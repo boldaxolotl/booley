@@ -196,7 +196,14 @@ def _next_archive(log_dir: Path) -> Path:
 def _draft_content(ticket: Path) -> tuple[dict[str, Any], str, bytes]:
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     draft = dict(fields)
-    for field in ("acceptance_basis", "created", "feature_branch", "steps_completed", "stage"):
+    for field in (
+        "acceptance_basis",
+        "acceptance_amendment",
+        "created",
+        "feature_branch",
+        "steps_completed",
+        "stage",
+    ):
         draft.pop(field, None)
     return fields, body, format_frontmatter(draft, body).encode()
 

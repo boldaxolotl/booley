@@ -7,6 +7,8 @@ Track actions taken during this triage session and present:
 | Action | Count | Tickets |
 |--------|-------|---------|
 | Unblocked | <n> | ... |
+| Amended | <n> | ... |
+| Requested review | <n> | ... |
 | Retried | <n> | ... |
 | Archived | <n> | ... |
 | Approved | <n> | ... |

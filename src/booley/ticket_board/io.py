@@ -225,6 +225,10 @@ class TicketIO:
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
     ) -> AcceptanceBasis:
         from .acceptance_basis import AcceptanceBasisError, load_acceptance_basis
+        from .amendment import pending_amendment
+
+        if pending_amendment(self._project_root, slug) is not None:
+            raise AcceptanceBasisError("amendment publication is pending; execution is not ready")
 
         board_path, status = find_ticket_file(self.tickets_dir, slug)
         if board_path is None or status in {None, "draft"}:

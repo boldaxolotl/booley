@@ -6,6 +6,7 @@ import argparse
 
 from .cli_handlers import (
     _cmd_activate,
+    _cmd_amend,
     _cmd_approve,
     _cmd_archive,
     _cmd_block,
@@ -343,6 +344,8 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     p.add_argument("slug", help="Ticket slug")
     p.add_argument("--feedback", default="", help="Feedback for next run (appended to blocked.md)")
 
+    _add_amend_subcommand(sub)
+
     # reset
     p = sub.add_parser(
         "reset",
@@ -375,6 +378,17 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
         help="Complete a ticket: approve, merge/cleanup per on_success from frontmatter",
     )
     p.add_argument("slug", help="Ticket slug")
+
+
+def _add_amend_subcommand(sub: argparse._SubParsersAction) -> None:
+    """Register the paired preview/apply interface for blocked amendments."""
+    p = sub.add_parser("amend", help="Preview or apply a blocked Ticket amendment")
+    p.add_argument("slug", help="Blocked Ticket slug")
+    p.add_argument("--changes-file", required=True, help="Typed JSON amendment request")
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--preview", action="store_true", help="Validate and show the exact change")
+    mode.add_argument("--apply", action="store_true", help="Publish the approved change")
+    p.add_argument("--expected-preview", help="Digest printed by --preview (required for --apply)")
 
 
 def _add_reporting_subcommands(sub: argparse._SubParsersAction) -> None:
@@ -505,6 +519,7 @@ HANDLERS = {
     "requeue": _cmd_requeue,
     "handoff": _cmd_handoff,
     "unblock": _cmd_unblock,
+    "amend": _cmd_amend,
     "reset": _cmd_reset,
     "reset-to": _cmd_reset_to_deprecated,
     "approve": _cmd_approve,

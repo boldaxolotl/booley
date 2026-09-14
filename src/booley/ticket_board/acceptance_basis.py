@@ -65,6 +65,7 @@ _AUTHORED_FIELDS = (
 _GENERATED_FIELDS = frozenset(
     {
         "acceptance_basis",
+        "acceptance_amendment",
         "created",
         "feature_branch",
         "steps_completed",
@@ -515,22 +516,11 @@ def _validate_record(value: Any) -> None:
     record, ticket, frontmatter, bindings, raw_plan, removals, providers = _record_components(
         value
     )
-    if set(record) != {
-        "schema",
-        "ticket",
-        "bindings",
-        "target_plan",
-        "removal_targets",
-        "providers",
-    }:
-        raise AcceptanceBasisError("Acceptance Basis record has invalid top-level fields")
+    _validate_record_schema(record)
     try:
-        schema = require_int(record.get("schema"), field="Acceptance Basis record.schema")
         require_str(ticket, "body")
     except BoundaryError as exc:
         raise AcceptanceBasisError(str(exc)) from exc
-    if schema != RECORD_SCHEMA_VERSION:
-        raise AcceptanceBasisError("Acceptance Basis record has an unsupported schema")
     if set(ticket) != {"frontmatter", "body"}:
         raise AcceptanceBasisError("Acceptance Basis record.ticket has an invalid schema")
     unknown = sorted(set(frontmatter) - set(_AUTHORED_FIELDS))
@@ -555,6 +545,73 @@ def _validate_record(value: Any) -> None:
         errors = OnSuccess.from_dict(dict(on_success)).validate()
         if errors:
             raise AcceptanceBasisError(f"Acceptance Basis record {errors[0]}")
+
+
+def _validate_record_schema(record: Mapping[str, Any]) -> None:
+    expected_fields = {
+        "schema",
+        "ticket",
+        "bindings",
+        "target_plan",
+        "removal_targets",
+        "providers",
+    }
+    if record.get("schema") == 3:
+        expected_fields.add("amendment")
+    if set(record) != expected_fields:
+        raise AcceptanceBasisError("Acceptance Basis record has invalid top-level fields")
+    try:
+        schema = require_int(record.get("schema"), field="Acceptance Basis record.schema")
+    except BoundaryError as exc:
+        raise AcceptanceBasisError(str(exc)) from exc
+    if schema not in {RECORD_SCHEMA_VERSION, 3}:
+        raise AcceptanceBasisError("Acceptance Basis record has an unsupported schema")
+    if schema == 3:
+        _validate_amendment_record(record.get("amendment"))
+
+
+def _validate_amendment_record(value: Any) -> None:
+    try:
+        row = require_dict(value, field="Acceptance Basis amendment")
+        if set(row) != {
+            "old_basis",
+            "operation_id",
+            "actor",
+            "reason",
+            "changes",
+            "scope_added",
+            "optional_conversions",
+        }:
+            raise AcceptanceBasisError("Acceptance Basis amendment has invalid fields")
+        AcceptanceBasis.from_mapping(row["old_basis"])
+        operation = require_str(row, "operation_id")
+        actor = require_str(row, "actor")
+        reason = require_str(row, "reason")
+        changes = require_list(row.get("changes"), field="amendment.changes")
+        scope = require_list(row.get("scope_added"), field="amendment.scope_added")
+        conversions = require_list(
+            row.get("optional_conversions"), field="amendment.optional_conversions"
+        )
+    except BoundaryError as exc:
+        raise AcceptanceBasisError(str(exc)) from exc
+    if not re.fullmatch(r"[0-9a-f]{32}", operation) or not actor.strip() or not reason.strip():
+        raise AcceptanceBasisError(
+            "Acceptance Basis amendment identity, actor or reason is invalid"
+        )
+    if not changes and not scope:
+        raise AcceptanceBasisError("Acceptance Basis amendment has no changes")
+    for item in changes:
+        if not isinstance(item, Mapping) or set(item) != {
+            "criterion",
+            "before_mandatory",
+            "after_mandatory",
+            "thresholds",
+        }:
+            raise AcceptanceBasisError("Acceptance Basis amendment Criterion change is invalid")
+    if any(not isinstance(item, str) for item in scope):
+        raise AcceptanceBasisError("Acceptance Basis amendment Scope changes are invalid")
+    if any(not isinstance(item, str) or not item for item in conversions):
+        raise AcceptanceBasisError("Acceptance Basis optional conversions are invalid")
 
 
 def _record_components(value: Any) -> tuple:
@@ -687,6 +744,15 @@ def load_acceptance_basis(
         )
     basis = AcceptanceBasis.from_mapping(fields.get("acceptance_basis"))
     record = load_basis_record(project_root, slug, basis)
+    amendment = record.get("amendment")
+    marker = fields.get("acceptance_amendment")
+    if amendment is None and marker is not None:
+        raise AcceptanceBasisError(f"{BLOCK_REASON}: unexpected amendment marker")
+    if amendment is not None and marker != {
+        "slug": slug,
+        "operation_id": amendment["operation_id"],
+    }:
+        raise AcceptanceBasisError(f"{BLOCK_REASON}: amendment marker mismatch")
     _validate_receipt(Path(project_root), slug, basis, record)
     recorded_fields = record.get("ticket", {}).get("frontmatter")
     current_fields = _canonical_authored_fields(fields)
