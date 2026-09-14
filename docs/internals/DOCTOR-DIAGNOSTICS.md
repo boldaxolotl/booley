@@ -98,13 +98,13 @@ metadata was not tightened.
 Measured on 14 SEP 2026 using each revision's `tests/architecture` analyzer:
 
 - Before: `90c27b43d000f157dc967640434132aa71100fa9` (`origin/main` at implementation start).
-- After: `4a15672722c47afbf41ccd68422e1020830618c5` (production and analyzer implementation).
+- After: `5874e7cf884fdc0ca1f53cac5bd4676d6e6115ac` (production and analyzer implementation).
 
 | Diagnostic | Before | After |
 | --- | ---: | ---: |
 | Python modules | 492 | 496 |
-| Located dependency facts | 2,424 | 2,447 |
-| Unique module edges | 1,989 | 2,013 |
+| Located dependency facts | 2,424 | 2,448 |
+| Unique module edges | 1,989 | 2,014 |
 | Direct mutual package pairs | 13 | 13 |
 | Largest cyclic package group | 18 | 18 |
 
@@ -115,7 +115,7 @@ Fan-out is unique in-repository target modules, including deferred/type-only imp
 | --- | ---: | ---: |
 | `harness.doctor` | 66 | 57 |
 | `harness.init_cmd` | 39 | 39 |
-| `runtime.inspection` | New | 11 |
+| `runtime.inspection` | New | 12 |
 | `harness.host_diagnostics` | New | 6 |
 | `harness.setup.readiness` | New | 15 |
 | `audit.diagnostic_results` | New | 0 |
@@ -146,3 +146,18 @@ python3 "$snapshot_dir/tests/architecture/report.py" \
 The report omits sources with zero edges from its fan-out listing;
 `audit.diagnostic_results` has no in-repository imports. Full reports include the
 unchanged 18-member SCC and 13 mutual pairs.
+
+## Validation and review
+
+At `5874e7cf` on 14 SEP 2026, the full Python suite passed **11,289 tests**
+with **65 skips**, using the repository virtual environment, local socket access,
+and `pytest -q -n 4 --dist=loadscope --tb=short`. The required focused Doctor,
+Init, Runtime, audit, guidance, release-host and architecture run passed 1,784
+tests with one skip before the two small review fixes; the changed Runtime/Docker
+suite passed 85 tests afterward. `ruff check src/ tests/` and `git diff --check`
+passed.
+
+Independent Standards and Spec reviews found no outstanding issues after review
+fixes: JSON boundaries use `core.boundary.require_dict`, and the shared image
+observation forwards its executable consistently. Retained-resource tests isolate
+both inventories at the production interface, avoiding host Docker state.
