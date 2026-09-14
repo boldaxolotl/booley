@@ -103,6 +103,24 @@ class TestCheckCriteriaAcceptance:
         assert verdict.disposition == "failed"
         assert "no criteria" in verdict.blocked_reason
 
+    def test_approved_all_optional_requires_report_justification(self, tmp_path: Path):
+        state = _FakeState(
+            criteria={
+                "review_rtl_bugs_clean": _FakeCriterion(met=False, mandatory=False),
+                "_report_submitted": _FakeCriterion(
+                    met=True,
+                    mandatory=True,
+                    detail={"unmet_optional_criteria": ["review_rtl_bugs_clean"]},
+                ),
+            }
+        )
+        state.authorized_zero_mandatory_basis_id = "a" * 64
+        assert self._write_state_and_check(tmp_path, state).disposition == "review"
+        state.criteria["_report_submitted"].detail = {"unmet_optional_criteria": []}
+        verdict = self._write_state_and_check(tmp_path, state)
+        assert verdict.disposition == "failed"
+        assert verdict.unmet_mandatory == ["_report_submitted"]
+
     def test_all_mandatory_met(self, tmp_path: Path):
         state = _FakeState(
             criteria={

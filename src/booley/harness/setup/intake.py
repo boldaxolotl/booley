@@ -560,7 +560,22 @@ def _persist_initial_criteria_state(
         criterion_params=criterion_params,
         strict=True,
     )
+    state.authorized_zero_mandatory_basis_id = _zero_mandatory_amendment_basis(ctx, expanded)
     state.save()
+
+
+def _zero_mandatory_amendment_basis(ctx: TicketContext, expanded: dict[str, bool]) -> str:
+    """Carry the committed human exception through state reconstruction."""
+    if any(required for name, required in expanded.items() if not name.startswith("_")):
+        return ""
+    basis = ctx.acceptance_basis
+    if basis is None:
+        return ""
+    from booley.ticket_board.acceptance_basis import load_basis_record
+
+    record = load_basis_record(ctx.project_root, ctx.slug, basis)
+    amendment = record.get("amendment", {})
+    return basis.basis_id if amendment.get("optional_conversions") else ""
 
 
 def _validate_retired_criteria(ctx: TicketContext) -> None:
@@ -891,7 +906,9 @@ def _criteria_state_needs_reinit(ctx: TicketContext) -> bool:
     expected = template.expand(ctx.sim_targets)
     expected_mandatory = {k for k, mandatory in expected.items() if mandatory}
     if not expected_mandatory:
-        return False
+        return state.authorized_zero_mandatory_basis_id != _zero_mandatory_amendment_basis(
+            ctx, expected
+        )
     actual_mandatory = {
         k for k, entry in state.criteria.items() if entry.mandatory and not k.startswith("_")
     }

@@ -63,6 +63,12 @@ A replacement Acceptance Basis for an unchanged waiting Ticket after its
 dependencies are accepted.
 _Avoid_: Target Contract, target snapshot, config patch, mutable recipe
 
+**Ticket Amendment**:
+A Human-approved relaxation of Criteria or expansion of Scope on a blocked
+Ticket, published as a new immutable Acceptance Basis while preserving its
+implementation and the earlier basis.
+_Avoid_: Ticket editing, reset, fresh authoring
+
 ### Execution and evidence
 
 **Criterion**:

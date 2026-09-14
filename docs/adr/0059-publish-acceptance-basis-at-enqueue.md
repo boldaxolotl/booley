@@ -16,6 +16,12 @@ the basis of an untouched waiting Ticket after its dependencies are accepted,
 using a recoverable publication-plus-promotion transaction while retaining the
 previous basis as evidence.
 
+A second exception is a Human-approved Ticket Amendment for a blocked Ticket.
+The Board publishes a new immutable basis containing only supported Criteria
+relaxations or Scope additions. It retains the prior basis and execution history;
+the existing implementation resumes under the amended requirements. This does
+not allow Developer execution to edit acceptance inputs or repair input drift.
+
 Target Contract fields, commands, journal schemas, and compatibility adapters
 are rejected rather than upgraded. Existing Tickets using the retired format
 must be recreated from a fresh draft and enqueued. This hard cutoff

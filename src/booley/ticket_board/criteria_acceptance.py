@@ -613,7 +613,7 @@ def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
         logger.info("Ticket %s blocked: %s", state.slug, reason)
         return CriteriaVerdict(disposition="blocked", blocked_reason=reason, **base)
 
-    if stats["mandatory"] == 0:
+    if stats["mandatory"] == 0 and not getattr(state, "authorized_zero_mandatory_basis_id", ""):
         logger.warning(
             "State for %s has no visible mandatory criteria -- failing instead "
             "of treating 0/0 as success.",

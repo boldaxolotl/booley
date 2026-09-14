@@ -497,6 +497,14 @@ disregards the former scaffold's strict-format instructions.
 
 Queuing a ticket doesn't start it. Tickets sit in `board/queue/` until you start Ticket Mode with `booley run` in a container terminal; that loop then pulls tickets off the queue one after another without further input. Use `/booley-ticket-triage` to work through blocked, failed, and finished ones.
 
+**Amending a blocked Ticket.** During triage, the agent may propose relaxing an
+existing acceptance Criterion or expanding file Scope when the recorded blocker
+supports that change. It shows the exact before-and-after proposal for Human
+approval. An approved amendment keeps the Ticket's implementation, publishes a
+new Acceptance Basis, and queues the Ticket to resume. Retry with feedback,
+requested review, reset, and fresh authoring remain separate choices; the
+triage agent handles the amendment commands.
+
 **Writing a ticket by hand** is an advanced path because executable tickets
 require the same preparation and validation that the skill automates. Follow
 the complete CLI workflow in the packaged

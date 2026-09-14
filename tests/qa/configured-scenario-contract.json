@@ -240,6 +240,30 @@
       "semantics": "8dcdbecb9f565fedcbedabb31a05b5502c147ed4696e9645a35c94bb483511f7",
       "checks": "82f19ee8652c8d1988dfca514c40be4b7ce888028a8770e448b0d973f37c7317",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "blocked-ticket-amendment-ubuntu-codex-cli": {
+      "required": true,
+      "semantics": "55facd962ec362286c71c395853b41144dce256a2549ee7f946b47082acf5793",
+      "checks": "703156a79bb8a6b7a5be5197c48cf045eccc9fab6bac77640bb48fe6ee550a82",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "blocked-ticket-amendment-ubuntu-claude-cli": {
+      "required": true,
+      "semantics": "947a59a76ec4b021ce29c81e0c0854df43b4e48a5553a1975ad95722e0952eba",
+      "checks": "703156a79bb8a6b7a5be5197c48cf045eccc9fab6bac77640bb48fe6ee550a82",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "blocked-ticket-amendment-windows-codex-cli": {
+      "required": true,
+      "semantics": "513671fdaf788a55f08c65a48851ddc3e70c9aa2d8e6b39b2ce394be8c97318a",
+      "checks": "703156a79bb8a6b7a5be5197c48cf045eccc9fab6bac77640bb48fe6ee550a82",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "blocked-ticket-amendment-windows-claude-cli": {
+      "required": true,
+      "semantics": "10e20ed409b319dd36a6df418aee4200cca9efabd93f1c6f3d0ef163bf0da90f",
+      "checks": "703156a79bb8a6b7a5be5197c48cf045eccc9fab6bac77640bb48fe6ee550a82",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     }
   }
 }
