@@ -118,7 +118,10 @@ def test_repeated_amendment_preserves_ticket_only_authority(tmp_path: Path) -> N
     basis = load_ticket_baseline(root, "blocked-again", fields, body)
 
     assert basis.outer_sha != first_basis.outer_sha
-    assert fields["machine"]["amendment"]["previous_generation"] == first_fields["machine"]["generation"]
+    assert (
+        fields["machine"]["amendment"]["previous_generation"]
+        == first_fields["machine"]["generation"]
+    )
     assert fields["machine"]["amendment"]["optional_conversions"] == ["review_rtl_bugs_clean"]
     assert fields["scope"] == ["README.md", "EXTRA.md"]
     assert validate_ticket_fields(fields, body, project_root=root) == []
