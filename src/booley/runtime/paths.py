@@ -13,27 +13,12 @@ import sys
 from importlib.resources import files
 from pathlib import Path
 
+from booley.core.resources import package_data_dir
+
 
 def dev_support_dir() -> Path:
     """Return the installed package's developer-support directory."""
     return Path(str(files("booley").joinpath("dev_support")))
-
-
-def package_data_dir() -> Path:
-    """Return path to the installed package's data/ directory.
-
-    Falls back to __file__-relative resolution if importlib.resources
-    resolves to a shadow booley/ directory (e.g. agent-created artifacts
-    in the worktree) that lacks the expected data/ subtree.
-    """
-    resolved = Path(str(files("booley").joinpath("data")))
-    if (resolved / "refs").is_dir():
-        return resolved
-    # Shadow package — fall back to this file's location
-    fallback = Path(__file__).resolve().parent.parent / "data"
-    if (fallback / "refs").is_dir():
-        return fallback
-    return resolved
 
 
 def refs_dir() -> Path:

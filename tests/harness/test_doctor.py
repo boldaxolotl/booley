@@ -1792,7 +1792,7 @@ def test_validate_one_flow_table_pre_run_commands_shape():
 
 
 def test_windows_rejects_host_provisioning_during_config_audit(tmp_path, monkeypatch):
-    from booley.eda import config as eda_config
+    from booley.eda.provisioning import configuration as eda_config
 
     passes: list[str] = []
     warns: list[str] = []

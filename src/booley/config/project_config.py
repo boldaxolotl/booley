@@ -81,7 +81,8 @@ def _load_config() -> dict[str, Any]:
         toml_path = project_toml_path if project_toml_path.exists() else root_toml_path
         with toml_path.open("rb") as f:
             toml = tomllib.load(f)
-        from booley.eda.config import EdaConfigError, parse_eda_config, retired_config_error
+        from booley.config.eda import EdaConfigError, parse_eda_config
+        from booley.config.flow_enablement import retired_config_error
 
         migration = retired_config_error(toml)
         if migration:
