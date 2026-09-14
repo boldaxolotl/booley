@@ -56,6 +56,8 @@ _MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024
 _MAX_PR_TEXT_BYTES = 1024 * 1024
 _MAX_FINDINGS = 100
 _BINARY_RUN_RE = re.compile(rb"[\t\x20-\x7e]{6,}")
+_ASCII_REGEX_FOLD = str.maketrans({"\u0130": "i", "\u0131": "i"})
+_PREFILTER_CHUNK_CHARS = 1024 * 1024
 _IDENT_RE = re.compile(r"^(?P<name>.*) <(?P<email>[^<>]*)> \d+ [+-]\d{4}$")
 _OID_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 
@@ -77,6 +79,7 @@ class GuardConfig:
     matcher: re.Pattern[str]
     allowed_authors: tuple[str, ...]
     ignored_paths: tuple[str, ...]
+    ascii_prefilter_terms: tuple[str, ...] | None
 
 
 @dataclass(frozen=True)
@@ -288,8 +291,15 @@ def _compile_term(term: str, key: bytes) -> TermPattern:
     return TermPattern(term, term_id, re.compile(body, re.IGNORECASE))
 
 
-def _combined_matcher(patterns: tuple[TermPattern, ...]) -> re.Pattern[str]:
-    ordered = sorted(enumerate(patterns), key=lambda item: len(item[1].literal), reverse=True)
+def _combined_matcher(
+    patterns: tuple[TermPattern, ...], selected: tuple[int, ...] | None = None
+) -> re.Pattern[str]:
+    indexed = (
+        enumerate(patterns)
+        if selected is None
+        else ((index, patterns[index]) for index in selected)
+    )
+    ordered = sorted(indexed, key=lambda item: len(item[1].literal), reverse=True)
     alternatives = (f"(?P<term_{index}>{pattern.regex.pattern})" for index, pattern in ordered)
     return re.compile("|".join(alternatives), re.IGNORECASE)
 
@@ -320,6 +330,9 @@ def _parse_config(raw_config: bytes, repo: Path) -> GuardConfig:
         _combined_matcher(patterns),
         tuple(authors),
         tuple(dict.fromkeys(ignored)),
+        tuple(term.casefold() for term in terms)
+        if all(term.isascii() for term in terms)
+        else None,
     )
 
 
@@ -335,11 +348,31 @@ def _redact_location(location: str, config: GuardConfig) -> str:
     return redacted
 
 
+def _ascii_candidate_indices(text: str, terms: tuple[str, ...]) -> tuple[int, ...]:
+    """Find a safe superset of ASCII regex matches using bounded text chunks."""
+    overlap = max(map(len, terms)) - 1
+    candidates: set[int] = set()
+    for start in range(0, len(text), _PREFILTER_CHUNK_CHARS):
+        chunk = text[start : start + _PREFILTER_CHUNK_CHARS + overlap]
+        if "\u0130" in chunk or "\u0131" in chunk:
+            chunk = chunk.translate(_ASCII_REGEX_FOLD)
+        folded = chunk.casefold()
+        candidates.update(index for index, term in enumerate(terms) if term in folded)
+    return tuple(sorted(candidates))
+
+
 def _scan_text(text: str, location: str, config: GuardConfig) -> list[Finding]:
+    matcher = config.matcher
+    if config.ascii_prefilter_terms is not None:
+        candidates = _ascii_candidate_indices(text, config.ascii_prefilter_terms)
+        if not candidates:
+            return []
+        if len(candidates) < len(config.patterns):
+            matcher = _combined_matcher(config.patterns, candidates)
     findings: list[Finding] = []
     safe_location = _redact_location(location, config)
     found_ids: set[str] = set()
-    for match in config.matcher.finditer(text):
+    for match in matcher.finditer(text):
         assert match.lastgroup is not None
         pattern = config.patterns[int(match.lastgroup.removeprefix("term_"))]
         if pattern.term_id in found_ids:
