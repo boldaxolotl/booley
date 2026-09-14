@@ -6,7 +6,7 @@ universal allowlist. The test-only analyzer records source knowledge without add
 a production abstraction layer.
 
 The latest measurements were verified on 14 SEP 2026 against source and analyzer
-at `8efb7c56`, with `90c27b43` as the implementation base. Earlier snapshots
+at `8f7d1479`, with `35062dda` as the integration base. Earlier snapshots
 retain their original revision and date.
 The direction rules are normative; dated graph snapshots are diagnostic evidence.
 
@@ -412,7 +412,7 @@ work distinguish legitimate composition from unjustified knowledge growth.
 ## Current snapshot: 14 SEP 2026 — Config/EDA/Runtime separation
 
 [#531](https://github.com/boldaxolotl/booley/issues/531) removes both Config→EDA
-edges and all four EDA→Runtime edges. Its own source/analyzer comparison is:
+edges and all four EDA→Runtime edges. Its original source/analyzer comparison is:
 
 | Diagnostic | Before `90c27b43` | After `8efb7c56` |
 | --- | ---: | ---: |
@@ -425,6 +425,11 @@ edges and all four EDA→Runtime edges. Its own source/analyzer comparison is:
 The Config↔EDA and EDA↔Runtime mutual pairs disappear. The exact 18-member SCC
 remains: #530's Target→Flows and FuseSoC→Runtime paths have not been removed on
 this branch. The 12-member/9-pair cumulative projection is not an achieved result.
+After integration with main for its existing CI author-allowlist repair, the
+final source/analyzer `8f7d1479` has 499 modules, 2,472 facts, and 2,030 edges;
+the integration base `35062dda` has 494 modules, 2,458 facts, and 2,017 edges.
+The 13→11 mutual-pair reduction and exact 18-member SCC are unchanged.
+
 Retain the existing exact SCC metadata; the new production metadata test requires
 it to equal the measured nontrivial groups, forcing tightening when a split lands.
 Separate seeded tests prove neutral packages cannot join the remaining group.

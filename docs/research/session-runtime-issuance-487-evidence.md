@@ -282,3 +282,29 @@ has not changed; only executable contract metadata and its proofs were added.
 - Final focused Core/architecture check after portable test adjustments:
   **154 passed**. `ruff check src/ tests/`, `ruff check .`, and
   `ruff format --check .` pass with Ruff 0.16.6.
+
+### Merge preparation integration: 14 SEP 2026
+
+PR #534's initial confidential-content CI rejected the author identities because
+its base carried an empty trusted author allowlist. The same candidate identity
+fails against the sealed policy at `90c27b43` and passes against current main's
+policy. Main already contains the dedicated repair `69c326ab`; merging main at
+`35062dda` into this branch produced `8f7d1479` without conflicts. No scanner
+exception, identity change, or policy change was added by #531.
+
+The final integrated source and analyzer have these reproducible measurements:
+
+| Diagnostic | Integration base `35062dda` | Integrated source `8f7d1479` |
+| --- | ---: | ---: |
+| Python modules | 494 | 499 |
+| Located dependency facts | 2,458 | 2,472 |
+| Unique normalized edges | 2,017 | 2,030 |
+| Config→EDA facts | 2 | 0 |
+| EDA→Runtime facts | 4 | 0 |
+| Mutual package pairs | 13 | 11 |
+| Largest cyclic package group | 18 | 18 |
+
+Use the same archive/report commands above with these two revisions. The
+additional two modules and 34 dependency facts relative to the original snapshot
+come from intervening main work, not this refactor. The removed directions,
+remaining exact SCC, and affected owner fan-out are unchanged by integration.
