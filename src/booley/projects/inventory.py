@@ -11,9 +11,9 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_list
+from booley.core.private_store import PrivateStore
+from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
-from booley.runtime.auth_token import config_dir
-from booley.runtime.private_store import PrivateStore
 
 SCHEMA_VERSION = 1
 _STATE_FILENAME = "projects.json"

@@ -89,7 +89,8 @@ def _load_booley_toml(project_root: Path) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    from booley.eda.config import EdaConfigError, parse_eda_config, retired_config_error
+    from booley.config.eda import EdaConfigError, parse_eda_config
+    from booley.config.flow_enablement import retired_config_error
 
     migration = retired_config_error(data)
     if migration:

@@ -11,13 +11,18 @@ from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from booley.runtime.auth_token import config_dir
-from booley.runtime.private_store import PrivateStore
+from booley.core.private_store import PrivateStore
+from booley.core.user_paths import config_dir
 
-from ..config import installation_name_error
 from .policies.vivado import KIND as VIVADO_KIND
 from .policies.vivado import POLICY_REVISION as VIVADO_POLICY_REVISION
 from .policies.vivado import VivadoPolicyError, inspect_installation
+
+_OPAQUE_NAME_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+_ENVIRONMENT_LOOKING = frozenset(
+    {"home", "path", "ld_library_path", "ld_preload", "lm_license_file", "xilinxd_license_file"}
+)
 
 SCHEMA_VERSION = 1
 LICENSING_KIND = "xilinx-flexnet"
@@ -511,6 +516,19 @@ def _validate_new_grant_project(project: Path) -> None:
 
 def _paths_overlap(left: Path, right: Path) -> bool:
     return left == right or left in right.parents or right in left.parents
+
+
+def installation_name_error(value: object) -> str | None:
+    """Return why *value* is not a safe opaque installation name."""
+    if not isinstance(value, str) or not value:
+        return "must be a non-empty string"
+    if _CONTROL_RE.search(value) or not _OPAQUE_NAME_RE.fullmatch(value):
+        return "must be an opaque lowercase name (letters, digits, dots, underscores, and hyphens only)"
+    if value in {".", ".."} or ".." in value:
+        return "must not contain path-like dot segments"
+    if value.lower().replace("-", "_") in _ENVIRONMENT_LOOKING:
+        return "must not look like an environment variable name"
+    return None
 
 
 def _validate_name(name: str, label: str) -> None:

@@ -10,7 +10,7 @@ import pytest
 from tests.diagnostic_helpers import _isolate_runtime_files
 
 from booley.audit.diagnostic_results import Severity
-from booley.eda.config import EdaConfig
+from booley.config.eda import EdaConfig
 from booley.eda.provisioning.policies import vivado
 from booley.runtime import inspection, runtime_context
 

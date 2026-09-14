@@ -347,6 +347,6 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     (root / "harness" / (owner.replace(".", "/") + ".py")).write_text(statement)
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
     report = format_problems(problems)
-    assert "D23" in report
+    assert "D26" in report
     assert f"booley.harness.{owner}" in report
     assert f"booley.harness.{target}" in report

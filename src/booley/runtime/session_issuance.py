@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from booley.config.eda import EdaConfig
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
 from booley.core.boundary import (
     BoundaryError,
@@ -26,14 +27,13 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
-from booley.eda.config import EdaConfig
+from booley.core.private_store import PrivateStore
+from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
-from booley.runtime.auth_token import config_dir
 from booley.runtime.devcontainer import EGRESS_NETWORK
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
-from booley.runtime.private_store import PrivateStore
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 _IS_WINDOWS = os.name == "nt"

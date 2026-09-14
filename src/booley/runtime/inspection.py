@@ -20,8 +20,8 @@ from pathlib import Path
 
 import booley
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
-from booley.eda.config import EdaConfig
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
     RelayProfile,
@@ -322,7 +322,7 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
 
 
 def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings) -> None:
-    from booley.eda.config import PROVISIONING_HOST
+    from booley.config.eda import PROVISIONING_HOST
 
     vivado = request.eda.get("vivado") if request.eda is not None else None
     if not _check_runtime_isolation(report):

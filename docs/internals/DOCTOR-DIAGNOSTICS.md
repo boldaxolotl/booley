@@ -87,7 +87,7 @@ public seams where appropriate. Integration tests also execute real owners,
 assert phase order and actual repair effects, and cover Bootstrap warning waivers
 and clean-run stamps. This is not a patch-count target or a generic probe registry.
 
-D1/D6 already protect audit and Runtime from Harness dependencies. D23 additionally
+D1/D6 already protect audit and Runtime from Harness dependencies. D26 additionally
 forbids the new Harness diagnostic owners from importing Doctor, Init command
 orchestration, CLI composition, or rendering modules. Ordinary, deferred, and
 `TYPE_CHECKING` imports are tested. The package SCC did not split, so its ratchet

@@ -17,7 +17,7 @@ from typing import Any
 
 from booley.audit import agent_schema, config_common, configs_schema, flow_schema, project_schema
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
-from booley.eda.config import EdaConfig, parse_eda_config
+from booley.config.eda import EdaConfig, parse_eda_config
 from booley.fusesoc import core_projection, fusesoc_registry
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.harness.setup.guidance_links import (

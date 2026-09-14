@@ -11,7 +11,7 @@ from tests.runtime.test_session_issuance import _install_trusted_validator
 
 from booley import __version__
 from booley.audit.diagnostic_results import Severity
-from booley.eda.config import EdaConfig
+from booley.config.eda import EdaConfig
 from booley.eda.provisioning import authority
 from booley.runtime import devcontainer as dc
 from booley.runtime import inspection, runtime_context, session_issuance

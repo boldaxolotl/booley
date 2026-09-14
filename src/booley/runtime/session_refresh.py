@@ -23,12 +23,12 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.core.private_store import PrivateStore
+from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
-from booley.runtime.auth_token import config_dir
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
-from booley.runtime.private_store import PrivateStore
 from booley.runtime.session_spec import (
     SessionSpecSnapshot,
     capture_session_spec,

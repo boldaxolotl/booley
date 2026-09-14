@@ -11,7 +11,7 @@ from pathlib import Path
 
 from booley import __version__
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
-from booley.eda.config import parse_eda_config
+from booley.config.eda import parse_eda_config
 from booley.harness.doctor_waivers import warning
 from booley.runtime import inspection
 
