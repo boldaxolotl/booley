@@ -10,9 +10,9 @@ from typing import Any, Literal, TypedDict, cast
 
 from booley.core.boundary import require_bool, require_dict, require_int, require_list, require_str
 from booley.runtime.pid import is_pid_alive
-from booley.ticket_board.acceptance_basis import ticket_baseline_from_machine
 from booley.ticket_board.acceptance_ledger import read_acceptance
 from booley.ticket_board.paths import ticket_runtime_dir
+from booley.ticket_board.ticket_baseline import ticket_baseline_from_machine
 
 
 class ReviewEntryError(ValueError):

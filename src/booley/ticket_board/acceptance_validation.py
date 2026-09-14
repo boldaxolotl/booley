@@ -18,10 +18,10 @@ from booley.runtime.project_dir import (
 )
 from booley.runtime.project_prepare import PreparationResult, prepare_project
 
-from .acceptance_basis import (
+from .ticket_baseline import (
     BLOCK_REASON,
-    AcceptanceBasis,
-    AcceptanceBasisError,
+    TicketBaseline,
+    TicketBaselineError,
     assert_candidate_inputs_unchanged,
     materialize_basis_checkout,
 )
@@ -29,7 +29,7 @@ from .acceptance_basis import (
 
 def assert_ticket_worktree_inputs_unchanged(
     project_root: Path | str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     live_checkout: Path | str,
     *,
     slug: str,
@@ -44,7 +44,7 @@ def assert_ticket_worktree_inputs_unchanged(
             slug=slug,
             ticket_path=Path(ticket_path),
         )
-    except (AcceptanceBasisError, CoreProjectionError, OSError, ValueError) as exc:
+    except (TicketBaselineError, CoreProjectionError, OSError, ValueError) as exc:
         raise _canonical_block_error(exc) from exc
 
 
@@ -70,18 +70,18 @@ def prepare_acceptance_checkout(
             sim_flow_enabled=flow_enabled("sim", prepared),
         )
         if not result.ok:
-            raise AcceptanceBasisError(result.error)
+            raise TicketBaselineError(result.error)
         reconcile_projected_cores(prepared)
         if native_cores_ignored(prepared):
             reconcile_isolated_registry(prepared)
-    except (AcceptanceBasisError, CoreProjectionError, OSError, ValueError) as exc:
+    except (TicketBaselineError, CoreProjectionError, OSError, ValueError) as exc:
         raise _canonical_block_error(exc) from exc
     return result
 
 
 def _validate_live_worktree(
     project_root: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     live_checkout: Path,
     *,
     slug: str,
@@ -112,20 +112,20 @@ def _require_contained_project_directory(reference: Path) -> None:
     try:
         project_dir = resolve_checkout_project_dir(reference).resolve()
     except (FileNotFoundError, ValueError) as exc:
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"cannot prepare materialized Ticket baseline at {reference}: {exc}"
         ) from exc
     try:
         project_dir.relative_to(reference.resolve())
     except ValueError as exc:
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"materialized project directory {project_dir} is outside {reference}"
         ) from exc
 
 
 def _assert_renderers_preserved_authoring(
     reference: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
 ) -> None:
     repositories = [(reference, basis.participant("outer"))]
     project = next((item for item in basis.participants if item.role == "project"), None)
@@ -135,7 +135,7 @@ def _assert_renderers_preserved_authoring(
     for repository, participant in repositories:
         changed = _tracked_paths_since(repository, participant.authoring_sha)
         if changed:
-            raise AcceptanceBasisError(
+            raise TicketBaselineError(
                 "generated-input renderer changed tracked "
                 f"{participant.role} path(s): {', '.join(sorted(changed))}"
             )
@@ -158,14 +158,14 @@ def _tracked_paths_since(repository: Path, authoring_sha: str) -> set[str]:
         )
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
-            raise AcceptanceBasisError(f"git {' '.join(command)} failed in {repository}: {detail}")
+            raise TicketBaselineError(f"git {' '.join(command)} failed in {repository}: {detail}")
         paths.update(path for path in result.stdout.split("\0") if path)
     return paths
 
 
-def _canonical_block_error(exc: Exception) -> AcceptanceBasisError:
+def _canonical_block_error(exc: Exception) -> TicketBaselineError:
     marker = f"{BLOCK_REASON}:"
     detail = str(exc).strip()
     while detail.startswith(marker):
         detail = detail.removeprefix(marker).lstrip()
-    return AcceptanceBasisError(f"{marker} {detail}".rstrip())
+    return TicketBaselineError(f"{marker} {detail}".rstrip())

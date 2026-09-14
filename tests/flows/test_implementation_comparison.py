@@ -17,8 +17,8 @@ from booley.flows.implementation_comparison import (
 )
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.catalog import TargetCatalog
-from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
+from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
 
 def select_target(project_root, token, *, for_flow=None):
@@ -49,7 +49,7 @@ def test_invalid_persisted_baseline_fails_closed() -> None:
         target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"])
 
 
-def _basis_project(tmp_path: Path, *, schema: int = 4) -> AcceptanceBasis:
+def _basis_project(tmp_path: Path, *, schema: int = 4) -> TicketBaseline:
     assert schema == 4
     (tmp_path / "toy.core").write_text(
         """CAPI=2:
@@ -67,7 +67,7 @@ targets:
 """,
         encoding="utf-8",
     )
-    return AcceptanceBasis(
+    return TicketBaseline(
         bindings=(
             AcceptanceTargetBinding(
                 flow="synth",
@@ -263,10 +263,10 @@ def test_authored_criterion_metadata_supplies_ticket_baseline_ref(
 
 
 def _basis_with_binding(
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     binding: AcceptanceTargetBinding,
-) -> AcceptanceBasis:
-    return AcceptanceBasis(
+) -> TicketBaseline:
+    return TicketBaseline(
         bindings=(binding,),
         participants=basis.participants,
     )
@@ -287,7 +287,7 @@ def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
         baseline_selector="",
         candidate_selector="synth_after",
     )
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         bindings=(empty_selector_binding,),
         participants=basis.participants,
     )
@@ -308,7 +308,7 @@ def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
 
 def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
     basis = _basis_project(tmp_path, schema=4)
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         bindings=(*basis.bindings, *basis.bindings),
         participants=basis.participants,
     )
@@ -329,7 +329,7 @@ def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
 
 def test_sealed_plan_rejects_missing_binding(tmp_path: Path) -> None:
     basis = _basis_project(tmp_path, schema=4)
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         bindings=(),
         participants=basis.participants,
     )

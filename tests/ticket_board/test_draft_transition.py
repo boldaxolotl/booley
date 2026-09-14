@@ -18,10 +18,10 @@ from booley.ticket_board import (
     draft_transition,
     workspace_ops,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
+    TicketBaselineError,
     ticket_machine_fields,
 )
 
@@ -46,7 +46,7 @@ def _participant(role: str = "outer") -> BasisParticipant:
 
 
 def _draft_journal(tmp_path: Path) -> draft_transition.DraftTransitionJournal:
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     machine = ticket_machine_fields(basis, fields={}, body="", generation="e" * 32)
     return draft_transition.DraftTransitionJournal(
         1,
@@ -172,8 +172,8 @@ def test_draft_transition_requires_blocked_basis_and_exact_files(
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr(
         draft_transition,
-        "load_acceptance_basis",
-        lambda *_args: (_ for _ in ()).throw(AcceptanceBasisError("invalid basis")),
+        "load_ticket_baseline",
+        lambda *_args: (_ for _ in ()).throw(TicketBaselineError("invalid basis")),
     )
     with pytest.raises(draft_transition.DraftTransitionError, match="invalid basis"):
         draft_transition.return_to_draft(
@@ -218,7 +218,7 @@ def test_draft_relocation_requires_paired_repository(
 ) -> None:
     journal = replace(_draft_journal(tmp_path), has_project=True)
     project = _participant("project")
-    basis = AcceptanceBasis((_participant(), project))
+    basis = TicketBaseline((_participant(), project))
     monkeypatch.setattr(draft_transition, "resolve_inner_project_repo", lambda _root: None)
     with pytest.raises(draft_transition.DraftTransitionError, match="paired project"):
         draft_transition._relocate_worktrees(tmp_path, journal, basis)
@@ -239,5 +239,5 @@ def test_draft_published_transition_rejects_changed_worktree_identity(
     monkeypatch.setattr(draft_transition, "_worktree_for_ref", lambda *_args: tmp_path / "actual")
     with pytest.raises(draft_transition.DraftTransitionError, match="identity changed"):
         draft_transition._finish_published_transition(
-            tmp_path, journal, AcceptanceBasis((_participant(),))
+            tmp_path, journal, TicketBaseline((_participant(),))
         )

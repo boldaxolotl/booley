@@ -18,17 +18,18 @@ from booley.core.boundary import (
 )
 from booley.runtime.project_dir import runtime_dir
 
-from .acceptance_basis import (
-    AcceptanceBasis,
+from .acceptance_targets import AcceptanceTargetBinding
+from .persistence import atomic_replace_bytes
+from .ticket_baseline import (
     BasisParticipant,
     ProviderTargetBinding,
+    TicketBaseline,
     provider_binding_from_mapping,
     ticket_machine_digest,
+    ticket_machine_from_participants,
     valid_branch_ref,
     valid_ticket_ref,
 )
-from .acceptance_targets import AcceptanceTargetBinding
-from .persistence import atomic_replace_bytes
 
 _OPERATION_RE = re.compile(r"[0-9a-f]{32}")
 _SHA_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
@@ -49,6 +50,22 @@ class ParticipantPreparation:
     expected_old_sha: str
     tree_sha: str
     message: str
+
+
+@dataclass(frozen=True)
+class TicketPublicationRequest:
+    """Inputs shared by fresh publication and journal recovery."""
+
+    slug: str
+    source_sha256: str
+    effective_sha256: str
+    authored_sha256: str
+    repositories: dict[str, Path]
+    operation_id: str | None = None
+    participants: tuple[ParticipantPreparation, ...] | None = None
+    bindings: tuple[AcceptanceTargetBinding, ...] | None = None
+    removal_targets: tuple[str, ...] | None = None
+    providers: tuple[ProviderTargetBinding, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -254,85 +271,58 @@ def _validate_journal(journal: BasisPublicationJournal, slug: str) -> None:
         raise BasisPublicationError("basis publication participant order is invalid")
 
 
-def publish_basis_commits(
+def publish_ticket_commits(
     project_root: Path,
-    slug: str,
-    source_sha256: str,
-    effective_sha256: str,
-    authored_sha256: str,
-    repositories: dict[str, Path],
-    *,
-    operation_id: str | None = None,
-    participants: tuple[ParticipantPreparation, ...] | None = None,
-    bindings: tuple[AcceptanceTargetBinding, ...] | None = None,
-    removal_targets: tuple[str, ...] | None = None,
-    providers: tuple[ProviderTargetBinding, ...] | None = None,
-) -> tuple[AcceptanceBasis, str]:
+    request: TicketPublicationRequest,
+) -> tuple[TicketBaseline, str]:
     """Prepare and CAS-publish participant commits, resuming any prior journal."""
-    journal = load_basis_publication(project_root, slug)
+    journal = load_basis_publication(project_root, request.slug)
     if journal is None:
-        journal = _new_journal(
-            slug,
-            source_sha256,
-            effective_sha256,
-            authored_sha256,
-            operation_id,
-            participants,
-            bindings,
-            removal_targets,
-            providers,
-        )
+        journal = _new_journal(request)
         _write(project_root, journal)
     else:
-        _validate_resume(
-            journal,
-            source_sha256,
-            effective_sha256,
-            authored_sha256,
-            participants,
-            bindings,
-            removal_targets,
-            providers,
-        )
-    _validate_repositories(journal, repositories)
-    journal = _prepare_participant_commits(project_root, repositories, journal)
+        _validate_resume(journal, request)
+    _validate_repositories(journal, request.repositories)
+    journal = _prepare_participant_commits(project_root, request.repositories, journal)
     basis = _basis(journal)
-    journal = _publish_participant_commits(project_root, repositories, journal)
-    _publish_ticket_keepalives(repositories, basis, journal.operation_id)
-    _retire_temporary_keepalives(repositories, journal)
+    journal = _publish_participant_commits(project_root, request.repositories, journal)
+    _publish_ticket_keepalives(request.repositories, basis, journal.operation_id)
+    _retire_temporary_keepalives(request.repositories, journal)
     return basis, journal.operation_id
 
 
-def _new_journal(
-    slug: str,
-    source_sha256: str,
-    effective_sha256: str,
-    authored_sha256: str,
-    operation_id: str | None,
-    participants: tuple[ParticipantPreparation, ...] | None,
-    bindings: tuple[AcceptanceTargetBinding, ...] | None,
-    removal_targets: tuple[str, ...] | None,
-    providers: tuple[ProviderTargetBinding, ...] | None,
-) -> BasisPublicationJournal:
-    if operation_id is None or not _OPERATION_RE.fullmatch(operation_id):
+def _new_journal(request: TicketPublicationRequest) -> BasisPublicationJournal:
+    if request.operation_id is None or not _OPERATION_RE.fullmatch(request.operation_id):
         raise BasisPublicationError("basis publication operation ID is invalid")
-    if participants is None or bindings is None or removal_targets is None or providers is None:
+    if any(
+        value is None
+        for value in (
+            request.participants,
+            request.bindings,
+            request.removal_targets,
+            request.providers,
+        )
+    ):
         raise BasisPublicationError("new basis publication is missing prepared inputs")
+    assert request.participants is not None
+    assert request.bindings is not None
+    assert request.removal_targets is not None
+    assert request.providers is not None
     journal = BasisPublicationJournal(
         schema=1,
-        operation_id=operation_id,
-        slug=slug,
-        source_sha256=source_sha256,
-        effective_sha256=effective_sha256,
-        authored_sha256=authored_sha256,
-        participants=participants,
-        bindings=tuple(binding.as_dict() for binding in bindings),
-        removal_targets=removal_targets,
-        providers=tuple(row.as_dict() for row in providers),
+        operation_id=request.operation_id,
+        slug=request.slug,
+        source_sha256=request.source_sha256,
+        effective_sha256=request.effective_sha256,
+        authored_sha256=request.authored_sha256,
+        participants=request.participants,
+        bindings=tuple(binding.as_dict() for binding in request.bindings),
+        removal_targets=request.removal_targets,
+        providers=tuple(row.as_dict() for row in request.providers),
         prepared={},
         published=(),
     )
-    _validate_journal(journal, slug)
+    _validate_journal(journal, request.slug)
     return journal
 
 
@@ -375,29 +365,26 @@ def _publish_participant_commits(
     return journal
 
 
-def _validate_resume(
-    journal: BasisPublicationJournal,
-    source_sha256: str,
-    effective_sha256: str,
-    authored_sha256: str,
-    participants: tuple[ParticipantPreparation, ...] | None,
-    bindings: tuple[AcceptanceTargetBinding, ...] | None,
-    removal_targets: tuple[str, ...] | None,
-    providers: tuple[ProviderTargetBinding, ...] | None,
-) -> None:
-    if journal.source_sha256 != source_sha256:
+def _validate_resume(journal: BasisPublicationJournal, request: TicketPublicationRequest) -> None:
+    if journal.source_sha256 != request.source_sha256:
         raise BasisPublicationError("Ticket draft changed during basis publication")
-    if journal.effective_sha256 != effective_sha256:
+    if journal.effective_sha256 != request.effective_sha256:
         raise BasisPublicationError("effective Ticket fields changed during basis publication")
-    if journal.authored_sha256 != authored_sha256:
+    if journal.authored_sha256 != request.authored_sha256:
         raise BasisPublicationError("authored Ticket changed during publication")
-    if participants is not None and participants != journal.participants:
+    if request.participants is not None and request.participants != journal.participants:
         raise BasisPublicationError("basis publication participant inputs changed")
-    if bindings is not None and tuple(item.as_dict() for item in bindings) != journal.bindings:
+    if (
+        request.bindings is not None
+        and tuple(item.as_dict() for item in request.bindings) != journal.bindings
+    ):
         raise BasisPublicationError("basis publication Target bindings changed")
-    if removal_targets is not None and removal_targets != journal.removal_targets:
+    if request.removal_targets is not None and request.removal_targets != journal.removal_targets:
         raise BasisPublicationError("basis publication removal Targets changed")
-    if providers is not None and tuple(row.as_dict() for row in providers) != journal.providers:
+    if (
+        request.providers is not None
+        and tuple(row.as_dict() for row in request.providers) != journal.providers
+    ):
         raise BasisPublicationError("basis publication provider bindings changed")
 
 
@@ -445,25 +432,27 @@ def _recover_or_create_commit(
 def _commit_message(journal: BasisPublicationJournal, plan: ParticipantPreparation) -> str:
     if plan.role != "outer":
         return plan.message
-    baseline = {
-        item.role: {
-            "commit": journal.prepared.get(item.role, ""),
-            "ticket_ref": item.ticket_ref,
-            "destination_ref": item.destination_ref,
-            "destination_commit": item.destination_sha,
-        }
+    if any(
+        item.role == "project" and item.role not in journal.prepared
         for item in journal.participants
-    }
-    if "project" in baseline and not baseline["project"]["commit"]:
+    ):
         raise BasisPublicationError("project commit must precede outer commit")
-    machine = {
-        "schema": 1,
-        "authored_sha256": journal.authored_sha256,
-        "generation": journal.operation_id,
-        "baseline": baseline,
-    }
-    if journal.providers:
-        machine["providers"] = list(journal.providers)
+    participants = tuple(
+        BasisParticipant(
+            item.role,
+            journal.prepared.get(item.role, ""),
+            item.ticket_ref,
+            item.destination_ref,
+            item.destination_sha,
+        )
+        for item in journal.participants
+    )
+    machine = ticket_machine_from_participants(
+        participants,
+        authored_sha256=journal.authored_sha256,
+        generation=journal.operation_id,
+        providers=tuple(provider_binding_from_mapping(row) for row in journal.providers),
+    )
     return (
         f"{plan.message}\n\n"
         f"Booley-Ticket-Slug: {journal.slug}\n"
@@ -513,7 +502,7 @@ def _publish_ticket_ref(
     )
 
 
-def _basis(journal: BasisPublicationJournal) -> AcceptanceBasis:
+def _basis(journal: BasisPublicationJournal) -> TicketBaseline:
     participants = tuple(
         BasisParticipant(
             item.role,
@@ -526,11 +515,11 @@ def _basis(journal: BasisPublicationJournal) -> AcceptanceBasis:
     )
     bindings = tuple(AcceptanceTargetBinding(**item) for item in journal.bindings)
     providers = tuple(provider_binding_from_mapping(row) for row in journal.providers)
-    return AcceptanceBasis(participants, bindings, journal.removal_targets, providers=providers)
+    return TicketBaseline(participants, bindings, journal.removal_targets, providers=providers)
 
 
 def _publish_ticket_keepalives(
-    repositories: dict[str, Path], basis: AcceptanceBasis, generation: str
+    repositories: dict[str, Path], basis: TicketBaseline, generation: str
 ) -> None:
     for participant in basis.participants:
         repository = repositories[participant.role]
@@ -542,9 +531,7 @@ def _publish_ticket_keepalives(
             continue
         if existing.returncode != 1:
             detail = (existing.stderr or existing.stdout).strip() or "no diagnostic"
-            raise BasisPublicationError(
-                f"could not inspect Ticket keepalive {ref}: {detail}"
-            )
+            raise BasisPublicationError(f"could not inspect Ticket keepalive {ref}: {detail}")
         _require_git(repository, "update-ref", ref, participant.authoring_sha, "")
 
 

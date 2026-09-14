@@ -20,12 +20,6 @@ from typing import Literal
 
 from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 
-from ..acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    BasisParticipant,
-    assert_inputs_unchanged,
-)
 from ..git_ops import worktree_is_clean
 from ..target_finalization import (
     TargetFinalizationError,
@@ -33,7 +27,13 @@ from ..target_finalization import (
     plan_orphaned_fileset_removals,
     plan_target_removals,
 )
-from ..workspace_ops import AcceptanceBasisOperationError, pin_basis_refs
+from ..ticket_baseline import (
+    BasisParticipant,
+    TicketBaseline,
+    TicketBaselineError,
+    assert_inputs_unchanged,
+)
+from ..workspace_ops import TicketBaselineOperationError, pin_basis_refs
 from ._model import (
     AcceptanceJournal,
     AcceptanceJournalError,
@@ -86,7 +86,7 @@ class AcceptanceRequest:
 
     root: Path
     slug: str
-    basis: AcceptanceBasis
+    basis: TicketBaseline
     cleanup: bool
     ticket_status: Literal["review", "done"]
     allowed_board_rename: tuple[Path, Path] | None
@@ -152,7 +152,7 @@ def _repository_for(
 
 def _initial_journal(
     slug: str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     *,
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
@@ -168,7 +168,7 @@ def _initial_journal(
 def _load_journal(
     path: Path,
     slug: str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     *,
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
@@ -293,7 +293,7 @@ def _plan_candidate(
 def _validate_source_surface(
     root: Path,
     project_repository: Path | None,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     sources: Mapping[str, str],
 ) -> None:
     """Rebuild the recorded composite checkout and reject acceptance-input drift."""
@@ -320,10 +320,10 @@ def _validate_source_surface(
 
             selector_errors = validate_binding_selectors(temporary, basis.bindings)
             if selector_errors:
-                raise AcceptanceBasisError(
+                raise TicketBaselineError(
                     "Ticket baseline selectors changed: " + "; ".join(selector_errors)
                 )
-        except AcceptanceBasisError as exc:
+        except TicketBaselineError as exc:
             raise AcceptanceOperationError(str(exc)) from exc
 
 
@@ -512,7 +512,7 @@ def _plan_missing_candidates(
     root: Path,
     project_repository: Path | None,
     slug: str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     journal: AcceptanceJournal,
     plan_directory: Path,
     repositories: AcceptanceRepositories,
@@ -595,7 +595,7 @@ def _validate_candidate_surface(
         # This is a fresh composite of the prepared candidate commits, never a
         # reused live Ticket Workspace, so exact basis semantics apply.
         assert_inputs_unchanged(transaction.basis, outer)
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         raise AcceptanceOperationError(str(exc)) from exc
 
 
@@ -714,7 +714,7 @@ def _reject_unjournaled_keepalives(
 def _reconcile_prepared_refs(
     root: Path,
     project_repository: Path | None,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     journal: AcceptanceJournal,
 ) -> None:
     by_role = {item.role: item for item in basis.participants}
@@ -763,7 +763,7 @@ def _reconcile_finalized_refs(
 def _validate_ticket_refs(
     root: Path,
     project_repository: Path | None,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     journal: AcceptanceJournal,
 ) -> None:
     for participant in basis.participants:
@@ -887,7 +887,7 @@ def _add_finalization_worktrees(
 def _baseline_core_snapshots(
     temporary: Path,
     project_checkout: Path | None,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     core_paths: tuple[str, ...],
 ) -> dict[str, bytes | None]:
     snapshots: dict[str, bytes | None] = {}
@@ -914,7 +914,7 @@ def _baseline_core_snapshots(
 def _planned_finalization_paths(
     temporary: Path,
     project_checkout: Path | None,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     journal: AcceptanceJournal,
 ) -> list[Path]:
     try:
@@ -1121,7 +1121,7 @@ def _publish_all(
 def _validate_recorded_destinations(
     root: Path,
     project_repository: Path | None,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     journal: AcceptanceJournal,
     *,
     after_approval: bool,
@@ -1146,7 +1146,7 @@ def _validate_recorded_destinations(
 def _validate_published_destinations(
     root: Path,
     project_repository: Path | None,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     journal: AcceptanceJournal,
     *,
     after_approval: bool,
@@ -1210,7 +1210,7 @@ def _ensure_sources(
                 slug=transaction.slug,
                 destination_branch=destination_branch,
             )
-        except AcceptanceBasisOperationError as exc:
+        except TicketBaselineOperationError as exc:
             raise AcceptanceOperationError(str(exc)) from exc
     if expected_sources is not None:
         expected = dict(expected_sources)
@@ -1260,7 +1260,7 @@ def _validated_source_keepalive(
 def _validated_keepalives(
     root: Path,
     project_repository: Path | None,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     journal: AcceptanceJournal,
 ) -> list[tuple[Path, str, str]]:
     by_role = {item.role: item for item in basis.participants}
@@ -1297,7 +1297,7 @@ def _validated_keepalives(
 def _retire_keepalives(
     root: Path,
     project_repository: Path | None,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     journal: AcceptanceJournal,
 ) -> None:
     refs = _validated_keepalives(root, project_repository, basis, journal)
@@ -1385,7 +1385,7 @@ class _AcceptanceTransaction:
     root: Path
     project_repository: Path | None
     slug: str
-    basis: AcceptanceBasis
+    basis: TicketBaseline
     journal: AcceptanceJournal
     path: Path
     store: AcceptanceStore
@@ -1457,7 +1457,7 @@ def _publish_pending_candidates(
     )
 
 
-def _destination_branch(basis: AcceptanceBasis) -> str:
+def _destination_branch(basis: TicketBaseline) -> str:
     outer = next(item for item in basis.participants if item.role == "outer")
     prefix = "refs/heads/"
     if not outer.destination_ref.startswith(prefix):

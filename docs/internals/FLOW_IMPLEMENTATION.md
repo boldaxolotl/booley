@@ -659,7 +659,7 @@ of a bare "no metrics".
 #### Ticket baselines and recorded recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket Acceptance Bases](#ticket-acceptance-bases).
+[Ticket baselines](#ticket-baselines).
 
 ### Reports and Criteria detail
 
@@ -892,7 +892,7 @@ violations, and critical design conditions are design failures.
 #### Ticket baselines and recorded recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket Acceptance Bases](#ticket-acceptance-bases).
+[Ticket baselines](#ticket-baselines).
 
 ### Reports and Criteria detail
 

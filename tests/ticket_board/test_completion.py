@@ -14,12 +14,6 @@ import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import completion
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    BasisParticipant,
-    ticket_baseline_from_machine,
-    ticket_machine_fields,
-)
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
 from booley.ticket_board.acceptance_journal._repository import (
     FaultingAcceptanceRepositories,
@@ -34,13 +28,19 @@ from booley.ticket_board.acceptance_journal._store import (
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.completion import complete_review_ticket
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.ticket_baseline import (
+    BasisParticipant,
+    TicketBaseline,
+    ticket_baseline_from_machine,
+    ticket_machine_fields,
+)
 
 ContractParticipant = BasisParticipant
 
 
 @pytest.fixture(autouse=True)
 def _reset_project_cache(monkeypatch: pytest.MonkeyPatch):
-    contracts: dict[Path, AcceptanceBasis] = {}
+    contracts: dict[Path, TicketBaseline] = {}
 
     monkeypatch.setattr(_TicketIO, "_bases", contracts, raising=False)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
@@ -109,9 +109,9 @@ class _Policy:
 
 
 class _TicketIO:
-    _bases: dict[Path, AcceptanceBasis]
+    _bases: dict[Path, TicketBaseline]
 
-    def __init__(self, root: Path, basis: AcceptanceBasis) -> None:
+    def __init__(self, root: Path, basis: TicketBaseline) -> None:
         if basis.machine is None:
             basis = replace(
                 basis,
@@ -144,7 +144,7 @@ class _TicketIO:
     def find_ticket(self, _slug: str) -> dict[str, Any]:
         return self.entry
 
-    def load_basis(self, _slug: str) -> AcceptanceBasis:
+    def load_basis(self, _slug: str) -> TicketBaseline:
         return self._bases[self._project_root.resolve()]
 
     def move_and_update(self, _slug: str, to_dir: str, _updates: dict[str, Any], **kwargs) -> bool:
@@ -162,7 +162,7 @@ class _BoundaryTicketIO:
     def find_ticket(self, _slug: str) -> dict[str, Any] | None:
         return self.entry
 
-    def load_basis(self, _slug: str) -> AcceptanceBasis:
+    def load_basis(self, _slug: str) -> TicketBaseline:
         machine = (self.entry or {}).get("machine")
         return replace(ticket_baseline_from_machine(machine), machine=machine)
 
@@ -170,16 +170,16 @@ class _BoundaryTicketIO:
 def _contract(
     root: Path,
     participants: tuple[BasisParticipant, ...],
-) -> AcceptanceBasis:
+) -> TicketBaseline:
     del root
-    basis = AcceptanceBasis(participants=participants)
+    basis = TicketBaseline(participants=participants)
     return replace(
         basis,
         machine=ticket_machine_fields(basis, fields={}, body="", generation="0" * 32),
     )
 
 
-def _boundary_contract() -> AcceptanceBasis:
+def _boundary_contract() -> TicketBaseline:
     participant = BasisParticipant(
         role="outer",
         authoring_sha="a" * 40,
@@ -187,7 +187,7 @@ def _boundary_contract() -> AcceptanceBasis:
         destination_ref="refs/heads/main",
         destination_sha="b" * 40,
     )
-    return AcceptanceBasis(participants=(participant,))
+    return TicketBaseline(participants=(participant,))
 
 
 def _paired_completion(
@@ -466,7 +466,7 @@ def test_complete_rejects_destination_ref_as_cleanup_target(
     root = tmp_path / "rtl"
     base = _repository(root)
     (root / ".booley_project").mkdir()
-    unsafe = AcceptanceBasis(
+    unsafe = TicketBaseline(
         participants=(
             ContractParticipant(
                 role="outer",
@@ -568,7 +568,7 @@ def test_complete_rejects_destination_change_to_dynamically_referenced_hook(
         "refs/heads/main",
         base,
     )
-    basis = AcceptanceBasis(participants=(participant,))
+    basis = TicketBaseline(participants=(participant,))
     tio = _TicketIO(root, basis)
 
     assert ticket_sha != basis_sha
@@ -649,7 +649,7 @@ def test_completion_snapshot_retry_uses_journal_sources_after_ref_cleanup(
 
 def test_materialized_basis_requires_project_owned_by_checkout(tmp_path: Path) -> None:
     from booley.ticket_board import operations
-    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+    from booley.ticket_board.ticket_baseline import TicketBaselineError
 
     root = tmp_path / "rtl"
     _repository(root)
@@ -660,7 +660,7 @@ def test_materialized_basis_requires_project_owned_by_checkout(tmp_path: Path) -
     checkout.mkdir()
 
     with pytest.raises(
-        AcceptanceBasisError,
+        TicketBaselineError,
         match="cannot prepare materialized Ticket baseline",
     ):
         operations._prepare_materialized_basis_view(tio, "change-target", checkout, basis)
@@ -1086,7 +1086,7 @@ def _single_target_removal_completion(
         "outer", ticket_sha, "refs/heads/change-target", "refs/heads/main", base
     )
     canonical = "acme:lib:toy:1.0#baseline"
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         removal_targets=(canonical,),
         bindings=(
             AcceptanceTargetBinding(
@@ -1170,7 +1170,7 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
         ),
     )
     canonical = "acme:lib:toy:1.0#baseline"
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         removal_targets=(canonical,),
         bindings=(
             AcceptanceTargetBinding(
@@ -1237,9 +1237,9 @@ def _target_removal_contract(
     root: Path,
     participants: tuple[BasisParticipant, ...],
     canonical: str,
-) -> AcceptanceBasis:
+) -> TicketBaseline:
     del root
-    return AcceptanceBasis(
+    return TicketBaseline(
         removal_targets=(canonical,),
         bindings=(
             AcceptanceTargetBinding(

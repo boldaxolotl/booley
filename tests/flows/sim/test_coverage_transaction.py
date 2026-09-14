@@ -368,7 +368,7 @@ def test_failed_state_commit_keeps_prior_acceptance_usable(tmp_path, monkeypatch
         tmp_path / "logs",
         saved,
         execution_id="prior",
-        acceptance_basis={},
+        ticket_identity={},
         participant_heads={"outer": "a" * 40},
     )
     assert snapshot.criteria["sim_pass_sim_0"]["met"] is True
@@ -417,7 +417,7 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
         tmp_path / "logs",
         saved,
         execution_id="test",
-        acceptance_basis={},
+        ticket_identity={},
         participant_heads={"outer": "a" * 40},
     )
     committed = boundary == "progress"

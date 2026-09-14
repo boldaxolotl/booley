@@ -17,9 +17,6 @@ from booley.runtime.project_dir import reset_cache
 from booley.runtime.submodule_materialization import materialize_submodules
 from booley.targets.catalog import TargetCatalog
 from booley.ticket_board import (
-    acceptance_basis as acceptance_basis_module,
-)
-from booley.ticket_board import (
     acceptance_targets,
     basis_publication,
     basis_refresh,
@@ -27,22 +24,8 @@ from booley.ticket_board import (
     enqueue_publication,
     workspace_ops,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    AcceptancePathPolicy,
-    BasisParticipant,
-    ProviderTargetBinding,
-    assert_inputs_unchanged,
-    assert_live_inputs_unchanged,
-    authored_ticket_digest,
-    load_acceptance_basis,
-    materialize_current_ticket_checkout,
-    ticket_baseline_from_machine,
-    ticket_machine_fields,
-    validate_current_basis_refs,
-    validate_ticket_view,
-    worktree_for_ref,
+from booley.ticket_board import (
+    ticket_baseline as acceptance_basis_module,
 )
 from booley.ticket_board.acceptance_journal import JournalState
 from booley.ticket_board.acceptance_targets import (
@@ -52,6 +35,23 @@ from booley.ticket_board.acceptance_targets import (
 from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
 from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
 from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.ticket_baseline import (
+    AcceptancePathPolicy,
+    BasisParticipant,
+    ProviderTargetBinding,
+    TicketBaseline,
+    TicketBaselineError,
+    assert_inputs_unchanged,
+    assert_live_inputs_unchanged,
+    authored_ticket_digest,
+    load_ticket_baseline,
+    materialize_current_ticket_checkout,
+    ticket_baseline_from_machine,
+    ticket_machine_fields,
+    validate_current_basis_refs,
+    validate_ticket_view,
+    worktree_for_ref,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +96,7 @@ def _simulate_host_mounted_project_worktree(
     monkeypatch: pytest.MonkeyPatch,
     project_dir: Path,
     project_worktree: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
 ) -> None:
     dot_git = project_worktree / ".git"
     admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
@@ -140,7 +140,7 @@ def test_machine_metadata_round_trips_through_ticket_frontmatter() -> None:
     provider = ProviderTargetBinding(
         "dependency", "2" * 32, "acme:lib:toy:1.0#future", "persistent", "3" * 64
     )
-    basis = AcceptanceBasis((_participant(),), providers=(provider,))
+    basis = TicketBaseline((_participant(),), providers=(provider,))
     body = "## Description\n\nDemo."
     machine = ticket_machine_fields(
         basis, fields={"summary": "demo"}, body=body, generation="1" * 32
@@ -160,8 +160,8 @@ def test_machine_metadata_round_trips_through_ticket_frontmatter() -> None:
 
 @pytest.mark.parametrize("schema", [True, 1.0])
 def test_basis_constructor_rejects_non_integer_schema(schema: object) -> None:
-    with pytest.raises(AcceptanceBasisError, match="schema must be 1"):
-        AcceptanceBasis((_participant(),), schema=schema)  # type: ignore[arg-type]
+    with pytest.raises(TicketBaselineError, match="schema must be 1"):
+        TicketBaseline((_participant(),), schema=schema)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("section", ["mandatory", "optional"])
@@ -225,8 +225,8 @@ def test_canonical_binding_preserves_full_criterion_path(
     ],
 )
 def test_basis_rejects_noncanonical_frontmatter(mapping: object, message: str) -> None:
-    with pytest.raises(AcceptanceBasisError, match=message):
-        AcceptanceBasis.from_mapping(mapping)
+    with pytest.raises(TicketBaselineError, match=message):
+        TicketBaseline.from_mapping(mapping)
 
 
 def test_no_manual_contract_commands_remain() -> None:
@@ -342,7 +342,7 @@ def test_basis_control_discovery_materializes_historical_submodule_pin(
     _git(root, "commit", "-m", "new project control")
     (root / ".booley_project").mkdir()
     monkeypatch.setenv("GIT_SSH", "/definitely/no/ssh")
-    basis = AcceptanceBasis((replace(_participant(), authoring_sha=authoring_sha),))
+    basis = TicketBaseline((replace(_participant(), authoring_sha=authoring_sha),))
 
     def discover(checkout: Path) -> tuple[str, ...]:
         return tuple(f"ip/{path.name}" for path in sorted((checkout / "ip").glob("*.core")))
@@ -425,7 +425,7 @@ def test_paired_ticket_load_ignores_authored_project_override(
 
     queued = tio.tickets_dir / "board" / "queue" / "control-record.md"
     fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    assert load_acceptance_basis(root, "control-record", fields, body).ticket_identity() == (
+    assert load_ticket_baseline(root, "control-record", fields, body).ticket_identity() == (
         basis.ticket_identity()
     )
 
@@ -448,7 +448,9 @@ def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Pat
     assert not (project_dir / "tickets/board/drafts/missing-paired-destination.md").exists()
 
 
-def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(tmp_path: Path) -> None:
+def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(
+    tmp_path: Path,
+) -> None:
     root, project_dir, tio = _basis_project(tmp_path)
 
     ticket = tio.create_ticket_file(
@@ -481,7 +483,7 @@ def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(tmp
     assert not receipt.exists()
     keepalive = f"refs/booley/tickets/{fields['machine']['generation']}/outer"
     assert _git(root, "rev-parse", keepalive) == basis.outer_sha
-    loaded = load_acceptance_basis(root, "automatic-basis", fields, body)
+    loaded = load_ticket_baseline(root, "automatic-basis", fields, body)
     assert loaded.basis_id == basis.basis_id
 
     assert loaded.ticket_identity() == fields["machine"]
@@ -588,7 +590,7 @@ def test_current_basis_validation_rejects_rewritten_destination_ref(tmp_path: Pa
     ).stdout.strip()
     _git(root, "update-ref", "refs/heads/main", unrelated)
 
-    with pytest.raises(AcceptanceBasisError, match="no longer descends"):
+    with pytest.raises(TicketBaselineError, match="no longer descends"):
         validate_current_basis_refs(root, basis)
 
 
@@ -620,7 +622,7 @@ def test_live_ticket_worktree_rejects_uncommitted_protected_input(tmp_path: Path
     )
     reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
 
-    with pytest.raises(AcceptanceBasisError, match="protected path"):
+    with pytest.raises(TicketBaselineError, match="protected path"):
         assert_live_inputs_unchanged(basis, root, reference)
 
 
@@ -659,7 +661,7 @@ def test_live_generated_inputs_must_match_prepared_reference(
     if live_state == "matching":
         assert_live_inputs_unchanged(basis, root, reference)
     else:
-        with pytest.raises(AcceptanceBasisError, match="protected path"):
+        with pytest.raises(TicketBaselineError, match="protected path"):
             assert_live_inputs_unchanged(basis, root, reference)
 
 
@@ -671,7 +673,7 @@ def test_prepared_ticket_view_recreates_core_projections(tmp_path: Path) -> None
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "enable projected core")
     commit = _git(root, "rev-parse", "HEAD")
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",
@@ -802,7 +804,7 @@ def test_live_project_worktree_uses_canonical_admin_mount(
     )
     reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
 
-    with pytest.raises(AcceptanceBasisError, match="protected path"):
+    with pytest.raises(TicketBaselineError, match="protected path"):
         assert_live_inputs_unchanged(basis, root, reference)
 
 
@@ -840,7 +842,7 @@ def test_worktree_discovery_rejects_ambiguous_bind_mount_paths(
 
     _stub_worktree_git(monkeypatch, output)
 
-    with pytest.raises(AcceptanceBasisError, match="ambiguous"):
+    with pytest.raises(TicketBaselineError, match="ambiguous"):
         worktree_for_ref(mounted_root, "refs/heads/demo")
 
 
@@ -885,7 +887,7 @@ def test_worktree_discovery_rejects_existing_path_with_wrong_git_identity(
     )
     _stub_worktree_git(monkeypatch, output, top_level=mounted_root)
 
-    with pytest.raises(AcceptanceBasisError, match="could not prove its Git identity"):
+    with pytest.raises(TicketBaselineError, match="could not prove its Git identity"):
         worktree_for_ref(mounted_root, "refs/heads/demo")
 
 
@@ -1126,7 +1128,7 @@ def test_enqueue_retry_recovers_matching_orphan_record_without_staged_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, project_dir, tio = _prepared_ticket(tmp_path)
-    publish = basis_publication.publish_basis_commits
+    publish = basis_publication.publish_ticket_commits
     interrupted = False
 
     def interrupt_before_journal(*args, **kwargs):
@@ -1136,13 +1138,13 @@ def test_enqueue_retry_recovers_matching_orphan_record_without_staged_index(
             raise OSError("before publication journal")
         return publish(*args, **kwargs)
 
-    monkeypatch.setattr(workspace_ops, "publish_basis_commits", interrupt_before_journal)
+    monkeypatch.setattr(workspace_ops, "publish_ticket_commits", interrupt_before_journal)
     assert tio.enqueue_ticket("transaction") is False
     assert basis_publication.load_basis_publication(root, "transaction") is None
     workspace = project_dir / "worktrees/transaction"
     assert _git(workspace, "diff", "--cached", "--name-only") == ""
 
-    monkeypatch.setattr(workspace_ops, "publish_basis_commits", publish)
+    monkeypatch.setattr(workspace_ops, "publish_ticket_commits", publish)
     assert tio.enqueue_ticket("transaction") is True
 
 
@@ -1207,7 +1209,7 @@ def test_board_basis_rejects_stale_runtime_ticket_snapshot(tmp_path: Path) -> No
     runtime_ticket.parent.mkdir(parents=True, exist_ok=True)
     runtime_ticket.write_text(format_frontmatter(fields, body), encoding="utf-8")
 
-    with pytest.raises(AcceptanceBasisError, match="machine"):
+    with pytest.raises(TicketBaselineError, match="machine"):
         tio.load_basis("transaction", runtime_ticket_path=runtime_ticket)
 
 
@@ -1226,7 +1228,7 @@ def test_legacy_executable_ticket_is_rejected_in_every_state(
     )
     tio = TicketIO(tickets, project_root=tmp_path)
 
-    with pytest.raises(AcceptanceBasisError, match="unsupported Ticket format"):
+    with pytest.raises(TicketBaselineError, match="unsupported Ticket format"):
         tio.load_basis("old")
 
 
@@ -1248,7 +1250,7 @@ def test_published_ticket_rejects_machine_or_unrecognized_field_edits(
         fields["unrecognized"] = "changed"
     queued.write_text(format_frontmatter(fields, body), encoding="utf-8")
 
-    with pytest.raises(AcceptanceBasisError, match=r"Ticket|unsupported"):
+    with pytest.raises(TicketBaselineError, match=r"Ticket|unsupported"):
         tio.load_basis("transaction")
 
 
@@ -1323,7 +1325,7 @@ def test_enqueue_rejects_stale_receipt_after_source_only_edit(
 def test_partial_keepalive_creation_rolls_forward_on_retry(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    basis = AcceptanceBasis((_participant("outer"), _participant("project")))
+    basis = TicketBaseline((_participant("outer"), _participant("project")))
     outer = tmp_path / "outer"
     project = tmp_path / "project"
     refs: dict[tuple[Path, str], str] = {}
@@ -1372,7 +1374,7 @@ def test_protected_parent_symlink_change_is_rejected(tmp_path: Path) -> None:
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "protected hook")
     sha = _git(root, "rev-parse", "HEAD")
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",
@@ -1389,7 +1391,7 @@ def test_protected_parent_symlink_change_is_rejected(tmp_path: Path) -> None:
     outside.mkdir()
     (root / ".booley_project/hooks").symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(AcceptanceBasisError, match="protected path"):
+    with pytest.raises(TicketBaselineError, match="protected path"):
         assert_inputs_unchanged(basis, root)
 
 
@@ -1404,7 +1406,7 @@ def test_acceptance_path_policy_protects_routing_config(tmp_path: Path) -> None:
     _git(root, "add", "booley.toml")
     _git(root, "commit", "-m", "route project")
     sha = _git(root, "rev-parse", "HEAD")
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",
@@ -1417,7 +1419,7 @@ def test_acceptance_path_policy_protects_routing_config(tmp_path: Path) -> None:
     )
     (root / "booley.toml").write_text('[project]\ndir = "other"\n', encoding="utf-8")
 
-    with pytest.raises(AcceptanceBasisError, match="protected path"):
+    with pytest.raises(TicketBaselineError, match="protected path"):
         assert_inputs_unchanged(basis, root)
 
 
@@ -1439,7 +1441,7 @@ def test_input_validation_supports_project_directory_outside_checkout(
     _git(root, "add", "booley.toml")
     _git(root, "commit", "-m", "external project route")
     sha = _git(root, "rev-parse", "HEAD")
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",
@@ -1465,7 +1467,7 @@ def test_gitignored_untracked_control_file_is_rejected(tmp_path: Path) -> None:
     _git(root, "add", ".gitignore")
     _git(root, "commit", "-m", "baseline")
     sha = _git(root, "rev-parse", "HEAD")
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",
@@ -1480,7 +1482,7 @@ def test_gitignored_untracked_control_file_is_rejected(tmp_path: Path) -> None:
     hook.parent.mkdir(parents=True)
     hook.write_text("print('changed')\n", encoding="utf-8")
 
-    with pytest.raises(AcceptanceBasisError, match="protected path"):
+    with pytest.raises(TicketBaselineError, match="protected path"):
         assert_inputs_unchanged(basis, root)
 
 
@@ -1495,7 +1497,7 @@ def test_protected_input_git_discovery_failure_is_loud(
     )
     monkeypatch.setattr(acceptance_targets.subprocess, "run", lambda *_args, **_kwargs: failed)
 
-    with pytest.raises(AcceptanceBasisError, match="protected-input discovery failed"):
+    with pytest.raises(TicketBaselineError, match="protected-input discovery failed"):
         AcceptancePathPolicy().discover(tmp_path)
 
 

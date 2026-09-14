@@ -15,9 +15,9 @@ import pytest
 from booley.ticket_board import (
     workspace_ops,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
 )
 
 
@@ -90,7 +90,7 @@ def _authoring_workspace(
 
 def _reset_plan(
     tmp_path: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     destination: Path,
 ) -> SimpleNamespace:
     return SimpleNamespace(
@@ -143,8 +143,8 @@ def test_authoring_change_validation_rejects_non_acceptance_paths(
         "_local_manifest_paths",
         lambda _surface, _project_repository: set(),
     )
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="non-authoring changes"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="non-authoring changes"):
+        workspace_ops.prepare_ticket_baseline(root, ticket, "ticket")
 
 
 def test_authoring_change_validation_rejects_modified_protected_source(
@@ -162,8 +162,8 @@ def test_authoring_change_validation_rejects_modified_protected_source(
     )
     monkeypatch.setattr(workspace_ops, "_git", lambda *_args, **_kwargs: _completed("git"))
 
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="non-authoring"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="non-authoring"):
+        workspace_ops.prepare_ticket_baseline(root, ticket, "ticket")
 
 
 def test_authoring_change_validation_rejects_unscoped_empty_placeholder(
@@ -185,8 +185,8 @@ def test_authoring_change_validation_rejects_unscoped_empty_placeholder(
         lambda *_args, **_kwargs: _completed("git", returncode=1),
     )
 
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="non-authoring"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="non-authoring"):
+        workspace_ops.prepare_ticket_baseline(root, ticket, "ticket")
 
 
 def test_authoring_path_allows_untracked_scoped_empty_placeholder(
@@ -272,12 +272,12 @@ def test_changed_core_targets_report_shape_and_identity_errors(
         workspace_ops, "_local_manifest_paths", lambda *_args, **_kwargs: {core.name}
     )
     monkeypatch.setattr(workspace_ops, "_baseline_surface_file", lambda *_args: None)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="is not a mapping"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="is not a mapping"):
+        workspace_ops.prepare_ticket_baseline(root, ticket, "ticket")
 
     core.write_text("targets: {}\n", encoding="utf-8")
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="no valid name"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="no valid name"):
+        workspace_ops.prepare_ticket_baseline(root, ticket, "ticket")
 
 
 def test_attachment_rollback_helpers_surface_git_inspection_failures(
@@ -289,7 +289,7 @@ def test_attachment_rollback_helpers_surface_git_inspection_failures(
         workspace_ops,
         "_git",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            workspace_ops.AcceptanceBasisOperationError("git unavailable")
+            workspace_ops.TicketBaselineOperationError("git unavailable")
         ),
     )
     assert workspace_ops._restore_attachment_upstream(attachment) == "git unavailable"
@@ -324,8 +324,8 @@ def test_public_basis_preparation_reports_git_process_failure(
         "run",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("git missing")),
     )
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="git missing"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="git missing"):
+        workspace_ops.prepare_ticket_baseline(root, ticket, "ticket")
 
 
 def test_strict_branch_lookup_distinguishes_missing_and_inspection_failure(
@@ -342,7 +342,7 @@ def test_strict_branch_lookup_distinguishes_missing_and_inspection_failure(
         "_git",
         lambda *_args, **_kwargs: _completed("git", returncode=2, stderr="locked"),
     )
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="locked"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="locked"):
         workspace_ops._strict_branch_sha(tmp_path, "ticket")
 
 
@@ -359,13 +359,13 @@ def test_ensure_workspace_rejects_moved_branch_and_existing_path(
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: "b" * 40)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="already points"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="already points"):
         workspace_ops.ensure_ticket_workspace(root, ticket, "ticket")
     monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: None)
     existing = project_data / "worktrees/ticket"
     existing.parent.mkdir(parents=True)
     existing.symlink_to("missing")
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="already exists"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="already exists"):
         workspace_ops.ensure_ticket_workspace(root, ticket, "ticket")
 
 
@@ -373,7 +373,7 @@ def test_reset_worktrees_reuses_matching_branch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     destination = tmp_path / "worktrees/ticket"
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     plan = _reset_plan(tmp_path, basis, destination)
     commands = _capture_reset_commands(monkeypatch)
     monkeypatch.setattr(workspace_ops, "_branch_sha", lambda *_args: "a" * 40)
@@ -393,7 +393,7 @@ def test_reset_worktrees_creates_new_branch(
         "refs/heads/main",
         "b" * 40,
     )
-    basis = AcceptanceBasis((participant,))
+    basis = TicketBaseline((participant,))
     plan = _reset_plan(tmp_path, basis, destination)
     commands = _capture_reset_commands(monkeypatch)
     monkeypatch.setattr(workspace_ops, "_branch_sha", lambda *_args: "")
@@ -427,15 +427,15 @@ def test_current_and_project_branch_validation(
     monkeypatch.setattr(workspace_ops, "_staged_tree", lambda *_args: "b" * 40)
     monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(workspace_ops, "_require_git", lambda *_args, **_kwargs: "")
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="detached"):
-        workspace_ops.prepare_acceptance_basis(tmp_path, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="detached"):
+        workspace_ops.prepare_ticket_baseline(tmp_path, ticket, "ticket")
 
     project = tmp_path / "project"
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: project)
     monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: None)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="does not exist"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="does not exist"):
         workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket")
 
 
@@ -448,7 +448,7 @@ def test_preflight_project_repository_validates_destination_ref(
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: tmp_path)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="full refs/heads"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="full refs/heads"):
         workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket")
 
 
@@ -481,11 +481,11 @@ def test_create_attachment_retains_unconfirmed_created_branch(
         workspace_ops,
         "_require_git",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            workspace_ops.AcceptanceBasisOperationError("update failed")
+            workspace_ops.TicketBaselineOperationError("update failed")
         ),
     )
 
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="retained"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="retained"):
         workspace_ops._create_attachment(attachment)
 
 
@@ -497,10 +497,10 @@ def test_create_attachment_records_partial_path_and_moved_destination(
 
     def fail_add(*_args: object, **_kwargs: object) -> str:
         attachment.worktree.mkdir()
-        raise workspace_ops.AcceptanceBasisOperationError("attach failed")
+        raise workspace_ops.TicketBaselineOperationError("attach failed")
 
     monkeypatch.setattr(workspace_ops, "_require_git", fail_add)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="attach failed"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="attach failed"):
         workspace_ops._create_attachment(attachment)
     assert attachment.partial_path is True
 
@@ -508,7 +508,7 @@ def test_create_attachment_records_partial_path_and_moved_destination(
     monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: "a" * 40)
     monkeypatch.setattr(workspace_ops, "_require_git", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "b" * 40)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="moved"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="moved"):
         workspace_ops._create_attachment(attachment)
 
 
@@ -522,10 +522,10 @@ def test_upstream_change_tracks_ambiguous_success_and_restores_absence(
         workspace_ops,
         "_require_git",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            workspace_ops.AcceptanceBasisOperationError("set failed")
+            workspace_ops.TicketBaselineOperationError("set failed")
         ),
     )
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="set failed"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="set failed"):
         workspace_ops._set_attachment_upstream(attachment, "main")
     assert attachment.upstream_changed is True
 
@@ -616,7 +616,7 @@ def test_created_branch_cleanup_handles_lookup_failure_and_absent_ref(
         workspace_ops,
         "_strict_branch_sha",
         lambda *_args: (_ for _ in ()).throw(
-            workspace_ops.AcceptanceBasisOperationError("cannot inspect")
+            workspace_ops.TicketBaselineOperationError("cannot inspect")
         ),
     )
     assert workspace_ops._delete_created_branch(attachment, False) == "cannot inspect"
@@ -652,7 +652,7 @@ def test_draft_generation_rejects_invalid_and_conflicting_descriptors(
     path = tmp_path / ".runtime/acceptance/drafts/ticket.json"
     path.parent.mkdir(parents=True)
     path.write_text("{}", encoding="utf-8")
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="invalid"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="invalid"):
         workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket")
     path.unlink()
     monkeypatch.setattr(
@@ -660,7 +660,7 @@ def test_draft_generation_rejects_invalid_and_conflicting_descriptors(
         "atomic_write_once",
         lambda *_args: (_ for _ in ()).throw(workspace_ops.WriteOnceConflictError("race")),
     )
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="conflicting"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="conflicting"):
         workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket")
 
 
@@ -686,10 +686,10 @@ def test_ensure_ticket_workspace_rejects_bad_slug_and_branch(
 ) -> None:
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: ''\n---\n", encoding="utf-8")
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unsafe"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="unsafe"):
         workspace_ops.ensure_ticket_workspace(tmp_path, "missing", "bad/slug")
     monkeypatch.setattr(workspace_ops, "_draft_generation", lambda *_args: "0" * 16)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="destination branch"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="destination branch"):
         workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket")
 
 
@@ -703,8 +703,8 @@ def test_workspace_preparation_and_status_fail_loudly(
         lambda *_args, **_kwargs: SimpleNamespace(ok=False, error="hook failed"),
     )
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: True)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="hook failed"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="hook failed"):
+        workspace_ops.prepare_ticket_baseline(root, ticket, "ticket")
     monkeypatch.setattr(
         workspace_ops,
         "prepare_project",
@@ -715,8 +715,8 @@ def test_workspace_preparation_and_status_fail_loudly(
         "_git",
         lambda *_args, **_kwargs: _completed("git", returncode=2, stderr="status failed"),
     )
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="status failed"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="status failed"):
+        workspace_ops.prepare_ticket_baseline(root, ticket, "ticket")
 
 
 def test_reset_project_source_validation_rejects_repository_mismatches(
@@ -727,13 +727,13 @@ def test_reset_project_source_validation_rejects_repository_mismatches(
         "project", "c" * 40, "refs/heads/ticket", "refs/heads/main", "d" * 40
     )
 
-    paired = AcceptanceBasis((outer, project))
-    native = AcceptanceBasis((outer,))
+    paired = TicketBaseline((outer, project))
+    native = TicketBaseline((outer,))
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unavailable"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="unavailable"):
         workspace_ops.preflight_basis_reset(tmp_path, "ticket", paired, "main")
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: tmp_path)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="no project"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="no project"):
         workspace_ops.preflight_basis_reset(tmp_path, "ticket", native, "main")
     monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "c" * 40)
     monkeypatch.setattr(
@@ -763,7 +763,7 @@ def test_missing_refresh_workspace_rejects_advanced_execution_ref(
     (repository / "source.txt").write_text("executed\n", encoding="utf-8")
     _git(repository, "commit", "-qam", "execution")
     _git(repository, "switch", "-q", "main")
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",
@@ -779,7 +779,7 @@ def test_missing_refresh_workspace_rejects_advanced_execution_ref(
     )
 
     with pytest.raises(
-        workspace_ops.AcceptanceBasisOperationError,
+        workspace_ops.TicketBaselineOperationError,
         match="acceptance-input-change-required",
     ):
         workspace_ops.load_refresh_source_workspace(
@@ -814,7 +814,7 @@ def test_authoring_basis_rejects_commits_beyond_destination(
     _git(worktree, "commit", "-qm", "unauthorized authoring commit")
 
     with pytest.raises(
-        workspace_ops.AcceptanceBasisOperationError,
+        workspace_ops.TicketBaselineOperationError,
         match="commits beyond the destination baseline",
     ):
         workspace_ops._pin_authoring_bases(repository, worktree, None, {"branch": "main"})
@@ -896,9 +896,9 @@ def test_refresh_project_staging_restoration_and_participation_checks(
         str(workspace_ops.ticket_project_worktree(outer)),
     )
 
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unavailable"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="unavailable"):
         workspace_ops._stage_refresh_project(workspace, None, tmp_path / "other")
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unavailable"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="unavailable"):
         workspace_ops._restore_refresh_project(outer, None, holding)
 
 
@@ -920,13 +920,13 @@ def test_refresh_relocation_rejects_participant_changes(
         lambda _outer: SimpleNamespace(worktree=tmp_path / "project"),
     )
 
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="participation"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="participation"):
         workspace_ops.relocate_refresh_workspace(
             root, "ticket", "0" * 16, operation, workspace, has_project=False
         )
 
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: None)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unavailable"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="unavailable"):
         workspace_ops.relocate_refresh_workspace(
             root, "ticket", "0" * 16, operation, workspace, has_project=True
         )
@@ -958,7 +958,7 @@ def test_discard_generation_refs_handles_absent_invalid_and_owned_refs(
         "_git",
         lambda *_args: _completed("git", returncode=2, stderr="locked"),
     )
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="locked"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="locked"):
         workspace_ops.discard_generation_refs({"outer": first}, "ticket", "0" * 16)
 
 
@@ -969,7 +969,7 @@ def test_load_refresh_source_rebuilds_invalid_cached_checkout(
     operation = tmp_path / "operation"
     checkout = operation / "old-basis"
     checkout.mkdir(parents=True)
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     expected = workspace_ops.AuthoringWorkspace(checkout, None, "a" * 40, "")
     calls: list[str] = []
     attempts = iter((False, True))
@@ -986,7 +986,7 @@ def test_load_refresh_source_rebuilds_invalid_cached_checkout(
 
     def load_workspace(*_args: object) -> workspace_ops.AuthoringWorkspace:
         if not next(attempts):
-            raise workspace_ops.AcceptanceBasisOperationError("stale")
+            raise workspace_ops.TicketBaselineOperationError("stale")
         return expected
 
     monkeypatch.setattr(workspace_ops, "_workspace_from_basis_checkout", load_workspace)
@@ -1004,7 +1004,7 @@ def test_workspace_from_basis_checkout_validates_participants_and_pristine_heads
     outer.mkdir()
     project = tmp_path / "project"
     paired = SimpleNamespace(worktree=project)
-    basis = AcceptanceBasis((_participant(), _participant("project")))
+    basis = TicketBaseline((_participant(), _participant("project")))
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: paired)
     monkeypatch.setattr(
         workspace_ops,
@@ -1025,17 +1025,17 @@ def test_workspace_from_basis_checkout_validates_participants_and_pristine_heads
     monkeypatch.setattr(
         workspace_ops, "checkout_project_dir_relative_to", lambda _root: Path("project")
     )
-    changed = AcceptanceBasis((_participant(), _participant("zeta")))
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="participants changed"):
+    changed = TicketBaseline((_participant(), _participant("zeta")))
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="participants changed"):
         workspace_ops._workspace_from_basis_checkout(tmp_path, outer, changed)
 
-    native = AcceptanceBasis((_participant(),))
+    native = TicketBaseline((_participant(),))
     monkeypatch.setattr(
         workspace_ops,
         "_require_git",
         lambda _repository, *args: "dirty" if args[0] == "status" else "a" * 40,
     )
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="not pristine"):
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="not pristine"):
         workspace_ops._workspace_from_basis_checkout(tmp_path, outer, native)
 
 
@@ -1043,28 +1043,28 @@ def test_prepare_replacement_basis_resumes_or_starts_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\nbranch: main\nacceptance_basis: old\n---\nbody\n", encoding="utf-8")
+    ticket.write_text("---\nbranch: main\nmachine: {}\n---\nbody\n", encoding="utf-8")
     workspace = workspace_ops.AuthoringWorkspace(tmp_path / "outer", None, "a" * 40, "", "0" * 16)
     publication = SimpleNamespace(operation_id="operation")
     published: list[tuple[object, ...]] = []
     monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: publication)
     monkeypatch.setattr(
         workspace_ops,
-        "publish_basis_commits",
+        "publish_ticket_commits",
         lambda *args, **kwargs: (
-            published.append((args, kwargs)) or (AcceptanceBasis((_participant(),)), "sha")
+            published.append((args, kwargs)) or (TicketBaseline((_participant(),)), "sha")
         ),
     )
 
-    result = workspace_ops.prepare_replacement_acceptance_basis(
+    result = workspace_ops.prepare_replacement_ticket_baseline(
         tmp_path, ticket, "ticket", workspace, (), operation_id="operation"
     )
 
     assert result[1] == "sha"
     assert published[-1][1] == {}
 
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="operation IDs"):
-        workspace_ops.prepare_replacement_acceptance_basis(
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="operation IDs"):
+        workspace_ops.prepare_replacement_ticket_baseline(
             tmp_path, ticket, "ticket", workspace, (), operation_id="other"
         )
 
@@ -1081,10 +1081,11 @@ def test_prepare_replacement_basis_resumes_or_starts_publication(
         workspace_ops, "_participant_preparations", lambda *_args: ("participant",)
     )
 
-    workspace_ops.prepare_replacement_acceptance_basis(
+    workspace_ops.prepare_replacement_ticket_baseline(
         tmp_path, ticket, "ticket", workspace, (), operation_id="new-operation"
     )
 
-    assert published[-1][1]["operation_id"] == "new-operation"
-    assert published[-1][1]["bindings"] == ("binding",)
-    assert published[-1][1]["removal_targets"] == ("old",)
+    request = published[-1][0][1]
+    assert request.operation_id == "new-operation"
+    assert request.bindings == ("binding",)
+    assert request.removal_targets == ("old",)

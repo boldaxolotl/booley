@@ -10,13 +10,15 @@ from types import SimpleNamespace
 import pytest
 
 from booley.ticket_board import (
-    acceptance_basis,
     operations,
     workspace_ops,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
+from booley.ticket_board import (
+    ticket_baseline as acceptance_basis,
+)
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
     ticket_machine_fields,
 )
 
@@ -53,7 +55,7 @@ def _handoff_tio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
 
 
 def _review_tio(tmp_path: Path) -> SimpleNamespace:
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     basis = replace(
         basis,
         machine=ticket_machine_fields(basis, fields={}, body="", generation="0" * 32),
@@ -104,13 +106,13 @@ def test_reset_helpers_report_missing_basis_and_preflight_failure(
 
     entry.pop("acceptance_basis")
     entry["machine"] = {"generation": "0" * 32}
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     tio._load_basis_unlocked = lambda _slug: basis
     monkeypatch.setattr(
         workspace_ops,
         "preflight_basis_reset",
         lambda *_args: (_ for _ in ()).throw(
-            workspace_ops.AcceptanceBasisOperationError("cannot preflight")
+            workspace_ops.TicketBaselineOperationError("cannot preflight")
         ),
     )
     assert operations.op_reset(tio, "ticket") is False
@@ -145,7 +147,7 @@ def test_materialized_handoff_requires_ticket_and_successful_preparation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     tio = _handoff_tio(tmp_path, monkeypatch)
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     monkeypatch.setattr(operations, "_load_handoff_basis", lambda *_args: basis)
     monkeypatch.setattr(
         acceptance_basis,
@@ -203,7 +205,7 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
 def test_handoff_basis_heads_validates_materialized_composite(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     tio = _handoff_tio(tmp_path, monkeypatch)
     monkeypatch.setattr(operations, "_load_handoff_basis", lambda *_args: basis)
     monkeypatch.setattr(

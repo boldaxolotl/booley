@@ -3,6 +3,7 @@
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -150,6 +151,59 @@ def test_freeze_rejects_mutable_state_that_disagrees_with_latest_evidence(tmp_pa
             ticket_identity=None,
             participant_heads={"outer": "a" * 40},
         )
+
+
+@pytest.mark.parametrize("drift", ["matching", "missing", "generation", "authored", "commit"])
+def test_freeze_requires_each_observation_to_match_current_ticket_identity(
+    tmp_path: Path, drift: str
+) -> None:
+    log_dir = tmp_path / "logs" / "fix-uart"
+    state = DevelopmentState()
+    state.slug = "fix-uart"
+    state.init_criteria({"sim_pass_uart": True})
+    changes = state.set_criterion("sim_pass_uart", True)
+    identity = {
+        "generation": "e" * 32,
+        "authored_sha256": "a" * 64,
+        "baseline": {"outer": {"commit": "b" * 40}},
+    }
+    recorded = deepcopy(identity)
+    if drift == "generation":
+        recorded["generation"] = "f" * 32
+    elif drift == "authored":
+        recorded["authored_sha256"] = "c" * 64
+    elif drift == "commit":
+        recorded["baseline"]["outer"]["commit"] = "d" * 40
+    elif drift == "missing":
+        recorded = None
+    record_changes(
+        log_dir,
+        state,
+        changes,
+        invocation_id="sim-green",
+        producer="sim",
+        execution_id="run-1",
+        ticket_identity=recorded,
+    )
+
+    if drift == "matching":
+        snapshot = freeze_acceptance(
+            log_dir,
+            state,
+            execution_id="run-1",
+            ticket_identity=identity,
+            participant_heads={"outer": "b" * 40},
+        )
+        assert len(snapshot.evidence) == 1
+    else:
+        with pytest.raises(AcceptanceLedgerError, match="another Ticket identity"):
+            freeze_acceptance(
+                log_dir,
+                state,
+                execution_id="run-1",
+                ticket_identity=identity,
+                participant_heads={"outer": "b" * 40},
+            )
 
 
 def test_concurrent_observations_receive_unique_completion_sequences(tmp_path):

@@ -20,11 +20,6 @@ from booley.criteria.templates import (
     find_retired_criteria,
 )
 from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    requires_return_to_draft,
-)
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
@@ -35,6 +30,11 @@ from booley.ticket_board.paths import (
     ticket_runtime_dir,
 )
 from booley.ticket_board.scanner import find_ticket_file
+from booley.ticket_board.ticket_baseline import (
+    TicketBaseline,
+    TicketBaselineError,
+    requires_return_to_draft,
+)
 
 from .. import ticket_cli
 from ..blocking import FatalError
@@ -154,7 +154,7 @@ def _load_context_basis(
     ticket_path: Path,
     slug: str,
     fields: dict[str, Any],
-) -> AcceptanceBasis | None:
+) -> TicketBaseline | None:
     raw_basis = fields.get("machine")
     try:
         return (
@@ -165,7 +165,7 @@ def _load_context_basis(
             if raw_basis is not None
             else None
         )
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         raise FatalError(f"Invalid Ticket baseline: {exc}", slug=slug) from exc
 
 

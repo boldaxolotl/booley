@@ -737,7 +737,9 @@ def test_finalize_requires_every_basis_mandatory_criterion(blocked, damage):
     assert read_entry(tio.logs_dir / "demo")["disposition"] == "unaccepted"
 
 
-@pytest.mark.parametrize("field", ["state", "heads", "ticket_generation", "ticket_identity", "execution_id"])
+@pytest.mark.parametrize(
+    "field", ["state", "heads", "ticket_generation", "ticket_identity", "execution_id"]
+)
 def test_review_entry_rejects_missing_required_fields(blocked, field):
     from booley.ticket_board.review_records import (
         ReviewEntryError,

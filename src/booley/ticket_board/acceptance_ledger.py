@@ -134,7 +134,9 @@ def _allocate_sequence(root: Path, transaction_id: str) -> tuple[int, Path]:
     raise AcceptanceLedgerError(f"Criterion evidence sequence exhausted beneath {root}")
 
 
-def _read_evidence_records(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
+def _read_evidence_records(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
     """Read and structurally validate every immutable observation."""
     root = Path(log_dir) / "acceptance" / "evidence"
     if not root.exists():
@@ -155,13 +157,17 @@ def _read_evidence_records(log_dir: Path, state: DevelopmentState) -> list[dict[
             role = payload["role"]
             if not isinstance(criterion, str) or role not in {"baseline", "candidate"}:
                 raise ValueError("record has invalid criterion identity or role")
+            if payload.get("ticket_identity") != ticket_identity:
+                raise ValueError("Criterion evidence names another Ticket identity")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise AcceptanceLedgerError(f"corrupt Criterion evidence {directory}: {exc}") from exc
         records.append(payload)
     return records
 
 
-def _read_evidence_refs(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
+def _read_evidence_refs(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
     """Return integrity-checked references to every immutable observation."""
     return [
         {
@@ -170,14 +176,16 @@ def _read_evidence_refs(log_dir: Path, state: DevelopmentState) -> list[dict[str
             "criterion": payload["criterion"],
             "role": payload["role"],
         }
-        for payload in _read_evidence_records(log_dir, state)
+        for payload in _read_evidence_records(log_dir, state, ticket_identity)
     ]
 
 
-def _validate_state_projection(log_dir: Path, state: DevelopmentState) -> None:
+def _validate_state_projection(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> None:
     """Reject mutable Criterion values that conflict with ledger-observed values."""
     latest: dict[str, dict[str, Any]] = {}
-    for payload in _read_evidence_records(log_dir, state):
+    for payload in _read_evidence_records(log_dir, state, ticket_identity):
         latest[payload["criterion"]] = payload
     for criterion, payload in latest.items():
         entry = state.criteria.get(criterion)
@@ -247,17 +255,18 @@ def freeze_acceptance(
     accepted_at: str | None = None,
 ) -> AcceptanceSnapshot:
     """Freeze and select one Criteria Satisfaction Record for the current Ticket epoch."""
-    _validate_state_projection(log_dir, state)
+    identity = dict(ticket_identity or {})
+    _validate_state_projection(log_dir, state, identity)
     payload = {
         "schema": SCHEMA_VERSION,
         "slug": state.slug,
         "ticket_type": state.ticket_type,
         "execution_id": execution_id,
         "accepted_at": accepted_at or utc_now_rfc3339(),
-        "ticket_identity": dict(ticket_identity or {}),
+        "ticket_identity": identity,
         "participant_heads": _participant_heads(participant_heads),
         "criteria": {key: entry.to_dict() for key, entry in state.criteria.items()},
-        "evidence": _read_evidence_refs(log_dir, state),
+        "evidence": _read_evidence_refs(log_dir, state, identity),
     }
     encoded = _canonical(payload)
     digest = hashlib.sha256(encoded).hexdigest()

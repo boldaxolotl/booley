@@ -1497,13 +1497,13 @@ def _make_handoff_ready_ticket(tio, slug, stages=None):
 def _handoff_basis_receipt():
     from dataclasses import replace
 
-    from booley.ticket_board.acceptance_basis import (
-        AcceptanceBasis,
+    from booley.ticket_board.ticket_baseline import (
         BasisParticipant,
+        TicketBaseline,
         ticket_machine_fields,
     )
 
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",
@@ -1576,7 +1576,7 @@ class TestOpHandoff:
         assert binding["snapshot_digest"] == accepted.snapshot.digest
 
     def test_rejects_handoff_when_basis_validation_fails(self, tmp_path, monkeypatch, capsys):
-        from booley.ticket_board import acceptance_basis as basis_module
+        from booley.ticket_board import ticket_baseline as basis_module
 
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
@@ -1584,7 +1584,7 @@ class TestOpHandoff:
         monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
 
         def reject_drift(*_args, **_kwargs):
-            raise basis_module.AcceptanceBasisError(
+            raise basis_module.TicketBaselineError(
                 "acceptance-input-change-required: destination ref was rewritten"
             )
 
@@ -2581,9 +2581,7 @@ class TestOpPromoteWaiting:
         monkeypatch.setattr(
             basis_refresh,
             "load_basis_refresh",
-            lambda *_args: SimpleNamespace(
-                state="prepared", machine=refreshed.ticket_identity()
-            ),
+            lambda *_args: SimpleNamespace(state="prepared", machine=refreshed.ticket_identity()),
         )
         finished = []
         monkeypatch.setattr(
@@ -2648,9 +2646,7 @@ class TestOpPromoteWaiting:
         monkeypatch.setattr(
             basis_refresh,
             "load_basis_refresh",
-            lambda *_args: SimpleNamespace(
-                state="prepared", machine=refreshed.ticket_identity()
-            ),
+            lambda *_args: SimpleNamespace(state="prepared", machine=refreshed.ticket_identity()),
         )
         recovered = []
         monkeypatch.setattr(
@@ -2733,7 +2729,11 @@ class TestOpReset:
             if slug == "legacy-queue":
                 return original(tio, slug)
             current = tio.find_ticket(slug)
-            if current is not None and "acceptance_basis" not in current and "machine" not in current:
+            if (
+                current is not None
+                and "acceptance_basis" not in current
+                and "machine" not in current
+            ):
                 path = operations_module._locked_reset_candidate(tio, slug)
                 return (path, current, None) if path is not None else None
             return original(tio, slug)
@@ -2799,7 +2799,7 @@ class TestOpReset:
 
     def test_reset_validates_authoritative_basis_before_mutation(self, tmp_path, monkeypatch):
         from booley.ticket_board import operations as operations_module
-        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+        from booley.ticket_board.ticket_baseline import TicketBaselineError
 
         tio = make_tio(tmp_path)
         make_ticket_in_dir(
@@ -2812,7 +2812,7 @@ class TestOpReset:
             tio,
             "_load_basis_unlocked",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AcceptanceBasisError("Ticket identity mismatch")
+                TicketBaselineError("Ticket identity mismatch")
             ),
         )
         monkeypatch.setattr(
@@ -5999,7 +5999,7 @@ class TestBoardMoveTerminalActionOverrides:
     def _accepted_snapshot(self, monkeypatch):
         from dataclasses import replace
 
-        from booley.ticket_board.acceptance_basis import ticket_baseline_from_machine
+        from booley.ticket_board.ticket_baseline import ticket_baseline_from_machine
 
         monkeypatch.setattr(
             "booley.ticket_board.operations._completion_acceptance_valid",
@@ -6068,7 +6068,7 @@ class TestBoardMoveTerminalActionOverrides:
         from dataclasses import replace
 
         from booley.core.models import TargetPlan
-        from booley.ticket_board.acceptance_basis import ticket_baseline_from_machine
+        from booley.ticket_board.ticket_baseline import ticket_baseline_from_machine
 
         tio = make_tio(tmp_path)
         make_ticket_in_dir(

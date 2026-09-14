@@ -18,9 +18,9 @@ import pytest
 from booley.ticket_board import (
     enqueue_publication,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
     ticket_machine_fields,
 )
 
@@ -47,7 +47,7 @@ def _participant(role: str = "outer") -> BasisParticipant:
 def _enqueue_journal(tmp_path: Path) -> enqueue_publication.EnqueueJournal:
     operation_id = "0" * 32
     machine = ticket_machine_fields(
-        AcceptanceBasis((_participant(),)), fields={}, body="", generation=operation_id
+        TicketBaseline((_participant(),)), fields={}, body="", generation=operation_id
     )
     digest = "1" * 64
     operation = tmp_path / "operation"
@@ -102,7 +102,7 @@ def _prepare(
     source.write_bytes(content)
     operation_id = "0" * 32
     machine = ticket_machine_fields(
-        AcceptanceBasis((_participant(),)), fields={}, body="", generation=operation_id
+        TicketBaseline((_participant(),)), fields={}, body="", generation=operation_id
     )
     return enqueue_publication.prepare_enqueue(
         project_root,

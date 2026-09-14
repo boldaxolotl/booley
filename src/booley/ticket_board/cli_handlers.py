@@ -250,17 +250,17 @@ def _validate_ticket_input(
     if not errors and basis_workspace is not None and fields.get("target_plan") is not None:
         try:
             from booley.ticket_board.workspace_ops import (
-                AcceptanceBasisOperationError,
-                validate_acceptance_basis_inputs,
+                TicketBaselineOperationError,
+                validate_ticket_baseline_inputs,
             )
 
-            validate_acceptance_basis_inputs(
+            validate_ticket_baseline_inputs(
                 project_root,
                 path,
                 path.stem,
                 workspace=basis_workspace,
             )
-        except (AcceptanceBasisOperationError, OSError, ValueError) as exc:
+        except (TicketBaselineOperationError, OSError, ValueError) as exc:
             errors.append(str(exc))
     warnings = [item for item in results if item.startswith("[warning] ")]
     return errors, warnings

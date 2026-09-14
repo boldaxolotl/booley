@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from booley.harness._ticket_ops import DirectTicketOps
-from booley.ticket_board.acceptance_basis import ticket_baseline_from_machine
 from booley.ticket_board.cli import main
 from booley.ticket_board.criteria_markdown import (
     parse_criteria_section,
@@ -18,6 +17,7 @@ from booley.ticket_board.frontmatter import parse_frontmatter, update_frontmatte
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.operations import op_complete
 from booley.ticket_board.scanner import find_ticket_file
+from booley.ticket_board.ticket_baseline import ticket_baseline_from_machine
 from booley.ticket_board.validation import validate_ticket_fields
 
 
@@ -191,9 +191,7 @@ def test_ticket_validation_normalizes_a_draft_path_from_a_project_subdirectory(
     assert not any("Dirty working tree" in error for error in errors)
 
 
-def test_enqueue_pins_tests_toml_update_in_ticket_baseline(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_enqueue_pins_tests_toml_update_in_ticket_baseline(tmp_path: Path, monkeypatch) -> None:
     root, tio = _project(tmp_path, monkeypatch)
     _ticket(tio, merge=True, planned=True)
     outer = root / ".booley_project" / "worktrees" / "change-target"

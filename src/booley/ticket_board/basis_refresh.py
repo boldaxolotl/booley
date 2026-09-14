@@ -22,14 +22,6 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 from booley.ticket_board.ticket_repositories import paired_project_repository
 
-from .acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    ProviderTargetBinding,
-    load_acceptance_basis,
-    ticket_baseline_from_machine,
-    ticket_machine_fields,
-)
 from .basis_publication import BasisPublicationError
 from .frontmatter import parse_frontmatter
 from .persistence import atomic_replace_bytes
@@ -40,15 +32,23 @@ from .target_surface_edit import (
     merge_target_definition,
     toml_table_block,
 )
+from .ticket_baseline import (
+    ProviderTargetBinding,
+    TicketBaseline,
+    TicketBaselineError,
+    load_ticket_baseline,
+    ticket_baseline_from_machine,
+    ticket_machine_fields,
+)
 from .workspace_ops import (
-    AcceptanceBasisOperationError,
     AuthoringWorkspace,
+    TicketBaselineOperationError,
     basis_changed_paths,
     discard_generation_refs,
     discard_refresh_workspace,
     load_refresh_source_workspace,
     open_authoring_generation,
-    prepare_replacement_acceptance_basis,
+    prepare_replacement_ticket_baseline,
     relocate_refresh_workspace,
 )
 
@@ -82,7 +82,7 @@ class _RefreshBuild:
     ticket: Path
     slug: str
     fields: dict[str, Any]
-    old_basis: AcceptanceBasis
+    old_basis: TicketBaseline
     old: AuthoringWorkspace
     journal: BasisRefreshJournal
 
@@ -148,13 +148,13 @@ def _validate_journal(journal: BasisRefreshJournal, slug: str, path: Path) -> No
     if journal.state == "prepared":
         try:
             ticket_baseline_from_machine(journal.machine)
-        except AcceptanceBasisError as exc:
+        except TicketBaselineError as exc:
             raise BasisRefreshError("Basis Refresh journal has an invalid new basis") from exc
     elif journal.machine:
         raise BasisRefreshError("building Basis Refresh journal contains published output")
 
 
-def _new_journal(root: Path, slug: str, old_basis: AcceptanceBasis) -> BasisRefreshJournal:
+def _new_journal(root: Path, slug: str, old_basis: TicketBaseline) -> BasisRefreshJournal:
     existing = load_basis_refresh(root, slug)
     if existing is not None:
         if existing.old_ticket_generation != old_basis.ticket_identity()["generation"]:
@@ -243,7 +243,7 @@ def _changed_paths(repository: Path, participant: Any) -> tuple[str, ...]:
 
 
 def _reapply_placeholders(
-    old: AuthoringWorkspace, new: AuthoringWorkspace, basis: AcceptanceBasis, slug: str
+    old: AuthoringWorkspace, new: AuthoringWorkspace, basis: TicketBaseline, slug: str
 ) -> None:
     old_repositories = {"outer": old.outer}
     new_repositories = {"outer": new.outer}
@@ -269,10 +269,10 @@ def _reapply_placeholders(
 
 
 def _verify_providers(
-    root: Path, workspace: Path, basis: AcceptanceBasis
+    root: Path, workspace: Path, basis: TicketBaseline
 ) -> tuple[ProviderTargetBinding, ...]:
     tickets = resolve_checkout_project_dir(root) / "tickets"
-    verified: dict[str, AcceptanceBasis] = {}
+    verified: dict[str, TicketBaseline] = {}
     refreshed: list[ProviderTargetBinding] = []
     for binding in basis.providers:
         provider_basis = verified.get(binding.provider)
@@ -282,8 +282,8 @@ def _verify_providers(
                 raise BasisRefreshError(f"provider Ticket {binding.provider!r} is not accepted")
             fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
             try:
-                provider_basis = load_acceptance_basis(root, binding.provider, fields, body)
-            except AcceptanceBasisError as exc:
+                provider_basis = load_ticket_baseline(root, binding.provider, fields, body)
+            except TicketBaselineError as exc:
                 raise BasisRefreshError(
                     f"provider Ticket {binding.provider!r} has no valid accepted basis: {exc}"
                 ) from exc
@@ -305,9 +305,11 @@ def _verify_providers(
             raise BasisRefreshError(
                 f"provider Target {binding.target!r} changed after it was pinned"
             )
-        refreshed.append(
-            replace(binding, ticket_generation=provider_basis.ticket_identity()["generation"])
-        )
+        if provider_basis.ticket_identity()["generation"] != binding.ticket_generation:
+            raise BasisRefreshError(
+                f"provider Ticket {binding.provider!r} changed generation after it was pinned"
+            )
+        refreshed.append(binding)
     return tuple(sorted(refreshed))
 
 
@@ -317,11 +319,11 @@ def _resume_prepared_refresh(
     fields: dict[str, Any],
     body: str,
     journal: BasisRefreshJournal,
-) -> tuple[AcceptanceBasis, str]:
+) -> tuple[TicketBaseline, str]:
     candidate_fields = {**fields, "machine": journal.machine}
     try:
-        basis = load_acceptance_basis(root, slug, candidate_fields, body)
-    except AcceptanceBasisError as exc:
+        basis = load_ticket_baseline(root, slug, candidate_fields, body)
+    except TicketBaselineError as exc:
         raise BasisRefreshError(str(exc)) from exc
     operation = _operation_path(root, journal.operation_id)
     candidate = operation / "new-outer"
@@ -351,27 +353,27 @@ def prepare_waiting_basis_refresh(
     project_root: Path,
     ticket_path: Path,
     slug: str,
-) -> tuple[AcceptanceBasis | None, str]:
+) -> tuple[TicketBaseline | None, str]:
     """Prepare and relocate a refreshed basis; Board publication remains with the caller."""
     root = project_root.resolve()
     try:
         return _prepare_waiting_basis_refresh(root, ticket_path, slug)
     except BasisRefreshError:
         raise
-    except (AcceptanceBasisOperationError, BasisPublicationError, OSError, ValueError) as exc:
+    except (TicketBaselineOperationError, BasisPublicationError, OSError, ValueError) as exc:
         raise BasisRefreshError(str(exc)) from exc
 
 
 def _prepare_waiting_basis_refresh(
     root: Path, ticket_path: Path, slug: str
-) -> tuple[AcceptanceBasis | None, str]:
+) -> tuple[TicketBaseline | None, str]:
     fields, body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
     pending = load_basis_refresh(root, slug)
     if pending is not None and pending.state == "prepared":
         return _resume_prepared_refresh(root, slug, fields, body, pending)
     try:
-        old_basis = load_acceptance_basis(root, slug, fields, body)
-    except AcceptanceBasisError as exc:
+        old_basis = load_ticket_baseline(root, slug, fields, body)
+    except TicketBaselineError as exc:
         raise BasisRefreshError(str(exc)) from exc
     if not old_basis.providers:
         return None, ""
@@ -422,14 +424,16 @@ def _publish_refresh_basis(
     workspace: AuthoringWorkspace,
     providers: tuple[ProviderTargetBinding, ...],
     journal: BasisRefreshJournal,
-) -> tuple[AcceptanceBasis, BasisRefreshJournal]:
+) -> tuple[TicketBaseline, BasisRefreshJournal]:
     if journal.state != "building":
         return ticket_baseline_from_machine(journal.machine), journal
-    basis, _operation_id = prepare_replacement_acceptance_basis(
+    basis, _operation_id = prepare_replacement_ticket_baseline(
         root, ticket, slug, workspace, providers, operation_id=journal.operation_id
     )
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    machine = ticket_machine_fields(basis, fields=fields, body=body, generation=journal.operation_id)
+    machine = ticket_machine_fields(
+        basis, fields=fields, body=body, generation=journal.operation_id
+    )
     prepared = journal.prepared(machine)
     _write_journal(root, prepared)
     return basis, prepared

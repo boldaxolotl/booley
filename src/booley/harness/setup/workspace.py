@@ -527,8 +527,7 @@ def _attach_clean_detached_basis_branch(
     if attached.returncode != 0:
         return StepResult(
             block_reason=(
-                f"Failed to attach Ticket baseline ref {expected_ref!r}: "
-                f"{attached.stderr.strip()}"
+                f"Failed to attach Ticket baseline ref {expected_ref!r}: {attached.stderr.strip()}"
             )
         )
     return None
@@ -768,10 +767,10 @@ def _validate_materialized_acceptance_basis(
     """Validate the basis-bound surface after disposable checkouts are materialized."""
     if ctx.acceptance_basis is None:
         return None
-    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
     from booley.ticket_board.acceptance_validation import (
         assert_ticket_worktree_inputs_unchanged,
     )
+    from booley.ticket_board.ticket_baseline import TicketBaselineError
 
     ticket_path = _current_ticket_path(ctx)
     if ticket_path is None:
@@ -786,7 +785,7 @@ def _validate_materialized_acceptance_basis(
             slug=ctx.slug,
             ticket_path=ticket_path,
         )
-    except (OSError, AcceptanceBasisError) as exc:
+    except (OSError, TicketBaselineError) as exc:
         return StepResult(block_reason=str(exc))
     return None
 
@@ -849,8 +848,8 @@ def _prepare_ticket_checkout(
             sim_flow_enabled=sim_flow_enabled,
         )
         return preparation if preparation.ok else StepResult(block_reason=preparation.error)
-    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
     from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
+    from booley.ticket_board.ticket_baseline import TicketBaselineError
 
     if ticket_path is None:
         return StepResult(block_reason=f"Ticket {ctx.slug!r} is unavailable during setup")
@@ -861,7 +860,7 @@ def _prepare_ticket_checkout(
             slug=ctx.slug,
             ticket_path=ticket_path,
         )
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         return StepResult(block_reason=str(exc))
 
 

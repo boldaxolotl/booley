@@ -37,14 +37,14 @@ from booley.ticket_board.ticket_repositories import (
     ticket_project_worktree,
 )
 
-from .acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    load_acceptance_basis,
-    ticket_baseline_from_machine,
-)
 from .frontmatter import format_frontmatter, parse_frontmatter
 from .persistence import atomic_replace_bytes
+from .ticket_baseline import (
+    TicketBaseline,
+    TicketBaselineError,
+    load_ticket_baseline,
+    ticket_baseline_from_machine,
+)
 from .workspace_ops import (
     AuthoringWorkspace,
     _generation_branch,
@@ -161,7 +161,7 @@ def _validate_journal(
         raise DraftTransitionError("return-to-draft journal operation ID is invalid")
     try:
         ticket_baseline_from_machine(journal.machine)
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     board = resolve_checkout_project_dir(root) / "tickets" / "board"
     draft = Path(journal.draft_ticket).resolve()
@@ -213,8 +213,8 @@ def _new_journal(
         raise DraftTransitionError(f"return-to-draft requires a blocked ticket, got {status!r}")
     fields, body, draft_content = _draft_content(ticket)
     try:
-        basis = load_acceptance_basis(root, slug, fields, body)
-    except AcceptanceBasisError as exc:
+        basis = load_ticket_baseline(root, slug, fields, body)
+    except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     operation_id = uuid.uuid4().hex
     operation = _operation_dir(root, operation_id)
@@ -269,15 +269,15 @@ def _require_file(path: Path, digest: str, label: str) -> None:
         raise DraftTransitionError(f"{label} changed unexpectedly: {path}")
 
 
-def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> AcceptanceBasis:
+def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> TicketBaseline:
     blocked = Path(journal.blocked_ticket)
     _require_file(blocked, journal.blocked_sha256, "blocked Ticket")
     candidate = _operation_dir(root, journal.operation_id) / "draft.md"
     _require_file(candidate, journal.draft_sha256, "replacement draft")
     fields, body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
     try:
-        basis = load_acceptance_basis(root, journal.slug, fields, body)
-    except AcceptanceBasisError as exc:
+        basis = load_ticket_baseline(root, journal.slug, fields, body)
+    except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     errors = validate_basis_refs(
         root,
@@ -342,7 +342,7 @@ def _move_worktree_if_present(repository: Path, ref: str, destination: Path) -> 
 
 
 def _preflight_relocation(
-    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+    root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> None:
     operation = _operation_dir(root, journal.operation_id)
     canonical_outer = resolve_project_dir(root) / "worktrees" / journal.slug
@@ -388,7 +388,7 @@ def _preflight_relocation(
 
 
 def _relocate_worktrees(
-    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+    root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> AuthoringWorkspace:
     operation = _operation_dir(root, journal.operation_id)
     canonical_outer = resolve_project_dir(root) / "worktrees" / journal.slug
@@ -422,7 +422,7 @@ def _relocate_worktrees(
 
 
 def _published_worktrees(
-    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+    root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> AuthoringWorkspace:
     outer = resolve_project_dir(root) / "worktrees" / journal.slug
     project = ticket_project_worktree(outer) if journal.has_project else None
@@ -437,7 +437,7 @@ def _published_worktrees(
 
 
 def _finish_published_transition(
-    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+    root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> AuthoringWorkspace:
     """Confirm published identities, then retire the slug-level recovery journal."""
     draft = Path(journal.draft_ticket)

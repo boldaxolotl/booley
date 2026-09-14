@@ -8,12 +8,12 @@ import pytest
 from booley.harness.scope_policy import committed_deviations
 from booley.mcp.report_changes import changed_ticket_paths, validate_justifications
 from booley.runtime.project_dir import PROJECT_DIR_NAME
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
+from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
     ticket_machine_fields,
 )
-from booley.ticket_board.frontmatter import format_frontmatter
 from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
 
@@ -50,7 +50,7 @@ def test_pinned_bases_cover_rename_deletion_and_paired_repository(tmp_path, monk
     (paired / "extra file.txt").write_text("new")
     git(paired, "add", ".")
     git(paired, "commit", "-qm", "project changes")
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         tuple(
             BasisParticipant(
                 role=role,
@@ -63,7 +63,11 @@ def test_pinned_bases_cover_rename_deletion_and_paired_repository(tmp_path, monk
         )
     )
     ticket = tmp_path / "ticket.md"
-    ticket.write_text(format_frontmatter({"machine": ticket_machine_fields(basis, fields={}, body="", generation="f" * 32)}, ""))
+    ticket.write_text(
+        format_frontmatter(
+            {"machine": ticket_machine_fields(basis, fields={}, body="", generation="f" * 32)}, ""
+        )
+    )
     monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
     monkeypatch.setenv("BOOLEY_PAIRED_PROJECT_REPOSITORY", "1")
     paths = changed_ticket_paths(outer)

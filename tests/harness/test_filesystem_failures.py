@@ -36,7 +36,7 @@ def make_tio(tmp_path):
     ]:
         (tickets_dir / d).mkdir(parents=True, exist_ok=True)
     (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
-    return TicketIO(tickets_dir)
+    return TicketIO(tickets_dir, project_root=tmp_path)
 
 
 def make_ticket_file(tio, subdir, slug, extra_fields=""):
@@ -94,7 +94,7 @@ class TestOpResetAuditTrail:
         tio = make_tio(tmp_path)
         slug = "test-reset-audit"
 
-        make_ticket_file(tio, "active", slug)
+        make_ticket_file(tio, "drafts", slug)
         set_progress(
             tio,
             slug,
@@ -144,7 +144,7 @@ class TestOpResetAuditTrail:
         tio = make_tio(tmp_path)
         slug = "test-reset-preserve"
 
-        make_ticket_file(tio, "active", slug)
+        make_ticket_file(tio, "drafts", slug)
         set_progress(tio, slug, {"step": "planning"})
 
         # Create ticket.md snapshot in logs (as init_ticket would)

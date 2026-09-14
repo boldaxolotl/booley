@@ -15,13 +15,15 @@ import pytest
 
 from booley.fusesoc import core_projection
 from booley.ticket_board import (
-    acceptance_basis,
     acceptance_validation,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
+from booley.ticket_board import (
+    ticket_baseline as acceptance_basis,
+)
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
+    TicketBaselineError,
 )
 
 
@@ -45,12 +47,12 @@ def _participant(role: str = "outer") -> BasisParticipant:
 
 
 def test_path_policy_and_basis_require_supported_schema_and_outer_participant() -> None:
-    with pytest.raises(AcceptanceBasisError, match="unsupported Acceptance Path Policy"):
+    with pytest.raises(TicketBaselineError, match="unsupported Acceptance Path Policy"):
         acceptance_basis.AcceptancePathPolicy(schema=2).discover(Path.cwd())
-    with pytest.raises(AcceptanceBasisError, match="requires an outer"):
-        AcceptanceBasis((_participant("project"),))
-    with pytest.raises(AcceptanceBasisError, match="participants must be a list"):
-        AcceptanceBasis.from_mapping({"schema": 1, "participants": {}})
+    with pytest.raises(TicketBaselineError, match="requires an outer"):
+        TicketBaseline((_participant("project"),))
+    with pytest.raises(TicketBaselineError, match="participants must be a list"):
+        TicketBaseline.from_mapping({"schema": 1, "participants": {}})
 
 
 @pytest.mark.parametrize(
@@ -75,8 +77,8 @@ def test_path_policy_and_basis_require_supported_schema_and_outer_participant() 
     ],
 )
 def test_participant_parser_rejects_malformed_rows(row: object, message: str) -> None:
-    with pytest.raises(AcceptanceBasisError, match=message):
-        AcceptanceBasis.from_mapping({"schema": 1, "participants": [row]})
+    with pytest.raises(TicketBaselineError, match=message):
+        TicketBaseline.from_mapping({"schema": 1, "participants": [row]})
 
 
 def test_git_path_and_worktree_command_fail_closed(
@@ -92,7 +94,7 @@ def test_git_path_and_worktree_command_fail_closed(
         "run",
         lambda *_args, **_kwargs: _completed("git", returncode=2, stderr="bad worktree"),
     )
-    with pytest.raises(AcceptanceBasisError, match="bad worktree"):
+    with pytest.raises(TicketBaselineError, match="bad worktree"):
         acceptance_basis._git_paths(tmp_path, "status")
 
     dot_git = tmp_path / ".git"
@@ -124,14 +126,14 @@ def test_worktree_command_remaps_inaccessible_admin_path(
 def test_destination_and_ticket_commit_inputs_require_complete_full_sha_maps(
     tmp_path: Path,
 ) -> None:
-    basis = AcceptanceBasis((_participant(),))
-    with pytest.raises(AcceptanceBasisError, match="cover every participant"):
+    basis = TicketBaseline((_participant(),))
+    with pytest.raises(TicketBaselineError, match="cover every participant"):
         acceptance_basis.validate_destination_refs(tmp_path, basis, {})
-    with pytest.raises(AcceptanceBasisError, match="must be a full Git SHA"):
+    with pytest.raises(TicketBaselineError, match="must be a full Git SHA"):
         acceptance_basis.validate_destination_refs(tmp_path, basis, {"outer": "bad"})
-    with pytest.raises(AcceptanceBasisError, match="cover every Basis participant"):
+    with pytest.raises(TicketBaselineError, match="cover every Basis participant"):
         acceptance_basis.materialize_ticket_commits(tmp_path, basis, tmp_path / "out", {})
-    with pytest.raises(AcceptanceBasisError, match="must be a full Git SHA"):
+    with pytest.raises(TicketBaselineError, match="must be a full Git SHA"):
         acceptance_basis.materialize_ticket_commits(
             tmp_path, basis, tmp_path / "out", {"outer": "bad"}
         )
@@ -146,7 +148,7 @@ def test_prepare_acceptance_checkout_wraps_generated_projection_failure(
         "reconcile_projected_cores",
         lambda *_args: (_ for _ in ()).throw(core_projection.CoreProjectionError("broken")),
     )
-    with pytest.raises(AcceptanceBasisError, match="acceptance-input-change-required: broken"):
+    with pytest.raises(TicketBaselineError, match="acceptance-input-change-required: broken"):
         acceptance_validation.prepare_acceptance_checkout(
             tmp_path,
             tmp_path,
@@ -167,7 +169,7 @@ def test_worktree_mapping_and_identity_failures_are_explicit(
             (recorded, _participant().ticket_ref),
         ),
     )
-    with pytest.raises(AcceptanceBasisError, match="could not be identified"):
+    with pytest.raises(TicketBaselineError, match="could not be identified"):
         acceptance_basis.worktree_for_ref(tmp_path, _participant().ticket_ref)
 
     responses = iter(
@@ -202,9 +204,9 @@ def test_descendant_and_project_repository_failures_are_explicit(
         "run",
         lambda *_args, **_kwargs: _completed("git", returncode=1),
     )
-    with pytest.raises(AcceptanceBasisError, match="ref is unavailable"):
-        acceptance_basis.validate_current_basis_refs(tmp_path, AcceptanceBasis((_participant(),)))
-    paired = AcceptanceBasis((_participant(), _participant("project")))
+    with pytest.raises(TicketBaselineError, match="ref is unavailable"):
+        acceptance_basis.validate_current_basis_refs(tmp_path, TicketBaseline((_participant(),)))
+    paired = TicketBaseline((_participant(), _participant("project")))
     monkeypatch.setattr(acceptance_basis, "paired_project_repository", lambda _root: None)
     monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(
@@ -212,7 +214,7 @@ def test_descendant_and_project_repository_failures_are_explicit(
         "_descendant_ref_commit",
         lambda *_args, **_kwargs: "a" * 40,
     )
-    with pytest.raises(AcceptanceBasisError, match="paired project repository"):
+    with pytest.raises(TicketBaselineError, match="paired project repository"):
         acceptance_basis.validate_current_basis_refs(tmp_path, paired)
 
 
@@ -225,12 +227,12 @@ def test_clone_commit_reports_clone_and_checkout_failures(
         "run",
         lambda *_args, **_kwargs: next(responses),
     )
-    with pytest.raises(AcceptanceBasisError, match="clone failed"):
+    with pytest.raises(TicketBaselineError, match="clone failed"):
         acceptance_basis._clone_commit(tmp_path, tmp_path / "clone", "a" * 40)
     responses = iter(
         [_completed("git"), _completed("git", returncode=1, stderr="checkout failed")]
     )
-    with pytest.raises(AcceptanceBasisError, match="checkout failed"):
+    with pytest.raises(TicketBaselineError, match="checkout failed"):
         acceptance_basis._clone_commit(tmp_path, tmp_path / "clone", "a" * 40)
 
 
@@ -263,13 +265,13 @@ def test_generated_path_equivalence_handles_symlinks_and_mode_mismatch(tmp_path:
         ("base_sha", None),
     ],
 )
-def test_load_acceptance_basis_rejects_every_retired_field(
+def test_load_ticket_baseline_rejects_every_retired_field(
     tmp_path: Path,
     retired_field: str,
     value: object,
 ) -> None:
-    with pytest.raises(AcceptanceBasisError, match="hard cutoff"):
-        acceptance_basis.load_acceptance_basis(
+    with pytest.raises(TicketBaselineError, match="hard cutoff"):
+        acceptance_basis.load_ticket_baseline(
             tmp_path,
             "ticket",
             {retired_field: value},
@@ -277,21 +279,21 @@ def test_load_acceptance_basis_rejects_every_retired_field(
 
 
 def test_ticket_machine_rejects_authored_drift() -> None:
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     fields = {"summary": "Ticket", "branch": "main"}
     body = "## Description\n\nTest."
     fields["machine"] = acceptance_basis.ticket_machine_fields(
         basis, fields=fields, body=body, generation="1" * 32
     )
     fields["summary"] = "Changed"
-    with pytest.raises(AcceptanceBasisError, match="authored Ticket changed"):
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
         acceptance_basis.ticket_baseline_from_fields(fields, body)
     fields["summary"] = "Ticket"
-    with pytest.raises(AcceptanceBasisError, match="authored Ticket changed"):
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
         acceptance_basis.ticket_baseline_from_fields(fields, "different")
 
 
 @pytest.mark.parametrize("retired", ["acceptance_basis", "base_sha", "target_contract"])
 def test_ticket_baseline_rejects_retired_fields_even_when_null(retired: str) -> None:
-    with pytest.raises(AcceptanceBasisError, match=r"unsupported|hard cutoff"):
+    with pytest.raises(TicketBaselineError, match=r"unsupported|hard cutoff"):
         acceptance_basis.ticket_baseline_from_fields({retired: None}, "")

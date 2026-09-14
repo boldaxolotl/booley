@@ -1202,11 +1202,11 @@ def _validate_acceptance_basis_field(fields: dict[str, Any]) -> list[str]:
     raw_machine = fields.get("machine")
     if raw_machine is None:
         return []
-    from .acceptance_basis import AcceptanceBasisError, ticket_baseline_from_machine
+    from .ticket_baseline import TicketBaselineError, ticket_baseline_from_machine
 
     try:
         ticket_baseline_from_machine(raw_machine)
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         return [str(exc)]
     return []
 

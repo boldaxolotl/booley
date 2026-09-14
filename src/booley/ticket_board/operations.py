@@ -442,8 +442,8 @@ def _prepare_handoff_snapshot(
 
 def _handoff_basis_heads(tio: Any, slug: str) -> dict[str, str] | None:
     """Validate current and live Basis views, returning exact participant heads."""
-    from .acceptance_basis import (
-        AcceptanceBasisError,
+    from .ticket_baseline import (
+        TicketBaselineError,
         assert_live_inputs_unchanged,
         materialize_ticket_commits,
         validate_current_basis_refs,
@@ -462,8 +462,8 @@ def _handoff_basis_heads(tio: Any, slug: str) -> dict[str, str] | None:
             errors = _prepare_materialized_basis_view(tio, slug, current, basis)
             assert_live_inputs_unchanged(basis, tio._project_root, current)
         if errors:
-            raise AcceptanceBasisError("Ticket baseline selectors changed: " + "; ".join(errors))
-    except (AcceptanceBasisError, OSError, ValueError) as exc:
+            raise TicketBaselineError("Ticket baseline selectors changed: " + "; ".join(errors))
+    except (TicketBaselineError, OSError, ValueError) as exc:
         print(f"Error: cannot hand off '{slug}': {exc}", file=sys.stderr)
         return None
     return heads
@@ -476,13 +476,13 @@ def _prepare_materialized_basis_view(
     basis: Any,
 ) -> list[str]:
     """Prepare and validate one exact composite through the runtime contract."""
-    from .acceptance_basis import AcceptanceBasisError, validate_ticket_view
     from .acceptance_validation import prepare_acceptance_checkout
     from .io import find_ticket_file
+    from .ticket_baseline import TicketBaselineError, validate_ticket_view
 
     ticket, _status = find_ticket_file(tio.tickets_dir, slug)
     if ticket is None:
-        raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during Basis validation")
+        raise TicketBaselineError(f"ticket {slug!r} is unavailable during Basis validation")
     prepare_acceptance_checkout(
         tio._project_root,
         checkout,
@@ -549,9 +549,9 @@ def _freeze_handoff_snapshot(
 ) -> bool:
     from booley.criteria.state import DevelopmentState
 
-    from .acceptance_basis import AcceptanceBasisError
     from .acceptance_ledger import AcceptanceLedgerError, bind_review_package, freeze_acceptance
     from .criteria_acceptance import check_criteria_acceptance
+    from .ticket_baseline import TicketBaselineError
 
     state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
     if not state_path.exists():
@@ -580,7 +580,7 @@ def _freeze_handoff_snapshot(
             participant_heads=participant_heads,
         )
         bind_review_package(log_dir, snapshot)
-    except (AcceptanceBasisError, AcceptanceLedgerError) as exc:
+    except (TicketBaselineError, AcceptanceLedgerError) as exc:
         print(f"Error: cannot freeze acceptance for '{slug}': {exc}", file=sys.stderr)
         return False
     return True
@@ -706,7 +706,7 @@ def op_unblock(
 
 
 def _queue_recovery_permitted(entry: dict[str, Any], slug: str) -> bool:
-    from .acceptance_basis import requires_return_to_draft
+    from .ticket_baseline import requires_return_to_draft
 
     if not requires_return_to_draft(entry):
         return True
@@ -838,11 +838,11 @@ def _waiting_provider_error(
     if not unavailable:
         return ""
     slug = ticket.get("feature_branch") or slug_from_file(ticket.get("file", ""))
-    from .acceptance_basis import AcceptanceBasisError
+    from .ticket_baseline import TicketBaselineError
 
     try:
         basis = tio.load_basis(slug)
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         return f"invalid Ticket baseline: {exc}"
     missing = sorted({row.provider for row in basis.providers} & unavailable)
     return "provider unavailable: " + ", ".join(missing) if missing else ""
@@ -958,13 +958,13 @@ def _acceptance_failure_detail(tio: Any, slug: str) -> str:
 
 
 def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: Any) -> None:
-    from .acceptance_basis import (
+    from .acceptance_journal import completion_basis_sources
+    from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
+    from .ticket_baseline import (
         assert_live_inputs_unchanged,
         materialize_ticket_commits,
         validate_current_basis_refs,
     )
-    from .acceptance_journal import completion_basis_sources
-    from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
 
     validate_review_package_binding(log_dir, snapshot)
     basis = tio.load_basis(slug)
@@ -1078,11 +1078,11 @@ def _prepare_completion_request(
     accepted_snapshot = _completion_acceptance_valid(tio, slug)
     if accepted_snapshot is None:
         return None
-    from .acceptance_basis import AcceptanceBasisError
+    from .ticket_baseline import TicketBaselineError
 
     try:
         basis = tio.load_basis(slug)
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return None
     if not on_success.merge and basis.target_plan is not None:
@@ -1426,11 +1426,11 @@ def _validated_reset_context(
         return None
     if current.get("machine") is None:
         return file_path, current, None
-    from .acceptance_basis import AcceptanceBasisError
+    from .ticket_baseline import TicketBaselineError
 
     try:
         basis = tio._load_basis_unlocked(slug)
-    except (AcceptanceBasisError, OSError, ValueError) as exc:
+    except (TicketBaselineError, OSError, ValueError) as exc:
         print(
             f"Error: reset could not validate the Ticket baseline for '{slug}': {exc}",
             file=sys.stderr,
@@ -1516,12 +1516,12 @@ def _reset_ticket_branches(
     raw_basis = entry.get("machine")
     if raw_basis is None:
         return _cleanup_reset_branches(project_root, slug, entry.get("feature_branch", ""))
-    from .acceptance_basis import AcceptanceBasisError
-    from .workspace_ops import AcceptanceBasisOperationError, reset_basis_worktrees
+    from .ticket_baseline import TicketBaselineError
+    from .workspace_ops import TicketBaselineOperationError, reset_basis_worktrees
 
     try:
         if basis is None:
-            raise AcceptanceBasisError("authoritative Ticket baseline is unavailable")
+            raise TicketBaselineError("authoritative Ticket baseline is unavailable")
         reset_basis_worktrees(
             project_root,
             slug,
@@ -1529,7 +1529,7 @@ def _reset_ticket_branches(
             str(entry.get("branch", "")),
             plan=reset_plan,
         )
-    except (AcceptanceBasisOperationError, AcceptanceBasisError, OSError) as exc:
+    except (TicketBaselineOperationError, TicketBaselineError, OSError) as exc:
         print(
             f"Error: reset could not restore the Ticket baseline for '{slug}': {exc}",
             file=sys.stderr,
@@ -1547,19 +1547,19 @@ def _preflight_reset_branches(
     """Resolve every Ticket baseline identity before runtime cleanup begins."""
     if entry.get("machine") is None:
         return None
-    from .acceptance_basis import AcceptanceBasisError
-    from .workspace_ops import AcceptanceBasisOperationError, preflight_basis_reset
+    from .ticket_baseline import TicketBaselineError
+    from .workspace_ops import TicketBaselineOperationError, preflight_basis_reset
 
     try:
         if basis is None:
-            raise AcceptanceBasisError("authoritative Ticket baseline is unavailable")
+            raise TicketBaselineError("authoritative Ticket baseline is unavailable")
         return preflight_basis_reset(
             project_root,
             slug,
             basis,
             str(entry.get("branch", "")),
         )
-    except (AcceptanceBasisOperationError, AcceptanceBasisError, OSError) as exc:
+    except (TicketBaselineOperationError, TicketBaselineError, OSError) as exc:
         print(
             f"Error: reset could not preflight the Ticket baseline for '{slug}': {exc}",
             file=sys.stderr,

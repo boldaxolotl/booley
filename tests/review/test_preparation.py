@@ -14,7 +14,7 @@ import pytest
 
 from booley.core.models import AgentResult
 from booley.ticket_board import review_preparation as rp
-from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
 
 def _explanation() -> dict:
@@ -64,7 +64,7 @@ def _basis(
     outer_ref: str = "refs/heads/booley-generation/0123456789abcdef/outer",
     project_sha: str | None = None,
     project_ref: str = "refs/heads/booley-generation/0123456789abcdef/project",
-) -> AcceptanceBasis:
+) -> TicketBaseline:
     participants = [
         BasisParticipant(
             role="outer",
@@ -84,7 +84,10 @@ def _basis(
                 destination_sha="d" * 40,
             )
         )
-    return AcceptanceBasis(tuple(participants), machine={"generation": "e" * 32, "schema": 1, "authored_sha256": "f" * 64, "baseline": {}})
+    return TicketBaseline(
+        tuple(participants),
+        machine={"generation": "e" * 32, "schema": 1, "authored_sha256": "f" * 64, "baseline": {}},
+    )
 
 
 def _git_evidence(path: Path) -> dict[str, Path]:
@@ -343,7 +346,7 @@ def test_review_snapshot_heads_requires_frozen_exact_participants(tmp_path: Path
 
 def test_review_repositories_reject_rewritten_destination_ref(tmp_path: Path, monkeypatch):
     def reject_destination(*_args):
-        raise rp.AcceptanceBasisError(
+        raise rp.TicketBaselineError(
             "acceptance-input-change-required: destination no longer descends"
         )
 

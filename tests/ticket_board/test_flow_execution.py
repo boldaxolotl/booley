@@ -10,12 +10,12 @@ import pytest
 from booley.criteria.state import DevelopmentState
 from booley.flows.execution_persistence import AcceptanceRecordingError
 from booley.flows.request import FlowRequest
-from booley.ticket_board.acceptance_basis import AcceptanceBasisError
 from booley.ticket_board.flow_execution import (
     TicketAcceptanceRecorder,
     TicketBoardFlowExecution,
 )
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.ticket_baseline import TicketBaselineError
 
 
 def test_recorder_rejects_malformed_acceptance_basis(
@@ -97,7 +97,7 @@ def test_ticket_runtime_configuration_requires_logs(
 ) -> None:
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
 
-    with pytest.raises(AcceptanceBasisError, match="no Criterion evidence directory"):
+    with pytest.raises(TicketBaselineError, match="no Criterion evidence directory"):
         TicketBoardFlowExecution._configure_runtime(FlowRequest(target="demo", work_dir=tmp_path))
 
 

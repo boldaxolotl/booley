@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 
 from booley.runtime.git import git_run
-from booley.ticket_board.acceptance_basis import ticket_baseline_from_machine
 from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.ticket_baseline import ticket_baseline_from_machine
 from booley.ticket_board.ticket_repositories import TicketWorkspaceError, ticket_repositories
 
 

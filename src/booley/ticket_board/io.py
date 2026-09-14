@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from booley.ticket_board.ticket_repositories import TicketWorkspace, TicketWorkspaceError
 
 if TYPE_CHECKING:
-    from .acceptance_basis import AcceptanceBasis
+    from .ticket_baseline import TicketBaseline
 
 logger = logging.getLogger(__name__)
 
@@ -215,35 +215,35 @@ class TicketIO:
 
     def load_basis(
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
-    ) -> AcceptanceBasis:
+    ) -> TicketBaseline:
         """Load an executable basis from Board authority and cross-check its snapshot."""
         with self._ticket_lock(slug, review_operation=True):
             return self._load_basis_unlocked(slug, runtime_ticket_path=runtime_ticket_path)
 
     def _load_basis_unlocked(
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
-    ) -> AcceptanceBasis:
-        from .acceptance_basis import AcceptanceBasisError, load_acceptance_basis
+    ) -> TicketBaseline:
+        from .ticket_baseline import TicketBaselineError, load_ticket_baseline
 
         board_path, status = find_ticket_file(self.tickets_dir, slug)
         if board_path is None or status in {None, "draft"}:
-            raise AcceptanceBasisError(f"executable Board Ticket {slug!r} is unavailable")
+            raise TicketBaselineError(f"executable Board Ticket {slug!r} is unavailable")
         board_fields, board_body = parse_frontmatter(board_path.read_text(encoding="utf-8"))
-        basis = load_acceptance_basis(self._project_root, slug, board_fields, board_body)
+        basis = load_ticket_baseline(self._project_root, slug, board_fields, board_body)
         if runtime_ticket_path is None:
             return basis
         snapshot_path = Path(runtime_ticket_path)
         snapshot_fields, snapshot_body = parse_frontmatter(
             snapshot_path.read_text(encoding="utf-8")
         )
-        snapshot = load_acceptance_basis(
+        snapshot = load_ticket_baseline(
             self._project_root,
             slug,
             snapshot_fields,
             snapshot_body,
         )
         if snapshot.ticket_identity() != basis.ticket_identity():
-            raise AcceptanceBasisError(
+            raise TicketBaselineError(
                 "acceptance-input-change-required: runtime Ticket names another generation"
             )
         return basis
@@ -806,8 +806,8 @@ class TicketIO:
 
     def _validate_enqueue_journal_basis(self, journal) -> None:
         """Revalidate immutable basis evidence before resuming publication."""
-        from .acceptance_basis import ticket_baseline_from_fields, validate_ticket_commit_trailers
         from .frontmatter import parse_frontmatter
+        from .ticket_baseline import ticket_baseline_from_fields, validate_ticket_commit_trailers
         from .workspace_ops import validate_basis_refs
 
         path = Path(journal.candidate)
@@ -898,10 +898,10 @@ class TicketIO:
         if not self._validate_authored_enqueue(slug, ticket_path, effective_fields, body):
             return None
         try:
-            from .acceptance_basis import ticket_machine_fields
-            from .workspace_ops import prepare_acceptance_basis
+            from .ticket_baseline import ticket_machine_fields
+            from .workspace_ops import prepare_ticket_baseline
 
-            basis, operation_id = prepare_acceptance_basis(
+            basis, operation_id = prepare_ticket_baseline(
                 self._project_root,
                 ticket_path,
                 slug,
@@ -943,7 +943,9 @@ class TicketIO:
             )
             return None
         if effective_fields.get("machine") is not None:
-            self._print_enqueue_errors("invalid draft", ["draft Tickets cannot contain machine metadata"])
+            self._print_enqueue_errors(
+                "invalid draft", ["draft Tickets cannot contain machine metadata"]
+            )
             return None
         if not (self._project_root / ".git").exists():
             self._print_enqueue_errors(
@@ -1030,8 +1032,8 @@ class TicketIO:
         """Require durable basis refs before a real Git project becomes executable."""
         if not (self._project_root / ".git").exists():
             return []  # lightweight filesystem-only consumers cannot verify Git identities
-        from .acceptance_basis import (
-            AcceptanceBasisError,
+        from .ticket_baseline import (
+            TicketBaselineError,
             ticket_baseline_from_fields,
             validate_ticket_commit_trailers,
         )
@@ -1042,7 +1044,7 @@ class TicketIO:
         try:
             basis = ticket_baseline_from_fields(fields, body)
             validate_ticket_commit_trailers(self._project_root, slug, basis, fields["machine"])
-        except AcceptanceBasisError as exc:
+        except TicketBaselineError as exc:
             return [str(exc)]
         try:
             return validate_basis_refs(

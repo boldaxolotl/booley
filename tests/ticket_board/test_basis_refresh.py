@@ -11,12 +11,6 @@ import yaml
 
 from booley.core.models import TargetPlan, TargetPlanRole
 from booley.ticket_board import basis_publication, basis_refresh
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    BasisParticipant,
-    ProviderTargetBinding,
-    ticket_machine_fields,
-)
 from booley.ticket_board.basis_refresh import (
     BasisRefreshError,
     _reapply_placeholders,
@@ -27,6 +21,12 @@ from booley.ticket_board.basis_refresh import (
     prepare_waiting_basis_refresh,
 )
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.ticket_baseline import (
+    BasisParticipant,
+    ProviderTargetBinding,
+    TicketBaseline,
+    ticket_machine_fields,
+)
 from booley.ticket_board.workspace_ops import AuthoringWorkspace
 
 
@@ -139,9 +139,7 @@ def test_reapply_test_tables_includes_nested_owned_tables(tmp_path: Path) -> Non
     assert tables["future"]["env"] == {"MODE": "fast"}
 
 
-def test_reapply_placeholders_rejects_old_basis_record(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_reapply_placeholders_rejects_old_basis_record(tmp_path: Path, monkeypatch) -> None:
     old = tmp_path / "old"
     new = tmp_path / "new"
     record = old / ".booley_project" / "acceptance" / "bases" / "ticket.json"
@@ -170,7 +168,7 @@ def test_reapply_placeholders_rejects_old_basis_record(
         _reapply_placeholders(
             AuthoringWorkspace(old, None, "b" * 40, ""),
             AuthoringWorkspace(new, None, "c" * 40, ""),
-            AcceptanceBasis((participant,)),
+            TicketBaseline((participant,)),
             "ticket",
         )
 
@@ -178,8 +176,9 @@ def test_reapply_placeholders_rejects_old_basis_record(
     assert not (new / ".booley_project" / "acceptance").exists()
 
 
-def test_provider_basis_refresh_is_allowed_when_pinned_export_is_unchanged(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("accepted_generation", ["a" * 32, "c" * 32])
+def test_provider_refresh_requires_pinned_generation_even_with_same_surface(
+    tmp_path: Path, monkeypatch, accepted_generation: str
 ) -> None:
     binding = ProviderTargetBinding(
         "provider",
@@ -188,9 +187,9 @@ def test_provider_basis_refresh_is_allowed_when_pinned_export_is_unchanged(
         TargetPlanRole.PERSISTENT.value,
         "b" * 64,
     )
-    consumer = AcceptanceBasis((_participant(),), providers=(binding,))
+    consumer = TicketBaseline((_participant(),), providers=(binding,))
     refreshed_provider = SimpleNamespace(
-        ticket_identity=lambda: {"generation": "c" * 32},
+        ticket_identity=lambda: {"generation": accepted_generation},
         target_plan=TargetPlan.from_value(
             [
                 {
@@ -203,12 +202,14 @@ def test_provider_basis_refresh_is_allowed_when_pinned_export_is_unchanged(
     ticket = tmp_path / "provider.md"
     ticket.write_text("---\n---\n", encoding="utf-8")
     monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
-    monkeypatch.setattr(basis_refresh, "load_acceptance_basis", lambda *_args: refreshed_provider)
+    monkeypatch.setattr(basis_refresh, "load_ticket_baseline", lambda *_args: refreshed_provider)
     monkeypatch.setattr(basis_refresh, "target_surface_sha256", lambda *_args: "b" * 64)
 
-    refreshed = _verify_providers(tmp_path, tmp_path, consumer)
-
-    assert refreshed[0].ticket_generation == "c" * 32
+    if accepted_generation != binding.ticket_generation:
+        with pytest.raises(BasisRefreshError, match="changed generation"):
+            _verify_providers(tmp_path, tmp_path, consumer)
+    else:
+        assert _verify_providers(tmp_path, tmp_path, consumer) == (binding,)
 
 
 def _participant() -> BasisParticipant:
@@ -221,10 +222,8 @@ def _participant() -> BasisParticipant:
     )
 
 
-def _published_basis(
-    *, providers: tuple[ProviderTargetBinding, ...] = ()
-) -> AcceptanceBasis:
-    basis = AcceptanceBasis((_participant(),), providers=providers)
+def _published_basis(*, providers: tuple[ProviderTargetBinding, ...] = ()) -> TicketBaseline:
+    basis = TicketBaseline((_participant(),), providers=providers)
     return replace(
         basis,
         machine=ticket_machine_fields(basis, fields={}, body="", generation="e" * 32),
@@ -263,7 +262,7 @@ def _stub_refresh_recovery(tmp_path: Path, monkeypatch):
         "provider", "c" * 32, "acme:lib:toy:1.0#future", "persistent", "d" * 64
     )
     old_basis = _published_basis(providers=(provider,))
-    new_basis = AcceptanceBasis((_participant(),), providers=(provider,))
+    new_basis = TicketBaseline((_participant(),), providers=(provider,))
     journal_path = tmp_path / "refresh.json"
     operations = tmp_path / "operations"
     monkeypatch.setattr(basis_refresh, "_journal_path", lambda *_args: journal_path)
@@ -273,11 +272,9 @@ def _stub_refresh_recovery(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(basis_refresh, "resolve_project_dir", lambda root: root)
     monkeypatch.setattr(
         basis_refresh,
-        "load_acceptance_basis",
+        "load_ticket_baseline",
         lambda _root, _slug, fields, _body: (
-            old_basis
-            if fields.get("machine", {}).get("generation") == "e" * 32
-            else new_basis
+            old_basis if fields.get("machine", {}).get("generation") == "e" * 32 else new_basis
         ),
     )
 
@@ -292,7 +289,7 @@ def _stub_refresh_recovery(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(
         basis_refresh,
-        "prepare_replacement_acceptance_basis",
+        "prepare_replacement_ticket_baseline",
         lambda *_args, **kwargs: (new_basis, kwargs["operation_id"]),
     )
     calls = []
@@ -353,7 +350,7 @@ def test_reapply_placeholders_validates_project_sources_and_destinations(
     source = old_project / "future.sv"
     source.write_text("content\n", encoding="utf-8")
     participant = replace(_participant(), role="project")
-    basis = AcceptanceBasis((_participant(), participant))
+    basis = TicketBaseline((_participant(), participant))
     old = AuthoringWorkspace(old_outer, old_project, "b" * 40, "b" * 40)
     new = AuthoringWorkspace(new_outer, new_project, "c" * 40, "c" * 40)
     monkeypatch.setattr(
@@ -376,7 +373,7 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
     binding = ProviderTargetBinding(
         "provider", "a" * 32, "acme:lib:toy:1.0#future", "persistent", "b" * 64
     )
-    consumer = AcceptanceBasis((_participant(),), providers=(binding,))
+    consumer = TicketBaseline((_participant(),), providers=(binding,))
     monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (None, None))
     with pytest.raises(BasisRefreshError, match="is not accepted"):
         _verify_providers(tmp_path, tmp_path, consumer)
@@ -386,22 +383,22 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
     monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
     monkeypatch.setattr(
         basis_refresh,
-        "load_acceptance_basis",
-        lambda *_args: (_ for _ in ()).throw(basis_refresh.AcceptanceBasisError("bad basis")),
+        "load_ticket_baseline",
+        lambda *_args: (_ for _ in ()).throw(basis_refresh.TicketBaselineError("bad basis")),
     )
     with pytest.raises(BasisRefreshError, match="no valid accepted basis"):
         _verify_providers(tmp_path, tmp_path, consumer)
 
-    provider_basis = AcceptanceBasis((_participant(),))
-    monkeypatch.setattr(basis_refresh, "load_acceptance_basis", lambda *_args: provider_basis)
+    provider_basis = TicketBaseline((_participant(),))
+    monkeypatch.setattr(basis_refresh, "load_ticket_baseline", lambda *_args: provider_basis)
     with pytest.raises(BasisRefreshError, match="no longer exports"):
         _verify_providers(tmp_path, tmp_path, consumer)
 
-    provider_basis = AcceptanceBasis(
+    provider_basis = TicketBaseline(
         (_participant(),),
         target_plan=TargetPlan.from_value([{"target": binding.target, "role": "persistent"}]),
     )
-    monkeypatch.setattr(basis_refresh, "load_acceptance_basis", lambda *_args: provider_basis)
+    monkeypatch.setattr(basis_refresh, "load_ticket_baseline", lambda *_args: provider_basis)
     monkeypatch.setattr(basis_refresh, "target_surface_sha256", lambda *_args: "c" * 64)
     with pytest.raises(BasisRefreshError, match="changed after it was pinned"):
         _verify_providers(tmp_path, tmp_path, consumer)
@@ -411,7 +408,7 @@ def _refresh_build_fixture(
     tmp_path: Path,
 ) -> tuple[
     ProviderTargetBinding,
-    AcceptanceBasis,
+    TicketBaseline,
     basis_refresh.BasisRefreshJournal,
     Path,
     AuthoringWorkspace,
@@ -458,7 +455,7 @@ def test_publish_refresh_records_machine_identity_and_resumes_prepared_journal(
     journals: list[basis_refresh.BasisRefreshJournal] = []
     monkeypatch.setattr(
         basis_refresh,
-        "prepare_replacement_acceptance_basis",
+        "prepare_replacement_ticket_baseline",
         lambda *_args, **_kwargs: (basis, journal.operation_id),
     )
     monkeypatch.setattr(basis_refresh, "_write_journal", lambda _root, item: journals.append(item))
@@ -480,7 +477,7 @@ def test_publish_refresh_records_machine_identity_and_resumes_prepared_journal(
 
 def _prepared_refresh_fixture(
     tmp_path: Path,
-) -> tuple[AcceptanceBasis, basis_refresh.BasisRefreshJournal, Path, Path]:
+) -> tuple[TicketBaseline, basis_refresh.BasisRefreshJournal, Path, Path]:
     basis = _published_basis()
     journal = basis_refresh.BasisRefreshJournal(
         1,

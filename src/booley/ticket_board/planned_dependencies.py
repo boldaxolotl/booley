@@ -19,15 +19,6 @@ from booley.runtime.project_dir import resolve_checkout_project_dir, runtime_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
-from .acceptance_basis import (
-    AcceptanceBasisError,
-    ProviderTargetBinding,
-    canonical_json,
-    load_acceptance_basis,
-    materialize_basis_checkout,
-    provider_binding_from_mapping,
-    selector_matches_canonical,
-)
 from .acceptance_targets import (
     criterion_targets,
     deferable_rtl_or_tb_input,
@@ -40,6 +31,15 @@ from .target_surface_edit import (
     TargetSurfaceEditError,
     merge_target_definition,
     toml_table_block,
+)
+from .ticket_baseline import (
+    ProviderTargetBinding,
+    TicketBaselineError,
+    canonical_json,
+    load_ticket_baseline,
+    materialize_basis_checkout,
+    provider_binding_from_mapping,
+    selector_matches_canonical,
 )
 
 _PROVIDER_STATES = frozenset({"waiting", "queued", "running", "blocked", "review"})
@@ -166,8 +166,8 @@ def _provider(root: Path, tickets_dir: Path, slug: str) -> _Provider | None:
             f"provider {slug!r} has an unsupported Ticket format; recreate the Ticket"
         )
     try:
-        basis = load_acceptance_basis(root, slug, fields, body)
-    except AcceptanceBasisError as exc:
+        basis = load_ticket_baseline(root, slug, fields, body)
+    except TicketBaselineError as exc:
         raise PlannedDependencyError(
             f"provider {slug!r} has invalid Ticket baseline metadata: {exc}"
         ) from exc
@@ -279,7 +279,7 @@ def _load_marker(path: Path) -> ProviderMaterialization:
             frozenset(_marker_strings(raw, "placeholder_paths")),
         )
     except (
-        AcceptanceBasisError,
+        TicketBaselineError,
         BoundaryError,
         OSError,
         TypeError,
@@ -708,7 +708,7 @@ def _restore_provider_surfaces(
                 core_path, tests_key, _digest = _surface(checkout, binding.target)
                 _merge_provider_target(checkout, workspace, core_path, binding.target)
                 _merge_provider_test_table(checkout, workspace, tests_key)
-    except (AcceptanceBasisError, OSError, TargetSurfaceEditError) as exc:
+    except (TicketBaselineError, OSError, TargetSurfaceEditError) as exc:
         raise PlannedDependencyError(
             f"cannot restore planned provider {provider.slug!r}: {exc}"
         ) from exc
@@ -823,7 +823,7 @@ def _validate_refreshed_provider(
                 root, provider.basis, Path(directory) / "checkout"
             )
             _validate_refreshed_bindings(provider, bindings, exported, checkout)
-    except (AcceptanceBasisError, OSError) as exc:
+    except (TicketBaselineError, OSError) as exc:
         raise PlannedDependencyError(
             f"cannot validate refreshed provider {provider.slug!r}: {exc}"
         ) from exc

@@ -9,13 +9,14 @@ import yaml
 
 from booley.core.models import TargetPlan
 from booley.ticket_board import (
-    acceptance_basis,
     acceptance_targets,
     planned_dependencies,
     target_surface_edit,
     workspace_ops,
 )
-from booley.ticket_board.acceptance_basis import ProviderTargetBinding
+from booley.ticket_board import (
+    ticket_baseline as acceptance_basis,
+)
 from booley.ticket_board.planned_dependencies import (
     PlannedDependencyError,
     ProviderMaterialization,
@@ -29,6 +30,7 @@ from booley.ticket_board.planned_dependencies import (
     validate_materialized_surfaces,
     validate_planned_dependencies,
 )
+from booley.ticket_board.ticket_baseline import ProviderTargetBinding
 
 
 def _core(path: Path, targets: str, *, filesets: str = "  rtl: {}\n") -> None:
@@ -698,7 +700,11 @@ def test_public_materialization_retries_after_atomic_surface_write_failure(
     _core(source / "toy.core", "  future:\n    filesets: []\n")
     plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
     provider = _Provider(
-        "provider", {}, SimpleNamespace(target_plan=plan, ticket_identity=lambda: {"generation": "a" * 32}, removal_targets=())
+        "provider",
+        {},
+        SimpleNamespace(
+            target_plan=plan, ticket_identity=lambda: {"generation": "a" * 32}, removal_targets=()
+        ),
     )
     monkeypatch.setattr(planned_dependencies, "_active_providers", lambda *_args: [])
     monkeypatch.setattr(planned_dependencies, "_provider", lambda *_args: provider)
@@ -918,7 +924,11 @@ def test_existing_marker_rechecks_new_ambiguous_provider(tmp_path: Path, monkeyp
         _Provider(
             slug,
             {},
-            SimpleNamespace(target_plan=plan, removal_targets=(), ticket_identity=lambda: {"generation": "a" * 32}),
+            SimpleNamespace(
+                target_plan=plan,
+                removal_targets=(),
+                ticket_identity=lambda: {"generation": "a" * 32},
+            ),
         )
         for slug in ("first", "second")
     ]
@@ -1141,22 +1151,22 @@ def test_provider_discovery_filters_states_and_wraps_invalid_basis(
     )
     monkeypatch.setattr(
         planned_dependencies,
-        "load_acceptance_basis",
-        lambda *_args: (_ for _ in ()).throw(acceptance_basis.AcceptanceBasisError("bad basis")),
+        "load_ticket_baseline",
+        lambda *_args: (_ for _ in ()).throw(acceptance_basis.TicketBaselineError("bad basis")),
     )
     with pytest.raises(PlannedDependencyError, match="invalid Ticket baseline"):
         planned_dependencies._provider(tmp_path, tmp_path, "provider")
 
     monkeypatch.setattr(
         planned_dependencies,
-        "load_acceptance_basis",
+        "load_ticket_baseline",
         lambda *_args: SimpleNamespace(target_plan=None),
     )
     assert planned_dependencies._provider(tmp_path, tmp_path, "provider") is None
     basis = SimpleNamespace(
         target_plan=TargetPlan.from_value([{"target": "future", "role": "persistent"}])
     )
-    monkeypatch.setattr(planned_dependencies, "load_acceptance_basis", lambda *_args: basis)
+    monkeypatch.setattr(planned_dependencies, "load_ticket_baseline", lambda *_args: basis)
     assert planned_dependencies._provider(tmp_path, tmp_path, "provider") == _Provider(
         "provider", {"machine": {"generation": "bad"}}, basis
     )

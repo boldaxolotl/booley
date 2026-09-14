@@ -513,9 +513,7 @@ def _prepare_basis_project_checkout(
     source: Path | None,
 ) -> Path:
     if source is None:
-        raise TicketWorkspaceError(
-            "paired Ticket baseline repository is expected but unavailable"
-        )
+        raise TicketWorkspaceError("paired Ticket baseline repository is expected but unavailable")
     _require_clean_source(source)
     branch = _basis_branch(source, request.expected_ref, request.expected_sha)
     if not _branch_upstream(source, branch):

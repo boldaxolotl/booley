@@ -44,18 +44,18 @@ from booley.runtime.agent_config import get_backend_config, load_backend_config
 from booley.runtime.paths import skills_dir
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    BasisParticipant,
-    validate_current_basis_refs,
-)
 from booley.ticket_board.acceptance_ledger import read_acceptance
 from booley.ticket_board.agent_execution import configure_agent_call
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
 from booley.ticket_board.review_records import ReviewInspection
+from booley.ticket_board.ticket_baseline import (
+    BasisParticipant,
+    TicketBaseline,
+    TicketBaselineError,
+    validate_current_basis_refs,
+)
 from booley.ticket_board.ticket_jobs import wait_for_ticket_jobs
 from booley.ticket_board.ticket_repositories import (
     paired_project_repository,
@@ -258,10 +258,10 @@ def _find_checkout(project_root: Path, ticket_ref: str) -> Path | None:
     return None
 
 
-def _load_review_basis(tio: TicketIO, slug: str) -> AcceptanceBasis:
+def _load_review_basis(tio: TicketIO, slug: str) -> TicketBaseline:
     try:
         return tio.load_basis(slug)
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         raise ReviewPrepError(f"ticket '{slug}' has no valid Ticket baseline: {exc}") from exc
 
 
@@ -287,7 +287,7 @@ def _review_snapshot_heads(
     log_dir: Path,
     slug: str,
     status: str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
 ) -> dict[str, str] | None:
     if status not in {"review", "blocked"}:
         return None
@@ -328,12 +328,12 @@ def _validate_review_entry(
 
 def _resolve_review_repositories(
     project_root: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     expected_heads: dict[str, str] | None,
 ) -> tuple[Path, str, ProjectReviewRepository | None]:
     try:
         current_heads = validate_current_basis_refs(project_root, basis)
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         raise ReviewPrepError(f"Ticket baseline refs are invalid: {exc}") from exc
     outer = basis.participant("outer")
     worktree, head_sha = _resolve_outer_review_repository(project_root, outer)
@@ -356,7 +356,7 @@ def _resolve_context(
     require_review: bool = False,
     allow_report_disabled: bool = False,
     inspect_unaccepted: bool = False,
-    locked_basis: AcceptanceBasis | None = None,
+    locked_basis: TicketBaseline | None = None,
 ) -> ReviewPrepContext:
     tickets_dir = tickets_dir_from_project_root(project_root)
     tio = TicketIO(tickets_dir, project_root=project_root)

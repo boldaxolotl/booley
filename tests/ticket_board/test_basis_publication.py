@@ -17,9 +17,9 @@ from booley.ticket_board import (
     acceptance_targets,
     basis_publication,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
 )
 
 
@@ -141,31 +141,35 @@ def test_new_basis_publication_requires_complete_inputs(
     participant = _publication_participant()
     monkeypatch.setattr(basis_publication, "load_basis_publication", lambda *_args: None)
     with pytest.raises(basis_publication.BasisPublicationError, match="operation ID"):
-        basis_publication.publish_basis_commits(
+        basis_publication.publish_ticket_commits(
             tmp_path,
-            "ticket",
-            "1" * 64,
-            "2" * 64,
-            "3" * 64,
-            {},
-            participants=(participant,),
-            bindings=(),
-            removal_targets=(),
-            providers=(),
+            basis_publication.TicketPublicationRequest(
+                "ticket",
+                "1" * 64,
+                "2" * 64,
+                "3" * 64,
+                {},
+                participants=(participant,),
+                bindings=(),
+                removal_targets=(),
+                providers=(),
+            ),
         )
     with pytest.raises(basis_publication.BasisPublicationError, match="missing prepared"):
-        basis_publication.publish_basis_commits(
+        basis_publication.publish_ticket_commits(
             tmp_path,
-            "ticket",
-            "1" * 64,
-            "2" * 64,
-            "3" * 64,
-            {},
-            operation_id="0" * 32,
-            participants=None,
-            bindings=(),
-            removal_targets=(),
-            providers=(),
+            basis_publication.TicketPublicationRequest(
+                "ticket",
+                "1" * 64,
+                "2" * 64,
+                "3" * 64,
+                {},
+                operation_id="0" * 32,
+                participants=None,
+                bindings=(),
+                removal_targets=(),
+                providers=(),
+            ),
         )
 
 
@@ -196,30 +200,34 @@ def test_basis_publication_resume_and_repository_inputs_are_immutable(
         }
         values.update(kwargs)
         with pytest.raises(basis_publication.BasisPublicationError):
-            basis_publication.publish_basis_commits(
+            basis_publication.publish_ticket_commits(
                 tmp_path,
-                "ticket",
-                values["source_sha256"],
-                values["effective_sha256"],
-                journal.authored_sha256,
-                {"outer": tmp_path},
-                participants=values["participants"],
-                bindings=values["bindings"],
-                removal_targets=values["removal_targets"],
-                providers=(),
+                basis_publication.TicketPublicationRequest(
+                    "ticket",
+                    values["source_sha256"],
+                    values["effective_sha256"],
+                    journal.authored_sha256,
+                    {"outer": tmp_path},
+                    participants=values["participants"],
+                    bindings=values["bindings"],
+                    removal_targets=values["removal_targets"],
+                    providers=(),
+                ),
             )
     with pytest.raises(basis_publication.BasisPublicationError, match="repositories"):
-        basis_publication.publish_basis_commits(
+        basis_publication.publish_ticket_commits(
             tmp_path,
-            "ticket",
-            journal.source_sha256,
-            journal.effective_sha256,
-            journal.authored_sha256,
-            {},
-            participants=journal.participants,
-            bindings=(),
-            removal_targets=(),
-            providers=(),
+            basis_publication.TicketPublicationRequest(
+                "ticket",
+                journal.source_sha256,
+                journal.effective_sha256,
+                journal.authored_sha256,
+                {},
+                participants=journal.participants,
+                bindings=(),
+                removal_targets=(),
+                providers=(),
+            ),
         )
 
 
@@ -261,7 +269,7 @@ def test_basis_publication_rejects_mismatched_commit_and_ticket_ref(
 def test_basis_keepalives_reject_changed_and_uninspectable_refs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     monkeypatch.setattr(
         basis_publication,
         "_git",
