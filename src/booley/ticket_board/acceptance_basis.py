@@ -327,6 +327,7 @@ def authored_ticket_record_from_spec(
     *,
     removal_targets: tuple[str, ...] = (),
     providers: tuple[ProviderTargetBinding, ...] = (),
+    amendment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a schema-3 Basis record solely from a converted authored Ticket."""
     record = {
@@ -340,6 +341,8 @@ def authored_ticket_record_from_spec(
         "removal_targets": list(removal_targets),
         "providers": [provider.as_dict() for provider in sorted(providers)],
     }
+    if amendment is not None:
+        record["amendment"] = dict(amendment)
     _validate_converted_record(record)
     return record
 
@@ -495,8 +498,9 @@ def _validate_amendment_record(value: Any) -> None:
         raise AcceptanceBasisError("Acceptance Basis optional conversions are invalid")
 
 
-def _validate_converted_record(value: Any) -> None:
+def _validate_converted_record(value: Any) -> None:  # noqa: PLR0912, PLR0915
     """Validate a derived schema-3 record without reading human Ticket syntax."""
+    # Keep structural, semantic, and amendment checks at one record boundary.
     try:
         record = require_dict(value, field="Acceptance Basis record")
         ticket = require_dict(record.get("ticket"), field="Acceptance Basis record.ticket")
@@ -543,6 +547,12 @@ def _validate_converted_record(value: Any) -> None:
         or not isinstance(spec["on_success"], list)
     ):
         raise AcceptanceBasisError("Acceptance Basis record converted Ticket has invalid types")
+    if not any(isinstance(row, dict) and row.get("mandatory") is True for row in spec["criteria"]):
+        amendment = record.get("amendment")
+        if not isinstance(amendment, dict) or not amendment.get("optional_conversions"):
+            raise AcceptanceBasisError(
+                "zero mandatory Criteria require a committed human amendment"
+            )
     try:
         calculated = hashlib.sha256(
             json.dumps(

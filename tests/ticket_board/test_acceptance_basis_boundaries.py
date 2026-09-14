@@ -86,7 +86,7 @@ def test_committed_amendment_record_requires_human_and_valid_changes() -> None:
         "optional_conversions": ["review_rtl_bugs_clean"],
     }
     record = {**_record(), "schema": 3, "amendment": valid}
-    acceptance_basis._validate_record_schema(record)
+    acceptance_basis._validate_record(record)
     for replacement in (
         {**valid, "actor": " "},
         {**valid, "operation_id": "short"},
@@ -97,7 +97,7 @@ def test_committed_amendment_record_requires_human_and_valid_changes() -> None:
         {**valid, "reason": 12},
     ):
         with pytest.raises(AcceptanceBasisError):
-            acceptance_basis._validate_record_schema({**record, "amendment": replacement})
+            acceptance_basis._validate_record({**record, "amendment": replacement})
 
 
 def test_path_policy_and_basis_require_supported_schema_and_outer_participant() -> None:

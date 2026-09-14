@@ -10,11 +10,17 @@ import pytest
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     BasisParticipant,
+    authored_ticket_record_from_spec,
     canonical_json,
     load_basis_record,
     materialize_basis_checkout,
     materialize_ticket_commits,
     validate_current_basis_refs,
+)
+from booley.ticket_board.ticket_document import (
+    TicketAuthoringView,
+    TicketConversionContext,
+    convert_ticket_document,
 )
 
 
@@ -58,34 +64,21 @@ def _repository(path: Path, *, record_path: str) -> tuple[Path, str, str, str]:
 
 
 def _write_record(repository: Path, path: str, floor: int) -> None:
-    record = {
-        "schema": 2,
-        "ticket": {
-            "frontmatter": {
-                "summary": "timing",
-                "type": "feature",
-                "branch": "main",
-                "scope": ["rtl/design.sv"],
-                "spec": "",
-                "dependencies": [],
-                "priority": "medium",
-                "criteria": {
-                    "mandatory": {"synthesis_ok": {"targets": ["synth"], "fmax_mhz_min": floor}}
-                },
-                "on_success": {
-                    "destination": "review",
-                    "merge": True,
-                    "cleanup": True,
-                    "triage_report": True,
-                },
-            },
-            "body": "Timing requirement",
-        },
-        "bindings": [],
-        "target_plan": [],
-        "removal_targets": [],
-        "providers": [],
-    }
+    ticket = (
+        "---\nsummary: timing\ntype: feature\nbranch: main\n"
+        "scope: [rtl/design.sv]\non_success: [review, merge]\n"
+        f"CRITERIA_MANDATORY: {{SYNTH: {{synth: {{fmax_mhz_min: {floor}}}}}}}\n"
+        "---\n\n## Description\n\nTiming requirement.\n"
+    )
+    view = TicketAuthoringView(
+        resolve_target=lambda selector, _flow: selector,
+        tests_for_target=lambda _target: (),
+    )
+    conversion = convert_ticket_document(
+        ticket, TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert conversion.document is not None, conversion.diagnostics
+    record = authored_ticket_record_from_spec(conversion.document.spec, ())
     target = repository / path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(canonical_json(record))
@@ -180,12 +173,9 @@ def test_repeated_amendment_retains_basis_and_implementation(tmp_path: Path, pai
             for role, values in sorted(owners.items())
         )
         basis = AcceptanceBasis(participants)
-        assert (
-            load_basis_record(root, "ticket", basis)["ticket"]["frontmatter"]["criteria"][
-                "mandatory"
-            ]["synthesis_ok"]["fmax_mhz_min"]
-            == floor
-        )
+        [criterion] = load_basis_record(root, "ticket", basis)["ticket"]["spec"]["criteria"]
+        assert criterion["capability"] == "SYNTH"
+        assert criterion["value"]["threshold"] == floor
         assert validate_current_basis_refs(root, basis) == heads
         materialize_basis_checkout(root, basis, tmp_path / f"basis-{floor}")
         materialize_ticket_commits(root, basis, tmp_path / f"current-{floor}", heads)

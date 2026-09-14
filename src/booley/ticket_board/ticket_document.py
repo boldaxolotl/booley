@@ -470,10 +470,12 @@ def _validate_top_level(
         raise ValueError(f"Ticket is missing required fields: {', '.join(sorted(missing))}")
     mandatory = fields[_MANDATORY]
     optional = fields.get(_OPTIONAL, {})
-    if not isinstance(mandatory, dict) or not mandatory:
-        raise ValueError("CRITERIA_MANDATORY must be a nonempty mapping")
+    if not isinstance(mandatory, dict):
+        raise ValueError("CRITERIA_MANDATORY must be a mapping")
     if not isinstance(optional, dict):
         raise ValueError("CRITERIA_OPTIONAL must be a mapping")
+    if not mandatory and not optional:
+        raise ValueError("Ticket needs at least one Criterion")
     from .constants import KNOWN_FIELDS
 
     retired = {"base_sha", "target_contract", "target_contract_history"}
@@ -675,8 +677,8 @@ def _normalize_criteria(
                     raise ValueError(f"Duplicate atomic Criterion {row.identity}")
                 seen.add(row.identity)
                 rows.append(row)
-    if not any(row.mandatory for row in rows):
-        raise ValueError("CRITERIA_MANDATORY expands to no atomic Criteria")
+    if not rows:
+        raise ValueError("Ticket needs at least one atomic Criterion")
     _validate_cross_criteria(rows, annotations)
     return tuple(rows)
 

@@ -40,7 +40,7 @@ from .test_acceptance_basis import _blocked_ticket
 def test_amend_preview_and_apply_commands(tmp_path, capsys):
     _, _, tio = _blocked_ticket(tmp_path)
     state = DevelopmentState.load(tio.logs_dir / "blocked-again/.runtime/booley_state.json")
-    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.init_criteria({"review_rtl_bugs_done": True})
     state.save()
     capsys.readouterr()
     changes_file = tmp_path / "amendment.json"
@@ -49,7 +49,7 @@ def test_amend_preview_and_apply_commands(tmp_path, capsys):
             {
                 "actor": "QA Human",
                 "reason": "Accept residual review risk",
-                "criteria": [{"criterion": "review_rtl_bugs_clean", "make_optional": True}],
+                    "criteria": [{"criterion": "review_rtl_bugs_done", "make_optional": True}],
             }
         )
     )
