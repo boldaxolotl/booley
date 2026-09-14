@@ -24,6 +24,8 @@ from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     TicketBaseline,
     TicketBaselineError,
+    ticket_baseline_from_machine,
+    ticket_machine_from_participants,
 )
 
 
@@ -44,6 +46,74 @@ def _participant(role: str = "outer") -> BasisParticipant:
         "refs/heads/main",
         "b" * 40,
     )
+
+
+@pytest.mark.parametrize(
+    ("amendment_patch", "message"),
+    [
+        ({"reason": None}, "reason"),
+        ({"actor": ""}, "actor must be a non-empty string"),
+        ({"operation_id": "b" * 32}, "generation identity is invalid"),
+        ({"changes": []}, "has no changes"),
+        ({"changes": [{"criterion": "review_rtl_bugs_clean"}]}, "Criterion change is invalid"),
+        (
+            {
+                "changes": [
+                    {
+                        "criterion": 4,
+                        "before_mandatory": True,
+                        "after_mandatory": False,
+                        "thresholds": {},
+                    }
+                ]
+            },
+            "Criterion values are invalid",
+        ),
+        (
+            {
+                "changes": [
+                    {
+                        "criterion": "review_rtl_bugs_clean",
+                        "before_mandatory": 1,
+                        "after_mandatory": False,
+                        "thresholds": {},
+                    }
+                ]
+            },
+            "mandatory values are invalid",
+        ),
+        ({"optional_conversions": [3]}, "Scope or optional conversions are invalid"),
+    ],
+)
+def test_ticket_machine_rejects_malformed_amendment_metadata(
+    amendment_patch: dict[str, object], message: str
+) -> None:
+    generation = "a" * 32
+    machine = ticket_machine_from_participants(
+        (_participant(),), authored_sha256="c" * 64, generation=generation
+    )
+    amendment = {
+        "slug": "blocked-ticket",
+        "operation_id": generation,
+        "previous_generation": "d" * 32,
+        "actor": "maintainer",
+        "reason": "approved relaxation",
+        "changes": [
+            {
+                "criterion": "review_rtl_bugs_clean",
+                "before_mandatory": True,
+                "after_mandatory": False,
+                "thresholds": {},
+            }
+        ],
+        "scope_added": [],
+        "optional_conversions": [],
+    }
+    amendment.update(amendment_patch)
+    machine["amendment"] = amendment
+
+    with pytest.raises(TicketBaselineError, match=message):
+        ticket_baseline_from_machine(machine)
 
 
 def test_path_policy_and_basis_require_supported_schema_and_outer_participant() -> None:
