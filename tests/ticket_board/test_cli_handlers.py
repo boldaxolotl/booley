@@ -49,7 +49,7 @@ def test_amend_preview_and_apply_commands(tmp_path, capsys):
             {
                 "actor": "QA Human",
                 "reason": "Accept residual review risk",
-                    "criteria": [{"criterion": "review_rtl_bugs_done", "make_optional": True}],
+                "criteria": [{"criterion": "review_rtl_bugs_done", "make_optional": True}],
             }
         )
     )
