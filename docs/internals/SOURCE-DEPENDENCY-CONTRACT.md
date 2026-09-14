@@ -5,8 +5,10 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
-Measurements below were verified on 11 SEP 2026 against `main` at `d7b67321`.
-The direction rules are normative; dated graph snapshots are diagnostic evidence.
+Current measurements were verified on 14 SEP 2026 at implementation revision
+`354b5e4a`, compared with `main` at `90c27b43`. Historical snapshots retain their
+own dates and revisions. Direction rules are normative; graph snapshots are
+diagnostic evidence.
 
 ## Source map
 
@@ -99,6 +101,35 @@ values retain the enabled default. This narrow boundary intentionally differs
 from fail-closed authority and Runtime configuration because legacy Projects
 must not silently lose execution when the declarative reader is unavailable.
 
+## Target/FuseSoC and execution separation
+
+Target inspection owns selection and presentation; FuseSoC owns design resolution
+and core provenance checks. Neither needs Runtime execution to calculate shared
+paths or compare Scope entries. D23 forbids Targets from importing Flows or
+Runtime. D24 forbids FuseSoC from importing Runtime. These rules include deferred
+and type-only imports and have no waiver or composition exception.
+
+- `core.build_paths.work_root_for` owns the canonical checkout-local Edalize
+  directory identity. It reuses the neutral checkout guard and Project-directory
+  name, preserves config sanitization and variant suffixes, and creates no files.
+  Ambient Project-directory overrides do not redirect these existing per-worktree
+  build caches. Flow callers retain directory creation, leases and execution;
+  Target detail retains its existing payload and exception handling.
+- `core.scope_matching` owns pure literal/glob matching and Scope entry syntax.
+  Runtime retains filesystem glob expansion, dirty-status/new-file policy and
+  Git staging. Harness retains forbidden-path policy. The standalone pre-commit
+  hook remains self-contained and keeps its distinct behavior.
+- Core provenance classification is unchanged. Out-of-Scope matching is not proof
+  of a read-only mount, and the existing imperative-script checks do not impose
+  blanket rejection on all external paths. EDAM file confinement remains with
+  its existing owner; this extraction introduces no new execution authority.
+
+The measured Target/FuseSoC pair is approved separately from the remaining
+16-package cyclic group. A regression using the checked-in SCC metadata rejects
+recombination even independently of the direction rules. See
+[the #530 evidence](../research/target-fusesoc-530-evidence.md) for exact revisions,
+full reports, migration fan-out, and verification.
+
 ## Graph semantics
 
 The analyzer uses `ast` to parse every `*.py` file below `src/booley`. It records
@@ -151,6 +182,8 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D20 | Prefix `booley.eda` | Exact modules `booley.runtime.session_issuance`, `booley.runtime.issuance_invalidation` | Forbid | EDA supplies provisioning facts without knowing Runtime issuance, persistence, or invalidation. |
 | D21 | Prefix `booley.review` | Prefixes `booley.ticket_board`, `booley.harness` | Forbid | Review renders artifacts from resolved evidence without knowing Ticket Board lifecycle or Harness orchestration. |
 | D22 | Prefix `booley.ticket_board` | Prefix `booley.review` | Forbid, subject only to C9 | Ticket Board composes Review only through its exact artifact-generation entry point. |
+| D23 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
+| D24 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 
 ## Ticket review lifecycle boundary
 
@@ -312,14 +345,14 @@ booley.review <-> booley.ticket_board
 booley.runtime <-> booley.ticket_board
 ```
 
-## Current snapshot: 11 SEP 2026
+## Historical snapshot: 11 SEP 2026
 
 Source and analyzer revision: `d7b67321` (the latest `main` merge on 11 SEP 2026).
 The comparison revision `1fdc706e` is `main` immediately before 10 SEP in
 Asia/Tbilisi (UTC+04:00). These snapshots describe source imports, not runtime
 performance or product qualification.
 
-| Diagnostic | 02 SEP baseline `094d1c5d` | Before 10 SEP `1fdc706e` | Current `d7b67321` |
+| Diagnostic | 02 SEP baseline `094d1c5d` | Before 10 SEP `1fdc706e` | 11 SEP `d7b67321` |
 | --- | ---: | ---: | ---: |
 | Parsed Python modules | 370 | 476 | 483 |
 | Located dependency facts | 1,761 | 2,337 | 2,376 |
@@ -329,9 +362,9 @@ performance or product qualification.
 | Exact composition permissions | 7 | 3 | 3 |
 | Live legacy waivers | 2 | 2 | 0 |
 
-The current SCC is the same 18-member set listed in the historical baseline.
+The 11 SEP SCC was the same 18-member set listed in the historical baseline.
 `booley.evidence`, like `booley.core`, `booley.data`, and `booley.docker`, remains
-outside it. The current 15 mutual pairs are:
+outside it. The 11 SEP snapshot had these 15 mutual pairs:
 
 ```text
 booley.bwave <-> booley.flows
@@ -361,7 +394,7 @@ already landed by `1fdc706e`; they are not additional 10 SEP reductions.
 Named composition hotspot fan-out is the number of unique imported modules.
 These diagnostic values do not gate changes:
 
-| Canonical role | Exact module | 02 SEP baseline | Before 10 SEP | Current |
+| Canonical role | Exact module | 02 SEP baseline | Before 10 SEP | 11 SEP |
 | --- | --- | ---: | ---: | ---: |
 | Host/Project diagnostic composition | `booley.harness.doctor` | 62 | 66 | 66 |
 | Command composition | `booley.harness.booley` | 52 | 57 | 58 |
@@ -388,6 +421,77 @@ When one of these modules changes, record before-and-after output in
 [#279](https://github.com/boldaxolotl/booley/issues/279). This lets later fan-out
 work distinguish legitimate composition from unjustified knowledge growth.
 
+## Current snapshot: 14 SEP 2026
+
+Compared the source and analyzer at `90c27b43` with implementation revision
+`354b5e4a` for [#530](https://github.com/boldaxolotl/booley/issues/530).
+Both reports were generated from Git archives of those exact revisions.
+
+| Diagnostic | Before `90c27b43` | After `354b5e4a` |
+| --- | ---: | ---: |
+| Parsed Python modules | 492 | 494 |
+| Located dependency facts | 2,424 | 2,433 |
+| Unique module-to-module edges | 1,989 | 1,998 |
+| Direct mutual package pairs | 13 | 11 |
+| Cyclic package group sizes | 18 | 16 and 2 |
+| Exact composition permissions | 4 | 4 |
+| Live legacy waivers | 0 | 0 |
+
+The approved groups now match the measured split (all names prefixed `booley.`):
+
+```text
+agent_workspace, audit, bwave, config, criteria, dev_support, eda, feedback,
+flows, harness, mcp, projects, review, runtime, specialists, ticket_board
+
+fusesoc, targets
+```
+
+The `flows <-> targets` and `fusesoc <-> runtime` mutual pairs are removed.
+The remaining pairs are:
+
+```text
+booley.bwave <-> booley.flows
+booley.config <-> booley.eda
+booley.dev_support <-> booley.runtime
+booley.eda <-> booley.runtime
+booley.feedback <-> booley.harness
+booley.fusesoc <-> booley.targets
+booley.harness <-> booley.mcp
+booley.harness <-> booley.runtime
+booley.harness <-> booley.ticket_board
+booley.mcp <-> booley.specialists
+booley.mcp <-> booley.ticket_board
+```
+
+Affected caller and owner fan-out counts unique imported in-repository modules:
+
+| Module | Before | After |
+| --- | ---: | ---: |
+| `booley.core.build_paths` | absent | 2 |
+| `booley.core.scope_matching` | absent | 0 |
+| `booley.targets.target_surface` | 5 | 5 |
+| `booley.fusesoc.core_security` | 3 | 3 |
+| `booley.runtime.git` | 2 | 3 |
+| `booley.harness.scope_policy` | 2 | 3 |
+| `booley.dev_support.demo_contract` | 12 | 12 |
+| `booley.dev_support.scope_precommit_hook` | 2 | 2 |
+| `booley.flows.edam` | 3 | 2 |
+| `booley.flows.sim.build` | 10 | 11 |
+| `booley.flows.sim.execution.engine` | 25 | 26 |
+| `booley.flows.sim.flow` | 48 | 49 |
+| `booley.flows.sim.standalone` | 7 | 7 |
+| `booley.flows.sim.verilator_coverage_execution` | 15 | 15 |
+| `booley.flows.lint.flow` | 16 | 17 |
+| `booley.flows.synth.flow` | 35 | 36 |
+| `booley.flows.fpga.flow` | 32 | 33 |
+
+Fan-out increases where a caller retains its execution dependencies and now also
+names the neutral mechanism it uses. They are not new orchestration layers.
+Target detail and core provenance retain their fan-out while losing upward
+knowledge; the Scope matcher has no in-repository dependencies. All other named
+composition hotspots are unchanged. Full named-hotspot and top-30 reports are in
+[the implementation evidence](../research/target-fusesoc-530-evidence.md).
+
 ## Required gate
 
 The pytest gate checks every normalized production dependency against the direction
@@ -400,6 +504,8 @@ entry.
 The approved SCC sets are fixed metadata, not a record of the smallest groups
 ever observed. New cycles entirely within an approved set can pass this check,
 and a split can recombine until the approved sets are explicitly tightened.
+For #530 the old combined approval has been replaced by two disjoint sets, so
+Target/FuseSoC cannot rejoin the execution group under the remaining metadata.
 Direction rules still apply to every edge. Package projection also combines
 distinct modules: a package SCC does not establish a module-level import cycle.
 A passing gate therefore proves the stated source rules, not complete separation,
