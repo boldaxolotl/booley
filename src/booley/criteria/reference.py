@@ -165,8 +165,7 @@ def _implementation_params_intro() -> list[str]:
         "Percentage threshold values must include the `%` suffix (for example, "
         "`cell_count_reduce_at_least: 8%`).",
         "",
-        "Ticket syntax: "
-        "`SYNTH: {synth_core: {cell_count_max: 500, fmax_mhz_min: 400}}`.",
+        "Ticket syntax: `SYNTH: {synth_core: {cell_count_max: 500, fmax_mhz_min: 400}}`.",
         "",
         "For a relative threshold on a new Target, add `baseline: <existing-target>` "
         "inside that Target's threshold mapping. Existing Targets use their own "
