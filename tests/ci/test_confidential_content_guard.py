@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 SCANNER = Path(__file__).parents[2] / ".github/scripts/confidential_content_guard.py"
 SAFE_IDENT = "Safe User <safe@example.test>"
 SENTINEL = "quokka-sentinel-987"
@@ -976,6 +978,7 @@ def test_overlapping_banned_terms_are_detected(tmp_path: Path) -> None:
         assert text not in result.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
 def test_publish_pr_create_scans_then_sends_exact_drafts(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     sealed_env = _sealed_fixture(repo, _encoded_config())
@@ -1068,6 +1071,7 @@ def test_publish_pr_requires_sealed_file_even_with_old_ci_env(tmp_path: Path) ->
     assert not captured_args.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
 def test_publish_pr_supports_edit_comment_and_review(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     sealed_env = _sealed_fixture(repo, _encoded_config())
@@ -1124,6 +1128,7 @@ def test_proposed_pr_text_fails_closed_when_draft_is_too_large(tmp_path: Path) -
     assert "exceeds the inspection size limit" in result.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
 def test_sync_ci_key_uses_sealed_vocabulary_and_not_stale_ci_env(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     sealed_env = _sealed_fixture(repo, _encoded_config())
@@ -1168,6 +1173,7 @@ def test_sync_ci_key_fails_when_sealed_file_is_missing(tmp_path: Path) -> None:
     assert "could not complete" in result.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
 def test_sync_ci_key_does_not_echo_gh_failure_output(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     sealed_env = _sealed_fixture(repo, _encoded_config())
