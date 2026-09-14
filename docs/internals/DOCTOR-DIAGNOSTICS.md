@@ -93,7 +93,7 @@ orchestration, CLI composition, or rendering modules. Ordinary, deferred, and
 `TYPE_CHECKING` imports are tested. The package SCC did not split, so its ratchet
 metadata was not tightened.
 
-## Reproducible dependency measurements
+## Original dependency measurements
 
 Measured on 14 SEP 2026 using each revision's `tests/architecture` analyzer:
 
@@ -175,3 +175,27 @@ translation, and guidance/projection repair boundaries through the production
 interfaces. A local coverage run passed 3,829 tests with one skip; the final
 focused additions passed 38 tests. Combined coverage of changed production
 statements is 656/708 (92.66%), above the required 90% CI threshold.
+
+## Final integration with #531
+
+After #534 merged, the source integration keeps Config-owned EDA request types
+and moves the Doctor-only direction rule to D26, alongside #531's D23–D25.
+The complete architecture suite and focused diagnostic/Config tests passed 303
+cases. No inspection, repair, or authority behavior was added by this merge.
+
+Using `9b25274683dfc408eb17582501bb5d403a0d3f64` as the current-main baseline
+and `803dfd6ff38e84a6cfbcf0dc6aee368fdb15cc49` as the integrated source:
+
+| Diagnostic | Current main | Integrated #532 |
+| --- | ---: | ---: |
+| Python modules | 499 | 503 |
+| Located dependency facts | 2,472 | 2,496 |
+| Unique module edges | 2,030 | 2,055 |
+| Mutual package pairs | 11 | 11 |
+| Largest cyclic package group | 18 | 18 |
+
+Doctor remains 66 → 57 and Init remains 39 → 39. The new owners remain Runtime
+inspection 12, host diagnostics 6, Project readiness 15, and diagnostic values 0.
+The original table above records the earlier baseline; #531's two removed mutual
+pairs are credited to that change, not to Doctor extraction. Reproduce this final
+comparison with the same archive/report commands and these two revisions.
