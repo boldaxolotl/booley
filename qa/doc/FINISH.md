@@ -62,3 +62,8 @@ sealed, do not modify the run.
 Report the sealed artifact root to the Human Maintainer and tell them that Findings,
 outcomes, and Qualification require a separate explicit invocation of
 `booley-qa-triage`.
+
+After sealing, record and locally commit the compact observed-Check snapshot described
+in [Result history](../results/README.md). It indexes run-to-run observations, not
+Findings or a Scenario Run Outcome. Keep the sealed records and evidence in the
+artifact root for separate Human Maintainer triage.
