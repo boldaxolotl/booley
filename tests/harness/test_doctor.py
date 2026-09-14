@@ -4,40 +4,42 @@ from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from booley import __version__
-from booley.audit import config_common, design_size, project_schema, resource_policy
+from booley.audit import (
+    config_common,
+    design_size,
+    host_environment,
+    project_schema,
+    resource_policy,
+)
+from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
-from booley.harness import developer_probe, doctor, doctor_stamp
+from booley.harness import developer_probe, doctor, doctor_stamp, host_diagnostics
 from booley.runtime import (
     auth_token,
     runtime_context,
+    session_issuance,
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime.project_dir import reset_cache, resolve_project_dir
+from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
-
-
-def test_docker_permission_guidance_compatibility_facade(monkeypatch) -> None:
-    monkeypatch.setattr(
-        doctor.host_environment,
-        "docker_permission_denied_fix",
-        lambda: "current guidance",
-    )
-
-    assert doctor._docker_permission_denied_fix() == "current guidance"
+from tests.diagnostic_helpers import (
+    _issued_runtime_state,
+    _Rec,
+)
 
 
 def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> None:
@@ -65,56 +67,6 @@ def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> 
 
     assert sources.rtl_source_files == ("rtl/selected.sv",)
     assert sources.tb_files == ("tb/selected.sv",)
-
-
-def test_doctor_reuses_one_target_source_inspector(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target_names = [f"lint_{index}" for index in range(100)]
-    targets = "".join(
-        f"  {name}:\n"
-        "    flow: lint\n"
-        "    flow_options: {tool: verilator}\n"
-        "    filesets: [rtl]\n"
-        "    toplevel: dut\n"
-        for name in target_names
-    )
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\n"
-        "name: acme:ip:design:1.0\n"
-        "filesets:\n"
-        "  rtl:\n"
-        "    files: [rtl/dut.sv]\n"
-        "targets:\n"
-        f"{targets}",
-        encoding="utf-8",
-    )
-    catalog = TargetCatalog.build(tmp_path)
-    refs = {handle.name: handle for handle in catalog.list()}
-    managers: list[object] = []
-    resolutions = 0
-    real_manager = target_inspection.CoreManager
-    real_get_depends = real_manager.get_depends
-
-    def counting_manager(*args, **kwargs):
-        manager = real_manager(*args, **kwargs)
-        managers.append(manager)
-        return manager
-
-    def counting_get_depends(self, *args, **kwargs):
-        nonlocal resolutions
-        resolutions += 1
-        return real_get_depends(self, *args, **kwargs)
-
-    monkeypatch.setattr(target_inspection, "CoreManager", counting_manager)
-    monkeypatch.setattr(real_manager, "get_depends", counting_get_depends)
-
-    inputs = doctor._CoreAuditInputs(catalog, refs)
-    for name in target_names:
-        assert inputs.sources_for(name).rtl_source_files == ("rtl/dut.sv",)
-
-    assert len(managers) == 1
-    assert resolutions == 1
 
 
 def _write_project(
@@ -247,18 +199,11 @@ def _write_skills_home(root: Path) -> Path:
 
 
 def _patch_bootstrap_current(monkeypatch) -> None:
-    findings = tuple(
-        doctor.host_bootstrap.BootstrapFinding(
-            resource,
-            doctor.host_bootstrap.BootstrapState.CURRENT,
-            "ok",
-        )
-        for resource in ("host-config", "git", "docker", "vscode", "skills", "nangate45")
-    )
+    report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "Host Bootstrap docker: ok"),))
     monkeypatch.setattr(
-        doctor.host_bootstrap,
-        "reconcile_bootstrap",
-        lambda intent: doctor.host_bootstrap.BootstrapResult(intent, findings),
+        host_diagnostics,
+        "inspect_host",
+        lambda: host_diagnostics.HostDiagnosticResult(report, "docker"),
     )
 
 
@@ -285,25 +230,15 @@ def _patch_environment(
     # Doctor tests exercise the host-side orchestration path deterministically,
     # whatever machine the suite itself runs on.
     _patch_host_environment(monkeypatch, root)
-    monkeypatch.setattr(doctor, "_docker_image_exists", lambda: True)
+    monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: True)
     monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
 
-    # The broad Doctor fixture predates host issuance and keeps its concern on
-    # orchestration. Exact stamp/authority behavior has dedicated tests below.
-    def check_issued_runtime_fixture(_project, docker_exe, passed, _skip, failed):
-        passed("Session Runtime spec has valid host issuance (fixture)")
-        doctor._check_runtime_booley_version(
-            docker_exe,
-            dc.SANDBOX_IMAGE,
-            passed,
-            failed,
-        )
-
-    monkeypatch.setattr(
-        doctor,
-        "_check_issued_session_runtime",
-        check_issued_runtime_fixture,
-    )
+    # Orchestration tests substitute the public issuance interface. Runtime
+    # owner tests separately exercise real authority and live-state policy.
+    issuance, _spec, _labels, _state = _issued_runtime_state(root)
+    issuance = replace(issuance, image=dc.SANDBOX_IMAGE)
+    monkeypatch.setattr(session_issuance, "validate", lambda *_args: issuance)
+    monkeypatch.setattr(session_issuance, "requested_license", lambda _root: None)
     monkeypatch.setattr(
         doctor.session_runtime,
         "up",
@@ -311,7 +246,6 @@ def _patch_environment(
     )
     # Keep the suite hermetic: the host-clock check (F-5) probes an HTTP Date
     # header over the real network.
-    monkeypatch.setattr(doctor, "_check_host_clock", lambda *a, **k: None)
     monkeypatch.setattr(
         doctor.image_lifecycle,
         "reconcile",
@@ -345,6 +279,8 @@ def _patch_environment(
         if cmd[:3] == ["git", "rev-parse", "--git-common-dir"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
         if cmd[:3] == [sys.executable, "-c", "import booley.ticket_board"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[1:3] == ["ps", "-aq"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -395,35 +331,6 @@ def _patch_environment(
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
     return calls
-
-
-def test_doctor_prefers_linked_checkout_project_snapshot(tmp_path, monkeypatch):
-    """F-25: Doctor config and design inputs must share one checkout."""
-    canonical_root = tmp_path / "canonical"
-    checkout_root = tmp_path / "ticket-checkout"
-    canonical_root.mkdir()
-    checkout_root.mkdir()
-    canonical_dir = _write_project(canonical_root)
-    checkout_dir = _write_project(checkout_root)
-    checkout_toml = checkout_dir / "booley.toml"
-    checkout_toml.write_text(
-        checkout_toml.read_text(encoding="utf-8").replace('name = "unit"', 'name = "ticket"'),
-        encoding="utf-8",
-    )
-    reset_cache()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(canonical_dir))
-    assert resolve_project_dir() == canonical_dir.resolve()  # pre-warm session-global cache
-
-    audit = doctor._check_project_setup(
-        checkout_root,
-        MagicMock(),
-        MagicMock(),
-        MagicMock(),
-    )
-
-    assert audit is not None
-    assert audit.project_dir == checkout_dir.resolve()
-    assert audit.booley_toml["project"]["name"] == "ticket"
 
 
 def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
@@ -598,8 +505,9 @@ def test_doctor_warns_when_devcontainer_missing(tmp_path, monkeypatch, capsys):
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
     output = capsys.readouterr().out
-    # Missing spec is a warning (Interactive Mode not seeded), not a hard failure.
-    assert rc == 0
+    # Configuration currency warns; the independent host issuance check fails.
+    assert rc == 1
+    assert "Session Runtime host issuance is invalid" in output
     assert "no .devcontainer/devcontainer.json" in output
 
 
@@ -1578,283 +1486,6 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
     )
 
 
-def test_validate_one_flow_table_rejects_retired_default_target():
-    fails: list[str] = []
-    warns: list[str] = []
-
-    def _fail(msg: str, fix: str = "") -> None:
-        fails.append(msg)
-
-    def _warn(msg: str) -> None:
-        warns.append(msg)
-
-    ok = doctor._validate_one_flow_table(
-        "lint",
-        {"default_target": "lint_core"},
-        _warn,
-        _fail,
-    )
-    assert ok is False
-    assert any("[flows.lint].default_target is retired" in m for m in fails)
-
-
-def test_validate_one_flow_table_rejects_retired_target_key():
-    fails: list[str] = []
-
-    ok = doctor._validate_one_flow_table(
-        "lint",
-        {"target": "ibex_top#lint"},
-        lambda _msg: None,
-        lambda msg, fix="": fails.append(f"{msg} {fix}"),
-    )
-
-    assert ok is False
-    assert any("[flows.lint].target is retired" in message for message in fails)
-    assert any("Flow calls require an explicit target" in message for message in fails)
-
-
-def test_validate_one_flow_table_rejects_retired_selftest_table():
-    fails: list[str] = []
-
-    ok = doctor._validate_one_flow_table(
-        "sim",
-        {"selftest": {"good": "main", "bad": "known_bad"}},
-        lambda _msg: None,
-        lambda msg, fix="": fails.append(f"{msg} {fix}"),
-    )
-
-    assert ok is False
-    assert any("[flows.sim.selftest] is retired" in message for message in fails)
-    assert any("bad-overlay" in message for message in fails)
-
-
-@pytest.mark.parametrize("key", ["builtin", "custom"])
-def test_validate_flow_tables_rejects_retired_allowlists(key):
-    fails: list[str] = []
-
-    ok = doctor._validate_flow_tables(
-        {"tools": {key: ["sim"]}},
-        lambda _msg: None,
-        lambda msg, fix="": fails.append(f"{msg} {fix}"),
-    )
-
-    assert ok is False
-    assert any("retired" in message and "enabled = false" in message for message in fails)
-
-
-@pytest.mark.parametrize("retired", ["elab", "elaborate"])
-def test_doctor_rejects_retired_elaboration_tables_with_migration(retired):
-    fails: list[str] = []
-
-    ok = doctor._validate_flow_tables(
-        {"flows": {retired: {"standalone_frontend": "iverilog"}, "sim": {}}},
-        lambda _msg: None,
-        lambda msg, fix="": fails.append(f"{msg} {fix}"),
-    )
-
-    assert ok is False
-    assert any(
-        f"[flows.{retired}] is retired" in message
-        and "sim --mode elab-only" in message
-        and "[flows.sim].standalone_frontend" in message
-        for message in fails
-    )
-
-
-def test_validate_one_flow_table_accepts_lint_timeout_ms():
-    """Lint reads the same persistent timeout policy as every other built-in Flow."""
-    fails: list[str] = []
-    warns: list[str] = []
-
-    ok = doctor._validate_one_flow_table(
-        "lint",
-        {"timeout_ms": 900000},
-        warns.append,
-        lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is True
-    assert warns == []
-
-    # simulate DOES read timeout_ms → no set-but-ignored warning.
-    warns.clear()
-    doctor._validate_one_flow_table(
-        "sim",
-        {"timeout_ms": 900000},
-        warns.append,
-        lambda msg, fix="": fails.append(msg),
-    )
-    assert not any("timeout_ms" in m for m in warns)
-
-
-@pytest.mark.parametrize(
-    ("knob", "reader", "non_reader", "value"),
-    [
-        ("sim_time_grace_s", "sim", "lint", 180),
-        ("fail_on_timing_violation", "synth", "lint", True),
-        ("warnings_as_errors", "lint", "sim", False),
-        # trace_files declares the TB's own dump path; only simulate reads it.
-        ("trace_files", "sim", "lint", ["fpu.vcd"]),
-    ],
-)
-def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, value):
-    """Every selective knob warns under a Flow that ignores it, stays quiet under its own.
-
-    A knob added to a Flow without an entry here is silently accepted anywhere,
-    which is the exact failure mode ``_SELECTIVE_FLOW_KNOBS`` exists to prevent.
-    """
-    fails: list[str] = []
-    warns: list[str] = []
-
-    doctor._validate_one_flow_table(
-        non_reader, {knob: value}, warns.append, lambda msg, fix="": fails.append(msg)
-    )
-    assert any(f"[flows.{non_reader}].{knob}" in m and "ignores it" in m for m in warns)
-
-    warns.clear()
-    doctor._validate_one_flow_table(
-        reader, {knob: value}, warns.append, lambda msg, fix="": fails.append(msg)
-    )
-    assert not any(knob in m and "ignores it" in m for m in warns)
-
-
-@pytest.mark.parametrize(
-    ("flow_name", "knob", "value"),
-    [
-        ("synth", "flatten", True),
-        ("synth", "frontend", "slang"),
-        ("synth", "sdc", "constraints/top.sdc"),
-        ("fpga", "part", "xc7a35tcsg324-1"),
-        ("fpga", "ppa_profile", "compact"),
-        ("fpga", "out_of_context", True),
-        ("fpga", "strategy", "Flow_PerfOptimized_high"),
-    ],
-)
-def test_target_build_inputs_are_rejected_from_flow_tables(flow_name, knob, value):
-    fails: list[str] = []
-
-    ok = doctor._validate_one_flow_table(
-        flow_name,
-        {knob: value},
-        lambda _msg: None,
-        lambda msg, fix="": fails.append(f"{msg} {fix}"),
-    )
-
-    assert ok is False
-    assert any(knob in message and ".core Target" in message for message in fails)
-
-
-def test_validate_one_flow_table_pre_run_commands_shape():
-    """[flows.sim].pre_run_commands must be a list of strings (ADR 0039)."""
-    fails: list[str] = []
-    warns: list[str] = []
-
-    # A scalar (or a list with non-string entries) fails the shape check.
-    ok = doctor._validate_one_flow_table(
-        "sim",
-        {"pre_run_commands": "make prep"},
-        warns.append,
-        lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is False
-    assert any("[flows.sim].pre_run_commands must be a" in m for m in fails)
-
-    fails.clear()
-    ok = doctor._validate_one_flow_table(
-        "sim",
-        {"pre_run_commands": ["make prep", 3]},
-        warns.append,
-        lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is False
-
-    # A well-formed list passes, with no inert-knob warning on simulate.
-    fails.clear()
-    warns.clear()
-    ok = doctor._validate_one_flow_table(
-        "sim",
-        {"pre_run_commands": ["make prep CASE=$BOOLEY_TEST_NAME"]},
-        warns.append,
-        lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is True
-    assert fails == []
-    assert not any("pre_run_commands" in m for m in warns)
-
-    # Only simulate reads it: set on lint it is inert → warn, not fail.
-    ok = doctor._validate_one_flow_table(
-        "lint",
-        {"pre_run_commands": ["make prep"]},
-        warns.append,
-        lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is True
-    assert any("[flows.lint].pre_run_commands" in m and "ignores it" in m for m in warns)
-
-
-def test_windows_rejects_host_provisioning_during_config_audit(tmp_path, monkeypatch):
-    from booley.eda import config as eda_config
-
-    passes: list[str] = []
-    warns: list[str] = []
-    fails: list[str] = []
-    monkeypatch.setattr(eda_config.sys, "platform", "win32")
-
-    valid = doctor._validate_booley_toml(
-        {"eda": {"vivado": {"provisioning": "host"}}},
-        tmp_path,
-        passes.append,
-        warns.append,
-        lambda message, fix="": fails.append(message),
-    )
-
-    assert valid is False
-    assert any("host provisioning is unsupported on Windows" in message for message in fails)
-
-
-class TestValidateAgentTable:
-    """A typo'd provider is fatal, not advisory: `_parse_provider` raises rather
-    than run a backend the project never chose, so every agent run dies with a
-    BackendConfigError. Doctor must be where that surfaces."""
-
-    @staticmethod
-    def _run(agent_section):
-        passes: list[str] = []
-        fails: list[str] = []
-        valid = doctor._validate_agent_table(
-            {"agent": agent_section} if agent_section is not None else {},
-            passes.append,
-            lambda msg, fix="": fails.append(msg),
-        )
-        return valid, passes, fails
-
-    def test_fails_on_an_invalid_provider(self):
-        valid, _passes, fails = self._run({"provider": "cluade"})
-        assert not valid
-        assert any("cluade" in m for m in fails)
-
-    def test_fails_when_agent_is_not_a_table(self):
-        valid, _passes, fails = self._run("claude")
-        assert not valid
-        assert any("[agent] must be a table" in m for m in fails)
-
-    def test_passes_and_names_a_valid_provider(self):
-        valid, passes, fails = self._run({"provider": "codex"})
-        assert valid and not fails
-        assert any("codex" in m for m in passes)
-
-    def test_rejects_the_retired_primary_alias(self):
-        valid, _passes, fails = self._run({"primary": "claude"})
-        assert not valid
-        assert any("retired" in m for m in fails)
-
-    @pytest.mark.parametrize("section", [None, {}])
-    def test_absent_or_empty_agent_is_not_an_error(self, section):
-        # The provider may legitimately come from BOOLEY_PRIMARY_PROVIDER or the
-        # container's BOOLEY_AGENT_APP; only a present-and-wrong value fails.
-        valid, passes, fails = self._run(section)
-        assert valid and not fails and not passes
-
-
 def test_validate_known_tables_warns_on_unknown_and_retired():
     """Unrecognized top-level booley.toml tables warn (typo/stale); known ones don't."""
     # Every canonical table is silent (derived — a second literal list here
@@ -2193,6 +1824,8 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
+        if cmd[1:3] == ["ps", "-aq"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
             return subprocess.CompletedProcess(
                 cmd,
@@ -2269,464 +1902,6 @@ def test_doctor_skips_simulate_dry_run_when_tb_top_runtime_resolved(
 # ---------------------------------------------------------------------------
 # .core audit (ADR 0022 Phases 6-7) — _run_core_audit driven directly
 # ---------------------------------------------------------------------------
-
-
-class _Rec:
-    """Collects doctor check outcomes as (level, message) tuples.
-
-    The signatures mirror ``_Reporter``'s exactly — ``warn_``/``fail_`` take an
-    optional fix hint. A stub that accepted fewer args than the real reporter is
-    what let the ``warn_(msg, fix)`` TypeError reach a user's `doctor` run: the
-    checks that pass fix hints to ``_warn`` had no host-side coverage, so the
-    crash only surfaced on a real cocotb project.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, str]] = []
-        self.fix_hints: list[str] = []
-
-    def p(self, m: str) -> None:
-        self.events.append(("pass", m))
-
-    def w(self, m: str, fix: str = "") -> None:
-        self.events.append(("warn", m))
-
-    def n(self, m: str) -> None:
-        self.events.append(("note", m))
-
-    def s(self, m: str) -> None:
-        self.events.append(("skip", m))
-
-    def f(self, m: str, fix: str = "") -> None:
-        self.events.append(("fail", m))
-        if fix:
-            self.fix_hints.append(fix)
-
-    def fails(self) -> list[str]:
-        return [m for lvl, m in self.events if lvl == "fail"]
-
-    def kinds(self) -> set[str]:
-        return {lvl for lvl, _ in self.events}
-
-
-def test_host_doctor_rejects_unissued_session_spec(tmp_path, monkeypatch) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    (tmp_path / ".devcontainer").mkdir()
-    (tmp_path / ".devcontainer" / "devcontainer.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
-    rec = _Rec()
-
-    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
-
-    assert any("host issuance is invalid" in message for message in rec.fails())
-
-
-def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monkeypatch) -> None:
-    from booley.runtime import session_issuance as runtime_spec
-
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
-    spec_path.parent.mkdir()
-    spec_path.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-
-    def missing_bind(*_args):
-        raise runtime_spec.RuntimeSpecError(
-            "generated bind source for /home/agent/.booley-host-skills/example-skill "
-            "is missing: /host/skills/renamed-skill"
-        )
-
-    monkeypatch.setattr(runtime_spec, "validate", missing_bind)
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
-    rec = _Rec()
-
-    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
-
-    assert any("example-skill" in message and "missing" in message for message in rec.fails())
-
-
-def _runtime_probe_subprocess(other_stdout: str):
-    def run(argv, **_kwargs):
-        stdout = (
-            f"{__version__}\n"
-            if "import booley; print(booley.__version__)" in argv
-            else other_stdout
-        )
-        return subprocess.CompletedProcess(argv, 0, stdout, "")
-
-    return run
-
-
-def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeypatch) -> None:
-    from booley.runtime import session_issuance as runtime_spec
-
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
-    spec_path.parent.mkdir()
-    spec_path.write_text("{}", encoding="utf-8")
-    issuance = runtime_spec.Issuance(
-        version=runtime_spec.STAMP_VERSION,
-        project_root=str(tmp_path),
-        spec_sha256="a" * 64,
-        image="sha256:image",
-        image_id="sha256:image",
-        keeper_image=runtime_spec.keeper_image(tmp_path),
-        policy_revision=1,
-        installation=None,
-        license_profile=None,
-        wrapper_sha256=None,
-        relay_image_id=None,
-        validator_sha256="d" * 64,
-        file_sha256="b" * 64,
-    )
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-
-    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess(""))
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
-    rec = _Rec()
-
-    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
-
-    assert not rec.fails()
-    assert any(
-        "valid host issuance" in message for level, message in rec.events if level == "pass"
-    )
-
-
-def _issued_runtime_state(tmp_path: Path):
-    from booley.runtime import session_issuance as runtime_spec
-
-    image = "sha256:" + "a" * 64
-    issuance = runtime_spec.Issuance(
-        version=runtime_spec.STAMP_VERSION,
-        project_root=str(tmp_path),
-        spec_sha256="b" * 64,
-        image=image,
-        image_id=image,
-        keeper_image=runtime_spec.keeper_image(tmp_path),
-        policy_revision=1,
-        installation=None,
-        license_profile=None,
-        wrapper_sha256=None,
-        relay_image_id=None,
-        validator_sha256="d" * 64,
-        file_sha256="c" * 64,
-    )
-    spec = {
-        "image": image,
-        "remoteUser": "agent",
-        "workspaceFolder": "/work",
-        "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
-        "mounts": [],
-        "containerEnv": {},
-        "remoteEnv": {},
-        "runArgs": [
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--pids-limit",
-            "4096",
-            "--network",
-            "booley-egress",
-        ],
-    }
-    labels = dict(item.split("=", 1) for item in runtime_spec.labels(issuance))
-    state = {
-        "Image": image,
-        "Config": {
-            "Image": image,
-            "User": "agent",
-            "WorkingDir": "/work",
-            "Env": [],
-            "Labels": labels,
-        },
-        "HostConfig": {
-            "CapAdd": None,
-            "CapDrop": ["ALL"],
-            "Privileged": False,
-            "PidMode": "",
-            "IpcMode": "private",
-            "UsernsMode": "",
-            "Devices": [],
-            "DeviceRequests": None,
-            "PortBindings": {},
-            "PublishAllPorts": False,
-            "PidsLimit": 4096,
-            "SecurityOpt": ["no-new-privileges"],
-            "Memory": 0,
-        },
-        "NetworkSettings": {"Networks": {"booley-egress": {}}},
-        "Mounts": [
-            {
-                "Destination": "/work",
-                "Source": str(tmp_path),
-                "Type": "bind",
-                "RW": True,
-            }
-        ],
-    }
-    return issuance, spec, labels, state
-
-
-@pytest.mark.parametrize(
-    "drift",
-    [
-        "image",
-        "workspace-mount",
-        "cap-add",
-        "privileged",
-        "host-pid",
-        "host-ipc",
-        "device",
-        "published-port",
-        "extra-security-option",
-    ],
-)
-def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch, drift) -> None:
-    from booley.runtime import session_issuance as runtime_spec
-
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    issuance, spec, labels, state = _issued_runtime_state(tmp_path)
-    if drift == "image":
-        state["Image"] = "sha256:" + "d" * 64
-    elif drift == "workspace-mount":
-        state["Mounts"][0]["Source"] = str(tmp_path / "wrong-workspace")
-    elif drift == "cap-add":
-        state["HostConfig"]["CapAdd"] = ["SYS_ADMIN"]
-    elif drift == "privileged":
-        state["HostConfig"]["Privileged"] = True
-    elif drift == "host-pid":
-        state["HostConfig"]["PidMode"] = "host"
-    elif drift == "host-ipc":
-        state["HostConfig"]["IpcMode"] = "host"
-    elif drift == "device":
-        state["HostConfig"]["Devices"] = [{"PathOnHost": "/dev/kvm"}]
-    elif drift == "published-port":
-        state["HostConfig"]["PortBindings"] = {"22/tcp": [{"HostPort": "2222"}]}
-    else:
-        state["HostConfig"]["SecurityOpt"].append("label=disable")
-    spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
-    spec_path.parent.mkdir()
-    spec_path.write_text(json.dumps(spec), encoding="utf-8")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-
-    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess("runtime-1\n"))
-
-    def inspect(argv):
-        if argv[-1] == "{{json .Config.Labels}}":
-            return json.dumps(labels)
-        return json.dumps([state])
-
-    monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
-    rec = _Rec()
-
-    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
-
-    assert any("state differs from current host issuance" in message for message in rec.fails())
-
-
-def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from booley.runtime import session_issuance as runtime_spec
-
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    issuance, spec, labels, state = _issued_runtime_state(tmp_path)
-    state["Image"] = "sha256:" + "d" * 64
-    labels.update(
-        {
-            "devcontainer.local_folder": str(tmp_path),
-            "devcontainer.config_file": str(tmp_path / ".devcontainer" / "devcontainer.json"),
-        }
-    )
-    state["Config"]["Labels"] = labels
-    state["State"] = {"Running": True}
-    spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
-    spec_path.parent.mkdir()
-    spec_path.write_text(json.dumps(spec), encoding="utf-8")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-    calls: list[list[str]] = []
-    probe = _runtime_probe_subprocess("runtime-1\n")
-
-    def record_probe(argv, **kwargs):
-        calls.append(argv)
-        return probe(argv, **kwargs)
-
-    monkeypatch.setattr(doctor.subprocess, "run", record_probe)
-
-    def inspect(argv):
-        if argv[-1] == "{{json .Config.Labels}}":
-            return json.dumps(labels)
-        return json.dumps([state])
-
-    monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
-    rec = _Rec()
-
-    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
-
-    assert any("stop" in fix and "runtime-1" in fix for fix in rec.fix_hints)
-    inventory = next(argv for argv in calls if argv[1:3] == ["ps", "-aq"])
-    assert inventory[-2:] == ["--format", "{{.Names}}"]
-
-
-def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch) -> None:
-    from booley.runtime import session_issuance as runtime_spec
-
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    issuance, spec, labels, state = _issued_runtime_state(tmp_path)
-    spec["remoteEnv"] = {"BOOLEY_PROJECT_DIR": "/booley-project"}
-    labels["devcontainer.local_folder"] = str(tmp_path)
-    state["Config"]["Labels"] = labels
-    state["Mounts"].extend(
-        [
-            {"Destination": "/vscode", "Name": "vscode", "Type": "volume", "RW": True},
-            {
-                "Destination": "/tmp/vscode-wayland-1234-abcd.sock",
-                "Source": "/run/user/1000/wayland-0",
-                "Type": "bind",
-                "RW": True,
-            },
-        ]
-    )
-    spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
-    spec_path.parent.mkdir()
-    spec_path.write_text(json.dumps(spec), encoding="utf-8")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-
-    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess("runtime-1\n"))
-
-    def inspect(argv):
-        if argv[-1] == "{{json .Config.Labels}}":
-            return json.dumps(labels)
-        return json.dumps([state])
-
-    monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
-    rec = _Rec()
-
-    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
-
-    assert not rec.fails()
-    assert any("state matches" in message for level, message in rec.events if level == "pass")
-
-
-def test_in_runtime_doctor_executes_mounted_vivado_policy_branch(tmp_path, monkeypatch) -> None:
-    from booley.eda.provisioning.policies import vivado
-
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    wrapper_bytes = b"booley-vivado-wrapper"
-    wrapper_digest = hashlib.sha256(wrapper_bytes).hexdigest()
-    original_read_bytes = Path.read_bytes
-    original_read_text = Path.read_text
-
-    def read_bytes(path):
-        if path == Path(vivado.WRAPPER_TARGET):
-            return wrapper_bytes
-        return original_read_bytes(path)
-
-    def read_text(path, *args, **kwargs):
-        if path == Path("/proc/self/mountinfo"):
-            return "36 25 0:32 / /opt/booley-eda/vivado ro,relatime - ext4 /dev/root ro\n"
-        return original_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(doctor, "_check_runtime_isolation", lambda *_args: True)
-    original_is_dir = Path.is_dir
-    original_is_file = Path.is_file
-    monkeypatch.setattr(
-        Path,
-        "is_dir",
-        lambda path: True if path == Path(vivado.CONTAINER_TARGET) else original_is_dir(path),
-    )
-    compatibility = {
-        Path("/usr/lib/x86_64-linux-gnu/libudev.so.1"),
-        Path("/usr/lib/x86_64-linux-gnu/libpixman-1.so.0"),
-        Path("/usr/lib/locale/locale-archive"),
-    }
-    monkeypatch.setattr(
-        Path,
-        "is_file",
-        lambda path: True if path in compatibility else original_is_file(path),
-    )
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
-    monkeypatch.setattr(Path, "read_text", read_text)
-    monkeypatch.setattr(vivado, "wrapper_sha256", lambda: wrapper_digest)
-    monkeypatch.setattr(
-        doctor.os,
-        "access",
-        lambda path, mode: path == Path(vivado.CONTAINER_TARGET) / "Vivado" / "bin" / "vivado",
-    )
-    monkeypatch.setattr(
-        doctor.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 0, f"vivado v{vivado.SUPPORTED_VERSION}\n", ""
-        ),
-    )
-    project = doctor.ProjectAudit(
-        tmp_path,
-        project_dir,
-        {"eda": {"vivado": {"provisioning": "host"}}},
-        {},
-        "sim",
-    )
-    rec = _Rec()
-
-    doctor._check_issued_session_runtime(project, None, rec.p, rec.s, rec.f)
-
-    assert not rec.fails()
-    assert any(
-        f"mounted Vivado {vivado.SUPPORTED_VERSION}" in message
-        for level, message in rec.events
-        if level == "pass"
-    )
-
-
-def test_in_runtime_doctor_does_not_require_vivado_for_disabled_fpga(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(doctor, "_check_runtime_isolation", lambda *_args: True)
-    project = doctor.ProjectAudit(
-        tmp_path,
-        project_dir,
-        {
-            "eda": {"vivado": {"provisioning": "host"}},
-            "flows": {"fpga": {"enabled": False}},
-        },
-        {},
-        "sim",
-    )
-    rec = _Rec()
-
-    doctor._check_issued_session_runtime(project, None, rec.p, rec.s, rec.f)
-
-    assert not rec.fails()
-    assert any(
-        "no active host-mounted commercial EDA request" in message
-        for level, message in rec.events
-        if level == "pass"
-    )
 
 
 def _audit(root: Path) -> _Rec:
@@ -3255,89 +2430,6 @@ targets:
 # ===========================================================================
 
 
-class TestStateVolumeCheck:
-    """_check_interactive_state_volumes surfaces orphans for pruning."""
-
-    @staticmethod
-    def _project(root: Path) -> doctor.ProjectAudit:
-        pd = root / ".booley_project"
-        pd.mkdir(exist_ok=True)
-        return doctor.ProjectAudit(
-            project_root=root,
-            project_dir=pd,
-            booley_toml={},
-            configs_toml={"x": {}},
-            first_target="x",
-        )
-
-    def _run(self, tmp_path, monkeypatch, vols, *, verbose=False) -> _Rec:
-        from booley.runtime import interactive_docker as idk
-
-        monkeypatch.setattr(idk, "state_volumes", lambda: vols)
-        rec = _Rec()
-        doctor._check_interactive_state_volumes(
-            self._project(tmp_path),
-            "docker",
-            verbose,
-            rec.p,
-            rec.w,
-            rec.s,
-        )
-        return rec
-
-    def test_skips_without_runtime(self, tmp_path):
-        rec = _Rec()
-        doctor._check_interactive_state_volumes(
-            self._project(tmp_path),
-            None,
-            False,
-            rec.p,
-            rec.w,
-            rec.s,
-        )
-        assert rec.kinds() == {"skip"}
-
-    def test_passes_when_no_volumes(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, [])
-        assert rec.kinds() == {"pass"}
-        assert any("no persistent" in m for _, m in rec.events)
-
-    def test_recognizes_this_projects_volume(self, tmp_path, monkeypatch):
-        project_id = dc.canonical_project_id(tmp_path)
-        mine = f"booley-claude-state-{project_id}"
-        rec = self._run(tmp_path, monkeypatch, [mine])
-        assert rec.fails() == []
-        assert any(mine in m for lvl, m in rec.events if lvl == "pass")
-        assert "warn" not in rec.kinds()
-
-    def test_flags_other_projects_as_prunable(self, tmp_path, monkeypatch):
-        project_id = dc.canonical_project_id(tmp_path)
-        rec = self._run(
-            tmp_path,
-            monkeypatch,
-            [
-                f"booley-claude-state-{project_id}",  # mine
-                "booley-codex-state-someoldproject",  # orphan
-                "booley-claude-state-anotherproject",  # orphan
-            ],
-        )
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert len(warns) == 1
-        assert "2 interactive state volume(s) from other projects" in warns[0]
-        assert "docker volume rm" in warns[0]
-
-    def test_verbose_lists_orphans(self, tmp_path, monkeypatch, capsys):
-        self._run(
-            tmp_path,
-            monkeypatch,
-            [
-                "booley-codex-state-someoldproject",
-            ],
-            verbose=True,
-        )
-        assert "booley-codex-state-someoldproject" in capsys.readouterr().out
-
-
 class TestWcpServerCheck:
     """_check_wcp_server probes the live VaporView WCP port, not just the spec.
 
@@ -3372,7 +2464,7 @@ class TestWcpServerCheck:
         extension_state=None,
         extension_probe=None,
     ) -> _Rec:
-        from booley.runtime import runtime_context, session_runtime
+        from booley.runtime import runtime_context
         from booley.runtime.vaporview import ExtensionState
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_container)
@@ -3542,326 +2634,6 @@ class TestWcpPortProbe:
 # ===========================================================================
 # Stale devcontainer.json detection (predates the home-state persistence fix)
 # ===========================================================================
-
-
-class TestDevcontainerSpecStaleness:
-    """_check_devcontainer_spec must surface a spec that loses history on rebuild."""
-
-    def _run(
-        self,
-        root: Path,
-        monkeypatch,
-        image: str | None = None,
-        declared_provider: str | None = None,
-    ) -> _Rec:
-        from booley.runtime import devcontainer as dc
-
-        # Isolate from git; tracking is exercised by other tests.
-        monkeypatch.setattr(doctor, "_devcontainer_tracked", lambda p: False)
-        # Isolate from the developer machine's own `booley auth` store — the
-        # token-seed drift branch reads it, and a real stored token would flip
-        # the fresh-spec tests below from pass to warn.
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "xdg-isolated"))
-        monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
-        rec = _Rec()
-        doctor._check_devcontainer_spec(
-            root,
-            image or dc.SANDBOX_IMAGE,
-            declared_provider,
-            rec.p,
-            rec.w,
-            rec.f,
-            _note=rec.n,
-        )
-        return rec
-
-    def test_fresh_claude_spec_passes(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.kinds() == {"pass"}
-
-    def test_verified_pdk_without_spec_mount_warns(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
-        monkeypatch.setattr(doctor.nangate_pdk, "is_ready", lambda: True)
-
-        rec = self._run(tmp_path, monkeypatch)
-
-        assert rec.fails() == []
-        assert any(
-            level == "warn" and "/opt/pdk" in message and "synthesis" in message
-            for level, message in rec.events
-        )
-
-    def test_verified_pdk_with_spec_mount_passes(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        spec = dc.build_devcontainer_spec(
-            dc.APP_CLAUDE,
-            trusted_eda_mounts=(("/host/pdk", "/opt/pdk"),),
-        )
-        dc.write_devcontainer(tmp_path, spec)
-        monkeypatch.setattr(doctor.nangate_pdk, "is_ready", lambda: True)
-
-        rec = self._run(tmp_path, monkeypatch)
-
-        assert rec.kinds() == {"pass"}
-
-    def test_image_drift_warns_not_fails(self, tmp_path, monkeypatch):
-        # Spec frozen on the base image while [sandbox].image now names a custom
-        # project image (extra toolchain) — the openc910/Xuantie blocker shape.
-        from booley.runtime import devcontainer as dc
-
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
-        rec = self._run(tmp_path, monkeypatch, image="openc910-booley-sandbox:latest")
-        assert rec.fails() == []
-        assert any(
-            lvl == "warn" and "openc910-booley-sandbox:latest" in m and "--seed" in m
-            for lvl, m in rec.events
-        )
-
-    def test_matching_custom_image_passes(self, tmp_path, monkeypatch):
-        # Spec built for the same custom image the project configures: no drift.
-        from booley.runtime import devcontainer as dc
-
-        spec = dc.build_devcontainer_spec(
-            dc.APP_CLAUDE,
-            image="openc910-booley-sandbox:latest",
-        )
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch, image="openc910-booley-sandbox:latest")
-        assert rec.kinds() == {"pass"}
-
-    def test_immutable_image_pin_is_not_stale_when_resolution_unavailable(
-        self, tmp_path, monkeypatch
-    ):
-        # Inside an issued Session Runtime Docker is intentionally absent. The
-        # spec is already pinned to an immutable ID, but the configured tag
-        # cannot be resolved there; string-comparing the ID to the tag would be
-        # a false stale-image warning.
-        immutable_id = "sha256:" + "a" * 64
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, image=immutable_id)
-        dc.write_devcontainer(tmp_path, spec)
-        monkeypatch.setattr(doctor, "_devcontainer_tracked", lambda p: False)
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
-        monkeypatch.setattr(doctor.idk, "image_id", lambda image: None)
-        rec = _Rec()
-
-        doctor._check_devcontainer_spec(
-            tmp_path,
-            dc.SANDBOX_IMAGE,
-            None,
-            rec.p,
-            rec.w,
-            rec.f,
-            _note=rec.n,
-        )
-
-        assert rec.fails() == []
-        assert not any(level == "warn" for level, _ in rec.events)
-        assert any(
-            level == "note" and "host `booley doctor` is authoritative" in message
-            for level, message in rec.events
-        )
-
-    def test_immutable_image_pin_mismatch_warns_when_resolution_succeeds(
-        self, tmp_path, monkeypatch
-    ):
-        old_id = "sha256:" + "a" * 64
-        current_id = "sha256:" + "b" * 64
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id)
-        dc.write_devcontainer(tmp_path, spec)
-        monkeypatch.setattr(doctor, "_devcontainer_tracked", lambda p: False)
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
-        monkeypatch.setattr(doctor.idk, "image_id", lambda image: current_id)
-        rec = _Rec()
-
-        doctor._check_devcontainer_spec(
-            tmp_path,
-            dc.SANDBOX_IMAGE,
-            None,
-            rec.p,
-            rec.w,
-            rec.f,
-            _note=rec.n,
-        )
-
-        assert rec.fails() == []
-        assert any(
-            level == "warn" and old_id in message and dc.SANDBOX_IMAGE in message
-            for level, message in rec.events
-        )
-
-    def test_agent_app_drift_fails(self, tmp_path, monkeypatch):
-        # The picorv32 shape, hit live 2026-07-27: the project switched to
-        # `[agent] provider = "codex"` long after seeding, so the untracked spec
-        # still said claude. incontainer_register then wrote the Booley MCP
-        # entry into ~/.claude.json while the Codex session — the only agent
-        # actually running — saw no Booley MCP tools at all.
-        from booley.runtime import devcontainer as dc
-
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
-        rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
-        assert any("BOOLEY_AGENT_APP" in m and "codex" in m for m in rec.fails())
-        assert not any(lvl == "warn" for lvl, _ in rec.events)
-
-    def test_agent_app_matching_declared_provider_passes(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CODEX))
-        rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
-        assert rec.kinds() == {"pass"}
-
-    def test_undeclared_provider_mutes_the_app_drift_warn(self, tmp_path, monkeypatch):
-        # No [agent] provider: the seeder falls back to host detection, so
-        # there is nothing the on-disk app can be drift-checked against.
-        from booley.runtime import devcontainer as dc
-
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
-        rec = self._run(tmp_path, monkeypatch, declared_provider=None)
-        assert rec.kinds() == {"pass"}
-
-    def test_agent_app_drift_reported_over_missing_state_volume(self, tmp_path, monkeypatch):
-        # A mismatched spec still mounts a volume for the app it *names*, so the
-        # persistence check would pass and hide the real problem. Order matters:
-        # the app drift must be what the user is told to fix.
-        from booley.runtime import devcontainer as dc
-
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        assert dc.spec_state_is_persisted(spec) is True  # the misleading "all good"
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
-        assert rec.fails() and all("BOOLEY_AGENT_APP" in m for m in rec.fails())
-        assert not any(lvl == "warn" for lvl, _ in rec.events)
-
-    def test_stale_claude_spec_warns_not_fails(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        spec["mounts"] = [m for m in spec["mounts"] if "type=volume" not in m]
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(lvl == "warn" and "stale" in m for lvl, m in rec.events)
-
-    def test_missing_spec_warns_run_init(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch)
-        assert any("no .devcontainer" in m for _, m in rec.events)
-
-    def test_stored_token_without_seed_mount_warns(self, tmp_path, monkeypatch):
-        # A credential stored AFTER the spec was seeded: VS Code sessions can't
-        # see it (no sidecar mount), so they silently run on the refreshing
-        # credential — surface the drift, don't fail.
-        from booley.runtime import auth_token
-        from booley.runtime import devcontainer as dc
-
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        auth_token.store_token("sk-ant-oat01-stored")
-        rec = _Rec()
-        monkeypatch.setattr(doctor, "_devcontainer_tracked", lambda p: False)
-        monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
-        doctor._check_devcontainer_spec(tmp_path, dc.SANDBOX_IMAGE, None, rec.p, rec.w, rec.f)
-        assert rec.fails() == []
-        assert any(lvl == "warn" and "booley auth" in m and "--seed" in m for lvl, m in rec.events)
-
-    def test_stored_token_with_seed_mount_passes(self, tmp_path, monkeypatch):
-        from booley.runtime import auth_token
-        from booley.runtime import devcontainer as dc
-
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        path = auth_token.store_token("sk-ant-oat01-stored")
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, token_seed_source=str(path))
-        dc.write_devcontainer(tmp_path, spec)
-        rec = _Rec()
-        monkeypatch.setattr(doctor, "_devcontainer_tracked", lambda p: False)
-        monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
-        doctor._check_devcontainer_spec(tmp_path, dc.SANDBOX_IMAGE, None, rec.p, rec.w, rec.f)
-        assert rec.kinds() == {"pass"}
-
-    def test_pre_adr_0035_spec_without_vaporview_warns(self, tmp_path, monkeypatch):
-        # A spec seeded before the Waveform Viewer landed installs no VaporView
-        # and pins no WCP settings; an image rebuild never fixes that, so the
-        # agent's scoped `bwave gui` fails in every session — surface it.
-        # Exact shape hit live on a real project 2026-07-14.
-        from booley.runtime import devcontainer as dc
-
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
-        for key in ("vaporview.wcp.enabled", "vaporview.wcp.port"):
-            del spec["customizations"]["vscode"]["settings"][key]
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(lvl == "warn" and "VaporView" in m and "--seed" in m for lvl, m in rec.events)
-
-    def test_spec_without_hdl_highlight_is_a_note(self, tmp_path, monkeypatch):
-        # A spec seeded before the SystemVerilog highlighting extension landed
-        # renders RTL as plain text in attached windows; extensions are
-        # spec-delivered (never image-baked), so only a re-seed fixes it.
-        from booley.runtime import devcontainer as dc
-
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["extensions"] = [
-            "Anthropic.claude-code",
-            "lramseyer.vaporview",
-        ]
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(lvl == "note" and "highlighting" in m for lvl, m in rec.events)
-
-    def test_spec_without_live_preview_warns(self, tmp_path, monkeypatch):
-        # Live Preview is spec-delivered, so a project seeded before it landed
-        # cannot render review HTML in its attached container window.
-
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["extensions"].remove("ms-vscode.live-server")
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(lvl == "warn" and "Live Preview" in m for lvl, m in rec.events)
-
-    def test_spec_restoring_live_preview_ports_warns(self, tmp_path, monkeypatch):
-        # F-14: an otherwise current spec can restore dead 3000/3001 tunnels
-        # before Live Preview starts and leave the report preview blank.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["settings"]["remote.restoreForwardedPorts"] = True
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(
-            lvl == "warn" and "collision-safe Live Preview" in m and "--seed" in m
-            for lvl, m in rec.events
-        )
-
-    def test_spec_without_live_preview_port_randomizer_warns(self, tmp_path, monkeypatch):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        spec["postAttachCommand"] = dc.vaporview_patch_command()
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(
-            lvl == "warn" and "collision-safe Live Preview" in m and "--seed" in m
-            for lvl, m in rec.events
-        )
-
-    def test_spec_with_python_terminal_autoactivation_is_a_note(self, tmp_path, monkeypatch):
-        # Existing specs should direct users to re-seed so a Settings-Synced
-        # Python extension stops injecting delayed activation commands.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        for key in dc._PYTHON_TERMINAL_SETTINGS:
-            del spec["customizations"]["vscode"]["settings"][key]
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(
-            lvl == "note" and "Python terminal activation" in m and "--seed" in m
-            for lvl, m in rec.events
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -5444,99 +4216,6 @@ class TestWorktreeCoreShadowGuard:
         assert "future ticket worktree" in self._warns(rec)[0]
 
 
-class TestStealthCoresCheck:
-    """ADR 0036 contract: authored cores live in .booley_project/cores/ (and
-    nowhere else in the state dir), and never share a VLNV with a repo core."""
-
-    def _project(self, tmp_path: Path) -> tuple[Path, Path]:
-        root = tmp_path / "repo"
-        project_dir = root / ".booley_project"
-        (project_dir / "cores").mkdir(parents=True)
-        return root, project_dir
-
-    def test_clean_layout_passes(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        (root / "repo.core").write_text("CAPI=2:\nname: ::repo:0\n", encoding="utf-8")
-        (project_dir / "cores" / "s.core").write_text(
-            "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
-        )
-        rec = _Rec()
-        doctor._check_stealth_cores(root, project_dir, rec.p, rec.f)
-        assert rec.kinds() == {"pass"}
-
-    def test_stranded_core_fails_with_move_hint(self, tmp_path: Path):
-        # The original stealth-project layout: authored cores directly under
-        # .booley_project/ — structurally skipped, so Targets silently vanish.
-        root, project_dir = self._project(tmp_path)
-        (project_dir / "stranded.core").write_text("CAPI=2:\nname: ::s:0\n", encoding="utf-8")
-        rec = _Rec()
-        doctor._check_stealth_cores(root, project_dir, rec.p, rec.f)
-        assert "stranded" in rec.fails()[0]
-        assert "stranded.core" in rec.fails()[0]
-
-    def test_worktree_copies_are_not_stranded(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        wt = project_dir / "worktrees" / "t1"
-        wt.mkdir(parents=True)
-        (wt / "copy.core").write_text("CAPI=2:\nname: ::c:0\n", encoding="utf-8")
-        bl = project_dir / ".baseline-wt-7-abc"
-        bl.mkdir()
-        (bl / "copy.core").write_text("CAPI=2:\nname: ::c:0\n", encoding="utf-8")
-        rec = _Rec()
-        doctor._check_stealth_cores(root, project_dir, rec.p, rec.f)
-        assert rec.kinds() == {"pass"}
-
-    def test_private_registry_copies_are_not_stranded(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        registry = project_dir / "tmp" / "fusesoc-isolated-cores"
-        registry.mkdir(parents=True)
-        (registry / "copy.core").write_text("CAPI=2:\nname: ::c:0\n", encoding="utf-8")
-        rec = _Rec()
-
-        doctor._check_stealth_cores(root, project_dir, rec.p, rec.f)
-
-        assert rec.kinds() == {"pass"}
-
-    def test_cross_root_collision_fails(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        (root / "repo.core").write_text("CAPI=2:\nname: ::dup:0\n", encoding="utf-8")
-        (project_dir / "cores" / "s.core").write_text("CAPI=2:\nname: ::dup:1\n", encoding="utf-8")
-        rec = _Rec()
-        doctor._check_stealth_cores(root, project_dir, rec.p, rec.f)
-        assert any("both core roots" in msg for msg in rec.fails())
-
-    def test_hidden_cores_require_stealth_mode(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        (project_dir / "cores" / "s.core").write_text(
-            "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
-        )
-        rec = _Rec()
-
-        doctor._check_stealth_cores(root, project_dir, rec.p, rec.f, stealth_enabled=False)
-
-        assert any("stealth mode is disabled" in msg for msg in rec.fails())
-
-    def test_stealth_projection_is_repaired(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        (project_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        (project_dir / "cores" / "s.core").write_text(
-            "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
-        )
-        rec = _Rec()
-
-        doctor._check_stealth_cores(
-            root,
-            project_dir,
-            rec.p,
-            rec.f,
-            stealth_enabled=True,
-            repair=True,
-        )
-
-        assert rec.fails() == []
-        assert (root / ".booley-projected-s.core").is_file()
-
-
 # ---------------------------------------------------------------------------
 # Ticket Board self-heal (ADR 0028 Decision 11) — _check_board_orphans
 # ---------------------------------------------------------------------------
@@ -5937,135 +4616,6 @@ class TestHostAgentSession:
         rec = _Rec()
         doctor._check_runtime_location(None, "booley-sandbox", rec.p, rec.w, rec.s, rec.f)
         assert not any("HOST" in m for _lvl, m in rec.events)
-
-
-class TestGuidanceVenueNote:
-    """Guidance that names Booley Flows must scope them to the Session Runtime.
-
-    The repo root's CLAUDE.md link resolves on the host too, so an unscoped
-    file tells a host-side agent to call MCP tools that do not exist there.
-    """
-
-    def _canon(self, tmp_path: Path, body: str) -> Path:
-        canon = tmp_path / "AGENTS.md"
-        canon.write_text(body, encoding="utf-8")
-        return canon
-
-    def test_scoped_guidance_passes(self, tmp_path):
-        canon = self._canon(
-            tmp_path,
-            "- The MCP tools below exist only inside the Session Runtime.\n"
-            "- At the start of a tab, call `booley_status`.\n",
-        )
-        rec = _Rec()
-        doctor._check_guidance_runtime_note(canon, rec.p, rec.w)
-        assert rec.kinds() == {"pass"}
-
-    def test_unscoped_btool_guidance_warns(self, tmp_path):
-        canon = self._canon(tmp_path, "- At the start of a tab, call `booley_status`.\n")
-        rec = _Rec()
-        doctor._check_guidance_runtime_note(canon, rec.p, rec.w)
-        assert rec.kinds() == {"warn"}
-        assert "host-side agent session" in rec.events[0][1]
-
-    def test_guidance_without_btools_is_silent(self, tmp_path):
-        """Nothing to scope — a project may legitimately not mention them."""
-        canon = self._canon(tmp_path, "# AGENTS.md\n\n- Project purpose: a UART.\n")
-        rec = _Rec()
-        doctor._check_guidance_runtime_note(canon, rec.p, rec.w)
-        assert rec.events == []
-
-    def test_shipped_template_satisfies_the_check(self, tmp_path):
-        """The template doctor's fix hint points at must itself pass the check."""
-        from booley.runtime.paths import skills_dir
-
-        template = skills_dir() / "booley-setup" / "AGENTS_TEMPLATE.md"
-        canon = self._canon(tmp_path, template.read_text(encoding="utf-8"))
-        rec = _Rec()
-        doctor._check_guidance_runtime_note(canon, rec.p, rec.w)
-        assert rec.kinds() == {"pass"}
-
-    def test_automatic_profile_reports_missing_links_without_creating_them(
-        self, tmp_path, monkeypatch
-    ):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        self._canon(project_dir, "# Project guidance\n")
-        project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
-        monkeypatch.setattr(
-            doctor,
-            "ensure_guidance_links",
-            lambda *_a, **_kw: pytest.fail("read-only Doctor repaired links"),
-        )
-        rec = _Rec()
-
-        doctor._check_agents_md(project, rec.p, rec.w, repair=False)
-
-        assert rec.kinds() == {"warn"}
-        assert not (tmp_path / "AGENTS.md").exists()
-        assert not (tmp_path / "CLAUDE.md").exists()
-
-    def test_manual_profile_repairs_guidance_links(self, tmp_path, monkeypatch):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        self._canon(project_dir, "# Project guidance\n")
-        project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
-        calls = []
-        monkeypatch.setattr(
-            doctor,
-            "ensure_guidance_links",
-            lambda root, data: calls.append((root, data)),
-        )
-        rec = _Rec()
-
-        doctor._check_agents_md(project, rec.p, rec.w)
-
-        assert calls == [(tmp_path, project_dir)]
-        assert any("root links ensured" in message for _kind, message in rec.events)
-
-
-class TestCheckDocker:
-    """QA-3: the container-runtime check must not FAIL inside the Session Runtime.
-
-    In-container there is no nested container runtime and Booley Flows run
-    directly, so a missing runtime is expected — SKIP, don't FAIL.
-    """
-
-    def test_skips_in_container(self, monkeypatch):
-        _set_venue(monkeypatch, True)
-        # Even if no runtime is on PATH, in-container it must not FAIL.
-        monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
-        rec = _Rec()
-        result = doctor._check_docker(rec.p, rec.s, rec.f)
-        assert result is None
-        assert rec.kinds() == {"skip"}
-        assert not rec.fails()
-
-    def test_fails_on_host_without_runtime(self, monkeypatch):
-        _set_venue(monkeypatch, False)
-        monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
-        rec = _Rec()
-        result = doctor._check_docker(rec.p, rec.s, rec.f)
-        assert result is None
-        assert "container runtime not on PATH" in rec.fails()
-
-    def test_passes_on_host_with_running_runtime(self, monkeypatch):
-        _set_venue(monkeypatch, False)
-        runtime = "doc" + "ker"
-        monkeypatch.setattr(
-            doctor.shutil,
-            "which",
-            lambda name: runtime if name == doctor._CONTAINER_CLI else None,
-        )
-        monkeypatch.setattr(
-            doctor.subprocess,
-            "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="", stderr=""),
-        )
-        rec = _Rec()
-        result = doctor._check_docker(rec.p, rec.s, rec.f)
-        assert result == runtime
-        assert rec.kinds() == {"pass"}
 
 
 class TestAdvisoryMcpTools:
@@ -6506,65 +5056,6 @@ class TestDeveloperProbe:
         monkeypatch.setattr(config_mod, "load_backend_config", boom)
         with pytest.raises(developer_probe.ProbeError, match="no backend"):
             developer_probe.measure_developer_rss(tmp_path)
-
-
-class TestHostClockCheck:
-    """F-5: doctor warns when the host clock is skewed from an HTTP Date header."""
-
-    @staticmethod
-    def _run_check(monkeypatch, *, offset_s=None, unreachable=False):
-        import email.utils
-        import urllib.error
-        from datetime import timedelta
-
-        class _Headers:
-            def __init__(self, date_str):
-                self._date = date_str
-
-            def get(self, _key, default=""):
-                return self._date or default
-
-        class _Resp:
-            def __init__(self, date_str):
-                self.headers = _Headers(date_str)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-        def fake_urlopen(req, timeout=0):
-            if unreachable:
-                raise urllib.error.URLError("offline")
-            remote = doctor.datetime.now(doctor.UTC) - timedelta(seconds=offset_s)
-            return _Resp(email.utils.format_datetime(remote))
-
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-        passes, warns, skips = [], [], []
-        doctor._check_host_clock(passes.append, warns.append, skips.append)
-        return passes, warns, skips
-
-    def test_aligned_clock_passes(self, monkeypatch):
-        passes, warns, skips = self._run_check(monkeypatch, offset_s=0)
-        assert passes and not warns and not skips
-
-    def test_skewed_clock_warns_with_fix_hint(self, monkeypatch):
-        # Host 4h ahead of the reference (i.e. reference is 4h in the past
-        # relative to local now -> skew positive -> "ahead of").
-        passes, warns, _skips = self._run_check(monkeypatch, offset_s=4 * 3600)
-        assert warns and not passes
-        assert "ahead of" in warns[0]
-        assert "w32tm /resync" in warns[0]
-
-    def test_clock_behind_warns_behind(self, monkeypatch):
-        passes, warns, _skips = self._run_check(monkeypatch, offset_s=-4 * 3600)
-        assert warns and not passes
-        assert "behind" in warns[0]
-
-    def test_offline_skips(self, monkeypatch):
-        passes, warns, skips = self._run_check(monkeypatch, unreachable=True)
-        assert skips and not passes and not warns
 
 
 # ===========================================================================
@@ -7675,23 +6166,6 @@ class TestLineEndingsCheck:
         assert reporter.findings[0].severity == "warn"
 
 
-def test_project_audit_reports_a_missing_project_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    def missing_project_dir(_root: Path) -> Path:
-        raise FileNotFoundError
-
-    monkeypatch.setattr(doctor, "resolve_checkout_project_dir", missing_project_dir)
-    reporter = doctor._Reporter.create()
-
-    project_dir, audit = doctor._audit_project_setup(tmp_path, reporter)
-
-    assert project_dir is None
-    assert audit is None
-    assert reporter.findings is not None
-    assert any("project directory not found" in finding.message for finding in reporter.findings)
-
-
 # ===========================================================================
 # _check_subscription_creds_health — expired-creds gap (2026-07-23 incident)
 # ===========================================================================
@@ -7718,7 +6192,11 @@ class TestSubscriptionCredsHealth:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
         for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
             monkeypatch.delenv(var, raising=False)
-        monkeypatch.setattr(doctor, "_detect_claude_code", lambda: True)
+        monkeypatch.setattr(
+            host_environment,
+            "inspect_agent_installation",
+            lambda _app: host_environment.AgentInstallation(True, None),
+        )
         _set_venue(monkeypatch, False)
         return home
 
@@ -7895,3 +6373,53 @@ class TestSynthHeavyTargetCalibration:
 
         assert rec.kinds() == {"warn"}
         assert "unselected Target 'asic_small'" in rec.events[0][1]
+
+
+def test_doctor_reuses_one_target_source_inspector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target_names = [f"lint_{index}" for index in range(100)]
+    targets = "".join(
+        f"  {name}:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n"
+        "    toplevel: dut\n"
+        for name in target_names
+    )
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:ip:design:1.0\n"
+        "filesets:\n"
+        "  rtl:\n"
+        "    files: [rtl/dut.sv]\n"
+        "targets:\n"
+        f"{targets}",
+        encoding="utf-8",
+    )
+    catalog = TargetCatalog.build(tmp_path)
+    refs = {handle.name: handle for handle in catalog.list()}
+    managers: list[object] = []
+    resolutions = 0
+    real_manager = target_inspection.CoreManager
+    real_get_depends = real_manager.get_depends
+
+    def counting_manager(*args, **kwargs):
+        manager = real_manager(*args, **kwargs)
+        managers.append(manager)
+        return manager
+
+    def counting_get_depends(self, *args, **kwargs):
+        nonlocal resolutions
+        resolutions += 1
+        return real_get_depends(self, *args, **kwargs)
+
+    monkeypatch.setattr(target_inspection, "CoreManager", counting_manager)
+    monkeypatch.setattr(real_manager, "get_depends", counting_get_depends)
+
+    inputs = doctor._CoreAuditInputs(catalog, refs)
+    for name in target_names:
+        assert inputs.sources_for(name).rtl_source_files == ("rtl/dut.sv",)
+
+    assert len(managers) == 1
+    assert resolutions == 1

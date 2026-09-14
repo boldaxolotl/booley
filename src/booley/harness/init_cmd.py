@@ -1212,20 +1212,6 @@ def _mask_source_dir() -> Path:
     return auth_token.config_dir() / "empty-mask"
 
 
-def _detect_claude_code() -> bool:
-    """Heuristic: Claude Code is installed if its config dir or CLI exists."""
-    if (Path.home() / ".claude").is_dir():
-        return True
-    return shutil.which("claude") is not None
-
-
-def _detect_codex() -> bool:
-    """Heuristic: Codex is installed if its config dir or CLI exists."""
-    if (Path.home() / ".codex").is_dir():
-        return True
-    return shutil.which("codex") is not None
-
-
 def _select_interactive_app(project_root: Path | None = None) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:

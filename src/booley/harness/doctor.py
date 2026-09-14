@@ -24,33 +24,28 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import booley
 from booley.agent_workspace.isolation import get_category_dirs
 from booley.audit import (
-    agent_schema,
-    config_common,
-    configs_schema,
     design_size,
     eda_environment,
-    flow_schema,
     host_environment,
-    project_schema,
     resource_policy,
     target_matrix,
 )
+from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.config.jobs import parse_caps
 from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import is_str_list
 from booley.flows import execution
 from booley.fusesoc import (
-    core_projection,
     core_security,
     fusesoc_registry,
     selftest_overlay,
 )
-from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
-from booley.harness import bootstrap as host_bootstrap
 from booley.harness import (
     doctor_stamp,
+    host_diagnostics,
     image_lifecycle,
     nangate_pdk,
     upgrade_cli,
@@ -65,28 +60,9 @@ from booley.harness.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
-from booley.harness.init_cmd import (
-    DOCKER_IMAGE,
-    FLAVOR_IMAGES,
-    MIN_PY,
-    _detect_claude_code,
-    _detect_codex,
-    _docker_image_exists,
-    _read_version,
-    banner,
-    err,
-    info,
-    ok,
-    skip,
-    warn,
-)
-from booley.harness.setup.common import note
-from booley.harness.setup.guidance_links import (
-    CANON_NAME,
-    LINK_NAMES,
-    ensure_guidance_links,
-    guidance_entry_current,
-)
+from booley.harness.setup import readiness
+from booley.harness.setup.common import banner, err, info, note, ok, skip, warn
+from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
 from booley.harness.setup.line_endings import (
     LineEndingMode,
     LineEndingObservation,
@@ -96,15 +72,11 @@ from booley.harness.setup.line_endings import (
     line_ending_repository_display,
     reconcile_project_line_endings,
 )
-from booley.runtime import auth_token, runtime_context, session_runtime, vaporview
+from booley.harness.setup.readiness import ProjectAudit
+from booley.runtime import auth_token, inspection, runtime_context, session_runtime, vaporview
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
-from booley.runtime.devcontainer import (
-    devcontainer_path,
-    spec_mounts_token_seed,
-    spec_state_is_persisted,
-)
 from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import (
@@ -283,36 +255,6 @@ def _warning_sink(
     return emit
 
 
-def _render_environment_finding(
-    finding: host_environment.EnvironmentFinding,
-    _pass: Check,
-    _warn: Warn,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Translate a typed host finding into Doctor presentation callbacks."""
-    if finding.severity is host_environment.EnvironmentSeverity.PASS:
-        _pass(finding.message)
-    elif finding.severity is host_environment.EnvironmentSeverity.SKIP:
-        _skip(finding.message)
-    elif finding.severity is host_environment.EnvironmentSeverity.FAIL:
-        _fail(finding.message, finding.fix)
-    else:
-        assert finding.check_id is not None
-        _warning_sink(_warn, finding.check_id)(finding.message, finding.fix)
-
-
-@dataclass(frozen=True)
-class ProjectAudit:
-    """Parsed setup files needed for Doctor's Flow checks."""
-
-    project_root: Path
-    project_dir: Path
-    booley_toml: dict[str, Any]
-    configs_toml: dict[str, dict[str, Any]]
-    first_target: str
-
-
 @dataclass(frozen=True)
 class DoctorFinding:
     """One structured Doctor observation, independent of console rendering."""
@@ -396,6 +338,33 @@ class _Reporter:
             _reported_warning_keys=set(),
             findings=[],
         )
+
+    def diagnostics(self, report: DiagnosticReport) -> None:
+        """Render an owner's observations without reimplementing its decisions."""
+        for index, finding in enumerate(report.findings, 1):
+            if finding.severity is Severity.PASS:
+                self.pass_(finding.message)
+            elif finding.severity is Severity.NOTE:
+                self.note_(finding.message, finding.fix)
+            elif finding.severity is Severity.SKIP:
+                self.skip_(finding.message)
+            elif finding.severity is Severity.FAIL:
+                self.fail_(finding.message, finding.fix)
+            else:
+                assert finding.check_id is not None
+                self.warn_(
+                    warning(
+                        finding.check_id,
+                        finding.message,
+                        subject=finding.subject,
+                        dedupe=finding.dedupe,
+                    ),
+                    finding.fix,
+                )
+            if self.verbose:
+                for detail in report.details:
+                    if detail.after_finding == index:
+                        info(detail.message)
 
     def pass_(self, msg: str) -> None:
         assert self.findings is not None
@@ -567,7 +536,7 @@ def run_doctor_result(
     Manual ``booley doctor`` retains its established self-healing behavior.
     """
     banner("Booley Doctor")
-    info(f"version: {_read_version()}")
+    info(f"version: {booley.__version__}")
     print()
 
     verbose = getattr(args, "verbose", False)
@@ -604,19 +573,18 @@ def _run_project_phase(
 ) -> tuple[str | None, ProjectAudit | None]:
     """Run host, config, Git, and Ticket Board checks."""
     banner("Host checks")
-    docker_exe = _run_host_checks(reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_)
-    project_dir, project = _audit_project_setup(project_root, reporter)
+    host = host_diagnostics.inspect_host()
+    reporter.diagnostics(host.report)
+    docker_exe = host.docker_exe
+    loaded = readiness.load_project(project_root)
+    reporter.diagnostics(loaded.report)
+    project_dir, project = loaded.project_dir, loaded.project
+    mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
     _check_upgrade_review(project_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
-        _check_agents_md(
-            project,
-            reporter.pass_,
-            reporter.warn_,
-            _note=reporter.note_,
-            repair=not read_only,
-        )
+        reporter.diagnostics(readiness.check_guidance(project, mode=mode))
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     _check_line_endings(
         project_root,
@@ -628,16 +596,7 @@ def _run_project_phase(
     )
     if project is not None:
         _check_worktree_core_shadow_guard(project.project_dir, reporter.pass_, reporter.warn_)
-        stealth = project.booley_toml.get("stealth")
-        explicit_stealth = isinstance(stealth, Mapping) and stealth.get("enabled") is True
-        _check_stealth_cores(
-            project_root,
-            project.project_dir,
-            reporter.pass_,
-            reporter.fail_,
-            stealth_enabled=explicit_stealth,
-            repair=not read_only,
-        )
+        reporter.diagnostics(readiness.check_stealth_cores(project, mode=mode))
     _check_board_orphans(
         project_root,
         reporter.pass_,
@@ -662,24 +621,6 @@ def _check_upgrade_review(project_dir: Path | None, reporter: _Reporter) -> None
         presentation.summary,
         presentation.action,
     )
-
-
-def _audit_project_setup(
-    project_root: Path, reporter: _Reporter
-) -> tuple[Path | None, ProjectAudit | None]:
-    """Resolve and audit the project-data directory selected for one checkout."""
-    try:
-        project_dir = resolve_checkout_project_dir(project_root)
-    except FileNotFoundError:
-        project_dir = None
-    project = _check_project_setup(
-        project_root,
-        reporter.pass_,
-        reporter.warn_,
-        reporter.fail_,
-        project_dir=project_dir,
-    )
-    return project_dir, project
 
 
 def _run_runtime_phase(
@@ -796,111 +737,12 @@ def _run_deep_phase(
     )
 
 
-def _run_host_checks(_pass: Check, _warn: Check, _skip: Check, _fail: Fail) -> str | None:
-    """Run host environment checks. Returns the container CLI path."""
-    py_ver = sys.version_info
-    _render_environment_finding(
-        host_environment.audit_python_version((py_ver.major, py_ver.minor), MIN_PY),
-        _pass,
-        _warn,
-        _skip,
-        _fail,
-    )
-
-    try:
-        import booley
-
-        _pass(f"booley package v{booley.__version__}")
-        _check_legacy_distribution(_pass, _fail)
-    except ImportError:
-        _fail("booley package not importable", "pip install booley-rtl")
-
-    from booley.runtime import runtime_context
-
-    if runtime_context.inside_session_runtime():
-        _skip("Host Bootstrap check skipped inside the Session Runtime")
-        docker_exe = _check_docker(_pass, _skip, _fail)
-    else:
-        bootstrap_result = host_bootstrap.reconcile_bootstrap(image_lifecycle.Intent.CHECK)
-        _render_bootstrap_findings(bootstrap_result, _pass, _warn, _fail)
-        docker_finding = next(
-            (finding for finding in bootstrap_result.findings if finding.resource == "docker"),
-            None,
-        )
-        docker_exe = (
-            shutil.which(_CONTAINER_CLI)
-            if docker_finding is not None
-            and docker_finding.state is host_bootstrap.BootstrapState.CURRENT
-            else None
-        )
-
-    # The host-clock check is a host-only concern (sandbox image builds run on
-    # the host); skip it in-container where there is nothing to build (F-5).
-    if not runtime_context.inside_session_runtime():
-        _check_host_clock(_pass, _warn, _skip)
-    return docker_exe
-
-
-def _render_bootstrap_findings(
-    result: host_bootstrap.BootstrapResult,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    """Translate authoritative bootstrap facts into Doctor presentation."""
-    for finding in result.findings:
-        message = f"Host Bootstrap {finding.resource}: {finding.detail}"
-        if finding.state is host_bootstrap.BootstrapState.ERROR:
-            _fail(message, "booley bootstrap")
-        elif finding.state is host_bootstrap.BootstrapState.PENDING:
-            _warn(f"{message} — run booley bootstrap")
-        else:
-            _pass(message)
-
-
-def _check_legacy_distribution(_pass: Check, _fail: Fail) -> None:
-    """Render the extracted legacy-distribution audit."""
-    _render_environment_finding(
-        host_environment.audit_legacy_distribution(),
-        _pass,
-        lambda _message: None,
-        lambda _message: None,
-        _fail,
-    )
-
-
 #: ``.core`` security violations whose verdict depends on the agent's write
 #: Scope. doctor only has a synthetic project-wide Scope, so these are
 #: advisory there; the per-ticket Scope check at commit time is the real gate.
 #: Everything else (``fpga_hook``, ``expr_param``) is a property of the
 #: ``.core`` itself and stays a hard FAIL.
 _SCOPE_DEPENDENT_VIOLATIONS = frozenset({"in_scope_script", "unconfinable_script"})
-
-
-def _check_host_clock(_pass: Check, _warn: Check, _skip: Check) -> None:
-    """Render the extracted host clock probe."""
-    _render_environment_finding(
-        host_environment.probe_host_clock(), _pass, _warn, _skip, lambda *_args: None
-    )
-
-
-def _check_docker(_pass: Check, _skip: Check, _fail: Fail) -> str | None:
-    """Render the extracted container-runtime probe."""
-    from booley.runtime import runtime_context
-
-    audit = host_environment.probe_container_runtime(
-        _CONTAINER_CLI,
-        inside_session_runtime=runtime_context.inside_session_runtime(),
-        which=shutil.which,
-        run=subprocess.run,
-    )
-    _render_environment_finding(audit.finding, _pass, lambda _message: None, _skip, _fail)
-    return audit.executable
-
-
-def _docker_permission_denied_fix() -> str:
-    """Compatibility facade for the extracted runtime permission guidance."""
-    return host_environment.docker_permission_denied_fix()
 
 
 def _sandbox_image(project: ProjectAudit | None) -> str:
@@ -920,21 +762,11 @@ def _sandbox_image(project: ProjectAudit | None) -> str:
 def _docker_image_exists_by_name(image: str) -> bool:
     """Return whether *image* is available locally."""
     if image == DOCKER_IMAGE:
-        return _docker_image_exists()
+        return idk.image_exists(image)
     docker_exe = shutil.which(_CONTAINER_CLI)
     if not docker_exe:
         return False
-    try:
-        result = subprocess.run(
-            [docker_exe, "image", "inspect", image],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
+    return idk.image_exists(image, executable=docker_exe, timeout=10)
 
 
 def _image_env_value(docker_exe: str, image: str, key: str) -> str | None:
@@ -967,277 +799,6 @@ def _image_env_value(docker_exe: str, image: str, key: str) -> str | None:
         if isinstance(entry, str) and entry.startswith(prefix):
             return entry[len(prefix) :]
     return None
-
-
-def _check_project_setup(
-    project_root: Path,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-    *,
-    project_dir: Path | None = None,
-) -> ProjectAudit | None:
-    """Strictly parse and validate Booley project setup files."""
-    if project_dir is None:
-        try:
-            project_dir = resolve_checkout_project_dir(project_root)
-        except FileNotFoundError:
-            _fail("project directory not found", "booley init")
-            return None
-
-    _pass(f"project directory found: {project_dir}")
-
-    booley_toml = _load_toml(project_dir / "booley.toml", _pass, _fail)
-    if booley_toml is None:
-        return None
-
-    valid = _validate_booley_toml(booley_toml, project_dir, _pass, _warn, _fail)
-    from booley.targets.flow_names import canonicalize_config
-
-    booley_toml = canonicalize_config(booley_toml)
-
-    # configs.toml is optional now: ADR 0022 makes the ``.core`` the sole
-    # design-description home, and the legacy configs.toml registry path was
-    # removed. Validate a configs.toml only when a project still ships one.
-    configs_toml: dict[str, dict[str, Any]] = {}
-    configs_path = project_dir / "configs.toml"
-    if configs_path.is_file():
-        configs_raw = _load_toml(configs_path, _pass, _fail)
-        if configs_raw is None:
-            return None
-        validated = _validate_configs_toml(configs_raw, _pass, _fail)
-        if validated is None:
-            valid = False
-        else:
-            configs_toml = validated
-
-    # Deep-check config selection comes from the .core Targets (the design home);
-    # fall back to a configs.toml config name only if no .core is authored.
-    first_target = ""
-    try:
-        targets = TargetCatalog.build(project_root).list()
-        first_target = targets[0].selector if targets else ""
-    except Exception:  # noqa: BLE001 — registry may be unavailable; fall back to a configs.toml config name
-        first_target = ""
-    if not first_target:
-        first_target = next(iter(configs_toml), "")
-
-    if not valid:
-        return None
-
-    if first_target:
-        _pass(f"first deep-check config: {first_target}")
-    return ProjectAudit(
-        project_root=project_root,
-        project_dir=project_dir,
-        booley_toml=booley_toml,
-        configs_toml=configs_toml,
-        first_target=first_target,
-    )
-
-
-def _load_toml(path: Path, _pass: Check, _fail: Fail) -> dict[str, Any] | None:
-    if not path.is_file():
-        _fail(f"{path.name} missing", "booley init")
-        return None
-    try:
-        with path.open("rb") as handle:
-            data = tomllib.load(handle)
-    except tomllib.TOMLDecodeError as exc:
-        _fail(f"{path.name} does not parse: {exc}", f"fix {path}")
-        return None
-    except OSError as exc:
-        _fail(f"{path.name} unreadable: {exc}", f"check permissions on {path}")
-        return None
-    _pass(f"{path.name} parses")
-    return data
-
-
-def _validate_booley_toml(
-    data: dict[str, Any],
-    project_dir: Path,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> bool:
-    """Validate the project-level booley.toml schema used by doctor."""
-    if not _render_config_audit(project_schema.audit_eda_config(data), _pass, _warn, _fail):
-        return False
-    valid = _render_config_audit(project_schema.audit_project_table(data), _pass, _warn, _fail)
-    valid &= _render_config_audit(agent_schema.audit_agent_table(data), _pass, _warn, _fail)
-    valid &= _render_config_audit(agent_schema.audit_models_table(data), _pass, _warn, _fail)
-    valid &= _render_config_audit(project_schema.audit_feedback_table(data), _pass, _warn, _fail)
-    valid &= _render_config_audit(project_schema.audit_stealth_table(data), _pass, _warn, _fail)
-    valid &= _render_config_audit(
-        flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES), _pass, _warn, _fail
-    )
-    valid &= _render_config_audit(project_schema.audit_sandbox_table(data), _pass, _warn, _fail)
-    valid &= _render_config_audit(
-        project_schema.audit_interactive_table(data), _pass, _warn, _fail
-    )
-    valid &= _render_config_audit(project_schema.audit_developer_table(data), _pass, _warn, _fail)
-    _render_config_audit(project_schema.audit_known_tables(data), _pass, _warn, _fail)
-    # Source RTL/TB layout is validated from the .core tags:[tb] partition (see
-    # _run_core_checks → sim_target_has_untagged_tb), not a booley.toml
-    # [sources.*] table — those fields were retired (ADR 0026 follow-through).
-
-    if not project_dir.exists():
-        _fail(f"project directory missing: {project_dir}", "booley init")
-        valid = False
-    return valid
-
-
-def _render_config_audit(
-    audit: config_common.ConfigTableAudit,
-    _pass: Check,
-    _warn: Warn,
-    _fail: Fail,
-) -> bool:
-    """Translate domain findings into Doctor's presentation callbacks."""
-    for finding in audit.findings:
-        if finding.severity is config_common.ConfigFindingSeverity.PASS:
-            _pass(finding.message)
-        elif finding.severity is config_common.ConfigFindingSeverity.FAIL:
-            _fail(finding.message, finding.fix)
-        else:
-            assert finding.check_id is not None
-            _warning_sink(_warn, finding.check_id, subject=finding.subject)(
-                finding.message, finding.fix
-            )
-    return audit.is_valid
-
-
-def _validate_agent_table(data: dict[str, Any], _pass: Check, _fail: Fail) -> bool:
-    """Compatibility facade for the extracted agent configuration audit."""
-    return _render_config_audit(
-        agent_schema.audit_agent_table(data), _pass, lambda _message: None, _fail
-    )
-
-
-def _validate_models_table(data: dict[str, Any], _pass: Check, _warn: Check, _fail: Fail) -> bool:
-    """Compatibility facade for the extracted models configuration audit."""
-    return _render_config_audit(agent_schema.audit_models_table(data), _pass, _warn, _fail)
-
-
-def _validate_flow_tables(data: dict[str, Any], _warn: Check, _fail: Fail) -> bool:
-    """Compatibility facade for the extracted Flow configuration audit."""
-    return _render_config_audit(
-        flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES),
-        lambda _message: None,
-        _warn,
-        _fail,
-    )
-
-
-def _validate_one_flow_table(
-    flow_name: str,
-    section: Any,
-    _warn: Check,
-    _fail: Fail,
-) -> bool:
-    """Compatibility facade for one extracted Flow-table audit."""
-    return _render_config_audit(
-        flow_schema.audit_flow_table(flow_name, section),
-        lambda _message: None,
-        _warn,
-        _fail,
-    )
-
-
-def _validate_configs_toml(
-    raw: dict[str, Any],
-    _pass: Check,
-    _fail: Fail,
-) -> dict[str, dict[str, Any]] | None:
-    audit = configs_schema.audit_configs_toml(raw)
-    for issue in audit.issues:
-        _fail(issue.message, issue.fix)
-    if audit.configs is None:
-        return None
-    _pass(f"configs.toml contains {len(audit.configs)} valid config(s)")
-    return audit.configs
-
-
-def _check_agents_md(
-    project: ProjectAudit,
-    _pass: Check,
-    _warn: Check,
-    *,
-    _note: Check | None = None,
-    repair: bool = True,
-) -> None:
-    """Check the canonical guidance file and ensure root links point to it.
-
-    The canonical AGENTS.md lives in the project data dir; the RTL repo root
-    only carries generated AGENTS.md/CLAUDE.md links to it.
-    """
-    note_sink = _note or _pass
-    canon = project.project_dir / CANON_NAME
-    if not canon.is_file():
-        note_sink("project guidance file missing; run setup guidance when ready")
-        return
-    link_warn = _warning_sink(_warn, "guidance.links-unhealthy")
-    if repair:
-        try:
-            ensure_guidance_links(project.project_root, project.project_dir)
-            _pass("project guidance file present; root links ensured")
-        except OSError as exc:
-            link_warn(f"could not create root guidance links: {exc}")
-    elif _guidance_links_current(project.project_root, canon):
-        _pass("project guidance file present; root links current")
-    else:
-        link_warn(
-            "project guidance root links are missing or stale",
-            "run `booley doctor` to repair AGENTS.md and CLAUDE.md",
-        )
-    _check_guidance_runtime_note(canon, _pass, _warn)
-
-
-def _guidance_links_current(project_root: Path, canon: Path) -> bool:
-    """True when every root entry is a live link or matching tracked file."""
-    try:
-        resolved_canon = canon.resolve(strict=True)
-    except OSError:
-        return False
-    for name in LINK_NAMES:
-        link = project_root / name
-        try:
-            if not guidance_entry_current(project_root, link, resolved_canon):
-                return False
-        except OSError:
-            return False
-    return True
-
-
-# The guidance file is read by host-side agent sessions too — the root
-# CLAUDE.md link resolves on both host and runtime by design (guidance_links), but the
-# Booley Flows it names exist only inside the Session Runtime. Guidance that names
-# them without naming the runtime location hands a host agent instructions it cannot
-# satisfy; AGENTS_TEMPLATE.md carries the scoping note, so projects written
-# before it (or edited since) need telling.
-_GUIDANCE_BTOOL_MARKER = "booley_status"
-_GUIDANCE_RUNTIME_MARKER = "session runtime"
-
-
-def _check_guidance_runtime_note(canon: Path, _pass: Check, _warn: Check) -> None:
-    """The guidance must scope its Booley Flow instructions to the Session Runtime."""
-    _warn = _warning_sink(_warn, "guidance.session-runtime-scope", subject=str(canon))
-    try:
-        text = canon.read_text(encoding="utf-8", errors="replace").lower()
-    except OSError as exc:
-        _warn(f"could not read {canon}: {exc}")
-        return
-    if _GUIDANCE_BTOOL_MARKER not in text:
-        return  # no Booley Flow instructions to scope
-    if _GUIDANCE_RUNTIME_MARKER in text:
-        _pass("project guidance scopes Booley Flows to the Session Runtime")
-        return
-    _warn(
-        "project guidance tells agents to call booley_status and the Booley Flows but never says "
-        "they exist only inside the Session Runtime — a host-side agent session sees no such "
-        "Booley Flows and falls back to raw EDA commands",
-        f"add the Session Runtime scoping bullet from AGENTS_TEMPLATE.md to {canon}",
-    )
 
 
 def _check_worktree_prune_guard(
@@ -1449,119 +1010,6 @@ def _check_worktree_core_shadow_guard(
 
 # State-dir subtrees that legitimately hold transient .core COPIES (worktree /
 # baseline checkouts, build caches) — never authored sources, never "stranded".
-_STATE_TRANSIENT_DIR_NAMES = frozenset({"worktrees", "build", "_build", ".runtime", ".git", "tmp"})
-
-
-def _check_stealth_cores(
-    project_root: Path,
-    project_dir: Path,
-    _pass: Check,
-    _fail: Fail,
-    *,
-    stealth_enabled: bool | None = None,
-    repair: bool = False,
-) -> None:
-    """Audit authored stealth cores and their root projections.
-
-    Two failure modes, each of which silently empties or corrupts the Target
-    registry when left undiagnosed:
-
-    * an authored ``.core`` stranded in the state dir OUTSIDE
-      ``.booley_project/cores/`` — :func:`~booley.fusesoc.fusesoc_registry.discover_cores`
-      skips the state tree structurally, so the core just vanishes from the
-      selectable Targets (``"(none authored)"`` with no hint why);
-    * the same logical VLNV authored in both the repo tree and
-      ``.booley_project/cores/`` — enumeration hard-errors on this
-      (:class:`~booley.fusesoc.fusesoc_registry.CoreCollisionError`), and doctor turns
-      that into an actionable finding before an MCP tool call trips over it.
-    """
-    stealth_root = project_dir / fusesoc_registry.STATE_CORES_SUBDIR
-    authored = tuple(sorted(stealth_root.rglob("*.core"))) if stealth_root.is_dir() else ()
-    if stealth_enabled is False and authored:
-        _fail(
-            ".booley_project/cores contains authored cores while stealth mode is disabled",
-            "set [stealth] enabled = true, or move the cores into the tracked repository",
-        )
-    elif stealth_enabled is True:
-        _check_core_projections(project_root, _pass, _fail, repair=repair)
-
-    stranded = [
-        p
-        for p in project_dir.rglob("*.core")
-        if not p.is_relative_to(stealth_root)
-        and not _STATE_TRANSIENT_DIR_NAMES.intersection(p.relative_to(project_dir).parts)
-        and not any(part.startswith(".baseline-wt") for part in p.relative_to(project_dir).parts)
-        and TRACE_OVERLAY_MARKER not in p.name
-    ]
-    if stranded:
-        names = ", ".join(str(p.relative_to(project_dir)) for p in sorted(stranded))
-        _fail(
-            f"authored .core stranded in the state dir, invisible to Booley and FuseSoC: {names}",
-            f"move it under {stealth_root} — the one scanned subtree of .booley_project/ (ADR 0036)",
-        )
-    else:
-        _pass("no authored .core stranded outside .booley_project/cores/")
-
-    try:
-        TargetCatalog.build(project_root).list()
-    except fusesoc_registry.CoreCollisionError as exc:
-        _fail(str(exc), "rename or delete one of the colliding cores")
-    except fusesoc_registry.FuseSocError:
-        # Unreadable/misnamed cores are the core-audit checks' beat, not ours.
-        return
-    else:
-        _pass("no VLNV collision between repo-tree and .booley_project/cores/ cores")
-
-
-def _check_core_projections(
-    project_root: Path,
-    _pass: Check,
-    _fail: Fail,
-    *,
-    repair: bool,
-) -> None:
-    """Audit or reconcile the derived root-level core copies."""
-    failed = False
-    if repair:
-        try:
-            core_projection.reconcile_projected_cores(project_root)
-        except (core_projection.CoreProjectionError, OSError) as exc:
-            _fail(f"stealth core projection failed: {exc}", "fix the conflict and run booley init")
-            failed = True
-    try:
-        issues = core_projection.projection_issues(project_root)
-    except (core_projection.CoreProjectionError, OSError) as exc:
-        _fail(
-            f"could not inspect stealth core projections: {exc}",
-            "fix the core and run booley init",
-        )
-        failed = True
-        issues = ()
-    if issues:
-        _fail(
-            f"stealth core projections are not current: {', '.join(issues)}",
-            "run booley init to reconcile the ignored root-level projections",
-        )
-    elif not failed:
-        _pass("stealth core projections match .booley_project/cores/")
-    _check_projection_exclude(project_root, _pass, _fail)
-
-
-def _check_projection_exclude(project_root: Path, _pass: Check, _fail: Fail) -> None:
-    """Require generated core projections to stay out of host git status."""
-    common = _git_common_dir(project_root)
-    if common is None:
-        return
-    exclude = common / "info" / "exclude"
-    lines = exclude.read_text(encoding="utf-8").splitlines() if exclude.is_file() else []
-    pattern = f"/{core_projection.PROJECTED_CORE_GLOB}"
-    if pattern not in lines:
-        _fail(
-            "stealth core projections are not excluded from host git status",
-            "run booley init to add the generated projection pattern to .git/info/exclude",
-        )
-    else:
-        _pass("stealth core projections are excluded through .git/info/exclude")
 
 
 def _check_board_orphans(
@@ -2413,29 +1861,22 @@ def _run_mcp_checks(
         reporter.skip_("Interactive Mode checks skipped - project config invalid")
         return
 
-    _check_devcontainer_spec(
+    request = inspection.RuntimeInspectionRequest(
         project.project_root,
         image,
-        _declared_provider(project),
-        reporter.pass_,
-        reporter.warn_,
-        reporter.fail_,
-        _note=reporter.note_,
+        docker_exe,
+        declared_provider=_declared_provider(project),
+        eda=project.eda,
+        fpga_enabled=_flow_enabled(project, "fpga"),
+        expected_cache_mount=nangate_pdk.CONTAINER_ROOT if nangate_pdk.is_ready() else None,
     )
-    _check_issued_session_runtime(
-        project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_
-    )
+    reporter.diagnostics(inspection.inspect_runtime(request).report)
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
     _check_interactive_logs_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
     _check_interactive_logs_tracked(project.project_dir, reporter.pass_, reporter.fail_)
     _run_agent_credential_checks(project, reporter)
     _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
-    _check_interactive_state_volumes(
-        project, docker_exe, verbose, reporter.pass_, reporter.note_, reporter.skip_
-    )
-    _check_issued_image_keepers(
-        project, docker_exe, verbose, reporter.pass_, reporter.note_, reporter.skip_
-    )
+    reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))
 
     if not docker_exe:
         reporter.skip_("MCP server probe skipped - container runtime unavailable")
@@ -2522,554 +1963,6 @@ def _check_interactive_logs_tracked(
         )
     else:
         _pass(".interactive_logs/ is not tracked in git")
-
-
-def _devcontainer_tracked(project_root: Path) -> bool:
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--", ".devcontainer"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
-
-
-def _check_devcontainer_spec(  # noqa: PLR0911,PLR0912 — ordered drift precondition ladder
-    project_root: Path,
-    sandbox_image: str,
-    declared_provider: str | None,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-    *,
-    _note: Check | None = None,
-) -> None:
-    """ADR 0018: untracked, valid devcontainer.json; never a tracked one.
-
-    *sandbox_image* is the project-resolved ``[sandbox].image``; the spec's own
-    ``image`` must match it, else the Session Runtime runs a stale image.
-    *declared_provider* is the project's *explicit* ``[agent] provider``
-    (``None`` = undeclared); the spec's ``BOOLEY_AGENT_APP`` must match it.
-    """
-    note_sink = _note or _pass
-    _warn = _warning_sink(
-        _warn,
-        "interactive.devcontainer-drift",
-        subject=str(devcontainer_path(project_root)),
-    )
-    if _devcontainer_tracked(project_root):
-        _fail(
-            ".devcontainer/ is tracked by git - Interactive Mode unavailable",
-            "remove it from git history; Booley keeps the spec untracked",
-        )
-        return
-    path = devcontainer_path(project_root)
-    if not path.is_file():
-        _warn("no .devcontainer/devcontainer.json - run `booley init` (or `--seed`)")
-        return
-    try:
-        spec = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        _fail(f"{path} does not parse: {exc}", "re-run booley init")
-        return
-    # Agent-app drift: the spec's app is chosen from [agent] provider at seed
-    # time, so a project that adopts (or switches) a provider afterwards leaves
-    # the untracked spec pointing at the previous app. Everything downstream is
-    # keyed off it, and every consequence is SILENT:
-    #   - incontainer_register writes the Booley MCP entry into the *other*
-    #     app's config, so the running agent sees no Booley MCP tools at all while
-    #     the HTTP server sits there healthy — the failure looks like a dead
-    #     server from every angle except the agent's own `mcp list`.
-    #   - the state volume targets the other app's home-state dir, so the real
-    #     agent's sessions/memories live in the writable layer and die on the
-    #     next rebuild.
-    #   - the credential seed mounts the other app's auth files.
-    # Checked BEFORE the persistence check below on purpose: a mismatched spec
-    # still mounts a volume for the app it names, so that check would report a
-    # cheerful pass while the agent actually in use persists nothing.
-    spec_app = dc.spec_agent_app(spec)
-    if declared_provider is not None and spec_app is not None and spec_app != declared_provider:
-        _fail(
-            f"devcontainer.json BOOLEY_AGENT_APP '{spec_app}' != [agent] provider "
-            f"'{declared_provider}': the Booley MCP entry is registered for "
-            f"'{spec_app}', so a '{declared_provider}' session sees no Booley "
-            f"MCP tools, and '{declared_provider}' home-state is not persisted",
-            "re-run `booley init --seed`, then rebuild the container in VS Code",
-        )
-        return
-    # A spec predating the home-state persistence fix mounts no volume at the
-    # agent's ~/.claude (etc.), so in-container transcripts/plans/todos vanish on
-    # every rebuild. Regenerating is untracked and cheap, so warn (not fail).
-    if spec_state_is_persisted(spec) is False:
-        _warn(
-            "devcontainer.json is stale: no persistent volume for the agent's "
-            "home-state - in-container transcripts/plans are lost on every "
-            "rebuild; re-run `booley init` to regenerate"
-        )
-        return
-    # Image drift: the spec is generated from [sandbox].image, but a project
-    # that sets/changes that image *after* the first `booley init` (e.g. adds a
-    # custom project image with an extra toolchain) leaves the untracked spec
-    # frozen on the old image. The Session Runtime then runs the wrong image
-    # and the Flows silently miss their EDA toolchains, indistinguishable
-    # from a real failure. Regenerating is cheap and untracked, so warn.
-    spec_image = spec.get("image")
-    resolved_image = idk.image_id(sandbox_image)
-    immutable_spec = isinstance(spec_image, str) and re.fullmatch(
-        r"sha256:[0-9a-f]{64}", spec_image
-    )
-    if immutable_spec and resolved_image is None:
-        note_sink(
-            "devcontainer.json has an immutable image pin, but [sandbox].image "
-            f"'{sandbox_image}' cannot be resolved here; image drift is unverified "
-            "and host `booley doctor` is authoritative"
-        )
-    elif isinstance(spec_image, str) and spec_image != (resolved_image or sandbox_image):
-        _warn(
-            f"devcontainer.json image '{spec_image}' != immutable ID for [sandbox].image "
-            f"'{sandbox_image}': the Session Runtime runs a stale image "
-            "(missing toolchains it should have) - re-run `booley init --seed`, "
-            "then rebuild the container in VS Code"
-        )
-        return
-    # The setup-managed Nangate cache lives on the host, not in the image.
-    # A session-spec refresh once dropped this mount while leaving the verified
-    # cache intact, so synthesis failed only after a ticket reached its QoR
-    # gate. Host Doctor can see the cache and must catch that drift up front.
-    if nangate_pdk.is_ready() and not dc.spec_mounts_target(spec, nangate_pdk.CONTAINER_ROOT):
-        _warn(
-            "devcontainer.json omits the verified Nangate45 cache mount at "
-            f"{nangate_pdk.CONTAINER_ROOT}: ASIC synthesis will fail before "
-            "elaboration - re-run `booley init --seed`, then rebuild the container"
-        )
-        return
-    # Token-seed drift: a credential stored by `booley auth` reaches VS Code
-    # sessions only through the spec's sidecar mount (VS Code resolves the
-    # ${localEnv:...} route against its own env, where the store is invisible).
-    # A spec seeded before the credential was stored has no mount, so those
-    # sessions silently run on the refreshing credential instead.
-    remote_env = spec.get("remoteEnv")
-    app = remote_env.get("BOOLEY_AGENT_APP") if isinstance(remote_env, dict) else None
-    if (
-        app in auth_token.CREDENTIALS
-        and auth_token.read_stored_token(app)
-        and spec_mounts_token_seed(spec) is False
-    ):
-        _warn(
-            "devcontainer.json predates the stored `booley auth` credential: "
-            "VS Code sessions fall back to the refreshing one - re-run "
-            "`booley init --seed`, then rebuild the container in VS Code"
-        )
-        return
-    # Waveform Viewer drift (ADR 0035): VaporView and its WCP settings reach
-    # the container only via the spec's customizations - never via the image -
-    # so a spec seeded before the viewer landed leaves every scoped
-    # `bwave gui` failing with "WCP server not running", rebuild or not.
-    if not dc.spec_installs_vaporview(spec):
-        _warn(
-            "devcontainer.json predates the Waveform Viewer (ADR 0035) or its "
-            "WCP auto-start patch: VaporView/WCP settings or the postAttach "
-            "manifest patch are missing, so in-container `bwave gui` finds no "
-            "running viewer - re-run `booley init --seed`, then rebuild the "
-            "container in VS Code"
-        )
-        return
-    # Highlighting drift: same delivery path as VaporView (spec-only, never
-    # the image), so a spec seeded before the grammar extensions landed
-    # renders RTL and SDC/XDC constraints as plain text in attached windows.
-    # Cosmetic, but a re-seed is cheap.
-    if not dc.spec_installs_hdl_highlight(spec):
-        note_sink(
-            "devcontainer.json predates the Verilog/SystemVerilog + Tcl "
-            "highlighting extensions: RTL and SDC/XDC constraints render as "
-            "plain text in attached VS Code windows - re-run "
-            "`booley init --seed`, then reload the container window"
-        )
-        return
-    # Rendered-report drift: Live Preview is also spec-delivered. Without it,
-    # self-contained review HTML can be opened only as source inside a
-    # container that deliberately has no desktop browser. A fixed port can
-    # likewise inherit a dead tunnel owned by VS Code's long-lived local
-    # process. This breaks a supported workflow, so it is a warning rather than
-    # a cosmetic note: Doctor must not call this runtime green.
-    if not dc.spec_installs_live_preview(spec):
-        _warn(
-            "devcontainer.json lacks the collision-safe Live Preview setup: "
-            "rendered review HTML may open as a blank preview - re-run init "
-            "with `--seed`, then rebuild the container in VS Code"
-        )
-        return
-    # A synced Python extension discovers host-created workspace virtualenvs
-    # asynchronously and injects their activation command into new terminals.
-    # The runtime already provides its Python stack, so this is both unnecessary
-    # and disruptive when the command lands while a CLI/TUI owns the terminal.
-    if not dc.spec_disables_python_terminal_activation(spec):
-        note_sink(
-            "devcontainer.json predates the Python terminal activation fix: a "
-            "synced Python extension can inject a delayed `source .venv/bin/activate` "
-            "into new terminals - re-run init with `--seed`, then rebuild the "
-            "container in VS Code"
-        )
-        return
-    _pass("devcontainer.json present and structurally current")
-
-
-def _check_issued_session_runtime(  # noqa: PLR0911,PLR0912,PLR0915 - fail-closed audit gates
-    project: ProjectAudit,
-    docker_exe: str | None,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Enforce the immutable host issuance and mounted-Vivado runtime contract."""
-    from booley.eda.config import PROVISIONING_HOST, EdaConfigError, parse_eda_config
-
-    try:
-        eda = parse_eda_config(project.booley_toml.get("eda"))
-    except EdaConfigError as exc:
-        _fail(f"Session Runtime EDA configuration is invalid: {exc}", "fix booley.toml [eda]")
-        return
-
-    vivado = eda.get("vivado")
-    if runtime_context.inside_session_runtime():
-        if not _check_runtime_isolation(_pass, _fail):
-            return
-        mounted = Path("/opt/booley-eda/vivado").is_dir()
-        if (
-            vivado is not None
-            and vivado.provisioning == PROVISIONING_HOST
-            and _flow_enabled(project, "fpga")
-            and not mounted
-        ):
-            _fail(
-                "host-provisioned Vivado is absent from the Session Runtime",
-                "reissue the spec on the host and recreate the Session Runtime",
-            )
-            return
-        if mounted:
-            _check_mounted_vivado_runtime(_pass, _fail)
-        else:
-            _pass("Session Runtime has no active host-mounted commercial EDA request")
-        return
-
-    from booley.runtime import session_issuance as runtime_spec
-
-    path = devcontainer_path(project.project_root)
-    try:
-        spec = json.loads(path.read_text(encoding="utf-8"))
-        issuance = runtime_spec.validate(project.project_root, spec, path)
-    except (OSError, json.JSONDecodeError, runtime_spec.RuntimeSpecError) as exc:
-        _fail(
-            f"Session Runtime host issuance is invalid: {exc}",
-            "run `booley init --seed` on the host and recreate the Session Runtime",
-        )
-        return
-    _pass(f"Session Runtime spec has valid host issuance ({issuance.spec_sha256[:12]})")
-
-    if not docker_exe:
-        _skip("live issued Session Runtime labels/topology - container runtime unavailable")
-        return
-    _check_runtime_booley_version(
-        docker_exe,
-        issuance.image,
-        _pass,
-        _fail,
-    )
-    identity = next(
-        label for label in runtime_spec.labels(issuance) if label.startswith("booley.project-id=")
-    )
-    try:
-        result = subprocess.run(
-            [
-                docker_exe,
-                "ps",
-                "-aq",
-                "--filter",
-                f"label={identity}",
-                "--filter",
-                f"label={dc.INTERACTIVE_ROLE_LABEL}",
-                "--format",
-                "{{.Names}}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        _fail(f"could not inspect issued Session Runtime resources: {exc}", "start Docker")
-        return
-    containers = [name for name in result.stdout.splitlines() if name]
-    drifted = [
-        name
-        for name in containers
-        if not session_runtime._container_matches_issuance(
-            name,
-            issuance,
-            spec=spec,
-            workspace=project.project_root,
-        )
-    ]
-    if result.returncode != 0:
-        _fail("could not list issued Session Runtime resources", "start Docker")
-    elif drifted:
-        _fail(
-            "live Session Runtime state differs from current host issuance",
-            session_runtime.issued_runtime_drift_fix(
-                project.project_root,
-                issuance,
-                drifted,
-            ),
-        )
-    elif containers:
-        _pass("live Session Runtime state matches the current host issuance")
-    else:
-        _pass("no stale live Session Runtime resources for this Project")
-    _check_issued_license_relay(
-        project.project_root,
-        containers,
-        issuance,
-        _pass,
-        _fail,
-    )
-
-
-def _probe_runtime_booley_version(
-    docker_exe: str,
-    image: str,
-) -> subprocess.CompletedProcess[str]:
-    """Read Booley's version from the issued image without network access."""
-    probe = "import booley; print(booley.__version__)"
-    return subprocess.run(
-        [
-            docker_exe,
-            "run",
-            "--rm",
-            "--pull=never",
-            "--network",
-            "none",
-            "--entrypoint",
-            "python3",
-            image,
-            "-c",
-            probe,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-
-
-def _check_runtime_booley_version(
-    docker_exe: str,
-    image: str,
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Require the host package and issued Runtime Image to agree."""
-    try:
-        result = _probe_runtime_booley_version(docker_exe, image)
-    except (OSError, subprocess.SubprocessError) as exc:
-        _fail(
-            f"could not read the issued Session Runtime Booley version: {exc}",
-            "rebuild the sandbox image with `booley init --force`, then recreate the Session Runtime",
-        )
-        return
-
-    runtime_version = result.stdout.strip()
-    if result.returncode != 0 or not runtime_version:
-        detail = (result.stderr or result.stdout).strip()
-        _fail(
-            "issued Runtime Image cannot report its Booley version",
-            f"rebuild it with `booley init --force` ({detail or f'exit {result.returncode}'})",
-        )
-        return
-
-    host_version = _read_version()
-    if runtime_version != host_version:
-        _fail(
-            f"host Booley {host_version} != Session Runtime Booley {runtime_version}",
-            "run `booley init --force`, then `booley session down` and "
-            "`booley session up` to recreate the Session Runtime",
-        )
-        return
-    _pass(f"host and Session Runtime use Booley {host_version}")
-
-
-def _check_runtime_isolation(_pass: Check, _fail: Fail) -> bool:
-    """Enforce authority absence and fixed Project-data identity in every runtime."""
-    if os.environ.get("BOOLEY_PROJECT_DIR") != "/booley-project":
-        _fail(
-            "Session Runtime Project-data identity differs from /booley-project",
-            "reissue the spec on the host and recreate the Session Runtime",
-        )
-        return False
-    required = Path("/booley-project")
-    forbidden = (
-        Path("/var/run/docker.sock"),
-        Path("/run/docker.sock"),
-        Path("/root/.ssh"),
-        Path("/home/agent/.ssh"),
-        Path("/root/.config/booley/eda"),
-        Path("/home/agent/.config/booley/eda"),
-    )
-    if not required.is_dir() or any(_runtime_path_exposed(path) for path in forbidden):
-        _fail(
-            "Session Runtime exposes a forbidden host-authority surface",
-            "reissue the spec on the host and recreate the Session Runtime",
-        )
-        return False
-    _pass("Session Runtime Project data and host-authority isolation verified")
-    return True
-
-
-def _runtime_path_exposed(path: Path) -> bool:
-    """Treat an agent-inaccessible root path as isolated, not as a Doctor crash."""
-    try:
-        return path.exists()
-    except PermissionError:
-        return False
-
-
-def _check_issued_license_relay(
-    project_root: Path,
-    containers: list[str],
-    issuance: object,
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Validate exact live relay bytes, endpoints, aliases, and hardening."""
-    from booley.eda.provisioning.licensing.flexnet_docker import (
-        RelayDockerError,
-        RelayProfile,
-        resources_for_session,
-        validate_relay,
-    )
-    from booley.runtime import session_issuance as runtime_spec
-
-    try:
-        profile = runtime_spec.requested_license(project_root)
-    except runtime_spec.RuntimeSpecError as exc:
-        _fail(f"License Profile authority is invalid: {exc}", "repair the host EDA authority")
-        return
-    if profile is None:
-        return
-    image_id = getattr(issuance, "relay_image_id", None)
-    if not isinstance(image_id, str):
-        _fail("issued License Profile lacks an immutable relay image", "run `booley init --seed`")
-        return
-    relay = resources_for_session(str(project_root.resolve()))
-    if not session_runtime._relay_objects_exist(relay):
-        if containers:
-            _fail(
-                "licensed Session Runtime has no relay topology",
-                "run `booley session up --rebuild`",
-            )
-        return
-    try:
-        validate_relay(
-            relay,
-            containers[0] if len(containers) == 1 else None,
-            RelayProfile(
-                profile.server_ipv4,
-                profile.server_hostid,
-                profile.lmgrd_port,
-                profile.vendor_port,
-            ),
-            issuance_labels=runtime_spec.labels(issuance),
-            image=image_id,
-        )
-    except RelayDockerError as exc:
-        _fail(
-            f"live FlexNet relay topology differs from host issuance: {exc}",
-            "run `booley session down`, then `booley session up --rebuild`",
-        )
-        return
-    _pass("live FlexNet relay bytes, hardening, endpoints, and aliases verified")
-
-
-def _check_mounted_vivado_runtime(  # noqa: PLR0911 - ordered fail-closed runtime gates
-    _pass: Check, _fail: Fail
-) -> None:
-    """Prove wrapper, release mount, architecture support, and runtime identity."""
-    from booley.eda.provisioning.policies.vivado import (
-        CONTAINER_TARGET,
-        SUPPORTED_VERSION,
-        wrapper_sha256,
-    )
-
-    wrapper = Path("/usr/local/bin/vivado")
-    executable = Path(CONTAINER_TARGET) / "Vivado" / "bin" / "vivado"
-    try:
-        digest = hashlib.sha256(wrapper.read_bytes()).hexdigest()
-    except OSError as exc:
-        _fail(f"mounted Vivado wrapper is unreadable: {exc}", "rebuild the Runtime Image")
-        return
-    if digest != wrapper_sha256() or not os.access(executable, os.X_OK):
-        _fail(
-            "mounted Vivado wrapper/release layout differs from built-in policy",
-            "rebuild the image and reissue the Session Runtime spec on the host",
-        )
-        return
-    compatibility = (
-        Path("/usr/lib/x86_64-linux-gnu/libudev.so.1"),
-        Path("/usr/lib/x86_64-linux-gnu/libpixman-1.so.0"),
-        Path("/usr/lib/locale/locale-archive"),
-    )
-    if any(not path.is_file() for path in compatibility):
-        _fail(
-            "Runtime Image lacks the fixed Vivado compatibility libraries or locale",
-            "rebuild the Runtime Image and reissue the spec",
-        )
-        return
-    try:
-        mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
-    except OSError as exc:
-        _fail(f"cannot inspect mounted Vivado release: {exc}", "recreate the Session Runtime")
-        return
-    fields = [line.split(" - ", 1)[0].split() for line in mountinfo.splitlines()]
-    matches = [parts for parts in fields if len(parts) > 5 and parts[4] == CONTAINER_TARGET]
-    if len(matches) != 1 or "ro" not in matches[0][5].split(","):
-        _fail(
-            "Vivado release root is not one exact read-only runtime mount",
-            "reissue the spec and recreate the Session Runtime",
-        )
-        return
-    license_pointer = os.environ.get("XILINXD_LICENSE_FILE")
-    if (
-        license_pointer is not None
-        and re.fullmatch(r"[1-9][0-9]{0,4}@booley-license-xilinx", license_pointer) is None
-    ):
-        _fail(
-            "XILINXD_LICENSE_FILE differs from the fixed private-relay contract",
-            "reissue the Session Runtime from the host License Profile",
-        )
-        return
-    try:
-        result = subprocess.run(
-            [str(wrapper), "-version"],
-            capture_output=True,
-            text=True,
-            timeout=90,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        _fail(f"Vivado runtime identity probe failed: {exc}", "check the mounted installation")
-        return
-    output = f"{result.stdout}\n{result.stderr}"
-    if result.returncode != 0 or f"vivado v{SUPPORTED_VERSION}" not in output.lower():
-        _fail(
-            f"mounted Vivado did not report exact version {SUPPORTED_VERSION}",
-            "register and grant an exact supported Vivado installation",
-        )
-        return
-    _pass(f"mounted Vivado {SUPPORTED_VERSION} wrapper, read-only release, and identity verified")
 
 
 def _check_devcontainer_excludes(
@@ -3194,8 +2087,8 @@ def _agent_app_installed(provider: str) -> bool:
     """Whether *provider*'s CLI is on this host (indirection keeps both
     detectors monkeypatchable as module globals)."""
     if provider == auth_token.APP_CLAUDE:
-        return _detect_claude_code()
-    return _detect_codex()
+        return host_environment.inspect_agent_installation("claude").installed
+    return host_environment.inspect_agent_installation("codex").installed
 
 
 def _provider_not_installed_reason(provider: str) -> str:
@@ -3383,7 +2276,10 @@ def _check_subscription_creds_health(
 
     from booley.runtime import runtime_context
 
-    if provider != auth_token.APP_CLAUDE or not _detect_claude_code():
+    if (
+        provider != auth_token.APP_CLAUDE
+        or not host_environment.inspect_agent_installation("claude").installed
+    ):
         return
     app = auth_token.APP_CLAUDE
     rotation_free = bool(auth_token.resolve_token(app)) or (
@@ -3602,84 +2498,6 @@ def _check_wcp_server(
         _pass(description)
     else:
         _fail(f"{description}: nothing is listening in '{container}'", _wcp_dark_fix(argv_prefix))
-
-
-def _check_interactive_state_volumes(
-    project: ProjectAudit,
-    docker_exe: str | None,
-    verbose: bool,
-    _pass: Check,
-    _note: Check,
-    _skip: Check,
-) -> None:
-    """Surface persistent home-state volumes and flag orphans for pruning.
-
-    The named volumes that keep an interactive session's plans/transcripts alive
-    across rebuilds persist by design; the reaper never removes them. They
-    accumulate one-per-project, so list any belonging to *other* projects as
-    prunable (a removed project leaves its volume behind).
-    """
-    if not docker_exe:
-        _skip("interactive state-volume check skipped - runtime unavailable")
-        return
-    vols = idk.state_volumes()
-    if not vols:
-        _pass("no persistent interactive state volumes")
-        return
-
-    project_id = dc.canonical_project_id(project.project_root)
-    mine = {dc.state_volume_name(app, project_id) for app in (dc.APP_CLAUDE, dc.APP_CODEX)}
-    others = sorted(v for v in vols if v not in mine)
-
-    present_mine = sorted(v for v in vols if v in mine)
-    if present_mine:
-        _pass(f"interactive state persists for this project ({', '.join(present_mine)})")
-
-    if others:
-        _note(
-            f"{len(others)} interactive state volume(s) from other projects persist; "
-            "remove unused ones with: docker volume rm <name>",
-        )
-        if verbose:
-            for v in others:
-                info(f"    {v}")
-    elif not present_mine:
-        # Volumes exist but the regex shape changed — surface the count anyway.
-        _pass(f"{len(vols)} interactive state volume(s) present")
-
-
-def _check_issued_image_keepers(
-    project: ProjectAudit,
-    docker_exe: str | None,
-    verbose: bool,
-    _pass: Check,
-    _note: Check,
-    _skip: Check,
-) -> None:
-    """Surface retained issuance images and possible keepers from old projects."""
-    if not docker_exe:
-        _skip("issued image-keeper check skipped - runtime unavailable")
-        return
-    tags = idk.issued_image_tags()
-    if not tags:
-        _pass("no retained Runtime Image keepers")
-        return
-
-    from booley.runtime import session_issuance as runtime_spec
-
-    mine = runtime_spec.keeper_image(project.project_root)
-    others = [tag for tag in tags if tag != mine]
-    if mine in tags:
-        _pass("issued Runtime Image is retained for this Project")
-    if others:
-        _note(
-            f"{len(others)} issued image keeper(s) from other projects persist; "
-            "after confirming those projects are gone, remove one with: "
-            "docker image rm <keeper-tag>"
-        )
-        if verbose:
-            for tag in others:
-                info(f"    {tag}")
 
 
 def _run_mcp_probe(

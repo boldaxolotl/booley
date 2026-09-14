@@ -52,13 +52,14 @@ def _run_docker(
     args: list[str],
     *,
     timeout: int = _DOCKER_TIMEOUT,
+    executable: str = "docker",
 ) -> subprocess.CompletedProcess:
     """Run ``docker <args>`` capturing output. Never raises on non-zero exit.
 
     Tests patch this single function to simulate the Docker CLI.
     """
     return subprocess.run(
-        ["docker", *args],
+        [executable, *args],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -128,9 +129,17 @@ def container_running(name: str) -> bool:
     return result.returncode == 0 and result.stdout.strip().lower() == "true"
 
 
-def image_exists(name: str) -> bool:
+def image_exists(name: str, *, executable: str = "docker", timeout: int = 15) -> bool:
+    """Observe local image availability without pulling or starting an image."""
     try:
-        return _run_docker(["image", "inspect", name], timeout=15).returncode == 0
+        if executable == "docker":
+            return _run_docker(["image", "inspect", name], timeout=timeout).returncode == 0
+        return (
+            _run_docker(
+                ["image", "inspect", name], timeout=timeout, executable=executable
+            ).returncode
+            == 0
+        )
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
 
