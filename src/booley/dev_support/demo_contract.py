@@ -89,14 +89,12 @@ def _status(repository: Path) -> str:
     ).stdout.strip()
 
 
-def _ticket_fields(project_dir: Path, slug: str) -> tuple[TicketSpec, Path]:
+def _ticket_fields(project_root: Path, project_dir: Path, slug: str) -> tuple[TicketSpec, Path]:
     ticket, _status_name = find_ticket_file(project_dir / "tickets", slug)
     if ticket is None:
         raise DemoContractError(f"ticket {slug!r} is missing")
     try:
-        document = TicketIO(
-            project_dir / "tickets", project_root=project_dir.parent
-        ).load_document(slug)
+        document = TicketIO(project_dir / "tickets", project_root=project_root).load_document(slug)
     except (AcceptanceBasisError, OSError, ValueError) as exc:
         raise DemoContractError(f"ticket {slug!r} is invalid: {exc}") from exc
     return document.spec, ticket
@@ -268,7 +266,7 @@ def validate_demo(
     try:
         _require_checkout_ref(root, contract.upstream_ref, "upstream")
         _require_checkout_ref(project, contract.project_ref, "project")
-        spec, ticket = _ticket_fields(project, contract.ticket_slug)
+        spec, ticket = _ticket_fields(root, project, contract.ticket_slug)
     except DemoContractError as exc:
         return [str(exc)]
     except subprocess.CalledProcessError as exc:

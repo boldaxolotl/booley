@@ -851,7 +851,7 @@ def test_checkout_ticket_and_fixture_helpers(
     project = tmp_path / "project"
     (project / "tickets" / "board" / "queue").mkdir(parents=True)
     with pytest.raises(DemoContractError, match="ticket 'demo' is missing"):
-        demo_contract_module._ticket_fields(project, "demo")
+        demo_contract_module._ticket_fields(tmp_path, project, "demo")
     ticket = project / "tickets" / "board" / "queue" / "demo.md"
     ticket.write_text(
         _SIMPLE_TICKET.replace(
@@ -872,7 +872,7 @@ def test_checkout_ticket_and_fixture_helpers(
     monkeypatch.setattr(
         demo_contract_module, "ticket_authoring_view", lambda _root: _simple_view()
     )
-    spec, found = demo_contract_module._ticket_fields(project, "demo")
+    spec, found = demo_contract_module._ticket_fields(tmp_path, project, "demo")
     assert spec.fields["summary"] == "Demo"
     assert found == ticket
 

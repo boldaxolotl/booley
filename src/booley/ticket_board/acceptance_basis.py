@@ -553,6 +553,13 @@ def _validate_converted_record(value: Any) -> None:  # noqa: PLR0912, PLR0915
             raise AcceptanceBasisError(
                 "zero mandatory Criteria require a committed human amendment"
             )
+        optional_ids = {
+            row.get("identity")
+            for row in spec["criteria"]
+            if isinstance(row, dict) and row.get("mandatory") is False
+        }
+        if set(amendment["optional_conversions"]) - optional_ids:
+            raise AcceptanceBasisError("human amendment names unavailable optional Criteria")
     try:
         calculated = hashlib.sha256(
             json.dumps(
