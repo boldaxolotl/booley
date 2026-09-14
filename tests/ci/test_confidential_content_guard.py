@@ -170,6 +170,43 @@ def _scan_pull_request(repo: Path, event: dict) -> subprocess.CompletedProcess[s
     )
 
 
+def _scan_pr_text(
+    repo: Path,
+    *,
+    files: tuple[Path, ...] = (),
+    stdin: str | None = None,
+    config: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    if config is not None:
+        env["BOOLEY_LEAK_GUARD_CONFIG_B64"] = config
+    command = [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text"]
+    for path in files:
+        command.extend(("--file", str(path)))
+    if stdin is not None:
+        command.append("--stdin")
+    return subprocess.run(
+        command,
+        input=stdin,
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def _sync_ci_secret(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(repo), "sync-ci-secret"],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
 def test_clean_commit_passes(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     (repo / "clean.txt").write_text("ordinary public content\n", encoding="utf-8")
@@ -600,6 +637,140 @@ def test_pull_request_metadata_clean_event_passes(tmp_path: Path) -> None:
     result = _scan_pull_request(repo, event)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_proposed_pr_text_blocks_file_and_stdin_without_echoing_terms(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    draft = tmp_path / "body.md"
+    draft.write_text(f"private detail: {SENTINEL}\n", encoding="utf-8")
+
+    file_result = _scan_pr_text(repo, files=(draft,), config=_encoded_config())
+    stdin_result = _scan_pr_text(repo, stdin=f"title {SENTINEL}", config=_encoded_config())
+
+    for result in (file_result, stdin_result):
+        assert result.returncode == 1
+        assert "confidential term" in result.stderr
+        assert SENTINEL not in result.stderr
+
+
+def test_proposed_pr_text_accepts_clean_title_and_body(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    draft = tmp_path / "body.md"
+    draft.write_text("public description\n", encoding="utf-8")
+
+    result = _scan_pr_text(
+        repo, files=(draft,), stdin="public title", config=_encoded_config()
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_proposed_pr_text_prefers_local_toml_over_ci_env(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    stale_config = base64.b64encode(
+        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["other"]\n'.encode()
+    ).decode()
+
+    result = _scan_pr_text(repo, stdin=SENTINEL, config=stale_config)
+
+    assert result.returncode == 1
+    assert "confidential term" in result.stderr
+
+
+def test_proposed_pr_text_fails_closed_for_missing_input_or_config(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+
+    missing_input = _scan_pr_text(repo, config=_encoded_config())
+    missing_config = _scan_pr_text(repo, stdin="public title")
+
+    assert missing_input.returncode == 1
+    assert "could not complete" in missing_input.stderr
+    assert missing_config.returncode == 1
+    assert "could not complete" in missing_config.stderr
+
+
+def test_proposed_pr_text_fails_closed_when_draft_cannot_be_read(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    missing = tmp_path / "missing.md"
+
+    result = _scan_pr_text(repo, files=(missing,), config=_encoded_config())
+
+    assert result.returncode == 1
+    assert "could not complete" in result.stderr
+    assert str(missing) not in result.stderr
+
+
+def test_proposed_pr_text_fails_closed_when_draft_is_too_large(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    draft = tmp_path / "body.md"
+    draft.write_bytes(b"x" * (1024 * 1024 + 1))
+
+    result = _scan_pr_text(repo, files=(draft,), config=_encoded_config())
+
+    assert result.returncode == 1
+    assert "exceeds the inspection size limit" in result.stderr
+
+
+def test_sync_ci_secret_uses_local_toml_even_when_ci_env_is_set(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    raw_config = base64.b64decode(_encoded_config())
+    (repo / ".git/booley-leak-guard.toml").write_bytes(raw_config)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        '#!/bin/sh\ntest -z "${BOOLEY_LEAK_GUARD_CONFIG_B64+x}" || exit 2\n'
+        'test -z "${GH_REPO+x}" || exit 3\n'
+        'printf "%s\\n" "$*" > "$CAPTURE_ARGS"\ncat > "$CAPTURE_STDIN"\n',
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+    captured_args = tmp_path / "args"
+    captured_stdin = tmp_path / "stdin"
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "BOOLEY_LEAK_GUARD_CONFIG_B64": base64.b64encode(b"stale config").decode(),
+        "GH_REPO": "somewhere/else",
+        "CAPTURE_ARGS": str(captured_args),
+        "CAPTURE_STDIN": str(captured_stdin),
+    }
+
+    result = _sync_ci_secret(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert captured_args.read_text(encoding="utf-8").strip() == (
+        "secret set BOOLEY_LEAK_GUARD_CONFIG_B64 --app actions"
+    )
+    assert base64.b64decode(captured_stdin.read_bytes()) == raw_config
+    assert SENTINEL not in result.stdout + result.stderr
+
+
+def test_sync_ci_secret_fails_before_gh_when_local_toml_is_missing(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    env = os.environ | {"BOOLEY_LEAK_GUARD_CONFIG_B64": _encoded_config()}
+
+    result = _sync_ci_secret(repo, env)
+
+    assert result.returncode == 1
+    assert "could not complete" in result.stderr
+
+
+def test_sync_ci_secret_does_not_echo_gh_failure_output(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(f'#!/bin/sh\necho "{SENTINEL}" >&2\nexit 1\n', encoding="utf-8")
+    fake_gh.chmod(0o755)
+    env = os.environ | {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+    result = _sync_ci_secret(repo, env)
+
+    assert result.returncode == 1
+    assert "could not complete" in result.stderr
+    assert SENTINEL not in result.stderr
 
 
 def test_workflow_scans_metadata_on_pr_edits() -> None:

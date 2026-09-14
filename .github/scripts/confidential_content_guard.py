@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Fail-closed confidential-content guard for Git hooks and CI.
+"""Fail-closed confidential-content guard for Git hooks, PR drafts, and CI.
 
-The vocabulary is deliberately not stored in this repository.  Local hooks
-load TOML from ``.git/booley-leak-guard.toml`` (or the path named by the
-repo-local ``booley.leakGuardConfig`` setting).  CI receives the same TOML as
-base64 in ``BOOLEY_LEAK_GUARD_CONFIG_B64``.  Diagnostics identify matched
-terms by a one-way digest and never echo the confidential text.
+The vocabulary is deliberately not stored in this repository. The local TOML
+in ``.git/booley-leak-guard.toml`` (or the path named by the repo-local
+``booley.leakGuardConfig`` setting) is authoritative. ``sync-ci-secret``
+publishes its validated base64 encoding to ``BOOLEY_LEAK_GUARD_CONFIG_B64``
+for CI. Diagnostics identify matched terms by a one-way digest and never echo
+the confidential text.
 
 This file is stdlib-only because CI executes the trusted default-branch copy
 against an untrusted pull-request checkout without importing candidate code.
@@ -43,6 +44,7 @@ _ALLOWED_AUTHORS_ENV = "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS"
 _LOCAL_CONFIG_NAME = "booley-leak-guard.toml"
 _MAX_BLOB_BYTES = 256 * 1024 * 1024
 _MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024
+_MAX_PR_TEXT_BYTES = 1024 * 1024
 _MAX_FINDINGS = 100
 _BINARY_RUN_RE = re.compile(rb"[\t\x20-\x7e]{6,}")
 _IDENT_RE = re.compile(r"^(?P<name>.*) <(?P<email>[^<>]*)> \d+ [+-]\d{4}$")
@@ -163,20 +165,30 @@ def _configured_path(repo: Path) -> Path | None:
     return _common_git_config(repo)
 
 
-def _config_bytes(repo: Path) -> bytes:
-    encoded = os.environ.get(_CONFIG_B64_ENV, "").strip()
-    if encoded:
-        try:
-            return base64.b64decode(encoded, validate=True)
-        except (ValueError, binascii.Error) as exc:
-            raise GuardError("the CI confidential configuration is not valid base64") from exc
-    path = _configured_path(repo)
+def _read_local_config(path: Path | None) -> bytes:
     if path is None:
         raise GuardError("the confidential vocabulary is required but not configured")
     try:
         return path.read_bytes()
     except OSError as exc:
         raise GuardError("the configured confidential vocabulary cannot be read") from exc
+
+
+def _local_config_bytes(repo: Path) -> bytes:
+    return _read_local_config(_configured_path(repo))
+
+
+def _config_bytes(repo: Path) -> bytes:
+    path = _configured_path(repo)
+    if path is not None:
+        return _read_local_config(path)
+    encoded = os.environ.get(_CONFIG_B64_ENV, "").strip()
+    if encoded:
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise GuardError("the CI confidential configuration is not valid base64") from exc
+    return _read_local_config(None)
 
 
 def _string_list(value: object, field: str) -> list[str]:
@@ -229,13 +241,16 @@ def _combined_matcher(patterns: tuple[TermPattern, ...]) -> re.Pattern[str]:
 def load_config(repo: Path | str | None = None) -> GuardConfig:
     """Load and validate the explicit confidential guard configuration."""
     root = Path(repo or Path.cwd()).resolve()
+    return _parse_config(_config_bytes(root), root)
+
+
+def _parse_config(raw_config: bytes, repo: Path) -> GuardConfig:
     try:
-        raw_config = _config_bytes(root)
         document = tomllib.loads(raw_config.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise GuardError("the confidential configuration is not valid UTF-8 TOML") from exc
     terms, authors, ignored = _config_lists(document)
-    authors.extend(_extra_authors(root))
+    authors.extend(_extra_authors(repo))
     terms = list(dict.fromkeys(terms))
     authors = list(dict.fromkeys(authors))
     if not terms:
@@ -742,6 +757,66 @@ def pull_request_main(repo: Path | str, event_path: Path) -> int:
     return 0
 
 
+def _read_pr_text(stream: BinaryIO) -> str:
+    data = stream.read(_MAX_PR_TEXT_BYTES + 1)
+    if len(data) > _MAX_PR_TEXT_BYTES:
+        raise GuardError("proposed PR text exceeds the inspection size limit")
+    return data.decode("utf-8")
+
+
+def pr_text_main(repo: Path | str, files: list[Path], *, read_stdin: bool = False) -> int:
+    """Inspect proposed PR text before a GitHub write publishes it."""
+    root = Path(repo).resolve()
+    try:
+        if not files and not read_stdin:
+            raise GuardError("at least one proposed PR text input is required")
+        config = load_config(root)
+        findings: list[Finding] = []
+        for index, path in enumerate(files, start=1):
+            with path.open("rb") as stream:
+                text = _read_pr_text(stream)
+            _add_limited(findings, _scan_text(text, f"proposed PR text {index}", config))
+        if read_stdin:
+            text = _read_pr_text(sys.stdin.buffer)
+            _add_limited(findings, _scan_text(text, "proposed PR stdin text", config))
+    except (GuardError, OSError, UnicodeError) as exc:
+        error = exc if isinstance(exc, GuardError) else GuardError("proposed PR text cannot be read")
+        return _guard_failure(error, sys.stderr)
+    if findings:
+        _print_findings(findings, config, sys.stderr)
+        return 1
+    print("Confidential-content proposed PR text guard: clean.")
+    return 0
+
+
+def sync_ci_secret_main(repo: Path | str) -> int:
+    """Publish the authoritative local TOML as the Actions secret."""
+    root = Path(repo).resolve()
+    try:
+        raw_config = _local_config_bytes(root)
+        _parse_config(raw_config, root)
+        env = os.environ.copy()
+        env["GH_PROMPT_DISABLED"] = "1"
+        env.pop(_CONFIG_B64_ENV, None)
+        env.pop("GH_REPO", None)
+        result = subprocess.run(
+            ["gh", "secret", "set", _CONFIG_B64_ENV, "--app", "actions"],
+            input=base64.b64encode(raw_config),
+            cwd=root,
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise GuardError("the GitHub Actions confidential configuration could not be updated")
+    except (OSError, subprocess.SubprocessError, GuardError) as exc:
+        error = exc if isinstance(exc, GuardError) else GuardError("gh secret set could not run")
+        return _guard_failure(error, sys.stderr)
+    print("GitHub Actions confidential configuration synchronized from local TOML.")
+    return 0
+
+
 def audit_main(repo: Path | str, revisions: list[str], *, include_worktree: bool = False) -> int:
     root = Path(repo).resolve()
     try:
@@ -778,6 +853,14 @@ def _parser() -> argparse.ArgumentParser:
         "pull-request", help="inspect GitHub pull-request metadata"
     )
     pull_request_parser.add_argument("--event", required=True, type=Path)
+    pr_text_parser = subparsers.add_parser(
+        "pr-text", help="inspect proposed PR text before publishing it"
+    )
+    pr_text_parser.add_argument("--file", action="append", default=[], type=Path)
+    pr_text_parser.add_argument("--stdin", action="store_true")
+    subparsers.add_parser(
+        "sync-ci-secret", help="publish local confidential TOML to the Actions secret"
+    )
     audit_parser = subparsers.add_parser("audit", help="inspect full ancestry of revisions")
     audit_parser.add_argument("--rev", action="append", default=[], help="revision to inspect")
     audit_parser.add_argument(
@@ -798,6 +881,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if parsed.command == "pull-request":
         return pull_request_main(parsed.repo, parsed.event)
+    if parsed.command == "pr-text":
+        return pr_text_main(parsed.repo, parsed.file, read_stdin=parsed.stdin)
+    if parsed.command == "sync-ci-secret":
+        return sync_ci_secret_main(parsed.repo)
     revisions = parsed.rev or ["HEAD"]
     return audit_main(parsed.repo, revisions, include_worktree=parsed.worktree)
 
