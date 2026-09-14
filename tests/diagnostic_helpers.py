@@ -201,14 +201,17 @@ def _isolate_runtime_files(monkeypatch):
     is_dir = Path.is_dir
     exists = Path.exists
     hidden = {
-        "/var/run/docker.sock",
-        "/run/docker.sock",
-        "/root/.ssh",
-        "/home/agent/.ssh",
-        "/root/.config/booley/eda",
-        "/home/agent/.config/booley/eda",
+        Path(name)
+        for name in (
+            "/var/run/docker.sock",
+            "/run/docker.sock",
+            "/root/.ssh",
+            "/home/agent/.ssh",
+            "/root/.config/booley/eda",
+            "/home/agent/.config/booley/eda",
+        )
     }
     monkeypatch.setattr(
-        Path, "is_dir", lambda p: True if str(p) == "/booley-project" else is_dir(p)
+        Path, "is_dir", lambda p: True if p == Path("/booley-project") else is_dir(p)
     )
-    monkeypatch.setattr(Path, "exists", lambda p: False if str(p) in hidden else exists(p))
+    monkeypatch.setattr(Path, "exists", lambda p: False if p in hidden else exists(p))
