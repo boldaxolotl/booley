@@ -173,7 +173,7 @@ repaired, report the actionable error without turning basis internals into user 
 CLASSIFIED=$(python -m booley.ticket_board classify)
 ```
 
-Inspect every non-done Ticket's published Acceptance Basis and Target Plan as well as
+Inspect every non-done Ticket's published Ticket baseline and Target Plan as well as
 its Scope. Preserve ordinary scope-overlap and interface-dependency inference for all
 non-done Tickets. If an active provider exports a New or Replacement Target selected
 by the new Ticket's Criteria, add that provider to `dependencies` in human mode. In
@@ -205,7 +205,7 @@ A reproduced bug may use `fail -> pass` on its exact registered SIM test; an
 ordinary passing test uses `pass`. If the bug has no failing test, recommend a
 verification ticket that creates one and a dependent fix ticket.
 
-Only the Board publishes `acceptance_basis`, `created`, and `feature_branch`.
+Only the Board publishes `machine`, `created`, and `feature_branch`.
 Do not author generated metadata, SHAs, `target_plan`, `ticket_format`, or a
 `criteria` wrapper. An annotated Target requires `merge` in `on_success`;
 `cleanup` is otherwise independent of merge.
@@ -267,7 +267,7 @@ mapping, or split them between sections when mandatory/optional status differs.
 Project scalar Criteria use their registered name in uppercase and the value
 `true`; they produce the lowercase registered Criterion without a Target binding.
 
-For relative thresholds, use the current Target at its Acceptance Basis by
+For relative thresholds, use the current Target at its Ticket baseline by
 default. A replacement defaults to its `(replaces <existing Target>)`
 predecessor. A `(new)` or `(temp)` Target needs an explicit existing `baseline`
 Target. Percentage thresholds require a `%` suffix. Consult the live
@@ -293,7 +293,7 @@ Ticket Creation Guidance is Project-owned, free-form Markdown consumed **only he
 creation**. Its authority is limited to the proposed Ticket's Criteria,
 Target annotations, and `on_success`.
 It cannot change scope, priority, dependencies, ticket depth or body, approval gates,
-Acceptance Basis publication, or an existing Ticket.
+Ticket baseline publication, or an existing Ticket.
 
 Resolve the Project directory through Booley rather than assuming its location. Read
 `ticket_creation.md` when it exists. For Projects created before that filename was

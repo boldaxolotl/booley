@@ -15,39 +15,39 @@ their referenced filesets, and owned test tables before enqueue. Added filesets
 may be referenced only by planned Targets. Acceptance derives removals from the
 plan: replacement baselines and ephemeral Targets disappear, and persistent and
 replacement Targets remain. Enqueue validates and commits these approved
-authoring inputs while publishing the Acceptance Basis.
+authoring inputs while recording the Ticket baseline in machine metadata.
 
 This replaces the unstructured `on_success.remove_targets` operation with an
 explicit transition model. The old field has a hard cutoff: any Ticket that
 contains it is invalid, including Tickets already queued or in progress. The
-published Acceptance Basis may retain a machine-owned canonical removal set, but
+resolved Ticket baseline may retain a machine-owned canonical removal set, but
 it derives that set exclusively from `target_plan`; it is not an authoring
 surface or user-facing workflow detail.
 
-An eligible basis-published Ticket in `waiting`, `queued`, `running`, `blocked`, or
+An eligible baseline-published Ticket in `waiting`, `queued`, `running`, `blocked`, or
 `review` may provide its planned persistent and replacement Targets to
 dependent Tickets. Ephemeral Targets and retiring replacement baselines are
 never providers. The consumer declares the provider as a normal Ticket
 dependency; Booley pins and materializes the provider's published Target surface
-internally, then refreshes the untouched consumer Ticket and publishes a new
-Acceptance Basis against the accepted dependency state before its first execution. Many Tickets may
+internally, then refreshes the untouched consumer Ticket and records a new
+machine generation against the accepted dependency state before its first execution. Many Tickets may
 consume one planned Target, and replacements may form an ordered chain, but
 sibling replacements of the same eventual baseline must be ordered or
 resolved explicitly.
 
-This ADR amends ADR-0059's one-basis-per-Authoring-Generation rule only for a
+This ADR amends ADR-0059's one-baseline-per-Ticket-Generation rule only for a
 pre-execution **Basis Refresh**. Once all dependencies are accepted, Booley may replace
-the basis of a still-untouched waiting Ticket without user approval when its approved
+the baseline of a still-untouched waiting Ticket without user approval when its approved
 authored inputs are unchanged. The publication and waiting-to-queued transition are one
-recoverable transaction; the old basis and receipt remain retained evidence. Any drift
+recoverable transaction; the old generation remains in retained evidence. Any drift
 blocks for `return-to-draft` instead of being treated as a refresh.
 
 Ticket Amendment is a separate, Human-approved exception for blocked Tickets.
 It can relax existing Criteria or add Scope without changing Target Plans,
-provider bindings, baseline commits, or destination refs. The Board retains
-the old basis and resumes the same implementation against a newly published
-basis. A downstream consumer still checks the provider's exported Target and
-control surface, not its earlier pinned basis ID.
+provider bindings, or destination refs. The Board pins new authoring commits
+in the Ticket's machine section and joins the prior implementation to that
+lineage. A downstream consumer still checks the provider's exported Target and
+control surface, not its earlier pinned generation.
 
 Because a provider may itself pass through this refresh, downstream consumers do not
 require its accepted basis ID to equal the earlier pin. They require the same exported

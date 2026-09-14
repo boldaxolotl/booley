@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.ticket_board import cleanup_only, operations
-from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
 
 def _git(root: Path, *args: str) -> str:
@@ -19,7 +19,7 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _ticket(tmp_path: Path) -> tuple[Path, AcceptanceBasis, dict[str, str]]:
+def _ticket(tmp_path: Path) -> tuple[Path, TicketBaseline, dict[str, str]]:
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", "main")
@@ -36,7 +36,7 @@ def _ticket(tmp_path: Path) -> tuple[Path, AcceptanceBasis, dict[str, str]]:
     _git(worktree, "add", "README.md")
     _git(worktree, "commit", "-m", "accepted")
     source = _git(worktree, "rev-parse", "HEAD")
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",

@@ -1,4 +1,4 @@
-"""Executable reproducer for F-87 generated Acceptance Basis inputs."""
+"""Executable reproducer for F-87 generated Ticket baseline inputs."""
 
 from __future__ import annotations
 

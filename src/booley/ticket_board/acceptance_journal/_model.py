@@ -149,7 +149,7 @@ class AcceptanceJournal:
 
     @property
     def roles(self) -> tuple[str, ...]:
-        """Return participant roles in Acceptance Basis order."""
+        """Return participant roles in Ticket baseline order."""
         return tuple(item["role"] for item in self.participants)
 
     @property
@@ -583,7 +583,7 @@ def load_journal(
 
 
 def load_persisted_journal(path: Path) -> AcceptanceJournal:
-    """Read and fully validate a journal when its Acceptance Basis is unavailable."""
+    """Read and fully validate a journal when its Ticket baseline is unavailable."""
     value = read_json(path)
     try:
         mapping = require_dict(value, field="acceptance journal")

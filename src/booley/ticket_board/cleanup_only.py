@@ -10,14 +10,14 @@ from typing import Any
 
 from booley.runtime.project_dir import runtime_dir
 
-from .acceptance_basis import (
-    AcceptanceBasis,
+from .helpers import validate_ticket_slug
+from .persistence import atomic_replace_bytes
+from .ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
     validate_current_basis_refs,
     worktree_for_ref,
 )
-from .helpers import validate_ticket_slug
-from .persistence import atomic_replace_bytes
 from .ticket_repositories import resolve_inner_project_repo
 
 _STATES = ("pinned", "approved", "cleaned_project", "cleaned_outer", "done")
@@ -27,12 +27,12 @@ class CleanupOnlyError(RuntimeError):
     """Accepted Ticket heads could not be safely retained or cleaned."""
 
 
-def _journal_path(root: Path, slug: str, basis: AcceptanceBasis) -> Path:
+def _journal_path(root: Path, slug: str, basis: TicketBaseline) -> Path:
     validate_ticket_slug(slug)
     return runtime_dir(root) / "acceptance" / "cleanup-only" / slug / f"{basis.basis_id}.json"
 
 
-def _source_ref(slug: str, basis: AcceptanceBasis, role: str) -> str:
+def _source_ref(slug: str, basis: TicketBaseline, role: str) -> str:
     return f"refs/booley/acceptance/cleanup-only/{slug}/{basis.basis_id}/{role}"
 
 
@@ -68,9 +68,7 @@ def _ref_sha(repository: Path, ref: str) -> str | None:
     )
 
 
-def _pin_sources(
-    root: Path, slug: str, basis: AcceptanceBasis, sources: Mapping[str, str]
-) -> None:
+def _pin_sources(root: Path, slug: str, basis: TicketBaseline, sources: Mapping[str, str]) -> None:
     for participant in basis.participants:
         repository = _repository(root, participant)
         source = sources[participant.role]
@@ -82,7 +80,7 @@ def _pin_sources(
             raise CleanupOnlyError(f"accepted source pin {ref} changed")
 
 
-def _read_journal(root: Path, slug: str, basis: AcceptanceBasis) -> dict[str, Any] | None:
+def _read_journal(root: Path, slug: str, basis: TicketBaseline) -> dict[str, Any] | None:
     path = _journal_path(root, slug, basis)
     if not path.is_file():
         return None
@@ -109,7 +107,7 @@ def _read_journal(root: Path, slug: str, basis: AcceptanceBasis) -> dict[str, An
     return record
 
 
-def _write_journal(root: Path, slug: str, basis: AcceptanceBasis, record: dict[str, Any]) -> None:
+def _write_journal(root: Path, slug: str, basis: TicketBaseline, record: dict[str, Any]) -> None:
     atomic_replace_bytes(
         _journal_path(root, slug, basis),
         (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode(),
@@ -119,7 +117,7 @@ def _write_journal(root: Path, slug: str, basis: AcceptanceBasis, record: dict[s
 def cleanup_only_sources(
     root: Path,
     slug: str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     expected_sources: Mapping[str, str],
 ) -> dict[str, str] | None:
     """Return durable accepted heads after checking every retained Git ref."""
@@ -155,7 +153,7 @@ def _retire_participant(root: Path, participant: BasisParticipant, source: str) 
 def advance_cleanup_only(
     tio: Any,
     slug: str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     expected_sources: Mapping[str, str],
 ) -> bool:
     """Pin, approve, and retire unmerged Ticket refs in recoverable order."""

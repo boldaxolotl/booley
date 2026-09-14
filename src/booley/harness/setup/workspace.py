@@ -131,7 +131,7 @@ def _hook_acceptance_controls(worktree_path: Path, surface_root: Path | None) ->
 
         controls = acceptance_control_paths(root)
     except (OSError, ValueError):
-        logger.warning("Could not enumerate Acceptance Basis controls for %s", root)
+        logger.warning("Could not enumerate Ticket baseline controls for %s", root)
         return []
     if worktree_path == root:
         return [path for path in controls if not path.startswith(".booley_project/")]
@@ -505,7 +505,7 @@ def _attach_clean_detached_basis_branch(
         return StepResult(
             block_reason=(
                 "Ticket Workspace uses 'detached HEAD' with uncommitted changes; "
-                f"refusing to attach Acceptance Basis ref {expected_ref!r}"
+                f"refusing to attach Ticket baseline ref {expected_ref!r}"
             )
         )
     ancestry = git_run(
@@ -519,7 +519,7 @@ def _attach_clean_detached_basis_branch(
         return StepResult(
             block_reason=(
                 "Detached Ticket Workspace HEAD is not contained in "
-                f"Acceptance Basis ref {expected_ref!r}{suffix}"
+                f"Ticket baseline ref {expected_ref!r}{suffix}"
             )
         )
     branch = expected_ref.removeprefix("refs/heads/")
@@ -527,8 +527,7 @@ def _attach_clean_detached_basis_branch(
     if attached.returncode != 0:
         return StepResult(
             block_reason=(
-                f"Failed to attach Acceptance Basis ref {expected_ref!r}: "
-                f"{attached.stderr.strip()}"
+                f"Failed to attach Ticket baseline ref {expected_ref!r}: {attached.stderr.strip()}"
             )
         )
     return None
@@ -538,7 +537,7 @@ def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult 
     """Require the outer checkout to remain on its generation-qualified basis ref."""
     basis = ctx.acceptance_basis
     if basis is None:
-        raise ValueError("Acceptance Basis is unavailable")
+        raise ValueError("Ticket baseline is unavailable")
     expected_ref = basis.participant("outer").ticket_ref
     result = git_run(worktree_path, ["symbolic-ref", "--quiet", "HEAD"], timeout=10)
     current_ref = result.stdout.strip()
@@ -551,7 +550,7 @@ def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult 
         return StepResult(
             block_reason=(
                 f"Ticket Workspace uses {current_ref or 'detached HEAD'!r}; "
-                f"expected Acceptance Basis ref {expected_ref!r}"
+                f"expected Ticket baseline ref {expected_ref!r}"
             )
         )
     ancestry = git_run(
@@ -565,7 +564,7 @@ def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult 
         return StepResult(
             block_reason=(
                 f"Ticket Workspace branch {expected_ref!r} does not descend from "
-                f"Acceptance Basis commit {basis.outer_sha}{suffix}"
+                f"Ticket baseline commit {basis.outer_sha}{suffix}"
             )
         )
     ctx.feature_branch = expected_ref.removeprefix("refs/heads/")
@@ -768,10 +767,10 @@ def _validate_materialized_acceptance_basis(
     """Validate the basis-bound surface after disposable checkouts are materialized."""
     if ctx.acceptance_basis is None:
         return None
-    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
     from booley.ticket_board.acceptance_validation import (
         assert_ticket_worktree_inputs_unchanged,
     )
+    from booley.ticket_board.ticket_baseline import TicketBaselineError
 
     ticket_path = _current_ticket_path(ctx)
     if ticket_path is None:
@@ -786,7 +785,7 @@ def _validate_materialized_acceptance_basis(
             slug=ctx.slug,
             ticket_path=ticket_path,
         )
-    except (OSError, AcceptanceBasisError) as exc:
+    except (OSError, TicketBaselineError) as exc:
         return StepResult(block_reason=str(exc))
     return None
 
@@ -849,8 +848,8 @@ def _prepare_ticket_checkout(
             sim_flow_enabled=sim_flow_enabled,
         )
         return preparation if preparation.ok else StepResult(block_reason=preparation.error)
-    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
     from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
+    from booley.ticket_board.ticket_baseline import TicketBaselineError
 
     if ticket_path is None:
         return StepResult(block_reason=f"Ticket {ctx.slug!r} is unavailable during setup")
@@ -861,7 +860,7 @@ def _prepare_ticket_checkout(
             slug=ctx.slug,
             ticket_path=ticket_path,
         )
-    except AcceptanceBasisError as exc:
+    except TicketBaselineError as exc:
         return StepResult(block_reason=str(exc))
 
 

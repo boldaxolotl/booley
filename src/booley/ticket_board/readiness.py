@@ -11,16 +11,16 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
-from .acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
+from .acceptance_targets import resolve_commit
+from .acceptance_validation import prepare_acceptance_checkout
+from .scanner import find_ticket_file
+from .ticket_baseline import (
+    TicketBaseline,
+    TicketBaselineError,
     assert_live_inputs_unchanged,
     materialize_current_ticket_checkout,
     validate_ticket_view,
 )
-from .acceptance_targets import resolve_commit
-from .acceptance_validation import prepare_acceptance_checkout
-from .scanner import find_ticket_file
 from .ticket_document import (
     TicketDocument,
     convert_ticket_document,
@@ -88,13 +88,13 @@ def _validate_checkout_basis(
         if basis.project_sha:
             project_repository = resolve_inner_project_repo(root)
             if project_repository is None:
-                raise AcceptanceBasisError(
+                raise TicketBaselineError(
                     "Acceptance Basis project participant repository is missing"
                 )
             resolve_commit(project_repository, basis.project_sha)
         ticket, _status = find_ticket_file(tickets_dir, slug)
         if ticket is None:
-            raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during readiness")
+            raise TicketBaselineError(f"ticket {slug!r} is unavailable during readiness")
         validation_errors = _validate_current_ticket_view(
             root,
             ticket,
@@ -102,7 +102,7 @@ def _validate_checkout_basis(
             basis,
             document,
         )
-    except (AcceptanceBasisError, OSError, ValueError) as exc:
+    except (TicketBaselineError, OSError, ValueError) as exc:
         return [str(exc)]
     return validation_errors
 
@@ -111,7 +111,7 @@ def _validate_current_ticket_view(
     root: Path,
     ticket: Path,
     slug: str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     document: TicketDocument,
 ) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:

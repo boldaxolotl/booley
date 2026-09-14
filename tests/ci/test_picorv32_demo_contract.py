@@ -509,7 +509,8 @@ def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -
     assert result.returncode == 0
     fields, body = parse_frontmatter(destination.read_text(encoding="utf-8"))
     assert fields["summary"] == "Demo"
-    assert fields["acceptance_basis"]["schema"] == 1
+    assert fields["machine"]["schema"] == 1
+    assert fields["machine"]["baseline"]["outer"]["commit"]
     assert "target_contract" not in fields
     assert "bugs: clean" in destination.read_text(encoding="utf-8")
     assert body.endswith("## Description\n\nDo the work.")
@@ -854,9 +855,7 @@ def test_checkout_ticket_and_fixture_helpers(
         demo_contract_module._ticket_fields(tmp_path, project, "demo")
     ticket = project / "tickets" / "board" / "queue" / "demo.md"
     ticket.write_text(
-        _SIMPLE_TICKET.replace(
-            "on_success: []\n", "on_success: []\nacceptance_basis: {schema: 1}\n"
-        ),
+        _SIMPLE_TICKET.replace("on_success: []\n", "on_success: []\nmachine: {schema: 1}\n"),
         encoding="utf-8",
     )
     converted = convert_ticket_document(
@@ -912,7 +911,7 @@ def test_ticket_fixture_comparison_ignores_generated_publication_fields(
         _SIMPLE_TICKET.replace(
             "on_success: []\n",
             "on_success: []\ncreated: '2026-09-05T00:00:00Z'\n"
-            "acceptance_basis: {schema: 1, participants: []}\n",
+            "machine: {schema: 1, participants: []}\n",
         ),
         encoding="utf-8",
     )

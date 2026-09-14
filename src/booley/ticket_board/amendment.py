@@ -19,20 +19,6 @@ from booley.criteria.ticket_projection import project_ticket_criteria
 from booley.runtime.project_dir import runtime_dir
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
-from .acceptance_basis import (
-    PATH_POLICY,
-    AcceptanceBasis,
-    BasisParticipant,
-    assert_live_inputs_unchanged,
-    authored_ticket_record_from_spec,
-    canonical_json,
-    load_acceptance_basis_from_document,
-    materialize_basis_checkout,
-    record_relative_path,
-    validate_current_basis_refs,
-    worktree_for_ref,
-    write_basis_receipt,
-)
 from .acceptance_path_policy import is_static_acceptance_path
 from .amendment_proposal import AmendmentProposal
 from .amendment_v2 import build_v2_amendment_proposal
@@ -42,6 +28,20 @@ from .logs import PROGRESS_DEFAULTS, load_progress, save_progress
 from .paths import existing_runtime_file, human_log_file, ticket_log_dir
 from .persistence import atomic_replace_bytes, atomic_write_once
 from .scanner import find_ticket_file
+from .ticket_baseline import (
+    PATH_POLICY,
+    BasisParticipant,
+    TicketBaseline,
+    assert_live_inputs_unchanged,
+    canonical_json,
+    load_ticket_baseline_from_document,
+    materialize_basis_checkout,
+    ticket_baseline_from_machine,
+    ticket_machine_digest,
+    ticket_machine_from_spec,
+    validate_current_basis_refs,
+    worktree_for_ref,
+)
 from .ticket_document import (
     TicketDocument,
     TicketSpec,
@@ -89,7 +89,10 @@ def _journal_path(root: Path, slug: str) -> Path:
 
 def pending_amendment(root: Path, slug: str) -> dict[str, Any] | None:
     """Read the recoverable current operation, if one exists."""
-    path = _journal_path(root, slug)
+    try:
+        path = _journal_path(root, slug)
+    except FileNotFoundError:
+        return None
     if not path.exists():
         return None
     try:
@@ -111,7 +114,7 @@ def _write_journal(root: Path, row: dict[str, Any]) -> None:
     atomic_replace_bytes(_journal_path(root, row["slug"]), canonical_json(row))
 
 
-def _repositories(root: Path, basis: AcceptanceBasis) -> dict[str, tuple[Path, Path]]:
+def _repositories(root: Path, basis: TicketBaseline) -> dict[str, tuple[Path, Path]]:
     result: dict[str, tuple[Path, Path]] = {}
     project = resolve_inner_project_repo(root)
     for participant in basis.participants:
@@ -127,7 +130,7 @@ def _repositories(root: Path, basis: AcceptanceBasis) -> dict[str, tuple[Path, P
 
 def _status_snapshot(
     root: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     scope: list[str],
     repositories: dict[str, tuple[Path, Path]],
 ) -> dict[str, Any]:
@@ -196,7 +199,7 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
     source = ticket.read_bytes()
     document = _convert_ticket(root, slug, source.decode("utf-8"))
     fields, body = dict(document.spec.fields), document.spec.body
-    basis = load_acceptance_basis_from_document(root, slug, document)
+    basis = load_ticket_baseline_from_document(root, slug, document)
     heads = validate_current_basis_refs(root, basis)
     proposal = _validated_proposal(root, slug, basis, document.spec, request)
     revised_document = _convert_ticket(root, slug, _render_ticket(proposal.fields, body))
@@ -222,6 +225,7 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
         "slug": slug,
         "ticket_sha256": hashlib.sha256(source).hexdigest(),
         "basis": basis.as_dict(),
+        "old_machine": basis.ticket_identity(),
         "source_state": source_state,
         "prior_scope": prior_scope,
         "state_sha256": state_digest,
@@ -240,13 +244,13 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
 
 
 def _validated_proposal(
-    root: Path, slug: str, basis: AcceptanceBasis, spec: TicketSpec, request: Any
+    root: Path, slug: str, basis: TicketBaseline, spec: TicketSpec, request: Any
 ) -> AmendmentProposal:
     with tempfile.TemporaryDirectory(prefix="booley-amend-preview-") as directory:
         reference = materialize_basis_checkout(root, basis, Path(directory) / "basis")
         assert_live_inputs_unchanged(basis, root, reference)
         with ticket_conversion_context(root, slug, "executable") as context:
-            view = context.resolve_view({"acceptance_basis": basis.as_dict()})
+            view = context.resolve_view({"machine": basis.ticket_identity()})
             proposal = build_v2_amendment_proposal(spec, request, root, view)
         if not proposal.fields["CRITERIA_MANDATORY"]:
             proposal.fields["acceptance_amendment"] = {
@@ -281,7 +285,7 @@ def _preflight_state(path: Path, proposal: AmendmentProposal) -> None:
 def _preview_evidence(
     path: Path,
     proposal: AmendmentProposal,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     checkout: Path,
     params: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
@@ -333,7 +337,7 @@ def apply_amendment(tio: Any, slug: str, request: Any, expected_preview: str) ->
                 raise AmendmentError("apply requires an exact preview digest")
             tio._validate_return_to_draft_preconditions(slug, check_owner=False)
             if load_basis_publication(root, slug) is not None:
-                raise AmendmentError("another Acceptance Basis publication is pending")
+                raise AmendmentError("another Ticket baseline publication is pending")
             preview, _proposal = _inspection(tio, slug, request)
             if preview["digest"] != expected_preview:
                 raise AmendmentError("amendment preview is stale; preview the current proposal")
@@ -343,6 +347,7 @@ def apply_amendment(tio: Any, slug: str, request: Any, expected_preview: str) ->
                 "prepared": {},
                 "published": [],
                 "new_basis": {},
+                "machine": {},
                 "phase": "preparing",
             }
             _write_journal(root, journal)
@@ -357,18 +362,15 @@ def apply_amendment(tio: Any, slug: str, request: Any, expected_preview: str) ->
 
 def _finish_amendment(tio: Any, journal: dict[str, Any]) -> dict[str, Any]:
     root = Path(tio._project_root).resolve()
-    old = AcceptanceBasis.from_mapping(journal["basis"])
+    old = ticket_baseline_from_machine(journal["old_machine"])
+    if old.as_dict() != journal["basis"]:
+        raise AmendmentError("amendment journal baseline identity changed")
     repositories = _repositories(root, old)
     _prepare_amendment_participants(root, journal, old, repositories)
     _publish_refs(root, journal, old, repositories)
-    new_basis = AcceptanceBasis.from_mapping(journal["new_basis"])
-    write_basis_receipt(
-        root,
-        journal["slug"],
-        new_basis,
-        source_sha256=journal["ticket_sha256"],
-        operation_id=journal["operation_id"],
-    )
+    new_basis = ticket_baseline_from_machine(journal["machine"])
+    if new_basis.as_dict() != journal["new_basis"]:
+        raise AmendmentError("prepared amendment baseline identity changed")
     _publish_board_and_state(tio, journal, new_basis, repositories)
     _publish_handoff_and_queue(tio, journal, new_basis)
     return {
@@ -382,11 +384,10 @@ def _finish_amendment(tio: Any, journal: dict[str, Any]) -> dict[str, Any]:
 def _prepare_amendment_participants(
     root: Path,
     journal: dict[str, Any],
-    old: AcceptanceBasis,
+    old: TicketBaseline,
     repositories: dict[str, tuple[Path, Path]],
 ) -> None:
-    record = _amended_record(root, journal, old)
-    for participant in old.participants:
+    for participant in sorted(old.participants, key=lambda row: row.role != "project"):
         role = participant.role
         if role in journal["prepared"]:
             continue
@@ -403,7 +404,7 @@ def _prepare_amendment_participants(
             checkout,
             participant,
             journal,
-            record if _record_owner(old) == role else None,
+            _amendment_machine(root, old, journal) if role == "outer" else None,
         )
         journal["prepared"][role] = commits
         _write_journal(root, journal)
@@ -418,33 +419,47 @@ def _prepare_amendment_participants(
             )
             for row in old.participants
         )
-        journal["new_basis"] = AcceptanceBasis(participants).as_dict()
+        journal["new_basis"] = TicketBaseline(participants).as_dict()
+        journal["machine"] = _amendment_machine(root, old, journal, participants=participants)
         journal["phase"] = "prepared"
         _write_journal(root, journal)
 
 
-def _record_owner(basis: AcceptanceBasis) -> str:
-    return "project" if basis.project_sha else "outer"
-
-
-def _amended_record(root: Path, journal: dict[str, Any], old: AcceptanceBasis) -> bytes:
-    from .acceptance_basis import load_basis_record
-
-    old_record = load_basis_record(root, journal["slug"], old)
-    loaded = old.with_record(old_record)
+def _amendment_machine(
+    root: Path,
+    old: TicketBaseline,
+    journal: dict[str, Any],
+    *,
+    participants: tuple[BasisParticipant, ...] | None = None,
+) -> dict[str, Any]:
+    """Build signed Ticket metadata after the project commit is prepared."""
+    if participants is None:
+        participants = tuple(
+            BasisParticipant(
+                row.role,
+                journal["prepared"].get(row.role, {}).get("authoring", row.authoring_sha),
+                row.ticket_ref,
+                row.destination_ref,
+                row.destination_sha,
+            )
+            for row in old.participants
+        )
+    basis = TicketBaseline(participants, providers=old.providers)
     revised = _convert_ticket(
         root,
         journal["slug"],
         _render_ticket(journal["revised_fields"], journal["body"]),
     )
-    prior_conversions = (old_record.get("amendment") or {}).get("optional_conversions", [])
+    machine = ticket_machine_from_spec(basis, revised.spec, journal["operation_id"])
+    prior_conversions = (old.machine or {}).get("amendment", {}).get("optional_conversions", [])
     conversions = [
         change["criterion"]
         for change in journal["changes"]
         if change["before_mandatory"] and not change["after_mandatory"]
     ]
-    amendment = {
-        "old_basis": old.as_dict(),
+    machine["amendment"] = {
+        "slug": journal["slug"],
+        "previous_generation": old.ticket_identity()["generation"],
         "operation_id": journal["operation_id"],
         "actor": journal["actor"],
         "reason": journal["reason"],
@@ -452,38 +467,7 @@ def _amended_record(root: Path, journal: dict[str, Any], old: AcceptanceBasis) -
         "scope_added": journal["scope_added"],
         "optional_conversions": sorted(set(prior_conversions) | set(conversions)),
     }
-    payload = authored_ticket_record_from_spec(
-        revised.spec,
-        loaded.bindings,
-        removal_targets=loaded.removal_targets,
-        providers=loaded.providers,
-        amendment=amendment,
-    )
-    return canonical_json(payload)
-
-
-def _temporary_index(
-    repository: Path, tree: str, record_path: str | None, data: bytes | None
-) -> str:
-    descriptor, name = tempfile.mkstemp(prefix="booley-amend-index-")
-    os.close(descriptor)
-    index = Path(name)
-    index.unlink()
-    try:
-        _git(repository, "read-tree", tree, index=index)
-        if record_path is not None and data is not None:
-            blob = _git(repository, "hash-object", "-w", "--stdin", data=data)
-            _git(
-                repository,
-                "update-index",
-                "--add",
-                "--cacheinfo",
-                f"100644,{blob},{record_path}",
-                index=index,
-            )
-        return _git(repository, "write-tree", index=index)
-    finally:
-        index.unlink(missing_ok=True)
+    return machine
 
 
 def _checkpoint(checkout: Path, source: dict[str, Any], operation_id: str, role: str) -> str:
@@ -542,20 +526,19 @@ def _prepare_participant(
     checkout: Path,
     participant: BasisParticipant,
     journal: dict[str, Any],
-    record: bytes | None,
+    machine: dict[str, Any] | None,
 ) -> dict[str, str]:
     role = participant.role
     operation = journal["operation_id"]
     checkpoint = _checkpoint(checkout, journal["source_state"][role], operation, role)
-    record_path = (
-        (
-            record_relative_path(root, project_participant=role == "project")
-            / f"{journal['slug']}.json"
-        ).as_posix()
-        if record is not None
-        else None
-    )
-    authoring_tree = _temporary_index(owner, participant.authoring_sha, record_path, record)
+    authoring_tree = _git(owner, "rev-parse", f"{participant.authoring_sha}^{{tree}}")
+    message = f"Ticket {operation}: amend {role} acceptance requirements"
+    if machine is not None:
+        message += (
+            f"\n\nBooley-Ticket-Slug: {journal['slug']}"
+            f"\nBooley-Authored-SHA256: {machine['authored_sha256']}"
+            f"\nBooley-Machine-SHA256: {ticket_machine_digest(machine)}"
+        )
     authoring = _git(
         owner,
         "commit-tree",
@@ -563,10 +546,10 @@ def _prepare_participant(
         "-p",
         participant.authoring_sha,
         "-m",
-        f"Ticket {operation}: amend {role} acceptance requirements",
+        message,
     )
     _git(owner, "update-ref", f"refs/booley/amendments/{operation}/{role}/authoring", authoring)
-    joined_tree = _temporary_index(owner, checkpoint, record_path, record)
+    joined_tree = _git(owner, "rev-parse", f"{checkpoint}^{{tree}}")
     joined = _git(
         owner,
         "commit-tree",
@@ -576,7 +559,7 @@ def _prepare_participant(
         "-p",
         authoring,
         "-m",
-        f"Ticket {operation}: join amended {role} basis",
+        f"Ticket {operation}: join amended {role} baseline",
     )
     _git(owner, "update-ref", f"refs/booley/amendments/{operation}/{role}/joined", joined)
     return {"checkpoint": checkpoint, "authoring": authoring, "joined": joined}
@@ -585,7 +568,7 @@ def _prepare_participant(
 def _publish_refs(
     root: Path,
     journal: dict[str, Any],
-    old: AcceptanceBasis,
+    old: TicketBaseline,
     repositories: dict[str, tuple[Path, Path]],
 ) -> None:
     for role in ("project", "outer"):
@@ -609,7 +592,7 @@ def _publish_refs(
 def _publish_board_and_state(
     tio: Any,
     journal: dict[str, Any],
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     repositories: dict[str, tuple[Path, Path]],
 ) -> None:
     root = Path(tio._project_root).resolve()
@@ -619,18 +602,14 @@ def _publish_board_and_state(
     if ticket is None or status != "blocked":
         raise AmendmentError("blocked Ticket disappeared during publication")
     fields = dict(journal["revised_fields"])
-    fields["acceptance_basis"] = basis.as_dict()
-    fields["acceptance_amendment"] = {
-        "slug": journal["slug"],
-        "operation_id": journal["operation_id"],
-    }
+    fields["machine"] = journal["machine"]
     candidate = _render_ticket(fields, journal["body"]).encode()
     if ticket.read_bytes() != candidate:
         original = hashlib.sha256(ticket.read_bytes()).hexdigest()
         if original != journal["ticket_sha256"]:
             raise AmendmentError("Board Ticket changed during amendment publication")
         atomic_replace_bytes(ticket, candidate, mode=0o644)
-    loaded = load_acceptance_basis_from_document(
+    loaded = load_ticket_baseline_from_document(
         root, journal["slug"], _convert_ticket(root, journal["slug"], candidate.decode())
     )
     _rebuild_state(tio, journal, loaded, repositories["outer"][1])
@@ -639,11 +618,9 @@ def _publish_board_and_state(
 
 
 def _rebuild_state(
-    tio: Any, journal: dict[str, Any], basis: AcceptanceBasis, checkout: Path
+    tio: Any, journal: dict[str, Any], basis: TicketBaseline, checkout: Path
 ) -> None:
     from booley.criteria.state import DevelopmentState
-
-    from .acceptance_basis import load_basis_record
 
     path = existing_runtime_file(tio.logs_dir, journal["slug"], "booley_state.json")
     prior = (
@@ -655,13 +632,11 @@ def _rebuild_state(
         atomic_write_once(prior, path.read_bytes())
     state = DevelopmentState.load(path)
     revised_fields = dict(journal["revised_fields"])
-    revised_fields["acceptance_basis"] = basis.as_dict()
-    revised_fields["acceptance_amendment"] = {
-        "slug": journal["slug"],
-        "operation_id": journal["operation_id"],
-    }
+    revised_fields["machine"] = basis.ticket_identity()
     revised = _convert_ticket(
-        Path(tio._project_root), journal["slug"], _render_ticket(revised_fields, journal["body"])
+        Path(tio._project_root),
+        journal["slug"],
+        _render_ticket(revised_fields, journal["body"]),
     )
     params = project_ticket_criteria(revised.spec).params
     for change in journal["changes"]:
@@ -684,8 +659,7 @@ def _rebuild_state(
     visible_mandatory = any(
         entry.mandatory for name, entry in state.criteria.items() if not name.startswith("_")
     )
-    record = load_basis_record(Path(tio._project_root), journal["slug"], basis)
-    conversions = record["amendment"]["optional_conversions"]
+    conversions = basis.ticket_identity()["amendment"]["optional_conversions"]
     state.authorized_zero_mandatory_basis_id = (
         basis.basis_id if not visible_mandatory and conversions else ""
     )
@@ -693,7 +667,7 @@ def _rebuild_state(
 
 
 def _reevaluate_changed_entry(
-    entry: Any, basis: AcceptanceBasis, journal: dict[str, Any], checkout: Path
+    entry: Any, basis: TicketBaseline, journal: dict[str, Any], checkout: Path
 ) -> None:
     from booley.criteria.state import DevelopmentState
     from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
@@ -735,7 +709,7 @@ def _reevaluate_changed_entry(
             entry.met = False
             entry.stale = True
     detail["amendment_evaluation"] = {
-        "old_basis_id": AcceptanceBasis.from_mapping(journal["basis"]).basis_id,
+        "old_basis_id": TicketBaseline.from_mapping(journal["basis"]).basis_id,
         "new_basis_id": basis.basis_id,
         "source_evidence_sha256": hashlib.sha256(canonical_json(stamp or {})).hexdigest(),
         "reused": bool(reusable),
@@ -785,7 +759,7 @@ def _amendment_summary(journal: dict[str, Any], record: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: AcceptanceBasis) -> None:
+def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: TicketBaseline) -> None:
     root = Path(tio._project_root).resolve()
     slug = journal["slug"]
     history = ticket_log_dir(tio.logs_dir, slug) / "amendments" / f"{journal['operation_id']}.json"
@@ -825,16 +799,16 @@ def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: Accepta
     _journal_path(root, slug).unlink()
 
 
-def _handoff_record(tio: Any, journal: dict[str, Any], basis: AcceptanceBasis) -> dict[str, Any]:
+def _handoff_record(tio: Any, journal: dict[str, Any], basis: TicketBaseline) -> dict[str, Any]:
     outcomes = _amendment_outcomes(tio, journal)
     rerun = [name for name, outcome in outcomes.items() if outcome["evidence"] == "rerun"]
-    next_action = "Resume Ticket Mode under the revised Acceptance Basis"
+    next_action = "Resume Ticket Mode under the revised Ticket baseline"
     if rerun:
         next_action += "; rerun stale Criteria: " + ", ".join(sorted(rerun))
     return {
         "schema": 1,
         "operation_id": journal["operation_id"],
-        "old_basis_id": AcceptanceBasis.from_mapping(journal["basis"]).basis_id,
+        "old_basis_id": TicketBaseline.from_mapping(journal["basis"]).basis_id,
         "new_basis_id": basis.basis_id,
         "reason": journal["reason"],
         "actor": journal["actor"],

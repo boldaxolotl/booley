@@ -149,7 +149,7 @@ def test_control_project_repo_ignores_authored_project_dir(
 def test_basis_bound_workspace_recreates_missing_paired_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+    from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
     ctx = _make_ticket(tmp_path, monkeypatch)
     project = ctx.project_root / ".booley_project"
@@ -165,7 +165,7 @@ def test_basis_bound_workspace_recreates_missing_paired_checkout(
     _git(project, "switch", "main")
     _git(project, "branch", "--set-upstream-to=main", branch)
     outer_sha = _git(ctx.project_root, "rev-parse", "HEAD")
-    ctx.acceptance_basis = AcceptanceBasis(
+    ctx.acceptance_basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",

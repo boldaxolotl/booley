@@ -1,4 +1,4 @@
-"""Immutable acceptance inputs published automatically when a Ticket is enqueued."""
+"""Resolve Ticket-owned baselines and acceptance inputs from pinned commits."""
 
 from __future__ import annotations
 
@@ -9,9 +9,13 @@ import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .ticket_document import TicketDocument, TicketSpec
 
 from booley.core.boundary import (
     BoundaryError,
@@ -24,7 +28,6 @@ from booley.core.models import TargetPlan, TargetPlanError, TargetPlanRole
 from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     checkout_project_dir_relative_to,
-    checkout_runtime_dir,
     resolve_checkout_project_dir,
 )
 from booley.ticket_board.ticket_repositories import (
@@ -34,25 +37,296 @@ from booley.ticket_board.ticket_repositories import (
 
 from .acceptance_path_policy import is_static_acceptance_path
 from .acceptance_targets import AcceptanceTargetBinding, validate_binding_selectors
-from .persistence import WriteOnceConflictError, atomic_write_once
 
 SCHEMA_VERSION = 1
 BLOCK_REASON = "acceptance-input-change-required"
-CONVERTED_RECORD_SCHEMA_VERSION = 3
 TICKET_REF_PREFIX = "refs/heads/booley-generation"
 
 _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SAFE_REF_RE = re.compile(r"^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*$")
-if TYPE_CHECKING:
-    from .ticket_document import TicketDocument, TicketSpec
+_AUTHORED_FIELDS = (
+    "summary",
+    "type",
+    "branch",
+    "project_destination_ref",
+    "scope",
+    "spec",
+    "dependencies",
+    "priority",
+    "criteria",
+    "target_plan",
+    "on_success",
+    "auto_approve",
+    "synthesis",
+    "baseline_tests",
+    "scope_current",
+    "scope_new",
+)
+_RETIRED_FIELDS = frozenset(
+    {"target_contract", "target_contract_history", "base_sha", "acceptance_amendment"}
+)
+_AUTHORED_DEFAULTS: dict[str, Any] = {
+    "scope": [],
+    "spec": "",
+    "dependencies": [],
+    "priority": "medium",
+    "criteria": {},
+    "on_success": {
+        "destination": "review",
+        "merge": True,
+        "cleanup": True,
+        "triage_report": True,
+    },
+}
 
 
-class AcceptanceBasisError(ValueError):
-    """An Acceptance Basis or its committed record is malformed."""
+class TicketBaselineError(ValueError):
+    """A Ticket baseline or its machine metadata is malformed."""
+
+
+def authored_ticket_digest(fields: Mapping[str, Any], body: str) -> str:
+    """Identify only human-authored Ticket content, excluding machine state."""
+    from .criteria_markdown import strip_criteria_from_body
+
+    payload = {
+        "frontmatter": _canonical_authored_fields(fields),
+        "body": strip_criteria_from_body(body).strip(),
+    }
+    return hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def ticket_machine_fields(
+    basis: TicketBaseline,
+    *,
+    fields: Mapping[str, Any],
+    body: str,
+    generation: str,
+) -> dict[str, Any]:
+    """Build the Ticket's machine-only identity after authoring commits exist."""
+    return ticket_machine_from_participants(
+        basis.participants,
+        authored_sha256=authored_ticket_digest(fields, body),
+        generation=generation,
+        providers=basis.providers,
+    )
+
+
+def ticket_machine_from_spec(
+    basis: TicketBaseline, spec: TicketSpec, generation: str
+) -> dict[str, Any]:
+    """Stamp an executable Ticket with its authored v2 semantic digest."""
+    return ticket_machine_from_participants(
+        basis.participants,
+        authored_sha256=spec.semantic_digest(),
+        generation=generation,
+        providers=basis.providers,
+    )
+
+
+def ticket_machine_from_participants(
+    participants: tuple[BasisParticipant, ...],
+    *,
+    authored_sha256: str,
+    generation: str,
+    providers: tuple[ProviderTargetBinding, ...] = (),
+) -> dict[str, Any]:
+    """Use one canonical shape for published and pre-commit Ticket metadata."""
+    machine = {
+        "schema": 1,
+        "authored_sha256": authored_sha256,
+        "generation": generation,
+        "baseline": {
+            row.role: {
+                "commit": row.authoring_sha,
+                "ticket_ref": row.ticket_ref,
+                "destination_ref": row.destination_ref,
+                "destination_commit": row.destination_sha,
+            }
+            for row in participants
+        },
+    }
+    if providers:
+        machine["providers"] = [row.as_dict() for row in providers]
+    return machine
+
+
+def ticket_machine_digest(machine: Mapping[str, Any]) -> str:
+    """Digest machine identities without the outer commit's self-reference."""
+    payload = deepcopy(dict(machine))
+    payload.pop("authored_sha256", None)
+    baseline = require_dict(payload.get("baseline"), field="machine.baseline")
+    outer = require_dict(baseline.get("outer"), field="machine.baseline.outer")
+    outer.pop("commit", None)
+    baseline["outer"] = outer
+    payload["baseline"] = baseline
+    return hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def ticket_baseline_from_fields(fields: Mapping[str, Any], body: str) -> TicketBaseline:
+    """Validate machine metadata and return its pinned repository identities."""
+    if "acceptance_basis" in fields:
+        raise TicketBaselineError(
+            "unsupported Ticket format: recreate this Ticket without acceptance_basis"
+        )
+    retired = sorted(_RETIRED_FIELDS & set(fields))
+    if retired:
+        raise TicketBaselineError(
+            "legacy Ticket fields are unsupported after the hard cutoff: " + ", ".join(retired)
+        )
+    from .constants import KNOWN_FIELDS, RUNTIME_FIELDS
+
+    unknown = set(fields) - KNOWN_FIELDS - RUNTIME_FIELDS
+    if unknown:
+        raise TicketBaselineError(f"unsupported Ticket fields: {', '.join(sorted(unknown))}")
+    basis = ticket_baseline_from_machine(fields.get("machine"))
+    try:
+        machine = require_dict(fields["machine"], field="machine")
+    except BoundaryError as exc:
+        raise TicketBaselineError(str(exc)) from exc
+    if machine["authored_sha256"] != authored_ticket_digest(fields, body):
+        raise TicketBaselineError(f"{BLOCK_REASON}: authored Ticket changed")
+    return basis
+
+
+def ticket_baseline_from_machine(value: Any) -> TicketBaseline:
+    """Parse the machine-only baseline without consulting mutable Ticket content."""
+    try:
+        machine = require_dict(value, field="machine")
+        schema = require_int(machine.get("schema"), field="machine.schema")
+        authored = require_str(machine, "authored_sha256")
+        generation = require_str(machine, "generation")
+        baseline = require_dict(machine.get("baseline"), field="machine.baseline")
+    except BoundaryError as exc:
+        raise TicketBaselineError(str(exc)) from exc
+    required = {"schema", "authored_sha256", "generation", "baseline"}
+    if (
+        schema != 1
+        or not required <= set(machine)
+        or set(machine) - required - {"providers", "amendment"}
+    ):
+        raise TicketBaselineError("machine has invalid fields or schema")
+    if not re.fullmatch(r"[0-9a-f]{32}", generation):
+        raise TicketBaselineError("machine.generation must be a 32-digit hex identifier")
+    if not re.fullmatch(r"[0-9a-f]{64}", authored):
+        raise TicketBaselineError("machine.authored_sha256 is invalid")
+    if set(baseline) not in ({"outer"}, {"outer", "project"}):
+        raise TicketBaselineError("machine.baseline requires outer and optional project")
+    participants = []
+    for role in sorted(baseline):
+        try:
+            row = require_dict(baseline[role], field=f"machine.baseline.{role}")
+        except BoundaryError as exc:
+            raise TicketBaselineError(str(exc)) from exc
+        if set(row) != {"commit", "ticket_ref", "destination_ref", "destination_commit"}:
+            raise TicketBaselineError(f"machine.baseline.{role} has invalid fields")
+        participants.append(
+            {
+                "role": role,
+                "authoring_sha": row["commit"],
+                "ticket_ref": row["ticket_ref"],
+                "destination_ref": row["destination_ref"],
+                "destination_sha": row["destination_commit"],
+            }
+        )
+    basis = TicketBaseline.from_mapping({"schema": 1, "participants": participants})
+    raw_providers = machine.get("providers", [])
+    if not isinstance(raw_providers, list):
+        raise TicketBaselineError("machine.providers must be a list")
+    providers = tuple(provider_binding_from_mapping(row) for row in raw_providers)
+    if providers != tuple(sorted(set(providers))):
+        raise TicketBaselineError("machine.providers must be sorted and unique")
+    if "amendment" in machine:
+        _validate_machine_amendment(machine["amendment"], generation)
+    return TicketBaseline(basis.participants, providers=providers, machine=dict(machine))
+
+
+def _validate_machine_amendment(value: Any, generation: str) -> None:
+    """Validate the Human-approved requirement change signed by the Ticket commit."""
+    try:
+        row = require_dict(value, field="machine.amendment")
+        expected = {
+            "slug",
+            "operation_id",
+            "previous_generation",
+            "actor",
+            "reason",
+            "changes",
+            "scope_added",
+            "optional_conversions",
+        }
+        if set(row) != expected:
+            raise BoundaryError("machine.amendment has invalid fields")
+        slug = require_str(row, "slug")
+        operation = require_str(row, "operation_id")
+        previous = require_str(row, "previous_generation")
+        actor = require_str(row, "actor")
+        reason = require_str(row, "reason")
+        changes = require_list(row.get("changes"), field="machine.amendment.changes")
+        scope = require_list(row.get("scope_added"), field="machine.amendment.scope_added")
+        conversions = require_list(
+            row.get("optional_conversions"), field="machine.amendment.optional_conversions"
+        )
+    except BoundaryError as exc:
+        raise TicketBaselineError(str(exc)) from exc
+    if not slug.strip() or not actor.strip() or not reason.strip():
+        raise TicketBaselineError("machine.amendment requires a slug, Human actor and reason")
+    if operation != generation or not re.fullmatch(r"[0-9a-f]{32}", previous):
+        raise TicketBaselineError("machine.amendment generation identity is invalid")
+    if not changes and not scope:
+        raise TicketBaselineError("machine.amendment has no changes")
+    for change in changes:
+        if not isinstance(change, Mapping) or set(change) != {
+            "criterion",
+            "before_mandatory",
+            "after_mandatory",
+            "thresholds",
+        }:
+            raise TicketBaselineError("machine.amendment Criterion change is invalid")
+        if not isinstance(change["criterion"], str) or not isinstance(
+            change["thresholds"], Mapping
+        ):
+            raise TicketBaselineError("machine.amendment Criterion values are invalid")
+        if not all(
+            isinstance(change[key], bool) for key in ("before_mandatory", "after_mandatory")
+        ):
+            raise TicketBaselineError("machine.amendment mandatory values are invalid")
+    if any(not isinstance(item, str) or not item for item in (*scope, *conversions)):
+        raise TicketBaselineError("machine.amendment Scope or optional conversions are invalid")
+
+
+def validate_ticket_commit_trailers(
+    project_root: Path | str,
+    slug: str,
+    basis: TicketBaseline,
+    machine: Mapping[str, Any],
+) -> None:
+    """Check the independent Git anchor for the Ticket's authored and machine identity."""
+    result = subprocess.run(
+        ["git", "show", "-s", "--format=%B", basis.outer_sha],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise TicketBaselineError(f"{BLOCK_REASON}: outer authoring commit is unavailable")
+    trailers = dict(
+        line.split(": ", 1)
+        for line in result.stdout.splitlines()
+        if line.startswith("Booley-") and ": " in line
+    )
+    expected = {
+        "Booley-Ticket-Slug": slug,
+        "Booley-Authored-SHA256": machine["authored_sha256"],
+        "Booley-Machine-SHA256": ticket_machine_digest(machine),
+    }
+    if any(trailers.get(key) != value for key, value in expected.items()):
+        raise TicketBaselineError(f"{BLOCK_REASON}: Ticket commit identity changed")
 
 
 def requires_return_to_draft(fields: Mapping[str, Any]) -> bool:
-    """Return whether Acceptance Basis drift forbids direct requeue or execution."""
+    """Return whether Ticket baseline drift forbids direct requeue or execution."""
     return fields.get("blocked_reason") == BLOCK_REASON
 
 
@@ -73,7 +347,7 @@ class AcceptancePathPolicy:
             or isinstance(self.schema, bool)
             or self.schema != SCHEMA_VERSION
         ):
-            raise AcceptanceBasisError(f"unsupported Acceptance Path Policy {self.schema}")
+            raise TicketBaselineError(f"unsupported Acceptance Path Policy {self.schema}")
         from .acceptance_targets import acceptance_control_paths
 
         try:
@@ -81,7 +355,7 @@ class AcceptancePathPolicy:
             command = tuple(_worktree_git_command(root, git_owner)) if git_owner else ("git",)
             return acceptance_control_paths(root, git_command=command)
         except (OSError, ValueError) as exc:
-            raise AcceptanceBasisError(
+            raise TicketBaselineError(
                 f"{BLOCK_REASON}: protected-input discovery failed in {project_root}: {exc}"
             ) from exc
 
@@ -111,10 +385,10 @@ class BasisParticipant:
 
 @dataclass(frozen=True, order=True)
 class ProviderTargetBinding:
-    """One basis-pinned Target exported by a dependency Ticket."""
+    """One generation-pinned Target exported by a dependency Ticket."""
 
     provider: str
-    basis_id: str
+    ticket_generation: str
     target: str
     role: str
     surface_sha256: str
@@ -122,7 +396,7 @@ class ProviderTargetBinding:
     def as_dict(self) -> dict[str, str]:
         return {
             "provider": self.provider,
-            "basis_id": self.basis_id,
+            "ticket_generation": self.ticket_generation,
             "target": self.target,
             "role": self.role,
             "surface_sha256": self.surface_sha256,
@@ -130,8 +404,8 @@ class ProviderTargetBinding:
 
 
 @dataclass(frozen=True)
-class AcceptanceBasis:
-    """Minimal immutable pointer stored in Ticket frontmatter."""
+class TicketBaseline:
+    """Resolved baseline and Target inputs for one validated Ticket."""
 
     participants: tuple[BasisParticipant, ...]
     bindings: tuple[AcceptanceTargetBinding, ...] = ()
@@ -139,6 +413,7 @@ class AcceptanceBasis:
     schema: int = SCHEMA_VERSION
     target_plan: TargetPlan | None = None
     providers: tuple[ProviderTargetBinding, ...] = ()
+    machine: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -146,42 +421,38 @@ class AcceptanceBasis:
             or isinstance(self.schema, bool)
             or self.schema != SCHEMA_VERSION
         ):
-            raise AcceptanceBasisError(
-                f"acceptance_basis.schema must be {SCHEMA_VERSION}, got {self.schema!r}"
+            raise TicketBaselineError(
+                f"ticket baseline.schema must be {SCHEMA_VERSION}, got {self.schema!r}"
             )
         roles = tuple(row.role for row in self.participants)
         if roles != tuple(sorted(set(roles))):
-            raise AcceptanceBasisError(
-                "acceptance_basis.participants must be sorted by unique role"
-            )
+            raise TicketBaselineError("ticket baseline.participants must be sorted by unique role")
         if "outer" not in roles:
-            raise AcceptanceBasisError(
-                "acceptance_basis.participants requires an outer participant"
-            )
+            raise TicketBaselineError("ticket baseline.participants requires an outer participant")
 
     @classmethod
-    def from_mapping(cls, value: Any) -> AcceptanceBasis:
-        """Validate the deliberately small frontmatter representation."""
+    def from_mapping(cls, value: Any) -> TicketBaseline:
+        """Validate the small internal participant representation."""
         try:
-            data = require_dict(value, field="acceptance_basis")
+            data = require_dict(value, field="ticket baseline")
         except BoundaryError as exc:
-            raise AcceptanceBasisError(str(exc)) from exc
+            raise TicketBaselineError(str(exc)) from exc
         if set(data) != {"schema", "participants"}:
-            raise AcceptanceBasisError(
-                "acceptance_basis must contain exactly schema and participants"
+            raise TicketBaselineError(
+                "ticket baseline must contain exactly schema and participants"
             )
         try:
-            schema = require_int(data.get("schema"), field="acceptance_basis.schema")
+            schema = require_int(data.get("schema"), field="ticket baseline.schema")
         except BoundaryError as exc:
-            raise AcceptanceBasisError(str(exc)) from exc
+            raise TicketBaselineError(str(exc)) from exc
         if schema != SCHEMA_VERSION:
-            raise AcceptanceBasisError(
-                f"acceptance_basis.schema must be {SCHEMA_VERSION}, got {data.get('schema')!r}"
+            raise TicketBaselineError(
+                f"ticket baseline.schema must be {SCHEMA_VERSION}, got {data.get('schema')!r}"
             )
         try:
-            rows = require_list(data.get("participants"), field="acceptance_basis.participants")
+            rows = require_list(data.get("participants"), field="ticket baseline.participants")
         except BoundaryError as exc:
-            raise AcceptanceBasisError(str(exc)) from exc
+            raise TicketBaselineError(str(exc)) from exc
         return cls(tuple(_parse_participant(row, index) for index, row in enumerate(rows)))
 
     def as_dict(self) -> dict[str, Any]:
@@ -193,6 +464,12 @@ class AcceptanceBasis:
     @property
     def basis_id(self) -> str:
         return hashlib.sha256(canonical_json(self.as_dict())).hexdigest()
+
+    def ticket_identity(self) -> dict[str, Any]:
+        """Return the Ticket-owned identity stamped into acceptance evidence."""
+        if self.machine is None:
+            raise TicketBaselineError("Ticket machine metadata is unavailable")
+        return deepcopy(self.machine)
 
     @property
     def outer_sha(self) -> str:
@@ -207,66 +484,39 @@ class AcceptanceBasis:
         try:
             return next(row for row in self.participants if row.role == role)
         except StopIteration as exc:
-            raise AcceptanceBasisError(f"Acceptance Basis has no {role!r} participant") from exc
-
-    def with_record(self, record: Mapping[str, Any]) -> AcceptanceBasis:
-        bindings = tuple(_binding_from_record(row) for row in record.get("bindings", ()))
-        ticket = record.get("ticket", {})
-        if record.get("schema") != CONVERTED_RECORD_SCHEMA_VERSION:
-            raise AcceptanceBasisError("old Acceptance Basis record schema is unsupported")
-        frontmatter = ticket.get("spec", {}).get("fields", {})
-        if not isinstance(frontmatter, Mapping):
-            raise AcceptanceBasisError("Acceptance Basis record frontmatter is invalid")
-        _validate_record_routing(self, frontmatter)
-        raw_plan = record.get("target_plan", [])
-        try:
-            plan = TargetPlan.from_value(raw_plan) if raw_plan else None
-        except TargetPlanError as exc:
-            raise AcceptanceBasisError(f"Acceptance Basis record {exc}") from exc
-        removals = _record_string_tuple(record, "removal_targets")
-        providers = tuple(
-            provider_binding_from_mapping(row) for row in record.get("providers", ())
-        )
-        return AcceptanceBasis(
-            self.participants,
-            bindings,
-            removals,
-            self.schema,
-            plan,
-            providers,
-        )
+            raise TicketBaselineError(f"Ticket baseline has no {role!r} participant") from exc
 
 
-def _validate_record_routing(basis: AcceptanceBasis, frontmatter: Mapping[str, Any]) -> None:
+def _validate_ticket_routing(basis: TicketBaseline, frontmatter: Mapping[str, Any]) -> None:
     destination = frontmatter.get("branch")
     outer = basis.participant("outer")
     if not isinstance(destination, str) or outer.destination_ref != f"refs/heads/{destination}":
-        raise AcceptanceBasisError(
-            "Acceptance Basis outer destination disagrees with its committed Ticket record"
+        raise TicketBaselineError(
+            "Ticket baseline outer destination disagrees with its authored branch"
         )
     project = next((item for item in basis.participants if item.role == "project"), None)
     project_destination = frontmatter.get("project_destination_ref")
     if project is None:
         if project_destination is not None:
-            raise AcceptanceBasisError(
-                "Acceptance Basis record declares a project destination without a participant"
+            raise TicketBaselineError(
+                "Ticket declares a project destination without a baseline participant"
             )
         return
     if not isinstance(project_destination, str) or project.destination_ref != project_destination:
-        raise AcceptanceBasisError(
-            "Acceptance Basis project destination disagrees with its committed Ticket record"
+        raise TicketBaselineError(
+            "Ticket baseline project destination disagrees with its authored branch"
         )
 
 
 def _parse_participant(value: Any, index: int) -> BasisParticipant:
-    field = f"acceptance_basis.participants[{index}]"
+    field = f"ticket baseline.participants[{index}]"
     try:
         row = require_dict(value, field=field)
     except BoundaryError as exc:
-        raise AcceptanceBasisError(str(exc)) from exc
+        raise TicketBaselineError(str(exc)) from exc
     expected = {"role", "authoring_sha", "ticket_ref", "destination_ref", "destination_sha"}
     if set(row) != expected:
-        raise AcceptanceBasisError(f"{field} must contain exactly {', '.join(sorted(expected))}")
+        raise TicketBaselineError(f"{field} must contain exactly {', '.join(sorted(expected))}")
     try:
         role = require_str(row, "role").strip()
         authoring_sha = require_str(row, "authoring_sha").strip().lower()
@@ -274,15 +524,15 @@ def _parse_participant(value: Any, index: int) -> BasisParticipant:
         destination_ref = require_str(row, "destination_ref").strip()
         destination_sha = require_str(row, "destination_sha").strip().lower()
     except BoundaryError as exc:
-        raise AcceptanceBasisError(f"{field}: {exc}") from exc
+        raise TicketBaselineError(f"{field}: {exc}") from exc
     if role not in {"outer", "project"}:
-        raise AcceptanceBasisError(f"{field}.role must be outer or project")
+        raise TicketBaselineError(f"{field}.role must be outer or project")
     if not _COMMIT_RE.fullmatch(authoring_sha) or not _COMMIT_RE.fullmatch(destination_sha):
-        raise AcceptanceBasisError(f"{field} commit identities must be full Git SHAs")
+        raise TicketBaselineError(f"{field} commit identities must be full Git SHAs")
     if not valid_ticket_ref(ticket_ref):
-        raise AcceptanceBasisError(f"{field}.ticket_ref is not a generation-qualified ref")
+        raise TicketBaselineError(f"{field}.ticket_ref is not a generation-qualified ref")
     if not valid_branch_ref(destination_ref):
-        raise AcceptanceBasisError(f"{field}.destination_ref must be a full branch ref")
+        raise TicketBaselineError(f"{field}.destination_ref must be a full branch ref")
     return BasisParticipant(role, authoring_sha, ticket_ref, destination_ref, destination_sha)
 
 
@@ -306,297 +556,62 @@ def canonical_json(value: Any) -> bytes:
     ).encode()
 
 
-def authored_ticket_record(
-    fields: Mapping[str, Any],
-    body: str,
-    bindings: Any,
-    *,
-    target_plan: TargetPlan | None = None,
-    removal_targets: tuple[str, ...] = (),
-    providers: tuple[ProviderTargetBinding, ...] = (),
-) -> dict[str, Any]:
-    """Reject the retired schema-2 record creation interface."""
-    raise AcceptanceBasisError(
-        "old Acceptance Basis record schema is unsupported; convert the human Ticket"
-    )
-
-
-def authored_ticket_record_from_spec(
-    spec: TicketSpec,
-    bindings: Any,
-    *,
-    removal_targets: tuple[str, ...] = (),
-    providers: tuple[ProviderTargetBinding, ...] = (),
-    amendment: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build a schema-3 Basis record solely from a converted authored Ticket."""
-    record = {
-        "schema": CONVERTED_RECORD_SCHEMA_VERSION,
-        "ticket": {
-            "spec": spec.semantic_record(),
-            "semantic_digest": spec.semantic_digest(),
-        },
-        "bindings": [_binding_to_record(row) for row in bindings],
-        "target_plan": spec.target_plan.as_list() if spec.target_plan is not None else [],
-        "removal_targets": list(removal_targets),
-        "providers": [provider.as_dict() for provider in sorted(providers)],
+def _canonical_authored_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
+    canonical = {
+        name: deepcopy(value)
+        for name, value in _AUTHORED_DEFAULTS.items()
+        if name in _AUTHORED_FIELDS
     }
-    if amendment is not None:
-        record["amendment"] = dict(amendment)
-    _validate_converted_record(record)
-    return record
+    canonical.update({name: fields[name] for name in _AUTHORED_FIELDS if name in fields})
+    from booley.core.models import OnSuccess
 
-
-def _binding_to_record(binding: AcceptanceTargetBinding) -> dict[str, str]:
-    return {
-        "flow": binding.flow,
-        "criterion": binding.criterion,
-        "baseline_identity": binding.baseline,
-        "baseline_selector": binding.baseline_selector,
-        "candidate_identity": binding.candidate,
-        "candidate_selector": binding.candidate_selector,
+    raw_on_success = canonical["on_success"]
+    if not isinstance(raw_on_success, Mapping):
+        raise TicketBaselineError("on_success must be a mapping")
+    configured = OnSuccess.from_dict(dict(raw_on_success))
+    errors = configured.validate()
+    if errors:
+        raise TicketBaselineError(errors[0])
+    canonical["on_success"] = {
+        "destination": configured.destination,
+        "merge": configured.merge,
+        "cleanup": configured.cleanup,
+        "triage_report": configured.triage_report,
     }
-
-
-def _binding_from_record(value: Any) -> AcceptanceTargetBinding:
-    expected = {
-        "flow",
-        "criterion",
-        "baseline_identity",
-        "baseline_selector",
-        "candidate_identity",
-        "candidate_selector",
-    }
-    try:
-        mapping = require_dict(value, field="Acceptance Basis binding")
-        if set(mapping) != expected:
-            raise BoundaryError("Acceptance Basis binding has an invalid schema")
-        binding = AcceptanceTargetBinding(
-            flow=require_str(mapping, "flow"),
-            criterion=require_str(mapping, "criterion"),
-            baseline=require_str(mapping, "baseline_identity"),
-            candidate=require_str(mapping, "candidate_identity"),
-            baseline_selector=require_str(mapping, "baseline_selector"),
-            candidate_selector=require_str(mapping, "candidate_selector"),
-        ).validate_persisted()
-    except (BoundaryError, ValueError) as exc:
-        raise AcceptanceBasisError(str(exc)) from exc
-    return binding
+    if "target_plan" in canonical:
+        try:
+            plan = TargetPlan.from_value(canonical["target_plan"])
+        except TargetPlanError as exc:
+            raise TicketBaselineError(str(exc)) from exc
+        canonical["target_plan"] = plan.as_list()
+    return canonical
 
 
 def provider_binding_from_mapping(value: Any) -> ProviderTargetBinding:
     """Parse and validate one persisted provider Target binding."""
-    expected = {"provider", "basis_id", "target", "role", "surface_sha256"}
+    expected = {"provider", "ticket_generation", "target", "role", "surface_sha256"}
     try:
-        mapping = require_dict(value, field="Acceptance Basis provider binding")
+        mapping = require_dict(value, field="Ticket baseline provider binding")
         if set(mapping) != expected:
-            raise BoundaryError("Acceptance Basis provider binding has an invalid schema")
+            raise BoundaryError("Ticket baseline provider binding has an invalid schema")
         binding = ProviderTargetBinding(
             provider=require_str(mapping, "provider").strip(),
-            basis_id=require_str(mapping, "basis_id").strip(),
+            ticket_generation=require_str(mapping, "ticket_generation").strip(),
             target=require_str(mapping, "target").strip(),
             role=require_str(mapping, "role").strip(),
             surface_sha256=require_str(mapping, "surface_sha256").strip(),
         )
     except BoundaryError as exc:
-        raise AcceptanceBasisError(str(exc)) from exc
+        raise TicketBaselineError(str(exc)) from exc
     if not binding.provider or not binding.target:
-        raise AcceptanceBasisError("Acceptance Basis provider names must be non-empty")
+        raise TicketBaselineError("Ticket baseline provider names must be non-empty")
     if binding.role not in {TargetPlanRole.PERSISTENT.value, TargetPlanRole.REPLACEMENT.value}:
-        raise AcceptanceBasisError("Acceptance Basis provider role is not exportable")
-    if not re.fullmatch(r"[0-9a-f]{64}", binding.basis_id):
-        raise AcceptanceBasisError("Acceptance Basis provider basis_id is invalid")
+        raise TicketBaselineError("Ticket baseline provider role is not exportable")
+    if not re.fullmatch(r"[0-9a-f]{32}", binding.ticket_generation):
+        raise TicketBaselineError("machine provider ticket_generation is invalid")
     if not re.fullmatch(r"[0-9a-f]{64}", binding.surface_sha256):
-        raise AcceptanceBasisError("Acceptance Basis provider surface_sha256 is invalid")
+        raise TicketBaselineError("Ticket baseline provider surface_sha256 is invalid")
     return binding
-
-
-def record_relative_path(project_root: Path | str, *, project_participant: bool) -> Path:
-    if project_participant:
-        return Path("acceptance") / "bases"
-    return checkout_project_dir_relative_to(Path(project_root)) / "acceptance" / "bases"
-
-
-def load_basis_record(
-    project_root: Path | str, slug: str, basis: AcceptanceBasis
-) -> dict[str, Any]:
-    """Read and validate the authored-input record from its owning participant commit."""
-    root = Path(project_root).resolve()
-    project = resolve_inner_project_repo(root)
-    owner = basis.participant("project") if project is not None else basis.participant("outer")
-    repository = project if project is not None else root
-    if repository is None:
-        raise AcceptanceBasisError("Acceptance Basis project participant is unavailable")
-    relative = record_relative_path(root, project_participant=project is not None) / f"{slug}.json"
-    result = subprocess.run(
-        ["git", "show", f"{owner.authoring_sha}:{relative.as_posix()}"],
-        cwd=repository,
-        capture_output=True,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.decode(errors="replace").strip()
-        raise AcceptanceBasisError(f"Acceptance Basis record is unavailable: {detail}")
-    try:
-        record = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise AcceptanceBasisError(f"Acceptance Basis record is invalid JSON: {exc}") from exc
-    _validate_record(record)
-    if canonical_json(record) != result.stdout:
-        raise AcceptanceBasisError("Acceptance Basis record is not canonical JSON")
-    return record
-
-
-def _validate_record(value: Any) -> None:
-    if not isinstance(value, Mapping) or value.get("schema") != CONVERTED_RECORD_SCHEMA_VERSION:
-        raise AcceptanceBasisError("old Acceptance Basis record schema is unsupported")
-    _validate_converted_record(value)
-
-
-def _validate_amendment_record(value: Any) -> None:
-    try:
-        row = require_dict(value, field="Acceptance Basis amendment")
-        if set(row) != {
-            "old_basis",
-            "operation_id",
-            "actor",
-            "reason",
-            "changes",
-            "scope_added",
-            "optional_conversions",
-        }:
-            raise AcceptanceBasisError("Acceptance Basis amendment has invalid fields")
-        AcceptanceBasis.from_mapping(row["old_basis"])
-        operation = require_str(row, "operation_id")
-        actor = require_str(row, "actor")
-        reason = require_str(row, "reason")
-        changes = require_list(row.get("changes"), field="amendment.changes")
-        scope = require_list(row.get("scope_added"), field="amendment.scope_added")
-        conversions = require_list(
-            row.get("optional_conversions"), field="amendment.optional_conversions"
-        )
-    except BoundaryError as exc:
-        raise AcceptanceBasisError(str(exc)) from exc
-    if not re.fullmatch(r"[0-9a-f]{32}", operation) or not actor.strip() or not reason.strip():
-        raise AcceptanceBasisError(
-            "Acceptance Basis amendment identity, actor or reason is invalid"
-        )
-    if not changes and not scope:
-        raise AcceptanceBasisError("Acceptance Basis amendment has no changes")
-    for item in changes:
-        if not isinstance(item, Mapping) or set(item) != {
-            "criterion",
-            "before_mandatory",
-            "after_mandatory",
-            "thresholds",
-        }:
-            raise AcceptanceBasisError("Acceptance Basis amendment Criterion change is invalid")
-    if any(not isinstance(item, str) for item in scope):
-        raise AcceptanceBasisError("Acceptance Basis amendment Scope changes are invalid")
-    if any(not isinstance(item, str) or not item for item in conversions):
-        raise AcceptanceBasisError("Acceptance Basis optional conversions are invalid")
-
-
-def _validate_converted_record(value: Any) -> None:  # noqa: PLR0912, PLR0915
-    """Validate a derived schema-3 record without reading human Ticket syntax."""
-    # Keep structural, semantic, and amendment checks at one record boundary.
-    try:
-        record = require_dict(value, field="Acceptance Basis record")
-        ticket = require_dict(record.get("ticket"), field="Acceptance Basis record.ticket")
-        spec = require_dict(ticket.get("spec"), field="Acceptance Basis record.ticket.spec")
-        digest = require_str(ticket, "semantic_digest")
-        bindings = require_list(record.get("bindings"), field="Acceptance Basis record.bindings")
-        raw_plan = require_list(
-            record.get("target_plan"), field="Acceptance Basis record.target_plan"
-        )
-        removals = require_list(
-            record.get("removal_targets"), field="Acceptance Basis record.removal_targets"
-        )
-        providers = require_list(
-            record.get("providers"), field="Acceptance Basis record.providers"
-        )
-    except BoundaryError as exc:
-        raise AcceptanceBasisError(str(exc)) from exc
-    expected_fields = {
-        "schema",
-        "ticket",
-        "bindings",
-        "target_plan",
-        "removal_targets",
-        "providers",
-    }
-    if "amendment" in record:
-        expected_fields.add("amendment")
-        _validate_amendment_record(record["amendment"])
-    if set(record) != expected_fields or record["schema"] != CONVERTED_RECORD_SCHEMA_VERSION:
-        raise AcceptanceBasisError("Acceptance Basis record has invalid schema-3 fields")
-    if set(ticket) != {"spec", "semantic_digest"} or set(spec) != {
-        "fields",
-        "body",
-        "criteria",
-        "target_plan",
-        "on_success",
-    }:
-        raise AcceptanceBasisError("Acceptance Basis record has invalid converted Ticket fields")
-    if (
-        not isinstance(spec["fields"], dict)
-        or not isinstance(spec["body"], str)
-        or not isinstance(spec["criteria"], list)
-        or not isinstance(spec["target_plan"], list)
-        or not isinstance(spec["on_success"], list)
-    ):
-        raise AcceptanceBasisError("Acceptance Basis record converted Ticket has invalid types")
-    if not any(isinstance(row, dict) and row.get("mandatory") is True for row in spec["criteria"]):
-        amendment = record.get("amendment")
-        if not isinstance(amendment, dict) or not amendment.get("optional_conversions"):
-            raise AcceptanceBasisError(
-                "zero mandatory Criteria require a committed human amendment"
-            )
-        optional_ids = {
-            row.get("identity")
-            for row in spec["criteria"]
-            if isinstance(row, dict) and row.get("mandatory") is False
-        }
-        if set(amendment["optional_conversions"]) - optional_ids:
-            raise AcceptanceBasisError("human amendment names unavailable optional Criteria")
-    try:
-        calculated = hashlib.sha256(
-            json.dumps(
-                spec,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            ).encode()
-        ).hexdigest()
-    except (TypeError, ValueError) as exc:
-        raise AcceptanceBasisError("Acceptance Basis record Ticket spec is not JSON-safe") from exc
-    if digest != calculated:
-        raise AcceptanceBasisError("Acceptance Basis record authored semantic digest is invalid")
-    flags = spec["on_success"]
-    allowed_flags = {"triage_report", "review", "merge", "cleanup"}
-    if (
-        any(not isinstance(flag, str) for flag in flags)
-        or flags != sorted(set(flags))
-        or set(flags) - allowed_flags
-    ):
-        raise AcceptanceBasisError("Acceptance Basis record on_success has invalid flags")
-    if raw_plan != spec["target_plan"]:
-        raise AcceptanceBasisError("Acceptance Basis record Target Plan differs from Ticket spec")
-    try:
-        plan = TargetPlan.from_value(raw_plan) if raw_plan else None
-    except TargetPlanError as exc:
-        raise AcceptanceBasisError(f"Acceptance Basis record {exc}") from exc
-    if _string_tuple(removals, "Acceptance Basis record.removal_targets") != _target_plan_removals(
-        plan
-    ):
-        raise AcceptanceBasisError("Acceptance Basis record removals differ from Target Plan")
-    for binding in bindings:
-        _binding_from_record(binding)
-    provider_bindings = tuple(provider_binding_from_mapping(row) for row in providers)
-    if provider_bindings != tuple(sorted(set(provider_bindings))):
-        raise AcceptanceBasisError("Acceptance Basis record providers must be sorted and unique")
 
 
 def selector_matches_canonical(authored: str, canonical: str) -> bool:
@@ -622,24 +637,6 @@ def selector_matches_canonical(authored: str, canonical: str) -> bool:
     )
 
 
-def _string_tuple(values: list[Any], field: str) -> tuple[str, ...]:
-    try:
-        result = tuple(require_str({"value": item}, "value").strip() for item in values)
-    except BoundaryError as exc:
-        raise AcceptanceBasisError(f"{field} must contain strings") from exc
-    if any(not item for item in result) or tuple(sorted(set(result))) != result:
-        raise AcceptanceBasisError(f"{field} must contain sorted unique non-empty strings")
-    return result
-
-
-def _record_string_tuple(record: Mapping[str, Any], key: str) -> tuple[str, ...]:
-    try:
-        values = require_list(record.get(key), field=f"Acceptance Basis record.{key}")
-    except BoundaryError as exc:
-        raise AcceptanceBasisError(str(exc)) from exc
-    return _string_tuple(values, f"Acceptance Basis record.{key}")
-
-
 def _target_plan_removals(plan: TargetPlan | None) -> tuple[str, ...]:
     if plan is None:
         return ()
@@ -651,157 +648,95 @@ def _target_plan_removals(plan: TargetPlan | None) -> tuple[str, ...]:
     return tuple(sorted(removals))
 
 
-def load_acceptance_basis(
+def load_ticket_baseline(
     project_root: Path | str, slug: str, fields: Mapping[str, Any], body: str | None = None
-) -> AcceptanceBasis:
-    """Reject the retired field-based loader; the human Ticket is authoritative."""
-    raise AcceptanceBasisError(
-        "field-based Acceptance Basis loading is unsupported; convert the human Ticket"
+) -> TicketBaseline:
+    """Resolve Ticket-owned acceptance inputs from pinned commits."""
+    retired = sorted(_RETIRED_FIELDS & set(fields))
+    if retired:
+        raise TicketBaselineError(
+            "legacy Target Contract tickets are unsupported after the hard cutoff; "
+            f"remove or recreate fields: {', '.join(retired)}"
+        )
+    if body is None:
+        raise TicketBaselineError("executable Ticket body is required")
+    basis = ticket_baseline_from_fields(fields, body)
+    machine = require_dict(fields["machine"], field="machine")
+    amendment = machine.get("amendment")
+    if isinstance(amendment, Mapping) and amendment.get("slug") != slug:
+        raise TicketBaselineError(f"{BLOCK_REASON}: amendment names another Ticket")
+    validate_ticket_commit_trailers(project_root, slug, basis, machine)
+    _validate_ticket_routing(basis, fields)
+    from .acceptance_targets import canonical_acceptance_bindings, criterion_targets
+    from .target_plan import TargetPlanValidationError, canonical_target_plan
+
+    with tempfile.TemporaryDirectory(prefix="booley-ticket-baseline-") as directory:
+        checkout = materialize_basis_checkout(project_root, basis, Path(directory) / "checkout")
+        from booley.fusesoc.core_projection import (
+            native_cores_ignored,
+            reconcile_isolated_registry,
+            reconcile_projected_cores,
+        )
+
+        reconcile_projected_cores(checkout)
+        if native_cores_ignored(checkout):
+            reconcile_isolated_registry(checkout)
+        try:
+            plan = canonical_target_plan(fields, checkout) if fields.get("target_plan") else None
+        except TargetPlanValidationError as exc:
+            raise TicketBaselineError(str(exc)) from exc
+        bindings = canonical_acceptance_bindings(
+            checkout, criterion_targets(fields.get("criteria"))
+        )
+    return TicketBaseline(
+        basis.participants,
+        bindings,
+        _target_plan_removals(plan),
+        basis.schema,
+        plan,
+        basis.providers,
+        machine=dict(machine),
     )
 
 
-def load_acceptance_basis_from_document(
+def load_ticket_baseline_from_document(
     project_root: Path | str, slug: str, document: TicketDocument
-) -> AcceptanceBasis:
-    """Check executable human Ticket meaning against its frozen schema-3 record."""
-    basis = AcceptanceBasis.from_mapping(document.generated.get("acceptance_basis"))
-    record = load_basis_record(project_root, slug, basis)
-    amendment = record.get("amendment")
-    marker = document.generated.get("acceptance_amendment")
-    if amendment is None and marker is not None:
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: unexpected amendment marker")
-    if amendment is not None and marker != {
-        "slug": slug,
-        "operation_id": amendment["operation_id"],
-    }:
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: amendment marker mismatch")
-    _validate_receipt(Path(project_root), slug, basis, record)
-    recorded = record["ticket"]
-    if (
-        recorded["semantic_digest"] != document.spec.semantic_digest()
-        or recorded["spec"] != document.spec.semantic_record()
-    ):
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: authored Ticket meaning changed")
-    return basis.with_record(record)
+) -> TicketBaseline:
+    """Resolve a v2 Ticket's pinned inputs from its converted authored meaning."""
+    from .acceptance_targets import canonical_acceptance_bindings, criterion_targets_from_spec
 
+    spec = document.spec
+    machine = document.generated.get("machine")
+    basis = ticket_baseline_from_machine(machine)
+    if machine["authored_sha256"] != spec.semantic_digest():
+        raise TicketBaselineError(f"{BLOCK_REASON}: authored Ticket changed")
+    amendment = machine.get("amendment")
+    if isinstance(amendment, Mapping) and amendment.get("slug") != slug:
+        raise TicketBaselineError(f"{BLOCK_REASON}: amendment names another Ticket")
+    validate_ticket_commit_trailers(project_root, slug, basis, machine)
+    _validate_ticket_routing(basis, spec.fields)
+    with tempfile.TemporaryDirectory(prefix="booley-ticket-baseline-") as directory:
+        checkout = materialize_basis_checkout(project_root, basis, Path(directory) / "checkout")
+        from booley.fusesoc.core_projection import (
+            native_cores_ignored,
+            reconcile_isolated_registry,
+            reconcile_projected_cores,
+        )
 
-def _receipt_payload(
-    project_root: Path,
-    slug: str,
-    basis: AcceptanceBasis,
-    record: Mapping[str, Any],
-    *,
-    source_sha256: str,
-    operation_id: str,
-) -> dict[str, Any]:
-    project_owner = any(row.role == "project" for row in basis.participants)
-    locator = (
-        record_relative_path(project_root, project_participant=project_owner) / f"{slug}.json"
+        reconcile_projected_cores(checkout)
+        if native_cores_ignored(checkout):
+            reconcile_isolated_registry(checkout)
+        bindings = canonical_acceptance_bindings(checkout, criterion_targets_from_spec(spec))
+    plan = spec.target_plan
+    return TicketBaseline(
+        basis.participants,
+        bindings,
+        _target_plan_removals(plan),
+        basis.schema,
+        plan,
+        basis.providers,
+        machine=dict(machine),
     )
-    return {
-        "schema": 1,
-        "basis_id": basis.basis_id,
-        "participants": [row.as_dict() for row in basis.participants],
-        "record": {
-            "role": "project" if project_owner else "outer",
-            "locator": locator.as_posix(),
-            "sha256": hashlib.sha256(canonical_json(record)).hexdigest(),
-        },
-        "source_sha256": source_sha256,
-        "operation_id": operation_id,
-    }
-
-
-def _receipt_path(project_root: Path, slug: str, basis: AcceptanceBasis) -> Path:
-    return (
-        checkout_runtime_dir(project_root)
-        / "acceptance"
-        / "bases"
-        / slug
-        / f"{basis.basis_id}.json"
-    )
-
-
-def write_basis_receipt(
-    project_root: Path | str,
-    slug: str,
-    basis: AcceptanceBasis,
-    *,
-    source_sha256: str,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Create the write-once control-plane receipt before Board publication."""
-    root = Path(project_root).resolve()
-    record = load_basis_record(root, slug, basis)
-    path = _receipt_path(root, slug, basis)
-    if path.exists():
-        receipt = _validate_receipt(root, slug, basis, record)
-        if receipt["source_sha256"] != source_sha256:
-            raise AcceptanceBasisError(
-                "existing Acceptance Basis receipt names a different source draft"
-            )
-        return receipt
-    receipt = _receipt_payload(
-        root,
-        slug,
-        basis,
-        record,
-        source_sha256=source_sha256,
-        operation_id=operation_id,
-    )
-    payload = canonical_json(receipt)
-    try:
-        atomic_write_once(path, payload)
-    except WriteOnceConflictError as exc:
-        raise AcceptanceBasisError(f"conflicting Acceptance Basis receipt: {path}") from exc
-    return receipt
-
-
-def load_basis_receipt(
-    project_root: Path | str, slug: str, value: Mapping[str, Any] | None
-) -> dict[str, Any]:
-    """Return the validated write-once receipt embedded in Criterion evidence."""
-    root = Path(project_root).resolve()
-    basis = AcceptanceBasis.from_mapping(value)
-    record = load_basis_record(root, slug, basis)
-    return _validate_receipt(root, slug, basis, record)
-
-
-def _validate_receipt(
-    project_root: Path, slug: str, basis: AcceptanceBasis, record: Mapping[str, Any]
-) -> dict[str, Any]:
-    path = _receipt_path(project_root, slug, basis)
-    try:
-        decoded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise AcceptanceBasisError(f"Acceptance Basis receipt is unavailable: {path}") from exc
-    try:
-        actual = require_dict(decoded, field="Acceptance Basis receipt")
-        receipt_schema = require_int(actual.get("schema"), field="Acceptance Basis receipt.schema")
-        source_identity = require_str(actual, "source_sha256")
-        operation_identity = require_str(actual, "operation_id")
-    except BoundaryError as exc:
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: Acceptance Basis receipt mismatch") from exc
-    expected = _receipt_payload(
-        project_root,
-        slug,
-        basis,
-        record,
-        source_sha256=source_identity,
-        operation_id=operation_identity,
-    )
-    identities_valid = (
-        re.fullmatch(r"[0-9a-f]{64}", source_identity) is not None
-        and re.fullmatch(r"[0-9a-f]{32}", operation_identity) is not None
-    )
-    if (
-        receipt_schema != SCHEMA_VERSION
-        or not identities_valid
-        or actual != expected
-        or canonical_json(actual) != path.read_bytes()
-    ):
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: Acceptance Basis receipt mismatch")
-    return actual
 
 
 def _git_paths(repository: Path, *args: str, owner: Path | None = None) -> set[str]:
@@ -814,7 +749,7 @@ def _git_paths(repository: Path, *args: str, owner: Path | None = None) -> set[s
         check=False,
     )
     if result.returncode != 0:
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"git {' '.join(args)} failed in {repository}: {result.stderr.strip()}"
         )
     return {item for item in result.stdout.split("\0") if item}
@@ -864,7 +799,7 @@ def _git_common_dir(repository: Path) -> Path | None:
 
 
 def assert_inputs_unchanged(
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     project_root: Path | str,
     *,
     generated_reference: Path | str | None = None,
@@ -892,7 +827,7 @@ def assert_inputs_unchanged(
             paired.worktree if paired is not None else resolve_inner_project_repo(root)
         )
     if project_repository is None:
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: paired project repository is unavailable")
+        raise TicketBaselineError(f"{BLOCK_REASON}: paired project repository is unavailable")
     _assert_repository_inputs_unchanged(
         project_repository,
         project.authoring_sha,
@@ -903,7 +838,7 @@ def assert_inputs_unchanged(
 
 
 def assert_live_inputs_unchanged(
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     project_root: Path | str,
     reference_checkout: Path | str,
 ) -> None:
@@ -916,7 +851,7 @@ def assert_live_inputs_unchanged(
     if outer_worktree is not None:
         recorded = _recorded_worktree_path(root, outer.ticket_ref)
         if recorded is None:
-            raise AcceptanceBasisError(
+            raise TicketBaselineError(
                 f"registered worktree for {outer.ticket_ref} disappeared during validation"
             )
         _assert_repository_inputs_unchanged(
@@ -936,7 +871,7 @@ def assert_live_inputs_unchanged(
     if project_worktree is not None:
         recorded = _recorded_worktree_path(project_owner, project.ticket_ref)
         if recorded is None:
-            raise AcceptanceBasisError(
+            raise TicketBaselineError(
                 f"registered worktree for {project.ticket_ref} disappeared during validation"
             )
         _assert_repository_inputs_unchanged(
@@ -951,7 +886,7 @@ def assert_live_inputs_unchanged(
 
 
 def assert_candidate_inputs_unchanged(
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     project_root: Path | str,
     live_checkout: Path | str,
     generated_reference: Path | str,
@@ -1016,17 +951,17 @@ def _require_participant_worktree(
 ) -> Path:
     expected = worktree_for_ref(owner, participant.ticket_ref)
     if expected is None:
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"{BLOCK_REASON}: no registered worktree for {participant.ticket_ref}"
         )
     if not _same_worktree_directory(candidate, expected):
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"{BLOCK_REASON}: live checkout {candidate} is not the registered "
             f"worktree for {participant.ticket_ref}"
         )
     recorded = _recorded_worktree_path(owner, participant.ticket_ref)
     if recorded is None:
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"{BLOCK_REASON}: registered worktree for {participant.ticket_ref} disappeared"
         )
     return recorded
@@ -1034,7 +969,7 @@ def _require_participant_worktree(
 
 def _partition_protected_inputs(
     root: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
 ) -> tuple[str, set[str], set[str]]:
     protected = _basis_control_paths(root, basis, PATH_POLICY.discover)
     return _partition_discovered_inputs(root, basis, protected)
@@ -1043,7 +978,7 @@ def _partition_protected_inputs(
 def _candidate_protected_inputs(
     live: Path,
     reference: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     *,
     git_owner: Path,
 ) -> tuple[str, set[str], set[str]]:
@@ -1054,18 +989,14 @@ def _candidate_protected_inputs(
 
 def _partition_discovered_inputs(
     root: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     protected: set[str],
 ) -> tuple[str, set[str], set[str]]:
     prefix = _project_path_prefix(root)
     outer_protected = {path for path in protected if not path.startswith(prefix)}
-    project = next((row for row in basis.participants if row.role == "project"), None)
-    if project is None:
-        outer_protected.add((Path(prefix) / "acceptance" / "bases").as_posix())
     project_protected = {
         path.removeprefix(prefix) for path in protected if path.startswith(prefix)
     }
-    project_protected.add("acceptance/bases")
     return prefix, outer_protected, project_protected
 
 
@@ -1076,12 +1007,12 @@ def _project_path_prefix(root: Path) -> str:
         return f"{PROJECT_DIR_NAME}/"
 
 
-def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> set[str]:
+def _basis_control_paths(root: Path, basis: TicketBaseline, discover: Any) -> set[str]:
     """Discover protected paths from both baseline and effective composite trees."""
     try:
         current = set(discover(root))
     except (FileNotFoundError, OSError, ValueError) as exc:
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"{BLOCK_REASON}: protected-input discovery failed in {root}: {exc}"
         ) from exc
     with tempfile.TemporaryDirectory(prefix="booley-basis-controls-") as raw_directory:
@@ -1090,7 +1021,7 @@ def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> s
         try:
             current.update(discover(baseline))
         except (FileNotFoundError, OSError, ValueError) as exc:
-            raise AcceptanceBasisError(
+            raise TicketBaselineError(
                 f"{BLOCK_REASON}: protected-input discovery failed in {baseline}: {exc}"
             ) from exc
     return current
@@ -1098,7 +1029,7 @@ def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> s
 
 def materialize_basis_checkout(
     project_root: Path | str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     destination: Path | str,
 ) -> Path:
     """Materialize the immutable outer and paired-project commits for inspection."""
@@ -1110,7 +1041,7 @@ def materialize_basis_checkout(
 
 def materialize_current_ticket_checkout(
     project_root: Path | str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     destination: Path | str,
 ) -> Path:
     """Materialize current generation refs after validating every Basis ref."""
@@ -1121,7 +1052,7 @@ def materialize_current_ticket_checkout(
 
 def validate_current_basis_refs(
     project_root: Path | str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
 ) -> dict[str, str]:
     """Validate source and destination refs, returning pinned Ticket commits."""
     root = Path(project_root).resolve()
@@ -1141,7 +1072,7 @@ def validate_current_basis_refs(
 
 def validate_destination_refs(
     project_root: Path | str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     recorded_commits: Mapping[str, str] | None = None,
 ) -> None:
     """Require every destination ref to contain its recorded durable identity."""
@@ -1153,11 +1084,11 @@ def validate_destination_refs(
     )
     roles = {participant.role for participant in basis.participants}
     if set(expected) != roles:
-        raise AcceptanceBasisError("recorded destination commits must cover every participant")
+        raise TicketBaselineError("recorded destination commits must cover every participant")
     for participant in basis.participants:
         recorded_sha = expected[participant.role]
         if not isinstance(recorded_sha, str) or not _COMMIT_RE.fullmatch(recorded_sha):
-            raise AcceptanceBasisError(
+            raise TicketBaselineError(
                 f"recorded {participant.role} destination commit must be a full Git SHA"
             )
         repository = root if participant.role == "outer" else _project_repository(root)
@@ -1172,7 +1103,7 @@ def validate_destination_refs(
 
 def materialize_ticket_commits(
     project_root: Path | str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     destination: Path | str,
     commits: Mapping[str, str],
 ) -> Path:
@@ -1180,12 +1111,12 @@ def materialize_ticket_commits(
     root = Path(project_root).resolve()
     expected_roles = {participant.role for participant in basis.participants}
     if set(commits) != expected_roles:
-        raise AcceptanceBasisError("recorded Ticket commits must cover every Basis participant")
+        raise TicketBaselineError("recorded Ticket commits must cover every Basis participant")
     validated: dict[str, str] = {}
     for participant in basis.participants:
         commit = commits[participant.role]
         if not isinstance(commit, str) or not _COMMIT_RE.fullmatch(commit):
-            raise AcceptanceBasisError(
+            raise TicketBaselineError(
                 f"recorded {participant.role} Ticket commit must be a full Git SHA"
             )
         repository = root if participant.role == "outer" else _project_repository(root)
@@ -1200,7 +1131,7 @@ def materialize_ticket_commits(
 
 def validate_ticket_view(
     checkout: Path | str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
 ) -> list[str]:
     """Validate protected inputs and selectors in one prepared Ticket view."""
     root = Path(checkout).resolve()
@@ -1219,7 +1150,7 @@ def _worktree_records(repository: Path) -> tuple[tuple[Path, str | None], ...]:
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
-        raise AcceptanceBasisError(f"git worktree list failed in {repository}: {detail}")
+        raise TicketBaselineError(f"git worktree list failed in {repository}: {detail}")
     records: list[tuple[Path, str | None]] = []
     worktree: Path | None = None
     branch: str | None = None
@@ -1253,7 +1184,7 @@ def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
     if match.exists():
         if _worktree_has_identity(match, ref, root):
             return match
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"registered worktree for {ref} at {match} could not prove its Git identity"
         )
     mounted = _mounted_worktree_path(
@@ -1263,7 +1194,7 @@ def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
         ref,
     )
     if mounted is None:
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"registered worktree for {ref} is unavailable at {match} and could not be "
             "identified in the current mount"
         )
@@ -1302,7 +1233,7 @@ def _mounted_worktree_path(
             matches.append(resolved)
     if len(matches) > 1:
         rendered = ", ".join(str(candidate) for candidate in sorted(matches))
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"registered worktree for {ref} is ambiguous in the current mount: {rendered}"
         )
     return matches[0] if matches else None
@@ -1348,7 +1279,7 @@ def _worktree_has_identity(candidate: Path, ref: str, owner: Path) -> bool:
 
 def _materialize_participant_commits(
     root: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     checkout: Path,
     commits: Mapping[str, str],
 ) -> Path:
@@ -1366,8 +1297,8 @@ def _materialize_participant_commits(
     try:
         materialize_project_submodules(root, checkout)
     except SubmoduleMaterializationError as exc:
-        raise AcceptanceBasisError(
-            f"could not materialize Acceptance Basis submodules offline: {exc}"
+        raise TicketBaselineError(
+            f"could not materialize Ticket baseline submodules offline: {exc}"
         ) from exc
     return checkout
 
@@ -1389,7 +1320,7 @@ def _descendant_ref_commit(
         check=False,
     )
     if result.returncode != 0 or not _COMMIT_RE.fullmatch(result.stdout.strip()):
-        raise AcceptanceBasisError(f"Acceptance Basis {kind} ref is unavailable: {ref}")
+        raise TicketBaselineError(f"Ticket baseline {kind} ref is unavailable: {ref}")
     return _descendant_commit(repository, result.stdout.strip(), recorded_sha, role=role, ref=ref)
 
 
@@ -1411,7 +1342,7 @@ def _descendant_commit(
     )
     if ancestor.returncode != 0:
         identity = ref or commit
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"{BLOCK_REASON}: {identity} no longer descends from recorded "
             f"{role} commit {recorded_sha}"
         )
@@ -1422,7 +1353,7 @@ def _project_repository(root: Path) -> Path:
     paired = paired_project_repository(root)
     repository = paired.worktree if paired is not None else resolve_inner_project_repo(root)
     if repository is None:
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: paired project repository is unavailable")
+        raise TicketBaselineError(f"{BLOCK_REASON}: paired project repository is unavailable")
     return repository
 
 
@@ -1435,9 +1366,7 @@ def _clone_commit(repository: Path, destination: Path, commit: str) -> None:
         check=False,
     )
     if clone.returncode != 0:
-        raise AcceptanceBasisError(
-            f"could not materialize Acceptance Basis: {clone.stderr.strip()}"
-        )
+        raise TicketBaselineError(f"could not materialize Ticket baseline: {clone.stderr.strip()}")
     checkout = subprocess.run(
         ["git", "checkout", "--detach", commit],
         cwd=destination,
@@ -1447,8 +1376,8 @@ def _clone_commit(repository: Path, destination: Path, commit: str) -> None:
         check=False,
     )
     if checkout.returncode != 0:
-        raise AcceptanceBasisError(
-            f"could not materialize Acceptance Basis commit {commit}: {checkout.stderr.strip()}"
+        raise TicketBaselineError(
+            f"could not materialize Ticket baseline commit {commit}: {checkout.stderr.strip()}"
         )
 
 
@@ -1484,7 +1413,7 @@ def _assert_repository_inputs_unchanged(
         or path == "FUSESOC_IGNORE"
     )
     if violations:
-        raise AcceptanceBasisError(
+        raise TicketBaselineError(
             f"{BLOCK_REASON}: protected path(s) changed: {', '.join(violations)}"
         )
 

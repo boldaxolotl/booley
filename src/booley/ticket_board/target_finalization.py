@@ -119,7 +119,7 @@ def _require_participant_owned_target(
         return
     relative = owner.relative_to(root).as_posix()
     raise TargetFinalizationError(
-        f"Acceptance Basis removal Target {canonical!r} is declared in nested "
+        f"Ticket baseline removal Target {canonical!r} is declared in nested "
         f"repository {relative!r}; only outer and paired project participants can be finalized"
     )
 
@@ -146,12 +146,12 @@ def plan_target_removals(
         canonical = handle.identity
         if canonical not in allowed:
             raise TargetFinalizationError(
-                f"Acceptance Basis removal Target {canonical!r} is not bound by this "
+                f"Ticket baseline removal Target {canonical!r} is not bound by this "
                 "Ticket's criteria"
             )
         if canonical in seen:
             raise TargetFinalizationError(
-                f"Acceptance Basis removal resolves {canonical!r} more than once"
+                f"Ticket baseline removal resolves {canonical!r} more than once"
             )
         seen.add(canonical)
         try:

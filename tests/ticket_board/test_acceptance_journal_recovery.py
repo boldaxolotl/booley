@@ -9,7 +9,6 @@ from typing import Literal
 import pytest
 
 from booley.ticket_board import completion
-from booley.ticket_board.acceptance_basis import BasisParticipant
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
 from booley.ticket_board.acceptance_journal._repository import (
     FaultingAcceptanceRepositories,
@@ -22,6 +21,7 @@ from booley.ticket_board.acceptance_journal._store import (
     FileAcceptanceStore,
 )
 from booley.ticket_board.completion import complete_review_ticket
+from booley.ticket_board.ticket_baseline import BasisParticipant
 from tests.ticket_board.test_completion import (
     _git,
     _paired_completion,

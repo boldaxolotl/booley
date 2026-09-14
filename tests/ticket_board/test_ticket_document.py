@@ -11,7 +11,6 @@ import pytest
 
 from booley.runtime.project_dir import reset_cache, resolve_project_dir
 from booley.targets.domain import UnknownTargetError
-from booley.ticket_board import acceptance_basis
 from booley.ticket_board.acceptance_targets import (
     criterion_targets_from_spec,
     validate_ticket_spec_targets,
@@ -20,6 +19,7 @@ from booley.ticket_board.cli import main
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.scanner import scan_all_tickets
+from booley.ticket_board.ticket_baseline import TicketBaselineError
 from booley.ticket_board.ticket_document import (
     TicketAuthoringView,
     TicketConversionContext,
@@ -30,7 +30,7 @@ from booley.ticket_board.ticket_document import (
     ticket_conversion_context,
 )
 from booley.ticket_board.validation import validate_ticket_spec
-from booley.ticket_board.workspace_ops import prepare_converted_acceptance_basis
+from booley.ticket_board.workspace_ops import prepare_converted_ticket_baseline
 
 
 def _context() -> TicketConversionContext:
@@ -133,7 +133,7 @@ def test_v2_serializer_round_trips_nested_criteria_and_policy() -> None:
 def test_v2_serializer_keeps_generated_metadata_separate() -> None:
     context = TicketConversionContext("executable", _context().resolve_view)
     text = _ticket("  LINT: {lint_core: clean}\n").replace(
-        "on_success: [merge]", "on_success: [merge]\nacceptance_basis: {schema: 1}"
+        "on_success: [merge]", "on_success: [merge]\nmachine: {schema: 1}"
     )
     original = convert_ticket_document(text, context)
     assert original.document is not None
@@ -142,58 +142,21 @@ def test_v2_serializer_keeps_generated_metadata_separate() -> None:
     parsed = convert_ticket_document(rendered, context)
 
     assert parsed.document is not None
-    assert parsed.document.generated == {"acceptance_basis": {"schema": 1}}
+    assert parsed.document.generated == {"machine": {"schema": 1}}
     assert parsed.document.spec.semantic_digest() == original.document.spec.semantic_digest()
 
 
-def test_schema3_record_detects_authored_drift_but_ignores_generated_metadata(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
+def test_semantic_digest_detects_authored_drift_but_ignores_machine_metadata() -> None:
     converted = convert_ticket_document(_ticket("  LINT: {lint_core: clean}\n"), _context())
     assert converted.document is not None
     spec = converted.document.spec
-    record = acceptance_basis.authored_ticket_record_from_spec(spec, ())
-    acceptance_basis._validate_record(record)
-    sha = "0" * 40
-    basis = acceptance_basis.AcceptanceBasis(
-        (
-            acceptance_basis.BasisParticipant(
-                "outer",
-                sha,
-                "refs/heads/booley-generation/0123456789abcdef/outer",
-                "refs/heads/main",
-                sha,
-            ),
-        )
-    )
-    monkeypatch.setattr(acceptance_basis, "load_basis_record", lambda *_args: record)
-    monkeypatch.setattr(acceptance_basis, "_validate_receipt", lambda *_args: None)
-    document = TicketDocument(
-        spec,
-        {
-            "acceptance_basis": basis.as_dict(),
-            "created": "2026-09-14T00:00:00Z",
-        },
-    )
-
-    assert (
-        acceptance_basis.load_acceptance_basis_from_document(
-            tmp_path, "ticket", document
-        ).as_dict()
-        == basis.as_dict()
-    )
-
+    executable = TicketDocument(spec, {"machine": {"schema": 1}})
+    assert executable.spec.semantic_digest() == spec.semantic_digest()
     changed = convert_ticket_document(
         _ticket("  LINT: {lint_core: clean}\n", flags="[review]"), _context()
     )
     assert changed.document is not None
-    with pytest.raises(
-        acceptance_basis.AcceptanceBasisError, match="authored Ticket meaning changed"
-    ):
-        acceptance_basis.load_acceptance_basis_from_document(
-            tmp_path, "ticket", TicketDocument(changed.document.spec, document.generated)
-        )
+    assert changed.document.spec.semantic_digest() != executable.spec.semantic_digest()
 
 
 def test_conversion_rejects_old_fields() -> None:
@@ -457,12 +420,12 @@ def test_standalone_target_resolution_fails_at_conversion_boundary() -> None:
 
 def test_executable_conversion_rejects_non_mapping_basis_pointer(tmp_path: Path) -> None:
     ticket = _ticket("  LINT: {core: clean}\n").replace(
-        "scope: [rtl/core.sv]", "acceptance_basis: invalid\nscope: [rtl/core.sv]"
+        "scope: [rtl/core.sv]", "machine: invalid\nscope: [rtl/core.sv]"
     )
     with ticket_conversion_context(tmp_path, "demo", "executable") as context:
         result = convert_ticket_document(ticket, context)
     assert result.document is None
-    assert "no valid Acceptance Basis pointer" in result.diagnostics[0].message
+    assert "no valid machine baseline" in result.diagnostics[0].message
 
 
 def test_serializer_detects_invalid_or_changed_converted_document() -> None:
@@ -635,7 +598,7 @@ def test_executable_ticket_requires_basis_pointer() -> None:
         ticket, TicketConversionContext("executable", draft_context.resolve_view)
     )
     assert conversion.document is None
-    assert "requires an Acceptance Basis" in conversion.diagnostics[0].message
+    assert "requires machine baseline metadata" in conversion.diagnostics[0].message
 
 
 def test_implicit_yaml_date_cannot_enter_semantic_record() -> None:
@@ -826,12 +789,8 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
     created = board.create_ticket_document("basis-v2", ticket)
     assert created is not None
 
-    basis, _operation_id = prepare_converted_acceptance_basis(project, created, "basis-v2")
-
+    basis, _operation_id = prepare_converted_ticket_baseline(project, created, "basis-v2")
     assert basis.outer_sha
-    record = acceptance_basis.load_basis_record(project, "basis-v2", basis)
-    assert record["schema"] == 3
-    assert record["ticket"]["spec"]["on_success"] == ["merge"]
 
     assert board.enqueue_ticket("basis-v2")
     queued = board.tickets_dir / "board" / "queue" / "basis-v2.md"
@@ -839,7 +798,10 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
     with ticket_conversion_context(project, "basis-v2", "executable") as context:
         conversion = convert_ticket_document(queued.read_text(encoding="utf-8"), context)
     assert conversion.document is not None
-    assert conversion.document.spec.semantic_digest() == record["ticket"]["semantic_digest"]
+    assert (
+        conversion.document.generated["machine"]["authored_sha256"]
+        == conversion.document.spec.semantic_digest()
+    )
     assert board.load_basis("basis-v2").as_dict() == basis.as_dict()
     assert check_ticket_ready(project, "basis-v2").errors == ()
     found = board.find_ticket("basis-v2")
@@ -860,7 +822,5 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
         queued.read_text(encoding="utf-8").replace("- merge\n", "- review\n"),
         encoding="utf-8",
     )
-    with pytest.raises(
-        acceptance_basis.AcceptanceBasisError, match="authored Ticket meaning changed"
-    ):
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
         board.load_basis("basis-v2")

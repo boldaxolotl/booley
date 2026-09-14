@@ -17,11 +17,6 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.ticket_projection import project_ticket_criteria
 from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    requires_return_to_draft,
-)
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
@@ -32,6 +27,11 @@ from booley.ticket_board.paths import (
     ticket_runtime_dir,
 )
 from booley.ticket_board.scanner import find_ticket_file
+from booley.ticket_board.ticket_baseline import (
+    TicketBaseline,
+    TicketBaselineError,
+    requires_return_to_draft,
+)
 from booley.ticket_board.ticket_document import TicketDocument
 
 from .. import ticket_cli
@@ -101,7 +101,7 @@ def _build_context(
     document: TicketDocument,
     progress: dict[str, Any],
 ) -> TicketContext:
-    """Construct execution context from the one converted Ticket model."""
+    """Construct execution context from the converted authored Ticket."""
     spec = document.spec
     fields = spec.fields
     acceptance_basis = _load_context_basis(project_root, ticket_path, slug)
@@ -118,7 +118,7 @@ def _build_context(
         priority=fields.get("priority", "medium"),
         base_sha=acceptance_basis.outer_sha if acceptance_basis is not None else "",
         acceptance_basis=acceptance_basis,
-        feature_branch=fields.get("feature_branch", ""),
+        feature_branch=document.generated.get("feature_branch", ""),
         completed_steps=progress.get("steps_completed", []),
         current_step=progress.get("stage", ""),
         project_root=project_root,
@@ -134,14 +134,14 @@ def _load_context_basis(
     project_root: Path,
     ticket_path: Path,
     slug: str,
-) -> AcceptanceBasis:
+) -> TicketBaseline:
     try:
         return TicketIO(
             tickets_dir_from_project_root(project_root),
             project_root=project_root,
         ).load_basis(slug, runtime_ticket_path=ticket_path)
-    except AcceptanceBasisError as exc:
-        raise FatalError(f"Invalid Acceptance Basis: {exc}", slug=slug) from exc
+    except TicketBaselineError as exc:
+        raise FatalError(f"Invalid Ticket baseline: {exc}", slug=slug) from exc
 
 
 def _check_dependencies(ctx: TicketContext) -> None:
@@ -348,23 +348,22 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
     progress = _load_progress(project_root, slug)
     if requires_return_to_draft(progress):
         raise FatalError(
-            f"Ticket '{slug}' has changed Acceptance Basis inputs; use return-to-draft"
+            f"Ticket '{slug}' has changed Ticket baseline inputs; use return-to-draft"
         )
 
     try:
         document = TicketIO(
             tickets_dir_from_project_root(project_root), project_root=project_root
         ).load_document(slug, runtime_ticket_path=ticket_path)
-    except AcceptanceBasisError as exc:
-        raise FatalError(
-            f"Ticket conversion or Acceptance Basis failed: {exc}", slug=slug
-        ) from exc
+    except (TicketBaselineError, OSError, ValueError) as exc:
+        raise FatalError(f"Ticket conversion or baseline failed: {exc}", slug=slug) from exc
     ctx = _build_context(project_root, ticket_path, slug, document, progress)
     _check_dependencies(ctx)
 
     action = _detect_and_apply_resume(ctx, progress)
 
     _verify_acceptance_basis(ctx, action)
+
     criteria_state_needs_init = action == "fresh" or _criteria_state_needs_reinit(ctx)
     if ctx.acceptance_basis is None:
         if criteria_state_needs_init:
@@ -407,11 +406,11 @@ def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str
 
 
 def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
-    """Verify durable Acceptance Basis refs before criteria state can be initialized."""
+    """Verify durable Ticket baseline refs before criteria state can be initialized."""
     del action
     basis = ctx.acceptance_basis
     if basis is None:
-        raise FatalError("acceptance_basis is required for executable Tickets", slug=ctx.slug)
+        raise FatalError("machine metadata is required for executable Tickets", slug=ctx.slug)
     from booley.ticket_board.workspace_ops import validate_basis_refs
 
     try:
@@ -542,10 +541,7 @@ def _zero_mandatory_amendment_basis(ctx: TicketContext, expanded: dict[str, bool
     basis = ctx.acceptance_basis
     if basis is None:
         return ""
-    from booley.ticket_board.acceptance_basis import load_basis_record
-
-    record = load_basis_record(ctx.project_root, ctx.slug, basis)
-    amendment = record.get("amendment") or {}
+    amendment = (basis.machine or {}).get("amendment", {})
     return basis.basis_id if amendment.get("optional_conversions") else ""
 
 
@@ -723,7 +719,6 @@ def _freeze_recipe_family(
 
     with _baseline_recipe_root(ctx, any(item[3] for item in prepared), flow_label) as base_root:
         for key, recipe_target, params, needs_baseline in prepared:
-            candidate = params[TARGET_IDENTITY_PARAM]
             build_root = recipe_root / key
             shutil.rmtree(build_root, ignore_errors=True)
             snapshot = _snapshot_intake_recipe(

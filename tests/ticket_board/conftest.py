@@ -100,7 +100,7 @@ def publish_handoff_snapshot(tio: TicketIO, slug: str, *_args) -> bool:
         tio.logs_dir / slug,
         DevelopmentState(slug=slug),
         execution_id="fixture",
-        acceptance_basis=None,
+        ticket_identity=None,
         participant_heads={"outer": "a" * 40},
     )
     return True

@@ -584,7 +584,7 @@ def _validate_criteria(
     # setup materializes their Ticket Workspace; project_root is the destination
     # checkout here and must not substitute for that immutable view.
     errors.extend(_validate_sim_entries(criteria))
-    if project_root and fields.get("acceptance_basis") is None:
+    if project_root and fields.get("machine") is None:
         errors.extend(_validate_sim_targets(criteria, fields, body, project_root))
 
     # Type-specific criteria rules (warnings only, no structural errors)
@@ -1216,45 +1216,39 @@ def validate_git_state(
 
 
 def _validate_acceptance_basis_field(fields: dict[str, Any]) -> list[str]:
-    raw_basis = fields.get("acceptance_basis")
-    if raw_basis is None:
+    if "acceptance_basis" in fields:
+        return ["unsupported Ticket format: recreate this Ticket without acceptance_basis"]
+    if "acceptance_amendment" in fields:
+        return ["unsupported Ticket format: recreate this Ticket without acceptance_amendment"]
+    raw_machine = fields.get("machine")
+    if raw_machine is None:
         return []
-    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
+    from .ticket_baseline import TicketBaselineError, ticket_baseline_from_machine
 
     try:
-        AcceptanceBasis.from_mapping(raw_basis)
-    except AcceptanceBasisError as exc:
+        ticket_baseline_from_machine(raw_machine)
+    except TicketBaselineError as exc:
         return [str(exc)]
     return []
 
 
 def _approved_optional_conversions(
-    fields: dict[str, Any], project_root: str | Path | None
+    fields: dict[str, Any], body: str, project_root: str | Path | None
 ) -> set[str]:
-    """Read the committed amendment provenance for optional-policy exceptions."""
-    marker = fields.get("acceptance_amendment")
-    raw_basis = fields.get("acceptance_basis")
-    if not isinstance(marker, dict) or raw_basis is None or project_root is None:
+    """Read Human-approved conversions from the commit-anchored Ticket machine section."""
+    machine = fields.get("machine")
+    amendment = machine.get("amendment") if isinstance(machine, dict) else None
+    if not isinstance(amendment, dict) or project_root is None:
         return set()
-    slug = marker.get("slug")
-    operation = marker.get("operation_id")
-    if not isinstance(slug, str) or not isinstance(operation, str):
+    slug = amendment.get("slug")
+    if not isinstance(slug, str) or fields.get("feature_branch", slug) != slug:
         return set()
     try:
-        from .acceptance_basis import AcceptanceBasis, load_basis_record
+        from .ticket_baseline import ticket_baseline_from_fields, validate_ticket_commit_trailers
 
-        basis = AcceptanceBasis.from_mapping(raw_basis)
-        record = load_basis_record(project_root, slug, basis)
+        basis = ticket_baseline_from_fields(fields, body)
+        validate_ticket_commit_trailers(project_root, slug, basis, machine)
     except (OSError, ValueError):
-        return set()
-    amendment = record.get("amendment")
-    recorded = record.get("ticket", {}).get("frontmatter", {})
-    if (
-        not isinstance(amendment, dict)
-        or amendment.get("operation_id") != operation
-        or recorded.get("criteria") != fields.get("criteria")
-        or recorded.get("scope") != fields.get("scope")
-    ):
         return set()
     return set(amendment.get("optional_conversions", []))
 
@@ -1268,7 +1262,7 @@ def _validate_amendment_candidate(
     newly_optional: set[str],
 ) -> list[str]:
     """Preflight changed Scope/Criteria before amendment provenance is committed."""
-    approved = _approved_optional_conversions(original, provenance_root) | newly_optional
+    approved = _approved_optional_conversions(original, body, provenance_root) | newly_optional
     scope_errors, scope = _validate_scope(revised, True, project_root)
     errors = [*scope_errors]
     errors.extend(
@@ -1306,7 +1300,7 @@ def validate_ticket_fields(
     errors.extend(_validate_on_success(fields.get("on_success")))
     errors.extend(_validate_target_plan(fields.get("target_plan"), fields.get("on_success")))
     errors.extend(_validate_acceptance_basis_field(fields))
-    approved_optional = _approved_optional_conversions(fields, project_root)
+    approved_optional = _approved_optional_conversions(fields, body, project_root)
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)
     errors.extend(scope_errors)

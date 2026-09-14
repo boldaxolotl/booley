@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import hashlib
+import logging
 import os
 import shutil
 import sys
@@ -14,14 +14,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.ticket_board.ticket_repositories import TicketWorkspace, TicketWorkspaceError
+
 if TYPE_CHECKING:
-    from .acceptance_basis import AcceptanceBasis
-    from .ticket_document import TicketDocument
+    from .ticket_baseline import TicketBaseline
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class TicketFileSpec:
-    """Retired metadata input; use a complete human Ticket document."""
+    """Metadata for creating a ticket file on disk."""
 
     summary: str
     ticket_type: str
@@ -39,6 +42,7 @@ class TicketFileSpec:
 
 from .acceptance_journal import acceptance_state
 from .constants import RUNTIME_FIELDS, normalize_dir
+from .frontmatter import parse_frontmatter, update_frontmatter
 from .helpers import (
     compute_done_slugs,
     lock_fd,
@@ -173,51 +177,27 @@ class TicketIO:
                         unlock_fd(lock_file)
 
     def find_ticket(self, slug: str) -> dict[str, Any] | None:
-        """Find and convert a Ticket, then attach its separate runtime state."""
-        from .acceptance_basis import load_acceptance_basis_from_document
-        from .ticket_document import convert_ticket_document, ticket_conversion_context
+        """Find a ticket by slug, parse frontmatter, return dict with status/file/feature_branch.
 
+        Runtime fields are loaded from .runtime/progress.json when available,
+        falling back to frontmatter for backward compatibility.
+
+        Returns dict or None.
+        """
         file_path, status = find_ticket_file(
             self.tickets_dir, slug, project_root=self._project_root
         )
         if file_path is None:
             return None
+
         stage = "draft" if status == "draft" else "executable"
-        with ticket_conversion_context(self._project_root, file_path.stem, stage) as context:
-            converted = convert_ticket_document(file_path.read_text(encoding="utf-8"), context)
-        if converted.document is None:
-            details = "; ".join(item.message for item in converted.diagnostics)
-            raise ValueError(f"Ticket {file_path.name} is invalid: {details}")
-        document = converted.document
+        canonical_slug = file_path.stem
+        document = self._convert_ticket(file_path, canonical_slug, stage)
         if stage == "executable":
-            load_acceptance_basis_from_document(self._project_root, file_path.stem, document)
-        spec = document.spec
-        fields = {
-            key: value
-            for key, value in spec.fields.items()
-            if key
-            not in {
-                "CRITERIA_MANDATORY",
-                "CRITERIA_OPTIONAL",
-                "on_success",
-                "acceptance_basis",
-                "created",
-                "feature_branch",
-            }
-        }
-        policy = spec.completion_policy
-        fields["on_success"] = {
-            "destination": policy.destination,
-            "merge": policy.merge,
-            "cleanup": policy.cleanup,
-            "triage_report": policy.triage_report,
-        }
-        fields["criteria"] = {
-            "mandatory": {row.identity: row.value for row in spec.criteria if row.mandatory},
-            "optional": {row.identity: row.value for row in spec.criteria if not row.mandatory},
-        }
-        fields["target_plan"] = spec.target_plan.as_list() if spec.target_plan else []
-        fields.update(document.generated)
+            from .ticket_baseline import load_ticket_baseline_from_document
+
+            load_ticket_baseline_from_document(self._project_root, canonical_slug, document)
+        fields = self._project_document(document)
 
         # Derive relative file path
         rel = file_path.relative_to(self.tickets_dir)
@@ -246,75 +226,100 @@ class TicketIO:
 
         return entry
 
+    def _convert_ticket(self, path: Path, slug: str, stage: str):
+        from .ticket_document import convert_ticket_document, ticket_conversion_context
+
+        with ticket_conversion_context(self._project_root, slug, stage) as context:
+            result = convert_ticket_document(path.read_text(encoding="utf-8"), context)
+        if result.document is None:
+            details = "; ".join(item.message for item in result.diagnostics)
+            raise ValueError(f"Ticket {path.name} is invalid: {details}")
+        return result.document
+
+    @staticmethod
+    def _project_document(document) -> dict[str, Any]:
+        """Project converted meaning into the runtime's existing internal fields."""
+        spec = document.spec
+        fields = {
+            key: value
+            for key, value in spec.fields.items()
+            if key not in {"CRITERIA_MANDATORY", "CRITERIA_OPTIONAL", "on_success", "machine"}
+        }
+        policy = spec.completion_policy
+        fields["on_success"] = {
+            "destination": policy.destination,
+            "merge": policy.merge,
+            "cleanup": policy.cleanup,
+            "triage_report": policy.triage_report,
+        }
+        fields["criteria"] = {
+            "mandatory": {row.identity: row.value for row in spec.criteria if row.mandatory},
+            "optional": {row.identity: row.value for row in spec.criteria if not row.mandatory},
+        }
+        fields["target_plan"] = spec.target_plan.as_list() if spec.target_plan else []
+        fields.update(document.generated)
+        return fields
+
     def load_basis(
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
-    ) -> AcceptanceBasis:
+    ) -> TicketBaseline:
         """Load an executable basis from Board authority and cross-check its snapshot."""
         with self._ticket_lock(slug, review_operation=True):
             return self._load_basis_unlocked(slug, runtime_ticket_path=runtime_ticket_path)
 
-    def load_document(
-        self, slug: str, *, runtime_ticket_path: str | Path | None = None
-    ) -> TicketDocument:
-        """Read the authoritative converted Ticket, checking a runtime copy if supplied."""
-        from .acceptance_basis import AcceptanceBasisError
-
-        self.load_basis(slug, runtime_ticket_path=runtime_ticket_path)
-        if runtime_ticket_path is not None:
-            return self._convert_executable_ticket(Path(runtime_ticket_path), slug)
-        board_path, status = find_ticket_file(self.tickets_dir, slug)
-        if board_path is None or status in {None, "draft"}:
-            raise AcceptanceBasisError(f"executable Board Ticket {slug!r} is unavailable")
-        return self._convert_executable_ticket(board_path, slug)
-
     def _load_basis_unlocked(
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
-    ) -> AcceptanceBasis:
-        from .acceptance_basis import (
-            AcceptanceBasisError,
-            load_acceptance_basis_from_document,
-        )
+    ) -> TicketBaseline:
         from .amendment import pending_amendment
+        from .ticket_baseline import TicketBaselineError, load_ticket_baseline_from_document
 
         if pending_amendment(self._project_root, slug) is not None:
-            raise AcceptanceBasisError("amendment publication is pending; execution is not ready")
+            raise TicketBaselineError("amendment publication is pending; execution is not ready")
 
-        board_path, status = find_ticket_file(self.tickets_dir, slug)
+        board_path, status = find_ticket_file(
+            self.tickets_dir, slug, project_root=self._project_root
+        )
         if board_path is None or status in {None, "draft"}:
-            raise AcceptanceBasisError(f"executable Board Ticket {slug!r} is unavailable")
-        board_document = self._convert_executable_ticket(board_path, slug)
-        basis = load_acceptance_basis_from_document(self._project_root, slug, board_document)
+            raise TicketBaselineError(f"executable Board Ticket {slug!r} is unavailable")
+        try:
+            board_document = self._convert_ticket(board_path, slug, "executable")
+        except ValueError as exc:
+            raise TicketBaselineError(str(exc)) from exc
+        basis = load_ticket_baseline_from_document(self._project_root, slug, board_document)
         if runtime_ticket_path is None:
             return basis
         snapshot_path = Path(runtime_ticket_path)
-        snapshot_document = self._convert_executable_ticket(snapshot_path, slug)
-        snapshot = load_acceptance_basis_from_document(
-            self._project_root,
-            slug,
-            snapshot_document,
-        )
-        if snapshot.as_dict() != basis.as_dict():
-            raise AcceptanceBasisError(
-                "acceptance-input-change-required: runtime Ticket snapshot names another basis"
+        try:
+            snapshot_document = self._convert_ticket(snapshot_path, slug, "executable")
+        except ValueError as exc:
+            raise TicketBaselineError(str(exc)) from exc
+        snapshot = load_ticket_baseline_from_document(self._project_root, slug, snapshot_document)
+        if snapshot.ticket_identity() != basis.ticket_identity():
+            raise TicketBaselineError(
+                "acceptance-input-change-required: runtime Ticket names another generation"
             )
         return basis
 
-    def _convert_executable_ticket(self, path: Path, slug: str) -> TicketDocument:
-        from .acceptance_basis import AcceptanceBasisError
-        from .ticket_document import convert_ticket_document, ticket_conversion_context
-
-        with ticket_conversion_context(self._project_root, slug, "executable") as context:
-            conversion = convert_ticket_document(path.read_text(encoding="utf-8"), context)
-        if conversion.document is None:
-            details = "; ".join(item.message for item in conversion.diagnostics)
-            raise AcceptanceBasisError(f"executable Ticket document is invalid: {details}")
-        return conversion.document
+    def load_document(self, slug: str, *, runtime_ticket_path: str | Path | None = None):
+        """Read the converted executable Ticket after validating Board authority."""
+        self.load_basis(slug, runtime_ticket_path=runtime_ticket_path)
+        if runtime_ticket_path is not None:
+            return self._convert_ticket(Path(runtime_ticket_path), slug, "executable")
+        board_path, status = find_ticket_file(
+            self.tickets_dir, slug, project_root=self._project_root
+        )
+        if board_path is None or status in {None, "draft"}:
+            raise FileNotFoundError(f"executable Board Ticket {slug!r} is unavailable")
+        return self._convert_ticket(board_path, slug, "executable")
 
     def _load_or_bootstrap_progress(self, slug, file_path):
-        """Load .runtime/progress.json, using runtime defaults when missing."""
+        """Load .runtime/progress.json, bootstrapping from frontmatter if missing."""
         progress = load_progress(self.logs_dir, slug)
         if progress is None:
-            progress = {key: progress_default(key) for key in RUNTIME_FIELDS}
+            with file_path.open(encoding="utf-8") as f:
+                text = f.read()
+            fields, _ = parse_frontmatter(text)
+            progress = {k: fields.get(k, progress_default(k)) for k in RUNTIME_FIELDS}
         return progress
 
     def _apply_updates(self, progress, updates, append_step=None):
@@ -356,33 +361,17 @@ class TicketIO:
         return spec_updates
 
     def _write_spec_fields(self, file_path, spec_updates):
-        """Write generated metadata through the v2 serializer."""
+        """Write spec field updates to frontmatter (atomic via temp+rename)."""
         if not spec_updates:
             return
-        from .persistence import atomic_replace_bytes
-        from .ticket_document import (
-            TicketDocument,
-            serialize_ticket_document,
-            ticket_conversion_context,
-        )
-
-        unknown = set(spec_updates) - {"acceptance_basis", "created", "feature_branch"}
-        if unknown:
-            raise ValueError(
-                "Authored Ticket fields must be edited in the human document: "
-                + ", ".join(sorted(unknown))
-            )
-        slug = Path(file_path).stem
-        document = self._convert_executable_ticket(Path(file_path), slug)
-        updated = TicketDocument(document.spec, {**document.generated, **spec_updates})
-        with ticket_conversion_context(self._project_root, slug, "executable") as context:
-            content = serialize_ticket_document(updated, context).encode()
-        atomic_replace_bytes(Path(file_path), content)
+        update_frontmatter(file_path, spec_updates)
 
     def move_ticket_file(self, slug: str, to_dir: str) -> bool:
         """Move a ticket .md file to a different directory (queue, active, etc.)."""
         with self._ticket_lock(slug):
-            file_path, _ = find_ticket_file(self.tickets_dir, slug)
+            file_path, _ = find_ticket_file(
+                self.tickets_dir, slug, project_root=self._project_root
+            )
             if file_path is None:
                 print(f"Error: ticket '{slug}' not found", file=sys.stderr)
                 return False
@@ -479,7 +468,9 @@ class TicketIO:
         lifecycle publisher may select the unaccepted-review exception, and it
         must supply both compare-and-swap identities captured before generation.
         """
-        file_path, source_status = find_ticket_file(self.tickets_dir, slug)
+        file_path, source_status = find_ticket_file(
+            self.tickets_dir, slug, project_root=self._project_root
+        )
         if file_path is None or source_status != expected_status:
             return False
         progress = self._load_or_bootstrap_progress(slug, file_path)
@@ -536,7 +527,9 @@ class TicketIO:
         """
         with self._ticket_lock(slug):
             # Find ticket inside lock to avoid TOCTOU race
-            file_path, source_status = find_ticket_file(self.tickets_dir, slug)
+            file_path, source_status = find_ticket_file(
+                self.tickets_dir, slug, project_root=self._project_root
+            )
             if file_path is None:
                 print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
                 return False
@@ -598,6 +591,10 @@ class TicketIO:
 
         Returns the log_dir path.
         """
+        with ticket_path.open(encoding="utf-8") as f:
+            text = f.read()
+        fields, _body = parse_frontmatter(text)
+
         # Move file to board/active/. Guard on identity, not just string
         # inequality: the source may already BE the destination reached via a
         # different bind mount of the same dir (devcontainer mounts
@@ -614,6 +611,10 @@ class TicketIO:
         log_dir = ticket_log_dir(self.logs_dir, slug)
         log_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(active_path), str(log_dir / "ticket.md"))
+
+        # Stamp 'created' in frontmatter (immutable, set once)
+        if not fields.get("created"):
+            update_frontmatter(active_path, {"created": now_iso()})
 
         # Create .runtime/progress.json with initial runtime state
         initial_progress = copy.deepcopy(PROGRESS_DEFAULTS)
@@ -650,18 +651,25 @@ class TicketIO:
 
         # Canonical slug = filename stem (immutable after creation).
         slug = ticket_path.stem
+        try:
+            document = self._convert_ticket(ticket_path, slug, "executable")
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return None
+        basis_errors = self._validate_enqueue_basis(slug, document)
+        if basis_errors:
+            print(
+                "Error: acceptance-input-change-required: ticket must have a published "
+                "Ticket baseline before fresh execution:",
+                file=sys.stderr,
+            )
+            for error in basis_errors:
+                print(f"  - {error}", file=sys.stderr)
+            return None
+
         with self._ticket_lock(slug):
             if not ticket_path.exists():
                 print(f"Error: ticket '{slug}' claimed by another process", file=sys.stderr)
-                return None
-            try:
-                document = self._convert_executable_ticket(ticket_path, slug)
-            except (RuntimeError, ValueError, OSError) as exc:
-                print(f"Error: executable Ticket is invalid: {exc}", file=sys.stderr)
-                return None
-            basis_errors = self._validate_enqueue_basis(slug, document)
-            if basis_errors:
-                self._print_enqueue_errors("ticket Acceptance Basis is invalid", basis_errors)
                 return None
             log_dir = self._init_ticket_locked(ticket_path, slug, execution_id, owner_pid)
 
@@ -677,7 +685,9 @@ class TicketIO:
     ) -> bool:
         """Replace an active ticket's execution generation under its lock."""
         with self._ticket_lock(slug):
-            file_path, status = find_ticket_file(self.tickets_dir, slug)
+            file_path, status = find_ticket_file(
+                self.tickets_dir, slug, project_root=self._project_root
+            )
             if file_path is None or status != "running":
                 return False
             progress = self._load_or_bootstrap_progress(slug, file_path)
@@ -694,18 +704,14 @@ class TicketIO:
     MAX_SLUG_LEN = 80
 
     def create_ticket_document(self, slug: str, content: str) -> Path | None:
-        """Create a v2 draft from the complete human-authored Ticket document."""
-        try:
-            validate_ticket_slug(slug)
-        except ValueError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+        """Create a draft from a complete human-authored v2 Ticket."""
+        prepared = self._prepare_new_ticket_content(slug, content)
+        if prepared is None:
             return None
-        if len(slug) > self.MAX_SLUG_LEN:
-            print(f"Error: slug exceeds {self.MAX_SLUG_LEN} characters", file=sys.stderr)
-            return None
-        if not self._valid_new_ticket_document(slug, content):
-            return None
-        existing, status = find_ticket_file(self.tickets_dir, slug)
+        content = prepared
+        existing, status = find_ticket_file(
+            self.tickets_dir, slug, project_root=self._project_root
+        )
         if existing is not None:
             print(f"Error: ticket '{slug}' already exists ({status}): {existing}", file=sys.stderr)
             return None
@@ -726,23 +732,49 @@ class TicketIO:
         self._materialize_ticket_workspace(file_path, slug)
         return file_path
 
-    def _valid_new_ticket_document(self, slug: str, content: str) -> bool:
+    def _prepare_new_ticket_content(self, slug: str, content: str) -> str | None:
+        """Validate a v2 draft and persist inferred paired routing in its human text."""
+        try:
+            validate_ticket_slug(slug)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return None
+        if len(slug) > self.MAX_SLUG_LEN:
+            print(f"Error: slug exceeds {self.MAX_SLUG_LEN} characters", file=sys.stderr)
+            return None
         from .ticket_document import convert_ticket_document, ticket_conversion_context
 
         with ticket_conversion_context(self._project_root, slug, "draft") as context:
             converted = convert_ticket_document(content, context)
         errors = [item for item in converted.diagnostics if item.code != "unresolved_target"]
-        for item in errors:
-            print(f"Error: {item.line}:{item.column}: {item.message}", file=sys.stderr)
-        if errors:
-            return False
-        if converted.document is None and not converted.preview:
-            print("Error: Ticket document has no valid draft preview", file=sys.stderr)
-            return False
-        return True
+        if errors or (converted.document is None and converted.preview is None):
+            for item in errors:
+                print(f"Error: {item.line}:{item.column}: {item.message}", file=sys.stderr)
+            return None
+        import yaml
+
+        fields = dict(
+            converted.document.spec.fields
+            if converted.document is not None
+            else converted.preview.fields
+        )
+        body = content.split("\n---\n", 1)[1]
+        try:
+            destination = TicketWorkspace.project_destination_ref(
+                self._project_root,
+                str(fields["branch"]),
+                str(fields.get("project_destination_ref", "")),
+            )
+        except TicketWorkspaceError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return None
+        if destination != fields.get("project_destination_ref", ""):
+            fields["project_destination_ref"] = destination
+            content = "---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n" + body
+        return content
 
     def create_ticket_file(self, slug: str, spec: TicketFileSpec) -> Path | None:
-        """Reject the retired field-based authoring API after the Ticket cutoff."""
+        """Reject retired field-based Ticket creation after the format cutoff."""
         raise ValueError("field-based Ticket creation is unsupported; use create_ticket_document")
 
     def _materialize_ticket_workspace(self, ticket: Path | None, slug: str) -> None:
@@ -767,13 +799,18 @@ class TicketIO:
 
         Returns (ticket_path, False) on success, (None, True) to skip.
         """
-        file_path, status = find_ticket_file(self.tickets_dir, slug)
-        if file_path is not None and status != "draft":
-            print(
-                f"Warning: ticket '{slug}' already exists ({status}), skipping enqueue",
-                file=sys.stderr,
-            )
-            return None, True
+        file_path, status = find_ticket_file(
+            self.tickets_dir, slug, project_root=self._project_root
+        )
+        if file_path is not None:
+            with file_path.open(encoding="utf-8") as f:
+                fields, _ = parse_frontmatter(f.read())
+            if fields.get("created"):
+                print(
+                    f"Warning: ticket '{slug}' already exists ({status}), skipping enqueue",
+                    file=sys.stderr,
+                )
+                return None, True
 
         ticket_path = file_path
         if ticket_path is None or not ticket_path.exists():
@@ -791,7 +828,7 @@ class TicketIO:
         """Check for circular deps and unmet deps. Returns (has_unmet, error)."""
         if not deps:
             return False, False
-        all_tickets = scan_all_tickets(self.tickets_dir, project_root=self._project_root)
+        all_tickets = scan_all_tickets(self.tickets_dir)
         cycle = self._detect_dep_cycle(slug, deps, all_tickets=all_tickets)
         if cycle:
             print(
@@ -825,13 +862,16 @@ class TicketIO:
 
     def _validate_enqueue_journal_basis(self, journal) -> None:
         """Revalidate immutable basis evidence before resuming publication."""
-        from .acceptance_basis import AcceptanceBasis, load_basis_receipt
+        from .ticket_baseline import load_ticket_baseline_from_document
         from .workspace_ops import validate_basis_refs
 
-        basis = AcceptanceBasis.from_mapping(journal.basis)
-        receipt = load_basis_receipt(self._project_root, journal.slug, journal.basis)
-        if receipt != journal.receipt:
-            raise RuntimeError("enqueue journal receipt differs from write-once evidence")
+        path = Path(journal.candidate)
+        if not path.is_file():
+            path = Path(journal.destination)
+        document = self._convert_ticket(path, journal.slug, "executable")
+        if document.generated.get("machine") != journal.machine:
+            raise RuntimeError("enqueue journal Ticket machine metadata changed")
+        basis = load_ticket_baseline_from_document(self._project_root, journal.slug, document)
         outer = basis.participant("outer")
         errors = validate_basis_refs(
             self._project_root,
@@ -842,7 +882,7 @@ class TicketIO:
             exact_destination_heads=True,
         )
         if errors:
-            raise RuntimeError("enqueue journal Acceptance Basis is invalid: " + "; ".join(errors))
+            raise RuntimeError("enqueue journal Ticket baseline is invalid: " + "; ".join(errors))
 
     def _append_enqueue_transition_once(self, journal) -> None:
         marker = f"enqueue operation {journal.operation_id}"
@@ -855,11 +895,21 @@ class TicketIO:
             journal.slug, "---", state, "ticket-create", f"{detail}; {marker}"
         )
 
-    def enqueue_ticket(self, slug: str) -> bool:
+    def enqueue_ticket(
+        self,
+        slug: str,
+        summary: str | None = None,
+        ticket_type: str | None = None,
+        branch: str | None = None,
+        on_success: dict | None = None,
+        integration_base: str = "",
+    ) -> bool:
         """Stamp created/last_update, validate, and move to queue/ or waiting/.
 
         Returns True/False.
         """
+        if self._retired_enqueue_argument(integration_base):
+            return False
         with self._ticket_lock(slug):
             from .enqueue_publication import load_enqueue_journal
 
@@ -869,111 +919,94 @@ class TicketIO:
             ticket_path, skip = self._resolve_enqueue_path(slug)
             if skip or ticket_path is None:
                 return False
-            prepared = self._prepare_enqueue_fields(slug, ticket_path)
+            prepared = self._prepare_enqueue_fields(slug, ticket_path, on_success)
             if prepared is None:
                 return False
-            document, receipt = prepared
-            has_unmet, dep_error = self._check_deps(
-                slug, document.spec.fields.get("dependencies", [])
-            )
+            fields, body, machine = prepared
+            has_unmet, dep_error = self._check_deps(slug, fields.get("dependencies", []))
             if dep_error:
                 return False
             journal = self._prepare_enqueue_publication(
-                slug, ticket_path, document, has_unmet, receipt
+                slug, ticket_path, fields, body, has_unmet, machine
             )
             return self._finish_enqueue_publication(journal)
 
-    def _prepare_enqueue_fields(
-        self, slug: str, ticket_path: Path
-    ) -> tuple[TicketDocument, dict[str, Any]] | None:
-        document = self._draft_enqueue_document(slug, ticket_path)
-        if document is None:
-            return None
-        from .validation import validate_ticket_spec
-
-        validation_root = self._enqueue_validation_root(slug, dict(document.spec.fields))
-        errors = validate_ticket_spec(
-            document.spec, project_root=validation_root, check_files=True
+    @staticmethod
+    def _retired_enqueue_argument(integration_base: str) -> bool:
+        if not integration_base:
+            return False
+        print(
+            "Error: --integration-base is retired; Tickets with a recorded baseline publish "
+            "their recorded refs directly to destination refs",
+            file=sys.stderr,
         )
-        if errors:
-            self._print_enqueue_errors("ticket validation failed", errors)
+        return True
+
+    def _prepare_enqueue_fields(
+        self, slug: str, ticket_path: Path, on_success: dict[str, Any] | None
+    ) -> tuple[dict[str, Any], str, dict[str, Any]] | None:
+        if on_success:
+            self._print_enqueue_errors("on_success override is unsupported", ["edit the Ticket"])
             return None
-        try:
-            from .acceptance_basis import write_basis_receipt
-            from .workspace_ops import prepare_converted_acceptance_basis
-
-            basis, operation_id = prepare_converted_acceptance_basis(
-                self._project_root,
-                ticket_path,
-                slug,
-            )
-            receipt = write_basis_receipt(
-                self._project_root,
-                slug,
-                basis,
-                source_sha256=hashlib.sha256(ticket_path.read_bytes()).hexdigest(),
-                operation_id=operation_id,
-            )
-            from .ticket_document import TicketDocument
-
-            document = TicketDocument(document.spec, {"acceptance_basis": basis.as_dict()})
-        except (RuntimeError, ValueError, OSError) as exc:
-            self._print_enqueue_errors("Acceptance Basis publication failed", [str(exc)])
-            return None
-        basis_errors = self._validate_enqueue_basis(slug, document)
-        if basis_errors:
-            self._print_enqueue_errors("ticket Acceptance Basis is invalid", basis_errors)
-            return None
-        return document, receipt
-
-    def _draft_enqueue_document(self, slug: str, ticket_path: Path) -> TicketDocument | None:
-        from .ticket_document import convert_ticket_document, ticket_conversion_context
-        from .workspace_ops import ensure_ticket_workspace
-
         if not (self._project_root / ".git").exists():
             self._print_enqueue_errors(
-                "Acceptance Basis publication failed",
+                "Ticket baseline publication failed",
                 ["enqueue requires a Git-backed Project; the draft was left unchanged"],
             )
             return None
         try:
+            from .ticket_baseline import ticket_machine_from_spec
+            from .validation import validate_ticket_spec
+            from .workspace_ops import ensure_ticket_workspace, prepare_converted_ticket_baseline
+
             ensure_ticket_workspace(self._project_root, ticket_path, slug)
-            with ticket_conversion_context(self._project_root, slug, "draft") as context:
-                converted = convert_ticket_document(
-                    ticket_path.read_text(encoding="utf-8"), context
-                )
-        except (RuntimeError, ValueError, OSError) as exc:
-            self._print_enqueue_errors("Ticket workspace preparation failed", [str(exc)])
-            return None
-        if converted.document is None:
-            self._print_enqueue_errors(
-                "ticket conversion failed",
-                [f"{item.line}:{item.column}: {item.message}" for item in converted.diagnostics],
+            document = self._convert_ticket(ticket_path, slug, "draft")
+            validation_root = self._enqueue_validation_root(slug, dict(document.spec.fields))
+            errors = validate_ticket_spec(
+                document.spec, project_root=validation_root, check_files=True
             )
+            if errors:
+                self._print_enqueue_errors("ticket validation failed", errors)
+                return None
+
+            basis, operation_id = prepare_converted_ticket_baseline(
+                self._project_root, ticket_path, slug
+            )
+            machine = ticket_machine_from_spec(basis, document.spec, operation_id)
+        except (RuntimeError, ValueError, OSError) as exc:
+            self._print_enqueue_errors("Ticket baseline publication failed", [str(exc)])
             return None
-        return converted.document
+        from .ticket_document import TicketDocument
+
+        executable = TicketDocument(document.spec, {"machine": machine})
+        basis_errors = self._validate_enqueue_basis(slug, executable)
+        if basis_errors:
+            self._print_enqueue_errors("ticket Ticket baseline is invalid", basis_errors)
+            return None
+        return dict(document.spec.fields), document.spec.body, machine
 
     def _prepare_enqueue_publication(
         self,
         slug: str,
         ticket_path: Path,
-        document: TicketDocument,
+        fields: dict[str, Any],
+        body: str,
         has_unmet: bool,
-        receipt: dict[str, Any],
+        machine: dict[str, Any],
     ):
-        from .acceptance_basis import AcceptanceBasis
         from .enqueue_publication import prepare_enqueue
+
+        created = now_iso()
+        destination_dir = "waiting" if has_unmet else "queue"
+        destination = self.tickets_dir / "board" / destination_dir / ticket_path.name
         from .ticket_document import (
             TicketDocument,
             serialize_ticket_document,
             ticket_conversion_context,
         )
 
-        basis = AcceptanceBasis.from_mapping(document.generated["acceptance_basis"])
-        created = now_iso()
-        candidate = TicketDocument(document.spec, {**document.generated, "created": created})
-        destination_dir = "waiting" if has_unmet else "queue"
-        destination = self.tickets_dir / "board" / destination_dir / ticket_path.name
+        document = self._convert_ticket(ticket_path, slug, "draft")
+        candidate = TicketDocument(document.spec, {"machine": machine, "created": created})
         with ticket_conversion_context(self._project_root, slug, "executable") as context:
             content = serialize_ticket_document(candidate, context).encode()
         return prepare_enqueue(
@@ -984,8 +1017,7 @@ class TicketIO:
             content,
             has_unmet=has_unmet,
             created=created,
-            basis=basis.as_dict(),
-            receipt=receipt,
+            machine=machine,
         )
 
     @staticmethod
@@ -1002,14 +1034,16 @@ class TicketIO:
 
         return resolve_project_dir(self._project_root) / "worktrees" / slug
 
-    def _validate_enqueue_basis(self, slug: str, document: TicketDocument) -> list[str]:
+    def _validate_enqueue_basis(self, slug: str, document) -> list[str]:
         """Require durable basis refs before a real Git project becomes executable."""
-        from .acceptance_basis import AcceptanceBasisError, load_acceptance_basis_from_document
+        if not (self._project_root / ".git").exists():
+            return []  # lightweight filesystem-only consumers cannot verify Git identities
+        from .ticket_baseline import TicketBaselineError, load_ticket_baseline_from_document
         from .workspace_ops import validate_basis_refs
 
         try:
-            basis = load_acceptance_basis_from_document(self._project_root, slug, document)
-        except AcceptanceBasisError as exc:
+            basis = load_ticket_baseline_from_document(self._project_root, slug, document)
+        except TicketBaselineError as exc:
             return [str(exc)]
         try:
             return validate_basis_refs(
@@ -1025,7 +1059,9 @@ class TicketIO:
         """Preserve a blocked generation and reopen a new draft workspace."""
         from .draft_transition import return_to_draft, transition_pending
 
-        ticket_path, status = find_ticket_file(self.tickets_dir, slug)
+        ticket_path, status = find_ticket_file(
+            self.tickets_dir, slug, project_root=self._project_root
+        )
         pending = transition_pending(self._project_root, slug)
         if (ticket_path is None or status is None) and not pending:
             raise FileNotFoundError(f"ticket {slug!r} does not exist")
@@ -1035,7 +1071,9 @@ class TicketIO:
             from .basis_refresh import discard_basis_refresh
 
             discard_basis_refresh(self._project_root, slug)
-            current_path, current_status = find_ticket_file(self.tickets_dir, slug)
+            current_path, current_status = find_ticket_file(
+                self.tickets_dir, slug, project_root=self._project_root
+            )
             result = return_to_draft(
                 self._project_root,
                 current_path or ticket_path or self.tickets_dir / "board/blocked" / f"{slug}.md",
@@ -1083,7 +1121,7 @@ class TicketIO:
                          already has it). If None, scans tickets automatically.
         """
         if all_tickets is None:
-            all_tickets = scan_all_tickets(self.tickets_dir, project_root=self._project_root)
+            all_tickets = scan_all_tickets(self.tickets_dir)
         dep_map = {}
         for t in all_tickets:
             fb = t.get("feature_branch") or slug_from_file(t.get("file", ""))

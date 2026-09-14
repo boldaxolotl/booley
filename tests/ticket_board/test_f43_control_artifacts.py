@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from booley.harness._ticket_ops import DirectTicketOps
-from booley.ticket_board.acceptance_basis import AcceptanceBasis
 from booley.ticket_board.cli import main
 from booley.ticket_board.criteria_markdown import (
     parse_criteria_section,
@@ -220,8 +219,7 @@ def test_enqueue_records_tests_toml_update_in_acceptance_basis(
     )
 
     assert tio.enqueue_ticket("change-target") is True
-    document = tio.load_document("change-target")
-    basis = AcceptanceBasis.from_mapping(document.generated["acceptance_basis"])
+    basis = tio.load_basis("change-target")
     outer_participant = basis.participant("outer")
 
     assert outer_participant.authoring_sha == _git(outer, "rev-parse", "HEAD")
@@ -280,7 +278,7 @@ def test_validate_and_enqueue_accept_sim_target_with_scope_new_fileset(
     }
     assert _git(outer, "rev-parse", "HEAD") == before
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    assert "acceptance_basis" not in fields
+    assert "machine" not in fields
 
     assert tio.enqueue_ticket("change-target") is True
 

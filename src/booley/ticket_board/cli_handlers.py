@@ -261,13 +261,13 @@ def _cmd_validate_ticket(tio, args):
             )
         if path.parent.name == "drafts" and (workspace.is_dir() or spec.target_plan):
             from .workspace_ops import (
-                AcceptanceBasisOperationError,
+                TicketBaselineOperationError,
                 validate_ticket_spec_authoring_inputs,
             )
 
             try:
                 validate_ticket_spec_authoring_inputs(project_root, workspace, spec)
-            except (AcceptanceBasisOperationError, FuseSocError, OSError, ValueError) as exc:
+            except (TicketBaselineOperationError, FuseSocError, OSError, ValueError) as exc:
                 errors.append(str(exc))
     if errors:
         print(json.dumps({"errors": errors}, indent=2))

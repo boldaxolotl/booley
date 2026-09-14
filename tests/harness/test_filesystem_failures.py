@@ -36,7 +36,7 @@ def make_tio(tmp_path):
     ]:
         (tickets_dir / d).mkdir(parents=True, exist_ok=True)
     (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
-    return TicketIO(tickets_dir)
+    return TicketIO(tickets_dir, project_root=tmp_path)
 
 
 def make_ticket_file(tio, subdir, slug, extra_fields=""):
@@ -45,10 +45,10 @@ def make_ticket_file(tio, subdir, slug, extra_fields=""):
         "---\n"
         f"summary: {slug.replace('-', ' ')}\n"
         "type: feature\n"
-        "branch: master\n"
-        "scope_current:\n  - rtl/foo.sv\n"
-        "scope_new: []\n"
-        "test: {tb/foo_tb.sv@config_a/v01: pass}\n"
+        "branch: main\n"
+        "scope: [rtl/foo.sv]\n"
+        "on_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
         f"{extra_fields}"
         "---\n"
         "## Description\nSome work.\n"
@@ -94,7 +94,7 @@ class TestOpResetAuditTrail:
         tio = make_tio(tmp_path)
         slug = "test-reset-audit"
 
-        make_ticket_file(tio, "active", slug)
+        make_ticket_file(tio, "drafts", slug)
         set_progress(
             tio,
             slug,
@@ -123,11 +123,6 @@ class TestOpResetAuditTrail:
         # Patch git ops to avoid real git calls
         with (
             patch("booley.ticket_board.operations.cleanup_worktree_and_branch"),
-            patch.object(
-                tio,
-                "find_ticket",
-                return_value={"file": f"board/active/{slug}.md", "status": "running"},
-            ),
         ):
             result = op_reset(tio, slug)
 
@@ -151,7 +146,7 @@ class TestOpResetAuditTrail:
         tio = make_tio(tmp_path)
         slug = "test-reset-preserve"
 
-        make_ticket_file(tio, "active", slug)
+        make_ticket_file(tio, "drafts", slug)
         set_progress(tio, slug, {"step": "planning"})
 
         # Create ticket.md snapshot in logs (as init_ticket would)
@@ -162,11 +157,6 @@ class TestOpResetAuditTrail:
 
         with (
             patch("booley.ticket_board.operations.cleanup_worktree_and_branch"),
-            patch.object(
-                tio,
-                "find_ticket",
-                return_value={"file": f"board/active/{slug}.md", "status": "running"},
-            ),
         ):
             result = op_reset(tio, slug)
 

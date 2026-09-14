@@ -20,7 +20,7 @@ from booley.ticket_board.ticket_document import (
     ticket_authoring_view,
 )
 from booley.ticket_board.workspace_ops import (
-    AcceptanceBasisOperationError,
+    TicketBaselineOperationError,
     target_surface_files,
     validate_ticket_spec_authoring_inputs,
 )
@@ -183,7 +183,7 @@ def test_v2_authoring_preflight_rejects_unannotated_target_delta(repository: Pat
     )
     assert converted.document is not None
 
-    with pytest.raises(AcceptanceBasisOperationError, match=r"unplanned|Target Plan"):
+    with pytest.raises(TicketBaselineOperationError, match=r"unplanned|Target Plan"):
         validate_ticket_spec_authoring_inputs(repository, repository, converted.document.spec)
 
 

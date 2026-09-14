@@ -466,7 +466,7 @@ unstructured, and let the skill turn it into a precise contract:
    the agent out of unrelated files.
 5. **Creation completes automatically.** After ticket approval, the skill authors any
    approved Target Plan in the Ticket Workspace, then enqueues the ticket. Enqueue
-   publishes the immutable Acceptance Basis; its worktrees, commits, and receipt are
+   publishes the immutable Ticket baseline; its worktrees, commits, and receipt are
    internal mechanics rather than additional user approval gates.
 
 #### Project Ticket Creation Guidance
@@ -502,7 +502,7 @@ Queuing a ticket doesn't start it. Tickets sit in `board/queue/` until you start
 existing acceptance Criterion or expanding file Scope when the recorded blocker
 supports that change. It shows the exact before-and-after proposal for Human
 approval. An approved amendment keeps the Ticket's implementation, publishes a
-new Acceptance Basis, and queues the Ticket to resume. Retry with feedback,
+new Ticket baseline, and queues the Ticket to resume. Retry with feedback,
 requested review, reset, and fresh authoring remain separate choices; the
 triage agent handles the amendment commands.
 
@@ -570,7 +570,7 @@ inspect state, and `booley cheat --board` for the compact transition reference.
 
 A ticket doesn't describe *steps*: it declares **acceptance criteria** (split into `mandatory` and `optional`), and the harness, not the agent, decides when they're met. A criterion is satisfied only by a valid verdict from the Booley Flow or Specialist that owns it (e.g. a simulation criterion needs `sim` to return `pass`; a `review_*` criterion needs a `reviewer` run), never by the Developer Agent asserting success, and it is re-checked whenever the underlying code changes. **A ticket cannot reach review with an unmet mandatory criterion.** Optional criteria do not block review, but the Developer Agent must justify every optional criterion it could not complete; `submit_run_report` rejects the report until that explanation is supplied, and final acceptance rejects a stale report that does not cover the currently unmet set. This applies even when routine run reports are disabled. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#ticket-mode) for the criteria mechanics.
 
-Ticket Mode binds that criterion set when enqueue publishes the Acceptance Basis. A
+Ticket Mode binds that criterion set when enqueue publishes the Ticket baseline. A
 Flow/Target call that cannot bind one of the basis-bound criteria is rejected before
 job admission and shows the
 copyable pending invocation; use `--diagnostic` to run it deliberately without
@@ -646,7 +646,7 @@ review criterion so its suggested invocation is immediately callable.
 #### Threshold parameters
 
 <!-- BEGIN GENERATED: criteria-params -->
-Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the Ticket's Acceptance Basis:
+`SYNTH` and `FPGA` Criteria name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Ticket baseline:
 
 | Flavour param suffix | Baseline? | Meaning |
 |----------------------|:---------:|---------|
@@ -657,11 +657,11 @@ Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **
 
 Percentage threshold values must include the `%` suffix (for example, `cell_count_reduce_at_least: 8%`).
 
-Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.
+Ticket syntax: `SYNTH: {synth_core: {cell_count_max: 500, fmax_mhz_min: 400}}`.
 
-For a relative threshold, a Target entry may instead be a directed frozen pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain Target name is backward-compatible shorthand for using that Target on both sides.
+For a relative threshold on a new Target, add `baseline: <existing-target>` inside that Target's threshold mapping. Existing Targets use their own Ticket-baseline version by default.
 
-In Ticket Mode, enqueue publishes an immutable Acceptance Basis. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
+In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relative `SYNTH` or `FPGA` Criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -694,9 +694,9 @@ In Ticket Mode, enqueue publishes an immutable Acceptance Basis. A baseline-rela
 
 > Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
 
-**Per-test `cycle_count`**
+**Per-test `CYCLE_COUNT`**
 
-Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the Ticket's Acceptance Basis.
+Nest each registered test under its Target and give it one or more thresholds; all thresholds for that test must pass. Relative forms compare the same Target/test at the Ticket baseline by default.
 
 | Parameter | Baseline? | Unit | Passing relation |
 |-----------|:---------:|------|------------------|
@@ -711,7 +711,7 @@ Use a list of mappings. Every item names one `target` and registered `test`, plu
 | `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
 | `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
 
-Syntax (ticket criteria): `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}]`.
+Ticket syntax: `CYCLE_COUNT: {sim_coremark: {coremark: {cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}}}`.
 
 A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
 
@@ -721,9 +721,9 @@ Relative comparisons report an **observed Cycle Count change**. When declared wo
 `create-file` materializes an isolated Ticket Workspace. This is where the
 Ticket-creation agent adds any Target the Ticket will require; the Project's
 destination branch stays fully functional and Doctor-clean until acceptance.
-`enqueue` validates and commits that authoring state, writes a minimal Acceptance Basis,
-and moves the Ticket to queue or waiting. Final acceptance rechecks the protected input
-paths against that basis before publishing the result.
+`enqueue` validates and commits that authoring state, records its pinned commits in
+the Ticket’s reserved `machine` section, and moves it to queue or waiting. Final
+acceptance rechecks protected inputs against those commits before publishing.
 
 **Per-clock timing thresholds.** Timing is reported per clock, so the timing
 metrics (`critical_path_ps`, `fmax_mhz`, `wns_ns`, `whs_ns`, `period_ns`) accept
@@ -774,16 +774,16 @@ while their runnable predecessors are removed. Temporal Targets exist only for T
 evidence and are removed. Every annotated selector and replacement predecessor is Criteria-bound;
 enqueue compares definitions semantically against the exact destination, rejects edits or
 deletions of existing Targets or filesets, and records the canonical plan and derived
-removals in the committed Acceptance Basis record. A planned Target may add a dedicated
+removals in the Ticket’s machine-only baseline metadata. A planned Target may add a dedicated
 fileset, provided no unchanged Target references it. Acceptance removes those derived Target
 definitions, unambiguously owned `tests.toml` tables, and newly authored filesets left
 unreferenced by a Temporal Target's removal. Existing or still-shared filesets, sources,
 parameters, constraints, generators, and hooks remain.
 
-A waiting Ticket may consume a New or Replacement Target from a basis-published
+A waiting Ticket may consume a New or Replacement Target from a baseline-published
 dependency. Booley pins that future surface internally. After the dependency is accepted,
 a Basis Refresh verifies the surface, rebases the still-untouched consumer onto current
-destinations, republishes its basis, and promotes it atomically. Drift blocks and requires
+destinations, records a new Ticket generation, and promotes it atomically. Drift blocks and requires
 `return-to-draft`.
 
 Every review-bound run persists a versioned, machine-readable JSON package at

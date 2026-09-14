@@ -48,7 +48,7 @@ def _lease_environment(
         phase="interactive",
         issued_at=rfc3339_from_epoch(issued_epoch),
         expires_at=rfc3339_from_epoch(issued_epoch + 7200),
-        basis_id="basis-1",
+        ticket_generation="basis-1",
         state_file=state,
         work_dir=worktree,
         log_dir=log_dir,
@@ -57,7 +57,7 @@ def _lease_environment(
         jobs_root=runtime_dir / "jobs",
         required_files=(
             ExecutionLeaseFile.capture("Ticket Board review Ticket", review_ticket),
-            ExecutionLeaseFile.capture("Acceptance Basis runtime Ticket", runtime_ticket),
+            ExecutionLeaseFile.capture("Ticket baseline runtime Ticket", runtime_ticket),
         ),
         absent_paths=(
             ExecutionLeaseAbsentPath(
@@ -148,7 +148,7 @@ def test_lease_record_path_drift_is_rejected(tmp_path: Path, monkeypatch) -> Non
 
 
 @pytest.mark.parametrize(
-    "field", ["basis_id", "state_file", "log_dir", "runtime_dir", "jobs_root"]
+    "field", ["ticket_generation", "state_file", "log_dir", "runtime_dir", "jobs_root"]
 )
 def test_resolved_lease_constraint_drift_is_rejected(
     tmp_path: Path, monkeypatch, field: str

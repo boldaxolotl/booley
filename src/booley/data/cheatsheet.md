@@ -53,7 +53,7 @@ One Ticket keeps one branch, worktree, and evidence history.
 | `draft → waiting → queued` | Wait for dependency Tickets |
 | `running → blocked → queued` | Human input, then resume the same Ticket |
 | `running → queued` | Exceptional interruption recovery; wait for active jobs first |
-| `running → done` | Explicit `on_success.destination: done` shortcut |
+| `running → done` | Omit `review` from the Ticket's `on_success` list |
 | `review → archived` | Close this Ticket; use a new Ticket for separate follow-up |
 | `review ──full reset──► queued` | Retire worktree/branch; archive artifacts; clear active state |
 
@@ -202,7 +202,7 @@ variants, and the first public test that killed each detected mutant.
 **Threshold parameters:**
 
 <!-- BEGIN GENERATED: criteria-params -->
-Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the Ticket's Acceptance Basis:
+`SYNTH` and `FPGA` Criteria name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Ticket baseline:
 
 | Flavour param suffix | Baseline? | Meaning |
 |----------------------|:---------:|---------|
@@ -213,11 +213,11 @@ Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **
 
 Percentage threshold values must include the `%` suffix (for example, `cell_count_reduce_at_least: 8%`).
 
-Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.
+Ticket syntax: `SYNTH: {synth_core: {cell_count_max: 500, fmax_mhz_min: 400}}`.
 
-For a relative threshold, a Target entry may instead be a directed frozen pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain Target name is backward-compatible shorthand for using that Target on both sides.
+For a relative threshold on a new Target, add `baseline: <existing-target>` inside that Target's threshold mapping. Existing Targets use their own Ticket-baseline version by default.
 
-In Ticket Mode, enqueue publishes an immutable Acceptance Basis. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
+In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relative `SYNTH` or `FPGA` Criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -250,9 +250,9 @@ In Ticket Mode, enqueue publishes an immutable Acceptance Basis. A baseline-rela
 
 > Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
 
-**Per-test `cycle_count`**
+**Per-test `CYCLE_COUNT`**
 
-Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the Ticket's Acceptance Basis.
+Nest each registered test under its Target and give it one or more thresholds; all thresholds for that test must pass. Relative forms compare the same Target/test at the Ticket baseline by default.
 
 | Parameter | Baseline? | Unit | Passing relation |
 |-----------|:---------:|------|------------------|
@@ -267,7 +267,7 @@ Use a list of mappings. Every item names one `target` and registered `test`, plu
 | `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
 | `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
 
-Syntax (ticket criteria): `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}]`.
+Ticket syntax: `CYCLE_COUNT: {sim_coremark: {coremark: {cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}}}`.
 
 A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
 

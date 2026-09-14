@@ -201,7 +201,7 @@ def _build_ticket_entry(md_file, d, dir_status, fields, rt):
         "priority",
         "scope",
         "spec",
-        "acceptance_basis",
+        "machine",
     ):
         if opt_key in fields:
             entry[opt_key] = fields[opt_key]

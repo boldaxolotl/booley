@@ -140,7 +140,7 @@ class ExecutionLeaseEnvironment:
     phase: str
     issued_at: str
     expires_at: str
-    basis_id: str
+    ticket_generation: str
     state_file: Path
     work_dir: Path
     log_dir: Path
@@ -158,7 +158,7 @@ class ExecutionLeaseEnvironment:
             "lease_file": str(self.lease_file),
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
-            "basis_id": self.basis_id,
+            "ticket_generation": self.ticket_generation,
             "state_file": str(self.state_file),
             "work_dir": str(self.work_dir),
             "log_dir": str(self.log_dir),
@@ -212,7 +212,7 @@ class ExecutionLeaseEnvironment:
                 phase=require_str(value, "phase"),
                 issued_at=require_str(value, "issued_at"),
                 expires_at=require_str(value, "expires_at"),
-                basis_id=require_str(value, "basis_id"),
+                ticket_generation=require_str(value, "ticket_generation"),
                 state_file=Path(require_str(value, "state_file")),
                 work_dir=Path(require_str(value, "work_dir")),
                 log_dir=Path(require_str(value, "log_dir")),

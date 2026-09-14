@@ -28,7 +28,7 @@ from booley.core.models import (  # noqa: F401
     TargetPlanError,
     TargetPlanRole,
 )
-from booley.ticket_board.acceptance_basis import AcceptanceBasis
+from booley.ticket_board.ticket_baseline import TicketBaseline
 
 
 @dataclass
@@ -65,7 +65,7 @@ class TicketContext:
     # Generation stamped atomically when this harness execution activates the ticket.
     execution_id: str = ""
     # Published acceptance identity for this executable Ticket generation.
-    acceptance_basis: AcceptanceBasis | None = None
+    acceptance_basis: TicketBaseline | None = None
     # Intake defers recorded criteria state until the authoring checkout is ready.
     criteria_state_needs_init: bool = False
 
@@ -78,9 +78,9 @@ class TicketContext:
         """Return the complete Ticket projection used for basis validation."""
         basis = self.acceptance_basis
         if basis is None:
-            raise ValueError("Ticket has no Acceptance Basis")
+            raise ValueError("Ticket has no machine metadata")
         return {
-            "acceptance_basis": basis.as_dict(),
+            "machine": basis.ticket_identity(),
             "criteria": self.criteria,
             "scope": self.scope_raw,
             "on_success": {

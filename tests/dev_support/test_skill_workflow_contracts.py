@@ -84,7 +84,7 @@ def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
     assert positions == sorted(positions)
     assert "acceptance-input-change-required" in blocked
     assert "logs/<slug>/runs/<NNN>/" in blocked
-    assert "retain the original basis" in blocked
+    assert "preserves the old Ticket baseline" in blocked
     assert "fresh Ticket authoring" in blocked
     assert "`outer_worktree` and `project_worktree`" in blocked
     assert "`booley board return-to-draft" not in blocked
@@ -107,7 +107,7 @@ def test_triage_review_briefing_is_fixed_compact_and_html_linked():
         "feature-branch commit (oldest first)",
         "changed path (including renames and submodules)",
         "current-run usage summary",
-        "on_success.triage_report: false",
+        "without `triage_report` in their `on_success` list",
         "deterministic criteria",
     ):
         assert required in review

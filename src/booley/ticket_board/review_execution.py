@@ -35,7 +35,7 @@ def _build_execution_lease(
     ctx: ReviewPrepContext,
     *,
     lease_id: str,
-    basis_id: str,
+    ticket_generation: str,
     state_path: Path,
     runtime_ticket: Path,
     review_ticket: Path,
@@ -50,7 +50,7 @@ def _build_execution_lease(
         expires_at=rfc3339_from_epoch(
             issued_epoch + _COMMAND_TIMEOUT_SECONDS + _LEASE_EXPIRY_SLACK_SECONDS
         ),
-        basis_id=basis_id,
+        ticket_generation=ticket_generation,
         state_file=state_path,
         work_dir=ctx.worktree,
         log_dir=ctx.log_dir,
@@ -59,7 +59,7 @@ def _build_execution_lease(
         jobs_root=jobs_root(ctx.log_dir),
         required_files=(
             ExecutionLeaseFile.capture("Ticket Board review Ticket", review_ticket),
-            ExecutionLeaseFile.capture("Acceptance Basis runtime Ticket", runtime_ticket),
+            ExecutionLeaseFile.capture("runtime Ticket", runtime_ticket),
         ),
         absent_paths=(
             ExecutionLeaseAbsentPath(
@@ -99,7 +99,7 @@ def _environment(
     slug: str,
     *,
     lease_id: str,
-    basis_id: str,
+    ticket_generation: str,
     review_ticket: Path,
 ) -> tuple[Path, dict[str, str], ExecutionLeaseEnvironment]:
     from .review_preparation import _resolve_context
@@ -111,8 +111,8 @@ def _environment(
         inspect_unaccepted=True,
         locked_basis=tio._load_basis_unlocked(slug),
     )
-    if ctx.acceptance_basis_id != basis_id:
-        raise ReviewEntryError("review inspection Acceptance Basis is no longer current")
+    if ctx.ticket_generation != ticket_generation:
+        raise ReviewEntryError("review inspection Ticket generation is no longer current")
     state_path = ctx.log_dir / ".runtime" / "booley_state.json"
     state = DevelopmentState.load(state_path)
     if (
@@ -129,7 +129,7 @@ def _environment(
     lease = _build_execution_lease(
         ctx,
         lease_id=lease_id,
-        basis_id=basis_id,
+        ticket_generation=ticket_generation,
         state_path=state_path,
         runtime_ticket=ticket,
         review_ticket=review_ticket,
@@ -176,7 +176,7 @@ def run_review_command(project_root: Path, slug: str, command: list[str]) -> int
             tio,
             slug,
             lease_id=uuid.uuid4().hex,
-            basis_id=entry["basis_id"],
+            ticket_generation=entry["ticket_generation"],
             review_ticket=tio.tickets_dir / board["file"],
         )
         operation = lease.operation_record(owner_pid=os.getpid())

@@ -18,9 +18,10 @@ import pytest
 from booley.ticket_board import (
     enqueue_publication,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
+    ticket_machine_fields,
 )
 
 
@@ -44,8 +45,10 @@ def _participant(role: str = "outer") -> BasisParticipant:
 
 
 def _enqueue_journal(tmp_path: Path) -> enqueue_publication.EnqueueJournal:
-    basis = AcceptanceBasis((_participant(),)).as_dict()
     operation_id = "0" * 32
+    machine = ticket_machine_fields(
+        TicketBaseline((_participant(),)), fields={}, body="", generation=operation_id
+    )
     digest = "1" * 64
     operation = tmp_path / "operation"
     return enqueue_publication.EnqueueJournal(
@@ -61,13 +64,7 @@ def _enqueue_journal(tmp_path: Path) -> enqueue_publication.EnqueueJournal:
         str(operation / "source.md"),
         False,
         "now",
-        basis,
-        {
-            "operation_id": operation_id,
-            "source_sha256": digest,
-            "basis_id": AcceptanceBasis.from_mapping(basis).basis_id,
-            "participants": basis["participants"],
-        },
+        machine,
     )
 
 
@@ -103,14 +100,10 @@ def _prepare(
 ) -> enqueue_publication.EnqueueJournal:
     content = b"draft\n"
     source.write_bytes(content)
-    basis = AcceptanceBasis((_participant(),)).as_dict()
     operation_id = "0" * 32
-    receipt = {
-        "operation_id": operation_id,
-        "source_sha256": hashlib.sha256(content).hexdigest(),
-        "basis_id": AcceptanceBasis.from_mapping(basis).basis_id,
-        "participants": basis["participants"],
-    }
+    machine = ticket_machine_fields(
+        TicketBaseline((_participant(),)), fields={}, body="", generation=operation_id
+    )
     return enqueue_publication.prepare_enqueue(
         project_root,
         "ticket",
@@ -119,8 +112,7 @@ def _prepare(
         b"queued\n",
         has_unmet=False,
         created="now",
-        basis=basis,
-        receipt=receipt,
+        machine=machine,
     )
 
 
@@ -166,11 +158,8 @@ def test_enqueue_payload_validation_rejects_each_bound_identity(
     monkeypatch.setattr(enqueue_publication, "_transaction_project_dir", lambda _root: tmp_path)
     for changed in (
         replace(journal, source_sha256="bad"),
-        replace(journal, basis={}),
-        replace(journal, receipt={**journal.receipt, "operation_id": "f" * 32}),
-        replace(journal, receipt={**journal.receipt, "source_sha256": "f" * 64}),
-        replace(journal, receipt={**journal.receipt, "basis_id": "f" * 64}),
-        replace(journal, receipt={**journal.receipt, "participants": []}),
+        replace(journal, machine={}),
+        replace(journal, machine={**journal.machine, "generation": "f" * 32}),
     ):
         enqueue_publication.write_enqueue_journal(tmp_path, changed)
         with pytest.raises(enqueue_publication.EnqueuePublicationError):

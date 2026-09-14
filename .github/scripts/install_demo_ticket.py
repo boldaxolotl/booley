@@ -53,10 +53,10 @@ def install_ticket_fixture(project_dir: Path, fixture: Path, slug: str) -> Path:
             project_dir / "tickets", project_root=project_dir.parent
         ).enqueue_ticket(slug)
         if not published:
-            raise DemoTicketInstallError("could not publish Ticket Acceptance Basis")
+            raise DemoTicketInstallError("could not publish Ticket baseline")
         destination.chmod(0o644)
     except (OSError, RuntimeError, ValueError) as exc:
-        raise DemoTicketInstallError(f"could not publish Ticket Acceptance Basis: {exc}") from exc
+        raise DemoTicketInstallError(f"could not publish Ticket baseline: {exc}") from exc
     return destination
 
 

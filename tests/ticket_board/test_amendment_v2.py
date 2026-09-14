@@ -8,10 +8,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasisError,
-    authored_ticket_record_from_spec,
-)
 from booley.ticket_board.amendment_proposal import AmendmentProposalError
 from booley.ticket_board.amendment_v2 import build_v2_amendment_proposal
 from booley.ticket_board.ticket_document import (
@@ -93,8 +89,7 @@ def test_v2_amendment_moves_last_review_requirement_to_optional(tmp_path: Path) 
     text = "---\n" + yaml.safe_dump(proposal.fields) + "---\n" + spec.body
     converted = convert_ticket_document(text, TicketConversionContext("draft", lambda _: view))
     assert converted.document is not None, converted.diagnostics
-    with pytest.raises(AcceptanceBasisError, match="committed human amendment"):
-        authored_ticket_record_from_spec(converted.document.spec, ())
+    assert converted.document.spec.criteria[0].mandatory is False
 
 
 def test_v2_amendment_moves_scalar_synth_pass_to_optional(tmp_path: Path) -> None:

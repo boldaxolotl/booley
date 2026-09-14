@@ -26,7 +26,7 @@ TicketStage = Literal["draft", "executable"]
 _MANDATORY = "CRITERIA_MANDATORY"
 _OPTIONAL = "CRITERIA_OPTIONAL"
 _FLAGS = frozenset({"triage_report", "review", "merge", "cleanup"})
-_OLD_FIELDS = frozenset({"ticket_format", "criteria", "target_plan"})
+_OLD_FIELDS = frozenset({"ticket_format", "criteria", "target_plan", "acceptance_basis"})
 _ANNOTATION = re.compile(r"^(?P<selector>.+?) \((?P<role>new|temp|replaces .+)\)$")
 _CAPABILITIES = frozenset(
     {
@@ -132,7 +132,7 @@ class TicketSpec:
                 _MANDATORY,
                 _OPTIONAL,
                 "on_success",
-                "acceptance_basis",
+                "machine",
                 "acceptance_amendment",
                 "created",
                 "feature_branch",
@@ -263,16 +263,16 @@ def ticket_conversion_context(
         yield TicketConversionContext("draft", resolve_view)
         return
 
-    from .acceptance_basis import AcceptanceBasis, materialize_ticket_commits
+    from .ticket_baseline import materialize_ticket_commits, ticket_baseline_from_machine
 
     with tempfile.TemporaryDirectory(prefix="booley-ticket-conversion-") as temporary:
         destination = Path(temporary) / "checkout"
 
         def resolve_view(generated: Mapping[str, Any]) -> TicketAuthoringView:
-            pointer = generated.get("acceptance_basis")
+            pointer = generated.get("machine")
             if not isinstance(pointer, Mapping):
-                raise ValueError("Executable Ticket has no valid Acceptance Basis pointer")
-            basis = AcceptanceBasis.from_mapping(pointer)
+                raise ValueError("Executable Ticket has no valid machine baseline")
+            basis = ticket_baseline_from_machine(pointer)
             authoring = {item.role: item.authoring_sha for item in basis.participants}
             checkout = materialize_ticket_commits(root, basis, destination, authoring)
             return ticket_authoring_view(checkout)
@@ -559,13 +559,13 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
         )
         generated = {
             key: fields[key]
-            for key in ("acceptance_basis", "acceptance_amendment", "created", "feature_branch")
+            for key in ("machine", "acceptance_amendment", "created", "feature_branch")
             if key in fields
         }
         if context.stage == "draft" and generated:
             raise ValueError("Draft Ticket cannot contain generated execution metadata")
-        if context.stage == "executable" and "acceptance_basis" not in generated:
-            raise ValueError("Executable Ticket requires an Acceptance Basis pointer")
+        if context.stage == "executable" and "machine" not in generated:
+            raise ValueError("Executable Ticket requires machine baseline metadata")
         view = context.resolve_view(generated)
         criteria = _normalize_criteria(mandatory, optional, view, locations)
         target_plan = _derive_target_plan(tuple(mentions), criteria, flags, view)
@@ -590,7 +590,7 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
 
 def serialize_ticket_document(document: TicketDocument, context: TicketConversionContext) -> str:
     """Render v2 frontmatter and prove it preserves the converted Ticket meaning."""
-    generated_keys = {"acceptance_basis", "acceptance_amendment", "created", "feature_branch"}
+    generated_keys = {"machine", "acceptance_amendment", "created", "feature_branch"}
     if set(document.generated) - generated_keys:
         raise ValueError("Ticket has unsupported generated metadata")
     fields = {

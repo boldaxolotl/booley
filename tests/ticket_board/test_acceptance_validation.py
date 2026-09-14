@@ -1,4 +1,4 @@
-"""Regression coverage for live Acceptance Basis validation."""
+"""Regression coverage for live Ticket baseline validation."""
 
 from __future__ import annotations
 
@@ -22,28 +22,22 @@ from booley.harness.models import TicketContext
 from booley.mcp.base import McpToolResult
 from booley.runtime import runtime_context
 from booley.runtime.project_dir import reset_cache
-from booley.ticket_board import acceptance_basis as acceptance_basis_module
 from booley.ticket_board import acceptance_validation
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    BasisParticipant,
-)
+from booley.ticket_board import ticket_baseline as acceptance_basis_module
 from booley.ticket_board.acceptance_validation import (
     assert_ticket_worktree_inputs_unchanged as _assert_ticket_worktree_inputs_unchanged,
 )
 from booley.ticket_board.acceptance_validation import (
     prepare_acceptance_checkout,
 )
-from booley.ticket_board.io import TicketIO
-
-_PROJECTION_TICKET = (
-    "---\nsummary: Accept generated input\ntype: feature\nbranch: main\n"
-    "project_destination_ref: refs/heads/main\nscope: [README.md]\n"
-    "on_success: [triage_report, review, merge, cleanup]\n"
-    "CRITERIA_MANDATORY:\n  REVIEW: {rtl: {bugs: clean}}\n"
-    "---\n\n## Description\n\nAccept generated inputs.\n"
+from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.ticket_baseline import (
+    BasisParticipant,
+    TicketBaseline,
+    TicketBaselineError,
 )
+
+from .test_acceptance_basis import _create_v2_ticket
 
 
 class _AcceptanceFlow(BooleyFlow):
@@ -147,7 +141,7 @@ def _enqueued_projection_ticket(
     tracked_projection: bool = False,
     post_setup_marker: bool = False,
     marker_uses_worktree_path: bool = False,
-) -> tuple[Path, Path, AcceptanceBasis]:
+) -> tuple[Path, Path, TicketBaseline]:
     root, project_dir, tio = _project_with_projection(
         tmp_path,
         ignore_native_cores=ignore_native_cores,
@@ -155,9 +149,16 @@ def _enqueued_projection_ticket(
         post_setup_marker=post_setup_marker,
         marker_uses_worktree_path=marker_uses_worktree_path,
     )
-    ticket = tio.create_ticket_document(
+    ticket = _create_v2_ticket(
+        tio,
         "generated-input",
-        _PROJECTION_TICKET.replace("project_destination_ref: refs/heads/main\n", ""),
+        TicketFileSpec(
+            summary="Accept generated input",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
     )
     assert ticket is not None
     assert tio.enqueue_ticket("generated-input") is True
@@ -170,7 +171,7 @@ def _runtime_ticket(root: Path) -> Path:
 
 def assert_ticket_worktree_inputs_unchanged(
     root: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     workspace: Path,
     *,
     slug: str = "generated-input",
@@ -185,7 +186,7 @@ def assert_ticket_worktree_inputs_unchanged(
     )
 
 
-def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, AcceptanceBasis]:
+def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, TicketBaseline]:
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", "main")
@@ -215,7 +216,17 @@ def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, AcceptanceBas
     _git(project_dir, "add", "-A")
     _git(project_dir, "commit", "-m", "initial project")
     tio = TicketIO(project_dir / "tickets", project_root=root)
-    ticket = tio.create_ticket_document("generated-input", _PROJECTION_TICKET)
+    ticket = _create_v2_ticket(
+        tio,
+        "generated-input",
+        TicketFileSpec(
+            summary="Accept paired generated input",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
     assert ticket is not None
     assert tio.enqueue_ticket("generated-input") is True
     return root, project_dir / "worktrees/generated-input", tio.load_basis("generated-input")
@@ -225,7 +236,7 @@ def _simulate_host_recorded_outer_worktree(
     monkeypatch: pytest.MonkeyPatch,
     root: Path,
     workspace: Path,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
 ) -> Path:
     dot_git = workspace / ".git"
     admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
@@ -291,7 +302,7 @@ def test_prepared_post_setup_marker_passes_live_guard_and_missing_marker_fails(
     )
 
     (workspace / "picosoc/FUSESOC_IGNORE").unlink()
-    with pytest.raises(AcceptanceBasisError, match=r"picosoc/FUSESOC_IGNORE"):
+    with pytest.raises(TicketBaselineError, match=r"picosoc/FUSESOC_IGNORE"):
         assert_ticket_worktree_inputs_unchanged(
             root,
             basis,
@@ -305,7 +316,7 @@ def test_prepared_post_setup_marker_passes_live_guard_and_missing_marker_fails(
     extra = workspace / "unexpected/FUSESOC_IGNORE"
     extra.parent.mkdir()
     extra.write_text("extra", encoding="utf-8")
-    with pytest.raises(AcceptanceBasisError, match=r"unexpected/FUSESOC_IGNORE"):
+    with pytest.raises(TicketBaselineError, match=r"unexpected/FUSESOC_IGNORE"):
         assert_ticket_worktree_inputs_unchanged(
             root,
             basis,
@@ -329,7 +340,7 @@ def test_nondeterministic_post_setup_marker_fails_live_guard(tmp_path: Path) -> 
         ticket_path=ticket,
     )
 
-    with pytest.raises(AcceptanceBasisError, match=r"picosoc/FUSESOC_IGNORE"):
+    with pytest.raises(TicketBaselineError, match=r"picosoc/FUSESOC_IGNORE"):
         assert_ticket_worktree_inputs_unchanged(
             root,
             basis,
@@ -348,7 +359,7 @@ def test_altered_generated_projection_fails_live_guard(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(AcceptanceBasisError, match="protected path") as raised:
+    with pytest.raises(TicketBaselineError, match="protected path") as raised:
         assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
     assert str(raised.value).count("acceptance-input-change-required") == 1
@@ -358,7 +369,7 @@ def test_missing_live_projection_is_candidate_drift(tmp_path: Path) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path)
 
     assert not (workspace / ".booley-projected-demo.core").exists()
-    with pytest.raises(AcceptanceBasisError, match=r"\.booley-projected-demo\.core"):
+    with pytest.raises(TicketBaselineError, match=r"\.booley-projected-demo\.core"):
         assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
@@ -368,7 +379,7 @@ def test_live_only_ordinary_core_remains_rejected(tmp_path: Path) -> None:
         "CAPI=2:\nname: booley::foreign:0\ntargets: {}\n", encoding="utf-8"
     )
 
-    with pytest.raises(AcceptanceBasisError, match=r"foreign\.core"):
+    with pytest.raises(TicketBaselineError, match=r"foreign\.core"):
         assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
@@ -412,21 +423,21 @@ def test_altered_isolated_projection_fails_live_guard(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(AcceptanceBasisError, match="protected path"):
+    with pytest.raises(TicketBaselineError, match="protected path"):
         assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
 def test_renderer_cannot_rewrite_tracked_projection(tmp_path: Path) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path, tracked_projection=True)
 
-    with pytest.raises(AcceptanceBasisError, match="renderer changed tracked"):
+    with pytest.raises(TicketBaselineError, match="renderer changed tracked"):
         assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
 def test_mismatched_live_checkout_fails_closed(tmp_path: Path) -> None:
     root, _workspace, basis = _enqueued_projection_ticket(tmp_path)
 
-    with pytest.raises(AcceptanceBasisError, match="is not the registered worktree"):
+    with pytest.raises(TicketBaselineError, match="is not the registered worktree"):
         assert_ticket_worktree_inputs_unchanged(root, basis, root)
 
 
@@ -436,7 +447,7 @@ def test_unregistered_live_checkout_fails_closed(tmp_path: Path) -> None:
     workspace.rename(unregistered)
     _git(root, "worktree", "prune")
 
-    with pytest.raises(AcceptanceBasisError, match="no registered worktree"):
+    with pytest.raises(TicketBaselineError, match="no registered worktree"):
         assert_ticket_worktree_inputs_unchanged(root, basis, unregistered)
 
 
@@ -491,10 +502,10 @@ def test_external_reference_project_route_fails_closed_before_preparation(
     prepare = MagicMock()
     monkeypatch.setattr(acceptance_validation, "prepare_project", prepare)
 
-    with pytest.raises(AcceptanceBasisError, match="outside"):
+    with pytest.raises(TicketBaselineError, match="outside"):
         assert_ticket_worktree_inputs_unchanged(
             root,
-            AcceptanceBasis((participant,)),
+            TicketBaseline((participant,)),
             workspace,
         )
     prepare.assert_not_called()
@@ -772,7 +783,7 @@ def test_live_guard_materializes_and_prepares_reference_once(
 
     def record_materialization(
         project_root: Path | str,
-        acceptance_basis: AcceptanceBasis,
+        acceptance_basis: TicketBaseline,
         destination: Path | str,
     ) -> Path:
         destinations.append(Path(destination))
@@ -809,7 +820,7 @@ def test_live_guard_cleans_materialized_reference_after_rejection(
 
     def record_materialization(
         project_root: Path | str,
-        acceptance_basis: AcceptanceBasis,
+        acceptance_basis: TicketBaseline,
         destination: Path | str,
     ) -> Path:
         destinations.append(Path(destination))
@@ -821,7 +832,7 @@ def test_live_guard_cleans_materialized_reference_after_rejection(
         record_materialization,
     )
 
-    with pytest.raises(AcceptanceBasisError, match="acceptance-input-change-required"):
+    with pytest.raises(TicketBaselineError, match="acceptance-input-change-required"):
         assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
     assert len(destinations) == 1
