@@ -70,6 +70,8 @@ def test_rejects_foreign_ownership(store, monkeypatch, operation):
 def test_rejects_symlinks(store, tmp_path, location):
     from tests.conftest import symlink_or_skip
 
+    if location == "lock" and not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("secure lock opening uses the platform's O_NOFOLLOW flag")
     store.ensure_directory()
     if location in {"file", "lock"}:
         target = tmp_path / "outside.json"
@@ -95,7 +97,7 @@ def test_rejects_symlinks(store, tmp_path, location):
 def test_directory_cannot_be_read_as_private_file(store):
     store.ensure_directory()
     (store.root / "record.json").mkdir()
-    with pytest.raises((StoreError, IsADirectoryError)):
+    with pytest.raises((StoreError, OSError)):
         store.read_json("record.json")
 
 

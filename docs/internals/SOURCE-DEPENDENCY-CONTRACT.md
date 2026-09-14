@@ -5,7 +5,9 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
-Measurements below were verified on 11 SEP 2026 against `main` at `d7b67321`.
+The latest measurements were verified on 14 SEP 2026 against source and analyzer
+at `8efb7c56`, with `90c27b43` as the implementation base. Earlier snapshots
+retain their original revision and date.
 The direction rules are normative; dated graph snapshots are diagnostic evidence.
 
 ## Source map
@@ -86,9 +88,16 @@ installation and License Profile registration, exact Project grants, Vivado
 policy, and resolution of immutable requirements supplied to Runtime. Project
 Initialization and Harness grant coordination compose those two contexts.
 
+Config owns declarative EDA requests in `booley.config.eda`, including parsing,
+configuration errors, and Project document loading. EDA owns host-platform
+validation and composed loading in `eda.provisioning.configuration`; registration
+name validation remains with authority. Retired configuration checks stay in
+`config.flow_enablement`. The `eda.config` compatibility exports only point to
+these canonical owners, and Config never imports them through EDA.
+
 EDA reads declarative Flow enablement from `booley.config.flow_enablement`; it
 must not import Flow execution, even from deferred or type-only imports. It also
-must not import Runtime issuance or invalidation modules. D19 and D20 have no
+must not import any Runtime module. D19, D20, D23, and D24 have no
 waiver or composition exception. The dependency and hotspot measurements for
 [#487](https://github.com/boldaxolotl/booley/issues/487) are recorded in
 [the implementation evidence](../research/session-runtime-issuance-487-evidence.md).
@@ -98,6 +107,15 @@ boolean `false` disables a Flow. Missing, unreadable, malformed, or non-boolean
 values retain the enabled default. This narrow boundary intentionally differs
 from fail-closed authority and Runtime configuration because legacy Projects
 must not silently lose execution when the declarative reader is unavailable.
+
+EDA and Runtime share `core.private_store`, whose full locking dependency lives
+in `core.file_lock`, and use `core.user_paths.config_dir` for the existing host
+configuration location. Callers retain ownership of store roots, anchors,
+diagnostics, schemas, and lifecycle ordering. `core.resources.package_data_dir`
+owns installed-resource lookup and shadow-package fallback; Runtime still owns
+native executable discovery. The Runtime storage/locking modules and
+`runtime.paths.package_data_dir` remain downward compatibility exports. D25
+prevents these three shared mechanisms from acquiring caller policy.
 
 ## Graph semantics
 
@@ -151,6 +169,9 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D20 | Prefix `booley.eda` | Exact modules `booley.runtime.session_issuance`, `booley.runtime.issuance_invalidation` | Forbid | EDA supplies provisioning facts without knowing Runtime issuance, persistence, or invalidation. |
 | D21 | Prefix `booley.review` | Prefixes `booley.ticket_board`, `booley.harness` | Forbid | Review renders artifacts from resolved evidence without knowing Ticket Board lifecycle or Harness orchestration. |
 | D22 | Prefix `booley.ticket_board` | Prefix `booley.review` | Forbid, subject only to C9 | Ticket Board composes Review only through its exact artifact-generation entry point. |
+| D23 | Prefix `booley.config` | Prefix `booley.eda` | Forbid | Config owns declarative requests without depending on EDA provisioning policy. |
+| D24 | Prefix `booley.eda` | Prefix `booley.runtime` | Forbid | EDA uses neutral host mechanisms without depending on Runtime execution or issuance. |
+| D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets`, `booley.ticket_board` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
 
 ## Ticket review lifecycle boundary
 
@@ -312,7 +333,7 @@ booley.review <-> booley.ticket_board
 booley.runtime <-> booley.ticket_board
 ```
 
-## Current snapshot: 11 SEP 2026
+## Historical snapshot: 11 SEP 2026
 
 Source and analyzer revision: `d7b67321` (the latest `main` merge on 11 SEP 2026).
 The comparison revision `1fdc706e` is `main` immediately before 10 SEP in
@@ -388,6 +409,30 @@ When one of these modules changes, record before-and-after output in
 [#279](https://github.com/boldaxolotl/booley/issues/279). This lets later fan-out
 work distinguish legitimate composition from unjustified knowledge growth.
 
+## Current snapshot: 14 SEP 2026 — Config/EDA/Runtime separation
+
+[#531](https://github.com/boldaxolotl/booley/issues/531) removes both Config→EDA
+edges and all four EDA→Runtime edges. Its own source/analyzer comparison is:
+
+| Diagnostic | Before `90c27b43` | After `8efb7c56` |
+| --- | ---: | ---: |
+| Python modules | 492 | 497 |
+| Located dependency facts | 2,424 | 2,438 |
+| Unique normalized edges | 1,989 | 2,002 |
+| Mutual package pairs | 13 | 11 |
+| Largest cyclic package group | 18 | 18 |
+
+The Config↔EDA and EDA↔Runtime mutual pairs disappear. The exact 18-member SCC
+remains: #530's Target→Flows and FuseSoC→Runtime paths have not been removed on
+this branch. The 12-member/9-pair cumulative projection is not an achieved result.
+Retain the existing exact SCC metadata; the new production metadata test requires
+it to equal the measured nontrivial groups, forcing tightening when a split lands.
+Separate seeded tests prove neutral packages cannot join the remaining group.
+
+Full ownership, edge inventories, affected caller fan-out, compatibility behavior,
+and reproduction commands are in the
+[#531 follow-up evidence](../research/session-runtime-issuance-487-evidence.md#follow-up-531--complete-configedaruntime-source-directions).
+
 ## Required gate
 
 The pytest gate checks every normalized production dependency against the direction
@@ -397,9 +442,11 @@ rejects any current multi-package SCC that is not a subset of an approved legacy
 member set. Approved groups may split; new acyclic singletons need no baseline
 entry.
 
-The approved SCC sets are fixed metadata, not a record of the smallest groups
-ever observed. New cycles entirely within an approved set can pass this check,
-and a split can recombine until the approved sets are explicitly tightened.
+The approved SCC sets are explicit metadata. In addition to the subset gate,
+`test_approved_cyclic_groups_are_tightened_to_actual_groups` requires production
+metadata to equal the currently measured nontrivial groups. A split therefore
+requires tightening in the same change, after which a recombination fails the
+subset gate. New cycles entirely within one remaining approved set can still pass.
 Direction rules still apply to every edge. Package projection also combines
 distinct modules: a package SCC does not establish a module-level import cycle.
 A passing gate therefore proves the stated source rules, not complete separation,
