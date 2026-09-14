@@ -75,3 +75,24 @@ def test_agent_detection_uses_config_or_executable(
     assert result.installed is (directory or executable is not None)
     assert result.config_present is directory
     assert result.executable == executable
+
+
+@pytest.mark.parametrize(
+    "severity",
+    [host_environment.EnvironmentSeverity.FAIL, host_environment.EnvironmentSeverity.WARN],
+)
+def test_host_diagnostics_preserves_environment_failures_and_warning_identity(
+    monkeypatch, severity
+):
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    observation = host_environment.EnvironmentFinding(
+        severity,
+        "legacy package observation",
+        "remove legacy package",
+        "host.legacy-package" if severity is host_environment.EnvironmentSeverity.WARN else None,
+    )
+    monkeypatch.setattr(host_environment, "audit_legacy_distribution", lambda: observation)
+    report = host_diagnostics.inspect_host().report
+    actual = next(f for f in report.findings if f.message == observation.message)
+    assert actual.severity == severity.value
+    assert (actual.fix, actual.check_id) == (observation.fix, observation.check_id)

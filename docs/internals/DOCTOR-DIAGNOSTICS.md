@@ -168,3 +168,10 @@ against the sealed policy without local allowed-identity additions. The Runtime
 filesystem fixture now compares `Path` objects, so its required and forbidden
 paths match on Windows and POSIX. Runtime inspection and architecture tests
 passed 192 tests after this change; Windows CI verifies the affected host path.
+
+The changed-line coverage follow-up exercises mounted Vivado failures, runtime
+isolation, retained image classification, unreadable Project data, host finding
+translation, and guidance/projection repair boundaries through the production
+interfaces. A local coverage run passed 3,829 tests with one skip; the final
+focused additions passed 38 tests. Combined coverage of changed production
+statements is 656/708 (92.66%), above the required 90% CI threshold.
