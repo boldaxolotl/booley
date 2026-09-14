@@ -11,17 +11,17 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
-from .acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    assert_live_inputs_unchanged,
-    materialize_current_ticket_checkout,
-    validate_ticket_view,
-)
 from .acceptance_targets import resolve_commit
 from .acceptance_validation import prepare_acceptance_checkout
 from .frontmatter import parse_frontmatter
 from .scanner import find_ticket_file
+from .ticket_baseline import (
+    TicketBaseline,
+    TicketBaselineError,
+    assert_live_inputs_unchanged,
+    materialize_current_ticket_checkout,
+    validate_ticket_view,
+)
 from .validation import validate_ticket_fields
 
 
@@ -79,8 +79,8 @@ def _validate_checkout_basis(
         return []
     if fields.get("target_contract") is not None:
         return ["legacy Target Contract tickets are unsupported after the hard cutoff"]
-    if fields.get("acceptance_basis") is None:
-        return ["executable Ticket has no Acceptance Basis"]
+    if "acceptance_basis" in fields or fields.get("machine") is None:
+        return ["unsupported Ticket format: executable Ticket needs machine metadata"]
     try:
         from .io import TicketIO
 
@@ -89,13 +89,13 @@ def _validate_checkout_basis(
         if basis.project_sha:
             project_repository = resolve_inner_project_repo(root)
             if project_repository is None:
-                raise AcceptanceBasisError(
-                    "Acceptance Basis project participant repository is missing"
+                raise TicketBaselineError(
+                    "Ticket baseline project participant repository is missing"
                 )
             resolve_commit(project_repository, basis.project_sha)
         ticket, _status = find_ticket_file(tickets_dir, slug)
         if ticket is None:
-            raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during readiness")
+            raise TicketBaselineError(f"ticket {slug!r} is unavailable during readiness")
         validation_errors = _validate_current_ticket_view(
             root,
             ticket,
@@ -104,7 +104,7 @@ def _validate_checkout_basis(
             fields,
             body,
         )
-    except (AcceptanceBasisError, OSError, ValueError) as exc:
+    except (TicketBaselineError, OSError, ValueError) as exc:
         return [str(exc)]
     return validation_errors
 
@@ -113,7 +113,7 @@ def _validate_current_ticket_view(
     root: Path,
     ticket: Path,
     slug: str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     fields: dict[str, object],
     body: str,
 ) -> list[str]:

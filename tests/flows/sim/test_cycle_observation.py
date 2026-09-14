@@ -22,8 +22,8 @@ from booley.harness.setup.intake import _apply_basis_selectors
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import AmbiguousTargetError
-from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
+from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
@@ -188,8 +188,8 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     return flow, next(iter(state.criteria))
 
 
-def _acceptance_basis() -> AcceptanceBasis:
-    return AcceptanceBasis(
+def _acceptance_basis() -> TicketBaseline:
+    return TicketBaseline(
         bindings=(
             AcceptanceTargetBinding(
                 flow="sim",

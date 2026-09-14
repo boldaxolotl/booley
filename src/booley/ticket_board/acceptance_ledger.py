@@ -38,7 +38,7 @@ class AcceptanceSnapshot:
     ticket_type: str
     execution_id: str
     accepted_at: str
-    acceptance_basis: dict[str, Any]
+    ticket_identity: dict[str, Any]
     participant_heads: dict[str, str]
     criteria: dict[str, dict[str, Any]]
     evidence: tuple[dict[str, Any], ...]
@@ -76,6 +76,8 @@ def _write_once(path: Path, content: bytes) -> None:
 
 
 def _snapshot_from_payload(payload: Mapping[str, Any], digest: str) -> AcceptanceSnapshot:
+    if "acceptance_basis" in payload:
+        raise AcceptanceLedgerError("unsupported Ticket format: recreate this Ticket")
     try:
         return AcceptanceSnapshot(
             digest=digest,
@@ -83,7 +85,7 @@ def _snapshot_from_payload(payload: Mapping[str, Any], digest: str) -> Acceptanc
             ticket_type=str(payload["ticket_type"]),
             execution_id=str(payload["execution_id"]),
             accepted_at=str(payload["accepted_at"]),
-            acceptance_basis=dict(payload.get("acceptance_basis") or {}),
+            ticket_identity=dict(payload.get("ticket_identity") or {}),
             participant_heads=_participant_heads(payload["participant_heads"]),
             criteria={key: dict(value) for key, value in dict(payload["criteria"]).items()},
             evidence=tuple(dict(value) for value in payload.get("evidence", [])),
@@ -132,7 +134,9 @@ def _allocate_sequence(root: Path, transaction_id: str) -> tuple[int, Path]:
     raise AcceptanceLedgerError(f"Criterion evidence sequence exhausted beneath {root}")
 
 
-def _read_evidence_records(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
+def _read_evidence_records(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
     """Read and structurally validate every immutable observation."""
     root = Path(log_dir) / "acceptance" / "evidence"
     if not root.exists():
@@ -145,19 +149,25 @@ def _read_evidence_records(log_dir: Path, state: DevelopmentState) -> list[dict[
         try:
             sequence = int(sequence_name)
             payload = json.loads((directory / "record.json").read_text(encoding="utf-8"))
+            if "acceptance_basis" in payload:
+                raise ValueError("unsupported Ticket format: recreate this Ticket")
             if payload.get("sequence") != sequence:
                 raise ValueError("record sequence does not match its directory")
             criterion = payload["criterion"]
             role = payload["role"]
             if not isinstance(criterion, str) or role not in {"baseline", "candidate"}:
                 raise ValueError("record has invalid criterion identity or role")
+            if payload.get("ticket_identity") != ticket_identity:
+                raise ValueError("Criterion evidence names another Ticket identity")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise AcceptanceLedgerError(f"corrupt Criterion evidence {directory}: {exc}") from exc
         records.append(payload)
     return records
 
 
-def _read_evidence_refs(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
+def _read_evidence_refs(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
     """Return integrity-checked references to every immutable observation."""
     return [
         {
@@ -166,14 +176,16 @@ def _read_evidence_refs(log_dir: Path, state: DevelopmentState) -> list[dict[str
             "criterion": payload["criterion"],
             "role": payload["role"],
         }
-        for payload in _read_evidence_records(log_dir, state)
+        for payload in _read_evidence_records(log_dir, state, ticket_identity)
     ]
 
 
-def _validate_state_projection(log_dir: Path, state: DevelopmentState) -> None:
+def _validate_state_projection(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> None:
     """Reject mutable Criterion values that conflict with ledger-observed values."""
     latest: dict[str, dict[str, Any]] = {}
-    for payload in _read_evidence_records(log_dir, state):
+    for payload in _read_evidence_records(log_dir, state, ticket_identity):
         latest[payload["criterion"]] = payload
     for criterion, payload in latest.items():
         entry = state.criteria.get(criterion)
@@ -191,7 +203,7 @@ def record_changes(
     invocation_id: str,
     producer: str,
     execution_id: str,
-    acceptance_basis: Mapping[str, Any] | None = None,
+    ticket_identity: Mapping[str, Any] | None = None,
     recorded_at: str | None = None,
     transaction_id: str = "",
 ) -> tuple[EvidenceRef, ...]:
@@ -223,7 +235,7 @@ def record_changes(
             "mandatory": change.mandatory,
             "params": change.params,
             "detail": change.detail,
-            "acceptance_basis": dict(acceptance_basis or {}),
+            "ticket_identity": dict(ticket_identity or {}),
             "recorded_at": timestamp,
         }
         encoded = _canonical(payload)
@@ -238,22 +250,23 @@ def freeze_acceptance(
     state: DevelopmentState,
     *,
     execution_id: str,
-    acceptance_basis: Mapping[str, Any] | None,
+    ticket_identity: Mapping[str, Any] | None,
     participant_heads: Mapping[str, str],
     accepted_at: str | None = None,
 ) -> AcceptanceSnapshot:
     """Freeze and select one Criteria Satisfaction Record for the current Ticket epoch."""
-    _validate_state_projection(log_dir, state)
+    identity = dict(ticket_identity or {})
+    _validate_state_projection(log_dir, state, identity)
     payload = {
         "schema": SCHEMA_VERSION,
         "slug": state.slug,
         "ticket_type": state.ticket_type,
         "execution_id": execution_id,
         "accepted_at": accepted_at or utc_now_rfc3339(),
-        "acceptance_basis": dict(acceptance_basis or {}),
+        "ticket_identity": identity,
         "participant_heads": _participant_heads(participant_heads),
         "criteria": {key: entry.to_dict() for key, entry in state.criteria.items()},
-        "evidence": _read_evidence_refs(log_dir, state),
+        "evidence": _read_evidence_refs(log_dir, state, identity),
     }
     encoded = _canonical(payload)
     digest = hashlib.sha256(encoded).hexdigest()
@@ -333,10 +346,10 @@ def validate_review_package_binding(log_dir: Path, snapshot: AcceptanceSnapshot)
 
 
 def _validate_manifest_identity(manifest: Mapping[str, Any], snapshot: AcceptanceSnapshot) -> None:
-    manifest_basis = manifest.get("acceptance_basis_id")
-    snapshot_basis = snapshot.acceptance_basis.get("basis_id")
-    if not isinstance(manifest_basis, str) or manifest_basis != snapshot_basis:
-        raise ValueError("review package names a different Acceptance Basis")
+    manifest_generation = manifest.get("ticket_generation")
+    snapshot_generation = snapshot.ticket_identity.get("generation")
+    if not isinstance(manifest_generation, str) or manifest_generation != snapshot_generation:
+        raise ValueError("review package names a different Ticket generation")
     heads = {"outer": manifest.get("head_sha")}
     if "project_head_sha" in manifest:
         heads["project"] = manifest.get("project_head_sha")

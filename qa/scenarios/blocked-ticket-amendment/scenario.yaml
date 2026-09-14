@@ -1,0 +1,447 @@
+format_version: 1
+scenario_id: blocked-ticket-amendment
+title: Human-approved amendment of a blocked Ticket
+source: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+check_sets:
+- id: amendment-core
+  checks:
+  - fixture.measurement
+  - ticket.blocked
+  - preview.readonly
+  - preview.stale
+  - preview.restore
+  - apply.threshold
+  - apply.participants
+  - resume.continuity
+  - resume.acceptance
+- id: amendment-boundaries
+  checks:
+  - reject.tightening
+  - reject.criterion-removal
+  - reject.target-change
+  - reject.build-control-change
+  - scope.protected
+  - optional.last
+  - scope.existing
+  - scope.new
+  - optional.missing-explanation
+  - optional.explained-finalization
+- id: amendment-finish
+  checks:
+  - final.records
+  - cleanup.owned
+shared_pre_run_requirements:
+- An immutable installed product artifact containing the blocked-Ticket amendment, its full source commit, matching public documentation, and runtime image digest; no editable source install.
+- Docker and Verilator in the issued Session Runtime, sufficient storage, and working authentication for the selected Ticket backend. Record identities without credential bytes.
+- A live Human Maintainer available to approve each exact before/after proposal. An operator or Developer Agent cannot fabricate that approval.
+- Authority over three disposable Projects and Tickets, their branches/workspaces, runtime processes, and owned temporary files. No remote publication or cleanup of borrowed resources.
+- Preserve the literal 438-cycle workload, initial 400-cycle ceiling, approved 450-cycle ceiling, and exact selected Target/test. Do not calibrate thresholds during the Run.
+configured_scenarios:
+- id: blocked-ticket-amendment-ubuntu-codex-cli
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Record the exact Codex CLI, SDK, and model identities before admission.
+  check_sets: [amendment-core, amendment-boundaries, amendment-finish]
+  exclusions: []
+- id: blocked-ticket-amendment-ubuntu-claude-cli
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Claude
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Claude
+  pre_run_requirements:
+  - Record the exact Claude CLI, SDK, and model identities before admission.
+  check_sets: [amendment-core, amendment-boundaries, amendment-finish]
+  exclusions: []
+- id: blocked-ticket-amendment-windows-codex-cli
+  required: true
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Record the exact Codex CLI, SDK, and model identities and the WSL2/Docker Desktop boundary before admission.
+  check_sets: [amendment-core, amendment-boundaries, amendment-finish]
+  exclusions: []
+- id: blocked-ticket-amendment-windows-claude-cli
+  required: true
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Claude
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Claude
+  pre_run_requirements:
+  - Record the exact Claude CLI, SDK, and model identities and the WSL2/Docker Desktop boundary before admission.
+  check_sets: [amendment-core, amendment-boundaries, amendment-finish]
+  exclusions: []
+inputs:
+- id: product
+  kind: pre-run
+  value: Exact immutable booley-rtl artifact SHA-256, full source commit, matching docs and image digest, and selected provider/model identity.
+  source: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
+  verification: Record all identities before setup; the installed artifact must contain the amendment behavior.
+- id: workload
+  kind: literal
+  value: |-
+    rtl/amend_counter.sv:
+      module amend_counter(input logic clk, output logic progress);
+        logic [8:0] count = '0;
+        always_ff @(posedge clk) count <= count + 1'b1;
+        assign progress = count[0];
+      endmodule
+    tb/amend_tb.sv:
+      module amend_tb;
+        logic clk = 0;
+        logic progress;
+        integer cycles = 0;
+        amend_counter dut(.clk(clk), .progress(progress));
+        always #5 clk = ~clk;
+        initial begin
+          repeat (438) begin
+            @(posedge clk);
+            #1;
+            cycles = cycles + 1;
+            if (progress !== cycles[0]) $fatal(1, "progress mismatch");
+          end
+          $display("[SIM_CYCLES] amend_smoke %0d", cycles);
+          $finish;
+        end
+      endmodule
+    amend.core:
+      CAPI=2:
+      name: booley:qa:amend:1
+      filesets:
+        rtl:
+          files: [rtl/amend_counter.sv]
+          file_type: systemVerilogSource
+        tb:
+          files: [tb/amend_tb.sv]
+          file_type: systemVerilogSource
+          tags: [tb]
+      targets:
+        sim_amend:
+          flow: sim
+          filesets: [rtl, tb]
+          toplevel: amend_tb
+          flow_options:
+            tool: verilator
+            verilator_options: [--timing, --main, --exe, -Wno-fatal]
+    tests.toml in the resolved Project data directory:
+      [sim_amend]
+      tests = ["amend_smoke"]
+      select = "+test={name}"
+    docs/amend_note.md initially contains exactly `The counter exposes progress.` and is the optional Ticket's sole Scope path. The threshold and Scope Tickets initially include only rtl/amend_counter.sv in Scope; tb/amend_tb.sv already exists and is the existing-file addition for the Scope Ticket.
+    The mandatory Cycle Count entry is exactly `cycle_count: [{target: sim_amend, test: amend_smoke, cycle_count_max: 400}]` and the approved ceiling is 450. The RTL refactor task replaces the continuous progress assignment with an equivalent always_comb block; no testbench edits are authorized. Derive expanded Criterion instance names from the sealed Ticket, never from a YAML list index.
+  source: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
+  verification: Retain the actual testbench and Target recipe bytes, source hashes, passing Flow report, named cycle observation, and initial sealed Ticket before any amendment.
+- id: amendment-requests
+  kind: literal
+  value: |-
+    Threshold request has the live approving Human's actor identity, nonblank reason `438 cycles meets the revised budget`, feedback `Continue from the preserved implementation`, and one exact expanded cycle_count Criterion with `thresholds: {cycle_count_max: 450}`. Separate requests use `make_optional: true` for the sole mandatory instance and `scope_add: ["tb/amend_tb.sv", "rtl/amend_extra.sv [new]"]`. Only the live Human's approval of a displayed exact preview authorizes apply.
+  source: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+  verification: Preserve exact request files, preview output/digest and live Human approval; derived path and Criterion names must match the frozen disposable fixture.
+authority:
+- Use installed public CLI and packaged triage guidance. Do not import private evaluators, patch the product, or ask the Developer Agent to alter its own acceptance controls.
+- Record each live Human decision. If approval is absent, leave that Ticket blocked and record dependent Checks blocked; do not infer consent from this Scenario definition.
+- Each Ticket and Project is disposable and run-owned. Preserve historical failures, Ticket machine baselines, source identities and evidence outside mutable Project state before restoration or cleanup.
+- A failed negative Check does not authorize mutation. Restore the stale-preview source change from an independent saved baseline and enter unconditional cleanup at the deadline.
+budget:
+  deadline_minutes: 480
+  cleanup_minutes: 25
+  contingency_minutes: 30
+  cleanup_start_minutes: 455
+  final_regression_start_minutes: 430
+phases:
+- {id: prepare, title: Freeze artifact and deterministic workload, minutes: 55}
+- {id: block, title: Produce three genuine blocked Tickets, minutes: 90}
+- {id: preview, title: Preview and negative boundaries, minutes: 60}
+- {id: amend, title: Publish approved amendments, minutes: 95}
+- {id: resume, title: Resume and finish under revised bases, minutes: 100}
+- {id: final, title: Final records and integrity review, minutes: 25}
+- {id: cleanup, title: Unconditional run-owned cleanup, minutes: 25}
+steps:
+- id: fixture.measurement
+  phase: prepare
+  action: Initialize three disposable Projects with the frozen workload and split outer/project repositories. Register sim_amend/amend_smoke and independently run the exact 438-cycle test. Ledger all resources before creation.
+  checks:
+  - id: fixture.measurement
+    capabilities: [METRIC-THRESHOLD-CRITERIA, TICKET-AMENDMENT]
+    stimulus: Run the frozen sim_amend/amend_smoke test with the installed public Flow.
+    expected: The producer succeeds and reports exactly 438 named cycles; its Target, test, source and recipe identities are recorded.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
+    evidence: Exact workload bytes, CLI result, Flow report, named cycle observation, recipe/source hashes and independent count of 438 clock edges.
+    capture: evidence/blocked-ticket-amendment.fixture.measurement
+  resources: [three disposable Project roots, outer and project Git repositories, Session Runtime]
+  timeout_minutes: 55
+- id: ticket.blocked
+  phase: block
+  requires: [fixture.measurement]
+  action: Create three separately named Tickets with the 400-cycle mandatory Criterion and declared review policy. The threshold and Scope Tickets also have mandatory sim_pass and a scoped RTL refactor task; the optional Ticket has a document-only Scope and a scoped explanation task so its Cycle Count instance is the sole mandatory Criterion. Run the selected live Ticket backend until each implementation is retained and it explicitly blocks on the unmet numeric gate; retain failures rather than scripting a fake block.
+  checks:
+  - id: ticket.blocked
+    capabilities: [TICKET-LIFECYCLE, CRITERION-ACCEPTANCE-POLICY, TICKET-AMENDMENT]
+    stimulus: Execute each sealed Ticket against the 438-cycle test and 400-cycle mandatory ceiling.
+    expected: Each Ticket is genuinely blocked with its 400-cycle mandatory Criterion unmet, successful underlying simulation, scoped implementation source and original Ticket commit retained; the threshold and Scope Tickets also have a passing mandatory sim_pass.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
+    evidence: Sealed Tickets, exact Board transitions, Flow reports, Criteria states, source diff/status, original Ticket generation IDs and participant heads for all three Tickets.
+    capture: evidence/blocked-ticket-amendment.ticket.blocked
+  resources: [three disposable Tickets and execution workspaces]
+  timeout_minutes: 90
+- id: preview.readonly
+  phase: preview
+  requires: [ticket.blocked]
+  action: Obtain the threshold Ticket's exact expanded Criterion name, save the literal 450-cycle request, snapshot Board/log/ref/source identities, then ask the triage agent to obtain a public Board amendment preview.
+  checks:
+  - id: preview.readonly
+    capabilities: [TICKET-AMENDMENT, TICKET-TRIAGE]
+    stimulus: Preview the threshold relaxation on the blocked Ticket without applying it.
+    expected: The preview shows 400 to 450, the reason and feedback, an exact digest, and unchanged Ticket, Ticket baseline, workspace, refs and logs.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Request bytes, preview stdout/exit, digest, before/after Board and source/ref/log hashes.
+    capture: evidence/blocked-ticket-amendment.preview.readonly
+  timeout_minutes: 10
+- id: preview.stale
+  phase: preview
+  requires: [preview.readonly]
+  action: Save the exact blocked source baseline, make one permitted scoped source edit, and attempt apply with the prior preview digest. Preserve the resulting fault evidence before restoration.
+  checks:
+  - id: preview.stale
+    capabilities: [TICKET-AMENDMENT]
+    stimulus: Apply the old digest after a scoped source change.
+    expected: Apply rejects the stale preview and leaves Ticket, Ticket baseline, Board queue, participant refs and amendment history unchanged.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
+    evidence: Saved baseline, edit diff, stale digest, CLI rejection, before/after Board/Ticket/ref/history hashes.
+    capture: evidence/blocked-ticket-amendment.preview.stale
+  timeout_minutes: 8
+- id: preview.restore
+  phase: preview
+  requires: [preview.readonly]
+  recovery:
+    baseline: preview.readonly
+    detection: [preview.stale]
+    instruction: Restore only the owned scoped source edit from its saved bytes whether stale rejection passed or failed; preserve both observations, verify the old source hash, and create a fresh preview.
+  action: Independently restore the stale-preview edit and obtain a current exact digest for later Human review.
+  checks:
+  - id: preview.restore
+    capabilities: [TICKET-AMENDMENT, TICKET-LIFECYCLE]
+    stimulus: Restore the owned source file and preview the unchanged 450-cycle request again.
+    expected: Original blocked source hash is restored and a valid current preview is available without silently applying an amendment.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
+    evidence: Restoration diff and hash, fresh preview/digest, unchanged Board and Ticket machine baselines.
+    capture: evidence/blocked-ticket-amendment.preview.restore
+  timeout_minutes: 8
+- id: reject.tightening
+  phase: preview
+  requires: [ticket.blocked]
+  action: On a blocked Ticket, preview a separate request that lowers the ceiling from 400 to 390; do not substitute this request for the approved relaxation.
+  checks:
+  - id: reject.tightening
+    capabilities: [TICKET-AMENDMENT, METRIC-THRESHOLD-CRITERIA]
+    stimulus: Submit the 390-cycle tightening as a proposed amendment.
+    expected: The request is rejected before mutation; no new Ticket baseline or queue event exists.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Exact negative request, CLI diagnostic, Board/Ticket/ref hashes before and after.
+    capture: evidence/blocked-ticket-amendment.reject.tightening
+  timeout_minutes: 5
+- id: reject.criterion-removal
+  phase: preview
+  requires: [ticket.blocked]
+  action: Submit a request attempting to remove an existing Criterion; keep the blocked Ticket unchanged.
+  checks:
+  - id: reject.criterion-removal
+    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    stimulus: Preview a Criterion removal request on a blocked Ticket.
+    expected: The request is rejected; all existing Criteria and Ticket machine baselines remain unchanged.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Exact removal request and diagnostic, Criteria and Ticket machine snapshots, pre/post hashes and refs.
+    capture: evidence/blocked-ticket-amendment.reject.criterion-removal
+  timeout_minutes: 5
+- id: reject.target-change
+  phase: preview
+  requires: [ticket.blocked]
+  action: Submit a request attempting to replace the Ticket's Target binding; keep the blocked Ticket unchanged.
+  checks:
+  - id: reject.target-change
+    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    stimulus: Preview a Target change request on a blocked Ticket.
+    expected: The request is rejected; Target identity, Criteria and Ticket machine baselines remain unchanged.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Exact Target request and diagnostic, Target/Ticket machine snapshots, pre/post hashes and refs.
+    capture: evidence/blocked-ticket-amendment.reject.target-change
+  timeout_minutes: 5
+- id: reject.build-control-change
+  phase: preview
+  requires: [ticket.blocked]
+  action: Submit a request attempting to replace a prepared build-control input; keep the blocked Ticket unchanged.
+  checks:
+  - id: reject.build-control-change
+    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    stimulus: Preview a build-control change request on a blocked Ticket.
+    expected: The request is rejected; build-control identity, Criteria and Ticket machine baselines remain unchanged.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Exact build-control request and diagnostic, control/Ticket machine snapshots, pre/post hashes and refs.
+    capture: evidence/blocked-ticket-amendment.reject.build-control-change
+  timeout_minutes: 5
+- id: scope.protected
+  phase: preview
+  requires: [ticket.blocked]
+  action: On the Scope Ticket, propose adding a Booley bookkeeping or prepared Target/control path; retain original Scope and state.
+  checks:
+  - id: scope.protected
+    capabilities: [TICKET-AMENDMENT, TICKET-SCOPE]
+    stimulus: Preview a protected-path Scope addition.
+    expected: The amendment is rejected and cannot legitimize a protected-input edit; no Scope, Ticket baseline or queue change occurs.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#scope
+    evidence: Exact protected path and request, rejection, Scope and protected-input hashes, Board/Ticket/ref comparison.
+    capture: evidence/blocked-ticket-amendment.scope.protected
+  timeout_minutes: 8
+- id: apply.threshold
+  phase: amend
+  requires: [preview.restore]
+  action: Show the fresh exact 400-to-450 preview to the live Human Maintainer; only after approval have the triage agent apply that exact digest and record the decision.
+  checks:
+  - id: apply.threshold
+    capabilities: [TICKET-AMENDMENT, TICKET-TRIAGE, TICKET-ACCEPTANCE-BASIS]
+    stimulus: Apply the Human-approved threshold request with its current preview digest.
+    expected: The same Ticket gains a new machine generation with a 450-cycle threshold, its prior 400-cycle commit remains intact, and it is queued once for resume with reason and feedback durable.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Live approval, displayed preview, exact request/digest, CLI result, old/new Ticket machine identities and baseline commits, Board transitions and amendment history.
+    capture: evidence/blocked-ticket-amendment.apply.threshold
+  timeout_minutes: 25
+- id: apply.participants
+  phase: amend
+  requires: [apply.threshold]
+  action: Inspect both outer and project repository participants after amendment publication without changing them.
+  checks:
+  - id: apply.participants
+    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    stimulus: Compare old/new participant heads, authoring ancestry, source trees and saved implementation checkpoint.
+    expected: Both participants represent the same published amendment; implementation files and original destination refs are preserved, and neither participant is executable under an unmatched Ticket baseline.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
+    evidence: Git refs/parents/trees for both participants, old/new Ticket machine baseline references, source diffs and execution-readiness result.
+    capture: evidence/blocked-ticket-amendment.apply.participants
+  timeout_minutes: 15
+- id: optional.last
+  phase: amend
+  requires: [ticket.blocked]
+  action: Preview the sole mandatory Criterion on the optional Ticket becoming optional. Obtain live Human approval of the exact proposal before triage applies its digest.
+  checks:
+  - id: optional.last
+    capabilities: [TICKET-AMENDMENT, CRITERION-ACCEPTANCE-POLICY]
+    stimulus: Apply the approved make_optional request to the one mandatory instance.
+    expected: The instance remains visible as optional, zero mandatory Criteria are explicit, a new Ticket machine generation is published, and the same Ticket is queued without immediate acceptance.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Approval and exact preview/digest, old/new Criteria and Ticket baseline, Board transition and unchanged implementation tree.
+    capture: evidence/blocked-ticket-amendment.optional.last
+  timeout_minutes: 20
+- id: scope.existing
+  phase: amend
+  requires: [scope.protected]
+  action: Preview one combined request adding the existing out-of-Scope tb/amend_tb.sv and rtl/amend_extra.sv [new] to the Scope Ticket; obtain live Human approval and apply the exact digest.
+  checks:
+  - id: scope.existing
+    capabilities: [TICKET-AMENDMENT, TICKET-SCOPE]
+    stimulus: Include the existing tb/amend_tb.sv path in the approved Scope addition.
+    expected: The path appears in the new Scope, prior entries remain, and the same implementation Ticket is queued under a new Ticket baseline.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Existing path identity, live approval, preview/digest, old/new Scope and Ticket baseline, Board and source status.
+    capture: evidence/blocked-ticket-amendment.scope.existing
+  - id: scope.new
+    capabilities: [TICKET-AMENDMENT, TICKET-SCOPE]
+    stimulus: Include rtl/amend_extra.sv [new] in the same approved request.
+    expected: The explicitly new file entry appears in Scope without deleting prior entries or editing the file merely by amending Scope.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Exact new-file syntax, live approval, old/new Scope, source tree/status and amendment history.
+    capture: evidence/blocked-ticket-amendment.scope.new
+  timeout_minutes: 25
+- id: resume.continuity
+  phase: resume
+  requires: [apply.threshold, apply.participants]
+  action: Resume the queued threshold Ticket with the selected live backend, then compare its workspace and prompt to the preserved blocked checkpoint and new Ticket baseline.
+  checks:
+  - id: resume.continuity
+    capabilities: [TICKET-AMENDMENT, TICKET-LIFECYCLE]
+    stimulus: Run the amended Ticket once from queue.
+    expected: A new execution continues the same Ticket and implementation with revised Criterion/feedback, retaining pre-amendment source changes and earlier evidence history.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
+    evidence: Run/execution IDs, Developer prompt excerpt, source diff/ancestry, old/new Criteria state, retained historical reports and Board log.
+    capture: evidence/blocked-ticket-amendment.resume.continuity
+  timeout_minutes: 40
+- id: resume.acceptance
+  phase: resume
+  requires: [resume.continuity]
+  action: Complete the threshold Ticket through its declared report and review policy, using current trustworthy evidence under the revised 450-cycle Ticket baseline.
+  checks:
+  - id: resume.acceptance
+    capabilities: [TICKET-AMENDMENT, CRITERION-ACCEPTANCE-POLICY, METRIC-THRESHOLD-CRITERIA]
+    stimulus: Evaluate the successful 438-cycle producer against the approved 450-cycle ceiling and finish normal Ticket processing.
+    expected: The numeric Criterion is met only with valid source/recipe evidence; the old 400-cycle failure remains historical, and final report/review state follows the Ticket's policy.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
+    evidence: Original and new Criterion evaluations, producer status and fingerprints, 438/450 operands, final report, review package and Board disposition.
+    capture: evidence/blocked-ticket-amendment.resume.acceptance
+  timeout_minutes: 30
+- id: optional.missing-explanation
+  phase: resume
+  requires: [optional.last]
+  action: Resume the optional Ticket and attempt finalization while its unmet optional Criterion lacks an explanation. Preserve the rejection before supplying an explanation.
+  checks:
+  - id: optional.missing-explanation
+    capabilities: [TICKET-AMENDMENT, CRITERION-ACCEPTANCE-POLICY]
+    stimulus: Attempt finalization without an explanation for the unmet optional Criterion.
+    expected: Missing explanation cannot silently pass; the Ticket remains unaccepted with its evidence and zero-mandatory state intact.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
+    evidence: Rejected finalization result, optional Criterion/evidence state, zero-mandatory Ticket baseline and Board disposition.
+    capture: evidence/blocked-ticket-amendment.optional.missing-explanation
+  timeout_minutes: 10
+- id: optional.explained-finalization
+  phase: resume
+  requires: [optional.last]
+  action: Supply a current explanation for the unmet optional Criterion and finish through the normal evidence, report and review policy, regardless of the prior rejection Check result.
+  checks:
+  - id: optional.explained-finalization
+    capabilities: [TICKET-AMENDMENT, CRITERION-ACCEPTANCE-POLICY]
+    stimulus: Finalize the amended all-optional Ticket with a current explanation.
+    expected: With an explanation and intact evidence/report policy, normal review or completion is possible despite zero mandatory Criteria.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
+    evidence: Explanation, finalization result, optional Criterion/evidence state, final report and Board disposition.
+    capture: evidence/blocked-ticket-amendment.optional.explained-finalization
+  timeout_minutes: 20
+- id: final.records
+  phase: final
+  action: Freeze all three Tickets' final source, Ticket baseline, Board and evidence identities; complete Check Results, deviations and run records before cleanup.
+  checks:
+  - id: final.records
+    capabilities: [TICKET-AMENDMENT, TICKET-LIFECYCLE]
+    stimulus: Reconcile every Check attempt and affected Ticket against immutable captured evidence.
+    expected: Every attempt has a status and evidence path, original failures remain visible, and the Run records identify the exact installed artifact and all resources.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
+    evidence: Check Results, observed failures, all Ticket baseline/source identities, resource ledger and final record audit.
+    capture: evidence/blocked-ticket-amendment.final.records
+  timeout_minutes: 25
+- id: cleanup.owned
+  phase: cleanup
+  action: Independently stop run-owned processes and remove only ledgered disposable Tickets, workspaces and Project/runtime resources; preserve evidence and borrowed resources.
+  checks:
+  - id: cleanup.owned
+    capabilities: [TICKET-LIFECYCLE, TICKET-AMENDMENT]
+    stimulus: Perform unconditional cleanup, including when a prior Check failed or was blocked.
+    expected: All run-owned resources have a recorded safe disposition, unrelated resources remain unchanged, and the sealed Run retains immutable evidence.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#ticket-board-lifecycle
+    evidence: Cleanup ledger before/after, process/workspace/Project inventory, retained evidence hashes and terminal Run manifest.
+    capture: evidence/blocked-ticket-amendment.cleanup.owned
+  timeout_minutes: 25

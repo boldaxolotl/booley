@@ -27,7 +27,7 @@ def materialize_submodules(
     """Populate destination gitlinks from initialized same-path source repositories.
 
     The destination checkout supplies ``[submodules].paths`` so historical and
-    Acceptance Basis projections retain the selection policy of their exact commit.
+    Ticket baseline projections retain the selection policy of their exact commit.
     ``excluded_top_level`` names checkouts already owned by a higher-level workspace
     transaction; their own nested gitlinks are materialized by that owner separately.
     """

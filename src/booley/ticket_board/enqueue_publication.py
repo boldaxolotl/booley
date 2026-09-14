@@ -19,7 +19,6 @@ from booley.core.boundary import (
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 
-from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
 from .persistence import atomic_replace_bytes
 
 _OPERATION_RE = re.compile(r"[0-9a-f]{32}")
@@ -46,8 +45,7 @@ class EnqueueJournal:
     backup: str
     has_unmet: bool
     created: str
-    basis: dict[str, Any]
-    receipt: dict[str, Any]
+    machine: dict[str, Any]
 
     def with_state(
         self, state: Literal["prepared", "published", "transitioned", "done"]
@@ -135,8 +133,7 @@ def _parse_enqueue_journal(value: Any) -> EnqueueJournal:
         backup=require_str(mapping, "backup"),
         has_unmet=require_bool(mapping, "has_unmet"),
         created=require_str(mapping, "created"),
-        basis=require_dict(mapping.get("basis"), field="enqueue journal basis"),
-        receipt=require_dict(mapping.get("receipt"), field="enqueue journal receipt"),
+        machine=require_dict(mapping.get("machine"), field="enqueue journal machine"),
     )
 
 
@@ -213,19 +210,8 @@ def _validate_journal_payload(journal: EnqueueJournal) -> None:
     digests = (journal.source_sha256, journal.candidate_sha256)
     if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in digests):
         raise EnqueuePublicationError("enqueue journal content identity is invalid")
-    try:
-        basis = AcceptanceBasis.from_mapping(journal.basis)
-    except AcceptanceBasisError as exc:
-        raise EnqueuePublicationError(str(exc)) from exc
-    basis_id = basis.basis_id
-    if journal.receipt.get("operation_id") != journal.operation_id:
-        raise EnqueuePublicationError("enqueue journal Acceptance Basis receipt is invalid")
-    if journal.receipt.get("source_sha256") != journal.source_sha256:
-        raise EnqueuePublicationError("enqueue journal source fingerprint changed")
-    if journal.receipt.get("basis_id") != basis_id:
-        raise EnqueuePublicationError("enqueue journal Acceptance Basis identity changed")
-    if journal.receipt.get("participants") != journal.basis.get("participants"):
-        raise EnqueuePublicationError("enqueue journal participant receipt changed")
+    if journal.machine.get("generation") != journal.operation_id:
+        raise EnqueuePublicationError("enqueue journal Ticket generation changed")
 
 
 def prepare_enqueue(
@@ -237,16 +223,15 @@ def prepare_enqueue(
     *,
     has_unmet: bool,
     created: str,
-    basis: dict[str, Any],
-    receipt: dict[str, Any],
+    machine: dict[str, Any],
 ) -> EnqueueJournal:
     """Persist a complete candidate and recovery journal without touching the draft."""
     existing = load_enqueue_journal(project_root, slug)
     if existing is not None:
         return existing
-    operation_id = receipt.get("operation_id")
+    operation_id = machine.get("generation")
     if not isinstance(operation_id, str) or not _OPERATION_RE.fullmatch(operation_id):
-        raise EnqueuePublicationError("Acceptance Basis receipt operation ID is invalid")
+        raise EnqueuePublicationError("Ticket generation is invalid")
     source, destination = _canonicalize_board_paths(
         project_root,
         slug,
@@ -269,8 +254,7 @@ def prepare_enqueue(
         str(backup),
         has_unmet,
         created,
-        basis,
-        receipt,
+        machine,
     )
     _validate_journal(project_root, slug, journal)
     atomic_replace_bytes(candidate, candidate_content, mode=0o644)

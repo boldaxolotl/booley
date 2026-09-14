@@ -96,7 +96,7 @@ def add_common_args(
         action="store_true",
         help=(
             "Run without satisfying Ticket criteria. In Ticket Mode this "
-            "is required for a Flow/Target combination outside the Acceptance Basis."
+            "is required for a Flow/Target combination outside the Ticket baseline."
         ),
     )
 

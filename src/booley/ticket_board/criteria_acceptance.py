@@ -260,7 +260,7 @@ def _has_matching_failing_evidence(entry) -> bool:
 
 
 def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
-    """Fail closed on evidence that cannot satisfy the recorded Acceptance Basis."""
+    """Fail closed on evidence that cannot satisfy the recorded Ticket baseline."""
     if not getattr(state, "strict_criteria", False):
         return []
     registry, registry_error = _load_test_registry(work_dir)
@@ -613,7 +613,7 @@ def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
         logger.info("Ticket %s blocked: %s", state.slug, reason)
         return CriteriaVerdict(disposition="blocked", blocked_reason=reason, **base)
 
-    if stats["mandatory"] == 0:
+    if stats["mandatory"] == 0 and not getattr(state, "authorized_zero_mandatory_basis_id", ""):
         logger.warning(
             "State for %s has no visible mandatory criteria -- failing instead "
             "of treating 0/0 as success.",

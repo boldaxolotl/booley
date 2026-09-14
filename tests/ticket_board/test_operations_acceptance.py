@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from booley.ticket_board import (
-    acceptance_basis,
     operations,
     workspace_ops,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
+from booley.ticket_board import (
+    ticket_baseline as acceptance_basis,
+)
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
+    ticket_machine_fields,
 )
 
 
@@ -51,12 +55,16 @@ def _handoff_tio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
 
 
 def _review_tio(tmp_path: Path) -> SimpleNamespace:
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
+    basis = replace(
+        basis,
+        machine=ticket_machine_fields(basis, fields={}, body="", generation="0" * 32),
+    )
     entry = {
         "status": "review",
         "step": "summary",
         "file": str(tmp_path / "ticket.md"),
-        "acceptance_basis": basis.as_dict(),
+        "machine": basis.ticket_identity(),
         "on_success": {},
     }
     return SimpleNamespace(
@@ -94,15 +102,17 @@ def test_reset_helpers_report_missing_basis_and_preflight_failure(
         "booley.ticket_board.io.find_ticket_file", lambda *_args: (ticket, "blocked")
     )
     assert operations.op_reset(tio, "ticket") is False
-    assert "authoritative Acceptance Basis is unavailable" in capsys.readouterr().err
+    assert "unsupported Ticket format" in capsys.readouterr().err
 
-    basis = AcceptanceBasis((_participant(),))
+    entry.pop("acceptance_basis")
+    entry["machine"] = {"generation": "0" * 32}
+    basis = TicketBaseline((_participant(),))
     tio._load_basis_unlocked = lambda _slug: basis
     monkeypatch.setattr(
         workspace_ops,
         "preflight_basis_reset",
         lambda *_args: (_ for _ in ()).throw(
-            workspace_ops.AcceptanceBasisOperationError("cannot preflight")
+            workspace_ops.TicketBaselineOperationError("cannot preflight")
         ),
     )
     assert operations.op_reset(tio, "ticket") is False
@@ -137,7 +147,7 @@ def test_materialized_handoff_requires_ticket_and_successful_preparation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     tio = _handoff_tio(tmp_path, monkeypatch)
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     monkeypatch.setattr(operations, "_load_handoff_basis", lambda *_args: basis)
     monkeypatch.setattr(
         acceptance_basis,
@@ -178,7 +188,7 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
 ) -> None:
     tio = _review_tio(tmp_path)
     snapshot = SimpleNamespace(
-        acceptance_basis={"different": True}, participant_heads={"outer": "a" * 40}
+        ticket_identity={"different": True}, participant_heads={"outer": "a" * 40}
     )
     monkeypatch.setattr(
         "booley.ticket_board.acceptance_ledger.read_acceptance",
@@ -188,19 +198,14 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
         "booley.ticket_board.acceptance_ledger.validate_review_package_binding",
         lambda *_args: None,
     )
-    monkeypatch.setattr(
-        acceptance_basis,
-        "load_basis_receipt",
-        lambda *_args: {"current": True},
-    )
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
-    assert "different Board Acceptance Basis" in capsys.readouterr().err
+    assert "different Board Ticket generation" in capsys.readouterr().err
 
 
 def test_handoff_basis_heads_validates_materialized_composite(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    basis = AcceptanceBasis((_participant(),))
+    basis = TicketBaseline((_participant(),))
     tio = _handoff_tio(tmp_path, monkeypatch)
     monkeypatch.setattr(operations, "_load_handoff_basis", lambda *_args: basis)
     monkeypatch.setattr(

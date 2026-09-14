@@ -13,7 +13,7 @@
       "diagnostic": {
         "type": "boolean",
         "default": false,
-        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Acceptance Basis."
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline."
       },
       "dry_run": {
         "type": "boolean",
@@ -50,7 +50,7 @@
       "diagnostic": {
         "type": "boolean",
         "default": false,
-        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Acceptance Basis."
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline."
       },
       "dry_run": {
         "type": "boolean",
@@ -124,7 +124,7 @@
       "diagnostic": {
         "type": "boolean",
         "default": false,
-        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Acceptance Basis."
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline."
       },
       "dry_run": {
         "type": "boolean",
@@ -231,7 +231,7 @@
       "diagnostic": {
         "type": "boolean",
         "default": false,
-        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Acceptance Basis."
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline."
       },
       "dry_run": {
         "type": "boolean",

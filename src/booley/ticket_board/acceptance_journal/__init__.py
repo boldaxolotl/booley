@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from ._model import AcceptanceJournalError, JournalState, acceptance_state, initial_journal
 
 if TYPE_CHECKING:
-    from ..acceptance_basis import AcceptanceBasis
+    from ..ticket_baseline import TicketBaseline
     from ._advance import (
         AcceptanceOperationError,
         AcceptanceOutcome,
@@ -42,12 +42,12 @@ _ADVANCE_EXPORTS = frozenset(
 def completion_basis_sources(
     root: Path,
     slug: str,
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     *,
     expected_sources: Mapping[str, str],
 ) -> dict[str, str] | None:
     """Return journal-pinned sources after validating recorded destinations."""
-    from ..acceptance_basis import validate_destination_refs
+    from ..ticket_baseline import validate_destination_refs
     from ._model import AcceptanceJournalError, load_persisted_journal
     from ._store import journal_path
 

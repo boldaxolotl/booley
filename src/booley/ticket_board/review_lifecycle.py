@@ -15,12 +15,12 @@ from booley.criteria.templates import CriteriaTemplate, extract_sim_targets
 from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.ticket_board.acceptance_basis import load_basis_receipt, load_basis_record
 from booley.ticket_board.acceptance_ledger import (
     bind_review_package,
     freeze_acceptance,
     read_acceptance,
 )
+from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.logs import load_progress
@@ -72,13 +72,13 @@ def _quiescent(tio: TicketIO, slug: str) -> None:
         raise ReviewEntryError("ticket Jobs are active; wait or cancel them before review")
 
 
-def _capture_state(ctx: prep.ReviewPrepContext, basis: Any) -> dict[str, Any]:
-    record = load_basis_record(ctx.project_root, ctx.slug, basis)
-    declarations = record["ticket"]["frontmatter"]["criteria"]
+def _capture_state(ctx: prep.ReviewPrepContext) -> dict[str, Any]:
+    fields, _body = parse_frontmatter(ctx.ticket_path.read_text(encoding="utf-8"))
+    declarations = fields["criteria"]
     template = (
         CriteriaTemplate.from_yaml(declarations)
         if declarations
-        else CriteriaTemplate.for_ticket_type(record["ticket"]["frontmatter"]["type"])
+        else CriteriaTemplate.for_ticket_type(fields["type"])
     )
     state = read_json(ctx.log_dir / ".runtime" / "booley_state.json") or {}
     criteria = dict(require_dict(state.get("criteria", {}), field="criteria"))
@@ -119,8 +119,8 @@ def _capture(
     row: ReviewInspection = {
         "schema": 1,
         "generation": uuid.uuid4().hex,
-        "basis_id": basis.basis_id,
-        "basis_receipt": load_basis_receipt(tio._project_root, slug, basis.as_dict()),
+        "ticket_generation": basis.ticket_identity()["generation"],
+        "ticket_identity": basis.ticket_identity(),
         "execution_id": str(board.get("execution_id", "")),
         "source_status": board["status"],
         "heads": heads,
@@ -133,7 +133,7 @@ def _capture(
     }
     captured = replace(ctx, inspection=row, runtime_dir=package_dir(ctx.log_dir, row))
     row["capture_sha"] = prep._source_fingerprint(captured)
-    row["state"] = _capture_state(ctx, basis)
+    row["state"] = _capture_state(ctx)
     prep._require_unchanged(captured, row["capture_sha"], "review inputs changed during capture")
     return captured
 
@@ -179,7 +179,7 @@ def _acceptance_ready(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
     if verdict.disposition != "review":
         raise ReviewEntryError(f"acceptance is {verdict.disposition}: {verdict}")
     if _handoff_basis_heads(tio, ctx.slug) != ctx.inspection["heads"]:
-        raise ReviewEntryError("Acceptance Basis or participant heads failed final validation")
+        raise ReviewEntryError("Ticket baseline or participant heads failed final validation")
 
 
 def _claim(tio: TicketIO, slug: str, action: str, reason: str, repair: bool) -> dict[str, Any]:
@@ -210,8 +210,8 @@ def _check_capture(tio: TicketIO, ctx: prep.ReviewPrepContext, expected: str) ->
     if board is None or str(board.get("execution_id", "")) != ctx.inspection["execution_id"]:
         raise ReviewEntryError("ticket execution generation changed during review")
     basis = tio._load_basis_unlocked(ctx.slug)
-    if basis.basis_id != ctx.acceptance_basis_id:
-        raise ReviewEntryError("Acceptance Basis changed during review generation")
+    if basis.ticket_identity()["generation"] != ctx.ticket_generation:
+        raise ReviewEntryError("Ticket generation changed during review")
     current = prep._resolve_context(
         ctx.project_root,
         ctx.slug,
@@ -238,7 +238,7 @@ def _publish_acceptance(ctx: prep.ReviewPrepContext, operation: dict[str, Any]) 
             ctx.log_dir,
             DevelopmentState.load(ctx.log_dir / ".runtime" / "booley_state.json"),
             execution_id=row["execution_id"],
-            acceptance_basis=row["basis_receipt"],
+            ticket_identity=row["ticket_identity"],
             participant_heads=row["heads"],
             accepted_at=operation["accepted_at"],
         )

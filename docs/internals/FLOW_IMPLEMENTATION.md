@@ -143,26 +143,25 @@ inside the selected checkout and removes it on normal exit or exceptions. The
 plan discloses that limited preparation side effect; EDA and project Pre-Run
 commands are never dispatched.
 
-### Ticket Acceptance Bases
+### Ticket baselines
 
 Ticket Mode treats the Target recipe as acceptance input, not implementation
 work. `create-file` opens a Ticket Workspace before enqueue, so new or changed
 Targets are authored on Ticket-owned branches without changing the Project's
 destination branches or making Doctor observe a half-configured Target. Enqueue
-publishes schema 1 with the exact outer and optional project-data participants and
-their generation-qualified Ticket and destination refs. A canonical committed record
-pins the authored Ticket and each Criterion's directed baseline/candidate Target
-binding using canonical Target identities and exact callable selectors. Tickets
-from before Acceptance Basis publication are beyond the hard cutoff and must be
-recreated.
+records schema 1 metadata in the Ticket's reserved `machine` section: its
+generation, authored-content digest, and exact outer and optional project-data
+baseline commits and refs. Each Criterion's directed baseline/candidate Target
+binding is derived from the authored Ticket and those pinned commits. Earlier
+executable Ticket formats are beyond the hard cutoff and must be recreated.
 
 The protected-path policy covers FuseSoC-selected Target declarations, the test
 registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
-discovery sentinels, Project routing, and the committed input record. Exact Git
+discovery sentinels and Project routing. Exact Git
 comparisons intentionally block formatting-only control changes. RTL and testbench
 contents remain editable when Scope permits them.
 
-Basis metadata is published only after every repository validates and
+Ticket baseline metadata is published only after every repository validates and
 commits. Worktrees can then be discarded and reconstructed from the recorded
 refs. Execution starts from those commits, and intake, each Flow, the commit
 guard, review handoff, and final acceptance reject drift as
@@ -179,8 +178,8 @@ non-relative Target may likewise omit only sources declared Scope `[new]`.
 `return-to-draft` preserves the old identity and evidence, then starts fresh
 Ticket authoring from committed destination refs.
 Legacy executable Tickets are rejected after the hard cutoff. Recreate them as a new
-Ticket draft so enqueue can publish an Acceptance Basis before execution. The
-only automatic replacement is a Basis Refresh for an untouched waiting Ticket after its
+Ticket draft so enqueue can publish a Ticket baseline before execution. The
+only automatic replacement is a baseline refresh for an untouched waiting Ticket after its
 dependencies are accepted; drift still requires `return-to-draft`.
 
 ### Shared run logs and artifacts
@@ -345,7 +344,7 @@ Count Criterion even when another test in the same batch fails. With no
 
 Absolute `_max`/`_min` thresholds use the current run only. Percentage-relative
 and `_cycles` delta thresholds automatically run the same Target/test at the
-Ticket's immutable Acceptance Basis in an ephemeral worktree. A zero baseline cannot
+Ticket's pinned baseline in an ephemeral worktree. A zero baseline cannot
 define a percentage and fails that check closed. Review reports call the result
 an **observed Cycle Count change** and disclose changes to known declared RTL,
 testbench, firmware, vectors, constraints, and other workload inputs. Such input
@@ -660,7 +659,7 @@ of a bare "no metrics".
 #### Ticket baselines and recorded recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket Acceptance Bases](#ticket-acceptance-bases).
+[Ticket baselines](#ticket-baselines).
 
 ### Reports and Criteria detail
 
@@ -893,7 +892,7 @@ violations, and critical design conditions are design failures.
 #### Ticket baselines and recorded recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket Acceptance Bases](#ticket-acceptance-bases).
+[Ticket baselines](#ticket-baselines).
 
 ### Reports and Criteria detail
 

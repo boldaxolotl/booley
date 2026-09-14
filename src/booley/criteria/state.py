@@ -323,6 +323,7 @@ class DevelopmentState:
     last_updated: str = ""
     # Ledger transactions selected atomically with the Criterion projection.
     acceptance_transactions: list[str] = field(default_factory=list)
+    authorized_zero_mandatory_basis_id: str = ""
 
     _file_path: Path | None = field(default=None, repr=False)
 
@@ -349,6 +350,9 @@ class DevelopmentState:
                 timeline=data.get("timeline", []),
                 acceptance_transactions=_acceptance_transactions(
                     data.get("acceptance_transactions", [])
+                ),
+                authorized_zero_mandatory_basis_id=data.get(
+                    "authorized_zero_mandatory_basis_id", ""
                 ),
                 work_dir=data.get("work_dir", ""),
                 last_updated=data.get("last_updated", ""),
@@ -385,6 +389,7 @@ class DevelopmentState:
             "all_mandatory_met": self.all_mandatory_met(),
             "timeline": self.timeline,
             "acceptance_transactions": self.acceptance_transactions,
+            "authorized_zero_mandatory_basis_id": self.authorized_zero_mandatory_basis_id,
             "last_updated": self.last_updated,
         }
         if self.work_dir:

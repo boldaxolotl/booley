@@ -20,11 +20,6 @@ from booley.criteria.templates import (
     find_retired_criteria,
 )
 from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
-    requires_return_to_draft,
-)
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
@@ -35,6 +30,11 @@ from booley.ticket_board.paths import (
     ticket_runtime_dir,
 )
 from booley.ticket_board.scanner import find_ticket_file
+from booley.ticket_board.ticket_baseline import (
+    TicketBaseline,
+    TicketBaselineError,
+    requires_return_to_draft,
+)
 
 from .. import ticket_cli
 from ..blocking import FatalError
@@ -142,6 +142,11 @@ def _reject_retired_ticket_fields(fields: dict[str, Any], slug: str) -> None:
             "recreate the Ticket.",
             slug=slug,
         )
+    if "acceptance_basis" in fields:
+        raise FatalError(
+            "unsupported Ticket format: recreate this Ticket without acceptance_basis",
+            slug=slug,
+        )
 
 
 def _load_context_basis(
@@ -149,8 +154,8 @@ def _load_context_basis(
     ticket_path: Path,
     slug: str,
     fields: dict[str, Any],
-) -> AcceptanceBasis | None:
-    raw_basis = fields.get("acceptance_basis")
+) -> TicketBaseline | None:
+    raw_basis = fields.get("machine")
     try:
         return (
             TicketIO(
@@ -160,8 +165,8 @@ def _load_context_basis(
             if raw_basis is not None
             else None
         )
-    except AcceptanceBasisError as exc:
-        raise FatalError(f"Invalid Acceptance Basis: {exc}", slug=slug) from exc
+    except TicketBaselineError as exc:
+        raise FatalError(f"Invalid Ticket baseline: {exc}", slug=slug) from exc
 
 
 def _check_dependencies(ctx: TicketContext) -> None:
@@ -369,7 +374,7 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
     fields = parsed.get("fields", {})
     if requires_return_to_draft(fields):
         raise FatalError(
-            f"Ticket '{slug}' has changed Acceptance Basis inputs; use return-to-draft"
+            f"Ticket '{slug}' has changed Ticket baseline inputs; use return-to-draft"
         )
 
     ctx = _build_context(project_root, ticket_path, slug, fields)
@@ -422,11 +427,11 @@ def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str
 
 
 def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
-    """Verify durable Acceptance Basis refs before criteria state can be initialized."""
+    """Verify durable Ticket baseline refs before criteria state can be initialized."""
     del action
     basis = ctx.acceptance_basis
     if basis is None:
-        raise FatalError("acceptance_basis is required for executable Tickets", slug=ctx.slug)
+        raise FatalError("machine metadata is required for executable Tickets", slug=ctx.slug)
     from booley.ticket_board.workspace_ops import validate_basis_refs
 
     try:
@@ -560,7 +565,19 @@ def _persist_initial_criteria_state(
         criterion_params=criterion_params,
         strict=True,
     )
+    state.authorized_zero_mandatory_basis_id = _zero_mandatory_amendment_basis(ctx, expanded)
     state.save()
+
+
+def _zero_mandatory_amendment_basis(ctx: TicketContext, expanded: dict[str, bool]) -> str:
+    """Carry the committed human exception through state reconstruction."""
+    if any(required for name, required in expanded.items() if not name.startswith("_")):
+        return ""
+    basis = ctx.acceptance_basis
+    if basis is None:
+        return ""
+    amendment = (basis.machine or {}).get("amendment", {})
+    return basis.basis_id if amendment.get("optional_conversions") else ""
 
 
 def _validate_retired_criteria(ctx: TicketContext) -> None:
@@ -891,7 +908,9 @@ def _criteria_state_needs_reinit(ctx: TicketContext) -> bool:
     expected = template.expand(ctx.sim_targets)
     expected_mandatory = {k for k, mandatory in expected.items() if mandatory}
     if not expected_mandatory:
-        return False
+        return state.authorized_zero_mandatory_basis_id != _zero_mandatory_amendment_basis(
+            ctx, expected
+        )
     actual_mandatory = {
         k for k, entry in state.criteria.items() if entry.mandatory and not k.startswith("_")
     }

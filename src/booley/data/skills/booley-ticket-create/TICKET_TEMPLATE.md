@@ -41,7 +41,7 @@ criteria:
       - target: sim_coremark
         test: coremark
         cycle_count_max: 100000              # absolute inclusive cap
-        cycle_count_reduce_at_least: 5%      # ≥5% reduction vs Acceptance Basis
+        cycle_count_reduce_at_least: 5%      # ≥5% reduction vs Ticket baseline
         cycle_count_reduce_at_least_cycles: 2000  # ≥2000-cycle reduction vs basis
     synthesis_ok:                            # -> synth Flow
       targets:                               # strings use one Target at both revisions
@@ -76,8 +76,8 @@ criteria:
         total: 10
 
 # -- Runtime fields are stamped by Booley or stored in logs/<slug>/.runtime/progress.json --
-# feature_branch, created
-# integration_base is unsupported; Acceptance Basis participants name destination refs.
+# feature_branch, created; the reserved machine section records baseline commits
+# integration_base is unsupported; Ticket baseline participants name destination refs.
 # current_tool, tools_completed, last_update, blocked_reason, blocked_tool
 ---
 

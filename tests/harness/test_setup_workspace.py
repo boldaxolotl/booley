@@ -77,7 +77,7 @@ def _run_worktree_create(
 # ===========================================================================
 
 
-class TestMaterializedAcceptanceBasis:
+class TestMaterializedTicketBaseline:
     def _context(self, tmp_path: Path) -> MagicMock:
         basis = MagicMock()
         basis.as_dict.return_value = {"schema": 3}
@@ -123,11 +123,11 @@ class TestMaterializedAcceptanceBasis:
         from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
 
         ctx = self._context(tmp_path)
-        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+        from booley.ticket_board.ticket_baseline import TicketBaselineError
 
         with patch(
             "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
-            side_effect=AcceptanceBasisError(
+            side_effect=TicketBaselineError(
                 "acceptance-input-change-required: protected input changed"
             ),
         ):
@@ -729,9 +729,9 @@ def _make_basis_ctx(
     authoring_sha: str,
     ticket_ref: str,
 ) -> TicketContext:
-    from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+    from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
-    basis = AcceptanceBasis(
+    basis = TicketBaseline(
         (
             BasisParticipant(
                 "outer",

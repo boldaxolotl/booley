@@ -2,26 +2,30 @@
 status: accepted
 ---
 
-# Publish Acceptance Basis at Enqueue with a Hard Cutoff
+# Record the Ticket Baseline at Enqueue with a Hard Cutoff
 
-Executable Tickets need one immutable authority for authored inputs, repository
-routing, Target identities, reset, readiness, and completion. Booley therefore
-publishes an Acceptance Basis automatically when a Ticket is enqueued, records
-its participant commits through prepare-first journals and identity-checked ref
-updates, and treats the stored basis as authoritative until the Ticket returns
-to draft.
+Executable Tickets need one authority for authored inputs, repository routing,
+Target identities, reset, readiness, and completion. Booley records the baseline
+commits and generation in the Ticket's machine-only frontmatter at enqueue.
+Prepare-first journals and identity-checked ref updates publish the commits;
+commit trailers anchor the Ticket metadata to the authoring lineage. The Ticket
+is authoritative until it returns to draft or receives an approved amendment.
 
 ADR-0060 adds one narrow exception: a pre-execution Basis Refresh may replace
-the basis of an untouched waiting Ticket after its dependencies are accepted,
-using a recoverable publication-plus-promotion transaction while retaining the
-previous basis as evidence.
+the machine generation of an untouched waiting Ticket after its dependencies
+are accepted, using a recoverable publication-plus-promotion transaction.
 
-Target Contract fields, commands, journal schemas, and compatibility adapters
-are rejected rather than upgraded. Existing Tickets using the retired format
-must be recreated from a fresh draft and enqueued. This hard cutoff
-supersedes only ADR-0058's promise that acceptance journals remain compatible
-with existing records; the Acceptance Journal remains the active acceptance
-module.
+A second exception is a Human-approved Ticket Amendment for a blocked Ticket.
+The Board records supported Criteria relaxations or Scope additions in a new
+Ticket machine generation and pinned authoring commits. It retains the prior
+execution history and joins the existing implementation to the new authoring
+lineage. Developer execution cannot edit acceptance inputs or repair input drift.
+
+The separate Acceptance Basis record and receipt, Target Contract fields, and
+compatibility adapters are rejected rather than upgraded. Existing Tickets
+using retired formats must be recreated from a fresh draft and enqueued. This
+hard cutoff supersedes ADR-0058's promise that acceptance journals remain
+compatible with existing records; the Acceptance Journal remains active.
 
 ## Considered Options
 
@@ -34,7 +38,7 @@ module.
 
 ## Consequences
 
-Enqueue, reset, and acceptance publication roll forward after interruption and
-fail closed on unknown ref identities. Checkouts are disposable projections of
-the recorded participant commits; moving a ref backward is not a rollback
-mechanism.
+Enqueue, amendment, reset, and acceptance publication roll forward after
+interruption and fail closed on unknown ref identities. Checkouts are disposable
+projections of the Ticket's recorded commits; moving a ref backward is not a
+rollback mechanism.

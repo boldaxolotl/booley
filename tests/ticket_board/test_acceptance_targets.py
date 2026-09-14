@@ -12,7 +12,7 @@ from booley.targets.domain import FuseSocError
 from booley.ticket_board import (
     acceptance_targets,
 )
-from booley.ticket_board.acceptance_basis import (
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
 )
 
