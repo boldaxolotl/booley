@@ -956,12 +956,14 @@ def test_large_nonmatching_pr_text_scans_promptly(tmp_path: Path, prefix: str) -
 @pytest.mark.parametrize("text", ["f\u0130le", "f\u0131le", "\u017fecret", "\u212aey"])
 def test_ascii_prefilter_preserves_unicode_ignorecase_matches(tmp_path: Path, text: str) -> None:
     repo, _base = _repository(tmp_path)
+    draft = tmp_path / "unicode-pr-text.txt"
+    draft.write_text(text, encoding="utf-8")
     config = base64.b64encode(
         f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n'
         '[private]\nwords = ["file", "secret", "key"]\n'.encode()
     ).decode()
 
-    result = _scan_pr_text(repo, stdin=text, config=config)
+    result = _scan_pr_text(repo, files=(draft,), config=config)
 
     assert result.returncode == 1
     assert "confidential term" in result.stderr
