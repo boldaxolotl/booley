@@ -254,3 +254,33 @@ Named composition hotspot fan-out (diagnostic only):
 - booley.specialists.mutation_tester: 25
 - booley.specialists.coverage_analyst: 13
 ```
+
+## Merge-readiness refresh: 14 SEP 2026
+
+The initial confidentiality CI failure rejected commit author/committer
+identities against the older allowlist. The approved repair is already on
+`main`; merging current `main` into this branch includes that repair without
+altering the extraction or adding a policy exception.
+
+Rechecked exact source/analyzer archives at base
+`35062ddae5a60656dcd1b982904c214c74a7bca2` and refreshed implementation
+`1a98ec85966f247a007fb853db07423d10438db0`:
+
+| Diagnostic | Before refresh base | Refreshed implementation |
+| --- | ---: | ---: |
+| Python modules | 494 | 496 |
+| Located dependency facts | 2,458 | 2,467 |
+| Unique normalized edges | 2,017 | 2,026 |
+| Cyclic group sizes | 18 | 16 and 2 |
+| Mutual package pairs | 13 | 11 |
+
+The exact cyclic groups, mutual pairs, all affected caller/owner fan-out, and
+named composition hotspots match the initial before/after reports above.
+The additional modules/edges are Ticket Board changes from `main`; their
+fan-out changes are identical on both sides of this new comparison.
+Reproduce using the same archive commands above with these two revisions.
+
+Refresh validation: 467 passing tests covering architecture, the new core
+modules, Target detail/catalog presentation, core security, Scope/Git, the
+standalone hook and demo contracts; `ruff check src/ tests/` passed. GitHub CI
+will rerun on the pushed candidate before the authorized Mergify queue request.

@@ -6,7 +6,7 @@ universal allowlist. The test-only analyzer records source knowledge without add
 a production abstraction layer.
 
 Current measurements were verified on 14 SEP 2026 at implementation revision
-`354b5e4a`, compared with `main` at `90c27b43`. Historical snapshots retain their
+`1a98ec85`, compared with `main` at `35062dda`. Historical snapshots retain their
 own dates and revisions. Direction rules are normative; graph snapshots are
 diagnostic evidence.
 
@@ -423,15 +423,19 @@ work distinguish legitimate composition from unjustified knowledge growth.
 
 ## Current snapshot: 14 SEP 2026
 
-Compared the source and analyzer at `90c27b43` with implementation revision
-`354b5e4a` for [#530](https://github.com/boldaxolotl/booley/issues/530).
-Both reports were generated from Git archives of those exact revisions.
+Compared the source and analyzer at `35062dda` with implementation revision
+`1a98ec85` for [#530](https://github.com/boldaxolotl/booley/issues/530).
+Both reports were generated from Git archives of those exact revisions after
+refreshing the branch with the approved confidentiality repair and Ticket
+changes from `main`. The original extraction measurements remain in the
+implementation evidence; the measured split and affected caller fan-out are
+unchanged.
 
-| Diagnostic | Before `90c27b43` | After `354b5e4a` |
+| Diagnostic | Before `35062dda` | After `1a98ec85` |
 | --- | ---: | ---: |
-| Parsed Python modules | 492 | 494 |
-| Located dependency facts | 2,424 | 2,433 |
-| Unique module-to-module edges | 1,989 | 1,998 |
+| Parsed Python modules | 494 | 496 |
+| Located dependency facts | 2,458 | 2,467 |
+| Unique module-to-module edges | 2,017 | 2,026 |
 | Direct mutual package pairs | 13 | 11 |
 | Cyclic package group sizes | 18 | 16 and 2 |
 | Exact composition permissions | 4 | 4 |
