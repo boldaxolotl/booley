@@ -74,6 +74,38 @@ def test_zero_mandatory_state_requires_committed_human_conversion(
     assert _zero_mandatory_amendment_basis(ctx, {"review_rtl_bugs_clean": False}) == ""
 
 
+def test_recipe_freeze_uses_callable_target_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup.intake import _snapshot_intake_recipe
+    from booley.targets.catalog import TargetCatalog
+
+    identity = "acme:ip:core:1.0#synth_core"
+    handle = SimpleNamespace(selector="synth_core")
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        lambda _root: SimpleNamespace(select=lambda _target: handle),
+    )
+    monkeypatch.setattr(
+        "booley.fusesoc.fusesoc_registry.resolve_target_handle",
+        lambda _handle, *, build_root: SimpleNamespace(build_root=build_root),
+    )
+
+    snapshot = _snapshot_intake_recipe(
+        SimpleNamespace(slug="ticket"),
+        tmp_path,
+        "synthesis_ok_area",
+        identity,
+        tmp_path / "build",
+        False,
+        "Synthesis",
+        lambda _resolved, target: {"target": target},
+    )
+
+    assert snapshot == {"target": "synth_core"}
+
+
 @pytest.fixture(autouse=True)
 def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
     from booley.harness.setup import intake

@@ -821,7 +821,7 @@ def _snapshot_intake_recipe(
             handle,
             build_root=build_root,
         )
-        return snapshot_builder(resolved, target)
+        return snapshot_builder(resolved, handle.selector)
     except (TargetResolutionError, BoundaryError, OSError) as exc:
         raise FatalError(
             f"Cannot freeze {flow_label.lower()} recipe for Target {target!r}: {exc}",
