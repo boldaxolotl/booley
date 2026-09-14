@@ -1,4 +1,4 @@
-"""Ticket Board policy for accepting review Tickets with an Acceptance Basis."""
+"""Ticket Board policy for accepting review Tickets with an Ticket baseline."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from typing import Any
 from booley.core.boundary import BoundaryError, require_str
 from booley.runtime.file_lock import LockContentionError
 
-from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
 from .acceptance_journal import (
     AcceptanceJournalError,
     AcceptanceOperationError,
@@ -20,12 +19,13 @@ from .acceptance_journal import (
     AcceptanceRequest,
     advance_acceptance,
 )
+from .ticket_baseline import TicketBaseline, TicketBaselineError
 from .validation import retired_ticket_field_errors
 
 CompletionError = AcceptanceOperationError
 
 
-def _destination_branch(entry: Mapping[str, Any], basis: AcceptanceBasis) -> str:
+def _destination_branch(entry: Mapping[str, Any], basis: TicketBaseline) -> str:
     try:
         branch = require_str(entry, "branch")
     except BoundaryError as exc:
@@ -39,7 +39,7 @@ def _destination_branch(entry: Mapping[str, Any], basis: AcceptanceBasis) -> str
     return branch
 
 
-def _validate_completion_plan(basis: AcceptanceBasis, *, cleanup: bool) -> None:
+def _validate_completion_plan(basis: TicketBaseline, *, cleanup: bool) -> None:
     if not cleanup:
         return
     for participant in basis.participants:
@@ -52,7 +52,7 @@ def _validate_completion_plan(basis: AcceptanceBasis, *, cleanup: bool) -> None:
 
 def _completion_inputs(
     tio: Any, slug: str, effective_policy: Any
-) -> tuple[Mapping[str, Any], AcceptanceBasis] | None:
+) -> tuple[Mapping[str, Any], TicketBaseline] | None:
     if getattr(effective_policy, "merge", None) is not True:
         raise CompletionError("journaled completion requires merge policy to be true")
     if not isinstance(getattr(effective_policy, "cleanup", None), bool):
@@ -76,7 +76,7 @@ def _completion_inputs(
         basis = tio.load_basis(slug)
         _destination_branch(entry, basis)
         _validate_completion_plan(basis, cleanup=effective_policy.cleanup)
-    except (AcceptanceBasisError, CompletionError) as exc:
+    except (TicketBaselineError, CompletionError) as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return None
     return entry, basis
@@ -86,7 +86,7 @@ def _request(
     tio: Any,
     slug: str,
     entry: Mapping[str, Any],
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     *,
     cleanup: bool,
     expected_sources: Mapping[str, str] | None = None,
@@ -135,7 +135,7 @@ def _finish_progress(
     tio: Any,
     slug: str,
     entry: Mapping[str, Any],
-    basis: AcceptanceBasis,
+    basis: TicketBaseline,
     cleanup: bool,
     progress: AcceptanceProgress,
     expected_sources: Mapping[str, str] | None,

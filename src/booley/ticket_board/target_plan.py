@@ -39,7 +39,7 @@ class TargetPlanValidationError(ValueError):
 
 @dataclass(frozen=True)
 class TargetPlanAnalysis:
-    """Canonical Target Plan data committed into an Acceptance Basis record."""
+    """Canonical Target Plan data derived from the Ticket and its pinned commits."""
 
     plan: TargetPlan | None
     removal_targets: tuple[str, ...]
@@ -439,6 +439,15 @@ def _canonical_plan(fields: Mapping[str, Any], catalog: TargetCatalog) -> Target
         return TargetPlan.from_value(entries)
     except TargetPlanError as exc:
         raise TargetPlanValidationError(f"canonical Target Plan {exc}") from exc
+
+
+def canonical_target_plan(fields: Mapping[str, Any], project_root: Path) -> TargetPlan | None:
+    """Resolve authored Target selectors against a pinned project checkout."""
+    try:
+        catalog = TargetCatalog.build(project_root)
+    except FuseSocError as exc:
+        raise TargetPlanValidationError(str(exc)) from exc
+    return _canonical_plan(fields, catalog)
 
 
 def _bound_identities(fields: Mapping[str, Any], project_root: Path) -> set[str]:

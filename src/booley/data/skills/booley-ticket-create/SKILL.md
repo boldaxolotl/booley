@@ -171,7 +171,7 @@ repaired, report the actionable error without turning basis internals into user 
 CLASSIFIED=$(python -m booley.ticket_board classify)
 ```
 
-Inspect every non-done Ticket's published Acceptance Basis and Target Plan as well as
+Inspect every non-done Ticket's published Ticket baseline and Target Plan as well as
 its Scope. Preserve ordinary scope-overlap and interface-dependency inference for all
 non-done Tickets. If an active provider exports a persistent or replacement Target selected
 by the new Ticket's Criteria, add that provider to `dependencies` in human mode. In
@@ -201,7 +201,7 @@ only how to *infer* a value from the conversation and the repo.
 
 **Bugfix, not yet reproducible?** Recommend a split: feature ticket (create the failing test) + bugfix ticket (fix the RTL, depends on the feature).
 
-Runtime fields are *not* inferred: `acceptance_basis` and `created` are published
+Runtime fields are *not* inferred: `machine` and `created` are published
 atomically by `enqueue`, and `feature_branch` is written by `init`. Never author
 those fields or a SHA. `integration_base`, `target_contract`, and `base_sha` are
 unsupported after the hard cutoff.
@@ -210,7 +210,8 @@ unsupported after the hard cutoff.
 
 `create-file` generates the frontmatter (including `criteria` and `on_success`) from its
 flags and creates the ordinary Ticket Workspace. Do **not** hand-write runtime YAML or
-any SHA. `enqueue` validates and commits authoring state, publishes the Acceptance Basis,
+any SHA. `enqueue` validates and commits authoring state, records the baseline
+commits in the Ticket's `machine` section,
 stamps `created`, and moves the Ticket to queue or waiting as one operation.
 
 ```bash
@@ -241,7 +242,7 @@ python -m booley.ticket_board create-file "$SLUG" \
 python -m booley.ticket_board validate-ticket \
   .booley_project/tickets/board/drafts/$SLUG.md [--check-git]
 
-# E6. Enqueue. This automatically publishes the immutable Acceptance Basis.
+# E6. Enqueue. This records the baseline commits in the Ticket's machine section.
 python -m booley.ticket_board enqueue "$SLUG"
 ```
 
@@ -302,14 +303,14 @@ means "clean under whatever linter that Target names"; there is no separate styl
 `cycle_count` is a list of mappings, never a `sim_pass` numeric parameter. Every item must
 name one `target` and registered `test`, plus at least one threshold. Absolute
 `cycle_count_max` / `cycle_count_min` use the current run. Relative percentage and `_cycles`
-forms automatically compare the same Target/test at the Acceptance Basis; consult
+forms automatically compare the same Target/test at the Ticket baseline; consult
 `booley cheat --criteria` for the complete signed-bound vocabulary.
 Write every percentage value with an explicit `%` suffix (for example,
 `cycle_count_reduce_at_least: 8%`); bare numbers are invalid for percentage thresholds.
 
 `synthesis_ok` / `fpga_impl_ok` take threshold **params** in four flavours per metric:
 absolute `_max` / `_min`, plus baseline-relative `_increase_at_most` / `_reduce_at_least`
-(compared against the Ticket's Acceptance Basis). Common ones: `cell_count_max`, `fmax_mhz_min`,
+(compared against the Ticket baseline). Common ones: `cell_count_max`, `fmax_mhz_min`,
 `cell_count_reduce_at_least` (ASIC); `lut_count_max`, `ff_count_max`, `fmax_mhz_min`
 (FPGA). Don't hardcode a subset here — for the full per-metric matrix and which pairs are
 mutually exclusive, run `booley cheat --criteria` (the "threshold flavours" table, also in
@@ -356,7 +357,7 @@ Ticket Creation Guidance is Project-owned, free-form Markdown consumed **only he
 creation**. Its authority is limited to the proposed Ticket's `criteria`, optional
 `target_plan`, and `on_success`.
 It cannot change scope, priority, dependencies, ticket depth or body, approval gates,
-Acceptance Basis publication, or an existing Ticket.
+Ticket baseline publication, or an existing Ticket.
 
 Resolve the Project directory through Booley rather than assuming its location. Read
 `ticket_creation.md` when it exists. For Projects created before that filename was

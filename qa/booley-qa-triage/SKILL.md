@@ -6,8 +6,22 @@ description: Triage sealed Public QA Scenario Runs with the Human Maintainer and
 # Triage Booley public QA
 
 Use this skill only when invoked. The Human Maintainer owns Triage Dispositions and
-run supersessions. Use [`triage.py`](../triage.py) for all record mechanics. Read
+run supersessions; invoking this skill delegates high-confidence case decisions to
+the agent. Use [`triage.py`](../triage.py) for all record mechanics. Read
 [Format](../doc/FORMAT.md) before changing records.
+
+Before asking the maintainer for any decision, give them a decision brief grounded in
+the frozen Scenario and sealed run records. Identify the affected run, Configured
+Scenario, and Check IDs. For each affected Check, explain the product claim it tests,
+its stimulus, expected behavior, and required observer/evidence; then give the recorded
+status, actual observation, and the exact expected-versus-observed difference or reason
+it was blocked or unavailable. Include relevant evidence paths and decisive excerpts or
+values, correction history, causal links, and material gaps or uncertainty. For an
+Observation without a Check, explain its context and linked Check Results. Separate
+recorded facts from suspected causes. State the available choices, their effect on
+Scenario Run Outcome or Qualification where relevant, and the specific judgment needed.
+Inspect cited evidence when the status projection lacks this context; identify anything
+the sealed evidence cannot establish.
 
 ## Admit runs
 
@@ -48,15 +62,25 @@ unavailable required observation as incomplete. Do not substitute CLI evidence.
 
 ## Review Triage Cases
 
-Run `python qa/triage.py status <triage-root>`. Present one pending Triage Case with
-its suspected root, grouped consequences, correction history, statuses, causal links,
-evidence paths, and separate similarity hints.
+Run `python qa/triage.py status <triage-root>` and review each pending Triage Case
+against the frozen Scenario and sealed evidence. Assess confidence for grouping and
+disposition separately. Confidence is high only when the applicable Check definition
+or Observation context, the result and correction chain, evidence integrity, any causal
+links, and all required disposition fields (including owner and qualification scope
+where applicable) support one decision with no material competing interpretation.
+Frequency, similarity hints, and low apparent impact do not establish confidence.
 
 Automatic grouping requires an exact result-level cause link. Similar text, timing,
-tools, and resources are hints. Ask the maintainer to confirm grouping. Use `merge`,
-`split`, or `reopen` with a reason; each candidate stays in one active case.
+tools, and resources are hints. Confirm exact-linked grouping yourself when confident;
+ask the maintainer when grouping is uncertain. Use `merge`, `split`, or `reopen` with a
+reason; each candidate stays in one active case.
 
-Ask for one disposition. Write its fields to a temporary JSON object, then use
+For a high-confidence case, choose the disposition without asking the maintainer.
+For a lower-confidence case, prepare the decision brief with its suspected root,
+grouped consequences, separate similarity hints, and the reason confidence is low;
+ask the maintainer for the disposition. Process high-confidence cases without stopping
+for individual approval, and report their case IDs, decisions, and bases to the
+maintainer. Write each disposition's fields to a temporary JSON object, then use
 `decide --details <path>` with a stable idempotency key. Use the closed vocabulary in
 Format:
 

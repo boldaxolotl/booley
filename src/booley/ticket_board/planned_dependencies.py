@@ -19,15 +19,6 @@ from booley.runtime.project_dir import resolve_checkout_project_dir, runtime_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
-from .acceptance_basis import (
-    AcceptanceBasisError,
-    ProviderTargetBinding,
-    canonical_json,
-    load_acceptance_basis,
-    materialize_basis_checkout,
-    provider_binding_from_mapping,
-    selector_matches_canonical,
-)
 from .acceptance_targets import (
     criterion_targets,
     deferable_rtl_or_tb_input,
@@ -40,6 +31,15 @@ from .target_surface_edit import (
     TargetSurfaceEditError,
     merge_target_definition,
     toml_table_block,
+)
+from .ticket_baseline import (
+    ProviderTargetBinding,
+    TicketBaselineError,
+    canonical_json,
+    load_ticket_baseline,
+    materialize_basis_checkout,
+    provider_binding_from_mapping,
+    selector_matches_canonical,
 )
 
 _PROVIDER_STATES = frozenset({"waiting", "queued", "running", "blocked", "review"})
@@ -161,13 +161,15 @@ def _provider(root: Path, tickets_dir: Path, slug: str) -> _Provider | None:
     if status not in _PROVIDER_STATES:
         return None
     fields, body = parse_frontmatter(path.read_text(encoding="utf-8"))
-    if fields.get("acceptance_basis") is None:
-        return None
-    try:
-        basis = load_acceptance_basis(root, slug, fields, body)
-    except AcceptanceBasisError as exc:
+    if fields.get("machine") is None:
         raise PlannedDependencyError(
-            f"provider {slug!r} has an invalid Acceptance Basis: {exc}"
+            f"provider {slug!r} has an unsupported Ticket format; recreate the Ticket"
+        )
+    try:
+        basis = load_ticket_baseline(root, slug, fields, body)
+    except TicketBaselineError as exc:
+        raise PlannedDependencyError(
+            f"provider {slug!r} has invalid Ticket baseline metadata: {exc}"
         ) from exc
     if basis.target_plan is None:
         return None
@@ -277,7 +279,7 @@ def _load_marker(path: Path) -> ProviderMaterialization:
             frozenset(_marker_strings(raw, "placeholder_paths")),
         )
     except (
-        AcceptanceBasisError,
+        TicketBaselineError,
         BoundaryError,
         OSError,
         TypeError,
@@ -395,7 +397,7 @@ def _materialize_provider(
             bindings.append(
                 ProviderTargetBinding(
                     provider.slug,
-                    provider.basis.basis_id,
+                    provider.basis.ticket_identity()["generation"],
                     entry.target,
                     entry.role.value,
                     digest,
@@ -706,7 +708,7 @@ def _restore_provider_surfaces(
                 core_path, tests_key, _digest = _surface(checkout, binding.target)
                 _merge_provider_target(checkout, workspace, core_path, binding.target)
                 _merge_provider_test_table(checkout, workspace, tests_key)
-    except (AcceptanceBasisError, OSError, TargetSurfaceEditError) as exc:
+    except (TicketBaselineError, OSError, TargetSurfaceEditError) as exc:
         raise PlannedDependencyError(
             f"cannot restore planned provider {provider.slug!r}: {exc}"
         ) from exc
@@ -801,7 +803,10 @@ def validate_planned_dependencies(
             raise PlannedDependencyError(
                 f"planned provider {slug_key!r} is no longer basis-published"
             )
-        if any(binding.basis_id != provider.basis.basis_id for binding in bindings):
+        if any(
+            binding.ticket_generation != provider.basis.ticket_identity()["generation"]
+            for binding in bindings
+        ):
             _validate_refreshed_provider(root, provider, bindings)
     return materialization
 
@@ -818,7 +823,7 @@ def _validate_refreshed_provider(
                 root, provider.basis, Path(directory) / "checkout"
             )
             _validate_refreshed_bindings(provider, bindings, exported, checkout)
-    except (AcceptanceBasisError, OSError) as exc:
+    except (TicketBaselineError, OSError) as exc:
         raise PlannedDependencyError(
             f"cannot validate refreshed provider {provider.slug!r}: {exc}"
         ) from exc

@@ -721,7 +721,7 @@ def build_review_facts(
                     "reason",
                     "blocked_reason",
                     "heads",
-                    "basis_id",
+                    "ticket_generation",
                 )
             }
             if inspection

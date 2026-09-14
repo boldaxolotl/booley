@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -25,7 +26,7 @@ _FM_FIELD_ORDER = [
     # Immutable runtime (set once, never mutated during execution)
     "feature_branch",
     "created",
-    "acceptance_basis",
+    "machine",
 ]
 
 # Chars that require quoting a YAML string value.
@@ -332,7 +333,7 @@ def _parse_inline_value(val: str) -> Any:  # noqa: PLR0911 — one early return 
 
 
 # Keys that use nested block-dict format (2-level indentation)
-_NESTED_BLOCK_KEYS = frozenset({"criteria", "on_success", "acceptance_basis"})
+_NESTED_BLOCK_KEYS = frozenset({"criteria", "on_success", "machine"})
 
 
 def _extract_fm_block(text):
@@ -362,6 +363,11 @@ def _parse_key_value(key, val, fm_lines, idx, fields):
 
     if not val and key in _NESTED_BLOCK_KEYS:
         nested, next_idx = _parse_nested_block(fm_lines, idx + 1)
+        if key == "machine" and isinstance(nested.get("amendment"), str):
+            try:
+                nested["amendment"] = json.loads(nested["amendment"])
+            except json.JSONDecodeError as exc:
+                raise ValueError("machine.amendment is invalid JSON") from exc
         fields[key] = nested
         return None, None, next_idx
 
@@ -438,7 +444,10 @@ def _format_nested_dict(key, val, lines):  # noqa: PLR0912 - bounded YAML subset
     """Format a nested block dict (criteria, on_success) as YAML lines."""
     lines.append(f"{key}:")
     for section_name, section_val in val.items():
-        if isinstance(section_val, list):
+        if key == "machine" and section_name == "amendment" and isinstance(section_val, dict):
+            encoded = json.dumps(section_val, sort_keys=True, separators=(",", ":"))
+            lines.append(f"  amendment: {_yaml_scalar(encoded)}")
+        elif isinstance(section_val, list):
             items = ", ".join(_yaml_inline_value(item) for item in section_val)
             lines.append(f"  {section_name}: [{items}]")
         elif isinstance(section_val, dict):
@@ -463,17 +472,6 @@ def _format_nested_dict(key, val, lines):  # noqa: PLR0912 - bounded YAML subset
             lines.append(f"  {section_name}: {_yaml_scalar(section_val)}")
 
 
-def _format_acceptance_basis(val, lines):
-    """Format the schema's one-level mapping with inline participant rows."""
-    lines.append("acceptance_basis:")
-    for field_name, field_value in val.items():
-        if isinstance(field_value, list):
-            items = ", ".join(_yaml_inline_value(item) for item in field_value)
-            lines.append(f"  {field_name}: [{items}]")
-        else:
-            lines.append(f"  {field_name}: {_yaml_scalar(field_value)}")
-
-
 def _yaml_inline_value(value: Any) -> str:
     """Format a scalar or collection for the frontmatter parser's inline subset."""
     if isinstance(value, dict):
@@ -496,8 +494,6 @@ def _format_field(key, val, lines):
     elif isinstance(val, dict):
         if not val:
             lines.append(f"{key}: {{}}")
-        elif key == "acceptance_basis":
-            _format_acceptance_basis(val, lines)
         elif key in _NESTED_BLOCK_KEYS:
             _format_nested_dict(key, val, lines)
         else:

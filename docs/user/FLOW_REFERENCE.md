@@ -34,7 +34,7 @@ Common controls:
 - `--report-dir <path>` persists the invocation report and Flow-specific reports
   under that directory.
 - `--diagnostic` runs without satisfying Ticket Criteria. A strict Ticket
-  requires it when the Flow/Target pair is outside the Acceptance Basis.
+  requires it when the Flow/Target pair is outside the Ticket baseline.
 - `--dry-run` resolves and validates the requested work and prints the same
   normalized plan shape for every built-in Flow. It does not run EDA or
   Pre-Sim Commands and does not update Booley-managed durable state.

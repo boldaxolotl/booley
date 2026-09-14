@@ -513,9 +513,7 @@ def _prepare_basis_project_checkout(
     source: Path | None,
 ) -> Path:
     if source is None:
-        raise TicketWorkspaceError(
-            "paired Acceptance Basis repository is expected but unavailable"
-        )
+        raise TicketWorkspaceError("paired Ticket baseline repository is expected but unavailable")
     _require_clean_source(source)
     branch = _basis_branch(source, request.expected_ref, request.expected_sha)
     if not _branch_upstream(source, branch):
@@ -548,15 +546,15 @@ def _attach_existing_branch(source: Path, destination: Path, branch: str) -> Non
 def _basis_branch(source: Path, expected_ref: str, expected_sha: str) -> str:
     if not expected_ref.startswith("refs/heads/"):
         raise TicketWorkspaceError(
-            f"paired Acceptance Basis ref must be a full branch ref: {expected_ref!r}"
+            f"paired Ticket baseline ref must be a full branch ref: {expected_ref!r}"
         )
     branch = expected_ref.removeprefix("refs/heads/")
     valid = _git(source, "check-ref-format", "--branch", branch)
     if valid.returncode != 0:
-        raise TicketWorkspaceError(f"paired Acceptance Basis ref is invalid: {expected_ref!r}")
+        raise TicketWorkspaceError(f"paired Ticket baseline ref is invalid: {expected_ref!r}")
     head = _ref_sha(source, expected_ref)
     if not head:
-        raise TicketWorkspaceError(f"paired Acceptance Basis ref does not exist: {expected_ref!r}")
+        raise TicketWorkspaceError(f"paired Ticket baseline ref does not exist: {expected_ref!r}")
     if not expected_sha:
         return branch
     ancestry = _git(source, "merge-base", "--is-ancestor", expected_sha, head)
@@ -564,12 +562,12 @@ def _basis_branch(source: Path, expected_ref: str, expected_sha: str) -> str:
         return branch
     if ancestry.returncode == 1:
         raise TicketWorkspaceError(
-            f"paired Acceptance Basis ref {expected_ref!r} does not descend from "
+            f"paired Ticket baseline ref {expected_ref!r} does not descend from "
             f"recorded project_sha {expected_sha}"
         )
     detail = (ancestry.stderr or ancestry.stdout).strip()
     raise TicketWorkspaceError(
-        f"could not validate paired Acceptance Basis ref {expected_ref!r} "
+        f"could not validate paired Ticket baseline ref {expected_ref!r} "
         f"(rc={ancestry.returncode}): {detail}"
     )
 

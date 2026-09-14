@@ -980,11 +980,16 @@ def _parse_list_criterion(
         specs = []
         for item in items:
             target = item.get("target")
-            if not isinstance(target, str) or not target.strip():
-                raise ValueError(f"{key} campaign target must be a non-empty string")
             params = {name: value for name, value in item.items() if name != "target"}
             if key in _CRITERION_PARAM_REGISTRY:
                 params = _validate_criterion_params(key, params)
+            if isinstance(target, dict):
+                if key not in _PAIRED_TARGET_CRITERIA or not has_relative_qor_threshold(params):
+                    raise ValueError(f"{key} paired campaign target needs a relative threshold")
+                specs.extend(_paired_target_specs(key, [target], params, mandatory=mandatory))
+                continue
+            if not isinstance(target, str) or not target.strip():
+                raise ValueError(f"{key} campaign target must be a non-empty string")
             specs.append(
                 CriterionSpec(
                     key,

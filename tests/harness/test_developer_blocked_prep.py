@@ -8,7 +8,7 @@ import pytest
 
 from booley.harness import developer
 from booley.harness.models import StepResult, TicketContext
-from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+from booley.ticket_board.ticket_baseline import TicketBaselineError
 
 
 def _context(tmp_path: Path, **overrides: Any) -> TicketContext:
@@ -154,9 +154,7 @@ def test_pre_handoff_basis_guard_preserves_one_canonical_reason(
     basis = MagicMock()
     ctx = _context(tmp_path, acceptance_basis=basis, worktree_path=worktree)
     validate = MagicMock(
-        side_effect=AcceptanceBasisError(
-            "acceptance-input-change-required: projected core changed"
-        )
+        side_effect=TicketBaselineError("acceptance-input-change-required: projected core changed")
     )
     block = MagicMock()
     monkeypatch.setattr(

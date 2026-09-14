@@ -17,6 +17,8 @@ from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import parse_timestamp
 from booley.targets.domain import FuseSocError
 
+from .amendment import AmendmentError, apply_amendment, preview_amendment
+from .amendment_proposal import AmendmentProposalError
 from .analytics import (
     attribute_tokens_to_steps,
     collect_all_messages,
@@ -133,7 +135,7 @@ def _cmd_show(tio, args):
     logs_dir = ticket_log_dir(tio.logs_dir, slug)
     worktree_root = (
         resolve_project_dir(tio._project_root)
-        if entry.get("acceptance_basis") is not None
+        if entry.get("machine") is not None
         else tio._project_root / ".booley_project"
     )
     worktree = worktree_root / "worktrees" / slug
@@ -195,7 +197,7 @@ def _validation_context(
     tio, path: Path, fields: dict[str, Any], project_root: Path
 ) -> tuple[Path, Path | None, tuple[Path, ...]]:
     allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
-    if not (project_root / ".git").exists() or fields.get("acceptance_basis") is not None:
+    if not (project_root / ".git").exists() or fields.get("machine") is not None:
         return project_root, None, allowed_dirty_paths
     from booley.ticket_board.workspace_ops import ensure_ticket_workspace
 
@@ -250,17 +252,17 @@ def _validate_ticket_input(
     if not errors and basis_workspace is not None and fields.get("target_plan") is not None:
         try:
             from booley.ticket_board.workspace_ops import (
-                AcceptanceBasisOperationError,
-                validate_acceptance_basis_inputs,
+                TicketBaselineOperationError,
+                validate_ticket_baseline_inputs,
             )
 
-            validate_acceptance_basis_inputs(
+            validate_ticket_baseline_inputs(
                 project_root,
                 path,
                 path.stem,
                 workspace=basis_workspace,
             )
-        except (AcceptanceBasisOperationError, OSError, ValueError) as exc:
+        except (TicketBaselineOperationError, OSError, ValueError) as exc:
             errors.append(str(exc))
     warnings = [item for item in results if item.startswith("[warning] ")]
     return errors, warnings
@@ -533,6 +535,21 @@ def _cmd_handoff(tio, args):
 def _cmd_unblock(tio, args):
     ok = op_unblock(tio, args.slug, feedback=getattr(args, "feedback", ""))
     return 0 if ok else 2
+
+
+def _cmd_amend(tio, args):
+    """Preview or publish one typed human amendment request."""
+    try:
+        request = json.loads(Path(args.changes_file).read_text(encoding="utf-8"))
+        if args.preview:
+            output = preview_amendment(tio, args.slug, request)
+        else:
+            output = apply_amendment(tio, args.slug, request, args.expected_preview)
+    except (AmendmentError, AmendmentProposalError, OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
 
 
 def _cmd_reset(tio, args):

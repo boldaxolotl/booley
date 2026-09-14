@@ -18,13 +18,13 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_repositories import paired_project_repository
 
 from . import acceptance_ledger
-from .acceptance_basis import BLOCK_REASON, AcceptanceBasis, AcceptanceBasisError
 from .acceptance_targets import resolve_commit
 from .acceptance_validation import assert_ticket_worktree_inputs_unchanged
 from .frontmatter import parse_frontmatter
 from .helpers import TicketSlugError, detect_project_root, resolve_runtime_ticket_slug
 from .io import TicketIO
 from .paths import ticket_runtime_dir
+from .ticket_baseline import BLOCK_REASON, TicketBaseline, TicketBaselineError
 
 
 class TicketAcceptanceRecorder:
@@ -35,25 +35,25 @@ class TicketAcceptanceRecorder:
         *,
         log_dir: Path | None = None,
         execution_id: str | None = None,
-        acceptance_basis: dict[str, Any] | None = None,
+        ticket_identity: dict[str, Any] | None = None,
     ) -> None:
         self._log_dir = log_dir
         self._execution_id = execution_id
-        self._basis_record = acceptance_basis
+        self._ticket_identity = ticket_identity
 
-    def _acceptance_basis_record(self) -> dict[str, Any]:
-        if self._basis_record is not None:
-            return self._basis_record
+    def _validated_ticket_identity(self) -> dict[str, Any]:
+        if self._ticket_identity is not None:
+            return self._ticket_identity
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file or not Path(ticket_file).is_file():
             return {}
-        fields, _body = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
-        raw_basis = fields.get("acceptance_basis")
-        if raw_basis is None:
-            return {}
+        fields, body = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
         try:
-            return require_dict(raw_basis, field="acceptance_basis")
-        except BoundaryError as exc:
+            from .ticket_baseline import ticket_baseline_from_fields
+
+            ticket_baseline_from_fields(fields, body)
+            return require_dict(fields["machine"], field="machine")
+        except (BoundaryError, TicketBaselineError) as exc:
             from booley.flows.execution_persistence import AcceptanceRecordingError
 
             raise AcceptanceRecordingError(str(exc)) from exc
@@ -91,7 +91,7 @@ class TicketAcceptanceRecorder:
                     if self._execution_id is not None
                     else os.environ.get("BOOLEY_EXECUTION_ID", "")
                 ),
-                acceptance_basis=self._acceptance_basis_record(),
+                ticket_identity=self._validated_ticket_identity(),
                 transaction_id=transaction_id,
             )
         except acceptance_ledger.AcceptanceLedgerError as exc:
@@ -121,23 +121,23 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
             return ResolvedFlowAcceptance(tuple(basis.bindings), paired, ticket_backed=True)
         except TicketSlugError as exc:
             return self._blocked(f"{BLOCK_REASON}: {exc}")
-        except (OSError, AcceptanceBasisError) as exc:
+        except (OSError, TicketBaselineError) as exc:
             return self._blocked(str(exc))
 
-    def _load_basis(self) -> tuple[AcceptanceBasis, Path, str, Path]:
+    def _load_basis(self) -> tuple[TicketBaseline, Path, str, Path]:
         raw_ticket_path = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not raw_ticket_path:
-            raise AcceptanceBasisError("ticket snapshot is unavailable")
+            raise TicketBaselineError("ticket snapshot is unavailable")
         ticket_path = Path(raw_ticket_path)
         if not ticket_path.is_file():
-            raise AcceptanceBasisError("ticket snapshot is unavailable")
+            raise TicketBaselineError("ticket snapshot is unavailable")
         slug = resolve_runtime_ticket_slug(ticket_path)
         project_root = detect_project_root()
         basis = TicketIO(
             resolve_checkout_project_dir(project_root) / "tickets",
             project_root=project_root,
         ).load_basis(slug, runtime_ticket_path=ticket_path)
-        self._basis_record = basis.as_dict()
+        self._ticket_identity = basis.ticket_identity()
         return basis, project_root, slug, ticket_path
 
     @staticmethod
@@ -146,14 +146,14 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
         if repository is None:
             return PairedProjectBaseline.absent()
         if not project_sha:
-            raise AcceptanceBasisError(
-                "paired Project Ticket execution requires a pinned Acceptance Basis commit"
+            raise TicketBaselineError(
+                "paired Project Ticket execution requires a pinned Ticket baseline commit"
             )
         try:
             sha = resolve_commit(repository.worktree, project_sha)
         except ValueError as exc:
-            raise AcceptanceBasisError(
-                f"recorded paired Project Acceptance Basis cannot be resolved: {exc}"
+            raise TicketBaselineError(
+                f"recorded paired Project Ticket baseline cannot be resolved: {exc}"
             ) from exc
         return PairedProjectBaseline.ticket_pinned(sha)
 
@@ -161,7 +161,7 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
     def _configure_runtime(request: FlowRequest) -> None:
         logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
         if not logs_dir:
-            raise AcceptanceBasisError("ticket execution has no Criterion evidence directory")
+            raise TicketBaselineError("ticket execution has no Criterion evidence directory")
         runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
         if not runtime_env:
             runtime_env = str(ticket_runtime_dir(logs_dir))

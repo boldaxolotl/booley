@@ -14,6 +14,7 @@ from booley.criteria.state import DevelopmentState
 from booley.ticket_board import acceptance_targets, cli_handlers
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
 from booley.ticket_board.cli_handlers import (
+    _cmd_amend,
     _cmd_board,
     _cmd_classify,
     _cmd_endpoint_table,
@@ -29,6 +30,55 @@ from booley.ticket_board.cli_handlers import (
 from booley.ticket_board.paths import existing_runtime_file
 
 from .conftest import make_ticket_file
+from .test_acceptance_basis import _blocked_ticket
+
+# ---------------------------------------------------------------------------
+# _cmd_amend
+# ---------------------------------------------------------------------------
+
+
+def test_amend_preview_and_apply_commands(tmp_path, capsys):
+    _, _, tio = _blocked_ticket(tmp_path)
+    state = DevelopmentState.load(tio.logs_dir / "blocked-again/.runtime/booley_state.json")
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.save()
+    capsys.readouterr()
+    changes_file = tmp_path / "amendment.json"
+    changes_file.write_text(
+        json.dumps(
+            {
+                "actor": "QA Human",
+                "reason": "Accept residual review risk",
+                "criteria": [{"criterion": "review_rtl_bugs_clean", "make_optional": True}],
+            }
+        )
+    )
+    args = Namespace(
+        slug="blocked-again",
+        changes_file=str(changes_file),
+        preview=True,
+        expected_preview=None,
+    )
+    assert _cmd_amend(tio, args) == 0
+    digest = json.loads(capsys.readouterr().out)["digest"]
+    args.preview = False
+    args.expected_preview = digest
+    assert _cmd_amend(tio, args) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "queued"
+
+
+def test_amend_command_reports_invalid_request(tmp_path, tio, capsys):
+    changes_file = tmp_path / "invalid.json"
+    changes_file.write_text("not JSON")
+    args = Namespace(
+        slug="blocked-again",
+        changes_file=str(changes_file),
+        preview=True,
+        expected_preview=None,
+    )
+    assert _cmd_amend(tio, args) == 2
+    assert "Error:" in capsys.readouterr().err
+
 
 # ---------------------------------------------------------------------------
 # _cmd_slug
@@ -316,7 +366,7 @@ class TestCmdShow:
             tio.logs_dir / "completed",
             state,
             execution_id="run-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
         )
         state_path.unlink()
