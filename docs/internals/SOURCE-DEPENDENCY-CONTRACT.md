@@ -546,7 +546,8 @@ composition hotspots are unchanged. Full named-hotspot and top-30 reports are in
 
 ## Current snapshot: 14 SEP 2026 — combined separation
 
-Integration of #530 with #531 removes the remaining return paths. The measured
+Compared source and analyzer at `9b252746` (main with #531) with `4a5b552d`
+(resolved integration). Integration of #530 with #531 removes the remaining return paths. The measured
 cyclic groups now contain 11 members and the separate Target/FuseSoC pair, with
 nine direct mutual pairs. Config, EDA, Audit, Review, and Projects all leave the
 execution group; the original 12-member projection predates the Ticket changes.
