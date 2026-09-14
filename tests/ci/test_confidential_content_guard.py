@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -112,6 +113,23 @@ words = ["{SENTINEL}"]
     return base64.b64encode(document.encode()).decode()
 
 
+def _sealed_fixture(repo: Path, config: str) -> dict[str, str]:
+    """Seal a private fixture with a key isolated in this temporary Git directory."""
+    env = os.environ | {"BOOLEY_LEAK_GUARD_KEY_DIR": str(repo / ".git/guard-keys")}
+    (repo / ".github").mkdir(exist_ok=True)
+    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(config))
+    result = subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(repo), "seal-config"],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 0, result.stderr
+    return env
+
+
 def _scan(
     repo: Path,
     base: str,
@@ -131,9 +149,7 @@ def _scan_records(
     config: str | None,
     destination: tuple[str, Path] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    if config is not None:
-        env["BOOLEY_LEAK_GUARD_CONFIG_B64"] = config
+    env = _sealed_fixture(repo, config) if config is not None else os.environ.copy()
     command = [sys.executable, str(SCANNER), "--repo", str(repo), "pre-push"]
     if destination is not None:
         command.extend((destination[0], str(destination[1])))
@@ -151,7 +167,7 @@ def _scan_records(
 def _scan_pull_request(repo: Path, event: dict) -> subprocess.CompletedProcess[str]:
     event_path = repo / "event.json"
     event_path.write_text(json.dumps(event), encoding="utf-8")
-    env = os.environ | {"BOOLEY_LEAK_GUARD_CONFIG_B64": _encoded_config()}
+    env = _sealed_fixture(repo, _encoded_config())
     return subprocess.run(
         [
             sys.executable,
@@ -178,9 +194,8 @@ def _scan_pr_text(
     config: str | None = None,
     env_config: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    if config is not None:
-        (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(config))
+    env = _sealed_fixture(repo, config) if config is not None else os.environ.copy()
+    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = str(repo / ".git/guard-keys")
     if env_config is not None:
         env["BOOLEY_LEAK_GUARD_CONFIG_B64"] = env_config
     command = [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text"]
@@ -199,9 +214,9 @@ def _scan_pr_text(
     )
 
 
-def _sync_ci_secret(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _sync_ci_key(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCANNER), "--repo", str(repo), "sync-ci-secret"],
+        [sys.executable, str(SCANNER), "--repo", str(repo), "sync-ci-key"],
         capture_output=True,
         check=False,
         env=env,
@@ -469,7 +484,7 @@ def test_audit_finds_blob_deleted_later_in_history(tmp_path: Path) -> None:
     _commit(repo, "add temporary fixture")
     (repo / "temporary.txt").unlink()
     head = _commit(repo, "remove temporary fixture")
-    env = os.environ | {"BOOLEY_LEAK_GUARD_CONFIG_B64": _encoded_config()}
+    env = _sealed_fixture(repo, _encoded_config())
 
     result = subprocess.run(
         [
@@ -501,8 +516,7 @@ def test_audit_accepts_glob_escaped_mergify_bot_identity(tmp_path: Path) -> None
         name="mergify[bot]",
         email="37929162+mergify[bot]@users.noreply.github.com",
     )
-    env = os.environ | {
-        "BOOLEY_LEAK_GUARD_CONFIG_B64": _encoded_config(),
+    env = _sealed_fixture(repo, _encoded_config()) | {
         "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": "mergify[[]bot[]]",
     }
 
@@ -644,6 +658,217 @@ def test_missing_secret_fails_closed(tmp_path: Path) -> None:
     assert "could not complete" in result.stderr
 
 
+def test_clone_recovers_vocabulary_with_separately_restored_key(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    env = _sealed_fixture(repo, _encoded_config())
+    encrypted = repo / ".github/confidential-vocabulary.enc"
+    assert SENTINEL.encode() not in encrypted.read_bytes()
+    _commit(repo, "track encrypted vocabulary")
+
+    clone = tmp_path / "restored"
+    subprocess.run(
+        ["git", "clone", "--quiet", str(repo), str(clone)],
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    restored_keys = tmp_path / "restored-keys"
+    restored_env = os.environ | {"BOOLEY_LEAK_GUARD_KEY_DIR": str(restored_keys)}
+    key_path = subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(clone), "key-path"],
+        capture_output=True,
+        check=False,
+        env=restored_env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert key_path.returncode == 0, key_path.stderr
+    missing = subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(clone), "pr-text", "--stdin"],
+        input="public title",
+        capture_output=True,
+        check=False,
+        env=restored_env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert missing.returncode == 1
+
+    source_keys = Path(env["BOOLEY_LEAK_GUARD_KEY_DIR"])
+    restored_keys.mkdir()
+    shutil.copyfile(next(source_keys.glob("*.key")), Path(key_path.stdout.strip()))
+    Path(key_path.stdout.strip()).chmod(0o600)
+    detected = subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(clone), "pr-text", "--stdin"],
+        input=SENTINEL,
+        capture_output=True,
+        check=False,
+        env=restored_env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert detected.returncode == 1
+    assert "confidential term" in detected.stderr
+    assert SENTINEL not in detected.stderr
+    restored = subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(clone), "restore-draft"],
+        capture_output=True,
+        check=False,
+        env=restored_env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert restored.returncode == 0, restored.stderr
+    draft = clone / ".git/booley-leak-guard.toml"
+    assert draft.read_bytes() == base64.b64decode(_encoded_config())
+    assert SENTINEL not in restored.stdout + restored.stderr
+
+
+def test_restore_draft_refuses_plaintext_inside_worktree(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    env = _sealed_fixture(repo, _encoded_config()) | {
+        "BOOLEY_LEAK_GUARD_CONFIG": "private.toml",
+    }
+    result = subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(repo), "restore-draft"],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 1
+    assert not (repo / "private.toml").exists()
+    assert SENTINEL not in result.stderr
+
+
+def test_candidate_encrypted_vocabulary_is_validated_against_trusted_key(
+    tmp_path: Path,
+) -> None:
+    repo, _initial = _repository(tmp_path)
+    env = _sealed_fixture(repo, _encoded_config())
+    trusted = _commit(repo, "add valid encrypted vocabulary")
+    event_path = tmp_path / "event.json"
+    event_path.write_text(
+        json.dumps(
+            {"pull_request": {"title": "public", "body": "public", "head": {"ref": "topic"}}}
+        ),
+        encoding="utf-8",
+    )
+    valid = subprocess.run(
+        [
+            sys.executable,
+            str(SCANNER),
+            "--repo",
+            str(repo),
+            "verify-candidate",
+            "--rev",
+            trusted,
+            "--base",
+            trusted,
+            "--event",
+            str(event_path),
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert valid.returncode == 0, valid.stderr
+
+    encrypted = repo / ".github/confidential-vocabulary.enc"
+    encrypted.write_bytes(b"corrupt\n")
+    broken = _commit(repo, "corrupt encrypted vocabulary")
+    _git(repo, "checkout", trusted)
+    invalid = subprocess.run(
+        [
+            sys.executable,
+            str(SCANNER),
+            "--repo",
+            str(repo),
+            "verify-candidate",
+            "--rev",
+            broken,
+            "--base",
+            trusted,
+            "--event",
+            str(event_path),
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert invalid.returncode == 1
+    assert "could not complete" in invalid.stderr
+
+
+def test_candidate_scan_blocks_new_term_in_same_pr(tmp_path: Path) -> None:
+    repo, _initial = _repository(tmp_path)
+    env = _sealed_fixture(repo, _encoded_config())
+    trusted = _commit(repo, "add initial encrypted vocabulary")
+    new_term = "new-secret-654"
+    changed_config = base64.b64encode(
+        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n'
+        f'[private]\nwords = ["{SENTINEL}", "{new_term}"]\n'.encode()
+    ).decode()
+    _sealed_fixture(repo, changed_config)
+    candidate = _commit(repo, "add new vocabulary term")
+    _git(repo, "checkout", trusted)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(
+        json.dumps(
+            {"pull_request": {"title": "public", "body": new_term, "head": {"ref": "topic"}}}
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCANNER),
+            "--repo",
+            str(repo),
+            "verify-candidate",
+            "--rev",
+            candidate,
+            "--base",
+            trusted,
+            "--event",
+            str(event_path),
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 1
+    assert "confidential term" in result.stderr
+    assert new_term not in result.stderr
+
+
+def test_tampered_encrypted_vocabulary_fails_closed(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    env = _sealed_fixture(repo, _encoded_config())
+    encrypted = repo / ".github/confidential-vocabulary.enc"
+    contents = bytearray(encrypted.read_bytes())
+    contents[-3] = ord("A") if contents[-3] != ord("A") else ord("B")
+    encrypted.write_bytes(contents)
+
+    result = subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text", "--stdin"],
+        input="public title",
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 1
+    assert "could not complete" in result.stderr
+
+
 def test_pull_request_metadata_is_blocked_without_echoing_term(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     event = {
@@ -700,9 +925,12 @@ def test_proposed_pr_text_accepts_clean_title_and_body(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_proposed_pr_text_prefers_local_toml_over_ci_env(tmp_path: Path) -> None:
+def test_proposed_pr_text_uses_sealed_file_over_private_draft_and_stale_ci_env(
+    tmp_path: Path,
+) -> None:
     repo, _base = _repository(tmp_path)
-    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    _sealed_fixture(repo, _encoded_config())
+    (repo / ".git/booley-leak-guard.toml").write_text("[private]\nwords = ['other']\n")
     stale_config = base64.b64encode(
         f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["other"]\n'.encode()
     ).decode()
@@ -725,7 +953,7 @@ def test_proposed_pr_text_fails_closed_for_missing_input_or_config(tmp_path: Pat
     assert "could not complete" in missing_config.stderr
 
 
-def test_proposed_pr_text_requires_local_toml_even_with_ci_env(tmp_path: Path) -> None:
+def test_proposed_pr_text_requires_sealed_file_even_with_old_ci_env(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
 
     result = _scan_pr_text(repo, stdin="public title", env_config=_encoded_config())
@@ -750,12 +978,13 @@ def test_overlapping_banned_terms_are_detected(tmp_path: Path) -> None:
 
 def test_publish_pr_create_scans_then_sends_exact_drafts(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    sealed_env = _sealed_fixture(repo, _encoded_config())
     title = tmp_path / "title.txt"
     body = tmp_path / "body.md"
     title.write_text("Public title\n", encoding="utf-8")
     body.write_text("Public description\n", encoding="utf-8")
     env, captured_args, captured_stdin = _recording_gh(tmp_path)
+    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = sealed_env["BOOLEY_LEAK_GUARD_KEY_DIR"]
 
     result = _publish_pr(
         repo,
@@ -795,12 +1024,13 @@ def test_publish_pr_create_scans_then_sends_exact_drafts(tmp_path: Path) -> None
 
 def test_publish_pr_blocks_confidential_drafts_before_gh(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    sealed_env = _sealed_fixture(repo, _encoded_config())
     title = tmp_path / "title.txt"
     body = tmp_path / "body.md"
     title.write_text("Public title", encoding="utf-8")
     body.write_text(f"Sensitive context: {SENTINEL}", encoding="utf-8")
     env, captured_args, _captured_stdin = _recording_gh(tmp_path)
+    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = sealed_env["BOOLEY_LEAK_GUARD_KEY_DIR"]
 
     result = _publish_pr(
         repo,
@@ -824,7 +1054,7 @@ def test_publish_pr_blocks_confidential_drafts_before_gh(tmp_path: Path) -> None
     assert not captured_args.exists()
 
 
-def test_publish_pr_requires_local_toml_even_with_ci_env(tmp_path: Path) -> None:
+def test_publish_pr_requires_sealed_file_even_with_old_ci_env(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     body = tmp_path / "body.md"
     body.write_text("Public comment", encoding="utf-8")
@@ -840,12 +1070,13 @@ def test_publish_pr_requires_local_toml_even_with_ci_env(tmp_path: Path) -> None
 
 def test_publish_pr_supports_edit_comment_and_review(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    sealed_env = _sealed_fixture(repo, _encoded_config())
     title = tmp_path / "title.txt"
     body = tmp_path / "body.md"
     title.write_text("Updated title", encoding="utf-8")
     body.write_text("Public response", encoding="utf-8")
     env, captured_args, captured_stdin = _recording_gh(tmp_path)
+    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = sealed_env["BOOLEY_LEAK_GUARD_KEY_DIR"]
     cases = (
         (
             ["edit", "--pr", "123", "--title-file", str(title)],
@@ -893,15 +1124,15 @@ def test_proposed_pr_text_fails_closed_when_draft_is_too_large(tmp_path: Path) -
     assert "exceeds the inspection size limit" in result.stderr
 
 
-def test_sync_ci_secret_uses_local_toml_even_when_ci_env_is_set(tmp_path: Path) -> None:
+def test_sync_ci_key_uses_sealed_vocabulary_and_not_stale_ci_env(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    raw_config = base64.b64decode(_encoded_config())
-    (repo / ".git/booley-leak-guard.toml").write_bytes(raw_config)
+    sealed_env = _sealed_fixture(repo, _encoded_config())
+    (repo / ".git/booley-leak-guard.toml").write_text("[private]\nwords = ['other']\n")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_gh = bin_dir / "gh"
     fake_gh.write_text(
-        '#!/bin/sh\ntest -z "${BOOLEY_LEAK_GUARD_CONFIG_B64+x}" || exit 2\n'
+        '#!/bin/sh\ntest -z "${BOOLEY_LEAK_GUARD_KEY_B64+x}" || exit 2\n'
         'test -z "${GH_REPO+x}" || exit 3\n'
         'printf "%s\\n" "$*" > "$CAPTURE_ARGS"\ncat > "$CAPTURE_STDIN"\n',
         encoding="utf-8",
@@ -909,45 +1140,45 @@ def test_sync_ci_secret_uses_local_toml_even_when_ci_env_is_set(tmp_path: Path) 
     fake_gh.chmod(0o755)
     captured_args = tmp_path / "args"
     captured_stdin = tmp_path / "stdin"
-    env = os.environ | {
+    env = sealed_env | {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        "BOOLEY_LEAK_GUARD_CONFIG_B64": base64.b64encode(b"stale config").decode(),
+        "BOOLEY_LEAK_GUARD_KEY_B64": base64.b64encode(b"stale key").decode(),
         "GH_REPO": "somewhere/else",
         "CAPTURE_ARGS": str(captured_args),
         "CAPTURE_STDIN": str(captured_stdin),
     }
 
-    result = _sync_ci_secret(repo, env)
+    result = _sync_ci_key(repo, env)
 
     assert result.returncode == 0, result.stderr
     assert captured_args.read_text(encoding="utf-8").strip() == (
-        "secret set BOOLEY_LEAK_GUARD_CONFIG_B64 --app actions"
+        "secret set BOOLEY_LEAK_GUARD_KEY_B64 --app actions"
     )
-    assert base64.b64decode(captured_stdin.read_bytes()) == raw_config
+    assert len(base64.b64decode(captured_stdin.read_bytes())) == 32
     assert SENTINEL not in result.stdout + result.stderr
 
 
-def test_sync_ci_secret_fails_before_gh_when_local_toml_is_missing(tmp_path: Path) -> None:
+def test_sync_ci_key_fails_when_sealed_file_is_missing(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     env = os.environ | {"BOOLEY_LEAK_GUARD_CONFIG_B64": _encoded_config()}
 
-    result = _sync_ci_secret(repo, env)
+    result = _sync_ci_key(repo, env)
 
     assert result.returncode == 1
     assert "could not complete" in result.stderr
 
 
-def test_sync_ci_secret_does_not_echo_gh_failure_output(tmp_path: Path) -> None:
+def test_sync_ci_key_does_not_echo_gh_failure_output(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    sealed_env = _sealed_fixture(repo, _encoded_config())
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_gh = bin_dir / "gh"
     fake_gh.write_text(f'#!/bin/sh\necho "{SENTINEL}" >&2\nexit 1\n', encoding="utf-8")
     fake_gh.chmod(0o755)
-    env = os.environ | {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env = sealed_env | {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
-    result = _sync_ci_secret(repo, env)
+    result = _sync_ci_key(repo, env)
 
     assert result.returncode == 1
     assert "could not complete" in result.stderr
@@ -961,6 +1192,8 @@ def test_workflow_scans_metadata_on_pr_edits() -> None:
 
     assert "types: [opened, synchronize, reopened, ready_for_review, edited]" in workflow
     assert "pull-request --event" in workflow
+    assert 'verify-candidate --rev "${HEAD_SHA}"' in workflow
+    assert '--base "${BASE_SHA}" --event "${GITHUB_EVENT_PATH}"' in workflow
 
 
 def test_workflow_trusts_mergify_identity_for_pr_updates_and_main_history() -> None:
