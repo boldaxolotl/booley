@@ -1,0 +1,5 @@
+[sim_smoke]
+tests = ["smoke"]
+
+[sim_fail]
+tests = ["intentional_failure"]

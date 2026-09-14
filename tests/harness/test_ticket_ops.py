@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.harness._ticket_ops import (
+    CreateTicketParams,
     DirectTicketOps,
     TicketCLIError,
     TicketOps,
@@ -154,6 +155,31 @@ class TestDirectTicketOpsParseTicket:
         with pytest.raises(TicketCLIError, match="not found"):
             ops.parse_ticket(tmp_path, str(tmp_path / "nonexistent.md"))
 
+    def test_parse_and_create_preserve_the_authored_document(self, tmp_path: Path):
+        (tmp_path / ".booley_project").mkdir()
+        content = (
+            "---\nsummary: Inspect RTL\ntype: verification\nbranch: main\n"
+            "scope: []\non_success: []\nCRITERIA_MANDATORY:\n"
+            "  REVIEW: {rtl: {bugs: done}}\n"
+            "---\n\n## Description\nInspect RTL.\n"
+        )
+        source = tmp_path / "human.md"
+        source.write_text(content)
+        ops = DirectTicketOps()
+        created = ops.create_ticket_file(tmp_path, "human", CreateTicketParams(str(source)))
+        assert created.read_text() == content
+        parsed = ops.parse_ticket(tmp_path, str(created))
+        assert parsed["fields"]["CRITERIA_MANDATORY"]["REVIEW"]["rtl"] == {"bugs": "done"}
+        assert "Inspect RTL." in parsed["body"]
+        assert ops.classify(tmp_path)["executable"] == []
+
+    def test_parse_rejects_old_document_shape(self, tmp_path: Path):
+        (tmp_path / ".booley_project").mkdir()
+        source = tmp_path / "old.md"
+        source.write_text("---\ncriteria: {mandatory: {lint_clean: [core]}}\n---\n")
+        with pytest.raises(TicketCLIError, match="Old Ticket format"):
+            DirectTicketOps().parse_ticket(tmp_path, str(source))
+
 
 # ---------------------------------------------------------------------------
 # DirectTicketOps.validate_ticket
@@ -166,6 +192,36 @@ class TestDirectTicketOpsValidateTicket:
         result = ops.validate_ticket(tmp_path, str(tmp_path / "nope.md"))
         assert result["errors"]
         assert "not found" in result["errors"][0].lower()
+
+    def test_invalid_document_reports_converter_diagnostic(self, tmp_path: Path):
+        (tmp_path / ".booley_project").mkdir()
+        source = tmp_path / "invalid.md"
+        source.write_text("---\nsummary: invalid\n---\n")
+        errors = DirectTicketOps().validate_ticket(tmp_path, str(source))["errors"]
+        assert any("required fields" in message for message in errors)
+
+    def test_draft_workspace_failure_is_reported_before_validation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from booley.ticket_board import workspace_ops
+
+        (tmp_path / ".git").mkdir()
+        draft_dir = tmp_path / ".booley_project" / "tickets" / "board" / "drafts"
+        draft_dir.mkdir(parents=True)
+        ticket = draft_dir / "demo.md"
+        ticket.write_text("---\nsummary: Draft\n---\n")
+
+        def cannot_prepare(*_args, **_kwargs):
+            raise RuntimeError("worktree is unavailable")
+
+        monkeypatch.setattr(workspace_ops, "ensure_ticket_workspace", cannot_prepare)
+        result = DirectTicketOps().validate_ticket(tmp_path, str(ticket))
+        assert "worktree is unavailable" in result["errors"][0]
+
+    def test_enqueue_error_is_reported(self, tmp_path: Path):
+        (tmp_path / ".booley_project").mkdir()
+        with pytest.raises(TicketCLIError, match="enqueue failed"):
+            DirectTicketOps().enqueue(tmp_path, "missing")
 
 
 # ---------------------------------------------------------------------------

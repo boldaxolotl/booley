@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -143,3 +144,65 @@ def test_op_complete_routes_authored_cleanup_without_merge(
     assert state["status"] == "done"
     assert cleanup_only._ref_sha(root, basis.participants[0].ticket_ref) is None
     assert cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, sources) == sources
+
+
+def test_cleanup_only_rejects_corrupt_or_mismatched_recovery_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, basis, sources = _ticket(tmp_path)
+    tio = SimpleNamespace(_project_root=root, find_ticket=lambda _slug: {"status": "done"})
+    assert cleanup_only.advance_cleanup_only(tio, "test-cleanup", basis, sources)
+    journal = cleanup_only._journal_path(root, "test-cleanup", basis)
+    original = journal.read_text()
+    journal.write_text("{broken json", encoding="utf-8")
+    with pytest.raises(cleanup_only.CleanupOnlyError, match="unreadable"):
+        cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, sources)
+    journal.write_text(original, encoding="utf-8")
+    with pytest.raises(cleanup_only.CleanupOnlyError, match="sources differ"):
+        cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, {"outer": "0" * 40})
+    record = json.loads(original)
+    record["slug"] = "other"
+    journal.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(cleanup_only.CleanupOnlyError, match="identity or schema"):
+        cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, sources)
+
+
+def test_cleanup_only_rejects_missing_accepted_source_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, basis, sources = _ticket(tmp_path)
+    tio = SimpleNamespace(_project_root=root, find_ticket=lambda _slug: {"status": "done"})
+    assert cleanup_only.advance_cleanup_only(tio, "test-cleanup", basis, sources)
+    _git(root, "update-ref", "-d", cleanup_only._source_ref("test-cleanup", basis, "outer"))
+    with pytest.raises(cleanup_only.CleanupOnlyError, match="unavailable or changed"):
+        cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, sources)
+
+
+def test_cleanup_only_refuses_changed_pins_and_ticket_refs(tmp_path: Path) -> None:
+    root, basis, sources = _ticket(tmp_path)
+    participant = basis.participants[0]
+    _git(
+        root,
+        "update-ref",
+        cleanup_only._source_ref("test-cleanup", basis, "outer"),
+        basis.outer_sha,
+    )
+    tio = SimpleNamespace(_project_root=root, find_ticket=lambda _slug: {"status": "done"})
+    with pytest.raises(cleanup_only.CleanupOnlyError, match=r"source pin.*changed"):
+        cleanup_only.advance_cleanup_only(tio, "test-cleanup", basis, sources)
+    with pytest.raises(cleanup_only.CleanupOnlyError, match="also the destination"):
+        cleanup_only._retire_participant(
+            root, replace(participant, ticket_ref=participant.destination_ref), sources["outer"]
+        )
+    with pytest.raises(cleanup_only.CleanupOnlyError, match="changed before cleanup"):
+        cleanup_only._retire_participant(root, participant, basis.outer_sha)
+    cleanup_only._retire_participant(
+        root, replace(participant, ticket_ref="refs/heads/missing"), sources["outer"]
+    )
+
+
+def test_cleanup_only_requires_paired_project_repository(tmp_path: Path) -> None:
+    root, basis, _sources = _ticket(tmp_path)
+    paired = replace(basis.participants[0], role="project")
+    with pytest.raises(cleanup_only.CleanupOnlyError, match="paired Project repository"):
+        cleanup_only._repository(root, paired)

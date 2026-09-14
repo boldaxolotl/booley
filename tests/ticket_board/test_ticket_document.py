@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from booley.ticket_board.acceptance_targets import (
     validate_ticket_spec_targets,
 )
 from booley.ticket_board.cli import main
-from booley.ticket_board.io import TicketIO
+from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.scanner import scan_all_tickets
 from booley.ticket_board.ticket_document import (
@@ -210,6 +211,271 @@ def test_conversion_rejects_duplicate_nested_yaml_key() -> None:
     assert conversion.document is None
     assert "Duplicate Ticket key" in conversion.diagnostics[0].message
     assert conversion.diagnostics[0].line == 9
+
+
+@pytest.mark.parametrize(
+    ("ticket", "message"),
+    [
+        ("summary: no fences\n", "must begin with YAML"),
+        ("---\nsummary: unterminated\n", "not terminated"),
+        ("---\n[]\n---\n## Description\n", "YAML mapping"),
+        (
+            _ticket("  LINT: {core: clean}\n").replace("summary:", "7: bad\nsummary:"),
+            "keys must be strings",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace(
+                "summary: Check core", "summary: &name Check core"
+            ),
+            "anchors",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace("summary: Check core", "summary: .nan"),
+            "NaN",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace(
+                "scope: [rtl/core.sv]", "scope: 2026-01-01"
+            ),
+            "unsupported YAML value",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace("on_success: [merge]", "on_success: merge"),
+            "YAML list",
+        ),
+        (_ticket("  LINT: {core: clean}\n", flags="[merge, merge]"), "duplicate flags"),
+        (_ticket("  LINT: {core: clean}\n", flags="[publish]"), "unknown flags"),
+        (
+            _ticket("  LINT: {core: clean}\n").replace(
+                "CRITERIA_MANDATORY:\n  LINT: {core: clean}", "CRITERIA_MANDATORY: []"
+            ),
+            "must be a mapping",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace(
+                "---\n\n## Description", "CRITERIA_OPTIONAL: []\n---\n\n## Description"
+            ),
+            "must be a mapping",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace("  LINT: {core: clean}\n", "  {}\n"),
+            "at least one Criterion",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace(
+                "scope: [rtl/core.sv]", "scope: [rtl/core.sv, rtl/core.sv]"
+            ),
+            "unique names",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace("type: feature", "type: impossible"),
+            "Ticket type",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace("branch: main", "branch: ''"),
+            "nonempty string",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace("## Description", "## Notes"),
+            "Description section",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace(
+                "scope: [rtl/core.sv]", "priority: urgent\nscope: [rtl/core.sv]"
+            ),
+            "Ticket priority",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace(
+                "scope: [rtl/core.sv]", "spec: 42\nscope: [rtl/core.sv]"
+            ),
+            "Ticket spec",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace(
+                "scope: [rtl/core.sv]", "base_sha: abc\nscope: [rtl/core.sv]"
+            ),
+            "retired Ticket fields",
+        ),
+        (
+            _ticket("  LINT: {core: clean}\n").replace(
+                "scope: [rtl/core.sv]", "mystery: yes\nscope: [rtl/core.sv]"
+            ),
+            "Unknown Ticket fields",
+        ),
+    ],
+)
+def test_document_boundary_rejects_malformed_authoring(ticket: str, message: str) -> None:
+    result = convert_ticket_document(ticket, _context())
+    assert result.document is None
+    assert message in result.diagnostics[0].message
+
+
+@pytest.mark.parametrize(
+    ("criteria", "message"),
+    [
+        ("  LINT: []\n", "must map Targets"),
+        ("  LINT: {core: pass}\n", "requires 'clean'"),
+        ("  ELAB: {core: clean}\n", "requires 'pass'"),
+        ("  SIM: {core: {unknown: pass}}\n", "unregistered test"),
+        ("  SIM: {core: {all: fail -> pass}}\n", "needs pass"),
+        ("  CYCLE_COUNT: {core: {unknown: {cycle_count_max: 100}}}\n", "unregistered test"),
+        ("  CYCLE_COUNT: {core: {smoke: {baseline: core}}}\n", "threshold"),
+        ("  SYNTH: {core: {baseline: core}}\n", "threshold or scalar pass"),
+        ("  SYNTH: {core: {baseline: 9, area_increase_at_most: '10%'}}\n", "baseline must"),
+        ("  REVIEW: {unknown: {bugs: done}}\n", "category"),
+        ("  REVIEW: {rtl: {unknown: done}}\n", "focus"),
+        ("  REVIEW: {rtl: {bugs: [done, done]}}\n", "outcome"),
+        ("  ELAB_STANDALONE: []\n", "nonempty Target list"),
+        ("  ELAB_STANDALONE: [core, core]\n", "repeats Target"),
+        ("  COVERAGE: {core: {tests: all}}\n", "exactly tests and metrics"),
+        (
+            "  COVERAGE: {core: {tests: [unknown], metrics: {line: {min_pct: 90}}}}\n",
+            "registered named tests",
+        ),
+        (
+            "  COVERAGE: {core: {tests: all, metrics: {mystery: {min_pct: 90}}}}\n",
+            "unknown metrics",
+        ),
+        ("  COVERAGE: {core: {tests: all, metrics: {line: {max_pct: 90}}}}\n", "requires min_pct"),
+        ("  SYNTH: {core (new): {area_um2_max: 100}}\n", "needs a mandatory Flow Criterion"),
+    ],
+)
+def test_criterion_declarations_fail_at_document_boundary(criteria: str, message: str) -> None:
+    ticket = _ticket(criteria)
+    if "needs a mandatory" in message:
+        ticket = ticket.replace(
+            "CRITERIA_MANDATORY:\n" + criteria,
+            "CRITERIA_MANDATORY: {}\nCRITERIA_OPTIONAL:\n" + criteria,
+        )
+    result = convert_ticket_document(ticket, _context())
+    assert result.document is None
+    assert message in result.diagnostics[0].message
+
+
+def test_document_boundary_reports_invalid_stage_and_generated_draft_metadata() -> None:
+    ticket = _ticket("  LINT: {core: clean}\n")
+    bad_stage = convert_ticket_document(
+        ticket, TicketConversionContext("unknown", _context().resolve_view)
+    )
+    assert bad_stage.document is None
+    assert "Unknown Ticket conversion stage" in bad_stage.diagnostics[0].message
+    stamped = ticket.replace("scope: [rtl/core.sv]", "created: '2026-09-14'\nscope: [rtl/core.sv]")
+    generated = convert_ticket_document(stamped, _context())
+    assert generated.document is None
+    assert "generated execution metadata" in generated.diagnostics[0].message
+
+
+def test_duplicate_atomic_requirement_across_sections_is_rejected() -> None:
+    ticket = _ticket("  LINT: {core: clean}\n").replace(
+        "---\n\n## Description",
+        "CRITERIA_OPTIONAL:\n  LINT: {core: clean}\n---\n\n## Description",
+    )
+    result = convert_ticket_document(ticket, _context())
+    assert result.document is None
+    assert "Duplicate atomic Criterion" in result.diagnostics[0].message
+
+
+def test_target_aliases_cannot_duplicate_one_flow_requirement() -> None:
+    view = TicketAuthoringView(
+        lambda selector, _flow: "same-target" if selector in {"first", "second"} else selector,
+        lambda _target: ("smoke",),
+    )
+    context = TicketConversionContext("draft", lambda _generated: view)
+    result = convert_ticket_document(_ticket("  LINT: {first: clean, second: clean}\n"), context)
+    assert result.document is None
+    assert "repeats Target" in result.diagnostics[0].message
+
+
+@pytest.mark.parametrize(
+    ("criteria", "view", "message"),
+    [
+        (
+            "  SIM: {core: {all: pass}}\n",
+            TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ()),
+            "no registered tests",
+        ),
+        (
+            "  COVERAGE: {core: {tests: all, metrics: {line: {min_pct: 90}}}}\n",
+            TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ()),
+            "no registered tests",
+        ),
+        (
+            "  ELAB_STANDALONE: [core, 4]\n",
+            TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ()),
+            "Target selectors must be strings",
+        ),
+        (
+            "  LINT: {core (replaces core): clean}\n",
+            TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ()),
+            "cannot replace itself",
+        ),
+    ],
+)
+def test_resolved_ticket_rejects_invalid_target_or_test_bindings(
+    criteria: str, view: TicketAuthoringView, message: str
+) -> None:
+    result = convert_ticket_document(
+        _ticket(criteria), TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert result.document is None
+    assert message in result.diagnostics[0].message
+
+
+def test_serializer_rejects_generated_metadata_outside_execution_fields() -> None:
+    converted = convert_ticket_document(_ticket("  LINT: {core: clean}\n"), _context())
+    assert converted.document is not None
+    document = TicketDocument(converted.document.spec, {"other": "generated"})
+    with pytest.raises(ValueError, match="unsupported generated metadata"):
+        serialize_ticket_document(document, _context())
+
+
+def test_yaml_errors_keep_source_location_and_reject_merge_keys() -> None:
+    malformed = convert_ticket_document(_ticket("  SIM: {core: [pass}\n"), _context())
+    assert malformed.document is None
+    assert malformed.diagnostics[0].line >= 8
+    merged = _ticket("  LINT: {core: clean}\n").replace(
+        "summary: Check core", "<<: {summary: hidden}\nsummary: Check core"
+    )
+    result = convert_ticket_document(merged, _context())
+    assert result.document is None
+    assert "keys must be strings" in result.diagnostics[0].message
+
+
+def test_standalone_target_resolution_fails_at_conversion_boundary() -> None:
+    def resolve(selector: str, _flow: str | None) -> str:
+        raise UnknownTargetError(f"Unknown Target {selector}")
+
+    view = TicketAuthoringView(resolve, lambda _target: ())
+    result = convert_ticket_document(
+        _ticket("  ELAB_STANDALONE: [missing]\n"),
+        TicketConversionContext("draft", lambda _generated: view),
+    )
+    assert result.document is None
+    assert "Unknown Target missing" in result.diagnostics[0].message
+
+
+def test_executable_conversion_rejects_non_mapping_basis_pointer(tmp_path: Path) -> None:
+    ticket = _ticket("  LINT: {core: clean}\n").replace(
+        "scope: [rtl/core.sv]", "acceptance_basis: invalid\nscope: [rtl/core.sv]"
+    )
+    with ticket_conversion_context(tmp_path, "demo", "executable") as context:
+        result = convert_ticket_document(ticket, context)
+    assert result.document is None
+    assert "no valid Acceptance Basis pointer" in result.diagnostics[0].message
+
+
+def test_serializer_detects_invalid_or_changed_converted_document() -> None:
+    converted = convert_ticket_document(_ticket("  LINT: {core: clean}\n"), _context())
+    assert converted.document is not None
+    spec = converted.document.spec
+    invalid = TicketDocument(replace(spec, fields={**spec.fields, "on_success": ["publish"]}), {})
+    with pytest.raises(ValueError, match="Serialized Ticket is invalid"):
+        serialize_ticket_document(invalid, _context())
+    changed_view = TicketAuthoringView(lambda _selector, _flow: "other", lambda _target: ())
+    changed_context = TicketConversionContext("draft", lambda _generated: changed_view)
+    with pytest.raises(ValueError, match="changed authored or generated meaning"):
+        serialize_ticket_document(converted.document, changed_context)
 
 
 def test_review_done_and_clean_can_have_different_requirements() -> None:
@@ -421,9 +687,6 @@ def test_v2_validation_uses_converted_sim_criterion(tmp_path: Path) -> None:
     fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
     project = tmp_path / "project"
     shutil.copytree(fixture, project)
-    (project / ".booley_project" / "tests.toml").write_text(
-        '[sim_smoke]\ntests = ["smoke"]\n', encoding="utf-8"
-    )
     view = ticket_authoring_view(project)
     conversion = convert_ticket_document(
         _ticket("  SIM: {sim_smoke: {smoke: pass}}\n").replace(
@@ -454,6 +717,55 @@ def test_create_document_rejects_old_ticket_shape(tmp_path: Path) -> None:
 
     assert board.create_ticket_document("old-format", ticket) is None
     assert not (tmp_path / "tickets" / "board" / "drafts" / "old-format.md").exists()
+
+
+def test_create_document_rejects_invalid_slug_and_duplicate_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".booley_project").mkdir()
+    board = TicketIO(tmp_path / ".booley_project" / "tickets", project_root=tmp_path)
+    ticket = _ticket("  REVIEW: {rtl: {bugs: done}}\n")
+    assert board.create_ticket_document("../escape", ticket) is None
+    assert board.create_ticket_document("x" * 81, ticket) is None
+    created = board.create_ticket_document("review", ticket)
+    assert created is not None and created.read_text() == ticket
+    assert board.create_ticket_document("review", ticket.replace("Check core", "Changed")) is None
+    assert created.read_text() == ticket
+    with pytest.raises(ValueError, match="field-based Ticket creation is unsupported"):
+        board.create_ticket_file("old", TicketFileSpec("Legacy", "verification", "main"))
+
+
+def test_create_document_reports_atomic_file_creation_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from booley.ticket_board import io
+
+    (tmp_path / ".booley_project").mkdir()
+    board = TicketIO(tmp_path / ".booley_project" / "tickets", project_root=tmp_path)
+    real_open = os.open
+
+    def already_claimed(path: str, flags: int, *args: object, **kwargs: object) -> int:
+        if str(path).endswith("race.md"):
+            raise FileExistsError(path)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(io.os, "open", already_claimed)
+    assert board.create_ticket_document("race", _ticket("  REVIEW: {rtl: {bugs: done}}\n")) is None
+    assert not (board.tickets_dir / "board" / "drafts" / "race.md").exists()
+
+
+def test_execution_start_rejects_unbound_ticket_without_moving_it(tmp_path: Path) -> None:
+    (tmp_path / ".booley_project").mkdir()
+    board = TicketIO(tmp_path / ".booley_project" / "tickets", project_root=tmp_path)
+    queue = board.tickets_dir / "board" / "queue"
+    queue.mkdir(parents=True)
+    ticket = queue / "unbound.md"
+    ticket.write_text(_ticket("  REVIEW: {rtl: {bugs: done}}\n"))
+    assert board.init_ticket(ticket) is None
+    assert ticket.exists()
+    assert not (board.tickets_dir / "board" / "active" / "unbound.md").exists()
 
 
 def test_create_file_cli_accepts_complete_document(tmp_path: Path, monkeypatch) -> None:

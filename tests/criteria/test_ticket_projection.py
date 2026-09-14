@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from booley.criteria.state import DevelopmentState
+from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.ticket_projection import project_ticket_criteria
 from booley.flows.sim import coverage_acceptance, coverage_flow_context
 from booley.ticket_board.ticket_document import (
@@ -137,3 +138,47 @@ def test_coverage_metrics_share_one_campaign_but_keep_separate_verdicts(
     )
     assert len(changes) == 2
     assert {change.met for change in changes} == {True, False}
+
+
+def test_cycle_and_synthesis_baselines_reach_flow_state() -> None:
+    text = (
+        "---\nsummary: Compare measured targets\ntype: verification\nbranch: main\n"
+        "scope: [rtl/core.sv]\non_success: []\nCRITERIA_MANDATORY:\n"
+        "  CYCLE_COUNT: {sim_core: {smoke: {baseline: sim_base, cycle_count_increase_at_most: '10%'}}}\n"
+        "  SYNTH: {synth_core: {baseline: synth_base, area_increase_at_most: '5%'}}\n"
+        "---\n\n## Description\n\nCompare results.\n"
+    )
+    view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ("smoke",))
+    converted = convert_ticket_document(
+        text, TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert converted.document is not None, converted.diagnostics
+    projection = project_ticket_criteria(converted.document.spec)
+    cycle_key = next(key for key in projection.params if key.startswith("cycle_count_"))
+    synth_key = next(key for key in projection.params if key.startswith("synthesis_ok_"))
+    assert projection.params[cycle_key][BASELINE_TARGET_PARAM] == "sim_base"
+    assert projection.params[cycle_key]["required_tests"] == ["smoke"]
+    assert projection.params[synth_key][BASELINE_TARGET_PARAM] == "synth_base"
+
+
+def test_standalone_and_project_scalar_have_no_per_target_result_alias() -> None:
+    text = (
+        "---\nsummary: Check project\ntype: verification\nbranch: main\n"
+        "scope: [rtl/core.sv]\non_success: []\nCRITERIA_MANDATORY:\n"
+        "  ELAB_STANDALONE: [core_a, core_b]\n"
+        "  IMPLEMENTATION_DONE: true\n"
+        "---\n\n## Description\n\nCheck project.\n"
+    )
+    view = TicketAuthoringView(
+        lambda selector, _flow: selector,
+        lambda _target: (),
+        frozenset({"IMPLEMENTATION_DONE"}),
+    )
+    converted = convert_ticket_document(
+        text, TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert converted.document is not None, converted.diagnostics
+    projection = project_ticket_criteria(converted.document.spec)
+    assert projection.params["elaborate_standalone"]["targets"] == ["core_a", "core_b"]
+    assert projection.params["implementation_done"] == {}
+    assert projection.aliases == {}

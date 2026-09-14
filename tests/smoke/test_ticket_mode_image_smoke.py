@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from mcp import Client, StdioServerParameters
 
 from booley.core.models import AgentCallParams, AgentResult
@@ -24,7 +25,6 @@ from booley.runtime import job_records, job_slots
 from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import enqueue_publication
-from booley.ticket_board.frontmatter import format_frontmatter
 from booley.ticket_board.helpers import detect_tickets_dir
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import session_jobs_dir
@@ -37,7 +37,6 @@ pytestmark = pytest.mark.skipif(
 _FIXTURE = Path(__file__).parents[1] / "fixtures" / "ticket_mode_smoke"
 _EXIT_CODE = re.compile(r"EXIT_CODE:\s*(-?\d+)")
 _RUN_ID = re.compile(r"run_id=([^\s)]+)")
-_OPTIONAL_KEY = "lint_clean_lint_optional"
 _OPTIONAL_REASON = "Optional lint Target is intentionally left unmet to exercise reporting."
 
 
@@ -136,16 +135,15 @@ def _write_ticket_file(
         "branch": "main",
         "project_destination_ref": "refs/heads/main",
         "scope": scope,
-        "criteria": criteria,
-        "on_success": {
-            "destination": "review",
-            "merge": False,
-            "cleanup": False,
-            "triage_report": False,
-        },
+        "on_success": ["review"],
+        **criteria,
         "priority": "high",
     }
-    content = format_frontmatter(fields, "## Description\nExercise real Ticket Mode boundaries.\n")
+    content = (
+        "---\n"
+        + yaml.safe_dump(fields, sort_keys=False)
+        + "---\n\n## Description\nExercise real Ticket Mode boundaries.\n"
+    )
     tickets = project / ".booley_project" / "tickets"
     draft = tickets / "board" / "drafts"
     draft.mkdir(exist_ok=True)
@@ -229,24 +227,25 @@ def test_enqueue_recovers_across_session_runtime_project_aliases(
 
 def _success_criteria() -> dict[str, Any]:
     return {
-        "mandatory": {
-            "lint_clean": ["lint_smoke"],
-            "elab_pass": ["sim_smoke"],
-            "sim_pass": ["tb/tb_dut.sv @ sim_smoke @ all @ none -> pass"],
-            "synthesis_ok": {
-                "targets": ["synth_smoke"],
-                "cell_count_max": 500,
-                "clk_i.fmax_mhz_min": 1,
+        "CRITERIA_MANDATORY": {
+            "LINT": {"lint_smoke": "clean"},
+            "ELAB": {"sim_smoke": "pass"},
+            "SIM": {"sim_smoke": {"all": "pass"}},
+            "SYNTH": {
+                "synth_smoke": {
+                    "cell_count_max": 500,
+                    "clk_i.fmax_mhz_min": 1,
+                }
             },
         },
-        "optional": {"lint_clean": ["lint_optional"]},
+        "CRITERIA_OPTIONAL": {"LINT": {"lint_optional": "clean"}},
     }
 
 
 def _blocked_criteria() -> dict[str, Any]:
     return {
-        "mandatory": {
-            "sim_pass": ["tb/tb_fail.sv @ sim_fail @ all @ none -> pass"],
+        "CRITERIA_MANDATORY": {
+            "SIM": {"sim_fail": {"all": "pass"}},
         }
     }
 
@@ -315,6 +314,20 @@ def _load_state() -> DevelopmentState:
 def _criterion(state: DevelopmentState, prefix: str) -> Any:
     matches = [value for key, value in state.criteria.items() if key.startswith(prefix)]
     assert len(matches) == 1, f"expected one {prefix!r} criterion, got {len(matches)}"
+    return matches[0]
+
+
+def _criterion_key(
+    state: DevelopmentState, prefix: str, target: str, parameter: str | None = None
+) -> str:
+    matches = [
+        key
+        for key, value in state.criteria.items()
+        if key.startswith(prefix)
+        and str(value.params.get("target", "")).endswith(f"#{target}")
+        and (parameter is None or parameter in value.params)
+    ]
+    assert len(matches) == 1, f"expected one {prefix!r} criterion for {target!r}: {matches}"
     return matches[0]
 
 
@@ -491,17 +504,21 @@ def _assert_board_state(project: Path, slug: str, expected: str) -> None:
 
 
 def _assert_openroad_criterion(state: DevelopmentState) -> None:
-    entry = state.criteria["synthesis_ok_synth_smoke"]
-    detail = entry.detail
-    assert entry.met and detail["synth_mode"] == "physical"
+    entries = {
+        parameter: state.criteria[_criterion_key(state, "synthesis_ok_", "synth_smoke", parameter)]
+        for parameter in ("cell_count_max", "clk_i.fmax_mhz_min")
+    }
+    assert all(entry.met for entry in entries.values())
+    detail = entries["cell_count_max"].detail
+    assert detail["synth_mode"] == "physical"
     assert detail["area_source"] == "openroad_post_optimization"
     assert detail["ppa_complete"] is True and detail["timing_complete"] is True
     assert isinstance(detail["cells"], int) and detail["cells"] > 0
     clock = detail["per_clock"]["clk_i"]
     assert isinstance(clock["critical_path_ps"], (int, float))
     assert isinstance(clock["fmax_mhz"], (int, float))
-    checks = {check["param"]: check for check in detail["checks"]}
-    for parameter in ("cell_count_max", "clk_i.fmax_mhz_min"):
+    for parameter, entry in entries.items():
+        checks = {check["param"]: check for check in entry.detail["checks"]}
         assert checks[parameter]["pass"] is True
         assert checks[parameter].get("skipped") is not True
     assert not detail.get("infra_error")
@@ -527,18 +544,20 @@ def test_ticket_mode_success_staleness_optional_and_openroad(
     _assert_board_state(project, slug, "review")
     state = DevelopmentState.load(_logs_dir(project, slug) / ".runtime" / "booley_state.json")
     assert all(entry.met for entry in state.criteria.values() if entry.mandatory)
-    assert not state.criteria[_OPTIONAL_KEY].met
-    assert state.criteria["_report_submitted"].detail["unmet_optional_criteria"] == [_OPTIONAL_KEY]
+    optional_key = _criterion_key(state, "lint_clean_", "lint_optional")
+    assert not state.criteria[optional_key].met
+    assert state.criteria["_report_submitted"].detail["unmet_optional_criteria"] == [optional_key]
     _assert_openroad_criterion(state)
     stale = observations["freshness"]
-    assert stale["lint_clean_lint_smoke"] and stale["synthesis_ok_synth_smoke"]
-    assert not stale["elab_pass_sim_smoke"]
+    assert stale[_criterion_key(state, "lint_clean_", "lint_smoke")]
+    assert all(value for key, value in stale.items() if key.startswith("synthesis_ok_"))
+    assert not stale[_criterion_key(state, "elab_pass_", "sim_smoke")]
     assert not next(value for key, value in stale.items() if key.startswith("sim_pass_"))
     assert observations["calls"].count("synth") == 1
     assert observations["calls"].count("sim") == 4
     assert observations["labels"] == ["developer"]
     report = (_logs_dir(project, slug) / "REPORT.md").read_text(encoding="utf-8")
-    assert _OPTIONAL_KEY in report and _OPTIONAL_REASON in report
+    assert optional_key in report and _OPTIONAL_REASON in report
     _assert_retained_worktree(project, slug, ["tb/tb_dut.sv"])
     _assert_no_live_jobs()
 
