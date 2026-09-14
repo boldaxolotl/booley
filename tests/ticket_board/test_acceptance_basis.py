@@ -965,7 +965,9 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     assert reopened_again["generation"] != reopened["generation"]
 
 
-def _prepared_ticket(tmp_path: Path, slug: str = "transaction") -> tuple[Path, Path, TicketIO]:
+def _prepared_ticket(
+    tmp_path: Path, slug: str = "transaction", extra_file: str | None = None
+) -> tuple[Path, Path, TicketIO]:
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", "main")
@@ -976,6 +978,8 @@ def _prepared_ticket(tmp_path: Path, slug: str = "transaction") -> tuple[Path, P
     (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n/hooks/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
     (root / "README.md").write_text("demo\n", encoding="utf-8")
+    if extra_file is not None:
+        (root / extra_file).write_text("additional source\n", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "initial")
@@ -995,8 +999,10 @@ def _prepared_ticket(tmp_path: Path, slug: str = "transaction") -> tuple[Path, P
     return root, project_dir, tio
 
 
-def _blocked_ticket(tmp_path: Path, slug: str = "blocked-again") -> tuple[Path, Path, TicketIO]:
-    root, project_dir, tio = _prepared_ticket(tmp_path, slug)
+def _blocked_ticket(
+    tmp_path: Path, slug: str = "blocked-again", extra_file: str | None = None
+) -> tuple[Path, Path, TicketIO]:
+    root, project_dir, tio = _prepared_ticket(tmp_path, slug, extra_file)
     assert tio.enqueue_ticket(slug)
     (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
     queued = project_dir / "tickets" / "board" / "queue" / f"{slug}.md"

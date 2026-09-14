@@ -59,7 +59,9 @@ _AUTHORED_FIELDS = (
     "scope_current",
     "scope_new",
 )
-_RETIRED_FIELDS = frozenset({"target_contract", "target_contract_history", "base_sha"})
+_RETIRED_FIELDS = frozenset(
+    {"target_contract", "target_contract_history", "base_sha", "acceptance_amendment"}
+)
 _AUTHORED_DEFAULTS: dict[str, Any] = {
     "scope": [],
     "spec": "",
@@ -182,7 +184,11 @@ def ticket_baseline_from_machine(value: Any) -> TicketBaseline:
     except BoundaryError as exc:
         raise TicketBaselineError(str(exc)) from exc
     required = {"schema", "authored_sha256", "generation", "baseline"}
-    if schema != 1 or not required <= set(machine) or set(machine) - required - {"providers"}:
+    if (
+        schema != 1
+        or not required <= set(machine)
+        or set(machine) - required - {"providers", "amendment"}
+    ):
         raise TicketBaselineError("machine has invalid fields or schema")
     if not re.fullmatch(r"[0-9a-f]{32}", generation):
         raise TicketBaselineError("machine.generation must be a 32-digit hex identifier")
@@ -214,7 +220,63 @@ def ticket_baseline_from_machine(value: Any) -> TicketBaseline:
     providers = tuple(provider_binding_from_mapping(row) for row in raw_providers)
     if providers != tuple(sorted(set(providers))):
         raise TicketBaselineError("machine.providers must be sorted and unique")
+    if "amendment" in machine:
+        _validate_machine_amendment(machine["amendment"], generation)
     return TicketBaseline(basis.participants, providers=providers, machine=dict(machine))
+
+
+def _validate_machine_amendment(value: Any, generation: str) -> None:
+    """Validate the Human-approved requirement change signed by the Ticket commit."""
+    try:
+        row = require_dict(value, field="machine.amendment")
+        expected = {
+            "slug",
+            "operation_id",
+            "previous_generation",
+            "actor",
+            "reason",
+            "changes",
+            "scope_added",
+            "optional_conversions",
+        }
+        if set(row) != expected:
+            raise BoundaryError("machine.amendment has invalid fields")
+        slug = require_str(row, "slug")
+        operation = require_str(row, "operation_id")
+        previous = require_str(row, "previous_generation")
+        actor = require_str(row, "actor")
+        reason = require_str(row, "reason")
+        changes = require_list(row.get("changes"), field="machine.amendment.changes")
+        scope = require_list(row.get("scope_added"), field="machine.amendment.scope_added")
+        conversions = require_list(
+            row.get("optional_conversions"), field="machine.amendment.optional_conversions"
+        )
+    except BoundaryError as exc:
+        raise TicketBaselineError(str(exc)) from exc
+    if not slug.strip() or not actor.strip() or not reason.strip():
+        raise TicketBaselineError("machine.amendment requires a slug, Human actor and reason")
+    if operation != generation or not re.fullmatch(r"[0-9a-f]{32}", previous):
+        raise TicketBaselineError("machine.amendment generation identity is invalid")
+    if not changes and not scope:
+        raise TicketBaselineError("machine.amendment has no changes")
+    for change in changes:
+        if not isinstance(change, Mapping) or set(change) != {
+            "criterion",
+            "before_mandatory",
+            "after_mandatory",
+            "thresholds",
+        }:
+            raise TicketBaselineError("machine.amendment Criterion change is invalid")
+        if not isinstance(change["criterion"], str) or not isinstance(
+            change["thresholds"], Mapping
+        ):
+            raise TicketBaselineError("machine.amendment Criterion values are invalid")
+        if not all(
+            isinstance(change[key], bool) for key in ("before_mandatory", "after_mandatory")
+        ):
+            raise TicketBaselineError("machine.amendment mandatory values are invalid")
+    if any(not isinstance(item, str) or not item for item in (*scope, *conversions)):
+        raise TicketBaselineError("machine.amendment Scope or optional conversions are invalid")
 
 
 def validate_ticket_commit_trailers(
@@ -585,6 +647,9 @@ def load_ticket_baseline(
         raise TicketBaselineError("executable Ticket body is required")
     basis = ticket_baseline_from_fields(fields, body)
     machine = require_dict(fields["machine"], field="machine")
+    amendment = machine.get("amendment")
+    if isinstance(amendment, Mapping) and amendment.get("slug") != slug:
+        raise TicketBaselineError(f"{BLOCK_REASON}: amendment names another Ticket")
     validate_ticket_commit_trailers(project_root, slug, basis, machine)
     _validate_ticket_routing(basis, fields)
     from .acceptance_targets import canonical_acceptance_bindings, criterion_targets

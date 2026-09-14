@@ -18,6 +18,7 @@ import pytest
 from booley.criteria.templates import CriteriaTemplate
 from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
+from booley.harness.setup.intake import _zero_mandatory_amendment_basis
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
@@ -50,6 +51,26 @@ _TEST_BASIS = TicketBaseline(
         ),
     )
 )
+
+
+def test_zero_mandatory_state_requires_committed_human_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis = TicketBaseline(
+        _TEST_BASIS.participants,
+        machine={"amendment": {"optional_conversions": ["review_rtl_bugs_clean"]}},
+    )
+    ctx = SimpleNamespace(project_root=tmp_path, slug="blocked", acceptance_basis=basis)
+    assert _zero_mandatory_amendment_basis(ctx, {"review_rtl_bugs_clean": True}) == ""
+    assert _zero_mandatory_amendment_basis(ctx, {"review_rtl_bugs_clean": False}) == (
+        basis.basis_id
+    )
+    ctx.acceptance_basis = None
+    assert _zero_mandatory_amendment_basis(ctx, {}) == ""
+    ctx.acceptance_basis = TicketBaseline(
+        _TEST_BASIS.participants, machine={"amendment": {"optional_conversions": []}}
+    )
+    assert _zero_mandatory_amendment_basis(ctx, {"review_rtl_bugs_clean": False}) == ""
 
 
 @pytest.fixture(autouse=True)

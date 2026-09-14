@@ -118,22 +118,33 @@ Run `python -m booley.ticket_board log-incident $SLUG --type <type> --step <step
 
 ## 5. Resolution Options
 
-Three distinct recovery paths — do NOT conflate them:
+Choose the applicable resolution from the recorded blockers. Show the exact
+before/after Criteria and Scope when proposing an amendment. An existing Human
+approval of those exact edits authorizes applying them; do not ask again.
 
 - **Unblock (default retry)**: `unblock` moves the ticket blocked→queue, **preserves** the worktree/branch/logs, and appends your feedback to `blocked.md` so the developer reads it on resume. This is the retry-with-feedback path — use it whenever you have diagnosis or answers to pass forward.
+- **Amend (approved requirement relaxation)**: `amend` can lower a declared
+  floor, raise a ceiling, make an existing mandatory Criterion optional, or add
+  Scope. It preserves all Criteria, existing implementation and evidence history,
+  records a new immutable Ticket baseline in machine metadata, then queues the same Ticket to
+  resume. Only offer edits supported by the validator and evidence. Give the
+  Human the exact preview and apply its digest after approval. Never suggest
+  deleting a Criterion or using amendment to legitimize protected-input drift.
+- **Requested review**: `request-review` gives the Human an unaccepted view of
+  the current blocked work and unmet gates when interactive verification is wanted.
 - **Reset (clean execution retry)**: `reset` archives the current run artifacts,
   recreates the worktree and branch from the same immutable Ticket baseline,
   and re-runs from the beginning. It takes **no feedback** (any feedback you
   compose is lost). Use only when the worktree is known-bad and a fresh
   execution against the original basis is required.
 - **Return to draft (fresh Ticket authoring)**: this is required when
-  `blocked_reason` is `acceptance-input-change-required`, or whenever the
-  Ticket baseline inputs must change. It preserves the old Ticket baseline
+  `blocked_reason` is `acceptance-input-change-required`, or when the required
+  change is outside amendment's narrow operations. It preserves the old Ticket baseline
   and worktrees for audit, archives the current run history under
   `logs/<slug>/runs/<NNN>/`, and opens a new generation-qualified authoring
   workspace from the committed destination refs. Correct the authoring inputs,
-  validate the draft, and enqueue it to publish a new immutable Acceptance
-  Basis. `unblock` and `reset` retain the original basis and are rejected for
+  validate the draft, and enqueue it to record a new immutable Ticket baseline.
+  `unblock` and `reset` retain the original baseline and are rejected for
   this block reason.
 - **Archive**: give up on this ticket.
 - **Skip**: leave as-is.
@@ -157,6 +168,29 @@ For an unblock retry:
 ## 7. Execute
 
 - **Unblock (retry with feedback)**: `python -m booley.ticket_board unblock $SLUG --feedback "..."` — then print: `Unblocked -> queued. Run ticket execution to resume.`
+- **Amend**: Write a JSON change request with the approving Human's `actor`
+  identity, nonblank `reason`, optional
+  `feedback`, and `criteria` and/or `scope_add`. Address each edit by its exact
+  expanded Criterion name; `thresholds` maps existing parameter names to relaxed
+  values, and `make_optional: true` moves that instance to optional. Scope
+  additions use the normal Scope syntax, including `[new]` for a new file.
+  Do not include Criterion removal, Target or build-control changes, or a
+  tightening. Then run:
+
+  ```bash
+  booley board amend "$SLUG" --changes-file "$FILE" --preview
+  booley board amend "$SLUG" --changes-file "$FILE" --apply --expected-preview "$DIGEST"
+  ```
+
+  Show the preview before apply, including the zero-mandatory outcome when
+  applicable. Apply only the exact proposal the Human approved. If apply
+  rejects a stale digest, inspect what changed, obtain and show a fresh preview,
+  and seek approval for any changed proposal; never apply the old digest by
+  substituting a newly computed one silently. Report
+  `Amended -> queued. Run ticket execution to resume.`
+- **Requested review**: Commit intended Ticket source changes, then run
+  `booley board request-review "$SLUG" --reason "<Human intent>"` and present
+  its unaccepted review package.
 - **Reset (clean execution retry)**: confirm the correction reason, then run
   `python -m booley.ticket_board reset $SLUG --reason "<correction reason>"`
   (or `booley board reset $SLUG --reason "<correction reason>"`) — then print:

@@ -64,6 +64,12 @@ The stable identity in `machine.generation` for one publication of a Ticket.
 A waiting Ticket receives a new generation after its dependencies are accepted.
 _Avoid_: Acceptance Basis, Target Contract, target snapshot, config patch
 
+**Ticket Amendment**:
+A Human-approved relaxation of Criteria or expansion of Scope on a blocked
+Ticket, published as a new Ticket generation with machine-only amendment
+provenance and a new pinned baseline while preserving its implementation.
+_Avoid_: Ticket editing, reset, fresh authoring
+
 ### Execution and evidence
 
 **Criterion**:

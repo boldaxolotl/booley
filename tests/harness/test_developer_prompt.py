@@ -1082,12 +1082,14 @@ class TestBlockRuleAgreesWithDebugLoop:
         )
         return system
 
-    def test_unattended_debug_loop_does_not_tell_the_agent_to_block(self, tmp_path: Path):
+    def test_unattended_debug_loop_defers_infeasibility_to_block_rule(self, tmp_path: Path):
         system = self._system(tmp_path, human_in_the_loop=False)
 
         assert "no human operator will unblock the ticket" in system
         assert "block with findings" not in system
-        assert "do not block, since nobody will unblock you" in system
+        assert "Apply Rule 3 if a mandatory criterion cannot be met" in system
+        assert "why it cannot be met, including the evidence and approaches tried" in system
+        assert "do not block, since nobody will unblock you" not in system
 
     def test_hitl_debug_loop_still_blocks(self, tmp_path: Path):
         system = self._system(tmp_path, human_in_the_loop=True)

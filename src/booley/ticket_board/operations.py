@@ -677,7 +677,7 @@ def op_unblock(
     if status != "blocked":
         print(f"Error: ticket '{slug}' is {status}, not blocked", file=sys.stderr)
         return False
-    if not _queue_recovery_permitted(entry, slug):
+    if not _queue_recovery_permitted(tio, entry, slug):
         return False
     step = entry.get("blocked_step", "")
 
@@ -705,8 +705,15 @@ def op_unblock(
     return ok
 
 
-def _queue_recovery_permitted(entry: dict[str, Any], slug: str) -> bool:
+def _queue_recovery_permitted(tio: Any, entry: dict[str, Any], slug: str) -> bool:
+    from .amendment import pending_amendment
     from .ticket_baseline import requires_return_to_draft
+
+    if pending_amendment(Path(tio._project_root), slug) is not None:
+        print(
+            f"Error: ticket '{slug}' has a pending amendment; retry amend --apply", file=sys.stderr
+        )
+        return False
 
     if not requires_return_to_draft(entry):
         return True
@@ -1582,7 +1589,7 @@ def op_reset(
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False
-    if not _queue_recovery_permitted(entry, slug):
+    if not _queue_recovery_permitted(tio, entry, slug):
         return False
     project_root = Path(getattr(tio, "_project_root", ""))
     if entry.get("machine") is None and (project_root / ".git").exists():

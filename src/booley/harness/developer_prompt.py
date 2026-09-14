@@ -150,8 +150,8 @@ or persistent infrastructure failure), write `_blocked_reason` with detail \
 """
 
 _RULE_BLOCKED_UNATTENDED = """\
-3. **BLOCKED**: `_blocked_reason` is reserved for genuinely irrecoverable \
-infrastructure failures (container broken, git broken, worktree gone). Do not \
+3. **BLOCKED**: Block on irrecoverable infrastructure failures \
+(container broken, git broken, worktree gone). Do not \
 block on missing spec or ambiguous requirements because no human operator will \
 unblock the ticket.
 
@@ -159,6 +159,14 @@ For spec-silent points, choose the most reasonable interpretation from the \
 work item text, visible tests, and Flow or Specialist reports. Document assumptions in \
 `$BOOLEY_LOGS_DIR/answered_questions.md`, an implementation note, or the \
 final report.
+
+"""
+
+_RULE_INFEASIBLE_CRITERION = """\
+If a mandatory criterion cannot be met within the Ticket's requirements, write \
+`_blocked_reason` with detail `{"reason": "..."}` naming the criterion and explaining \
+why it cannot be met, including the evidence and approaches tried, then stop. \
+This also applies in unattended mode; keep the mandatory criterion unchanged.
 
 """
 
@@ -180,15 +188,14 @@ directly from compiler diagnostics. {no_progress_exit}
 """
 
 # How to leave a sim-debug loop that stopped making progress. These must agree
-# with Rule 3: telling an unattended run to "block with findings" contradicted
-# the same prompt's "never block except on broken infrastructure".
+# with Rule 3: lack of progress alone does not establish infeasibility.
 _NO_PROGRESS_EXIT_HITL = (
     "After 5 no-progress sim-debug iterations on the same failing test, block with findings."
 )
 
 _NO_PROGRESS_EXIT_UNATTENDED = (
     "After 5 no-progress sim-debug iterations on the same failing test, stop "
-    "iterating on it — do not block, since nobody will unblock you. Move to "
+    "iterating on it. Apply Rule 3 if a mandatory criterion cannot be met; otherwise move to "
     "the remaining criteria, then submit the run report with the failing test, "
     "what you ruled out, and your best hypothesis."
 )
@@ -264,6 +271,7 @@ def _build_rules_section(
         _BASELINE_QOR_RULE if _has_baseline_relative_qor_criteria(criteria) else "",
         _RULE_EXIT_WITH_REPORT if run_report else _RULE_EXIT_NO_REPORT,
         blocked_rule,
+        _RULE_INFEASIBLE_CRITERION,
         rules_after_blocked,
         rules_tail,
     ]

@@ -223,7 +223,11 @@ class TicketIO:
     def _load_basis_unlocked(
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
     ) -> TicketBaseline:
+        from .amendment import pending_amendment
         from .ticket_baseline import TicketBaselineError, load_ticket_baseline
+
+        if pending_amendment(self._project_root, slug) is not None:
+            raise TicketBaselineError("amendment publication is pending; execution is not ready")
 
         board_path, status = find_ticket_file(self.tickets_dir, slug)
         if board_path is None or status in {None, "draft"}:
