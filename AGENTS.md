@@ -13,14 +13,12 @@ simulation, synthesis, linting, and ticket-based workflows.
   request to create or update a pull request authorizes its required branch
   push. A request to implement, edit, or commit does not authorize a push or
   pull request.
-- Before creating or editing a pull request, or posting a PR comment or review,
-  scan the exact proposed public text with
-  `python3 .github/scripts/confidential_content_guard.py --repo . pr-text`
-  (`--file` for draft files, `--stdin` for titles; both may be used together).
-  Submit that same scanned text explicitly to GitHub only after the scan passes.
-  Review the draft, links, and
-  attachments for confidential facts that a vocabulary match would miss.
-  Repeat the scan after changing the draft.
+- For every agent-authored PR creation, title/body edit, comment, or review,
+  write the public text to local draft files and submit it through
+  `python3 .github/scripts/confidential_content_guard.py --repo . publish-pr`.
+  The command scans and sends the same text in one operation; see
+  `docs/internals/agents/confidential-content.md` for each action. Review links
+  and attachments for confidential facts the vocabulary cannot match.
 - `main` is protected. Queue or merge a pull request only when the user
   explicitly asks to merge it. Use the Mergify queue workflow for that merge;
   read `docs/internals/agents/merge-queue.md` before queueing, dequeueing,

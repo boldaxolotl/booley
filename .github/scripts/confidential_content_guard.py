@@ -66,7 +66,6 @@ class TermPattern:
 class GuardConfig:
     patterns: tuple[TermPattern, ...]
     matcher: re.Pattern[str]
-    term_lookup: dict[str, TermPattern]
     allowed_authors: tuple[str, ...]
     ignored_paths: tuple[str, ...]
 
@@ -234,7 +233,10 @@ def _compile_term(term: str, key: bytes) -> TermPattern:
 
 
 def _combined_matcher(patterns: tuple[TermPattern, ...]) -> re.Pattern[str]:
-    alternatives = (re.escape(pattern.literal) for pattern in patterns)
+    ordered = sorted(enumerate(patterns), key=lambda item: len(item[1].literal), reverse=True)
+    alternatives = (
+        f"(?P<term_{index}>{pattern.regex.pattern})" for index, pattern in ordered
+    )
     return re.compile("|".join(alternatives), re.IGNORECASE)
 
 
@@ -262,7 +264,6 @@ def _parse_config(raw_config: bytes, repo: Path) -> GuardConfig:
     return GuardConfig(
         patterns,
         _combined_matcher(patterns),
-        {pattern.literal.casefold(): pattern for pattern in patterns},
         tuple(authors),
         tuple(dict.fromkeys(ignored)),
     )
@@ -285,9 +286,8 @@ def _scan_text(text: str, location: str, config: GuardConfig) -> list[Finding]:
     safe_location = _redact_location(location, config)
     found_ids: set[str] = set()
     for match in config.matcher.finditer(text):
-        pattern = config.term_lookup.get(match.group().casefold())
-        if pattern is None or not _valid_boundaries(text, match, pattern):
-            continue
+        assert match.lastgroup is not None
+        pattern = config.patterns[int(match.lastgroup.removeprefix("term_"))]
         if pattern.term_id in found_ids:
             continue
         found_ids.add(pattern.term_id)
@@ -296,21 +296,6 @@ def _scan_text(text: str, location: str, config: GuardConfig) -> list[Finding]:
         if len(findings) >= _MAX_FINDINGS:
             break
     return findings
-
-
-def _valid_boundaries(text: str, match: re.Match[str], pattern: TermPattern) -> bool:
-    left_ok = match.start() == 0 or not _ascii_alphanumeric(text[match.start() - 1])
-    if not left_ok:
-        return False
-    if pattern.literal.endswith("__"):
-        return match.end() < len(text) and (
-            text[match.end()].isalnum() or text[match.end()] == "_"
-        )
-    return match.end() == len(text) or not _ascii_alphanumeric(text[match.end()])
-
-
-def _ascii_alphanumeric(character: str) -> bool:
-    return character.isascii() and character.isalnum()
 
 
 def _gunzip_bounded(data: bytes) -> bytes:
@@ -770,7 +755,7 @@ def pr_text_main(repo: Path | str, files: list[Path], *, read_stdin: bool = Fals
     try:
         if not files and not read_stdin:
             raise GuardError("at least one proposed PR text input is required")
-        config = load_config(root)
+        config = _parse_config(_local_config_bytes(root), root)
         findings: list[Finding] = []
         for index, path in enumerate(files, start=1):
             with path.open("rb") as stream:
@@ -786,6 +771,76 @@ def pr_text_main(repo: Path | str, files: list[Path], *, read_stdin: bool = Fals
         _print_findings(findings, config, sys.stderr)
         return 1
     print("Confidential-content proposed PR text guard: clean.")
+    return 0
+
+
+def _publish_pr_command(args: argparse.Namespace, title: str | None, body: str | None) -> list[str]:
+    command = ["gh", "pr", args.pr_action]
+    if args.pr_action == "create":
+        command.extend(("--base", args.base, "--head", args.head, "--title", title))
+        if args.draft:
+            command.append("--draft")
+    else:
+        command.append(args.pr)
+        if title is not None:
+            command.extend(("--title", title))
+        if args.pr_action == "review":
+            command.append(f"--{args.verdict}")
+        if args.pr_action == "comment" and args.edit_last:
+            command.append("--edit-last")
+    if body is not None:
+        command.extend(("--body-file", "-"))
+    if args.repo_name:
+        command.extend(("--repo", args.repo_name))
+    return command
+
+
+def publish_pr_main(repo: Path | str, args: argparse.Namespace) -> int:
+    """Scan private TOML, then send the same text in one PR write operation."""
+    root = Path(repo).resolve()
+    try:
+        title_file = getattr(args, "title_file", None)
+        if args.pr_action == "edit" and title_file is None and args.body_file is None:
+            raise GuardError("a PR edit requires a title or body draft")
+        config = _parse_config(_local_config_bytes(root), root)
+        title = None
+        if title_file is not None:
+            with title_file.open("rb") as stream:
+                title = _read_pr_text(stream).rstrip("\r\n")
+            if not title or "\n" in title or "\r" in title or "\x00" in title:
+                raise GuardError("the proposed PR title is invalid")
+        body = None
+        if args.body_file is not None:
+            with args.body_file.open("rb") as stream:
+                body = _read_pr_text(stream)
+        findings: list[Finding] = []
+        if title is not None:
+            _add_limited(findings, _scan_text(title, "proposed PR title", config))
+        if body is not None:
+            _add_limited(findings, _scan_text(body, "proposed PR body", config))
+        if args.pr_action == "create":
+            _add_limited(findings, _scan_text(args.head, "proposed PR head", config))
+        if findings:
+            _print_findings(findings, config, sys.stderr)
+            return 1
+        env = os.environ.copy()
+        env["GH_PROMPT_DISABLED"] = "1"
+        env.pop("GH_REPO", None)
+        result = subprocess.run(
+            _publish_pr_command(args, title, body),
+            input=body.encode("utf-8") if body is not None else b"",
+            cwd=root,
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise GuardError("the GitHub pull-request write failed")
+    except (OSError, UnicodeError, subprocess.SubprocessError, GuardError) as exc:
+        error = exc if isinstance(exc, GuardError) else GuardError("the PR write could not run")
+        return _guard_failure(error, sys.stderr)
+    print("GitHub pull-request write completed after confidential-content scan.")
     return 0
 
 
@@ -836,6 +891,36 @@ def audit_main(repo: Path | str, revisions: list[str], *, include_worktree: bool
     return 0
 
 
+def _add_pr_publish_parser(subparsers: argparse._SubParsersAction) -> None:
+    publish_parser = subparsers.add_parser(
+        "publish-pr", help="scan and submit PR text in one operation"
+    )
+    publish_actions = publish_parser.add_subparsers(dest="pr_action", required=True)
+    for action in ("create", "edit", "comment", "review"):
+        action_parser = publish_actions.add_parser(action)
+        action_parser.add_argument("--repo", dest="repo_name")
+        if action == "create":
+            action_parser.add_argument("--title-file", required=True, type=Path)
+            action_parser.add_argument("--body-file", required=True, type=Path)
+            action_parser.add_argument("--base", required=True)
+            action_parser.add_argument("--head", required=True)
+            action_parser.add_argument("--draft", action="store_true")
+        else:
+            action_parser.add_argument("--pr", required=True)
+            if action == "edit":
+                action_parser.add_argument("--title-file", type=Path)
+                action_parser.add_argument("--body-file", type=Path)
+            else:
+                action_parser.add_argument("--body-file", required=True, type=Path)
+                if action == "review":
+                    action_parser.add_argument(
+                        "--verdict", required=True,
+                        choices=("approve", "comment", "request-changes"),
+                    )
+                else:
+                    action_parser.add_argument("--edit-last", action="store_true")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="repository to inspect")
@@ -858,6 +943,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     pr_text_parser.add_argument("--file", action="append", default=[], type=Path)
     pr_text_parser.add_argument("--stdin", action="store_true")
+    _add_pr_publish_parser(subparsers)
     subparsers.add_parser(
         "sync-ci-secret", help="publish local confidential TOML to the Actions secret"
     )
@@ -867,6 +953,14 @@ def _parser() -> argparse.ArgumentParser:
         "--worktree", action="store_true", help="also inspect tracked and untracked checkout files"
     )
     return parser
+
+
+def _pr_command_main(parsed: argparse.Namespace) -> int:
+    if parsed.command == "pull-request":
+        return pull_request_main(parsed.repo, parsed.event)
+    if parsed.command == "pr-text":
+        return pr_text_main(parsed.repo, parsed.file, read_stdin=parsed.stdin)
+    return publish_pr_main(parsed.repo, parsed)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -879,10 +973,8 @@ def main(argv: list[str] | None = None) -> int:
             remote_name=parsed.remote_name,
             remote_location=parsed.remote_location,
         )
-    if parsed.command == "pull-request":
-        return pull_request_main(parsed.repo, parsed.event)
-    if parsed.command == "pr-text":
-        return pr_text_main(parsed.repo, parsed.file, read_stdin=parsed.stdin)
+    if parsed.command in {"pull-request", "pr-text", "publish-pr"}:
+        return _pr_command_main(parsed)
     if parsed.command == "sync-ci-secret":
         return sync_ci_secret_main(parsed.repo)
     revisions = parsed.rev or ["HEAD"]

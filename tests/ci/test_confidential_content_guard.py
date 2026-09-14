@@ -176,10 +176,13 @@ def _scan_pr_text(
     files: tuple[Path, ...] = (),
     stdin: str | None = None,
     config: str | None = None,
+    env_config: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     if config is not None:
-        env["BOOLEY_LEAK_GUARD_CONFIG_B64"] = config
+        (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(config))
+    if env_config is not None:
+        env["BOOLEY_LEAK_GUARD_CONFIG_B64"] = env_config
     command = [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text"]
     for path in files:
         command.extend(("--file", str(path)))
@@ -205,6 +208,40 @@ def _sync_ci_secret(repo: Path, env: dict[str, str]) -> subprocess.CompletedProc
         text=True,
         timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
+
+
+def _publish_pr(
+    repo: Path, args: list[str], env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(repo), "publish-pr", *args],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def _recording_gh(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        '#!/bin/sh\ntest -z "${GH_REPO+x}" || exit 2\n'
+        'printf "%s\\n" "$@" > "$CAPTURE_ARGS"\ncat > "$CAPTURE_STDIN"\n',
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+    captured_args = tmp_path / "gh-args"
+    captured_stdin = tmp_path / "gh-stdin"
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GH_REPO": "somewhere/else",
+        "CAPTURE_ARGS": str(captured_args),
+        "CAPTURE_STDIN": str(captured_stdin),
+    }
+    return env, captured_args, captured_stdin
 
 
 def test_clean_commit_passes(tmp_path: Path) -> None:
@@ -672,7 +709,7 @@ def test_proposed_pr_text_prefers_local_toml_over_ci_env(tmp_path: Path) -> None
         f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["other"]\n'.encode()
     ).decode()
 
-    result = _scan_pr_text(repo, stdin=SENTINEL, config=stale_config)
+    result = _scan_pr_text(repo, stdin=SENTINEL, env_config=stale_config)
 
     assert result.returncode == 1
     assert "confidential term" in result.stderr
@@ -681,13 +718,122 @@ def test_proposed_pr_text_prefers_local_toml_over_ci_env(tmp_path: Path) -> None
 def test_proposed_pr_text_fails_closed_for_missing_input_or_config(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
 
-    missing_input = _scan_pr_text(repo, config=_encoded_config())
     missing_config = _scan_pr_text(repo, stdin="public title")
+    missing_input = _scan_pr_text(repo, config=_encoded_config())
 
     assert missing_input.returncode == 1
     assert "could not complete" in missing_input.stderr
     assert missing_config.returncode == 1
     assert "could not complete" in missing_config.stderr
+
+
+def test_proposed_pr_text_requires_local_toml_even_with_ci_env(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+
+    result = _scan_pr_text(repo, stdin="public title", env_config=_encoded_config())
+
+    assert result.returncode == 1
+    assert "could not complete" in result.stderr
+
+
+def test_overlapping_banned_terms_are_detected(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    config = base64.b64encode(
+        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n'
+        '[private]\nwords = ["Acme", "AcmeCloud", "abc", "abc-def"]\n'.encode()
+    ).decode()
+
+    for text in ("AcmeCloud", "abc-defg"):
+        result = _scan_pr_text(repo, stdin=text, config=config)
+        assert result.returncode == 1
+        assert "confidential term" in result.stderr
+        assert text not in result.stderr
+
+
+def test_publish_pr_create_scans_then_sends_exact_drafts(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    title = tmp_path / "title.txt"
+    body = tmp_path / "body.md"
+    title.write_text("Public title\n", encoding="utf-8")
+    body.write_text("Public description\n", encoding="utf-8")
+    env, captured_args, captured_stdin = _recording_gh(tmp_path)
+
+    result = _publish_pr(
+        repo,
+        [
+            "create", "--base", "main", "--head", "topic", "--title-file", str(title),
+            "--body-file", str(body), "--repo", "owner/repo",
+        ],
+        env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert captured_args.read_text(encoding="utf-8").splitlines() == [
+        "pr", "create", "--base", "main", "--head", "topic", "--title", "Public title",
+        "--body-file", "-", "--repo", "owner/repo",
+    ]
+    assert captured_stdin.read_text(encoding="utf-8") == body.read_text(encoding="utf-8")
+
+
+def test_publish_pr_blocks_confidential_drafts_before_gh(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    title = tmp_path / "title.txt"
+    body = tmp_path / "body.md"
+    title.write_text("Public title", encoding="utf-8")
+    body.write_text(f"Sensitive context: {SENTINEL}", encoding="utf-8")
+    env, captured_args, _captured_stdin = _recording_gh(tmp_path)
+
+    result = _publish_pr(
+        repo,
+        ["create", "--base", "main", "--head", "topic", "--title-file", str(title),
+         "--body-file", str(body)],
+        env,
+    )
+
+    assert result.returncode == 1
+    assert "confidential term" in result.stderr
+    assert SENTINEL not in result.stderr
+    assert not captured_args.exists()
+
+
+def test_publish_pr_requires_local_toml_even_with_ci_env(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    body = tmp_path / "body.md"
+    body.write_text("Public comment", encoding="utf-8")
+    env, captured_args, _captured_stdin = _recording_gh(tmp_path)
+    env["BOOLEY_LEAK_GUARD_CONFIG_B64"] = _encoded_config()
+
+    result = _publish_pr(repo, ["comment", "--pr", "123", "--body-file", str(body)], env)
+
+    assert result.returncode == 1
+    assert "could not complete" in result.stderr
+    assert not captured_args.exists()
+
+
+def test_publish_pr_supports_edit_comment_and_review(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(_encoded_config()))
+    title = tmp_path / "title.txt"
+    body = tmp_path / "body.md"
+    title.write_text("Updated title", encoding="utf-8")
+    body.write_text("Public response", encoding="utf-8")
+    env, captured_args, captured_stdin = _recording_gh(tmp_path)
+    cases = (
+        (["edit", "--pr", "123", "--title-file", str(title)],
+         ["pr", "edit", "123", "--title", "Updated title"], ""),
+        (["comment", "--pr", "123", "--body-file", str(body), "--edit-last"],
+         ["pr", "comment", "123", "--edit-last", "--body-file", "-"], "Public response"),
+        (["review", "--pr", "123", "--verdict", "request-changes", "--body-file", str(body)],
+         ["pr", "review", "123", "--request-changes", "--body-file", "-"], "Public response"),
+    )
+
+    for arguments, expected_args, expected_stdin in cases:
+        result = _publish_pr(repo, arguments, env)
+        assert result.returncode == 0, result.stderr
+        assert captured_args.read_text(encoding="utf-8").splitlines() == expected_args
+        assert captured_stdin.read_text(encoding="utf-8") == expected_stdin
 
 
 def test_proposed_pr_text_fails_closed_when_draft_cannot_be_read(tmp_path: Path) -> None:
