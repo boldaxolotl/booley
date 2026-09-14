@@ -9,6 +9,19 @@ Use this skill only when invoked. The Human Maintainer owns Triage Dispositions 
 run supersessions. Use [`triage.py`](../triage.py) for all record mechanics. Read
 [Format](../doc/FORMAT.md) before changing records.
 
+Before asking the maintainer for any decision, give them a decision brief grounded in
+the frozen Scenario and sealed run records. Identify the affected run, Configured
+Scenario, and Check IDs. For each affected Check, explain the product claim it tests,
+its stimulus, expected behavior, and required observer/evidence; then give the recorded
+status, actual observation, and the exact expected-versus-observed difference or reason
+it was blocked or unavailable. Include relevant evidence paths and decisive excerpts or
+values, correction history, causal links, and material gaps or uncertainty. For an
+Observation without a Check, explain its context and linked Check Results. Separate
+recorded facts from suspected causes. State the available choices, their effect on
+Scenario Run Outcome or Qualification where relevant, and the specific judgment needed.
+Inspect cited evidence when the status projection lacks this context; identify anything
+the sealed evidence cannot establish.
+
 ## Admit runs
 
 Require an exact artifact root and at least one sealed Scenario Run root. Treat run
@@ -48,9 +61,9 @@ unavailable required observation as incomplete. Do not substitute CLI evidence.
 
 ## Review Triage Cases
 
-Run `python qa/triage.py status <triage-root>`. Present one pending Triage Case with
-its suspected root, grouped consequences, correction history, statuses, causal links,
-evidence paths, and separate similarity hints.
+Run `python qa/triage.py status <triage-root>`. Prepare the decision brief for one
+pending Triage Case, showing its suspected root, grouped consequences, and separate
+similarity hints.
 
 Automatic grouping requires an exact result-level cause link. Similar text, timing,
 tools, and resources are hints. Ask the maintainer to confirm grouping. Use `merge`,
