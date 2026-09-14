@@ -156,6 +156,20 @@ def test_publish_validates_seal_and_refuses_rewrite(tmp_path, monkeypatch):
         results.publish(run.root, root)
 
 
+def test_publish_cleans_temporary_file_after_link_failure(tmp_path, monkeypatch):
+    run = sealed_run(tmp_path / "sealed")
+    monkeypatch.setattr(results, "validate_run", lambda _path: run)
+
+    def fail_link(_source, _destination):
+        raise OSError("publication failed")
+
+    monkeypatch.setattr(results.os, "link", fail_link)
+    root = tmp_path / "results"
+    with pytest.raises(OSError, match="publication failed"):
+        results.publish(run.root, root)
+    assert not list((root / "sample").iterdir())
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [

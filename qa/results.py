@@ -152,17 +152,19 @@ def publish(run_root: Path, root: Path) -> Path:
             raise ValueError(f"{destination}: run ID already has different results")
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=destination.parent, prefix=".qa-result-", delete=False
-    ) as stream:
-        temporary = Path(stream.name)
-        try:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=destination.parent, prefix=".qa-result-", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
             json.dump(result, stream, indent=2, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-            os.link(temporary, destination)
-        finally:
+        os.link(temporary, destination)
+    finally:
+        if temporary is not None:
             temporary.unlink(missing_ok=True)
     return destination
 
