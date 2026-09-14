@@ -418,6 +418,7 @@ class TestStateVolumeCheck:
         from booley.runtime import interactive_docker as idk
 
         monkeypatch.setattr(idk, "state_volumes", lambda: vols)
+        monkeypatch.setattr(idk, "issued_image_tags", lambda: [])
         rec = _Rec()
         _record_report(
             inspection.inspect_retained_resources(self._project(tmp_path).project_root, "docker"),

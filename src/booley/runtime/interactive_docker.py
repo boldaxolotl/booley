@@ -132,8 +132,6 @@ def container_running(name: str) -> bool:
 def image_exists(name: str, *, executable: str = "docker", timeout: int = 15) -> bool:
     """Observe local image availability without pulling or starting an image."""
     try:
-        if executable == "docker":
-            return _run_docker(["image", "inspect", name], timeout=timeout).returncode == 0
         return (
             _run_docker(
                 ["image", "inspect", name], timeout=timeout, executable=executable

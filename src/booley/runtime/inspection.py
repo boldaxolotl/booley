@@ -20,6 +20,7 @@ from pathlib import Path
 
 import booley
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.core.boundary import require_dict
 from booley.eda.config import EdaConfig
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
@@ -129,9 +130,9 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         )
         return
     try:
-        spec = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(spec, dict):
-            raise ValueError("devcontainer.json must contain an object")
+        spec = require_dict(
+            json.loads(path.read_text(encoding="utf-8")), field="devcontainer.json"
+        )
     except (OSError, ValueError) as exc:
         report.fail(f"{path} does not parse: {exc}", "re-run booley init")
         return
@@ -297,9 +298,9 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
 
     path = devcontainer_path(request.project_root)
     try:
-        spec = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(spec, dict):
-            raise ValueError("devcontainer.json must contain an object")
+        spec = require_dict(
+            json.loads(path.read_text(encoding="utf-8")), field="devcontainer.json"
+        )
         issuance = runtime_spec.validate(request.project_root, spec, path)
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:
         report.fail(
