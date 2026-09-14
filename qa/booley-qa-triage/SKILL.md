@@ -65,10 +65,10 @@ unavailable required observation as incomplete. Do not substitute CLI evidence.
 Run `python qa/triage.py status <triage-root>` and review each pending Triage Case
 against the frozen Scenario and sealed evidence. Assess confidence for grouping and
 disposition separately. Confidence is high only when the applicable Check definition
-or Observation context, result and correction chain, evidence integrity, causal links,
-and all required disposition fields (including owner and qualification scope where
-applicable) support one decision with no material competing interpretation. Frequency,
-similarity hints, and low apparent impact do not establish confidence.
+or Observation context, the result and correction chain, evidence integrity, any causal
+links, and all required disposition fields (including owner and qualification scope
+where applicable) support one decision with no material competing interpretation.
+Frequency, similarity hints, and low apparent impact do not establish confidence.
 
 Automatic grouping requires an exact result-level cause link. Similar text, timing,
 tools, and resources are hints. Confirm exact-linked grouping yourself when confident;
