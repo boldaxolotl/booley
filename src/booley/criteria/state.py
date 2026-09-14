@@ -564,7 +564,9 @@ class DevelopmentState:
             entry.ever_failed = True
         entry.updated_at = now
         if detail:
-            entry.detail = detail
+            # One Flow result can fan out to several atomic Ticket criteria.
+            # Threshold evaluation writes criterion-specific checks into detail.
+            entry.detail = dict(detail)
 
         # Threshold evaluation for criteria with params (synthesis_ok, fpga_impl_ok, etc.)
         if entry.params and detail:

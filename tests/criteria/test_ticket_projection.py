@@ -46,6 +46,16 @@ def test_one_synthesis_run_updates_independent_atomic_thresholds() -> None:
     assert len(changes) == 2
     assert {change.met for change in changes} == {True, False}
     assert not state.all_mandatory_met()
+    synth_entries = {
+        key: entry for key, entry in state.criteria.items() if key.startswith("synthesis_ok_")
+    }
+    for entry in synth_entries.values():
+        parameter = next(
+            param for param in entry.params if param in {"area_um2_max", "fmax_mhz_min"}
+        )
+        checks = {check["param"]: check for check in entry.detail["checks"]}
+        assert checks[parameter]["pass"] is (parameter == "area_um2_max")
+    assert len({id(entry.detail) for entry in synth_entries.values()}) == 2
 
 
 def test_named_sim_transition_is_bound_to_its_test() -> None:
