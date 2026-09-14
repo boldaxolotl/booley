@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from booley.core import resources
 from booley.dev_support import reference_docs
 from booley.runtime import paths
 
@@ -23,12 +24,29 @@ class TestPackageDataDir:
     def test_fallback_when_refs_missing(self, tmp_path):
         shadow = tmp_path / "booley" / "data"
         shadow.mkdir(parents=True)
-        real = Path(paths.__file__).resolve().parent / "data"
-        if (real / "refs").is_dir():
-            with patch("booley.runtime.paths.files") as mock_files:
-                mock_files.return_value.joinpath.return_value = shadow
-                result = paths.package_data_dir()
-                assert (result / "refs").is_dir() or result == shadow
+        real = Path(resources.__file__).resolve().parent.parent / "data"
+        assert (real / "refs").is_dir()
+        with patch("booley.core.resources.files") as mock_files:
+            mock_files.return_value.joinpath.return_value = shadow
+            assert resources.package_data_dir() == real
+            assert paths.package_data_dir() == real
+
+    def test_prefers_installed_package_resources(self, tmp_path, monkeypatch):
+        installed = tmp_path / "installed" / "booley"
+        (installed / "data" / "refs").mkdir(parents=True)
+        monkeypatch.setattr(resources, "files", lambda _name: installed)
+        assert resources.package_data_dir() == installed / "data"
+
+    def test_missing_fallback_retains_resource_location(self, tmp_path, monkeypatch):
+        shadow = tmp_path / "shadow"
+        monkeypatch.setattr(resources, "files", lambda _name: shadow)
+        monkeypatch.setattr(
+            resources, "__file__", str(tmp_path / "missing" / "core" / "resources.py")
+        )
+        assert resources.package_data_dir() == shadow / "data"
+
+    def test_runtime_import_is_the_shared_helper(self):
+        assert paths.package_data_dir is resources.package_data_dir
 
 
 class TestRefsDir:

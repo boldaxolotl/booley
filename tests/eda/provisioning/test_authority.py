@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.core import private_store
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import Inspection
-from booley.runtime import private_store
 
 
 @pytest.fixture

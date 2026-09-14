@@ -255,12 +255,9 @@ def audit_developer_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
     """Audit project EDA configuration using the authoritative parser."""
-    from booley.eda.config import (
-        EdaConfigError,
-        parse_eda_config,
-        retired_config_error,
-        validate_host_provisioning_platform,
-    )
+    from booley.config.eda import EdaConfigError, parse_eda_config
+    from booley.config.flow_enablement import retired_config_error
+    from booley.eda.provisioning.configuration import validate_host_provisioning_platform
 
     migration = retired_config_error(data)
     if migration:

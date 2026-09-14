@@ -8,8 +8,9 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.eda.config import PROVISIONING_HOST, EdaConfig, EdaConfigError, load_eda_config
+from booley.config.eda import PROVISIONING_HOST, EdaConfig, EdaConfigError
 from booley.eda.provisioning import authority
+from booley.eda.provisioning.configuration import load_eda_config
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
     ensure_relay_image,
