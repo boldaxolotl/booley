@@ -695,9 +695,7 @@ def test_proposed_pr_text_accepts_clean_title_and_body(tmp_path: Path) -> None:
     draft = tmp_path / "body.md"
     draft.write_text("public description\n", encoding="utf-8")
 
-    result = _scan_pr_text(
-        repo, files=(draft,), stdin="public title", config=_encoded_config()
-    )
+    result = _scan_pr_text(repo, files=(draft,), stdin="public title", config=_encoded_config())
 
     assert result.returncode == 0, result.stderr
 
@@ -762,16 +760,35 @@ def test_publish_pr_create_scans_then_sends_exact_drafts(tmp_path: Path) -> None
     result = _publish_pr(
         repo,
         [
-            "create", "--base", "main", "--head", "topic", "--title-file", str(title),
-            "--body-file", str(body), "--repo", "owner/repo",
+            "create",
+            "--base",
+            "main",
+            "--head",
+            "topic",
+            "--title-file",
+            str(title),
+            "--body-file",
+            str(body),
+            "--repo",
+            "owner/repo",
         ],
         env,
     )
 
     assert result.returncode == 0, result.stderr
     assert captured_args.read_text(encoding="utf-8").splitlines() == [
-        "pr", "create", "--base", "main", "--head", "topic", "--title", "Public title",
-        "--body-file", "-", "--repo", "owner/repo",
+        "pr",
+        "create",
+        "--base",
+        "main",
+        "--head",
+        "topic",
+        "--title",
+        "Public title",
+        "--body-file",
+        "-",
+        "--repo",
+        "owner/repo",
     ]
     assert captured_stdin.read_text(encoding="utf-8") == body.read_text(encoding="utf-8")
 
@@ -787,8 +804,17 @@ def test_publish_pr_blocks_confidential_drafts_before_gh(tmp_path: Path) -> None
 
     result = _publish_pr(
         repo,
-        ["create", "--base", "main", "--head", "topic", "--title-file", str(title),
-         "--body-file", str(body)],
+        [
+            "create",
+            "--base",
+            "main",
+            "--head",
+            "topic",
+            "--title-file",
+            str(title),
+            "--body-file",
+            str(body),
+        ],
         env,
     )
 
@@ -821,12 +847,21 @@ def test_publish_pr_supports_edit_comment_and_review(tmp_path: Path) -> None:
     body.write_text("Public response", encoding="utf-8")
     env, captured_args, captured_stdin = _recording_gh(tmp_path)
     cases = (
-        (["edit", "--pr", "123", "--title-file", str(title)],
-         ["pr", "edit", "123", "--title", "Updated title"], ""),
-        (["comment", "--pr", "123", "--body-file", str(body), "--edit-last"],
-         ["pr", "comment", "123", "--edit-last", "--body-file", "-"], "Public response"),
-        (["review", "--pr", "123", "--verdict", "request-changes", "--body-file", str(body)],
-         ["pr", "review", "123", "--request-changes", "--body-file", "-"], "Public response"),
+        (
+            ["edit", "--pr", "123", "--title-file", str(title)],
+            ["pr", "edit", "123", "--title", "Updated title"],
+            "",
+        ),
+        (
+            ["comment", "--pr", "123", "--body-file", str(body), "--edit-last"],
+            ["pr", "comment", "123", "--edit-last", "--body-file", "-"],
+            "Public response",
+        ),
+        (
+            ["review", "--pr", "123", "--verdict", "request-changes", "--body-file", str(body)],
+            ["pr", "review", "123", "--request-changes", "--body-file", "-"],
+            "Public response",
+        ),
     )
 
     for arguments, expected_args, expected_stdin in cases:

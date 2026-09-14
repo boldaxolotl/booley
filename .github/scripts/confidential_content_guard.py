@@ -234,9 +234,7 @@ def _compile_term(term: str, key: bytes) -> TermPattern:
 
 def _combined_matcher(patterns: tuple[TermPattern, ...]) -> re.Pattern[str]:
     ordered = sorted(enumerate(patterns), key=lambda item: len(item[1].literal), reverse=True)
-    alternatives = (
-        f"(?P<term_{index}>{pattern.regex.pattern})" for index, pattern in ordered
-    )
+    alternatives = (f"(?P<term_{index}>{pattern.regex.pattern})" for index, pattern in ordered)
     return re.compile("|".join(alternatives), re.IGNORECASE)
 
 
@@ -765,7 +763,9 @@ def pr_text_main(repo: Path | str, files: list[Path], *, read_stdin: bool = Fals
             text = _read_pr_text(sys.stdin.buffer)
             _add_limited(findings, _scan_text(text, "proposed PR stdin text", config))
     except (GuardError, OSError, UnicodeError) as exc:
-        error = exc if isinstance(exc, GuardError) else GuardError("proposed PR text cannot be read")
+        error = (
+            exc if isinstance(exc, GuardError) else GuardError("proposed PR text cannot be read")
+        )
         return _guard_failure(error, sys.stderr)
     if findings:
         _print_findings(findings, config, sys.stderr)
@@ -774,7 +774,9 @@ def pr_text_main(repo: Path | str, files: list[Path], *, read_stdin: bool = Fals
     return 0
 
 
-def _publish_pr_command(args: argparse.Namespace, title: str | None, body: str | None) -> list[str]:
+def _publish_pr_command(
+    args: argparse.Namespace, title: str | None, body: str | None
+) -> list[str]:
     command = ["gh", "pr", args.pr_action]
     if args.pr_action == "create":
         command.extend(("--base", args.base, "--head", args.head, "--title", title))
@@ -914,7 +916,8 @@ def _add_pr_publish_parser(subparsers: argparse._SubParsersAction) -> None:
                 action_parser.add_argument("--body-file", required=True, type=Path)
                 if action == "review":
                     action_parser.add_argument(
-                        "--verdict", required=True,
+                        "--verdict",
+                        required=True,
                         choices=("approve", "comment", "request-changes"),
                     )
                 else:
