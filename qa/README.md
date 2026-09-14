@@ -93,6 +93,7 @@ Scenario Runs.
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
 | [`booley-qa-triage/`](booley-qa-triage/) | Explicitly invoked skill for Human Maintainer triage and Qualification |
 | [`doc/`](doc/) | Scenario Run execution protocol and record contract |
+| [`results/`](results/README.md) | Small Git-tracked snapshots of sealed runs for observed Check status and run-to-run trends |
 
 The current suite maps 69 product capabilities and 16 distinct EDA integration
 references to 1,658 checks. Those counts show that the reviewed requirements are
