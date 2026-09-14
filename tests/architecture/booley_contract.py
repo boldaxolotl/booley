@@ -91,6 +91,18 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D23",
+        (prefix("booley.targets"),),
+        (prefix("booley.flows"), prefix("booley.runtime")),
+        "Target inspection uses shared build identity without Flow execution or Runtime",
+    ),
+    DirectionRule(
+        "D24",
+        (prefix("booley.fusesoc"),),
+        (prefix("booley.runtime"),),
+        "FuseSoC provenance consumes pure Scope matching without Runtime or Git execution",
+    ),
+    DirectionRule(
         "D22",
         (prefix("booley.ticket_board"),),
         (prefix("booley.review"),),
@@ -312,17 +324,16 @@ APPROVED_LEGACY_SCCS = (
             "eda",
             "feedback",
             "flows",
-            "fusesoc",
             "harness",
             "mcp",
             "projects",
             "review",
             "runtime",
             "specialists",
-            "targets",
             "ticket_board",
         )
     ),
+    frozenset(("booley.fusesoc", "booley.targets")),
 )
 
 BOOLEY_SOURCE_DEPENDENCY_CONTRACT = ArchitectureContract(

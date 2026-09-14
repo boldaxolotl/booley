@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.core.boundary import BoundaryError, require_bool
+from booley.core.build_paths import work_root_for
 from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.evidence.timing import (
     ClockTiming,
@@ -1189,7 +1190,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     def _synth_work_root(self, target: str) -> Path:
         """Return the shared mutable work root for one synthesis Target."""
-        return edam.work_root_for(self.args.work_dir, self.name, target)
+        return work_root_for(self.args.work_dir, self.name, target)
 
     def _synth_build_dir(self, target: str) -> Path:
         """The make-driven synth build dir for *target* (under its work root).
@@ -1511,7 +1512,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """
         from booley.flows.run_log import write_run_log
 
-        log_dir = edam.work_root_for(project_root, self.name, target, variant="baseline")
+        log_dir = work_root_for(project_root, self.name, target, variant="baseline")
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = write_run_log(log_dir, output)

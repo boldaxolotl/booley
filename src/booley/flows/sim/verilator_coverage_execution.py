@@ -10,7 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import cast
 
-from booley.flows import edam as edam_layer
+from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
@@ -95,7 +95,7 @@ class VerilatorCoverageExecution:
 
     def _prepare_build(self, request: SimulationBuildRequest) -> PreparedSimulationBuild | str:
         variant = request.variant.name
-        build_root = edam_layer.work_root_for(
+        build_root = work_root_for(
             self._handle.project_root,
             "sim",
             self._handle.selector,

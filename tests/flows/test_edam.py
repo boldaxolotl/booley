@@ -20,6 +20,7 @@ import pytest
 # Ensure src/ is importable (fallback when not installed via pip install -e .)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
+from booley.core.build_paths import work_root_for
 from booley.flows.edam import (
     EdamSecurityError,
     WorkRootLeaseError,
@@ -29,7 +30,6 @@ from booley.flows.edam import (
     make_command,
     relpath_for_make,
     try_work_root_lease,
-    work_root_for,
     work_root_lease,
 )
 from tests.conftest import symlink_or_skip

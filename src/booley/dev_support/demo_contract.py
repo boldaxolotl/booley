@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.core.scope_matching import scope_matches_file
 from booley.dev_support.demo_contract_codec import (
     DemoContract,
     DemoContractError,
@@ -20,7 +21,6 @@ from booley.dev_support.demo_contract_codec import (
 )
 from booley.flows.execution import flow_enabled
 from booley.fusesoc import fusesoc_registry
-from booley.runtime.git import scope_matches_file
 from booley.runtime.project_prepare import prepare_project
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
