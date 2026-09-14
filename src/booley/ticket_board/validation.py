@@ -295,6 +295,11 @@ def _validate_structured_criteria_grammar(criteria: dict[str, Any], errors: list
 
 def validate_criteria_section(criteria: Any) -> list[str]:
     """Validate a ticket's ``criteria:`` section. Returns error strings."""
+    return _validate_criteria_section(criteria, allow_zero_mandatory=False)
+
+
+def _validate_criteria_section(criteria: Any, *, allow_zero_mandatory: bool) -> list[str]:
+    """Apply fresh-authoring policy unless an immutable amendment proves the exception."""
     errors: list[str] = []
     if not isinstance(criteria, dict):
         errors.append("criteria must be a dict with 'mandatory' and/or 'optional' keys")
@@ -318,7 +323,9 @@ def validate_criteria_section(criteria: Any) -> list[str]:
             _validate_criterion_value(section_name, key, value, errors)
 
     mandatory = criteria.get("mandatory")
-    if not mandatory or (isinstance(mandatory, dict) and len(mandatory) == 0):
+    if not allow_zero_mandatory and (
+        not mandatory or (isinstance(mandatory, dict) and len(mandatory) == 0)
+    ):
         errors.append("criteria.mandatory must contain at least one criterion")
 
     if not errors:
@@ -546,6 +553,7 @@ def _validate_criteria(
     ticket_type: str,
     check_tb_files: bool,
     project_root: str | Path | None,
+    approved_optional: set[str],
 ) -> tuple[list[str], list[str]]:
     """Validate criteria section. Returns (errors, warnings)."""
     criteria = fields.get("criteria")
@@ -554,7 +562,9 @@ def _validate_criteria(
 
     errors: list[str] = []
     warnings: list[str] = []
-    criteria_errors = validate_criteria_section(criteria)
+    criteria_errors = _validate_criteria_section(
+        criteria, allow_zero_mandatory=bool(approved_optional)
+    )
     errors.extend(criteria_errors)
 
     if not isinstance(criteria, dict):
@@ -1049,6 +1059,7 @@ def _validate_sim_shape_for_rtl_tb_scope(
     project_root: str | Path | None,
     *,
     check_files: bool,
+    approved_optional: set[str] | None = None,
 ) -> list[str]:
     """Require simulation criteria and TB availability for RTL/TB edits."""
     if not project_root or not scope:
@@ -1065,7 +1076,12 @@ def _validate_sim_shape_for_rtl_tb_scope(
 
     errors: list[str] = []
     criteria = fields.get("criteria")
-    if not _has_mandatory_sim_criterion(criteria, str(fields.get("type", ""))):
+    approved_sim = any(
+        name.startswith(("sim_", "cycle_count_")) for name in (approved_optional or set())
+    )
+    if not approved_sim and not _has_mandatory_sim_criterion(
+        criteria, str(fields.get("type", ""))
+    ):
         errors.append("RTL/TB-editing tickets must include at least one mandatory sim_* criterion")
 
     tb_allowed_by_scope = touches_tb
@@ -1209,6 +1225,37 @@ def _validate_acceptance_basis_field(fields: dict[str, Any]) -> list[str]:
     return []
 
 
+def _approved_optional_conversions(
+    fields: dict[str, Any], project_root: str | Path | None
+) -> set[str]:
+    """Read the committed amendment provenance for optional-policy exceptions."""
+    marker = fields.get("acceptance_amendment")
+    raw_basis = fields.get("acceptance_basis")
+    if not isinstance(marker, dict) or raw_basis is None or project_root is None:
+        return set()
+    slug = marker.get("slug")
+    operation = marker.get("operation_id")
+    if not isinstance(slug, str) or not isinstance(operation, str):
+        return set()
+    try:
+        from .acceptance_basis import AcceptanceBasis, load_basis_record
+
+        basis = AcceptanceBasis.from_mapping(raw_basis)
+        record = load_basis_record(project_root, slug, basis)
+    except (OSError, ValueError):
+        return set()
+    amendment = record.get("amendment")
+    recorded = record.get("ticket", {}).get("frontmatter", {})
+    if (
+        not isinstance(amendment, dict)
+        or amendment.get("operation_id") != operation
+        or recorded.get("criteria") != fields.get("criteria")
+        or recorded.get("scope") != fields.get("scope")
+    ):
+        return set()
+    return set(amendment.get("optional_conversions", []))
+
+
 def validate_ticket_fields(
     fields: dict[str, Any],
     body: str,
@@ -1229,6 +1276,7 @@ def validate_ticket_fields(
     errors.extend(_validate_on_success(fields.get("on_success")))
     errors.extend(_validate_target_plan(fields.get("target_plan"), fields.get("on_success")))
     errors.extend(_validate_acceptance_basis_field(fields))
+    approved_optional = _approved_optional_conversions(fields, project_root)
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)
     errors.extend(scope_errors)
@@ -1238,6 +1286,7 @@ def validate_ticket_fields(
             _scope,
             project_root,
             check_files=check_files,
+            approved_optional=approved_optional,
         )
     )
 
@@ -1247,6 +1296,7 @@ def validate_ticket_fields(
         ticket_type,
         check_tb_files,
         project_root,
+        approved_optional,
     )
     errors.extend(criteria_errors)
     errors.extend(criteria_warnings)

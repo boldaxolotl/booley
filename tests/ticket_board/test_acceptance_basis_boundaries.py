@@ -130,7 +130,7 @@ def test_binding_record_parser_rejects_invalid_schema() -> None:
     ("mutate", "message"),
     [
         (lambda record: record.update(extra=True), "invalid top-level"),
-        (lambda record: record.update(schema=3), "unsupported schema"),
+        (lambda record: record.update(schema=4), "unsupported schema"),
         (lambda record: record["ticket"].update(extra=True), "ticket has an invalid schema"),
         (
             lambda record: record["ticket"]["frontmatter"].update(extra=True),

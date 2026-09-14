@@ -237,8 +237,11 @@ def _prompt(ctx: BlockedContext) -> str:
 Read the evidence below. Inspect the worktree with read-only Git commands when useful.
 Distinguish current blockers from passing checks, stale-but-fixed findings, and warnings.
 Report every independent blocker. Preserve the latest board transition reason exactly in
-`board_reason`; call out conflicts in findings. Recommend one of investigate, unblock with
-feedback, reset, archive, or defer. Do not modify files.
+`board_reason`; call out conflicts in findings. Recommend only applicable choices grounded
+in evidence: investigate, retry with feedback, relax a threshold, make a mandatory Criterion
+optional, expand Scope, requested review, reset, fresh authoring, archive, or defer. Never
+recommend removing Criteria. Explain the intended before/after change when recommending an
+amendment, and do not modify files.
 
 Worktree: `{worktree}`
 Evidence:

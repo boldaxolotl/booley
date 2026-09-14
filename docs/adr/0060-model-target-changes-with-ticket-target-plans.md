@@ -42,6 +42,13 @@ authored inputs are unchanged. The publication and waiting-to-queued transition 
 recoverable transaction; the old basis and receipt remain retained evidence. Any drift
 blocks for `return-to-draft` instead of being treated as a refresh.
 
+Ticket Amendment is a separate, Human-approved exception for blocked Tickets.
+It can relax existing Criteria or add Scope without changing Target Plans,
+provider bindings, baseline commits, or destination refs. The Board retains
+the old basis and resumes the same implementation against a newly published
+basis. A downstream consumer still checks the provider's exported Target and
+control surface, not its earlier pinned basis ID.
+
 Because a provider may itself pass through this refresh, downstream consumers do not
 require its accepted basis ID to equal the earlier pin. They require the same exported
 role and normalized Target/control surface from the provider's accepted basis.
