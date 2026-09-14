@@ -38,9 +38,9 @@ def _imports(path: Path) -> set[str]:
     return names
 
 
-def test_platform_lock_apis_stay_in_runtime_lock_module_or_fifo_domain() -> None:
+def test_platform_lock_apis_stay_in_core_lock_module_or_fifo_domain() -> None:
     allowed = {
-        _SOURCE_ROOT / "runtime" / "file_lock.py",
+        _SOURCE_ROOT / "core" / "file_lock.py",
         # Windows descriptor-to-handle conversion is not a file-lock policy.
         _SOURCE_ROOT / "runtime" / "regular_file.py",
         # FIFO flag manipulation is not a file-lock policy.

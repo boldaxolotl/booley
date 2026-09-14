@@ -91,6 +91,51 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D23",
+        (prefix("booley.config"),),
+        (prefix("booley.eda"),),
+        "Config owns declarative requests without depending on EDA provisioning policy",
+    ),
+    DirectionRule(
+        "D24",
+        (prefix("booley.eda"),),
+        (prefix("booley.runtime"),),
+        "EDA uses neutral host mechanisms without depending on Runtime execution or issuance",
+    ),
+    DirectionRule(
+        "D25",
+        tuple(
+            exact(f"booley.core.{name}") for name in ("private_store", "file_lock", "resources")
+        ),
+        tuple(
+            prefix(f"booley.{name}")
+            for name in (
+                "agent_workspace",
+                "audit",
+                "bwave",
+                "config",
+                "criteria",
+                "dev_support",
+                "docker",
+                "eda",
+                "evidence",
+                "feedback",
+                "flows",
+                "fusesoc",
+                "harness",
+                "mcp",
+                "presentation",
+                "projects",
+                "review",
+                "runtime",
+                "specialists",
+                "targets",
+                "ticket_board",
+            )
+        ),
+        "Shared private storage, locking, and package resources do not own caller policy",
+    ),
+    DirectionRule(
         "D22",
         (prefix("booley.ticket_board"),),
         (prefix("booley.review"),),
@@ -299,6 +344,8 @@ COMPOSITION_PERMISSIONS = (
 
 LEGACY_WAIVERS = ()
 
+# Measured at #531: still 18 members until #530 removes the Target/FuseSoC
+# return paths. The production SCC metadata test requires tightening on a split.
 APPROVED_LEGACY_SCCS = (
     frozenset(
         f"booley.{name}"

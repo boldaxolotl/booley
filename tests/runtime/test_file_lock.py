@@ -9,7 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.runtime import file_lock
+from booley.core import file_lock
+
+
+def test_runtime_compatibility_imports_preserve_lock_identity():
+    from booley.runtime import file_lock as compatibility
+
+    for name in compatibility.__all__:
+        assert getattr(compatibility, name) is getattr(file_lock, name)
 
 
 class _MemoryFile(io.StringIO):
