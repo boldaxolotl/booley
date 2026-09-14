@@ -988,8 +988,8 @@ _BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
             "needed evidence; explain the limitation. Diagnose compile/elaboration "
             "failures from compiler output. Queries need no GUI; use the viewer "
             "to show humans a scoped, logically grouped view and relay warnings "
-            "about omitted signals. Before use, call extra_args=[\"skill\"] for "
-            "workflow and presentation guidance, then extra_args=[\"--help\"] "
+            'about omitted signals. Before use, call extra_args=["skill"] for '
+            'workflow and presentation guidance, then extra_args=["--help"] '
             "for syntax."
         ),
         "schema": {
