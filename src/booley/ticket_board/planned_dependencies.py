@@ -125,16 +125,20 @@ def _surface(checkout: Path, target: str) -> tuple[Path, str, str]:
         raise PlannedDependencyError(f"provider Target {target!r} is not a mapping")
     try:
         selected_filesets = fusesoc_registry.target_fileset_definitions(document, target_body)
+        selected_parameters = fusesoc_registry.target_parameter_definitions(document, target_body)
     except FuseSocError as exc:
         raise PlannedDependencyError(str(exc)) from exc
     controls = {
-        key: value for key, value in document.items() if key not in {"targets", "filesets"}
+        key: value
+        for key, value in document.items()
+        if key not in {"targets", "filesets", "parameters"}
     }
     digest = hashlib.sha256(
         canonical_json(
             {
                 "controls": controls,
                 "filesets": selected_filesets,
+                "parameters": selected_parameters,
                 "target": target_body,
                 "tests": tests,
             }

@@ -21,7 +21,7 @@ class TargetSurfaceEditError(ValueError):
     """A Target definition cannot be composed without broad YAML rewriting."""
 
 
-_NEW_CORE_KEYS = frozenset({"CAPI=2", "name", "filesets", "targets"})
+_NEW_CORE_KEYS = frozenset({"CAPI=2", "name", "filesets", "parameters", "targets"})
 _TOML_HEADER_RE = re.compile(r"(?m)^[ \t]*(\[\[?[^\]\r\n]+\]\]?)[ \t]*(?:#.*)?\r?$")
 
 
@@ -184,6 +184,67 @@ def only_authorized_insertions(
     return True
 
 
+def _mapping_addition_replacements(
+    baseline: str,
+    current: str,
+    path: Path,
+    section: str,
+    names: Iterable[str],
+) -> list[tuple[int, int, str]]:
+    selected = set(names)
+    if not selected:
+        return []
+    baseline_document, _baseline_key, _baseline_targets = _document(baseline, path)
+    current_document, _current_key, _current_targets = _document(current, path)
+    current_section = _mapping_value(current_document, section)
+    if current_section is None:
+        raise TargetSurfaceEditError(f".core {path} has no mapping-valued {section} block")
+    current_key, current_mapping = current_section
+    current_entries = _entries(current_mapping)
+    missing = sorted(selected - set(current_entries))
+    if missing:
+        raise TargetSurfaceEditError(
+            f".core {path} does not declare {section} entries: {', '.join(missing)}"
+        )
+    baseline_section = _mapping_value(baseline_document, section)
+    current_span = _entry_span(current, (current_key, current_mapping))
+    if baseline_section is None:
+        return [(*current_span, "")]
+    baseline_key, baseline_mapping = baseline_section
+    baseline_entries = _entries(baseline_mapping)
+    if selected & set(baseline_entries):
+        raise TargetSurfaceEditError(f".core {path} did not add unique {section} entries")
+    if not baseline_entries:
+        baseline_start, baseline_end = _entry_span(baseline, (baseline_key, baseline_mapping))
+        return [(*current_span, baseline[baseline_start:baseline_end])]
+    if current_mapping.flow_style:
+        raise TargetSurfaceEditError(
+            f".core {path} uses an inline {section} mapping that cannot be edited narrowly"
+        )
+    return [
+        (_adjacent_prefix_start(current, start), end, "")
+        for start, end in (_entry_span(current, current_entries[name]) for name in selected)
+    ]
+
+
+def only_authorized_core_additions(
+    baseline: str,
+    current: str,
+    path: Path,
+    additions: Mapping[str, Iterable[str]],
+) -> bool:
+    """Return whether a core differs only by named mapping-entry additions."""
+    replacements = [
+        replacement
+        for section, names in additions.items()
+        for replacement in _mapping_addition_replacements(baseline, current, path, section, names)
+    ]
+    without_authorized = current
+    for start, end, replacement in sorted(replacements, reverse=True):
+        without_authorized = without_authorized[:start] + replacement + without_authorized[end:]
+    return without_authorized == baseline
+
+
 def _toml_header_path(header: str) -> tuple[str, ...]:
     try:
         parsed = tomllib.loads(header + "\n")
@@ -239,15 +300,23 @@ def _without_mapping_siblings(text: str, path: Path, section: str, keep: set[str
     if entries and removed == set(entries):
         start = mapping.start_mark.index
         end = mapping.end_mark.index
-        return text[:start] + "{}" + text[end:]
+        replacement = "{}" if mapping.flow_style else "{}\n"
+        return text[:start] + replacement + text[end:]
     for start, end in sorted(spans, reverse=True):
         result = result[:start] + result[end:]
     return result
 
 
-def _without_sibling_target_surface(text: str, path: Path, target: str, filesets: set[str]) -> str:
+def _without_sibling_target_surface(
+    text: str,
+    path: Path,
+    target: str,
+    filesets: set[str],
+    parameters: set[str],
+) -> str:
     result = _without_mapping_siblings(text, path, "targets", {target})
-    return _without_mapping_siblings(result, path, "filesets", filesets)
+    result = _without_mapping_siblings(result, path, "filesets", filesets)
+    return _without_mapping_siblings(result, path, "parameters", parameters)
 
 
 def _defined_target_filesets(text: str, path: Path, target_body: object) -> tuple[str, ...]:
@@ -265,16 +334,32 @@ def _defined_target_filesets(text: str, path: Path, target_body: object) -> tupl
         raise TargetSurfaceEditError(f".core {path}: {exc}") from exc
 
 
-def _insert_absent_filesets_mapping(
+def _defined_target_parameters(text: str, path: Path, target_body: object) -> tuple[str, ...]:
+    if not isinstance(target_body, Mapping):
+        raise TargetSurfaceEditError(f".core {path} Target definition is not a mapping")
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise TargetSurfaceEditError(f"cannot parse .core {path}: {exc}") from exc
+    if not isinstance(document, Mapping):
+        raise TargetSurfaceEditError(f".core {path} is not a YAML mapping")
+    try:
+        return tuple(fusesoc_registry.target_parameter_definitions(document, target_body))
+    except FuseSocError as exc:
+        raise TargetSurfaceEditError(f".core {path}: {exc}") from exc
+
+
+def _insert_absent_mapping(
     destination_text: str,
     destination_path: Path,
+    section: str,
     block: str,
     source_column: int,
 ) -> tuple[str, bool]:
     _document_node, targets_key, _target_mapping = _document(destination_text, destination_path)
     insertion = _line_start(destination_text, targets_key.start_mark.index)
     rendered = _reindent(block, source_column, targets_key.start_mark.column + 2)
-    prefix = " " * targets_key.start_mark.column + "filesets:\n"
+    prefix = " " * targets_key.start_mark.column + f"{section}:\n"
     return destination_text[:insertion] + prefix + rendered + destination_text[insertion:], True
 
 
@@ -292,12 +377,12 @@ def _insert_mapping_definition(
     document, _targets_key, _targets = _document(destination_text, destination_path)
     mapping_value = _mapping_value(document, section)
     if mapping_value is None:
-        if section != "filesets":
+        if section not in {"filesets", "parameters"}:
             raise TargetSurfaceEditError(
                 f".core {destination_path} has no mapping-valued {section} block"
             )
-        return _insert_absent_filesets_mapping(
-            destination_text, destination_path, block, source_column
+        return _insert_absent_mapping(
+            destination_text, destination_path, section, block, source_column
         )
     section_key, mapping = mapping_value
     entries = _entries(mapping)
@@ -367,16 +452,23 @@ def fileset_definition_spans(
 
 
 def merge_target_definition(source: Path, destination: Path, target: str) -> bool:
-    """Insert one Target and its referenced filesets, retaining unrelated bytes."""
+    """Insert one Target and its referenced local inputs, retaining unrelated bytes."""
     source_text = source.read_text(encoding="utf-8")
     _block, _column, source_body = _single_mapping_source(source_text, source, "targets", target)
     selected_filesets = _defined_target_filesets(source_text, source, source_body)
+    selected_parameters = _defined_target_parameters(source_text, source, source_body)
     if not destination.is_file():
         validate_new_core_surface(source_text, source)
         destination.parent.mkdir(parents=True, exist_ok=True)
         _write_text(
             destination,
-            _without_sibling_target_surface(source_text, source, target, set(selected_filesets)),
+            _without_sibling_target_surface(
+                source_text,
+                source,
+                target,
+                set(selected_filesets),
+                set(selected_parameters),
+            ),
         )
         return True
 
@@ -390,6 +482,16 @@ def merge_target_definition(source: Path, destination: Path, target: str) -> boo
             destination,
             "filesets",
             fileset,
+        )
+        changed = changed or inserted
+    for parameter in selected_parameters:
+        destination_text, inserted = _insert_mapping_definition(
+            source_text,
+            source,
+            destination_text,
+            destination,
+            "parameters",
+            parameter,
         )
         changed = changed or inserted
     destination_text, inserted = _insert_mapping_definition(
