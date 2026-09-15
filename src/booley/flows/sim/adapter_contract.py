@@ -24,6 +24,7 @@ class PreparedSimulationWork:
     trace_scope: str = ""
     trace_args: tuple[str, ...] = ()
     trace_files: tuple[str, ...] = ()
+    runtime_inputs: tuple[str, ...] = ()
     pass_sentinels: tuple[str, ...] = ()
     fail_sentinels: tuple[str, ...] = ()
     top: str = ""

@@ -129,7 +129,7 @@ def _execution_fixture(tmp_path: Path, monkeypatch):
     prepared = PreparedSimulationBuild(
         target=handle.selector,
         target_identity=handle.identity,
-        resolved=SimpleNamespace(cocotb_module="", parameters={}),
+        resolved=SimpleNamespace(cocotb_module="", parameters={}, files=()),
         work_root=build_root,
         build_root=build_root,
         eda_tool="verilator",
