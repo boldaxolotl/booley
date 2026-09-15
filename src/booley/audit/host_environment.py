@@ -48,6 +48,25 @@ class ContainerRuntimeAudit:
     finding: EnvironmentFinding
 
 
+@dataclass(frozen=True, slots=True)
+class AgentInstallation:
+    """Observed installation, not a decision about the Project's provider."""
+
+    config_present: bool
+    executable: str | None
+
+    @property
+    def installed(self) -> bool:
+        return self.config_present or self.executable is not None
+
+
+def inspect_agent_installation(provider: str) -> AgentInstallation:
+    """Use the shared config-directory-or-CLI heuristic without running an agent."""
+    if provider not in {"claude", "codex"}:
+        raise ValueError(f"unknown agent provider: {provider}")
+    return AgentInstallation((Path.home() / f".{provider}").is_dir(), shutil.which(provider))
+
+
 def audit_python_version(
     current: tuple[int, int],
     minimum: tuple[int, int],

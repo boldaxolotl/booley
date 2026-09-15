@@ -335,7 +335,11 @@ def test_doctor_does_not_reimplement_config_schema_mechanisms() -> None:
     }
     assert not function_names & extracted
     source = doctor_path.read_text(encoding="utf-8")
-    assert "agent_schema.audit_agent_table" in source
+    assert "readiness.load_project" in source
+    readiness_source = (_ROOT / "src" / "booley" / "harness" / "setup" / "readiness.py").read_text(
+        encoding="utf-8"
+    )
+    assert "agent_schema.audit_agent_table" in readiness_source
     assert "_parse_role_models" not in source
     assert "_SELECTIVE_FLOW_KNOBS" not in source
 

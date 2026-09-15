@@ -5,9 +5,8 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
-The latest measurements were verified on 14 SEP 2026 against source and analyzer
-at `8f7d1479`, with `35062dda` as the integration base. Earlier snapshots
-retain their original revision and date.
+Historical snapshots retain their original revisions and dates. Current hotspot
+measurements include #532; the #531 integration snapshot is recorded separately below.
 The direction rules are normative; dated graph snapshots are diagnostic evidence.
 
 ## Source map
@@ -17,9 +16,9 @@ The package layout maps to the canonical concepts indexed by the
 
 | Canonical concept | Principal source owners | Responsibility |
 | --- | --- | --- |
-| Host Bootstrap | `booley.harness.bootstrap`, `booley.harness.bootstrap_cli`, `booley.harness.host_sidecars` | Reconcile Project-independent host prerequisites and shared infrastructure. |
-| Project Initialization | `booley.harness.init_cmd`, `booley.harness.setup`, `booley.agent_workspace` | Validate and reconcile one Project before issuing its Session Runtime. |
-| Session Runtime | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment` | Own shared execution records, processes, paths, and runtime lifecycle. |
+| Host Bootstrap | `booley.harness.bootstrap`, `booley.harness.bootstrap_cli`, `booley.harness.host_sidecars`, `booley.harness.host_diagnostics` | Inspect and reconcile Project-independent host prerequisites and shared infrastructure. |
+| Project Initialization | `booley.harness.init_cmd`, `booley.harness.setup` (including `readiness`), `booley.agent_workspace` | Validate and reconcile one Project before issuing its Session Runtime. |
+| Session Runtime | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment`, `booley.runtime.inspection` | Inspect and own shared execution records, processes, paths, and runtime lifecycle. |
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
 | Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
@@ -31,7 +30,7 @@ The package layout maps to the canonical concepts indexed by the
 | B-Wave | `booley.bwave` | Answer structured waveform questions and control human viewing. |
 
 Supporting mechanism packages keep their names. `booley.audit` owns typed
-environment and configuration analysis; `booley.config` owns configuration;
+environment and configuration analysis and typed diagnostic report values; `booley.config` owns configuration;
 `booley.eda` owns trusted EDA registrations and Grants; `booley.review` renders
 review artifacts from resolved immutable evidence; `booley.projects` owns Project inventory commands; `booley.core` owns
 dependency-light primitives; and `booley.dev_support`, `booley.docker`, `booley.data`,
@@ -117,6 +116,21 @@ native executable discovery. The Runtime storage/locking modules and
 `runtime.paths.package_data_dir` remain downward compatibility exports. D25
 prevents these three shared mechanisms from acquiring caller policy.
 
+## Doctor diagnostic boundary
+
+Doctor composes and renders complete typed reports. `runtime.inspection` owns
+Runtime evidence collection and validation; `harness.host_diagnostics` owns host
+health composition; `harness.setup.readiness` owns Project loading and explicit
+inspection/reconciliation operations. These owners do not accept Doctor callbacks
+or import command orchestration or rendering. D1/D6 protect audit/Runtime; D26
+protects the two new Harness owners, including deferred and type-only imports.
+
+Inspection retains bounded subprocess and conditional authority-lock effects;
+Project repair operations remain explicit and preserve their interleaved phase
+order. The exact interfaces, effects, owner-local tests and before/after fan-out
+for [#532](https://github.com/boldaxolotl/booley/issues/532) are recorded in
+[the implementation evidence](DOCTOR-DIAGNOSTICS.md).
+
 ## Graph semantics
 
 The analyzer uses `ast` to parse every `*.py` file below `src/booley`. It records
@@ -172,6 +186,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D23 | Prefix `booley.config` | Prefix `booley.eda` | Forbid | Config owns declarative requests without depending on EDA provisioning policy. |
 | D24 | Prefix `booley.eda` | Prefix `booley.runtime` | Forbid | EDA uses neutral host mechanisms without depending on Runtime execution or issuance. |
 | D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets`, `booley.ticket_board` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
+| D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.harness.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
 
 ## Ticket review lifecycle boundary
 
@@ -380,17 +395,20 @@ Config-to-Runtime, Criteria-to-Flow, and Flow-to-Ticket-Board separations had
 already landed by `1fdc706e`; they are not additional 10 SEP reductions.
 
 Named composition hotspot fan-out is the number of unique imported modules.
-These diagnostic values do not gate changes:
+These diagnostic values do not gate changes. The current column is measured on
+14 SEP 2026 at the implementation revision recorded in
+[the #532 evidence](DOCTOR-DIAGNOSTICS.md); the earlier
+graph snapshot remains historical:
 
 | Canonical role | Exact module | 02 SEP baseline | Before 10 SEP | Current |
 | --- | --- | ---: | ---: | ---: |
-| Host/Project diagnostic composition | `booley.harness.doctor` | 62 | 66 | 66 |
-| Command composition | `booley.harness.booley` | 52 | 57 | 58 |
-| Project Initialization | `booley.harness.init_cmd` | 42 | 42 | 42 |
-| Harness | `booley.harness.developer` | 40 | 44 | 45 |
+| Host/Project diagnostic composition | `booley.harness.doctor` | 62 | 66 | 57 |
+| Command composition | `booley.harness.booley` | 52 | 57 | 57 |
+| Project Initialization | `booley.harness.init_cmd` | 42 | 42 | 39 |
+| Harness | `booley.harness.developer` | 40 | 44 | 44 |
 | Simulation Flow | `booley.flows.sim.flow` | 35 | 48 | 48 |
 | Synthesis Flow | `booley.flows.synth.flow` | 30 | 35 | 35 |
-| MCP composition | `booley.mcp.server` | 29 | 30 | 32 |
+| MCP composition | `booley.mcp.server` | 29 | 30 | 33 |
 | FPGA Flow | `booley.flows.fpga.flow` | 26 | 32 | 32 |
 | Mutation Specialist | `booley.specialists.mutation_tester` | 24 | 25 | 25 |
 | Coverage Specialist | `booley.specialists.coverage_analyst` | 22 | 8 | 13 |
@@ -409,7 +427,7 @@ When one of these modules changes, record before-and-after output in
 [#279](https://github.com/boldaxolotl/booley/issues/279). This lets later fan-out
 work distinguish legitimate composition from unjustified knowledge growth.
 
-## Current snapshot: 14 SEP 2026 — Config/EDA/Runtime separation
+## Integration snapshot: 14 SEP 2026 — Config/EDA/Runtime separation
 
 [#531](https://github.com/boldaxolotl/booley/issues/531) removes both Config→EDA
 edges and all four EDA→Runtime edges. Its original source/analyzer comparison is:

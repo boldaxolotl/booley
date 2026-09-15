@@ -130,17 +130,10 @@ def _runtime_base_build_metadata_args(booley_root: Path) -> list[str]:
 
 
 def _docker_image_exists(image: str = DOCKER_IMAGE) -> bool:
-    try:
-        result = subprocess.run(
-            ["docker", "image", "inspect", image],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
+    """Compatibility entry point for the shared, observation-only image probe."""
+    from booley.runtime.interactive_docker import image_exists
+
+    return image_exists(image)
 
 
 def _docker_image_id(image: str) -> str | None:

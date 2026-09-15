@@ -23,10 +23,14 @@ from typing import ClassVar
 import pytest
 
 import booley
+from booley.audit import host_environment
 from booley.fusesoc import fusesoc_registry
 from booley.harness import doctor
 from booley.runtime import agent_config as runtime_agent_config
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+from tests.diagnostic_helpers import (
+    _record_environment,
+)
 
 
 class _Rec:
@@ -415,7 +419,9 @@ class TestLegacyDistribution:
             ),
         )
         rec = _Rec()
-        doctor._check_legacy_distribution(rec.p, rec.f)
+        _record_environment(
+            host_environment.audit_legacy_distribution(), passed=rec.p, failed=rec.f
+        )
         assert rec.kinds() == {"fail"}
         assert "booley-rtl` is not installed at all" in rec.fails()[0]
         assert "0.0.9" in rec.fails()[0]
@@ -433,7 +439,9 @@ class TestLegacyDistribution:
             ),
         )
         rec = _Rec()
-        doctor._check_legacy_distribution(rec.p, rec.f)
+        _record_environment(
+            host_environment.audit_legacy_distribution(), passed=rec.p, failed=rec.f
+        )
         assert rec.kinds() == {"fail"}
         assert "both `booley`" in rec.fails()[0]
         assert "shadow" in rec.fails()[0]
@@ -444,7 +452,9 @@ class TestLegacyDistribution:
 
         monkeypatch.setattr(importlib.metadata, "distribution", not_found)
         rec = _Rec()
-        doctor._check_legacy_distribution(rec.p, rec.f)
+        _record_environment(
+            host_environment.audit_legacy_distribution(), passed=rec.p, failed=rec.f
+        )
         assert rec.kinds() == {"pass"}
 
 

@@ -338,8 +338,11 @@ class TestDoctorPolicyAwareness:
     def _run_oauth_check(monkeypatch, policy):
         from booley.harness import doctor
 
-        monkeypatch.setattr(doctor, "_detect_claude_code", lambda: True)
-        monkeypatch.setattr(doctor, "_detect_codex", lambda: False)
+        monkeypatch.setattr(
+            doctor.host_environment,
+            "inspect_agent_installation",
+            lambda provider: doctor.host_environment.AgentInstallation(provider == "claude", None),
+        )
         sink: dict[str, list[str]] = {"pass": [], "note": [], "warn": [], "skip": []}
         doctor._check_oauth_token(
             "claude",
