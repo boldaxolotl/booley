@@ -193,6 +193,57 @@ class TestProjectCommitMsgHookVendoring:
         assert hook.is_file(), "commit-msg hook not installed"
         assert b"\r" not in hook.read_bytes(), "hook written with CRLF (D0a)"
 
+    def test_installed_hook_rejects_compound_attribution_without_rewriting(
+        self, tmp_path: Path, monkeypatch, request: pytest.FixtureRequest
+    ):
+        """The vendored hook rejects before either attribution form is altered."""
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import reset_cache
+
+        repo = tmp_path / "project"
+        project_dir = tmp_path / "project-state"
+        _run_git(tmp_path, "init", "-q", "-b", "main", str(repo))
+        _run_git(repo, "config", "user.name", "T")
+        _run_git(repo, "config", "user.email", "t@example.test")
+        (repo / ".gitignore").write_text(".booley_project/\n", encoding="utf-8")
+        config = repo / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text(
+            '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n',
+            encoding="utf-8",
+        )
+        (repo / "baseline.txt").write_text("baseline\n", encoding="utf-8")
+        _run_git(repo, "add", ".gitignore", "baseline.txt")
+        _run_git(repo, "commit", "-qm", "baseline")
+        baseline = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        reset_cache()
+        request.addfinalizer(reset_cache)
+        _step_project_git_hooks(_ctx(repo))
+
+        (repo / "change.txt").write_text("change\n", encoding="utf-8")
+        _run_git(repo, "add", "change.txt")
+        original = (
+            "fix(core): repair edge case\n\n"
+            "Useful rationale.\n\n"
+            "Co-Authored-By: Person <person@example.test>\n"
+            "Generated with assistant-identity\n"
+        )
+        message = tmp_path / "message.txt"
+        message.write_text(original, encoding="utf-8")
+
+        result = _run_git(repo, "commit", "-F", str(message), check=False)
+
+        assert result.returncode != 0
+        assert _run_git(repo, "rev-parse", "HEAD").stdout.strip() == baseline
+        assert (repo / ".git" / "COMMIT_EDITMSG").read_text(encoding="utf-8") == original
+        assert "assistant-identity" not in result.stderr
+        assert "person@example.test" not in result.stderr
+        assert "remove" in result.stderr.lower()
+        assert "retry" in result.stderr.lower()
+
     def test_check_only_reports_current_installation_without_mutation(
         self, tmp_path: Path, monkeypatch
     ):

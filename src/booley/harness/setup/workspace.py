@@ -108,8 +108,9 @@ def _install_scope_hook(
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     _write_hook(hooks_dir / "pre-commit", hook_script)
-    # The commit-msg hook is stealth mode's message sanitizer — opt-out via
-    # [stealth] enabled = false (scope enforcement above stays unconditional).
+    # The commit-msg hook rejects attribution and sanitizes other protected
+    # terms — opt out via [stealth] enabled = false (scope enforcement above
+    # stays unconditional).
     from booley.dev_support.commit_msg_utils import stealth_enabled
 
     if stealth_enabled(project_root):
