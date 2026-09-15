@@ -68,6 +68,7 @@ _ENDPOINT_COLORS: dict[str, tuple[Callable[[str], str], Callable[[str], str]]] =
     "reviewer": _lavender,
     "coverage_analyst": _lavender,
     "mutation_tester": _lavender,
+    "bwave": _orange,
     "sim": _dodgerblue,
     "lint": _dodgerblue,
     "synth": _dodgerblue,

@@ -104,6 +104,13 @@ class TestEndpointBoxOpen:
         assert "\033[38;5;141m" in out
         assert "reviewer [setup]" in _strip_ansi(out)
 
+    def test_bwave_uses_palette_orange(self, capsys):
+        with patch("booley.harness.colors.COLORS_ENABLED", True):
+            terminal.endpoint_box_open("bwave", target="@dut wave")
+        out = capsys.readouterr().out
+        assert "\033[38;5;208m" in out
+        assert "bwave [@dut wave]" in _strip_ansi(out)
+
 
 # ---------------------------------------------------------------------------
 # endpoint_box_close formatting

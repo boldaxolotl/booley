@@ -31,6 +31,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Quality of life
 
+- Ticket Mode's Console now shows each direct Developer Agent B-Wave query,
+  including its subcommand, duration, and success or failure.
 - Built-in Flow timeouts now use one positive `timeout_ms` contract across
   configuration, CLI, and MCP calls. Each work unit gets the full active-time
   budget; time waiting for a job slot is excluded.

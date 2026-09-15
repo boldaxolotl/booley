@@ -43,11 +43,13 @@ _ENDPOINT_STYLES: dict[str, str] = {
     "reviewer": "color(183)",
     "coverage_analyst": "color(183)",
     "mutation_tester": "color(183)",
+    "bwave": "color(208)",
     "sim": "color(75)",
     "lint": "color(75)",
     "synth": "color(75)",
     "submit_run_report": "color(75)",
 }
+_ENDPOINT_DISPLAY_NAMES = {"bwave": "B-Wave"}
 _DEFAULT_ENDPOINT_STYLE = "color(249)"
 
 # ---------------------------------------------------------------------------
@@ -79,7 +81,8 @@ def _render_entry_line(mark: McpToolCompletionMark) -> Text:
     name_style = _ENDPOINT_STYLES.get(mark.name, _DEFAULT_ENDPOINT_STYLE)
     line = Text()
     line.append(icon_char, style=icon_style)
-    line.append(f" {mark.name}{target_str}", style=name_style)
+    display_name = _ENDPOINT_DISPLAY_NAMES.get(mark.name, mark.name)
+    line.append(f" {display_name}{target_str}", style=name_style)
     line.append(f" {dur}{cost}{summary_str}")
     return line
 
@@ -246,7 +249,8 @@ class MainPane(VerticalScroll):
     def _endpoint_divider(self, edge: str, name: str, target: str | None) -> str:
         """Build a one-row, terminal-cell-aware endpoint divider."""
         width = self._box_width()
-        label = f"{name} [{target}]" if target else name
+        display_name = _ENDPOINT_DISPLAY_NAMES.get(name, name)
+        label = f"{display_name} [{target}]" if target else display_name
         fitted = Text(label)
         fitted.expand_tabs(8)
         fitted.truncate(max(1, width - 5), overflow="ellipsis")
