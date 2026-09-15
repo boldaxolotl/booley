@@ -21,10 +21,10 @@ booley-ticket-create --agent <structured input>   # agent mode — no interactio
 
 ## Output Boundary
 
-Ticket creation authors only the Ticket, Target definitions and unambiguously owned
-`tests.toml` tables approved at the Step 2f gate, and empty placeholder files for Scope
-paths marked `[new]`. A planned Target may be added to an existing Target-definition
-file, but existing Targets remain unchanged.
+Ticket creation authors only the Ticket, Target definitions, their referenced filesets and
+local parameter declarations, unambiguously owned `tests.toml` tables approved at the Step
+2f gate, and empty placeholder files for Scope paths marked `[new]`. A planned Target may be
+added to an existing Target-definition file, while existing definitions remain unchanged.
 
 The developer who runs the Ticket authors its implementation. A placeholder is a
 zero-byte file: do not put declarations, modules, packages, assertions, stimulus,
@@ -115,10 +115,11 @@ mandatory in both lightweight and detailed modes.
 body, excluding generated basis fields), followed by a **Target Plan** section. If the
 plan is omitted, show `Target Plan: none`. For persistent and ephemeral entries, show the
 role, canonical name, destination file, acceptance result, complete Target definition,
-and complete owned `tests.toml` table. For a replacement, show its baseline and candidate,
-destination file, acceptance result, a focused Target-definition diff, and a focused
-owned-table diff. If either focused diff cannot be produced unambiguously, stop with an
-approval blocker. Ask: *"Create this ticket and Target Plan? (yes / edit / cancel)"*
+referenced filesets and local parameter declarations, and complete owned `tests.toml` table.
+For a replacement, show its baseline and candidate, destination file, acceptance result, a
+focused diff covering those same definitions, and a focused owned-table diff. If either
+focused diff cannot be produced unambiguously, stop with an approval blocker. Ask:
+*"Create this ticket and Target Plan? (yes / edit / cancel)"*
 
 For detailed mode, this is the first review artifact shown after grilling. If the user
 chooses `edit`, revise the complete ticket or Target definitions and show the entire review
@@ -147,7 +148,8 @@ mechanics require no further user confirmation.
 ## Step 4: Author and Enqueue
 
 Follow §C end to end after ticket approval: create the draft and workspace, author only
-the approved planned Target definitions and owned test tables there, validate, and enqueue. Author them
+the approved planned Target definitions, referenced inputs, and owned test tables there,
+validate, and enqueue. Author them
 exactly as approved at the 2f gate and create only empty placeholders for `[new]` Scope
 paths; do not implement any part of the Ticket. Basis publication remains an internal
 implementation detail: do not expose its SHAs or pause for another
@@ -232,7 +234,8 @@ python -m booley.ticket_board create-file "$SLUG" \
   --on-success "$ON_SUCCESS_JSON" \      # JSON: all four on_success fields
   --body-file "$BODY"
 
-# E4. Add only approved new Target definitions in the workspace printed by create-file.
+# E4. Add only approved new Target definitions and their referenced filesets and local
+#     parameter declarations in the workspace printed by create-file.
 #     A Scope [new] path may be absent or a zero-byte placeholder. Leave all other
 #     implementation/support-code files unchanged. Existing sources may make a new
 #     relative-QoR Target fully executable; otherwise report the blocker instead of
@@ -344,12 +347,13 @@ the candidate determines the expanded Criterion name.
 - Decide the Target Plan during Ticket creation. `persistent` retains the new Target;
   `replacement` retains its candidate and removes its runnable baseline; `ephemeral`
   removes its candidate. Every selector resolves uniquely and is bound by Criteria.
-  A planned Target may add a dedicated fileset, but it cannot edit an existing
-  fileset or attach the new fileset to an unchanged Target. Acceptance removes
+  A planned Target may add a dedicated fileset or local parameter declaration, but it
+  cannot edit an existing definition or attach a new input to an unchanged Target.
+  New conditional parameter declaration keys are unsupported; use a stable declaration
+  name and conditional entries in the Target's parameter list. Acceptance removes
   only the derived Target definitions, unambiguously owned `tests.toml` tables,
-  and newly authored filesets orphaned by ephemeral Target removal. Existing and
-  still-shared filesets, sources, parameters, constraints, generators, and hooks
-  remain.
+  and newly authored filesets or parameter declarations orphaned by ephemeral Target
+  removal. Existing and still-shared inputs, constraints, generators, and hooks remain.
 
 ## §E. Ticket Creation Guidance
 

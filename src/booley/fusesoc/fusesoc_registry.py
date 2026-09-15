@@ -496,7 +496,14 @@ _CAPI2_FILESET_ARRAY_FIELDS = ("files", "depend", "tags")
 # ``filesets_append: rtl`` that slipped past the audit would explode into
 # per-character fileset names ["r", "t", "l"]. The golden schema test pins
 # every key that reader consumes to an entry here.
-_CAPI2_TARGET_ARRAY_FIELDS = ("filesets", "filesets_append", "depend", "parameters", "flags")
+_CAPI2_TARGET_ARRAY_FIELDS = (
+    "filesets",
+    "filesets_append",
+    "depend",
+    "parameters",
+    "parameters_append",
+    "flags",
+)
 
 # The ONLY per-file attribute keys FuseSoC's CAPI2 schema permits inside a
 # ``{path: {attrs}}`` file entry. Verbatim from fusesoc 2.4.6's authoritative
@@ -1343,6 +1350,60 @@ def target_fileset_definitions(
     if missing:
         raise FuseSocError("Target references undefined fileset(s): " + ", ".join(missing))
     return {name: raw_filesets[name] for name in names}
+
+
+def target_parameter_specs(target_def: Mapping[str, Any] | None) -> list[str]:
+    """Parameter specifications selected by a Target, including appended entries."""
+    td = target_def or {}
+    return [*(td.get("parameters") or []), *(td.get("parameters_append") or [])]
+
+
+def _possible_parameter_specs(value: str) -> list[str]:
+    """Return possible CAPI2 parameter specs without splitting values on spaces."""
+    try:
+        ast = Exprs(value).ast
+    except ValueError:
+        return [value]
+
+    values: list[str] = []
+
+    def _walk(nodes: list[Any]) -> None:
+        for node in nodes:
+            if isinstance(node, str):
+                values.append(node)
+            elif isinstance(node, tuple) and len(node) == 3 and isinstance(node[2], list):
+                _walk(node[2])
+
+    _walk(ast)
+    return values
+
+
+def possible_target_parameter_names(target_def: Mapping[str, Any] | None) -> list[str]:
+    """Every parameter a Target may select, preserving FuseSoC ``NAME=value`` syntax."""
+    names = (
+        spec.split("=", 1)[0]
+        for expression in target_parameter_specs(target_def)
+        if isinstance(expression, str)
+        for spec in _possible_parameter_specs(expression)
+    )
+    return list(dict.fromkeys(name for name in names if name))
+
+
+def target_parameter_definitions(
+    core_doc: Mapping[str, Any], target_def: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Return locally declared parameters selected by a Target.
+
+    A Target may also select a parameter supplied by a dependency core. FuseSoC
+    resolution, rather than this source-level inventory, validates those names.
+    """
+    raw_parameters = core_doc.get("parameters", {})
+    if raw_parameters is None:
+        raw_parameters = {}
+    if not isinstance(raw_parameters, Mapping):
+        raise FuseSocError("core parameters must be a mapping")
+    names = possible_target_parameter_names(target_def)
+    return {name: raw_parameters[name] for name in names if name in raw_parameters}
 
 
 # Characters that mark a fileset path as non-literal (a glob or a CAPI2
