@@ -30,6 +30,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
+from booley.harness.image_lifecycle import LifecycleResult
+from booley.harness.image_lifecycle import Status as ImageLifecycleStatus
+from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
 from booley.runtime import session_issuance as runtime_spec
@@ -53,6 +56,14 @@ def _init_args() -> argparse.Namespace:
 def _run_full_init(root: Path) -> int:
     reset_cache()
     return init_cmd.run_init(_init_args(), root)
+
+
+def _filesystem_snapshot(root: Path) -> dict[Path, tuple[bytes, int]]:
+    return {
+        path.relative_to(root.parent): (path.read_bytes(), path.stat().st_mode)
+        for path in root.parent.rglob("*")
+        if path.is_file()
+    }
 
 
 @pytest.fixture
@@ -90,6 +101,16 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
         lambda _image: None,
     )
     monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+    monkeypatch.setattr(
+        interactive_init.session_runtime,
+        "plan_stopped_headless_runtime_reconciliation",
+        lambda *_args: type("Plan", (), {"pending": False})(),
+    )
+    monkeypatch.setattr(
+        interactive_init.session_runtime,
+        "reconcile_stopped_headless_runtime",
+        lambda *_args: False,
+    )
     pdk_root = tmp_path / "pdk"
     pdk_root.mkdir()
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk_root)
@@ -97,15 +118,67 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
 
 
 class TestFullInitRerun:
+    def test_check_only_after_full_init_is_current_and_mutation_free(
+        self,
+        repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        current_image = LifecycleResult(
+            selected_reference="booley-sandbox",
+            selected_id="sha256:test-image",
+            status=ImageLifecycleStatus.CURRENT,
+        )
+
+        def current_image_step(ctx, _bootstrap=None):
+            ctx.record("docker_image", "skip", "current")
+            return current_image
+
+        monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", current_image_step)
+        monkeypatch.setattr(
+            init_cmd,
+            "_step_auth",
+            lambda ctx, *_args, **_kwargs: ctx.record("auth", "skip", "current"),
+        )
+        assert _run_full_init(repo) == 0
+        capsys.readouterr()
+        before = _filesystem_snapshot(repo)
+        monkeypatch.setattr(
+            runtime_spec,
+            "issue_prepared",
+            lambda *_args, **_kwargs: pytest.fail("check-only issued Runtime state"),
+        )
+        monkeypatch.setattr(
+            interactive_init.session_runtime,
+            "reconcile_stopped_headless_runtime",
+            lambda *_args: pytest.fail("check-only reconciled Runtime state"),
+        )
+        args = _init_args()
+        args.check_only = True
+
+        assert init_cmd.run_init(args, repo) == 0
+
+        output = capsys.readouterr().out
+        assert "project_git_hooks — current" in output
+        assert "interactive — current" in output
+        assert _filesystem_snapshot(repo) == before
+
     def test_reconciles_stopped_headless_runtime_after_issuing(
         self, repo: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        with patch.object(
-            sr,
-            "reconcile_stopped_headless_runtime",
-            return_value=True,
-            create=True,
-        ) as reconcile:
+        with (
+            patch.object(
+                sr,
+                "reconcile_stopped_headless_runtime",
+                return_value=True,
+                create=True,
+            ) as reconcile,
+            patch.object(
+                sr,
+                "plan_stopped_headless_runtime_reconciliation",
+                return_value=type("Plan", (), {"pending": True})(),
+            ),
+        ):
             _run_full_init(repo)
 
         reconcile.assert_called_once()
@@ -120,10 +193,17 @@ class TestFullInitRerun:
         _run_full_init(repo)
         capsys.readouterr()
         ctx = InitContext(project_root=repo)
-        with patch.object(
-            sr,
-            "reconcile_stopped_headless_runtime",
-            side_effect=sr.SessionError("container became active"),
+        with (
+            patch.object(
+                sr,
+                "reconcile_stopped_headless_runtime",
+                side_effect=sr.SessionError("container became active"),
+            ),
+            patch.object(
+                sr,
+                "plan_stopped_headless_runtime_reconciliation",
+                return_value=type("Plan", (), {"pending": True})(),
+            ),
         ):
             init_cmd._step_interactive(
                 ctx,

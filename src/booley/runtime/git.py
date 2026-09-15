@@ -168,34 +168,23 @@ def _git_common_dir_fs(wt: Path) -> Path | None:  # noqa: PLR0911 — ordered re
     return gitdir
 
 
-def add_git_excludes(
+def _git_exclude_update(
     wt: Path,
     names: Iterable[str],
     *,
-    header: str = BOOLEY_EXCLUDE_HEADER,
-) -> bool:
-    """Idempotently add ``/<name>`` entries to the repo's honored ``info/exclude``.
-
-    Worktree-aware: writes to ``$GIT_COMMON_DIR/info/exclude`` (the file git
-    actually consults), not the per-worktree ``info`` dir, so the exclusions
-    take effect from linked worktrees too. Entries are anchored with a leading
-    ``/`` (repo-root relative) and grouped under *header*.
-
-    Best-effort: an absent or unusual ``.git`` is logged and skipped, not fatal.
-    Returns ``True`` if the exclude file was modified.
-    """
+    header: str,
+) -> tuple[Path | None, list[str] | None]:
+    """Prepare the exact shared-info exclude update, if one is needed."""
     common = _git_common_dir(wt)
     if common is None:
         logger.debug("no git common dir for %s; skipping exclude update", wt)
-        return False
-    info_dir = common / "info"
-    exclude = info_dir / "exclude"
+        return None, None
+    exclude = common / "info" / "exclude"
     existing = exclude.read_text(encoding="utf-8").splitlines() if exclude.is_file() else []
     missing = [f"/{n}" for n in names if f"/{n}" not in existing]
     duplicate_headers = existing.count(header) > 1
     if not missing and not duplicate_headers:
-        return False
-    info_dir.mkdir(parents=True, exist_ok=True)
+        return exclude, None
     lines: list[str] = []
     header_kept = False
     for line in existing:
@@ -213,6 +202,40 @@ def add_git_excludes(
         if lines and lines[-1].strip() != "":
             lines.append("")
         lines.extend([header, *missing])
+    return exclude, lines
+
+
+def git_excludes_pending(
+    wt: Path,
+    names: Iterable[str],
+    *,
+    header: str = BOOLEY_EXCLUDE_HEADER,
+) -> bool:
+    """Return whether the honored Git exclude needs reconciliation, without writing."""
+    _path, lines = _git_exclude_update(wt, names, header=header)
+    return lines is not None
+
+
+def add_git_excludes(
+    wt: Path,
+    names: Iterable[str],
+    *,
+    header: str = BOOLEY_EXCLUDE_HEADER,
+) -> bool:
+    """Idempotently add ``/<name>`` entries to the repo's honored ``info/exclude``.
+
+    Worktree-aware: writes to ``$GIT_COMMON_DIR/info/exclude`` (the file git
+    actually consults), not the per-worktree ``info`` dir, so the exclusions
+    take effect from linked worktrees too. Entries are anchored with a leading
+    ``/`` (repo-root relative) and grouped under *header*.
+
+    Best-effort: an absent or unusual ``.git`` is logged and skipped, not fatal.
+    Returns ``True`` if the exclude file was modified.
+    """
+    exclude, lines = _git_exclude_update(wt, names, header=header)
+    if exclude is None or lines is None:
+        return False
+    exclude.parent.mkdir(parents=True, exist_ok=True)
     exclude.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return True
 
