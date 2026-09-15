@@ -104,6 +104,8 @@ def test_dedupe_requires_same_real_warning_in_both_targets():
     with pytest.raises(FixtureError, match="no common real warning"):
         lint_dedupe(first, old_invalid, combined)
     assert lint_dedupe(first, _lint_report("WIDTHTRUNC", "b"), combined)["targets"] == ["a", "b"]
+    with pytest.raises(FixtureError, match="two distinct Targets"):
+        lint_dedupe(first, first, combined)
     combined["warnings"] *= 2
     with pytest.raises(FixtureError, match="duplicate"):
         lint_dedupe(first, _lint_report("WIDTHTRUNC", "b"), combined)

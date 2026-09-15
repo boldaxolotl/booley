@@ -111,6 +111,17 @@ def _warning_keys(report: dict) -> list[tuple]:
     return keys
 
 
+def _target_ids(report: dict, name: str) -> set[str]:
+    report = _mapping(report, name)
+    target_results = report.get("target_results", [])
+    _require(isinstance(target_results, list)
+             and all(isinstance(row, dict)
+                     and isinstance(row.get("target"), str) and bool(row["target"])
+                     for row in target_results),
+             f"{name} has invalid Target results")
+    return {row["target"] for row in target_results}
+
+
 def lint_dedupe(first: dict, second: dict, combined: dict) -> dict:
     """Prove the same real warning occurs for both Targets and once in aggregate."""
     first_keys, second_keys, combined_keys = map(set, map(_warning_keys, (first, second, combined)))
@@ -119,14 +130,14 @@ def lint_dedupe(first: dict, second: dict, combined: dict) -> dict:
     _require(common <= combined_keys, "aggregate report omitted the common warning")
     _require(len(combined.get("warnings", [])) == len(combined_keys),
              "aggregate report contains duplicate warning rows")
-    combined = _mapping(combined, "combined lint report")
-    target_results = combined.get("target_results", [])
-    _require(isinstance(target_results, list)
-             and all(isinstance(row, dict) and isinstance(row.get("target"), str)
-                     for row in target_results),
-             "aggregate report has invalid Target results")
-    targets = {row["target"] for row in target_results}
-    _require(len(targets) >= 2, "aggregate report lacks two distinct Target results")
+    first_targets = _target_ids(first, "first lint report")
+    second_targets = _target_ids(second, "second lint report")
+    targets = _target_ids(combined, "aggregate lint report")
+    _require(len(first_targets) == 1 and len(second_targets) == 1
+             and first_targets.isdisjoint(second_targets),
+             "per-Target reports do not identify two distinct Targets")
+    _require(targets == first_targets | second_targets,
+             "aggregate report Target identities differ from per-Target reports")
     return {"common_warnings": len(common), "targets": sorted(targets)}
 
 
