@@ -1395,6 +1395,28 @@ class TestBwaveDispatch:
         assert events[-1]["type"] == "endpoint_end"
         assert events[-1]["exit_code"] == 9
 
+    def test_bwave_spawn_error_still_closes_console_activity(self, tmp_path, monkeypatch):
+        async def fail_to_spawn(cmd, timeout=600):
+            raise OSError("spawn failed")
+
+        monkeypatch.setattr(self.mcp_server, "_run_subprocess", fail_to_spawn)
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
+
+        with pytest.raises(OSError, match="spawn failed"):
+            asyncio.run(
+                self._dispatch_bwave(
+                    "bwave",
+                    {"extra_args": ["@dut", "stats", "clk"]},
+                )
+            )
+
+        events = [
+            json.loads(line)
+            for line in (tmp_path / "display.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
+        assert events[-1]["exit_code"] == 2
+
     def test_markers_subcommand_shape(self, monkeypatch):
         calls = self._patch_dispatch(monkeypatch)
         asyncio.run(

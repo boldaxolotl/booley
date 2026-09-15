@@ -109,7 +109,16 @@ class TestEndpointBoxOpen:
             terminal.endpoint_box_open("bwave", target="@dut wave")
         out = capsys.readouterr().out
         assert "\033[38;5;208m" in out
-        assert "bwave [@dut wave]" in _strip_ansi(out)
+        assert "B-Wave [@dut wave]" in _strip_ansi(out)
+
+    def test_bwave_close_uses_canonical_name(self, capsys):
+        terminal.endpoint_box_close(
+            "bwave",
+            "@dut wave",
+            exit_code=0,
+            duration_s=0.4,
+        )
+        assert "B-Wave [@dut wave]" in _strip_ansi(capsys.readouterr().out)
 
 
 # ---------------------------------------------------------------------------
