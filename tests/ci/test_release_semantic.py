@@ -62,6 +62,103 @@ def test_publication_topology_grants_reusable_workflow_permissions() -> None:
     assert errors == ("source-validation must grant actions: read required by test.yml",)
 
 
+def test_publication_topology_requires_official_release_attestation() -> None:
+    publication = yaml.safe_load(
+        (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    )
+    build = next(
+        step
+        for step in publication["jobs"]["build-package"]["steps"]
+        if step.get("name") == "Build sdist and wheel"
+    )
+    build["run"] = build["run"].replace(", profile=BuildProfile.OFFICIAL_RELEASE", "")
+
+    errors = semantic.validate_publication_topology(publication, _test_workflow())
+
+    assert "build-package must attest the official release wheel" in errors
+
+
+def test_publication_attestation_must_be_in_post_tag_build_step() -> None:
+    publication = yaml.safe_load(
+        (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    )
+    steps = publication["jobs"]["build-package"]["steps"]
+    tag_check = next(
+        step for step in steps if step.get("name") == "Verify tag matches package version"
+    )
+    build = next(step for step in steps if step.get("name") == "Build sdist and wheel")
+    attestation = "write_build_stamp(Path.cwd(), profile=BuildProfile.OFFICIAL_RELEASE)"
+    build["run"] = build["run"].replace(attestation, "write_build_stamp(Path.cwd())")
+    tag_check["run"] += f"\n# {attestation}"
+
+    errors = semantic.validate_publication_topology(publication, _test_workflow())
+
+    assert "build-package must attest the official release wheel" in errors
+
+
+def test_publication_topology_requires_clean_wheel_staging() -> None:
+    publication = yaml.safe_load(
+        (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    )
+    build = next(
+        step
+        for step in publication["jobs"]["build-package"]["steps"]
+        if step.get("name") == "Build sdist and wheel"
+    )
+    build["run"] = build["run"].replace("rm -rf build/", "true")
+
+    errors = semantic.validate_publication_topology(publication, _test_workflow())
+
+    assert "build-package must clean stale wheel staging" in errors
+
+
+def test_publication_topology_verifies_attestation_in_both_artifact_paths() -> None:
+    publication = yaml.safe_load(
+        (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    )
+    direct = publication["jobs"]["test-wheel"]["steps"]
+    direct[:] = [step for step in direct if step.get("name") != "Verify release attestation"]
+    rebuilt = next(
+        step
+        for step in publication["jobs"]["test-sdist"]["steps"]
+        if step.get("name") == "Build and install from the exact source distribution"
+    )
+    rebuilt["run"] = rebuilt["run"].replace(
+        "assert embedded_official_release() is True",
+        "assert True",
+    )
+
+    errors = semantic.validate_publication_topology(publication, _test_workflow())
+
+    assert "test-wheel must verify the official release attestation" in errors
+    assert "test-sdist must verify the official release attestation" in errors
+
+
+def test_publication_topology_verifies_development_context_is_absent() -> None:
+    publication = yaml.safe_load(
+        (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    )
+    for job_name in ("test-wheel", "test-sdist"):
+        for step in publication["jobs"][job_name]["steps"]:
+            if "embedded_development_context_path().exists()" in str(step.get("run", "")):
+                step["run"] = step["run"].replace(
+                    "embedded_development_context_path().exists()",
+                    "False",
+                )
+
+    errors = semantic.validate_publication_topology(publication, _test_workflow())
+
+    assert "test-wheel must verify the official release attestation" in errors
+    assert "test-sdist must verify the official release attestation" in errors
+
+
+def test_runtime_image_workflow_does_not_attest_a_pypi_release_wheel() -> None:
+    workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+
+    assert "BuildProfile.OFFICIAL_RELEASE" not in workflow
+    assert "profile=BuildProfile.RUNTIME_IMAGE" in workflow
+
+
 def test_release_topology_splits_validation_by_image_dependency() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")

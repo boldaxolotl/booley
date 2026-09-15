@@ -37,8 +37,9 @@ jobs:
       - name: Build sdist and wheel
         run: |
           pip install build==1.6.0 twine==7.0.0
-          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import write_build_stamp; write_build_stamp(Path.cwd())'
+          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.OFFICIAL_RELEASE)'
           trap 'rm -f src/booley/_build_commit.py' EXIT
+          rm -rf build/
           python -m build
           twine check dist/*
 
@@ -112,6 +113,13 @@ jobs:
       - name: Verify CLI entry point
         run: booley --help
 
+      - name: Verify release attestation
+        run: >-
+          python -P -c 'from booley.runtime.build_stamp import
+          embedded_development_context_path, embedded_official_release;
+          assert embedded_official_release() is True;
+          assert not embedded_development_context_path().exists()'
+
       - name: Verify native bwave is not bundled
         run: |
           python -c "from booley.runtime.paths import bwave_binary; p = bwave_binary(); assert not p.exists(), f'unexpected bundled binary: {p}'"
@@ -144,6 +152,7 @@ jobs:
           python -m venv "${RUNNER_TEMP}/sdist-venv"
           "${RUNNER_TEMP}/sdist-venv/bin/pip" install "${RUNNER_TEMP}"/sdist-wheel/*.whl
           "${RUNNER_TEMP}/sdist-venv/bin/booley" --help
+          "${RUNNER_TEMP}/sdist-venv/bin/python" -P -c 'from booley.runtime.build_stamp import embedded_development_context_path, embedded_official_release; assert embedded_official_release() is True; assert not embedded_development_context_path().exists()'
 
   publish:
     needs: [source-validation, test-wheel, test-sdist]

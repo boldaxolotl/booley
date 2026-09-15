@@ -54,7 +54,7 @@ STAMP="$BOOLEY_ROOT/src/booley/_build_commit.py"
 # baked commit it doesn't have (and fails test_absent_stamp_module_yields_none).
 trap 'rm -f "$STAMP"' EXIT
 COMMIT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
-  'import sys; from pathlib import Path; from booley.runtime.build_stamp import write_build_stamp; print(write_build_stamp(Path(sys.argv[1])))' \
+  'import sys; from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; print(write_build_stamp(Path(sys.argv[1]), profile=BuildProfile.RUNTIME_IMAGE))' \
   "$BOOLEY_ROOT")"
 echo ">>> Stamped build commit: ${COMMIT:-<unknown>}"
 

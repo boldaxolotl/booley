@@ -609,6 +609,8 @@ def _docker_local_build(
     docker_dir: Path,
     exists: bool,
     fingerprint: str | None = None,
+    *,
+    preserve_build_stamp: bool = False,
 ) -> None:
     """Build the runtime base, wheel, and candidate image from local sources."""
     inputs = _local_build_inputs(ctx, docker_dir)
@@ -628,7 +630,7 @@ def _docker_local_build(
         ctx.record("docker_image", "err", "runtime-base identity missing")
         return
 
-    if not _docker_build_wheel(ctx, booley_root):
+    if not _docker_build_wheel(ctx, booley_root, preserve_stamp=preserve_build_stamp):
         return
 
     build = _DockerBuildSpec(
@@ -719,19 +721,24 @@ def _report_build_cache(prune_hint_gb: float = 10.0) -> None:
             return
 
 
-def _docker_build_wheel(ctx: InitContext, booley_root: Path) -> bool:
-    """Build the commit-stamped booley wheel into dist/. True on success.
+def _wheel_build_stamp(booley_root: Path, *, preserve_stamp: bool):
+    if not preserve_stamp:
+        return build_stamp(booley_root)
+    stamp_file = booley_root / "src" / "booley" / "_build_commit.py"
+    if not stamp_file.is_file():
+        raise OSError("verified development build stamp is missing")
+    return contextlib.nullcontext("<embedded>")
 
-    The stamp is what lets ``booley --version`` in the built container name the
-    commit it came from; without it every init-driven image reported a bare
-    ``booley <version>`` and the dev-install freshness check was unanswerable
-    (F-3). ``build.sh`` stamps through the same helper.
-    """
+
+def _docker_build_wheel(
+    ctx: InitContext, booley_root: Path, *, preserve_stamp: bool = False
+) -> bool:
+    """Build the provenance-stamped Booley wheel into ``dist/``."""
     dist_dir = booley_root / "dist"
     build_dir = booley_root / "build"
     info("building booley wheel...")
     try:
-        with build_stamp(booley_root) as commit:
+        with _wheel_build_stamp(booley_root, preserve_stamp=preserve_stamp) as commit:
             info(f"  build commit: {commit or '<unknown — not a git checkout>'}")
             # setuptools incrementally reuses build/lib. Package moves otherwise
             # leave deleted modules in the next wheel after a package move.

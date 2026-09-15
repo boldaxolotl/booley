@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from booley.runtime import image_lifecycle as runtime_lifecycle
 from booley.runtime import project_image
+from booley.runtime.build_stamp import embedded_official_release, extracted_development_context
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.version_attribution import VersionOrigin
@@ -32,8 +33,11 @@ Status = runtime_lifecycle.Status
 
 
 class _LegacyBuildAdapter:
-    def __init__(self, project_root: Path, *, verbose: bool) -> None:
+    def __init__(
+        self, project_root: Path, docker: DockerPort | None = None, *, verbose: bool
+    ) -> None:
         self.project_root = project_root
+        self.docker = docker
         self.verbose = verbose
 
     def build(
@@ -64,7 +68,7 @@ class _LegacyBuildAdapter:
 
     def _build_local(self, node: ImageNode, *, force: bool) -> None:
         from booley.harness.setup.common import InitContext
-        from booley.harness.setup.docker_image import _step_docker_image, ensure_flavor_image
+        from booley.harness.setup.docker_image import ensure_flavor_image
 
         context = InitContext(
             project_root=self.project_root,
@@ -73,7 +77,7 @@ class _LegacyBuildAdapter:
             show_step_banners=False,
         )
         if node.reference == BASE_IMAGE:
-            _step_docker_image(context, node.reference, allow_pull=False)
+            self._build_base(node, context)
         elif node.reference in FLAVOR_RECIPES:
             ensure_flavor_image(context, node.reference, allow_pull=False)
         else:
@@ -81,6 +85,36 @@ class _LegacyBuildAdapter:
         failures = [result.detail for result in context.results if result.status == "err"]
         if failures:
             raise ImageLifecycleError("; ".join(failures))
+
+    def _build_base(self, node: ImageNode, context: InitContext) -> None:
+        import booley
+        from booley.harness.setup.docker_image import (
+            _docker_image_exists,
+            _docker_local_build,
+            _step_docker_image,
+        )
+
+        if booley.version_attribution.origin is VersionOrigin.SOURCE:
+            _step_docker_image(context, node.reference, allow_pull=False)
+            return
+        try:
+            with extracted_development_context() as root:
+                docker_dir = root / "src" / "booley" / "data" / "docker"
+                _docker_local_build(
+                    context,
+                    docker_dir,
+                    (
+                        self.docker.image_id(BASE_IMAGE) is not None
+                        if self.docker is not None
+                        else _docker_image_exists(BASE_IMAGE)
+                    ),
+                    node.payload.fingerprint,
+                    preserve_build_stamp=True,
+                )
+        except (OSError, ValueError) as error:
+            raise ImageLifecycleError(
+                f"cannot verify the development Runtime Image build context: {error}"
+            ) from error
 
     def _build_project(self, node: ImageNode, context: InitContext) -> None:
         from booley.harness import init_cmd
@@ -109,8 +143,8 @@ def _docker_adapter() -> DockerPort:
     return runtime_lifecycle._docker_adapter()
 
 
-def _build_adapter(project_root: Path, _docker: DockerPort, *, verbose: bool) -> BuildPort:
-    return _LegacyBuildAdapter(project_root, verbose=verbose)
+def _build_adapter(project_root: Path, docker: DockerPort, *, verbose: bool) -> BuildPort:
+    return _LegacyBuildAdapter(project_root, docker, verbose=verbose)
 
 
 def _artifact_policy() -> ArtifactPolicy:
@@ -120,7 +154,11 @@ def _artifact_policy() -> ArtifactPolicy:
     if booley.version_attribution.origin is VersionOrigin.SOURCE:
         return ArtifactPolicy.LOCAL_ONLY
     if booley.version_attribution.origin is VersionOrigin.DISTRIBUTION:
-        return ArtifactPolicy.VERIFIED_RELEASE_ONLY
+        return (
+            ArtifactPolicy.VERIFIED_RELEASE_ONLY
+            if embedded_official_release()
+            else ArtifactPolicy.LOCAL_ONLY
+        )
     raise ImageLifecycleError(
         "cannot select managed Runtime Images because the running Booley code is "
         "neither an attributed source checkout nor an installed distribution"
