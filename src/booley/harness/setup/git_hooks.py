@@ -17,7 +17,9 @@ it never imports back from ``init_cmd``.
 from __future__ import annotations
 
 import shutil
+import stat
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness.setup.common import (
@@ -130,6 +132,35 @@ _PROJECT_HOOK_HELPERS = {
     "checkout_role.py": Path("core") / "checkout_role.py",
     "run_command.py": Path("core") / "run_command.py",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _VendoredHookAction:
+    name: str
+    source: Path
+    target: Path
+    pending: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _DelegatorHookAction:
+    name: str
+    script_name: str
+    target: Path
+    body: str
+    outcome: WriteOutcome
+
+
+def _vendored_hook_pending(source: Path, target: Path) -> bool:
+    """Whether ``copy2(source, target)`` would reconcile managed state."""
+    if not target.is_file():
+        return True
+    try:
+        return source.read_bytes() != target.read_bytes() or stat.S_IMODE(
+            source.stat().st_mode
+        ) != stat.S_IMODE(target.stat().st_mode)
+    except OSError:
+        return True
 
 
 def _build_hook_delegator_body(
@@ -272,40 +303,115 @@ def _build_pre_push_hook_body(project_root: Path, hooks_dst: Path) -> str:
     )
 
 
-def _step_project_git_hooks(ctx: InitContext) -> None:
-    """Install the commit-msg sanitizer + pre-push leak guard.
-
-    The ``git_hooks`` step installs the leak guard into the project-agnostic
-    .booley/ repo.
-    This step covers the repo the user actually commits from: it vendors the
-    sanitizer scripts into .booley_project/hooks/ and installs repo-relative
-    commit-msg and pre-push delegators into the project's own .git/hooks/.
-    The pre-push guard re-checks outgoing commits because ``git revert`` and
-    ``--no-verify`` bypass commit-msg entirely (F-17).
-
-    Both the scripts and the hook are local to this machine (git hooks never
-    travel with a clone, and .booley_project/ is commonly git-ignored) — they
-    are reproduced on every machine by `booley init`. Source-independence
-    comes from copying out of the installed booley package (dev_support_dir()), not
-    from any Booley source checkout, so end users need only the pip package.
-    """
-    ctx.step_banner("project commit-msg hook")
-
-    project_dir = resolve_project_dir(ctx.project_root)
-    hooks_dst = project_dir / "hooks"
-    src_dir = dev_support_dir()
-    missing = [s for s in _PROJECT_HOOK_SCRIPTS if not (src_dir / s).is_file()]
-    helper_sources = {
-        name: src_dir.parent / relative for name, relative in _PROJECT_HOOK_HELPERS.items()
+def _project_hook_actions(
+    ctx: InitContext,
+    hooks_dst: Path,
+    hooks_dir: Path,
+    src_dir: Path,
+    helper_sources: dict[str, Path],
+) -> tuple[list[_VendoredHookAction], list[_DelegatorHookAction]]:
+    vendored_sources = {
+        **{name: src_dir / name for name in _PROJECT_HOOK_SCRIPTS},
+        **helper_sources,
     }
+    vendored = [
+        _VendoredHookAction(
+            name,
+            source,
+            hooks_dst / name,
+            _vendored_hook_pending(source, hooks_dst / name),
+        )
+        for name, source in vendored_sources.items()
+    ]
+    hook_specs = (
+        (
+            "commit-msg",
+            "commit_msg_hook.py",
+            _build_commit_msg_hook_body(ctx.project_root, hooks_dst),
+        ),
+        ("pre-push", "pre_push_hook.py", _build_pre_push_hook_body(ctx.project_root, hooks_dst)),
+    )
+    delegators = []
+    for name, script_name, body in hook_specs:
+        target = hooks_dir / name
+        outcome = guarded_write(
+            target,
+            body,
+            owner_marker=script_name,
+            backup_suffix=".pre-booley",
+            dry_run=True,
+            newline="\n",
+            executable=True,
+        )
+        delegators.append(_DelegatorHookAction(name, script_name, target, body, outcome))
+    return vendored, delegators
+
+
+def _project_hook_pending_detail(
+    vendored: list[_VendoredHookAction],
+    delegators: list[_DelegatorHookAction],
+) -> str:
+    updates = [action.name for action in vendored if action.pending]
+    updates.extend(
+        action.name
+        for action in delegators
+        if action.outcome
+        not in (
+            WriteOutcome.UNCHANGED,
+            WriteOutcome.SKIPPED,
+            WriteOutcome.BACKED_UP,
+        )
+    )
+    backups = [action.name for action in delegators if action.outcome is WriteOutcome.BACKED_UP]
+    details = []
+    if updates:
+        details.append("would update " + ", ".join(updates))
+    details.extend(f"would back up {name}" for name in backups)
+    return "; ".join(details)
+
+
+def _apply_project_hook_actions(
+    vendored: list[_VendoredHookAction],
+    delegators: list[_DelegatorHookAction],
+) -> None:
+    pending_vendored = [action for action in vendored if action.pending]
+    if pending_vendored:
+        pending_vendored[0].target.parent.mkdir(parents=True, exist_ok=True)
+    for action in pending_vendored:
+        shutil.copy2(action.source, action.target)
+    for action in delegators:
+        outcome = guarded_write(
+            action.target,
+            action.body,
+            owner_marker=action.script_name,
+            backup_suffix=".pre-booley",
+            newline="\n",
+            executable=True,
+        )
+        if outcome is WriteOutcome.BACKED_UP:
+            warn(f"backed up existing {action.name} hook to {action.name}.pre-booley")
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectHookLocations:
+    hooks_dst: Path
+    hooks_dir: Path
+    source_dir: Path
+    helper_sources: dict[str, Path]
+
+
+def _project_hook_locations(ctx: InitContext) -> _ProjectHookLocations | None:
+    project_dir = resolve_project_dir(ctx.project_root)
+    source_dir = dev_support_dir()
+    helper_sources = {
+        name: source_dir.parent / relative for name, relative in _PROJECT_HOOK_HELPERS.items()
+    }
+    missing = [name for name in _PROJECT_HOOK_SCRIPTS if not (source_dir / name).is_file()]
     missing.extend(name for name, source in helper_sources.items() if not source.is_file())
     if missing:
         skip(f"sanitizer scripts not found in developer-support dir: {', '.join(missing)}")
         ctx.record("project_git_hooks", "skip", "sanitizer scripts missing")
-        return
-
-    # Locate the project repo's hooks dir (handles worktrees, where .git is a
-    # file pointing elsewhere) via git itself.
+        return None
     proc = subprocess.run(
         ["git", "-C", str(ctx.project_root), "rev-parse", "--git-path", "hooks"],
         capture_output=True,
@@ -315,52 +421,39 @@ def _step_project_git_hooks(ctx: InitContext) -> None:
     if proc.returncode != 0:
         skip("project root is not a git repo — project commit-msg hook skipped")
         ctx.record("project_git_hooks", "skip", "not a git repo")
+        return None
+    return _ProjectHookLocations(
+        project_dir / "hooks",
+        (ctx.project_root / proc.stdout.strip()).resolve(),
+        source_dir,
+        helper_sources,
+    )
+
+
+def _step_project_git_hooks(ctx: InitContext) -> None:
+    """Vendor and install the Project commit-msg and pre-push guards."""
+    ctx.step_banner("project commit-msg hook")
+    locations = _project_hook_locations(ctx)
+    if locations is None:
         return
-    hooks_dir = (ctx.project_root / proc.stdout.strip()).resolve()
-
-    # (hook filename, delegated vendored script, delegator body)
-    hook_installs = [
-        (
-            "commit-msg",
-            "commit_msg_hook.py",
-            _build_commit_msg_hook_body(ctx.project_root, hooks_dst),
-        ),
-        ("pre-push", "pre_push_hook.py", _build_pre_push_hook_body(ctx.project_root, hooks_dst)),
-    ]
-
+    vendored, delegators = _project_hook_actions(
+        ctx,
+        locations.hooks_dst,
+        locations.hooks_dir,
+        locations.source_dir,
+        locations.helper_sources,
+    )
+    detail = _project_hook_pending_detail(vendored, delegators)
+    if not detail:
+        skip("project commit-msg + pre-push hooks are current")
+        ctx.record("project_git_hooks", "skip", "current")
+        return
     if ctx.check_only:
-        warn("would vendor sanitizer scripts and install project commit-msg and pre-push hooks")
-        ctx.record("project_git_hooks", "warn", "would install")
+        warn(detail)
+        ctx.record("project_git_hooks", "warn", detail)
         return
 
-    hooks_dst.mkdir(parents=True, exist_ok=True)
-    for name in _PROJECT_HOOK_SCRIPTS:
-        shutil.copy2(str(src_dir / name), str(hooks_dst / name))
-    for name, source in helper_sources.items():
-        shutil.copy2(str(source), str(hooks_dst / name))
-
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-    for hook_name, script_name, hook_body in hook_installs:
-        hook_target = hooks_dir / hook_name
-
-        # A hook referencing the vendored script is ours (refreshed in place);
-        # a pre-existing non-Booley hook is backed up, never silently clobbered.
-        # newline="\n" is load-bearing: the default (newline=None) applies OS line
-        # translation, so on a Windows host `#!/bin/sh\n` lands on disk as
-        # `#!/bin/sh\r\n`. The Session Runtime container then tries to exec an
-        # interpreter literally named "/bin/sh\r", which does not exist — an ENOENT
-        # that fails EVERY in-container commit and misleadingly names the hook, not
-        # the interpreter (QA_REPORT D0a). A shell script must always be LF.
-        outcome = guarded_write(
-            hook_target,
-            hook_body,
-            owner_marker=script_name,
-            backup_suffix=".pre-booley",
-            newline="\n",
-            executable=True,
-        )
-        if outcome is WriteOutcome.BACKED_UP:
-            warn(f"backed up existing {hook_name} hook to {hook_name}.pre-booley")
+    _apply_project_hook_actions(vendored, delegators)
 
     ok("project commit-msg + pre-push hooks installed (vendored into .booley_project/hooks/)")
     ctx.record("project_git_hooks", "ok", "installed")

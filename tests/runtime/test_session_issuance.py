@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -66,52 +67,48 @@ def test_pin_image_rejects_reconciled_id_that_changed(
         runtime_spec.pin_image({"image": "booley-sandbox"}, expected_image_id=expected)
 
 
-def test_preview_exposes_only_detached_inputs_and_does_not_persist(
-    tmp_path: Path,
+def _stub_preview_dependencies(
+    project: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
+) -> list[runtime_spec.SessionSpecInputs]:
     captured: list[runtime_spec.SessionSpecInputs] = []
-    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
     build_requirements = SimpleNamespace(
         trusted_mounts=(("/host/tool", "/opt/tool"),),
         container_environment=(("EDA_LICENSE", "server"),),
         installation_name="vivado",
         license_profile_name="floating",
     )
+    leased = SimpleNamespace(
+        build=build_requirements,
+        runtime=SimpleNamespace(private_network=None),
+    )
+    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
     monkeypatch.setattr(
         runtime_spec.eda_requirements,
         "lease_build_requirements",
-        lambda *_args, **_kwargs: nullcontext(
-            SimpleNamespace(
-                build=build_requirements,
-                runtime=SimpleNamespace(private_network=None),
-            )
-        ),
+        lambda *_args, **_kwargs: nullcontext(leased),
     )
-    monkeypatch.setattr(
-        runtime_spec,
-        "authorized_project_data_source",
-        lambda _project: project,
-    )
+    monkeypatch.setattr(runtime_spec, "authorized_project_data_source", lambda _root: project)
     monkeypatch.setattr(
         runtime_spec,
         "pin_image",
         lambda spec, **_kwargs: spec.update(image="sha256:pinned") or spec["image"],
     )
-    monkeypatch.setattr(
-        runtime_spec,
-        "_pin_initialize_command",
-        lambda _project, _spec: None,
-    )
+    monkeypatch.setattr(runtime_spec, "_pin_initialize_command", lambda *_args: None)
     monkeypatch.setattr(runtime_spec, "_pin_project_data_mount", lambda *_args: None)
     monkeypatch.setattr(runtime_spec, "_pin_devcontainer_mount", lambda *_args: None)
-    monkeypatch.setattr(
-        runtime_spec,
-        "_seal_with_requirements",
-        lambda *_args: "digest",
-    )
+    monkeypatch.setattr(runtime_spec, "_seal_with_requirements", lambda *_args: "digest")
+    monkeypatch.setattr(runtime_spec, "_prospective_issuance", lambda *_args: SimpleNamespace())
+    return captured
+
+
+def test_preview_exposes_only_detached_inputs_and_does_not_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    captured = _stub_preview_dependencies(project, monkeypatch)
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
         captured.append(inputs)
@@ -124,7 +121,94 @@ def test_preview_exposes_only_detached_inputs_and_does_not_persist(
     assert captured == [prepared.inputs]
     assert prepared.inputs.project_data_source == project
     assert prepared.inputs.trusted_eda_mounts == (("/host/tool", "/opt/tool"),)
+    assert prepared.prospective_issuance is not None
     assert not (project / ".devcontainer" / "devcontainer.json").exists()
+
+
+def test_issue_prepared_revalidates_authority_and_persists_exact_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    inputs = runtime_spec.SessionSpecInputs(project, (), (), None, None)
+    spec = {"image": "sha256:pinned", "runArgs": []}
+    prospective = SimpleNamespace()
+    prepared = runtime_spec.PreparedSessionSpec(spec, "digest", inputs, prospective)
+    leased = SimpleNamespace(build=SimpleNamespace(), runtime=SimpleNamespace())
+    requirements = SimpleNamespace()
+    issuance = SimpleNamespace()
+    persist = Mock(return_value=issuance)
+    events: list[str] = []
+    monkeypatch.setattr(runtime_spec, "_spec_digest", lambda value: "digest")
+    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: False)
+    monkeypatch.setattr(
+        runtime_spec.eda_requirements,
+        "lease_build_requirements",
+        lambda *_args, **_kwargs: nullcontext(leased),
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "_session_spec_inputs",
+        lambda *_args: events.append("validate authority") or inputs,
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "_prospective_issuance",
+        lambda *_args: events.append("validate policy") or prospective,
+    )
+    monkeypatch.setattr(
+        runtime_spec.eda_requirements,
+        "prepare_runtime_dependencies",
+        lambda *_args, **_kwargs: events.append("prepare dependencies") or requirements,
+    )
+    monkeypatch.setattr(runtime_spec, "_persist_prepared", persist)
+
+    result = runtime_spec.issue_prepared(project, prepared)
+
+    assert result is issuance
+    assert events == ["validate authority", "validate policy", "prepare dependencies"]
+    persist.assert_called_once_with(project, prepared, requirements=requirements)
+
+
+def test_issue_prepared_rejects_authority_drift_before_persisting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    prospective = SimpleNamespace()
+    prepared = runtime_spec.PreparedSessionSpec(
+        {"image": "sha256:pinned", "runArgs": []},
+        "digest",
+        runtime_spec.SessionSpecInputs(project, (), (), None, None),
+        prospective,
+    )
+    changed = runtime_spec.SessionSpecInputs(project, (), (), None, "changed")
+    leased = SimpleNamespace(build=SimpleNamespace(), runtime=SimpleNamespace())
+    persist = Mock()
+    prepare_dependencies = Mock(side_effect=pytest.fail)
+    monkeypatch.setattr(runtime_spec, "_spec_digest", lambda value: "digest")
+    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: False)
+    monkeypatch.setattr(
+        runtime_spec.eda_requirements,
+        "lease_build_requirements",
+        lambda *_args, **_kwargs: nullcontext(leased),
+    )
+    monkeypatch.setattr(runtime_spec, "_session_spec_inputs", lambda *_args: changed)
+    monkeypatch.setattr(runtime_spec, "_prospective_issuance", lambda *_args: prospective)
+    monkeypatch.setattr(
+        runtime_spec.eda_requirements,
+        "prepare_runtime_dependencies",
+        prepare_dependencies,
+    )
+    monkeypatch.setattr(runtime_spec, "_persist_prepared", persist)
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="authority changed"):
+        runtime_spec.issue_prepared(project, prepared)
+
+    prepare_dependencies.assert_not_called()
+    persist.assert_not_called()
 
 
 def test_prepared_issue_restores_previous_spec_when_issuance_fails(
@@ -306,6 +390,7 @@ def _concurrent_licensed_project(
     monkeypatch.setattr(runtime_spec, "_pin_project_data_mount", lambda *_args: None)
     monkeypatch.setattr(runtime_spec, "_pin_devcontainer_mount", lambda *_args: None)
     monkeypatch.setattr(runtime_spec, "_seal_with_requirements", lambda *_args: "digest")
+    monkeypatch.setattr(runtime_spec, "_prospective_issuance", lambda *_args: SimpleNamespace())
     monkeypatch.setattr(eda_grants, "cleanup_project_resources_for_identity", lambda _root: ())
     return project
 
@@ -402,6 +487,46 @@ def test_every_project_requires_exact_host_stamp(issued) -> None:
     runtime_spec.stamp_path(project).unlink()
     with pytest.raises(runtime_spec.RuntimeSpecError, match="missing or corrupt"):
         runtime_spec.validate(project, spec, path)
+
+
+def test_inspect_prepared_accepts_exact_current_issuance(issued) -> None:
+    project, spec, _path, stamp = issued
+    prepared = runtime_spec.PreparedSessionSpec(
+        spec=spec,
+        digest=stamp.spec_sha256,
+        inputs=runtime_spec.SessionSpecInputs(project / ".booley_project", (), (), None, None),
+    )
+
+    assert runtime_spec.inspect_prepared(project, prepared) == stamp
+
+
+def test_inspect_prepared_rejects_different_desired_spec(issued) -> None:
+    project, spec, _path, _stamp = issued
+    desired = json.loads(json.dumps(spec))
+    desired["name"] = "changed desired spec"
+    prepared = runtime_spec.PreparedSessionSpec(
+        spec=desired,
+        digest=runtime_spec._spec_digest(desired),
+        inputs=runtime_spec.SessionSpecInputs(project / ".booley_project", (), (), None, None),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="prepared specification"):
+        runtime_spec.inspect_prepared(project, prepared)
+
+
+def test_inspect_prepared_rejects_missing_document_without_creating_it(issued) -> None:
+    project, spec, path, stamp = issued
+    path.unlink()
+    prepared = runtime_spec.PreparedSessionSpec(
+        spec=spec,
+        digest=stamp.spec_sha256,
+        inputs=runtime_spec.SessionSpecInputs(project / ".booley_project", (), (), None, None),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="missing"):
+        runtime_spec.inspect_prepared(project, prepared)
+
+    assert not path.exists()
 
 
 def test_legacy_registrar_remains_valid_for_issued_specs(

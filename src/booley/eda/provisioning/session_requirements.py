@@ -83,8 +83,6 @@ def lease_build_requirements(
     project_root: Path,
     *,
     vivado_enabled: bool,
-    prepare_relay: bool = False,
-    force_relay: bool = False,
 ) -> Iterator[LeasedSessionRequirements]:
     """Hold one coherent EDA snapshot through Runtime spec persistence."""
     project = project_root.resolve(strict=True)
@@ -102,20 +100,40 @@ def lease_build_requirements(
             installation,
             profile,
         ):
-            if profile is not None and prepare_relay:
-                ensure_relay_image(force=force_relay)
             runtime = _requirements(
                 project,
                 installation,
                 profile,
-                include_relay_identity=prepare_relay,
+                include_relay_identity=False,
             )
             yield LeasedSessionRequirements(
                 _build_values(installation, profile),
                 runtime,
             )
-    except (authority.AuthorityError, RelayDockerError) as exc:
+    except authority.AuthorityError as exc:
         raise SessionRequirementsError(str(exc)) from exc
+
+
+def prepare_runtime_dependencies(
+    project_root: Path,
+    leased: LeasedSessionRequirements,
+    *,
+    force_relay: bool = False,
+) -> SessionEdaRequirements:
+    """Prepare mutable dependencies after a caller validates one leased snapshot."""
+    installation = leased.runtime.installation
+    profile = leased.runtime.license_profile
+    try:
+        if profile is not None:
+            ensure_relay_image(force=force_relay)
+    except RelayDockerError as exc:
+        raise SessionRequirementsError(str(exc)) from exc
+    return _requirements(
+        project_root,
+        installation,
+        profile,
+        include_relay_identity=profile is not None,
+    )
 
 
 def _build_values(

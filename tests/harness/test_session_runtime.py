@@ -1061,6 +1061,22 @@ def _refresh_state(
 
 
 class TestInitReconciliation:
+    def test_plan_reports_stopped_old_runtime_without_removing_it(self, workspace: Path) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(running=False)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            patch.object(sr, "_relay_objects_exist", return_value=False),
+        ):
+            plan = sr.plan_stopped_headless_runtime_reconciliation(workspace, issuance)
+
+        assert plan.pending
+        remove.assert_not_called()
+
     def test_removes_only_a_stopped_owned_runtime_from_an_old_issuance(
         self, workspace: Path
     ) -> None:

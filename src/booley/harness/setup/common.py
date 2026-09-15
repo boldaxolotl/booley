@@ -124,6 +124,41 @@ class WriteOutcome(Enum):
     BACKED_UP = "backed_up"  # foreign file copied aside, then overwritten
 
 
+def _read_existing_text(target: Path, *, preserve_newlines: bool) -> str:
+    """Read managed text with exact line endings when the writer pins them."""
+    if not preserve_newlines:
+        return target.read_text(encoding="utf-8", errors="replace")
+    with target.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        return handle.read()
+
+
+def _planned_write_outcome(
+    target: Path,
+    content: str,
+    *,
+    owner_marker: str | None,
+    backup_suffix: str | None,
+    newline: str | None,
+) -> WriteOutcome:
+    if not target.exists():
+        return WriteOutcome.WRITTEN
+    if owner_marker is None:
+        return WriteOutcome.SKIPPED
+    try:
+        existing = _read_existing_text(target, preserve_newlines=newline is not None)
+    except OSError:
+        existing = None
+    if existing is not None and owner_marker in existing:
+        return WriteOutcome.UNCHANGED if existing == content else WriteOutcome.WRITTEN
+    return WriteOutcome.BACKED_UP if backup_suffix is not None else WriteOutcome.REFUSED
+
+
+def _executable_mode_pending(target: Path, outcome: WriteOutcome, executable: bool) -> bool:
+    return bool(
+        outcome is WriteOutcome.UNCHANGED and executable and target.stat().st_mode & 0o111 != 0o111
+    )
+
+
 def guarded_write(
     target: Path,
     content: str,
@@ -134,31 +169,11 @@ def guarded_write(
     newline: str | None = None,
     executable: bool = False,
 ) -> WriteOutcome:
-    """Write a scaffolded file without ever clobbering user-owned content.
+    """Reconcile one scaffold file according to its explicit ownership policy.
 
-    The one clobber-guard for init's write sites, replacing the historical
-    per-site schemes (bare ``.exists()``, ``_SYSTEMD_MARKER``, "already ours"
-    hook content sniffs). Ownership policy:
-
-    - ``owner_marker=None`` — *create-only*: the file is user-owned the moment
-      it exists; an existing file is never touched (``SKIPPED``). For
-      skeletons the user fills in (booley.toml, the .core).
-    - ``owner_marker=<str>`` — *managed*: a file containing the marker is
-      booley-owned and is refreshed when the content differs; one without it
-      is foreign and is left untouched (``REFUSED``) — unless
-      ``backup_suffix`` is given, in which case the foreign file is first
-      copied to ``<name><backup_suffix>`` and then overwritten
-      (``BACKED_UP``). *content* must itself carry the marker, or the next
-      run would refuse booley's own file.
-
-    ``dry_run`` computes the outcome without touching the filesystem (the
-    ``--check-only`` contract). ``newline="\\n"`` forces LF (shell scripts —
-    a CRLF shebang is an ENOENT in the container, QA_REPORT D0a).
-    ``executable`` sets +x, also on ``UNCHANGED`` so a stripped bit heals.
-
-    The docker-image files keep their richer scheme (``_GENERATED_HEADER`` +
-    ``# booley:keep`` in ``project_image.py``): there an *edited* generated
-    file must flip to user-owned, which a containment marker cannot express.
+    Marker-free files become user-owned when created. Marker-bearing files are
+    managed and may optionally back up foreign predecessors. ``dry_run`` returns
+    the exact prospective outcome, including required executable-mode repair.
     """
     if owner_marker is not None and owner_marker not in content:
         raise ValueError(
@@ -166,25 +181,21 @@ def guarded_write(
             f"{owner_marker!r} — the next init run would refuse booley's own file"
         )
 
-    exists = target.exists()
-    if not exists:
-        outcome = WriteOutcome.WRITTEN
-    elif owner_marker is None:
-        return WriteOutcome.SKIPPED
-    else:
-        try:
-            existing = target.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            existing = None  # unreadable — treat as foreign
-        if existing is not None and owner_marker in existing:
-            outcome = WriteOutcome.UNCHANGED if existing == content else WriteOutcome.WRITTEN
-        elif backup_suffix is not None:
-            outcome = WriteOutcome.BACKED_UP
-        else:
-            return WriteOutcome.REFUSED
-
-    if dry_run:
+    outcome = _planned_write_outcome(
+        target,
+        content,
+        owner_marker=owner_marker,
+        backup_suffix=backup_suffix,
+        newline=newline,
+    )
+    if outcome in (WriteOutcome.SKIPPED, WriteOutcome.REFUSED):
         return outcome
+    if dry_run:
+        return (
+            WriteOutcome.WRITTEN
+            if _executable_mode_pending(target, outcome, executable)
+            else outcome
+        )
 
     if outcome is WriteOutcome.BACKED_UP:
         shutil.copy2(target, target.with_name(target.name + backup_suffix))

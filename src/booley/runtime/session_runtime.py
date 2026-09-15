@@ -1452,6 +1452,67 @@ def _remove_stopped_session_container(name: str) -> None:
     logger.info("removed stopped stale Session Runtime %r", name)
 
 
+@dataclass(frozen=True, slots=True)
+class StoppedHeadlessRuntimePlan:
+    """Read-only reconciliation decision for init-owned headless resources."""
+
+    container_name: str | None = None
+    relay: object | None = None
+
+    @property
+    def pending(self) -> bool:
+        return self.container_name is not None or self.relay is not None
+
+
+def _stale_relay_for_plan(
+    workspace: Path,
+    issuance: Issuance,
+    project_id: str,
+    *,
+    excluding: str = "",
+    check_sessions: bool = True,
+) -> object | None:
+    relay = _relay_resources(workspace)
+    if not _relay_objects_exist(relay) or _relay_matches_issuance(relay, issuance):
+        return None
+    if check_sessions:
+        _assert_no_other_project_sessions(project_id, excluding=excluding)
+    return relay
+
+
+def plan_stopped_headless_runtime_reconciliation(
+    workspace: Path,
+    issuance: Issuance,
+) -> StoppedHeadlessRuntimePlan:
+    """Inspect the cleanup ordinary init would apply, without changing Docker."""
+    name = session_container_name(workspace)
+    project_id = _refresh_project_id(issuance)
+    state = _strict_refresh_container(name)
+    if state is None:
+        relay = _stale_relay_for_plan(workspace, issuance, project_id)
+        return StoppedHeadlessRuntimePlan(relay=relay)
+    _assert_refresh_container_owned(name, state, project_id)
+    current = _refresh_candidate_matches(state, issuance)
+    if state["State"]["Running"]:
+        if not current:
+            raise SessionError(
+                f"running Session Runtime {name!r} uses an older host issuance; "
+                "stop it and retry `booley init`"
+            )
+        return StoppedHeadlessRuntimePlan()
+    if current:
+        return StoppedHeadlessRuntimePlan()
+    _assert_no_other_project_sessions(project_id, excluding=name)
+    relay = _stale_relay_for_plan(
+        workspace,
+        issuance,
+        project_id,
+        excluding=name,
+        check_sessions=False,
+    )
+    return StoppedHeadlessRuntimePlan(container_name=name, relay=relay)
+
+
 def reconcile_stopped_headless_runtime(
     workspace: Path,
     issuance: Issuance,
@@ -1463,41 +1524,13 @@ def reconcile_stopped_headless_runtime(
     make the next ``session up`` fail. Active containers are left alone, and the
     canonical name is never modified until its Project ownership is proven.
     """
-    name = session_container_name(workspace)
-    project_id = _refresh_project_id(issuance)
-    state = _strict_refresh_container(name)
-    if state is None:
-        return _reconcile_stale_orphan_relay(workspace, issuance, project_id)
-    _assert_refresh_container_owned(name, state, project_id)
-    current = _refresh_candidate_matches(state, issuance)
-    if state["State"]["Running"]:
-        if not current:
-            raise SessionError(
-                f"running Session Runtime {name!r} uses an older host issuance; "
-                "stop it and retry `booley init`"
-            )
-        return False
-    if current:
-        return False
-    _assert_no_other_project_sessions(project_id, excluding=name)
-    _remove_stopped_session_container(name)
-    _reconcile_stale_orphan_relay(workspace, issuance, project_id)
-    logger.info("reconciled stopped headless Session Runtime %r", name)
-    return True
-
-
-def _reconcile_stale_orphan_relay(
-    workspace: Path,
-    issuance: Issuance,
-    project_id: str,
-) -> bool:
-    """Finish removal of relay resources left by an older issuance."""
-    relay = _relay_resources(workspace)
-    if not _relay_objects_exist(relay) or _relay_matches_issuance(relay, issuance):
-        return False
-    _assert_no_other_project_sessions(project_id)
-    _remove_license_relay(relay)
-    return True
+    plan = plan_stopped_headless_runtime_reconciliation(workspace, issuance)
+    if plan.container_name is not None:
+        _remove_stopped_session_container(plan.container_name)
+        logger.info("reconciled stopped headless Session Runtime %r", plan.container_name)
+    if plan.relay is not None:
+        _remove_license_relay(plan.relay)
+    return plan.pending
 
 
 def _relay_matches_issuance(
