@@ -344,6 +344,12 @@ class TestInitStampsItsWheel:
         assert seen == ["COMMIT = 'embedded'\n"]
         assert stamp_path(repo).is_file()
 
+    def test_verified_stamp_is_required_for_embedded_context(self, repo: Path):
+        ctx = InitContext()
+
+        assert not init_docker_image._docker_build_wheel(ctx, repo, preserve_stamp=True)
+        assert ctx.results[-1].detail == "wheel build failed"
+
     def test_wheel_build_removes_stale_staging_tree(self, repo: Path, monkeypatch):
         stale_module = repo / "build" / "lib" / "booley" / "tools" / "legacy.py"
         stale_module.parent.mkdir(parents=True)
