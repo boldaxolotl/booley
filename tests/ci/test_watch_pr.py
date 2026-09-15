@@ -360,6 +360,7 @@ def test_every_outcome_has_an_explicit_exit_mapping() -> None:
     assert mapped == set(watch_pr.Outcome)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
 def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path) -> None:
     log = tmp_path / "commands.log"
     long_url = "https://github.com/example/repo/pull/" + "x" * 10_000
