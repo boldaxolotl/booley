@@ -91,13 +91,13 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
-        "D26",
+        "D27",
         (prefix("booley.targets"),),
         (prefix("booley.flows"), prefix("booley.runtime")),
         "Target inspection uses shared build identity without Flow execution or Runtime",
     ),
     DirectionRule(
-        "D27",
+        "D28",
         (prefix("booley.fusesoc"),),
         (prefix("booley.runtime"),),
         "FuseSoC provenance consumes pure Scope matching without Runtime or Git execution",
@@ -146,6 +146,18 @@ DIRECTION_RULES = (
             )
         ),
         "Shared private storage, locking, and package resources do not own caller policy",
+    ),
+    DirectionRule(
+        "D26",
+        (exact("booley.harness.host_diagnostics"), exact("booley.harness.setup.readiness")),
+        (
+            exact("booley.harness.doctor"),
+            exact("booley.harness.init_cmd"),
+            exact("booley.harness.booley"),
+            exact("booley.harness.colors"),
+            exact("booley.harness.setup.common"),
+        ),
+        "diagnostic owners return observations without command orchestration or rendering",
     ),
     DirectionRule(
         "D22",
