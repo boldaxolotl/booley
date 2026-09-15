@@ -14,6 +14,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from booley.core.boundary import (
     BoundaryError,
@@ -95,6 +96,7 @@ class Snapshot:
     head_sha: str | None
     labels: frozenset[str] = frozenset()
     checks: tuple[Check, ...] = ()
+    required_check_names: frozenset[str] = frozenset()
     mergify_state: str | None = None
     comments: tuple[Comment, ...] = ()
 
@@ -258,8 +260,31 @@ def _parse_rollup(value: Any) -> str | None:
     return mergify_state
 
 
+def _parse_required_check_names(value: Any) -> frozenset[str]:
+    names: set[str] = set()
+    for index, raw in enumerate(_json_list(value, "branch rules")):
+        rule = _json_object(raw, f"branch rules[{index}]")
+        if _text(rule.get("type"), f"branch rules[{index}].type") != "required_status_checks":
+            continue
+        parameters = _json_object(rule.get("parameters"), f"branch rules[{index}].parameters")
+        checks = _json_list(
+            parameters.get("required_status_checks"),
+            f"branch rules[{index}].required_status_checks",
+        )
+        for check_index, check_raw in enumerate(checks):
+            check = _json_object(check_raw, f"required_status_checks[{check_index}]")
+            name = _text(check.get("context"), f"required_status_checks[{check_index}].context")
+            names.add(name)
+    return frozenset(names)
+
+
 def _snapshot_from_json(
-    pull: Any, checks: Any, comments: Any, *, require_comments: bool
+    pull: Any,
+    checks: Any,
+    comments: Any,
+    *,
+    require_comments: bool,
+    required_check_names: frozenset[str] = frozenset(),
 ) -> Snapshot:
     pr = _json_object(pull, "pull request")
     url = _text(pr.get("url"), "pull request.url")
@@ -285,6 +310,7 @@ def _snapshot_from_json(
         head_sha=head_sha,
         labels=frozenset(labels),
         checks=parsed_checks,
+        required_check_names=required_check_names,
         mergify_state=mergify_state,
         comments=parsed_comments,
     )
@@ -374,8 +400,12 @@ class GhTransport:
         raise WatchError("gh read failed")
 
     def _pull(self, repo: str, pr: int, deadline: float) -> Any:
-        fields = "state,mergedAt,headRefOid,url,labels,statusCheckRollup"
+        fields = "state,mergedAt,headRefOid,baseRefName,url,labels,statusCheckRollup"
         return self._read(["pr", "view", str(pr), "--repo", repo, "--json", fields], deadline)
+
+    def _required_checks(self, repo: str, branch: str, deadline: float) -> frozenset[str]:
+        path = f"repos/{repo}/rules/branches/{quote(branch, safe='')}"
+        return _parse_required_check_names(self._read(["api", path], deadline))
 
     def _checks(self, repo: str, pr: int, deadline: float) -> Any:
         fields = "name,state,bucket,link,startedAt,completedAt,workflow"
@@ -395,6 +425,8 @@ class GhTransport:
         if str(first_obj.get("state", "")).lower() == "closed":
             return _snapshot_from_json(first, [], [], require_comments=False)
         first_head = _text(first_obj.get("headRefOid"), "pull request.headRefOid", optional=True)
+        base_branch = _text(first_obj.get("baseRefName"), "pull request.baseRefName")
+        required_check_names = self._required_checks(repo, base_branch, deadline)
         checks = self._checks(repo, pr, deadline)
         final = self._pull(repo, pr, deadline)
         final_obj = _json_object(final, "pull request")
@@ -402,7 +434,13 @@ class GhTransport:
         if first_head != final_head:
             first_url = _text(first_obj.get("url"), "pull request.url")
             raise HeadChangedError(first_head, final_head, first_url)
-        return _snapshot_from_json(final, checks, [], require_comments=False)
+        return _snapshot_from_json(
+            final,
+            checks,
+            [],
+            require_comments=False,
+            required_check_names=required_check_names,
+        )
 
     def queue_snapshot(self, repo: str, pr: int, deadline: float) -> Snapshot:
         pull = self._pull(repo, pr, deadline)
@@ -479,7 +517,8 @@ def classify_ci(snapshot: Snapshot, expected_head: str) -> Decision:
     if snapshot.state == "closed":
         return Decision(Outcome.CLOSED, True)
     current = _latest_checks(snapshot.checks, expected_head)
-    if not current:
+    observed_names = {check.name for check in current}
+    if not current or not snapshot.required_check_names.issubset(observed_names):
         return Decision(Outcome.PENDING, False)
     failures = tuple(check for check in current if check.bucket in {"fail", "cancel"})
     if failures:

@@ -81,6 +81,7 @@ def snapshot(
     merged_at: str | None = None,
     labels: set[str] | None = None,
     checks: tuple[watch_pr.Check, ...] = (),
+    required_check_names: set[str] | None = None,
     mergify_state: str | None = None,
     comments: tuple[watch_pr.Comment, ...] = (),
 ) -> watch_pr.Snapshot:
@@ -91,6 +92,7 @@ def snapshot(
         head,
         frozenset(labels or set()),
         checks,
+        frozenset(required_check_names or set()),
         mergify_state,
         comments,
     )
@@ -134,6 +136,18 @@ def test_ci_empty_checks_never_establish_success() -> None:
 
     assert result.outcome == "timeout"
     assert clock.sleeps == [60, 40]
+
+
+def test_ci_waits_for_required_check_that_has_not_appeared() -> None:
+    state = snapshot(
+        checks=(check(name="confidential-content", bucket="pass"),),
+        required_check_names={"confidential-content", "ci-required"},
+    )
+
+    decision = watch_pr.classify_ci(state, HEAD)
+
+    assert decision.outcome == "pending"
+    assert decision.terminal is False
 
 
 @pytest.mark.parametrize("bucket", ["skipping", "pending"])
@@ -339,9 +353,11 @@ def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path
         "import json, os, sys\n"
         f"open({str(log)!r}, 'a', encoding='utf-8').write(' '.join(sys.argv[1:]) + '\\n')\n"
         "if sys.argv[1:3] == ['pr', 'view']:\n"
-        f"    print(json.dumps({{'url': {long_url!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'labels': [], 'statusCheckRollup': []}}))\n"
+        f"    print(json.dumps({{'url': {long_url!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'baseRefName': 'main', 'labels': [], 'statusCheckRollup': []}}))\n"
         "elif sys.argv[1:3] == ['pr', 'checks']:\n"
         "    print(json.dumps([{'name': 'ci-required', 'state': 'SUCCESS', 'bucket': 'pass', 'link': 'https://ci.example/run/1', 'startedAt': None, 'completedAt': None, 'workflow': 'CI'}]))\n"
+        "elif sys.argv[1] == 'api':\n"
+        "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n"
         "else:\n"
         "    raise SystemExit('unexpected command')\n",
         encoding="utf-8",
@@ -373,12 +389,15 @@ def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path
     assert len(lines) == 2
     summary = json.loads(lines[1])
     assert summary["outcome"] == "ci_passed"
-    assert summary["query_count"] == 3
+    assert summary["query_count"] == 4
     assert len(summary["pr_url"]) == watch_pr.MAX_LINK_LENGTH
     assert all(len(line) <= watch_pr.MAX_OUTPUT_LINE_LENGTH for line in lines)
     commands = log.read_text(encoding="utf-8").splitlines()
     assert "--required" in "\n".join(commands)
-    assert all(line.split()[:2] in (["pr", "view"], ["pr", "checks"]) for line in commands)
+    assert all(
+        line.split()[:2] in (["pr", "view"], ["pr", "checks"]) or line.split()[0] == "api"
+        for line in commands
+    )
 
 
 def test_cli_rejects_overlong_repo_without_echoing_it() -> None:
@@ -440,9 +459,11 @@ def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
         "#!/usr/bin/python3\n"
         "import json, sys\n"
         "if sys.argv[1:3] == ['pr', 'view']:\n"
-        f"    print(json.dumps({{'url': {URL!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'labels': [], 'statusCheckRollup': []}}))\n"
+        f"    print(json.dumps({{'url': {URL!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'baseRefName': 'main', 'labels': [], 'statusCheckRollup': []}}))\n"
         "elif sys.argv[1:3] == ['pr', 'checks']:\n"
-        "    print('[]')\n",
+        "    print('[]')\n"
+        "elif sys.argv[1] == 'api':\n"
+        "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n",
         encoding="utf-8",
     )
     fake_gh.chmod(fake_gh.stat().st_mode | 0o111)
