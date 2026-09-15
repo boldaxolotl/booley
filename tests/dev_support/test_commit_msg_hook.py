@@ -26,7 +26,7 @@ def _project_hook_has_no_ambient_source_policy():
 
 
 class TestSanitizeMessage:
-    """Bodies survive — redacted, never truncated (F-11); trailers are dropped."""
+    """Bodies survive redacted (F-11); recognized attribution is rejected."""
 
     def test_keeps_body_on_normal_commit(self):
         """The body is authored work: redact it, don't throw it away (F-11)."""
@@ -91,6 +91,40 @@ class TestSanitizeMessage:
 
         assert result == ("fix(core): repair widget\n\nredacted with care by the whole team.\n")
 
+    def test_plain_generated_prose_containing_protected_term_is_not_attribution(
+        self, tmp_path: Path
+    ):
+        config = tmp_path / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text(
+            '[stealth]\nbanned_words = ["generated", "docker"]\n',
+            encoding="utf-8",
+        )
+
+        result = sanitize_message(
+            "fix(core): repair widget\n\nGenerated with Docker for reproducibility.\n",
+            tmp_path,
+        )
+
+        assert (
+            result == "fix(core): repair widget\n\nredacted with redacted for reproducibility.\n"
+        )
+
+    def test_plain_identity_shape_before_final_prose_is_not_a_footer(self, tmp_path: Path):
+        config = tmp_path / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text(
+            '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
+            encoding="utf-8",
+        )
+
+        result = sanitize_message(
+            "fix(core): repair widget\n\nGenerated with assistant-identity\nMore details.\n",
+            tmp_path,
+        )
+
+        assert result == "fix(core): repair widget\n\nredacted with redacted\nMore details.\n"
+
     def test_empty_vocabulary_leaves_plain_shape_but_rejects_structural_shape(
         self, tmp_path: Path
     ):
@@ -126,10 +160,12 @@ class TestSanitizeMessage:
         assert sanitize_message("fix(a): x\nBody\n") == "fix(a): x\n\nBody\n"
 
     def test_honest_prose_is_redacted_not_deleted(self):
-        """Only the 🤖 footer and Co-Authored-By: are droppable. A sentence that
-        merely trips the banned list keeps its shape — a mangled word is
-        recoverable, a deleted line is not. ('generated' is on the list, so an
-        attribution-shaped rule would have eaten this real sentence.)"""
+        """Attribution is rejected before sanitization; other prose is redacted.
+
+        A sentence that merely trips the banned list keeps its shape — a
+        mangled word is recoverable, a deleted line is not. ("generated" is on
+        the list, so a blanket attribution rule would have eaten this sentence.)
+        """
         msg = "fix(core): repair widget\n\nGenerated with care by the whole team.\n"
         result = sanitize_message(msg)
         assert "with care by the whole team." in result

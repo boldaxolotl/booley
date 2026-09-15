@@ -57,6 +57,8 @@ _GENERATED_WITH_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_MARKDOWN_LINK_RE = re.compile(r"^\[(?P<label>[^]]+)\]\([^)]+\)$")
+
 
 def split_subject_body(msg: str) -> tuple[str, str]:
     """Normalize line endings, drop git's ``#`` comment lines, split subject/body.
@@ -80,15 +82,33 @@ def _trim_blank_edges(body: str) -> str:
     return "\n".join(lines)
 
 
+def _payload_names_protected_identity(
+    payload: str,
+    project_root: Path | None = None,
+) -> bool:
+    """Return whether an attribution payload is exactly one protected name."""
+    link = _MARKDOWN_LINK_RE.fullmatch(payload)
+    visible_name = (link.group("label") if link else payload).strip()
+    return any(
+        visible_name.casefold() == protected_name.casefold()
+        for protected_name in find_banned(visible_name, project_root)
+    )
+
+
 def _has_machine_attribution(body: str, project_root: Path | None = None) -> bool:
     """Return whether the body contains a recognized attribution footer."""
-    for line in body.split("\n"):
+    lines = body.split("\n")
+    for line in lines:
         if _STRUCTURAL_ATTRIBUTION_LINE_RE.match(line):
             return True
-        match = _GENERATED_WITH_LINE_RE.fullmatch(line)
-        if match and find_banned(match.group("payload"), project_root):
-            return True
-    return False
+
+    # Plain "Generated with ..." text is ambiguous, so only the final nonblank
+    # body line has footer shape. Its visible payload must be exactly one
+    # protected vocabulary entry: merely mentioning a protected term inside an
+    # authored sentence remains ordinary prose and takes the redaction path.
+    footer = next((line for line in reversed(lines) if line.strip()), "")
+    match = _GENERATED_WITH_LINE_RE.fullmatch(footer)
+    return bool(match and _payload_names_protected_identity(match.group("payload"), project_root))
 
 
 def sanitize_body(body: str, project_root: Path | None = None) -> str:

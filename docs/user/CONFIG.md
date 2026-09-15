@@ -835,10 +835,13 @@ prose. An already-installed hook no-ops at commit time when the flag is off.
 banned phrases substituted in place; the hook prints what it rewrote. Recognized
 attribution is different: `Co-Authored-By:` and robot-prefixed footer lines are
 always rejected, while a plain "Generated with …" footer is rejected only when
-its payload matches the active banned-word vocabulary. The hook leaves the raw
-message unchanged and tells you to remove the footer and retry. This avoids both
-silent deletion and recognizable redaction debris while preserving ordinary
-prose such as "Generated with care by the whole team."
+it is the final nonblank body line and its entire visible payload matches one
+entry in the active banned-word vocabulary. Markdown-linked payloads are
+compared by their visible label. The hook leaves the raw message unchanged and
+tells you to remove the footer and retry. This avoids both silent deletion and
+recognizable redaction debris while preserving ordinary prose such as
+"Generated with care by the whole team" or "Generated with Docker for
+reproducibility."
 
 An empty `banned_words = []` disables vocabulary redaction and therefore cannot
 confirm that an ambiguous plain "Generated with …" line names a protected
