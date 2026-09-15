@@ -3571,9 +3571,29 @@ def _tb_args(scope: str = "verif/mod_a_tb.sv") -> list[str]:
 @pytest.fixture()
 def ticket_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A logs dir with a mounted ticket snapshot, as Ticket Mode provides."""
+    from booley.ticket_board.ticket_document import (
+        TicketAuthoringView,
+        TicketConversionContext,
+        convert_ticket_document,
+    )
+
     logs = tmp_path / "logs"
     logs.mkdir()
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+
+    def converted_ticket():
+        path = logs / "ticket.md"
+        if not path.is_file():
+            return None, ""
+        view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ())
+        result = convert_ticket_document(
+            path.read_text(encoding="utf-8"),
+            TicketConversionContext("draft", lambda _generated: view),
+        )
+        assert result.document is not None, result.diagnostics
+        return result.document, str(path)
+
+    monkeypatch.setattr("booley.specialists.reviewer._load_ticket_document", converted_ticket)
     return logs
 
 
@@ -3581,7 +3601,15 @@ def _write_ticket(
     logs: Path, ticket_type: str = "feature", body: str = "Latency is 3 cycles."
 ) -> None:
     (logs / "ticket.md").write_text(
-        f"---\nsummary: t\ntype: {ticket_type}\n---\n\n{body}\n", encoding="utf-8"
+        "---\n"
+        "summary: t\n"
+        f"type: {ticket_type}\n"
+        "branch: main\n"
+        "scope: []\n"
+        "on_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {tb: {quality: clean}}}\n"
+        f"---\n\n## Description\n{body}\n",
+        encoding="utf-8",
     )
 
 

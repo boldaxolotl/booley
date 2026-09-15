@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
@@ -18,18 +19,21 @@ from booley.ticket_board.amendment import (
     preview_amendment,
 )
 from booley.ticket_board.amendment_proposal import AmendmentProposal, CriterionChange
-from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.paths import human_log_file, runtime_file
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     TicketBaseline,
-    load_ticket_baseline,
     ticket_baseline_from_machine,
     worktree_for_ref,
 )
-from booley.ticket_board.validation import validate_ticket_fields
+from booley.ticket_board.validation import validate_ticket_spec
 
-from .test_acceptance_basis import _blocked_ticket, _git, _paired_basis_project
+from .test_acceptance_basis import _blocked_ticket, _create_v2_ticket, _git, _paired_basis_project
+
+
+def _v2_fields(source: str) -> tuple[dict, str]:
+    frontmatter, body = source[4:].split("\n---\n", 1)
+    return yaml.safe_load(frontmatter), body
 
 
 def _optional_request() -> dict:
@@ -43,8 +47,8 @@ def _optional_request() -> dict:
 
 def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -> None:
     root, blocked, tio = _blocked_ticket(tmp_path)
-    old_fields, body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
-    old_basis = load_ticket_baseline(root, "blocked-again", old_fields, body)
+    _old_fields, _body = _v2_fields(blocked.read_text(encoding="utf-8"))
+    old_basis = tio.load_basis("blocked-again")
     old_head = _git(root, "rev-parse", old_basis.participant("outer").ticket_ref)
     worktree = worktree_for_ref(root, old_basis.participant("outer").ticket_ref)
     assert worktree is not None
@@ -62,8 +66,8 @@ def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -
 
     assert result["status"] == "queued"
     queued = blocked.parent.parent / "queue" / blocked.name
-    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    basis = load_ticket_baseline(root, "blocked-again", fields, body)
+    _fields, _body = _v2_fields(queued.read_text(encoding="utf-8"))
+    basis = tio.load_basis("blocked-again")
     assert tio.load_basis("blocked-again").basis_id == basis.basis_id
     new_head = _git(root, "rev-parse", basis.participant("outer").ticket_ref)
     assert _git(root, "merge-base", "--is-ancestor", old_head, new_head) == ""
@@ -75,7 +79,7 @@ def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -
     )
     assert current.criteria["review_rtl_bugs_clean"].mandatory is False
     assert current.authorized_zero_mandatory_basis_id == basis.basis_id
-    assert validate_ticket_fields(fields, body, project_root=root) == []
+    assert validate_ticket_spec(tio.load_document("blocked-again").spec, project_root=root) == []
     assert (tio.logs_dir / "blocked-again/amendments" / f"{result['operation_id']}.json").exists()
     assert (
         tio.logs_dir / "blocked-again/amendments" / f"{result['operation_id']}.prior-state.json"
@@ -103,8 +107,8 @@ def test_repeated_amendment_preserves_ticket_only_authority(tmp_path: Path) -> N
     first_preview = preview_amendment(tio, "blocked-again", first_request)
     apply_amendment(tio, "blocked-again", first_request, first_preview["digest"])
     queued = blocked.parent.parent / "queue" / blocked.name
-    first_fields, first_body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    first_basis = load_ticket_baseline(root, "blocked-again", first_fields, first_body)
+    first_fields, _first_body = _v2_fields(queued.read_text(encoding="utf-8"))
+    first_basis = tio.load_basis("blocked-again")
 
     queued.replace(blocked)
     second_request = {
@@ -114,8 +118,8 @@ def test_repeated_amendment_preserves_ticket_only_authority(tmp_path: Path) -> N
     }
     second_preview = preview_amendment(tio, "blocked-again", second_request)
     apply_amendment(tio, "blocked-again", second_request, second_preview["digest"])
-    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    basis = load_ticket_baseline(root, "blocked-again", fields, body)
+    fields, _body = _v2_fields(queued.read_text(encoding="utf-8"))
+    basis = tio.load_basis("blocked-again")
 
     assert basis.outer_sha != first_basis.outer_sha
     assert (
@@ -124,7 +128,7 @@ def test_repeated_amendment_preserves_ticket_only_authority(tmp_path: Path) -> N
     )
     assert fields["machine"]["amendment"]["optional_conversions"] == ["review_rtl_bugs_clean"]
     assert fields["scope"] == ["README.md", "EXTRA.md"]
-    assert validate_ticket_fields(fields, body, project_root=root) == []
+    assert validate_ticket_spec(tio.load_document("blocked-again").spec, project_root=root) == []
     assert not list(root.rglob("acceptance/bases/*.json"))
 
 
@@ -135,7 +139,7 @@ def test_stale_preview_rejected_without_publication(tmp_path: Path) -> None:
     state.save()
     request = _optional_request()
     preview = preview_amendment(tio, "blocked-again", request)
-    fields, _ = parse_frontmatter(blocked.read_text(encoding="utf-8"))
+    fields, _ = _v2_fields(blocked.read_text(encoding="utf-8"))
     basis = ticket_baseline_from_machine(fields["machine"])
     checkout = worktree_for_ref(root, basis.participant("outer").ticket_ref)
     assert checkout is not None
@@ -173,8 +177,8 @@ def test_preview_rejects_unblocked_ticket(tmp_path: Path) -> None:
 
 def test_preview_rejects_dirty_source_symlink(tmp_path: Path) -> None:
     root, blocked, tio = _blocked_ticket(tmp_path)
-    fields, body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
-    basis = load_ticket_baseline(root, "blocked-again", fields, body)
+    _fields, _body = _v2_fields(blocked.read_text(encoding="utf-8"))
+    basis = tio.load_basis("blocked-again")
     checkout = worktree_for_ref(root, basis.participant("outer").ticket_ref)
     assert checkout is not None
     source = checkout / "README.md"
@@ -220,8 +224,8 @@ def test_scope_expansion_does_not_checkpoint_prior_out_of_scope_dirty_file(
     tmp_path: Path,
 ) -> None:
     root, blocked, tio = _blocked_ticket(tmp_path, extra_file="EXTRA.md")
-    fields, body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
-    basis = load_ticket_baseline(root, "blocked-again", fields, body)
+    _fields, _body = _v2_fields(blocked.read_text(encoding="utf-8"))
+    basis = tio.load_basis("blocked-again")
     checkout = worktree_for_ref(root, basis.participant("outer").ticket_ref)
     assert checkout is not None
     (checkout / "EXTRA.md").write_text("uncommitted implementation\n")
@@ -240,7 +244,7 @@ def test_scope_expansion_rechecks_mandatory_sim_policy(tmp_path: Path) -> None:
         "reason": "Add RTL Scope",
         "scope_add": ["rtl/new.sv [new]"],
     }
-    with pytest.raises(AmendmentError, match="mandatory sim"):
+    with pytest.raises(AmendmentError, match="mandatory SIM"):
         preview_amendment(tio, "blocked-again", request)
     assert blocked.exists()
     assert amendment.pending_amendment(root, "blocked-again") is None
@@ -251,7 +255,8 @@ def test_paired_publication_retains_both_implementation_participants(tmp_path: P
 
     root, project_dir, tio = _paired_basis_project(tmp_path)
     slug = "paired-amendment"
-    created = tio.create_ticket_file(
+    created = _create_v2_ticket(
+        tio,
         slug,
         TicketFileSpec(
             summary="Amend both participants",
@@ -272,8 +277,8 @@ def test_paired_publication_retains_both_implementation_participants(tmp_path: P
     state = DevelopmentState.load(runtime_file(tio.logs_dir, slug, "booley_state.json"))
     state.init_criteria({"review_rtl_bugs_clean": True})
     state.save()
-    old_fields, body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
-    old_basis = load_ticket_baseline(root, slug, old_fields, body)
+    _old_fields, _body = _v2_fields(blocked.read_text(encoding="utf-8"))
+    old_basis = tio.load_basis(slug)
     outer = worktree_for_ref(root, old_basis.participant("outer").ticket_ref)
     project = worktree_for_ref(project_dir, old_basis.participant("project").ticket_ref)
     assert outer is not None and project is not None
@@ -281,14 +286,14 @@ def test_paired_publication_retains_both_implementation_participants(tmp_path: P
     preview = preview_amendment(tio, slug, _optional_request())
     result = apply_amendment(tio, slug, _optional_request(), preview["digest"])
     assert result["status"] == "queued"
-    current_fields, current_body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    basis = load_ticket_baseline(root, slug, current_fields, current_body)
+    _current_fields, _current_body = _v2_fields(queued.read_text(encoding="utf-8"))
+    basis = tio.load_basis(slug)
     assert tio.load_basis(slug).basis_id == basis.basis_id
     assert basis.outer_sha != old_basis.outer_sha
     assert basis.project_sha != old_basis.project_sha
     assert _git(outer, "show", "HEAD:README.md") == "paired implementation"
     assert _git(root, "show", f"{basis.outer_sha}:README.md") == "demo"
-    assert validate_ticket_fields(current_fields, current_body, project_root=root) == []
+    assert validate_ticket_spec(tio.load_document(slug).spec, project_root=root) == []
 
 
 def test_publication_interruption_rolls_forward_once(
@@ -341,7 +346,7 @@ def test_return_to_draft_clears_amendment_marker(tmp_path: Path) -> None:
     queued.replace(blocked)
     tio.return_to_draft("blocked-again")
     draft = tio.tickets_dir / "board/drafts/blocked-again.md"
-    fields, _body = parse_frontmatter(draft.read_text(encoding="utf-8"))
+    fields, _body = _v2_fields(draft.read_text(encoding="utf-8"))
     assert "machine" not in fields
 
 
@@ -352,8 +357,8 @@ def test_reset_uses_latest_requirements_and_original_authoring_source(tmp_path: 
     state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
     state.init_criteria({"review_rtl_bugs_clean": True})
     state.save()
-    old_fields, body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
-    old_basis = load_ticket_baseline(root, "blocked-again", old_fields, body)
+    _old_fields, _body = _v2_fields(blocked.read_text(encoding="utf-8"))
+    old_basis = tio.load_basis("blocked-again")
     checkout = worktree_for_ref(root, old_basis.participant("outer").ticket_ref)
     assert checkout is not None
     (checkout / "README.md").write_text("discard on explicit reset\n")
@@ -363,12 +368,12 @@ def test_reset_uses_latest_requirements_and_original_authoring_source(tmp_path: 
     queued = blocked.parent.parent / "queue" / blocked.name
     queued.replace(blocked)
     assert op_reset(tio, "blocked-again", reason="Start clean with revised criteria")
-    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    basis = load_ticket_baseline(root, "blocked-again", fields, body)
+    fields, _body = _v2_fields(queued.read_text(encoding="utf-8"))
+    basis = tio.load_basis("blocked-again")
     restored = worktree_for_ref(root, basis.participant("outer").ticket_ref)
     assert restored is not None
     assert _git(restored, "show", "HEAD:README.md") == "demo"
-    assert fields["criteria"]["optional"]["review_rtl_bugs"] is True
+    assert fields["CRITERIA_OPTIONAL"]["REVIEW"]["rtl"]["bugs"] == "clean"
 
 
 def test_numeric_reuse_requires_original_producer_success(tmp_path: Path) -> None:
@@ -473,7 +478,13 @@ def test_numeric_preview_reports_reused_evidence_without_changing_state(tmp_path
         ),
         scope_added=(),
     )
-    result = amendment._preview_evidence(state_path, proposal, basis, tmp_path)
+    result = amendment._preview_evidence(
+        state_path,
+        proposal,
+        basis,
+        tmp_path,
+        {"synthesis_ok_synth": {"fmax_mhz_min": 430}},
+    )
     assert result["synthesis_ok_synth"] == {
         "result": "unmet",
         "evidence": "reuse",

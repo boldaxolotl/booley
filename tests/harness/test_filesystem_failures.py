@@ -45,10 +45,10 @@ def make_ticket_file(tio, subdir, slug, extra_fields=""):
         "---\n"
         f"summary: {slug.replace('-', ' ')}\n"
         "type: feature\n"
-        "branch: master\n"
-        "scope_current:\n  - rtl/foo.sv\n"
-        "scope_new: []\n"
-        "test: {tb/foo_tb.sv@config_a/v01: pass}\n"
+        "branch: main\n"
+        "scope: [rtl/foo.sv]\n"
+        "on_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
         f"{extra_fields}"
         "---\n"
         "## Description\nSome work.\n"
@@ -121,7 +121,9 @@ class TestOpResetAuditTrail:
         assert len(lines_before) == 3
 
         # Patch git ops to avoid real git calls
-        with patch("booley.ticket_board.operations.cleanup_worktree_and_branch"):
+        with (
+            patch("booley.ticket_board.operations.cleanup_worktree_and_branch"),
+        ):
             result = op_reset(tio, slug)
 
         assert result is True
@@ -153,7 +155,9 @@ class TestOpResetAuditTrail:
         ticket_md = log_dir / "ticket.md"
         ticket_md.write_text("# Original ticket snapshot\n", encoding="utf-8")
 
-        with patch("booley.ticket_board.operations.cleanup_worktree_and_branch"):
+        with (
+            patch("booley.ticket_board.operations.cleanup_worktree_and_branch"),
+        ):
             result = op_reset(tio, slug)
 
         assert result is True

@@ -137,15 +137,25 @@ class OnSuccess:
 
     destination: when terminal actions fire — "done" skips review, "review" is default.
     merge: whether to merge the feature branch into the base branch.
-    cleanup: whether to delete the worktree and branch after a successful merge.
+    cleanup: whether to delete the worktree and branch after accepted heads are pinned.
     triage_report: whether to prepare the rich HTML explanation before handoff.
     """
 
-    destination: str = "review"  # "review" | "done"
-    merge: bool = True
-    cleanup: bool = True
-    triage_report: bool = True
+    destination: str = "done"  # "review" | "done"
+    merge: bool = False
+    cleanup: bool = False
+    triage_report: bool = False
     _unsupported_keys: tuple[str, ...] = field(default=(), repr=False, compare=False)
+
+    @classmethod
+    def from_flags(cls, flags: tuple[str, ...]) -> OnSuccess:
+        """Build execution policy from the converted human-readable flag list."""
+        return cls(
+            destination="review" if "review" in flags else "done",
+            merge="merge" in flags,
+            cleanup="cleanup" in flags,
+            triage_report="triage_report" in flags,
+        )
 
     @classmethod
     def from_dict(cls, d: dict | None) -> OnSuccess:
@@ -153,10 +163,10 @@ class OnSuccess:
             return cls()
         allowed = {"destination", "merge", "cleanup", "triage_report"}
         return cls(
-            destination=d.get("destination", "review"),
-            merge=d.get("merge", True),
-            cleanup=d.get("cleanup", True),
-            triage_report=d.get("triage_report", True),
+            destination=d.get("destination", "done"),
+            merge=d.get("merge", False),
+            cleanup=d.get("cleanup", False),
+            triage_report=d.get("triage_report", False),
             _unsupported_keys=tuple(sorted(set(d) - allowed)),
         )
 
@@ -180,8 +190,6 @@ class OnSuccess:
             errors.append("on_success.merge must be true or false")
         if not isinstance(self.cleanup, bool):
             errors.append("on_success.cleanup must be true or false")
-        elif self.cleanup and self.merge is False:
-            errors.append("on_success.cleanup requires on_success.merge: true")
         return errors
 
 

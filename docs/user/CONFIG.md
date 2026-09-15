@@ -1894,18 +1894,17 @@ One Ticket authoring record shares policy while expanding into independent
 Target-bound `coverage_<target>` Criteria:
 
 ```yaml
-criteria:
-  mandatory:
-    coverage:
-      - targets: [sim_counter, sim_counter_wide]
-        tests: all
-        metrics:
-          line: {min_pct: 90}
-          branch: {min_pct: 80}
-          toggle: {min_pct: 75}
+CRITERIA_MANDATORY:
+  COVERAGE:
+    sim_counter:
+      tests: all
+      metrics: {line: {min_pct: 90}, branch: {min_pct: 80}, toggle: {min_pct: 75}}
+    sim_counter_wide:
+      tests: all
+      metrics: {line: {min_pct: 90}, branch: {min_pct: 80}, toggle: {min_pct: 75}}
 ```
 
-`targets` must be explicit and nonempty. `tests` is `all` or a nonempty exact list
+Each Target must be explicit. `tests` is `all` or a nonempty exact list
 of registered test names, for example `[reset, wrap]`. Metrics are `line`,
 `branch`, `expression`, `toggle`, and `cover_property`; select at least one.
 Each `min_pct` is a finite non-boolean number in `(0, 100]`. Thresholds combine

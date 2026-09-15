@@ -68,22 +68,22 @@ class TestTicketContext:
 class TestOnSuccess:
     def test_defaults(self):
         os = OnSuccess()
-        assert os.destination == "review"
-        assert os.merge is True
-        assert os.cleanup is True
-        assert os.triage_report is True
+        assert os.destination == "done"
+        assert os.merge is False
+        assert os.cleanup is False
+        assert os.triage_report is False
 
     def test_from_dict_none(self):
         os = OnSuccess.from_dict(None)
-        assert os.destination == "review"
-        assert os.merge is True
+        assert os.destination == "done"
+        assert os.merge is False
 
     def test_from_dict_partial(self):
         os = OnSuccess.from_dict({"destination": "done"})
         assert os.destination == "done"
-        assert os.merge is True
-        assert os.cleanup is True
-        assert os.triage_report is True
+        assert os.merge is False
+        assert os.cleanup is False
+        assert os.triage_report is False
 
     def test_from_dict_full(self):
         os = OnSuccess.from_dict(
@@ -125,9 +125,15 @@ class TestOnSuccess:
         errors = OnSuccess(triage_report="yes").validate()  # type: ignore[arg-type]
         assert errors == ["on_success.triage_report must be true or false"]
 
-    def test_cleanup_requires_merge(self):
-        errors = OnSuccess(merge=False, cleanup=True).validate()
-        assert errors == ["on_success.cleanup requires on_success.merge: true"]
+    def test_cleanup_without_merge_is_valid(self):
+        assert OnSuccess(merge=False, cleanup=True).validate() == []
+
+    def test_from_converted_flags(self):
+        policy = OnSuccess.from_flags(("cleanup",))
+        assert policy.destination == "done"
+        assert policy.merge is False
+        assert policy.cleanup is True
+        assert policy.triage_report is False
 
 
 class TestTargetPlan:

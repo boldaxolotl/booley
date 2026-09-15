@@ -170,9 +170,10 @@ def test_draft_transition_requires_blocked_basis_and_exact_files(
         )
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(draft_transition, "_draft_content", lambda *_args: (object(), b"draft"))
     monkeypatch.setattr(
         draft_transition,
-        "load_ticket_baseline",
+        "load_ticket_baseline_from_document",
         lambda *_args: (_ for _ in ()).throw(TicketBaselineError("invalid basis")),
     )
     with pytest.raises(draft_transition.DraftTransitionError, match="invalid basis"):

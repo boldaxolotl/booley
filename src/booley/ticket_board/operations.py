@@ -799,7 +799,7 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
 
     Returns list of promoted ticket dicts: [{"slug": ..., "summary": ...}].
     """
-    tickets = scan_all_tickets(tio.tickets_dir)
+    tickets = scan_all_tickets(tio.tickets_dir, project_root=Path(tio._project_root))
     from .basis_refresh import recover_published_basis_refreshes
 
     recover_published_basis_refreshes(Path(tio._project_root), tickets)
@@ -1069,6 +1069,17 @@ def op_complete(
     slug, on_success, accepted_snapshot = request
     if on_success.merge:
         return _complete_with_merge(tio, slug, on_success, accepted_snapshot)
+    if on_success.cleanup:
+        from .cleanup_only import CleanupOnlyError, advance_cleanup_only
+
+        try:
+            basis = tio.load_basis(slug)
+            advance_cleanup_only(tio, slug, basis, accepted_snapshot.participant_heads)
+        except (CleanupOnlyError, OSError, ValueError) as exc:
+            print(f"Error: cleanup-only completion failed for '{slug}': {exc}", file=sys.stderr)
+            return False
+        _finish_completed_ticket(tio, slug, cleanup=True)
+        return True
     if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
         return False
     _finish_completed_ticket(tio, slug, cleanup=False)
@@ -1585,7 +1596,11 @@ def op_reset(
     The queue move is the final publication step: a queued ticket therefore
     never advertises stale active-run evidence, even if cleanup fails.
     """
-    entry = tio.find_ticket(slug)
+    try:
+        entry = tio.find_ticket(slug)
+    except ValueError as exc:
+        print(f"Error: unsupported Ticket format for '{slug}': {exc}", file=sys.stderr)
+        return False
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False

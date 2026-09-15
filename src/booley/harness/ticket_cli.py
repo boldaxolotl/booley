@@ -257,26 +257,9 @@ def create_ticket_file(project_root: Path, slug: str, params: CreateTicketParams
     return get_ticket_ops().create_ticket_file(project_root, slug, params)
 
 
-def enqueue(
-    project_root: Path,
-    slug: str,
-    *,
-    summary: str | None = None,
-    ticket_type: str | None = None,
-    branch: str | None = None,
-    on_success: dict | None = None,
-    integration_base: str = "",
-) -> None:
+def enqueue(project_root: Path, slug: str) -> None:
     """Enqueue a ticket via ticket_board enqueue."""
-    get_ticket_ops().enqueue(
-        project_root,
-        slug,
-        summary=summary,
-        ticket_type=ticket_type,
-        branch=branch,
-        on_success=on_success,
-        integration_base=integration_base,
-    )
+    get_ticket_ops().enqueue(project_root, slug)
 
 
 def complete(project_root: Path, slug: str) -> None:

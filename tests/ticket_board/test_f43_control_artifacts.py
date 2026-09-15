@@ -13,11 +13,10 @@ from booley.ticket_board.criteria_markdown import (
     parse_criteria_section,
     render_criteria_section,
 )
-from booley.ticket_board.frontmatter import parse_frontmatter, update_frontmatter
-from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.io import TicketIO
 from booley.ticket_board.operations import op_complete
 from booley.ticket_board.scanner import find_ticket_file
-from booley.ticket_board.ticket_baseline import ticket_baseline_from_machine
 from booley.ticket_board.validation import validate_ticket_fields
 
 
@@ -81,28 +80,32 @@ def _project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
 
 
 def _ticket(tio: TicketIO, *, merge: bool = False, planned: bool = False) -> Path:
-    path = tio.create_ticket_file(
+    criterion = (
+        "  LINT: {'lint_toy_new (new)': clean}\n"
+        if planned
+        else ("  REVIEW: {rtl: {bugs: clean}}\n")
+    )
+    actions = "[review, merge]" if merge else "[review]"
+    path = tio.create_ticket_document(
         "change-target",
-        TicketFileSpec(
-            summary="Change the Target contract",
-            ticket_type="refactor",
-            branch="main",
-            scope=["toy.core"],
-            criteria={
-                "mandatory": {"lint_clean": ["lint_toy_new"]}
-                if planned
-                else {"review_rtl_bugs": True}
-            },
-            target_plan=([{"target": "lint_toy_new", "role": "persistent"}] if planned else None),
-            body="## Description\n\nExercise every Booley-owned control artifact.\n",
-        ),
+        "---\n"
+        "summary: Change the Target contract\n"
+        "type: refactor\n"
+        "branch: main\n"
+        "scope: [toy.core]\n"
+        f"on_success: {actions}\n"
+        "CRITERIA_MANDATORY:\n"
+        f"{criterion}"
+        "---\n\n## Description\n\nExercise every Booley-owned control artifact.\n",
     )
     assert path is not None
-    update_frontmatter(
-        path,
-        {"on_success": {"destination": "review", "merge": merge, "cleanup": False}},
-    )
     return path
+
+
+def _replace_ticket(ticket: Path, old: str, new: str) -> None:
+    text = ticket.read_text(encoding="utf-8")
+    assert old in text
+    ticket.write_text(text.replace(old, new), encoding="utf-8")
 
 
 def test_authored_draft_validates_without_hiding_product_changes(
@@ -112,7 +115,8 @@ def test_authored_draft_validates_without_hiding_product_changes(
     ticket = _ticket(tio)
     _git(root, "add", "-f", str(ticket.relative_to(root)))
     _commit_all(root, "add draft ticket")
-    update_frontmatter(ticket, {"priority": "high"})
+    _git(root / ".booley_project" / "worktrees" / "change-target", "reset", "--hard", "main")
+    _replace_ticket(ticket, "type: refactor\n", "type: refactor\npriority: high\n")
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))
     capsys.readouterr()
@@ -148,7 +152,7 @@ def test_validate_ticket_does_not_exempt_a_product_markdown_file(
     product_ticket = root / "ticket-shaped-product-file.md"
     _ticket(tio).rename(product_ticket)
     _commit_all(root, "add product markdown")
-    update_frontmatter(product_ticket, {"priority": "high"})
+    _replace_ticket(product_ticket, "type: refactor\n", "type: refactor\npriority: high\n")
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))
     capsys.readouterr()
@@ -174,7 +178,8 @@ def test_ticket_validation_normalizes_a_draft_path_from_a_project_subdirectory(
     ticket = _ticket(tio)
     _git(root, "add", "-f", str(ticket.relative_to(root)))
     _commit_all(root, "add draft ticket")
-    update_frontmatter(ticket, {"priority": "high"})
+    _git(root / ".booley_project" / "worktrees" / "change-target", "reset", "--hard", "main")
+    _replace_ticket(ticket, "type: refactor\n", "type: refactor\npriority: high\n")
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     workdir = root / "rtl"
     monkeypatch.chdir(workdir)
@@ -191,7 +196,9 @@ def test_ticket_validation_normalizes_a_draft_path_from_a_project_subdirectory(
     assert not any("Dirty working tree" in error for error in errors)
 
 
-def test_enqueue_pins_tests_toml_update_in_ticket_baseline(tmp_path: Path, monkeypatch) -> None:
+def test_enqueue_records_tests_toml_update_in_acceptance_basis(
+    tmp_path: Path, monkeypatch
+) -> None:
     root, tio = _project(tmp_path, monkeypatch)
     _ticket(tio, merge=True, planned=True)
     outer = root / ".booley_project" / "worktrees" / "change-target"
@@ -212,9 +219,7 @@ def test_enqueue_pins_tests_toml_update_in_ticket_baseline(tmp_path: Path, monke
     )
 
     assert tio.enqueue_ticket("change-target") is True
-    queue = tio.tickets_dir / "board" / "queue" / "change-target.md"
-    fields, _body = parse_frontmatter(queue.read_text(encoding="utf-8"))
-    basis = ticket_baseline_from_machine(fields["machine"])
+    basis = tio.load_basis("change-target")
     outer_participant = basis.participant("outer")
 
     assert outer_participant.authoring_sha == _git(outer, "rev-parse", "HEAD")
@@ -230,15 +235,11 @@ def test_validate_and_enqueue_accept_sim_target_with_scope_new_fileset(
 ) -> None:
     root, tio = _project(tmp_path, monkeypatch)
     ticket = _ticket(tio, merge=True, planned=True)
-    update_frontmatter(
+    _replace_ticket(ticket, "scope: [toy.core]", "scope: [toy.core, 'tb/toy_test.py [new]']")
+    _replace_ticket(
         ticket,
-        {
-            "scope": ["toy.core", "tb/toy_test.py [new]"],
-            "criteria": {
-                "mandatory": {"sim_pass": ["tb/toy_test.py @ sim_toy_new @ all @ none -> pass"]}
-            },
-            "target_plan": [{"target": "sim_toy_new", "role": "persistent"}],
-        },
+        "  LINT: {'lint_toy_new (new)': clean}",
+        "  SIM: {'sim_toy_new (new)': {all: pass}}",
     )
     outer = root / ".booley_project" / "worktrees" / "change-target"
     core = outer / "toy.core"
@@ -257,6 +258,11 @@ def test_validate_and_enqueue_accept_sim_target_with_scope_new_fileset(
         + "    filesets: [rtl]\n"
         + "    filesets_append: [tb_new]\n"
         + "    toplevel: toy\n",
+        encoding="utf-8",
+    )
+    tests_toml = outer / ".booley_project" / "tests.toml"
+    tests_toml.write_text(
+        tests_toml.read_text(encoding="utf-8") + "\n[sim_toy_new]\ntests = ['smoke']\n",
         encoding="utf-8",
     )
     before = _git(outer, "rev-parse", "HEAD")
@@ -361,7 +367,7 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
 
     source.write_text(original, encoding="utf-8")
     unrelated_original = unrelated_ticket.read_text(encoding="utf-8")
-    update_frontmatter(unrelated_ticket, {"priority": "high"})
+    _replace_ticket(unrelated_ticket, "type: refactor\n", "type: refactor\npriority: high\n")
     assert op_complete(tio, "change-target") is False
     assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "review"
 

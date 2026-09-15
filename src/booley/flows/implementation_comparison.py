@@ -133,15 +133,15 @@ def _state_pair_for_candidate(
         for key, entry in criteria.items()
         if _criterion_matches_candidate(key, entry, criterion_prefix, candidate)
     ]
-    if len(matches) > 1:
-        raise ImplementationComparisonError(
-            f"no unique {criterion_prefix.removesuffix('_')} criterion for "
-            f"candidate Target {candidate.identity!r}"
-        )
     if not matches:
         return TargetPair(candidate.selector, candidate.selector)
-    key, entry = matches[0]
-    return _state_pair_from_entry(entry, key, candidate.selector)
+    pairs = {_state_pair_from_entry(entry, key, candidate.selector) for key, entry in matches}
+    if len(pairs) != 1:
+        raise ImplementationComparisonError(
+            f"conflicting {criterion_prefix.removesuffix('_')} Target pairs for "
+            f"candidate Target {candidate.identity!r}"
+        )
+    return next(iter(pairs))
 
 
 def _select_execution_ref(
@@ -172,12 +172,23 @@ def _binding_for_candidate(
         binding
         for binding in basis.bindings
         if binding.flow == flow
-        and binding.criterion_key == criterion
+        and (
+            binding.criterion_key == criterion or binding.criterion_key.startswith(f"{criterion}_")
+        )
         and binding.candidate == candidate.identity
     )
-    if len(matches) != 1:
+    if not matches or len(matches) != len(set(matches)):
         raise ImplementationComparisonError(
             f"Ticket baseline has no unique {flow}/{criterion} binding for "
+            f"candidate Target {candidate.selector!r}"
+        )
+    if any(
+        (binding.baseline, binding.baseline_selector, binding.candidate_selector)
+        != (matches[0].baseline, matches[0].baseline_selector, matches[0].candidate_selector)
+        for binding in matches[1:]
+    ):
+        raise ImplementationComparisonError(
+            f"Ticket baseline has conflicting {flow}/{criterion} bindings for "
             f"candidate Target {candidate.selector!r}"
         )
     return matches[0]

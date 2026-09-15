@@ -23,7 +23,6 @@ from booley.targets.domain import FuseSocError
 from booley.ticket_board.ticket_repositories import paired_project_repository
 
 from .basis_publication import BasisPublicationError
-from .frontmatter import parse_frontmatter
 from .persistence import atomic_replace_bytes
 from .planned_dependencies import PlannedDependencyError, target_surface_sha256
 from .scanner import find_ticket_file
@@ -36,10 +35,11 @@ from .ticket_baseline import (
     ProviderTargetBinding,
     TicketBaseline,
     TicketBaselineError,
-    load_ticket_baseline,
+    load_ticket_baseline_from_document,
     ticket_baseline_from_machine,
-    ticket_machine_fields,
+    ticket_machine_from_spec,
 )
+from .ticket_document import TicketDocument, convert_ticket_document, ticket_conversion_context
 from .workspace_ops import (
     AuthoringWorkspace,
     TicketBaselineOperationError,
@@ -58,6 +58,15 @@ _GENERATION_RE = re.compile(r"[0-9a-f]{16}")
 
 class BasisRefreshError(RuntimeError):
     """A waiting Ticket cannot be refreshed without new author approval."""
+
+
+def _converted_ticket(root: Path, ticket: Path, slug: str) -> TicketDocument:
+    with ticket_conversion_context(root, slug, "executable") as context:
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        detail = "; ".join(item.message for item in converted.diagnostics)
+        raise BasisRefreshError(f"Ticket document is invalid: {detail}")
+    return converted.document
 
 
 @dataclass(frozen=True)
@@ -280,9 +289,11 @@ def _verify_providers(
             ticket, status = find_ticket_file(tickets, binding.provider)
             if ticket is None or status != "done":
                 raise BasisRefreshError(f"provider Ticket {binding.provider!r} is not accepted")
-            fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
             try:
-                provider_basis = load_ticket_baseline(root, binding.provider, fields, body)
+                provider_document = _converted_ticket(root, ticket, binding.provider)
+                provider_basis = load_ticket_baseline_from_document(
+                    root, binding.provider, provider_document
+                )
             except TicketBaselineError as exc:
                 raise BasisRefreshError(
                     f"provider Ticket {binding.provider!r} has no valid accepted basis: {exc}"
@@ -316,13 +327,12 @@ def _verify_providers(
 def _resume_prepared_refresh(
     root: Path,
     slug: str,
-    fields: dict[str, Any],
-    body: str,
+    document: TicketDocument,
     journal: BasisRefreshJournal,
 ) -> tuple[TicketBaseline, str]:
-    candidate_fields = {**fields, "machine": journal.machine}
+    candidate = TicketDocument(document.spec, {**document.generated, "machine": journal.machine})
     try:
-        basis = load_ticket_baseline(root, slug, candidate_fields, body)
+        basis = load_ticket_baseline_from_document(root, slug, candidate)
     except TicketBaselineError as exc:
         raise BasisRefreshError(str(exc)) from exc
     operation = _operation_path(root, journal.operation_id)
@@ -367,20 +377,19 @@ def prepare_waiting_basis_refresh(
 def _prepare_waiting_basis_refresh(
     root: Path, ticket_path: Path, slug: str
 ) -> tuple[TicketBaseline | None, str]:
-    fields, body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+    document = _converted_ticket(root, ticket_path, slug)
     pending = load_basis_refresh(root, slug)
     if pending is not None and pending.state == "prepared":
-        return _resume_prepared_refresh(root, slug, fields, body, pending)
+        return _resume_prepared_refresh(root, slug, document, pending)
     try:
-        old_basis = load_ticket_baseline(root, slug, fields, body)
+        old_basis = load_ticket_baseline_from_document(root, slug, document)
     except TicketBaselineError as exc:
         raise BasisRefreshError(str(exc)) from exc
     if not old_basis.providers:
         return None, ""
     journal = _new_journal(root, slug, old_basis)
     operation = _operation_path(root, journal.operation_id)
-    effective_fields = dict(fields)
-    effective_fields.pop("machine", None)
+    effective_fields = dict(document.spec.fields)
     old = load_refresh_source_workspace(root, old_basis, slug, operation)
     workspace, provider_bindings = _build_refresh_workspace(
         _RefreshBuild(root, ticket_path, slug, effective_fields, old_basis, old, journal)
@@ -430,10 +439,8 @@ def _publish_refresh_basis(
     basis, _operation_id = prepare_replacement_ticket_baseline(
         root, ticket, slug, workspace, providers, operation_id=journal.operation_id
     )
-    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    machine = ticket_machine_fields(
-        basis, fields=fields, body=body, generation=journal.operation_id
-    )
+    document = _converted_ticket(root, ticket, slug)
+    machine = ticket_machine_from_spec(basis, document.spec, generation=journal.operation_id)
     prepared = journal.prepared(machine)
     _write_journal(root, prepared)
     return basis, prepared

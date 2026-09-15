@@ -12,7 +12,10 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .ticket_document import TicketDocument, TicketSpec
 
 from booley.core.boundary import (
     BoundaryError,
@@ -103,6 +106,18 @@ def ticket_machine_fields(
     return ticket_machine_from_participants(
         basis.participants,
         authored_sha256=authored_ticket_digest(fields, body),
+        generation=generation,
+        providers=basis.providers,
+    )
+
+
+def ticket_machine_from_spec(
+    basis: TicketBaseline, spec: TicketSpec, generation: str
+) -> dict[str, Any]:
+    """Stamp an executable Ticket with its authored v2 semantic digest."""
+    return ticket_machine_from_participants(
+        basis.participants,
+        authored_sha256=spec.semantic_digest(),
         generation=generation,
         providers=basis.providers,
     )
@@ -673,6 +688,46 @@ def load_ticket_baseline(
         bindings = canonical_acceptance_bindings(
             checkout, criterion_targets(fields.get("criteria"))
         )
+    return TicketBaseline(
+        basis.participants,
+        bindings,
+        _target_plan_removals(plan),
+        basis.schema,
+        plan,
+        basis.providers,
+        machine=dict(machine),
+    )
+
+
+def load_ticket_baseline_from_document(
+    project_root: Path | str, slug: str, document: TicketDocument
+) -> TicketBaseline:
+    """Resolve a v2 Ticket's pinned inputs from its converted authored meaning."""
+    from .acceptance_targets import canonical_acceptance_bindings, criterion_targets_from_spec
+
+    spec = document.spec
+    machine = document.generated.get("machine")
+    basis = ticket_baseline_from_machine(machine)
+    if machine["authored_sha256"] != spec.semantic_digest():
+        raise TicketBaselineError(f"{BLOCK_REASON}: authored Ticket changed")
+    amendment = machine.get("amendment")
+    if isinstance(amendment, Mapping) and amendment.get("slug") != slug:
+        raise TicketBaselineError(f"{BLOCK_REASON}: amendment names another Ticket")
+    validate_ticket_commit_trailers(project_root, slug, basis, machine)
+    _validate_ticket_routing(basis, spec.fields)
+    with tempfile.TemporaryDirectory(prefix="booley-ticket-baseline-") as directory:
+        checkout = materialize_basis_checkout(project_root, basis, Path(directory) / "checkout")
+        from booley.fusesoc.core_projection import (
+            native_cores_ignored,
+            reconcile_isolated_registry,
+            reconcile_projected_cores,
+        )
+
+        reconcile_projected_cores(checkout)
+        if native_cores_ignored(checkout):
+            reconcile_isolated_registry(checkout)
+        bindings = canonical_acceptance_bindings(checkout, criterion_targets_from_spec(spec))
+    plan = spec.target_plan
     return TicketBaseline(
         basis.participants,
         bindings,

@@ -44,7 +44,7 @@ post-processing finding and offer **reset** / **skip**. `prepare-review --force`
 is a maintenance/recovery operation and requires an explicit user request; it
 is not the interactive fallback.
 
-Tickets with `on_success.triage_report: false` intentionally have no semantic
+Tickets without `triage_report` in their `on_success` list intentionally have no semantic
 report-agent assessment. The same command renders their deterministic criteria,
 commit, scope, health, economics, and diff facts with a `hold` recommendation;
 inspect those facts and diffs before offering the normal decision choices.

@@ -66,11 +66,35 @@ def _apply_campaign(
 
         detail["evaluation"] = encode_coverage_campaign(campaign)["evaluation"]
         detail[SOURCE_FINGERPRINT_DETAIL_KEY] = _freshness(plan, plan.criterion_key)
-        changes.extend(
-            shadow.set_criterion(
-                plan.criterion_key, campaign.evaluation["status"] == "pass", detail=detail
+        aliases = shadow.flow_key_aliases.get(plan.criterion_key, [])
+        if aliases:
+            metrics = {
+                item.get("metric"): item.get("verdict")
+                for item in detail["evaluation"].get("metrics", [])
+                if isinstance(item, dict)
+            }
+            valid_suite = detail["evaluation"].get("suite", {}).get(
+                "status"
+            ) == "match" and not detail["evaluation"].get("diagnostics")
+            for key in aliases:
+                entry = shadow.criteria.get(key)
+                if entry is None:
+                    continue
+                policy = entry.params.get("metrics", {})
+                metric = next(iter(policy), None)
+                changes.extend(
+                    shadow.set_criterion(
+                        key,
+                        bool(valid_suite and metrics.get(metric) == "pass"),
+                        detail={**detail, "criterion_metric": metric},
+                    )
+                )
+        else:
+            changes.extend(
+                shadow.set_criterion(
+                    plan.criterion_key, campaign.evaluation["status"] == "pass", detail=detail
+                )
             )
-        )
     if all(run.simulation_verdict != "inconclusive" for run in campaign.runs):
         key = f"sim_pass_{plan.handle.name}"
         if key in shadow.criteria or key in shadow.flow_key_aliases:

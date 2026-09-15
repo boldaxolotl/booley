@@ -33,6 +33,18 @@ from booley.ticket_board.planned_dependencies import (
 from booley.ticket_board.ticket_baseline import ProviderTargetBinding
 
 
+def _ticket_text(
+    dependencies: str = "[]",
+    criterion: str = "REVIEW: {rtl: {bugs: done}}",
+) -> str:
+    return (
+        "---\nsummary: Consumer\ntype: feature\nbranch: main\nscope: []\n"
+        f"dependencies: {dependencies}\non_success: [review]\n"
+        f"CRITERIA_MANDATORY: {{{criterion}}}\n"
+        "---\n\n## Description\n\nConsumer dependency test.\n"
+    )
+
+
 def _core(path: Path, targets: str, *, filesets: str = "  rtl: {}\n") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -505,7 +517,7 @@ def test_public_materialization_rejects_missing_provider_dependency(
 ) -> None:
     ticket = tmp_path / "ticket.md"
     ticket.write_text(
-        "---\ncriteria: {mandatory: {sim_pass: [future]}}\ndependencies: []\n---\n",
+        _ticket_text(criterion="SIM: {future: {all: pass}}"),
         encoding="utf-8",
     )
     provider = _Provider(
@@ -529,7 +541,7 @@ def test_public_materialization_rejects_ambiguous_active_exports(
     tmp_path: Path, monkeypatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\ncriteria: {}\ndependencies: []\n---\n", encoding="utf-8")
+    ticket.write_text(_ticket_text(), encoding="utf-8")
     plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
     providers = [
         _Provider(slug, {}, SimpleNamespace(target_plan=plan, removal_targets=()))
@@ -544,7 +556,7 @@ def test_public_materialization_rejects_ambiguous_active_exports(
 
 def test_public_materialization_rejects_sibling_replacements(tmp_path: Path, monkeypatch) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\ncriteria: {}\ndependencies: []\n---\n", encoding="utf-8")
+    ticket.write_text(_ticket_text(), encoding="utf-8")
     providers = [
         _Provider(
             slug,
@@ -570,7 +582,7 @@ def test_consumer_criteria_reject_provider_target_being_replaced(
 ) -> None:
     ticket = tmp_path / "ticket.md"
     ticket.write_text(
-        "---\ncriteria: {mandatory: {lint_clean: [old]}}\ndependencies: [provider]\n---\n",
+        _ticket_text("[provider]", "LINT: {old: clean}"),
         encoding="utf-8",
     )
     provider = _Provider(
@@ -607,16 +619,16 @@ def test_provider_dependency_inference_accepts_partial_vlnv_selector() -> None:
             removal_targets=(),
         ),
     )
-    fields = {"criteria": {"mandatory": {"sim_pass": ["ibex:core#future"]}}}
-
-    assert planned_dependencies._required_provider_slugs(fields, [provider]) == {"provider"}
+    assert planned_dependencies._required_provider_slugs(("ibex:core#future",), [provider]) == {
+        "provider"
+    }
 
 
 def test_provider_dependency_inference_allows_ordered_replacement_chain() -> None:
     first, second = _ordered_chain_providers()
-    fields = {"criteria": {"mandatory": {"sim_pass": ["latest"]}}}
-
-    assert planned_dependencies._required_provider_slugs(fields, [first, second]) == {"second"}
+    assert planned_dependencies._required_provider_slugs(("latest",), [first, second]) == {
+        "second"
+    }
 
 
 def _ordered_chain_providers() -> tuple[_Provider, _Provider]:
@@ -656,7 +668,7 @@ def test_public_materialization_skips_superseded_ordered_export(
 ) -> None:
     ticket = tmp_path / "ticket.md"
     ticket.write_text(
-        "---\ncriteria: {mandatory: {sim_pass: [latest]}}\ndependencies: [first, second]\n---\n",
+        _ticket_text("[first, second]", "SIM: {latest: {all: pass}}"),
         encoding="utf-8",
     )
     first, second = _ordered_chain_providers()
@@ -690,7 +702,7 @@ def test_provider_basis_refresh_with_unchanged_surface_remains_valid(
     tmp_path: Path, monkeypatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\ndependencies: [provider]\n---\n", encoding="utf-8")
+    ticket.write_text(_ticket_text("[provider]"), encoding="utf-8")
     source = tmp_path / "provider"
     _core(source / "toy.core", "  future:\n    filesets: []\n")
     digest = target_surface_sha256(source, "future")
@@ -805,7 +817,7 @@ def test_public_materialization_retries_after_atomic_surface_write_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\ndependencies: [provider]\ncriteria: {}\n---\n", encoding="utf-8")
+    ticket.write_text(_ticket_text("[provider]"), encoding="utf-8")
     source = tmp_path / "source"
     workspace = tmp_path / "workspace"
     _core(source / "toy.core", "  future:\n    filesets: []\n")
@@ -943,7 +955,7 @@ def test_existing_marker_restores_surfaces_into_recreated_workspace(
     tmp_path: Path, monkeypatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\ndependencies: [provider]\ncriteria: {}\n---\n", encoding="utf-8")
+    ticket.write_text(_ticket_text("[provider]"), encoding="utf-8")
     source = tmp_path / "published"
     first_workspace = tmp_path / "first-workspace"
     recreated = tmp_path / "recreated-workspace"
@@ -974,7 +986,7 @@ def test_existing_marker_restores_surfaces_into_recreated_workspace(
 def test_existing_empty_marker_rechecks_new_active_provider(tmp_path: Path, monkeypatch) -> None:
     ticket = tmp_path / "ticket.md"
     ticket.write_text(
-        "---\ncriteria: {mandatory: {sim_pass: [future]}}\ndependencies: []\n---\n",
+        _ticket_text(criterion="SIM: {future: {all: pass}}"),
         encoding="utf-8",
     )
     marker = tmp_path / "marker.json"
@@ -1002,7 +1014,7 @@ def test_existing_empty_marker_rejects_new_export_from_existing_dependency(
 ) -> None:
     ticket = tmp_path / "ticket.md"
     ticket.write_text(
-        "---\ncriteria: {mandatory: {sim_pass: [future]}}\ndependencies: [provider]\n---\n",
+        _ticket_text("[provider]", "SIM: {future: {all: pass}}"),
         encoding="utf-8",
     )
     marker = tmp_path / "marker.json"
@@ -1029,7 +1041,7 @@ def test_existing_empty_marker_rejects_new_export_from_existing_dependency(
 
 def test_existing_marker_rechecks_new_ambiguous_provider(tmp_path: Path, monkeypatch) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\ndependencies: [first]\ncriteria: {}\n---\n", encoding="utf-8")
+    ticket.write_text(_ticket_text("[first]"), encoding="utf-8")
     plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
     providers = [
         _Provider(
@@ -1121,7 +1133,7 @@ def test_public_materialization_rejects_changed_ticket_dependencies(
     tmp_path: Path, monkeypatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\ndependencies: [new-provider]\n---\n", encoding="utf-8")
+    ticket.write_text(_ticket_text("[new-provider]"), encoding="utf-8")
     marker = tmp_path / "marker.json"
     marker.write_bytes(
         planned_dependencies._serialize(ProviderMaterialization(dependencies=("old-provider",)))
@@ -1136,7 +1148,7 @@ def test_public_materialization_pins_every_exported_provider_target(
     tmp_path: Path, monkeypatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\ndependencies: [provider]\n---\n", encoding="utf-8")
+    ticket.write_text(_ticket_text("[provider]"), encoding="utf-8")
     plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
     provider = _Provider(
         "provider",
@@ -1169,7 +1181,7 @@ def test_public_materialization_retries_after_marker_write_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\ndependencies: [provider]\n---\n", encoding="utf-8")
+    ticket.write_text(_ticket_text("[provider]"), encoding="utf-8")
     plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
     provider = _Provider(
         "provider",
@@ -1262,24 +1274,33 @@ def test_provider_discovery_filters_states_and_wraps_invalid_basis(
     )
     monkeypatch.setattr(
         planned_dependencies,
-        "load_ticket_baseline",
+        "load_ticket_baseline_from_document",
         lambda *_args: (_ for _ in ()).throw(acceptance_basis.TicketBaselineError("bad basis")),
+    )
+    monkeypatch.setattr(
+        planned_dependencies,
+        "convert_ticket_document",
+        lambda *_args: SimpleNamespace(
+            document=SimpleNamespace(spec=SimpleNamespace(fields={})), diagnostics=()
+        ),
     )
     with pytest.raises(PlannedDependencyError, match="invalid Ticket baseline"):
         planned_dependencies._provider(tmp_path, tmp_path, "provider")
 
     monkeypatch.setattr(
         planned_dependencies,
-        "load_ticket_baseline",
+        "load_ticket_baseline_from_document",
         lambda *_args: SimpleNamespace(target_plan=None),
     )
     assert planned_dependencies._provider(tmp_path, tmp_path, "provider") is None
     basis = SimpleNamespace(
         target_plan=TargetPlan.from_value([{"target": "future", "role": "persistent"}])
     )
-    monkeypatch.setattr(planned_dependencies, "load_ticket_baseline", lambda *_args: basis)
+    monkeypatch.setattr(
+        planned_dependencies, "load_ticket_baseline_from_document", lambda *_args: basis
+    )
     assert planned_dependencies._provider(tmp_path, tmp_path, "provider") == _Provider(
-        "provider", {"machine": {"generation": "bad"}}, basis
+        "provider", {}, basis
     )
 
 

@@ -37,13 +37,18 @@ from booley.ticket_board.ticket_repositories import (
     ticket_project_worktree,
 )
 
-from .frontmatter import format_frontmatter, parse_frontmatter
 from .persistence import atomic_replace_bytes
 from .ticket_baseline import (
     TicketBaseline,
     TicketBaselineError,
-    load_ticket_baseline,
+    load_ticket_baseline_from_document,
     ticket_baseline_from_machine,
+)
+from .ticket_document import (
+    TicketDocument,
+    convert_ticket_document,
+    serialize_ticket_document,
+    ticket_conversion_context,
 )
 from .workspace_ops import (
     AuthoringWorkspace,
@@ -194,20 +199,21 @@ def _next_archive(log_dir: Path) -> Path:
     return runs / f"{(max(existing, default=0) + 1):03d}"
 
 
-def _draft_content(ticket: Path) -> tuple[dict[str, Any], str, bytes]:
-    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    draft = dict(fields)
-    for field in (
-        "machine",
-        "acceptance_basis",
-        "acceptance_amendment",
-        "created",
-        "feature_branch",
-        "steps_completed",
-        "stage",
-    ):
-        draft.pop(field, None)
-    return fields, body, format_frontmatter(draft, body).encode()
+def _converted_document(root: Path, ticket: Path, slug: str, stage: str) -> TicketDocument:
+    with ticket_conversion_context(root, slug, stage) as context:
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        details = "; ".join(item.message for item in converted.diagnostics)
+        raise DraftTransitionError(f"Ticket is invalid: {details}")
+    return converted.document
+
+
+def _draft_content(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument, bytes]:
+    document = _converted_document(root, ticket, slug, "executable")
+    draft = TicketDocument(document.spec, {})
+    with ticket_conversion_context(root, slug, "draft") as context:
+        content = serialize_ticket_document(draft, context).encode()
+    return document, content
 
 
 def _new_journal(
@@ -219,9 +225,9 @@ def _new_journal(
 ) -> DraftTransitionJournal:
     if status != "blocked":
         raise DraftTransitionError(f"return-to-draft requires a blocked ticket, got {status!r}")
-    fields, body, draft_content = _draft_content(ticket)
+    document, draft_content = _draft_content(root, ticket, slug)
     try:
-        basis = load_ticket_baseline(root, slug, fields, body)
+        basis = load_ticket_baseline_from_document(root, slug, document)
     except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     operation_id = uuid.uuid4().hex
@@ -254,7 +260,7 @@ def _new_journal(
 def _prepare_generation(root: Path, journal: DraftTransitionJournal) -> DraftTransitionJournal:
     operation = _operation_dir(root, journal.operation_id)
     candidate = operation / "draft.md"
-    fields, _body = parse_frontmatter(candidate.read_text(encoding="utf-8"))
+    fields = dict(_converted_document(root, candidate, journal.slug, "draft").spec.fields)
     worktrees = open_authoring_generation(
         root,
         candidate,
@@ -282,16 +288,16 @@ def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> TicketBase
     _require_file(blocked, journal.blocked_sha256, "blocked Ticket")
     candidate = _operation_dir(root, journal.operation_id) / "draft.md"
     _require_file(candidate, journal.draft_sha256, "replacement draft")
-    fields, body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
+    document = _converted_document(root, blocked, journal.slug, "executable")
     try:
-        basis = load_ticket_baseline(root, journal.slug, fields, body)
+        basis = load_ticket_baseline_from_document(root, journal.slug, document)
     except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     errors = validate_basis_refs(
         root,
         basis,
         slug=journal.slug,
-        destination_branch=str(fields.get("branch", "")),
+        destination_branch=str(document.spec.fields.get("branch", "")),
     )
     if errors:
         raise DraftTransitionError("old Ticket baseline is invalid: " + "; ".join(errors))

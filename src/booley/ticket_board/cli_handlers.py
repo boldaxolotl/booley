@@ -9,10 +9,7 @@ import contextlib
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict
-from booley.core.models import OnSuccess, TargetPlan, TargetPlanError
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import parse_timestamp
 from booley.targets.domain import FuseSocError
@@ -42,9 +39,8 @@ from .execution import (
     resume_detect,
     select_mutation_config,
 )
-from .frontmatter import parse_frontmatter
 from .helpers import detect_project_root, generate_slug
-from .io import TicketFileSpec, scan_all_tickets
+from .io import scan_all_tickets
 from .lifecycle import SETTLED_STATUSES
 from .operations import (
     op_activate,
@@ -75,13 +71,7 @@ from .validation import (
     owned_draft_dirty_paths,
     validate_git_state,
     validate_logs,
-    validate_ticket_fields,
 )
-
-
-class TicketValidationError(RuntimeError):
-    """A draft validation workspace cannot be prepared or inspected."""
-
 
 # ---------------------------------------------------------------------------
 # Pure output commands (no side effects)
@@ -89,7 +79,7 @@ class TicketValidationError(RuntimeError):
 
 
 def _cmd_board(tio, args):
-    tickets = scan_all_tickets(tio.tickets_dir)
+    tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
     display_board(tickets, tickets_dir=Path(tio.tickets_dir))
     return 0
 
@@ -100,7 +90,7 @@ def _cmd_slug(tio, args):
 
 
 def _cmd_read_board(tio, args):
-    tickets = scan_all_tickets(tio.tickets_dir)
+    tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
     json.dump({"tickets": tickets}, sys.stdout, indent=2, ensure_ascii=False)
     print()
     return 0
@@ -123,7 +113,11 @@ def _cmd_show(tio, args):
     if not slug:
         return _cmd_board(tio, args)
 
-    entry = tio.find_ticket(slug)
+    try:
+        entry = tio.find_ticket(slug)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     if entry is None:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return 2
@@ -135,7 +129,7 @@ def _cmd_show(tio, args):
     logs_dir = ticket_log_dir(tio.logs_dir, slug)
     worktree_root = (
         resolve_project_dir(tio._project_root)
-        if entry.get("machine") is not None
+        if entry.get("acceptance_basis") is not None
         else tio._project_root / ".booley_project"
     )
     worktree = worktree_root / "worktrees" / slug
@@ -179,93 +173,49 @@ def _cmd_parse_ticket(tio, args):
     if not path.exists():
         print(json.dumps({"error": f"File not found: {args.path}"}))
         return 2
-    with path.open(encoding="utf-8") as f:
-        text = f.read()
-    fields, body = parse_frontmatter(text)
-    # Merge runtime fields from progress.json (backward compat: falls back to frontmatter)
-    from .logs import load_progress
-
-    progress = load_progress(tio.logs_dir, path.stem)
-    if progress is not None:
-        fields.update(progress)
-    json.dump({"fields": fields, "body": body}, sys.stdout, indent=2, ensure_ascii=False)
+    converted = _convert_cli_ticket(path, detect_project_root())
+    if converted.document is None:
+        json.dump(
+            {
+                "errors": [
+                    {
+                        "message": item.message,
+                        "line": item.line,
+                        "column": item.column,
+                        "code": item.code,
+                    }
+                    for item in converted.diagnostics
+                ]
+            },
+            sys.stdout,
+            indent=2,
+        )
+        print()
+        return 2
+    json.dump(
+        {
+            "spec": converted.document.spec.semantic_record(),
+            "generated": converted.document.generated,
+        },
+        sys.stdout,
+        indent=2,
+        ensure_ascii=False,
+    )
     print()
     return 0
 
 
-def _validation_context(
-    tio, path: Path, fields: dict[str, Any], project_root: Path
-) -> tuple[Path, Path | None, tuple[Path, ...]]:
-    allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
-    if not (project_root / ".git").exists() or fields.get("machine") is not None:
-        return project_root, None, allowed_dirty_paths
-    from booley.ticket_board.workspace_ops import ensure_ticket_workspace
+def _convert_cli_ticket(path: Path, project_root: Path):
+    from .ticket_document import convert_ticket_document, ticket_conversion_context
 
-    try:
-        workspace = ensure_ticket_workspace(project_root, path, path.stem)
-    except (RuntimeError, ValueError, OSError) as exc:
-        raise TicketValidationError(f"Ticket workspace preparation failed: {exc}") from exc
-    from .acceptance_targets import acceptance_control_paths
-
-    try:
-        allowed = tuple(
-            workspace.outer / item for item in acceptance_control_paths(workspace.outer)
-        )
-    except (FuseSocError, OSError, ValueError) as exc:
-        raise TicketValidationError(f"Acceptance input discovery failed: {exc}") from exc
-    return workspace.outer, workspace.outer, allowed
-
-
-def _validate_ticket_input(
-    tio,
-    path: Path,
-    fields: dict[str, Any],
-    body: str,
-    project_root: Path,
-    *,
-    check_git: bool,
-    check_files: bool = True,
-    check_tb_files: bool = True,
-) -> tuple[list[str], list[str]]:
-    validation_root, basis_workspace, allowed_dirty_paths = _validation_context(
-        tio, path, fields, project_root
+    stage = (
+        "executable"
+        if path.parent.name
+        in {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
+        else "draft"
     )
-    results = validate_ticket_fields(
-        fields,
-        body,
-        check_files=check_files,
-        check_git=check_git and validation_root == project_root,
-        project_root=str(validation_root),
-        check_tb_files=check_tb_files,
-        allowed_dirty_paths=allowed_dirty_paths,
-    )
-    if check_git and validation_root != project_root:
-        results.extend(
-            validate_git_state(
-                fields,
-                project_root,
-                owned_draft_dirty_paths(path, tio.tickets_dir),
-            )
-        )
-    results = list(dict.fromkeys(results))
-    errors = [item for item in results if not item.startswith("[warning] ")]
-    if not errors and basis_workspace is not None and fields.get("target_plan") is not None:
-        try:
-            from booley.ticket_board.workspace_ops import (
-                TicketBaselineOperationError,
-                validate_ticket_baseline_inputs,
-            )
-
-            validate_ticket_baseline_inputs(
-                project_root,
-                path,
-                path.stem,
-                workspace=basis_workspace,
-            )
-        except (TicketBaselineOperationError, OSError, ValueError) as exc:
-            errors.append(str(exc))
-    warnings = [item for item in results if item.startswith("[warning] ")]
-    return errors, warnings
+    with ticket_conversion_context(project_root, path.stem, stage) as context:
+        return convert_ticket_document(path.read_text(encoding="utf-8"), context)
 
 
 def _cmd_validate_ticket(tio, args):
@@ -273,25 +223,56 @@ def _cmd_validate_ticket(tio, args):
     if not path.exists():
         print(json.dumps({"errors": [f"File not found: {args.path}"]}))
         return 1
-    fields, body = parse_frontmatter(path.read_text(encoding="utf-8"))
-    try:
-        errors, warnings = _validate_ticket_input(
-            tio,
-            path,
-            fields,
-            body,
-            detect_project_root(),
-            check_git=args.check_git,
+    project_root = detect_project_root()
+    if path.parent.name == "drafts" and (project_root / ".git").exists():
+        from .workspace_ops import ensure_ticket_workspace
+
+        try:
+            ensure_ticket_workspace(project_root, path, path.stem)
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(json.dumps({"errors": [f"Ticket workspace preparation failed: {exc}"]}))
+            return 1
+    converted = _convert_cli_ticket(path, project_root)
+    if converted.document is None:
+        errors = [f"{item.line}:{item.column}: {item.message}" for item in converted.diagnostics]
+    else:
+        from .validation import validate_ticket_spec
+
+        spec = converted.document.spec
+        validation_root = project_root
+        workspace = None
+        if path.parent.name == "drafts":
+            workspace = resolve_project_dir(project_root) / "worktrees" / path.stem
+            if workspace.is_dir():
+                validation_root = workspace
+        errors = validate_ticket_spec(
+            spec,
+            project_root=validation_root,
+            check_git=args.check_git and validation_root == project_root,
+            allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
         )
-    except TicketValidationError as exc:
-        print(json.dumps({"errors": [str(exc)]}))
-        return 1
-    for warning in warnings:
-        print(f"Warning: {warning}", file=sys.stderr)
+        if args.check_git and validation_root != project_root:
+            errors.extend(
+                validate_git_state(
+                    dict(spec.fields),
+                    project_root,
+                    owned_draft_dirty_paths(path, tio.tickets_dir),
+                )
+            )
+        if path.parent.name == "drafts" and (workspace.is_dir() or spec.target_plan):
+            from .workspace_ops import (
+                TicketBaselineOperationError,
+                validate_ticket_spec_authoring_inputs,
+            )
+
+            try:
+                validate_ticket_spec_authoring_inputs(project_root, workspace, spec)
+            except (TicketBaselineOperationError, FuseSocError, OSError, ValueError) as exc:
+                errors.append(str(exc))
     if errors:
         print(json.dumps({"errors": errors}, indent=2))
         return 1
-    print(json.dumps({"errors": [], "warnings": warnings, "valid": True}))
+    print(json.dumps({"errors": [], "warnings": [], "valid": True}))
     return 0
 
 
@@ -338,7 +319,7 @@ def _cmd_next_step_or_steps(tio, args, command):
 
 
 def _cmd_classify(tio, args):
-    tickets = scan_all_tickets(tio.tickets_dir)
+    tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
     result = classify_tickets(tickets, logs_dir=tio.logs_dir)
     if args.format == "counts":
         for key in ("executable", "active", "blocked", "waiting", "review", "orphaned"):
@@ -350,7 +331,7 @@ def _cmd_classify(tio, args):
 
 
 def _cmd_detect_orphans(tio, args):
-    tickets = scan_all_tickets(tio.tickets_dir)
+    tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
     result = classify_tickets(tickets, orphan_threshold_min=args.threshold, logs_dir=tio.logs_dir)
     orphaned = result.get("orphaned", [])
     if not orphaned:
@@ -486,7 +467,11 @@ def _cmd_log_transition(tio, args):
 
 def _cmd_move_ticket(tio, args):
     # Review exits go through operations that preserve their distinct semantics.
-    entry = tio.find_ticket(args.slug)
+    try:
+        entry = tio.find_ticket(args.slug)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     cur_status = entry.get("status", "") if entry else ""
     norm_to = normalize_dir(args.to)
     if cur_status == "review" and norm_to == "board/done":
@@ -604,130 +589,13 @@ def _cmd_init(tio, args):
     return 2
 
 
-_ON_SUCCESS_REQUIRED_KEYS = frozenset({"destination", "merge", "cleanup", "triage_report"})
-_ON_SUCCESS_KEYS = _ON_SUCCESS_REQUIRED_KEYS
-
-
-def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | None]:
-    """Parse a complete successful-run disposition from the CLI boundary."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        return None, f"invalid JSON: {exc}"
-
-    try:
-        mapping = require_dict(parsed, field="--on-success")
-    except BoundaryError as exc:
-        return None, str(exc)
-    if "remove_targets" in mapping:
-        return (
-            None,
-            "on_success.remove_targets is unsupported after the Target Plan hard cutoff; "
-            "recreate the Ticket",
-        )
-
-    missing = _ON_SUCCESS_REQUIRED_KEYS - mapping.keys()
-    unknown = mapping.keys() - _ON_SUCCESS_KEYS
-    key_errors = []
-    if missing:
-        key_errors.append(f"missing keys: {', '.join(sorted(missing))}")
-    if unknown:
-        key_errors.append(f"unknown keys: {', '.join(sorted(unknown))}")
-    if key_errors:
-        return None, "; ".join(key_errors)
-
-    model = OnSuccess.from_dict(mapping)
-    errors = model.validate()
-    if errors:
-        return None, "; ".join(errors)
-    return {
-        "destination": model.destination,
-        "merge": model.merge,
-        "cleanup": model.cleanup,
-        "triage_report": model.triage_report,
-    }, None
-
-
-def _parse_target_plan_arg(value: str) -> tuple[list[dict[str, str]] | None, str | None]:
-    """Parse and canonicalize a Target Plan from the CLI boundary."""
-    try:
-        parsed = json.loads(value)
-        plan = TargetPlan.from_value(parsed)
-    except (json.JSONDecodeError, TargetPlanError) as exc:
-        return None, str(exc)
-    return plan.as_list(), None
-
-
-def _create_target_plan(args, on_success: dict[str, Any] | None):
-    source = args.target_plan
-    if args.target_plan_file:
-        try:
-            source = Path(args.target_plan_file).read_text(encoding="utf-8")
-        except OSError as exc:
-            return None, f"invalid --target-plan-file: {exc}"
-    if source is None:
-        return None, None
-    plan, error = _parse_target_plan_arg(source)
-    if error:
-        return None, f"invalid Target Plan: {error}"
-    if on_success is not None and on_success["merge"] is not True:
-        return None, "invalid Target Plan: target_plan requires on_success.merge: true"
-    return plan, None
-
-
 def _cmd_create_file(tio, args):
-    criteria, error = _create_file_criteria(args)
-    if error:
-        print(f"Error: {error}", file=sys.stderr)
+    try:
+        content = Path(args.document_file).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"Error: cannot read --document-file: {exc}", file=sys.stderr)
         return 2
-    on_success = None
-    if args.on_success is not None:
-        on_success, error = _parse_on_success_arg(args.on_success)
-        if error:
-            print(f"Error: invalid --on-success: {error}", file=sys.stderr)
-            return 2
-    target_plan, error = _create_target_plan(args, on_success)
-    if error:
-        print(f"Error: {error}", file=sys.stderr)
-        return 2
-    result = tio.create_ticket_file(
-        args.slug,
-        _create_file_spec(args, criteria, target_plan, on_success),
-    )
-    return 0 if result else 2
-
-
-def _create_file_criteria(args) -> tuple[Any, str | None]:
-    """Parse create-file criteria with file input taking precedence."""
-    if args.criteria_file:
-        try:
-            return json.loads(Path(args.criteria_file).read_text(encoding="utf-8")), None
-        except (json.JSONDecodeError, OSError) as e:
-            return None, f"invalid --criteria-file: {e}"
-    if args.criteria:
-        try:
-            return json.loads(args.criteria), None
-        except json.JSONDecodeError as e:
-            return None, f"invalid --criteria JSON: {e}"
-    return None, None
-
-
-def _create_file_spec(args, criteria, target_plan, on_success) -> TicketFileSpec:
-    body = Path(args.body_file).read_text(encoding="utf-8") if args.body_file else args.body
-    return TicketFileSpec(
-        summary=args.summary,
-        ticket_type=args.ticket_type,
-        branch=args.branch,
-        project_destination_ref=args.project_destination_ref,
-        scope=args.scope,
-        spec=args.spec,
-        dependencies=args.dependencies,
-        priority=args.priority,
-        criteria=criteria,
-        target_plan=target_plan,
-        on_success=on_success,
-        body=body,
-    )
+    return 0 if tio.create_ticket_document(args.slug, content) else 2
 
 
 def _cmd_return_to_draft(tio, args):
@@ -742,26 +610,7 @@ def _cmd_return_to_draft(tio, args):
 
 
 def _cmd_enqueue(tio, args):
-    on_success = None
-    dest = getattr(args, "destination", None)
-    merge = getattr(args, "merge", None)
-    cleanup = getattr(args, "cleanup", None)
-    triage_report = getattr(args, "triage_report", None)
-    if any(value is not None for value in (dest, merge, cleanup, triage_report)):
-        on_success = {
-            "destination": dest or "review",
-            "merge": merge if merge is not None else True,
-            "cleanup": cleanup if cleanup is not None else True,
-            "triage_report": triage_report if triage_report is not None else True,
-        }
-    success = tio.enqueue_ticket(
-        args.slug,
-        summary=getattr(args, "summary", None),
-        ticket_type=getattr(args, "ticket_type", None),
-        branch=getattr(args, "branch", None),
-        on_success=on_success,
-        integration_base=getattr(args, "integration_base", ""),
-    )
+    success = tio.enqueue_ticket(args.slug)
     return 0 if success else 2
 
 
@@ -806,8 +655,9 @@ def _validate_logs_report(tio, slug):
     ticket_fields = {}
     ticket_path = tio.logs_dir / slug / "ticket.md"
     if ticket_path.exists():
-        with ticket_path.open(encoding="utf-8") as f:
-            ticket_fields, _ = parse_frontmatter(f.read())
+        tio.load_basis(slug, runtime_ticket_path=ticket_path)
+        document = tio._convert_executable_ticket(ticket_path, slug)
+        ticket_fields = {**document.spec.fields, **document.generated}
 
     result = validate_logs(tio.logs_dir, slug, ticket_type, steps_completed, ticket_fields)
     report, error_count = format_validate_logs_report(result, slug)
@@ -815,7 +665,11 @@ def _validate_logs_report(tio, slug):
 
 
 def _cmd_validate_logs(tio, args):
-    validated = _validate_logs_report(tio, args.slug)
+    try:
+        validated = _validate_logs_report(tio, args.slug)
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"error": str(exc)}))
+        return 1
     if validated is None:
         print(json.dumps({"error": f"Ticket '{args.slug}' not found"}))
         return 1

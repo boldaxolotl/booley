@@ -423,6 +423,15 @@ class StandaloneMixin:
 
     def _plan_standalone_check(self, targets: list[str]) -> _StandalonePlanRecipe:
         """Resolve the complete standalone scope without opening logs or running tools."""
+        bound = self.state.criteria.get(_STANDALONE_CRITERION)
+        expected = (bound.params or {}).get("targets") if bound is not None else None
+        if isinstance(expected, list):
+            catalog = TargetCatalog.build(self.args.work_dir)
+            selected = {catalog.select(target).identity for target in targets}
+            if selected != set(expected):
+                raise ValueError(
+                    "elab-only-standalone must select exactly the Ticket's frozen Target set"
+                )
         frontend = self._resolve_standalone_frontend()
         try:
             scope = self._standalone_rtl_scope(targets)

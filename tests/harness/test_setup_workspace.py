@@ -1168,8 +1168,31 @@ class TestWorkspaceRun:
         """Kills: L157 cmpop NotEq→Eq, L159 return_None."""
         # Synth criteria make ctx.has_synth True, so the yosys check-paths
         # script runs and its failure must block setup.
+        from booley.ticket_board.ticket_document import TicketCriterion, TicketSpec
+
         ctx = _make_ctx(
-            project_root, branch="master", criteria={"mandatory": {"synthesis_ok": True}}
+            project_root,
+            branch="master",
+            ticket_spec=TicketSpec(
+                fields={},
+                body="",
+                criteria=(
+                    TicketCriterion(
+                        "synth:core:area_um2_max",
+                        "SYNTH",
+                        True,
+                        "core",
+                        None,
+                        "area_um2_max",
+                        10000,
+                        1,
+                        1,
+                    ),
+                ),
+                targets=(),
+                on_success=(),
+                target_plan=None,
+            ),
         )
 
         wt = project_root / ".booley_project" / "worktrees" / ctx.slug

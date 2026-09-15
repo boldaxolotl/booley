@@ -95,12 +95,6 @@ def resolve_ticket_baseline(
             belongs_to_family = key.startswith(criterion_prefix)
             if key in names or (belongs_to_family and params.get("target") == target.identity):
                 matches.append(params)
-        if len(matches) > 1:
-            return (
-                requested,
-                None,
-                (f"{flow_name}: no unique persisted criterion for {target.identity!r}"),
-            )
         matched_params.extend(matches)
     refs = {ref for params in matched_params if (ref := as_str(params.get(BASELINE_REF_PARAM)))}
     if not refs:

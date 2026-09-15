@@ -5,7 +5,29 @@ from unittest.mock import Mock
 import pytest
 
 from booley.ticket_board import notifications, operations
+from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.scanner import find_ticket_file
 from tests.ticket_board.conftest import make_ticket_file, publish_handoff_snapshot
+
+
+@pytest.fixture(autouse=True)
+def _notification_ticket_entries(tio, monkeypatch):
+    """Keep notification tests focused on delivery, using synthetic lifecycle rows."""
+
+    def find(slug):
+        path, status = find_ticket_file(tio.tickets_dir, slug)
+        if path is None:
+            return None
+        fields, _body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        return {
+            **fields,
+            "status": status,
+            "file": str(path.relative_to(tio.tickets_dir)),
+            "step": "",
+            "steps_completed": [],
+        }
+
+    monkeypatch.setattr(tio, "find_ticket", find)
 
 
 @pytest.mark.parametrize("setting", ["events = 42", "ntfy_topic = 42", "notifications = []"])
@@ -48,7 +70,7 @@ def test_sender_uses_https_and_bounded_delivery(tmp_path, monkeypatch):
 @pytest.mark.parametrize("merge", [False, True])
 def test_successful_completion_notifies(tio, monkeypatch, merge):
     make_ticket_file(tio, "review", "probe")
-    policy = Mock(merge=merge)
+    policy = Mock(merge=merge, cleanup=False)
     monkeypatch.setattr(
         operations, "_prepare_completion_request", lambda *_a: ("probe", policy, None)
     )
@@ -80,7 +102,9 @@ def test_completion_respects_event_filter(tio, tmp_path, monkeypatch, setting):
     (tmp_path / "booley.toml").write_text("[notifications]\n" + setting)
     make_ticket_file(tio, "review", "probe")
     monkeypatch.setattr(
-        operations, "_prepare_completion_request", lambda *_a: ("probe", Mock(merge=False), None)
+        operations,
+        "_prepare_completion_request",
+        lambda *_a: ("probe", Mock(merge=False, cleanup=False), None),
     )
     monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_a, **_kw: None)
     send = Mock()
@@ -156,7 +180,9 @@ def test_automatic_done_handoff_notifies(tio, monkeypatch):
     monkeypatch.setattr(operations, "_validate_transitions_for_handoff", lambda *_a: True)
     monkeypatch.setattr(operations, "_prepare_handoff_snapshot", publish_handoff_snapshot)
     monkeypatch.setattr(
-        operations, "_prepare_completion_request", lambda *_a: ("probe", Mock(merge=False), None)
+        operations,
+        "_prepare_completion_request",
+        lambda *_a: ("probe", Mock(merge=False, cleanup=False), None),
     )
     monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_a, **_kw: None)
     send = Mock()

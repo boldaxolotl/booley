@@ -13,7 +13,7 @@ from booley.harness import developer
 from booley.harness.models import TicketContext
 from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
 from booley.runtime.project_dir import reset_cache
-from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.io import TicketIO
 
 
 def _git(repository: Path, *args: str) -> None:
@@ -50,15 +50,16 @@ def _ticket_context(root: Path) -> TicketContext:
     _git(root, "commit", "-m", "initial")
 
     tickets = TicketIO(project_dir / "tickets", project_root=root)
-    created = tickets.create_ticket_file(
+    created = tickets.create_ticket_document(
         "generated-input",
-        TicketFileSpec(
-            summary="Accept generated input",
-            ticket_type="feature",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
-        ),
+        "---\n"
+        "summary: Accept generated input\n"
+        "type: feature\n"
+        "branch: main\n"
+        "scope: [README.md]\n"
+        "on_success: [review, merge]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
+        "---\n\n## Description\nAccept generated input.\n",
     )
     assert created is not None
     assert tickets.enqueue_ticket("generated-input") is True

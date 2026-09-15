@@ -36,7 +36,12 @@ def _participant(role: str = "outer") -> BasisParticipant:
 def _handoff_tio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     run_log = tmp_path / "run.log"
     run_log.write_text("done\n", encoding="utf-8")
-    entry = {"status": "running", "step": "summary", "on_success": {}}
+    entry = {
+        "status": "running",
+        "step": "summary",
+        "file": "board/review/ticket.md",
+        "on_success": {"destination": "review"},
+    }
     tio = SimpleNamespace(
         logs_dir=tmp_path,
         tickets_dir=tmp_path,
@@ -160,7 +165,9 @@ def test_materialized_handoff_requires_ticket_and_successful_preparation(
         lambda _root, _basis, _destination, _heads: tmp_path,
     )
     monkeypatch.setattr(acceptance_basis, "assert_live_inputs_unchanged", lambda *_args: None)
-    monkeypatch.setattr("booley.ticket_board.io.find_ticket_file", lambda *_args: (None, None))
+    monkeypatch.setattr(
+        "booley.ticket_board.io.find_ticket_file", lambda *_args, **_kwargs: (None, None)
+    )
     assert operations.op_handoff(tio, "ticket") is False
     assert "unavailable during Basis validation" in capsys.readouterr().err
     ticket = tmp_path / "ticket.md"

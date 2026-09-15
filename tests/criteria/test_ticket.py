@@ -244,8 +244,27 @@ class TestValidateTicketFieldsCriteria:
 
 
 class TestInitCriteriaState:
+    @staticmethod
+    def _entry(state: DevelopmentState, family: str, target: str, metric: str = ""):
+        matches = [
+            entry
+            for key, entry in state.criteria.items()
+            if key.startswith(f"{family}_")
+            and entry.params.get("target") == target
+            and (not metric or metric in entry.params.get("metrics", {}) or metric in entry.params)
+        ]
+        assert len(matches) == 1
+        return matches[0]
+
     def _make_ctx(self, tmp_path: Path, criteria=None):
+        import yaml
+
         from booley.harness.models import TicketContext
+        from booley.ticket_board.ticket_document import (
+            TicketAuthoringView,
+            TicketConversionContext,
+            convert_ticket_document,
+        )
 
         logs_dir = tmp_path / "logs" / "test-ticket"
         logs_dir.mkdir(parents=True)
@@ -258,6 +277,55 @@ class TestInitCriteriaState:
                     ],
                 },
             }
+        sections = {}
+        for old_section, new_section in (
+            ("mandatory", "CRITERIA_MANDATORY"),
+            ("optional", "CRITERIA_OPTIONAL"),
+        ):
+            converted_section = {}
+            for key, value in criteria.get(old_section, {}).items():
+                if key == "lint_clean":
+                    converted_section["LINT"] = dict.fromkeys(value, "clean")
+                elif key == "review_rtl_bugs_done":
+                    converted_section["REVIEW"] = {"rtl": {"bugs": "done"}}
+                elif key == "mutation_score":
+                    converted_section["MUTATION"] = {
+                        row["target"]: {k: v for k, v in row.items() if k != "target"}
+                        for row in value
+                    }
+                elif key == "coverage":
+                    converted_section["COVERAGE"] = {
+                        target: {k: v for k, v in value[0].items() if k != "targets"}
+                        for target in value[0]["targets"]
+                    }
+                elif key == "synthesis_ok":
+                    converted_section["SYNTH"] = {
+                        target: {k: v for k, v in value.items() if k != "targets"}
+                        for target in value["targets"]
+                    }
+                elif key == "sim_pass":
+                    converted_section["SIM"] = {
+                        item.split("@")[1].strip(): {"all": "pass"} for item in value
+                    }
+            if converted_section:
+                sections[new_section] = converted_section
+        sections.setdefault("CRITERIA_MANDATORY", {"REVIEW": {"tb": {"quality": "clean"}}})
+        authored = {
+            "summary": "test",
+            "type": "feature",
+            "branch": "master",
+            "scope": [],
+            "on_success": ["review"],
+            **sections,
+        }
+        text = (
+            "---\n" + yaml.safe_dump(authored, sort_keys=False) + "---\n\n## Description\nTest.\n"
+        )
+        view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ("smoke",))
+        conversion = convert_ticket_document(
+            text, TicketConversionContext("draft", lambda _generated: view)
+        )
+        assert conversion.document is not None, conversion.diagnostics
         ctx = TicketContext(
             slug="test-ticket",
             ticket_path=tmp_path / "ticket.md",
@@ -265,6 +333,7 @@ class TestInitCriteriaState:
             branch="master",
             summary="test",
             criteria=criteria,
+            ticket_spec=conversion.document.spec,
             project_root=tmp_path,
         )
         return ctx, logs_dir
@@ -303,13 +372,11 @@ class TestInitCriteriaState:
         state = DevelopmentState.load(state_path)
         assert state.slug == "test-ticket"
         assert state.ticket_type == "feature"
-        assert state.is_met("lint_clean_lite") is False
-        assert state.is_met("lint_clean_full") is False
+        assert self._entry(state, "lint_clean", "lite").met is False
+        assert self._entry(state, "lint_clean", "full").met is False
         assert state.is_met("review_rtl_bugs_done") is False
-        assert "lint_clean_lite" in state.criteria
-        assert state.criteria["lint_clean_lite"].mandatory is True
-        assert "mutation_score_sim_unit" in state.criteria
-        assert state.criteria["mutation_score_sim_unit"].mandatory is False
+        assert self._entry(state, "lint_clean", "lite").mandatory is True
+        assert self._entry(state, "mutation_score", "sim_unit").mandatory is False
 
     def test_init_fallback_to_default_template(self, tmp_path: Path):
         from unittest.mock import PropertyMock, patch
@@ -358,16 +425,13 @@ class TestInitCriteriaState:
             _init_criteria_state(ctx)
 
         state = DevelopmentState.load(logs_dir / ".runtime" / "booley_state.json")
-        assert state.criteria["coverage_sim_top"].params == {
-            "target": "sim_top",
-            "metrics": {
-                "line": {"min_pct": 90},
-                "branch": {"min_pct": 85.5},
-            },
-            "tests": "all",
+        assert self._entry(state, "coverage", "sim_top", "line").params["metrics"] == {
+            "line": {"min_pct": 90}
         }
-        # Criteria without params should have empty dict
-        assert state.criteria["lint_clean_lite"].params == {}
+        assert self._entry(state, "coverage", "sim_top", "branch").params["metrics"] == {
+            "branch": {"min_pct": 85.5}
+        }
+        assert self._entry(state, "lint_clean", "lite").params["target"] == "lite"
 
     def test_synthesis_recipe_frozen_into_criterion_params(self, tmp_path: Path):
         from unittest.mock import PropertyMock, patch
@@ -417,7 +481,7 @@ class TestInitCriteriaState:
             _init_criteria_state(ctx)
 
         state = DevelopmentState.load(logs_dir / ".runtime" / "booley_state.json")
-        params = state.criteria["synthesis_ok_synth_lite"].params
+        params = self._entry(state, "synthesis_ok", "synth_lite", "cell_count_max").params
         assert params["cell_count_max"] == 500
         assert len(params[RECIPE_FINGERPRINT_PARAM]) == 64
 
@@ -446,7 +510,7 @@ class TestInitCriteriaState:
             _init_criteria_state(ctx)
 
         state = DevelopmentState.load(logs_dir / ".runtime" / "booley_state.json")
-        params = state.criteria["synthesis_ok_synth_new"].params
+        params = self._entry(state, "synthesis_ok", "synth_new", "cell_count_max").params
         assert params["cell_count_max"] == 500
         assert RECIPE_FINGERPRINT_PARAM not in params
 

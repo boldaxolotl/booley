@@ -13,7 +13,6 @@ from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
 from .acceptance_targets import resolve_commit
 from .acceptance_validation import prepare_acceptance_checkout
-from .frontmatter import parse_frontmatter
 from .scanner import find_ticket_file
 from .ticket_baseline import (
     TicketBaseline,
@@ -22,7 +21,12 @@ from .ticket_baseline import (
     materialize_current_ticket_checkout,
     validate_ticket_view,
 )
-from .validation import validate_ticket_fields
+from .ticket_document import (
+    TicketDocument,
+    convert_ticket_document,
+    ticket_conversion_context,
+)
+from .validation import validate_ticket_spec
 
 
 @dataclass(frozen=True)
@@ -71,16 +75,11 @@ def _validate_checkout_basis(
     root: Path,
     tickets_dir: Path,
     slug: str,
-    fields: dict[str, object],
-    body: str,
+    document: TicketDocument,
 ) -> list[str]:
     """Validate one executable Ticket in its current Basis composite."""
     if not (root / ".git").exists():
         return []
-    if fields.get("target_contract") is not None:
-        return ["legacy Target Contract tickets are unsupported after the hard cutoff"]
-    if "acceptance_basis" in fields or fields.get("machine") is None:
-        return ["unsupported Ticket format: executable Ticket needs machine metadata"]
     try:
         from .io import TicketIO
 
@@ -90,7 +89,7 @@ def _validate_checkout_basis(
             project_repository = resolve_inner_project_repo(root)
             if project_repository is None:
                 raise TicketBaselineError(
-                    "Ticket baseline project participant repository is missing"
+                    "Acceptance Basis project participant repository is missing"
                 )
             resolve_commit(project_repository, basis.project_sha)
         ticket, _status = find_ticket_file(tickets_dir, slug)
@@ -101,8 +100,7 @@ def _validate_checkout_basis(
             ticket,
             slug,
             basis,
-            fields,
-            body,
+            document,
         )
     except (TicketBaselineError, OSError, ValueError) as exc:
         return [str(exc)]
@@ -114,8 +112,7 @@ def _validate_current_ticket_view(
     ticket: Path,
     slug: str,
     basis: TicketBaseline,
-    fields: dict[str, object],
-    body: str,
+    document: TicketDocument,
 ) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:
         current = materialize_current_ticket_checkout(root, basis, Path(directory) / "checkout")
@@ -125,13 +122,11 @@ def _validate_current_ticket_view(
             slug=slug,
             ticket_path=ticket,
         )
-        errors = validate_ticket_fields(
-            fields,
-            body,
+        errors = validate_ticket_spec(
+            document.spec,
             check_files=True,
             check_git=False,
             project_root=current,
-            check_tb_files=True,
         )
         errors.extend(validate_ticket_view(current, basis))
         assert_live_inputs_unchanged(basis, root, current)
@@ -146,9 +141,17 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
     if ticket is None:
         return ReadinessResult(None, (f"ticket {slug!r} not found",))
 
-    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     if (root / ".git").exists():
-        results = _validate_checkout_basis(root, tickets_dir, slug, fields, body)
+        with ticket_conversion_context(root, slug, "executable") as context:
+            conversion = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+        if conversion.document is None:
+            return ReadinessResult(
+                ticket,
+                tuple(
+                    f"{item.line}:{item.column}: {item.message}" for item in conversion.diagnostics
+                ),
+            )
+        results = _validate_checkout_basis(root, tickets_dir, slug, conversion.document)
     else:
         from booley.flows.execution import flow_enabled
 
@@ -167,13 +170,20 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
                 ticket,
                 ("project preparation changed Git-visible checkout state",),
             )
-        results = validate_ticket_fields(
-            fields,
-            body,
+        with ticket_conversion_context(root, slug, "draft") as context:
+            conversion = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+        if conversion.document is None:
+            return ReadinessResult(
+                ticket,
+                tuple(
+                    f"{item.line}:{item.column}: {item.message}" for item in conversion.diagnostics
+                ),
+            )
+        results = validate_ticket_spec(
+            conversion.document.spec,
             check_files=True,
             check_git=False,
             project_root=root,
-            check_tb_files=True,
         )
     warnings = tuple(item for item in results if item.startswith("[warning] "))
     errors = [item for item in results if not item.startswith("[warning] ")]

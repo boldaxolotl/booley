@@ -87,17 +87,12 @@ class TestBuildParser:
             [
                 "create-file",
                 "new-feature",
-                "--summary",
-                "Add widget",
-                "--type",
-                "feature",
-                "--branch",
-                "master",
+                "--document-file",
+                "/tmp/ticket.md",
             ]
         )
         assert args.slug == "new-feature"
-        assert args.summary == "Add widget"
-        assert args.ticket_type == "feature"
+        assert args.document_file == "/tmp/ticket.md"
 
     def test_approve_accepts_only_ticket_slug(self):
         parser = build_parser()
