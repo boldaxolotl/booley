@@ -27,19 +27,79 @@ managing the PR, leave its queue state unchanged and coordinate the handoff.
 Treat an unexpected queue or dequeue comment as evidence of another owner;
 pause state-changing commands until ownership is clear.
 
-After Mergify accepts the queue command, read that PR's status once:
+After Mergify accepts the queue command, observe that PR once using the
+watcher below or, when observing manually, read its status once:
 
 ```bash
 gh pr view <number> --json state,mergedAt,labels,statusCheckRollup,comments
 ```
 
+## Run one read-only watcher
+
+The caller must establish queue ownership before starting a watcher. A local
+watcher is an observer, not an ownership lock: exactly one foreground process
+may observe the selected PR, and a second agent must coordinate with the owner.
+The watcher performs reads only; it never queues, dequeues, reruns, pushes,
+merges, comments, or cleans up.
+
+For ordinary PR CI, capture the selected PR head and use a deadline that covers
+the documented cold-cache validation time:
+
+```bash
+python3 .github/scripts/watch_pr.py \
+  --repo OWNER/REPO --pr <number> --mode ci \
+  --expected-head <40-character-sha> --timeout-seconds 7200
+```
+
+For an owned queued PR, include predecessor wait in the caller-selected
+deadline. Two hours is an example, not a completion guarantee; Mergify's
+configured validation bound is 90 minutes after the PR reaches its check slot:
+
+```bash
+python3 .github/scripts/watch_pr.py \
+  --repo OWNER/REPO --pr <number> --mode queue --timeout-seconds 7200
+```
+
+The process prints one startup line and one final JSON summary. Resume the
+existing process session while it waits. Keep each surrounding agent-tool wait
+at 60 seconds or less, report elapsed waiting time from the last known summary,
+and do not issue parallel GitHub status queries. The process itself observes CI
+every 60 seconds and queue state every ten minutes. An expired deadline is
+unresolved observation, not proof of failure; choose a new deadline explicitly
+rather than restarting automatically.
+
+CI outcomes are `ci_passed` (exit 0), `check_failed`, `closed`, or
+`head_changed` (exit 1), `timeout` (exit 124), and `observation_error` (exit 2).
+Only required checks reported as `pass` satisfy CI. Missing, pending, skipped,
+or neutral checks remain unresolved; a cancelled required check is actionable.
+The expected head is checked before and after each status read, and results
+from an explicitly different head are ignored.
+
+Queue outcomes are `merged` (exit 0), `dequeued`, `closed`, `check_failed`,
+`queue_failed`, or `competing_control` (exit 1), `timeout` (exit 124), and
+`observation_error` (exit 2). `mergedAt` is the merge confirmation; a closed PR
+without it is not a merge. The initial comment snapshot baselines historical
+queue/dequeue commands, while later exact control commands are competing-owner
+evidence. The watcher relies on the configured `queued`,
+`merge-queue-checking`, and `dequeued` labels plus Mergify check data, not new
+bot status comments. Queue head updates are expected. An old failed attempt
+does not stop a newer pending or same-head retry.
+
+Cancellation is `cancelled` (exit 130 for SIGINT or 143 for SIGTERM).
+
+After an actionable outcome, fetch detailed checks or failure logs once using
+the recovery instructions below. A `merged` result is evidence for the caller
+to perform the existing final confirmation and authorized cleanup; the watcher
+does neither. Send SIGINT or SIGTERM when monitoring is no longer wanted; the
+watcher terminates its child read and reports `cancelled` with the conventional
+signal exit code.
+
 A non-null `mergedAt` finishes the wait; a `dequeued` label starts recovery.
 Waiting ownership is otherwise passive. Trust Mergify to enforce the configured
-serial priority queue and leave predecessor PRs to their owners. Sleep until
-Mergify's reported merge estimate; when no future estimate is available, wait
-ten minutes. Then check only the owned PR once. An unchanged status starts
-another quiet wait at the same cadence. Each waiting interval contains no
-GitHub status queries.
+serial priority queue and leave predecessor PRs to their owners. Wait ten
+minutes, then check only the owned PR once. An unchanged status starts another
+quiet wait at the same cadence. Each waiting interval contains no GitHub status
+queries.
 
 Mergify gives PRs with either of these labels the same high-priority tier:
 
