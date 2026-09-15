@@ -88,6 +88,21 @@ class TestRecordRoundTrip:
             encoding="utf-8",
         )
         assert [rec.run_id for rec in jobrec.list_records(root)] == ["sim-x-1"]
+        assert jobrec.list_records(root)[0].display_scope == "developer"
+
+    def test_display_scope_round_trip(self, _jobs_env):
+        rec = jobrec.JobRecord(
+            run_id="reviewer-nested-1",
+            endpoint="reviewer",
+            started_at="2026-07-04T13:15:02Z",
+            timeout_s=60,
+            display_scope="nested",
+        )
+
+        jobrec.write_record(rec, root=_jobs_env)
+
+        got = jobrec.read_record(rec.run_id, root=_jobs_env)
+        assert got is not None and got.display_scope == "nested"
 
     def test_overwrite_is_atomic_and_leaves_no_tmp(self, _jobs_env):
         # write_record goes through tmp + os.replace so a cross-process reader
@@ -107,6 +122,27 @@ class TestRecordRoundTrip:
         root = _jobs_env
         assert root is not None
         assert not list(root.glob("*.tmp"))
+
+    def test_delete_record_removes_synchronous_activity(self, _jobs_env):
+        rec = jobrec.JobRecord(
+            run_id="lint-sync-1",
+            endpoint="lint",
+            started_at="t",
+            timeout_s=60,
+        )
+        jobrec.write_record(rec, root=_jobs_env)
+
+        jobrec.delete_record(rec.run_id, root=_jobs_env)
+
+        assert jobrec.read_record(rec.run_id, root=_jobs_env) is None
+
+    def test_delete_record_is_best_effort(self, _jobs_env, monkeypatch):
+        def fail_unlink(*_args, **_kwargs):
+            raise OSError
+
+        monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+        jobrec.delete_record("lint-sync-1", root=_jobs_env)
 
 
 class TestDisabledStorage:

@@ -682,7 +682,6 @@ class TestTryReadReport:
             "TextContent",
             lambda **kwargs: SimpleNamespace(type=kwargs["type"], text=kwargs["text"]),
         )
-
         result = asyncio.run(
             self.mcp_server._dispatch_booley_mcp_tool(
                 "lint",

@@ -1190,6 +1190,8 @@ class TestWriteDisplayEvent:
             "line": "✓ target_a",
             "completion": True,
             "repeats_at_end": True,
+            "invocation_id": endpoint._invocation_id,
+            "display_scope": "developer",
             "timestamp": event["timestamp"],
         }
 

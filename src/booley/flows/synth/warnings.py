@@ -7,6 +7,7 @@ warning dialect, grouping, disposition, and representative bounds stay here.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import Counter
 from collections.abc import Mapping
@@ -17,6 +18,7 @@ WarningDisposition = Literal["benign", "advisory", "structural"]
 
 _SOURCE_ORDER = ("sv2v", "yosys", "openroad", "final_check")
 _REPRESENTATIVE_LIMIT = 8
+_REPRESENTATIVE_MESSAGE_BYTES = 2 * 1024
 _YOSYS_WARNING_RE = re.compile(r"^(?:Warning:|ABC:\s+Warning:)", re.IGNORECASE)
 _OPENROAD_WARNING_RE = re.compile(
     r"^\[WARNING(?:\s+([A-Z][A-Z0-9_]*-\d+))?\]\s*(.*)$",
@@ -52,6 +54,9 @@ class WarningGroup:
     category: str
     disposition: WarningDisposition
     message: str
+    message_sha256: str
+    original_bytes: int
+    truncated: bool
     count: int
     rationale: str | None = None
 
@@ -62,6 +67,9 @@ class WarningGroup:
             "category": self.category,
             "disposition": self.disposition,
             "message": self.message,
+            "message_sha256": self.message_sha256,
+            "original_bytes": self.original_bytes,
+            "truncated": self.truncated,
             "count": self.count,
         }
         if self.rationale:
@@ -120,11 +128,48 @@ class _WarningRecord:
     category: str
     disposition: WarningDisposition
     message: str
+    message_sha256: str
+    original_bytes: int
+    truncated: bool
     rationale: str | None = None
 
 
 def _normalize_message(lines: list[str]) -> str:
     return " ".join(" ".join(lines).split())
+
+
+def _message_excerpt(message: str) -> tuple[str, str, int, bool]:
+    """Return bounded display text plus identity for the complete diagnostic."""
+    raw = message.encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    if len(raw) <= _REPRESENTATIVE_MESSAGE_BYTES:
+        return message, digest, len(raw), False
+    suffix = "…"
+    budget = _REPRESENTATIVE_MESSAGE_BYTES - len(suffix.encode("utf-8"))
+    excerpt = raw[:budget].decode("utf-8", errors="ignore") + suffix
+    return excerpt, digest, len(raw), True
+
+
+def _warning_record(
+    tool: str,
+    code: str | None,
+    category: str,
+    disposition: WarningDisposition,
+    message: str,
+    rationale: str | None = None,
+) -> _WarningRecord:
+    excerpt, digest, original_bytes, truncated = _message_excerpt(message)
+    return _WarningRecord(
+        tool,
+        code,
+        category,
+        disposition,
+        excerpt,
+        digest,
+        original_bytes,
+        truncated,
+        rationale,
+    )
 
 
 def _multiline_records(text: str, starts: re.Pattern[str]) -> list[str]:
@@ -176,7 +221,7 @@ def _yosys_records(text: str) -> list[_WarningRecord]:
         tool = "abc" if message.lower().startswith("abc:") else "yosys"
         category = _category(message, None)
         disposition, rationale = _disposition(message, category)
-        result.append(_WarningRecord(tool, None, category, disposition, message, rationale))
+        result.append(_warning_record(tool, None, category, disposition, message, rationale))
     return result
 
 
@@ -190,7 +235,7 @@ def _openroad_records(text: str) -> list[_WarningRecord]:
         message = _normalize_message([line])
         category = _category(message, code)
         disposition, rationale = _disposition(message, category)
-        result.append(_WarningRecord("openroad", code, category, disposition, message, rationale))
+        result.append(_warning_record("openroad", code, category, disposition, message, rationale))
     return result
 
 
@@ -211,14 +256,24 @@ def _records(sources: Mapping[str, str]) -> list[_WarningRecord]:
 
 def _sv2v_records(text: str) -> list[_WarningRecord]:
     return [
-        _WarningRecord("sv2v", None, "other", "advisory", message)
+        _warning_record("sv2v", None, "other", "advisory", message)
         for message in _multiline_records(text, _PLAIN_WARNING_RE)
     ]
 
 
 def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
     grouped = Counter(
-        (item.tool, item.code, item.category, item.disposition, item.message, item.rationale)
+        (
+            item.tool,
+            item.code,
+            item.category,
+            item.disposition,
+            item.message_sha256,
+            item.message,
+            item.original_bytes,
+            item.truncated,
+            item.rationale,
+        )
         for item in records
     )
     groups = [
@@ -227,8 +282,11 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
             code=key[1],
             category=key[2],
             disposition=key[3],
-            message=key[4],
-            rationale=key[5],
+            message_sha256=key[4],
+            message=key[5],
+            original_bytes=key[6],
+            truncated=key[7],
+            rationale=key[8],
             count=count,
         )
         for key, count in grouped.items()

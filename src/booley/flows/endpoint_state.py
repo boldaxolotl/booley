@@ -7,6 +7,7 @@ publication operations; this module does not construct parsers.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager
@@ -32,6 +33,7 @@ from booley.flows.execution_persistence import (
     StandaloneFlowExecution,
 )
 from booley.runtime import job_slots
+from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     ExecutionResult,
@@ -105,7 +107,13 @@ class EndpointState(ABC):
         self._start_time: float = 0.0
         self._pre_run_head: str | None = None
         self._raw_argv: list[str] | None = None
-        self._invocation_id = uuid.uuid4().hex
+        invocation_id = (
+            os.environ.get("BOOLEY_RUN_ID")
+            or os.environ.get("BOOLEY_DISPLAY_INVOCATION_ID")
+            or uuid.uuid4().hex
+        )
+        self._display_identity = DisplayIdentity.current(invocation_id)
+        self._invocation_id = self._display_identity.invocation_id
         self._reserved_invocation_dir: Path | None = None
         # Set for the duration of _run(); read by _post_run to avoid echoing a
         # verdict block the endpoint already printed itself (F-28).

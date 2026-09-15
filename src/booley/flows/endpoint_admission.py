@@ -136,7 +136,13 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
         line = f"waiting for {job_class} slot (position {position + 1}); held by {held_by}"
         logger.info("%s: %s", endpoint.name, line)
         print(f"[slot] {endpoint.name}: {line}", file=sys.stderr, flush=True)
-        _write_display_event(_endpoint_progress_event(endpoint.name, line))
+        _write_display_event(
+            _endpoint_progress_event(
+                endpoint.name,
+                line,
+                identity=endpoint._display_identity,
+            )
+        )
 
     token = store.acquire(
         job_class,

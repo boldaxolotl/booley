@@ -82,7 +82,6 @@ def test_probe_and_live_server_share_catalog_validation(
         "_discover_booley_mcp_tools",
         lambda: (definitions, []),
     )
-    monkeypatch.setattr(mcp_server, "_reconcile_orphaned_locks", lambda: None)
     monkeypatch.setattr(mcp_server, "_reconcile_orphaned_jobs", lambda: None)
 
     with pytest.raises(error_type):

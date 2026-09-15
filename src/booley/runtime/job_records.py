@@ -1,4 +1,4 @@
-"""Durable records for asynchronous endpoint dispatch (ADR 0027).
+"""Durable endpoint records for detached polling and bounded activity status.
 
 A long-running MCP tool call (``simulate``, ``fpga_impl``, ``asic_synthesize``)
 can outlive the MCP *client's* ~60-90s call cap while the *server's* budget runs
@@ -40,6 +40,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.runtime.display_identity import DisplayScope
 from booley.runtime.timefmt import parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,9 @@ class JobRecord:
     pid: int | None = None
     status: str = STATUS_RUNNING
     exit_code: int | None = None
+    # Presentation scope of the submitting MCP server. Nested Specialist jobs
+    # are real Jobs but must not replace the Developer Agent's heartbeat text.
+    display_scope: DisplayScope = DisplayScope.DEVELOPER
     # Optional durable parent operation. Detached work keeps the same lease so
     # its later evidence cannot escape the review execution that admitted it.
     lease_id: str | None = None
@@ -108,6 +112,8 @@ class JobRecord:
     def from_dict(cls, d: dict) -> JobRecord:
         # Tolerate unknown keys from a future writer — read only what we model.
         known = {f: d.get(f) for f in cls.__dataclass_fields__}
+        if known.get("display_scope") is not None:
+            known["display_scope"] = DisplayScope.parse(known["display_scope"])
         return cls(**{k: v for k, v in known.items() if v is not None})
 
 
@@ -164,6 +170,17 @@ def read_record(run_id: str, root: Path | None) -> JobRecord | None:
         return None
 
 
+def delete_record(run_id: str, root: Path | None) -> None:
+    """Remove a record after synchronous activity no longer needs it."""
+    path = _record_path(run_id, root)
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.debug("Failed to remove job record %s", run_id, exc_info=True)
+
+
 def list_records(root: Path | None) -> list[JobRecord]:
     """Return every job record on disk (unordered). Empty when none."""
     records_root = root
@@ -211,6 +228,7 @@ def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
         raise BoundaryError("Job pid must be positive")
     if record.exit_code is not None:
         require_int(record.exit_code, field="Job exit code")
+    DisplayScope.parse(record.display_scope)
     if record.lease_id is not None:
         require_str({"lease_id": record.lease_id}, "lease_id")
     started_at = parse_stamp(record.started_at)

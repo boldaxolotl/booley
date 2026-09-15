@@ -78,6 +78,32 @@ def test_warning_groups_keep_counts_and_representative_diagnostics() -> None:
     assert "Booley-generated deprecated query" in deprecation["rationale"]
 
 
+def test_huge_warning_message_is_bounded_and_traceable() -> None:
+    instance_list = " ".join(f"u{i}" for i in range(500_000))
+    warning = f"[WARNING STA-0349] missing clocks on {instance_list}\n"
+
+    summary = parse_synth_diagnostics({"openroad": warning}).warnings.to_detail()
+
+    representative = summary["representatives"][0]
+    assert len(representative["message"].encode("utf-8")) <= 2 * 1024
+    assert representative["truncated"] is True
+    assert representative["original_bytes"] > 2 * 1024
+    assert len(representative["message_sha256"]) == 64
+    assert representative["code"] == "STA-0349"
+
+
+def test_huge_warning_groups_use_full_message_digest() -> None:
+    prefix = "[WARNING STA-0349] " + "x" * 4_000
+    warnings = f"{prefix} first\n{prefix} second\n"
+
+    summary = parse_synth_diagnostics({"openroad": warnings}).warnings.to_detail()
+
+    representatives = summary["representatives"]
+    assert summary["unique_warnings"] == 2
+    assert representatives[0]["message"] == representatives[1]["message"]
+    assert representatives[0]["message_sha256"] != representatives[1]["message_sha256"]
+
+
 def test_missing_final_check_is_incomplete_not_clean() -> None:
     diagnostics = parse_synth_diagnostics({"yosys": "Warnings: 0 unique messages.\n"})
 

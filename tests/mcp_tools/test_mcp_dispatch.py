@@ -6,6 +6,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -273,6 +274,100 @@ class TestReportFetch:
     def test_latest_report_missing_endpoint_returns_none(self, _report_env):
         _seed_report(_report_env, "sim", {"flow": "sim"})
         assert _latest_report("lint") is None
+
+    def test_inline_endpoint_publishes_running_job_record(self, _report_env, monkeypatch):
+        import asyncio
+        import os
+
+        async def scenario():
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def run(_cmd, *, timeout, on_spawn=None, on_first_active=None, **_kwargs):
+                if on_spawn:
+                    on_spawn(os.getpid())
+                if on_first_active:
+                    on_first_active()
+                started.set()
+                await release.wait()
+                return 0, "ok", "", False
+
+            monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+            jobs = _JobManager(_FakeLifetime())
+            task = asyncio.create_task(jobs.run_synchronous("lint", ["lint"], 60))
+            await started.wait()
+            active = jobrec.list_records(session_jobs_dir())
+            release.set()
+            await task
+            remaining = jobrec.list_records(session_jobs_dir())
+            return active, remaining
+
+        active, remaining = asyncio.run(scenario())
+        assert len(active) == 1
+        assert active[0].endpoint == "lint"
+        assert active[0].status == jobrec.STATUS_RUNNING
+        assert remaining == []
+
+    def test_visible_inline_endpoint_delegates_to_job_manager(self):
+        import asyncio
+
+        jobs = _JobManager(_FakeLifetime())
+        jobs.run_synchronous = AsyncMock(return_value=(0, "ok", "", False))
+
+        result = asyncio.run(
+            mcp_server._run_inline_endpoint("lint", ["lint"], 60, jobs, publish_activity=True)
+        )
+
+        assert result == (0, "ok", "", False)
+        jobs.run_synchronous.assert_awaited_once_with("lint", ["lint"], 60)
+
+    def test_administrative_inline_timeout_closes_display(self, monkeypatch):
+        import asyncio
+
+        async def timed_out(*_args, **_kwargs):
+            return 124, "", "timeout", True
+
+        monkeypatch.setattr(mcp_server, "_run_subprocess", timed_out)
+        write_end = MagicMock()
+        monkeypatch.setattr(mcp_server, "_write_synthetic_endpoint_end", write_end)
+
+        result = asyncio.run(
+            mcp_server._run_inline_endpoint(
+                "submit_run_report",
+                ["report"],
+                15,
+                _JobManager(_FakeLifetime()),
+                publish_activity=False,
+            )
+        )
+
+        assert result == (124, "", "timeout", True)
+        assert write_end.call_args.args[:2] == ("submit_run_report", 15)
+        assert write_end.call_args.kwargs["identity"].invocation_id
+
+    def test_administrative_inline_cancellation_closes_display(self, monkeypatch):
+        import asyncio
+
+        async def cancelled(*_args, **_kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(mcp_server, "_run_subprocess", cancelled)
+        write_end = MagicMock()
+        monkeypatch.setattr(mcp_server, "_write_synthetic_endpoint_end", write_end)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                mcp_server._run_inline_endpoint(
+                    "submit_run_report",
+                    ["report"],
+                    15,
+                    _JobManager(_FakeLifetime()),
+                    publish_activity=False,
+                )
+            )
+
+        assert write_end.call_args.args[:2] == ("submit_run_report", 0)
+        assert write_end.call_args.kwargs["outcome"] == "aborted"
 
     def test_latest_report_no_reports_dir(self, tmp_path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
@@ -1581,6 +1676,11 @@ class TestCancel:
             got = jobrec.read_record("simulate-c-2", root=session_jobs_dir())
             assert got is not None and got.status == jobrec.STATUS_CANCELLED
             assert got.exit_code == 130
+            terminal = json.loads(
+                (_report_env / "display.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+            )
+            assert terminal["invocation_id"] == "simulate-c-2"
+            assert terminal["outcome"] == "cancelled"
         finally:
             if child.poll() is None:
                 child.kill()
@@ -1706,6 +1806,14 @@ class TestCancel:
         record = jobrec.read_record(run_id, root=session_jobs_dir())
         assert record is not None and record.status == jobrec.STATUS_CANCELLED
         assert "CANCELLED" in jobs.result_text(run_id)
+        events = [
+            json.loads(line)
+            for line in (_report_env / "display.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        terminal = events[-1]
+        assert terminal["type"] == "endpoint_end"
+        assert terminal["invocation_id"] == run_id
+        assert terminal["outcome"] == "cancelled"
 
     def test_server_shutdown_cancellation_is_not_mislabeled_as_user_cancel(
         self,
@@ -1738,6 +1846,78 @@ class TestCancel:
         run_id = asyncio.run(scenario())
         record = jobrec.read_record(run_id, root=session_jobs_dir())
         assert record is not None and record.status == jobrec.STATUS_RUNNING
+        terminal = json.loads(
+            (_report_env / "display.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+        )
+        assert terminal["invocation_id"] == run_id
+        assert terminal["outcome"] == "aborted"
+
+    def test_adopted_cancel_persists_only_after_process_stops(self, _report_env, monkeypatch):
+        import asyncio
+        import os
+
+        rec = jobrec.JobRecord(
+            run_id="sim-adopted-atomic",
+            endpoint="sim",
+            started_at=_utc_stamp(-10),
+            timeout_s=600,
+            pid=os.getpid(),
+        )
+        jobrec.write_record(rec, root=session_jobs_dir())
+        jobs = _JobManager(_FakeLifetime())
+
+        async def stop(_pid):
+            current = jobrec.read_record(rec.run_id, root=session_jobs_dir())
+            assert current is not None and current.status == jobrec.STATUS_RUNNING
+
+        monkeypatch.setattr(mcp_server, "_cancel_adopted_process_group", stop)
+        monkeypatch.setattr(jobs, "_adopt_report_outcome", lambda _rec: False)
+
+        phase = asyncio.run(jobs.cancel(rec.run_id))
+
+        assert phase == "running"
+        final = jobrec.read_record(rec.run_id, root=session_jobs_dir())
+        assert final is not None and final.status == jobrec.STATUS_CANCELLED
+
+    def test_adopted_cancel_preserves_completion_that_wins_race(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
+        import asyncio
+        import os
+
+        rec = jobrec.JobRecord(
+            run_id="sim-adopted-finished",
+            endpoint="sim",
+            started_at=_utc_stamp(-10),
+            timeout_s=600,
+            pid=os.getpid(),
+        )
+        jobrec.write_record(rec, root=session_jobs_dir())
+        jobs = _JobManager(_FakeLifetime())
+        checks = 0
+
+        def adopt(current):
+            nonlocal checks
+            checks += 1
+            if checks == 1:
+                return False
+            jobs._record_terminal(current, 0, timed_out=False)
+            return True
+
+        async def stop(_pid):
+            return None
+
+        monkeypatch.setattr(jobs, "_adopt_report_outcome", adopt)
+        monkeypatch.setattr(mcp_server, "_cancel_adopted_process_group", stop)
+
+        phase = asyncio.run(jobs.cancel(rec.run_id))
+
+        assert phase == "finished"
+        final = jobrec.read_record(rec.run_id, root=session_jobs_dir())
+        assert final is not None and final.status == jobrec.STATUS_DONE
+        assert not (_report_env / "display.jsonl").exists()
 
     def test_cancel_endpoint_visible_wherever_poll_is(self, monkeypatch):
         # Like poll, cancel must be reachable in Ticket-Mode too: any server

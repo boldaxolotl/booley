@@ -271,6 +271,129 @@ class TestDisplayWatcherEvents:
         assert list(watcher._open_endpoints.keys()) == []
         assert watcher._nesting_depth == 0
 
+    def test_identified_orphan_does_not_hide_later_endpoint(self, tmp_path: Path):
+        """One missing terminal event must not poison unrelated later jobs."""
+        display = tmp_path / "display.jsonl"
+        display.touch()
+        watcher = DisplayWatcher(display)
+        watcher._file_pos = 0
+
+        self._write_event(
+            display,
+            {
+                "type": "endpoint_start",
+                "endpoint": "reviewer",
+                "invocation_id": "review-1",
+                "display_scope": "developer",
+            },
+        )
+        self._write_event(
+            display,
+            {
+                "type": "endpoint_start",
+                "endpoint": "synth",
+                "invocation_id": "synth-1",
+                "display_scope": "developer",
+            },
+        )
+        self._write_event(
+            display,
+            {
+                "type": "endpoint_end",
+                "endpoint": "synth",
+                "invocation_id": "synth-1",
+                "display_scope": "developer",
+                "exit_code": 0,
+            },
+        )
+
+        with (
+            patch("booley.harness.terminal.endpoint_box_open") as mock_open,
+            patch("booley.harness.terminal.endpoint_box_close") as mock_close,
+        ):
+            watcher._poll_events()
+
+        assert mock_open.call_args_list[1].args == ("synth", None)
+        mock_close.assert_called_once()
+        assert mock_close.call_args.args[:2] == ("synth", None)
+
+    @pytest.mark.parametrize(
+        "identity_fields",
+        [
+            {"invocation_id": "partial"},
+            {"display_scope": "developer"},
+            {"invocation_id": "partial", "display_scope": "invalid"},
+        ],
+    )
+    def test_malformed_identified_start_cannot_enter_legacy_nesting(
+        self,
+        tmp_path: Path,
+        identity_fields: dict[str, str],
+    ):
+        display = tmp_path / "display.jsonl"
+        display.touch()
+        watcher = DisplayWatcher(display)
+        watcher._file_pos = 0
+        self._write_event(
+            display,
+            {"type": "endpoint_start", "endpoint": "sim", **identity_fields},
+        )
+
+        with patch("booley.harness.terminal.endpoint_box_open") as mock_open:
+            watcher._poll_events()
+
+        mock_open.assert_not_called()
+        assert watcher._nesting_depth == 0
+        assert not watcher.endpoint_active()
+
+    def test_unknown_identified_end_is_ignored(self, tmp_path: Path):
+        """A duplicate/foreign terminal event cannot close an active invocation."""
+        display = tmp_path / "display.jsonl"
+        display.touch()
+        watcher = DisplayWatcher(display)
+        watcher._file_pos = 0
+
+        for event in (
+            {
+                "type": "endpoint_start",
+                "endpoint": "sim",
+                "invocation_id": "sim-1",
+                "display_scope": "developer",
+            },
+            {
+                "type": "endpoint_end",
+                "endpoint": "sim",
+                "invocation_id": "other-run",
+                "display_scope": "developer",
+                "exit_code": 130,
+            },
+            {
+                "type": "endpoint_progress",
+                "endpoint": "sim",
+                "invocation_id": "sim-1",
+                "display_scope": "developer",
+                "line": "still simulating",
+            },
+            {
+                "type": "endpoint_end",
+                "endpoint": "sim",
+                "invocation_id": "sim-1",
+                "display_scope": "developer",
+                "exit_code": 0,
+            },
+        ):
+            self._write_event(display, event)
+
+        with (
+            patch("booley.harness.terminal.endpoint_box_open"),
+            patch("booley.harness.terminal.endpoint_progress_line") as mock_progress,
+            patch("booley.harness.terminal.endpoint_box_close") as mock_close,
+        ):
+            watcher._poll_events()
+
+        mock_progress.assert_called_once_with("still simulating")
+        mock_close.assert_called_once()
+
     def test_unknown_event_type_ignored(self, tmp_path: Path):
         display = tmp_path / "display.jsonl"
         display.touch()
