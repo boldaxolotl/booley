@@ -104,6 +104,13 @@ class TestEndpointBoxOpen:
         assert "\033[38;5;141m" in out
         assert "reviewer [setup]" in _strip_ansi(out)
 
+    def test_bwave_uses_palette_orange(self, capsys):
+        with patch("booley.harness.colors.COLORS_ENABLED", True):
+            terminal.endpoint_box_open("bwave", target="@dut wave")
+        out = capsys.readouterr().out
+        assert "\033[38;5;208m" in out
+        assert "B-Wave [@dut wave]" in _strip_ansi(out)
+
 
 # ---------------------------------------------------------------------------
 # endpoint_box_close formatting
@@ -111,6 +118,15 @@ class TestEndpointBoxOpen:
 
 
 class TestEndpointBoxClose:
+    def test_bwave_uses_canonical_name(self, capsys):
+        terminal.endpoint_box_close(
+            "bwave",
+            "@dut wave",
+            exit_code=0,
+            duration_s=0.4,
+        )
+        assert "B-Wave [@dut wave]" in _strip_ansi(capsys.readouterr().out)
+
     def test_pass_with_display_lines(self, capsys):
         terminal.endpoint_box_close(
             "lint",
@@ -210,6 +226,10 @@ class TestAgentText:
 
 
 class TestEndpointHeartbeat:
+    def test_bwave_uses_canonical_name(self, capsys):
+        terminal.endpoint_heartbeat("bwave", 301.0)
+        assert "B-Wave: 5m01s elapsed" in _strip_ansi(capsys.readouterr().out)
+
     def test_under_one_minute(self, capsys):
         terminal.endpoint_heartbeat("lint", 45.0)
         out = _strip_ansi(capsys.readouterr().out)

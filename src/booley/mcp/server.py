@@ -27,6 +27,7 @@ import copy
 import json
 import logging
 import os
+import shlex
 import socket
 import sys
 import time
@@ -56,11 +57,17 @@ if TYPE_CHECKING:
 
 from booley import __version__
 from booley.core.boundary import BoundaryError, require_finite_number
+from booley.flows.endpoint_events import (
+    _endpoint_end_event,
+    _endpoint_start_event,
+    _write_display_event,
+)
 from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
 from booley.mcp.application import McpApplication, McpToolDefinition, UnknownMcpToolError
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
 from booley.runtime.build_metadata import format_status_line
+from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 from booley.runtime.mcp_config import (
     DEFAULT_HTTP_PORT,
@@ -2388,8 +2395,31 @@ async def _dispatch_bwave(
     if not _mcp_tool_visible(name):
         return None
     cmd = builder(arguments)
-    exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd)
-    return [TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr))]
+    extra_args = arguments.get("extra_args", [])
+    display_label = shlex.join(extra_args) if extra_args else None
+    _write_display_event(
+        _endpoint_start_event(name, None, display_label=display_label),
+    )
+    started = time.monotonic()
+    exit_code = 2
+    try:
+        exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd)
+        return [
+            TextContent(
+                type="text",
+                text=_format_mcp_tool_result(exit_code, stdout, stderr),
+            )
+        ]
+    finally:
+        _write_display_event(
+            _endpoint_end_event(
+                name,
+                None,
+                EndpointOutcome(exit_code=exit_code),
+                time.monotonic() - started,
+                display_label=display_label,
+            ),
+        )
 
 
 def _job_inline_wait_seconds() -> float:

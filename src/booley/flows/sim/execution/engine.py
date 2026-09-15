@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
+from booley.core.build_paths import work_root_for
 from booley.flows import edam as edam_layer
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import begin_run_log, write_run_log
@@ -315,7 +316,7 @@ class SimulationExecution:
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
         policy = _build_policy(self._options.trace)
-        build_root = edam_layer.work_root_for(
+        build_root = work_root_for(
             handle.project_root,
             "sim",
             handle.selector,
@@ -413,7 +414,7 @@ class SimulationExecution:
     ) -> tuple[str, ...]:
         root = handle.project_root
         policy = _build_policy(self._options.trace)
-        build_root = edam_layer.work_root_for(
+        build_root = work_root_for(
             root,
             "sim",
             handle.selector,

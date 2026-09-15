@@ -422,6 +422,7 @@ def test_ordinary_python_source_skips_release_image_smoke(tmp_path: Path) -> Non
         ".github/workflows/test.yml",
         "pyproject.toml",
         "src/booley/runtime/git.py",
+        "src/booley/core/scope_matching.py",
         "src/booley/ticket_board/completion.py",
         "tests/conftest.py",
         "tests/ticket_board/test_completion.py",

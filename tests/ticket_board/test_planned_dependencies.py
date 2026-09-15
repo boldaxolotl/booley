@@ -117,6 +117,93 @@ def test_new_provider_core_copies_only_referenced_filesets(tmp_path: Path) -> No
     assert set(document["targets"]) == {"exported"}
 
 
+def test_new_provider_core_copies_only_locally_referenced_parameters(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    (source / "toy.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1.0\n"
+        "parameters:\n"
+        "  ENABLE_ZBB: {datatype: int, paramtype: vlogparam, default: 0}\n"
+        "  PRIVATE: {datatype: str, paramtype: vlogdefine, default: hidden}\n"
+        "targets:\n"
+        "  exported: {parameters: [ENABLE_ZBB=1]}\n"
+        "  private: {parameters: [PRIVATE]}\n",
+        encoding="utf-8",
+    )
+
+    assert _merge_provider_target(source, destination, Path("toy.core"), "exported")
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["parameters"] == {
+        "ENABLE_ZBB": {"datatype": "int", "paramtype": "vlogparam", "default": 0}
+    }
+    assert set(document["targets"]) == {"exported"}
+
+
+@pytest.mark.parametrize("destination_parameters", ["", "parameters: {}\n"])
+def test_provider_merge_adds_parameter_section_or_fills_empty_mapping(
+    tmp_path: Path, destination_parameters: str
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    (source / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\n"
+        "parameters:\n"
+        "  ENABLE_ZBB: {datatype: int, paramtype: vlogparam, default: 0}\n"
+        "targets:\n  future: {parameters: [ENABLE_ZBB=1]}\n",
+        encoding="utf-8",
+    )
+    (destination / "toy.core").write_text(
+        f"CAPI=2:\nname: acme:lib:toy:1.0\n{destination_parameters}targets:\n  current: {{}}\n",
+        encoding="utf-8",
+    )
+
+    assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["parameters"]["ENABLE_ZBB"]["default"] == 0
+    assert set(document["targets"]) == {"current", "future"}
+
+
+def test_provider_merge_rejects_referenced_parameter_conflict(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    for root, default in ((source, 0), (destination, 1)):
+        root.mkdir()
+        (root / "toy.core").write_text(
+            "CAPI=2:\nname: acme:lib:toy:1.0\nparameters:\n"
+            f"  ENABLE_ZBB: {{datatype: int, paramtype: vlogparam, default: {default}}}\n"
+            "targets:\n  future: {parameters: [ENABLE_ZBB=1]}\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(PlannedDependencyError, match=r"parameters\.ENABLE_ZBB differs"):
+        _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+
+def test_provider_merge_leaves_dependency_supplied_parameter_reference_local(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    (source / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\ntargets:\n"
+        "  future: {parameters: [DEPENDENCY_WIDTH=16]}\n",
+        encoding="utf-8",
+    )
+
+    assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert "parameters" not in document
+    assert document["targets"]["future"]["parameters"] == ["DEPENDENCY_WIDTH=16"]
+
+
 def test_new_provider_core_rejects_non_target_build_content(tmp_path: Path) -> None:
     source = tmp_path / "source"
     destination = tmp_path / "destination"
@@ -359,6 +446,30 @@ def test_surface_digest_includes_shared_core_controls(tmp_path: Path) -> None:
     core.write_text(core.read_text(encoding="utf-8").replace("one.sv", "two.sv"), encoding="utf-8")
 
     assert target_surface_sha256(tmp_path, "future") != first
+
+
+def test_surface_digest_tracks_only_target_referenced_parameters(tmp_path: Path) -> None:
+    core = tmp_path / "toy.core"
+    core.write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nparameters:\n"
+        "  ENABLE_ZBB: {datatype: int, paramtype: vlogparam, default: 0}\n"
+        "  PRIVATE: {datatype: int, paramtype: vlogparam, default: 4}\n"
+        "targets:\n  future: {parameters: [ENABLE_ZBB=1]}\n",
+        encoding="utf-8",
+    )
+    first = target_surface_sha256(tmp_path, "future")
+    core.write_text(
+        core.read_text(encoding="utf-8").replace("default: 4", "default: 8"),
+        encoding="utf-8",
+    )
+    unrelated = target_surface_sha256(tmp_path, "future")
+    core.write_text(
+        core.read_text(encoding="utf-8").replace("default: 0", "default: 2"),
+        encoding="utf-8",
+    )
+
+    assert unrelated == first
+    assert target_surface_sha256(tmp_path, "future") != unrelated
 
 
 def test_surface_digest_excludes_unreferenced_filesets(tmp_path: Path) -> None:

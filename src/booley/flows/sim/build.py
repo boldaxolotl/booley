@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
+from booley.core.build_paths import work_root_for
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
@@ -138,7 +139,7 @@ def _prepare_simulation_build(
     """Prepare one supported simulator Target after boundary normalization."""
     root = handle.project_root
     target = handle.selector
-    work_root = edam_layer.work_root_for(root, "sim", target, variant=variant)
+    work_root = work_root_for(root, "sim", target, variant=variant)
     resolved = fusesoc_registry.resolve_target_handle(
         handle,
         build_root=work_root,

@@ -84,17 +84,23 @@ def test_mcp_adapter_preserves_structured_pre_state_rejection(capsys) -> None:
 def test_mcp_adapter_promotes_neutral_outcome_before_extension_hooks() -> None:
     class NeutralOutcomeMcpTool(ConcreteMcpTool):
         finalized_type: type[object] | None = None
+        finalized_label: str | None = None
 
         def _run(self) -> EndpointOutcome:
-            return EndpointOutcome(report_text="ok")
+            return EndpointOutcome(
+                report_text="ok",
+                display_label="target demo · 2 tests",
+            )
 
         def _finalize_result(self, result: McpToolResult) -> None:
             self.finalized_type = type(result)
+            self.finalized_label = result.display_label
 
     endpoint = NeutralOutcomeMcpTool()
 
     assert endpoint.main([]) == EXIT_SUCCESS
     assert endpoint.finalized_type is McpToolResult
+    assert endpoint.finalized_label == "target demo · 2 tests"
 
 
 def test_finalize_failure_propagates_without_persisting_replacement_result() -> None:
@@ -969,7 +975,7 @@ class TestMcpToolMain:
         ("run_raises", "expected_exit"),
         [(False, EXIT_SUCCESS), (True, EXIT_ERROR)],
     )
-    def test_display_label_brackets_full_lifecycle(
+    def test_completed_display_label_updates_end_of_lifecycle(
         self,
         tmp_path: Path,
         run_raises: bool,
@@ -982,7 +988,10 @@ class TestMcpToolMain:
             def _run(self) -> McpToolResult:
                 if run_raises:
                     raise RuntimeError("boom")
-                return McpToolResult(exit_code=EXIT_SUCCESS)
+                return McpToolResult(
+                    exit_code=EXIT_SUCCESS,
+                    display_label="target demo · 2 tests",
+                )
 
         endpoint = LabelledMcpTool()
         sentinel = "target demo · test smoke"
@@ -1009,7 +1018,11 @@ class TestMcpToolMain:
             "endpoint_start",
             "endpoint_end",
         ]
-        assert [event["display_label"] for event in lifecycle_events] == [sentinel, sentinel]
+        completed_label = sentinel if run_raises else "target demo · 2 tests"
+        assert [event["display_label"] for event in lifecycle_events] == [
+            sentinel,
+            completed_label,
+        ]
 
     def test_success_flow(self, tmp_path: Path):
         state_file = tmp_path / "state.json"

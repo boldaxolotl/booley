@@ -41,8 +41,10 @@ from booley.fusesoc.fusesoc_registry import (
     core_target_uses_legacy_fusesoc_api,
     discover_cores,
     parse_edam,
+    possible_target_parameter_names,
     read_core,
     state_cores_dir,
+    target_parameter_definitions,
     target_source_files_for_ref,
     vendored_files,
 )
@@ -1593,6 +1595,18 @@ class TestCoreSchemaErrors:
         core = _write_core(tmp_path, text)
         assert "targets.sim.filesets must be array" in core_schema_errors(core)
 
+    def test_scalar_target_parameters_append_flagged(self, tmp_path: Path):
+        text = textwrap.dedent(
+            """\
+            CAPI=2:
+            name: ::demo:0
+            targets:
+              sim: {flow: sim, parameters_append: WIDTH=8}
+            """
+        )
+        core = _write_core(tmp_path, text)
+        assert "targets.sim.parameters_append must be array" in core_schema_errors(core)
+
     def test_unreadable_core_reports_error(self, tmp_path: Path):
         core = tmp_path / "broken.core"
         core.write_text("- just\n- a\n- list\n", encoding="utf-8")
@@ -1697,6 +1711,47 @@ class TestTargetSchemaFieldRegistry:
             "core_schema_errors() does not audit as arrays — add them to "
             "_CAPI2_TARGET_ARRAY_FIELDS or a scalar will splat into per-character names"
         )
+
+    def test_target_parameter_specs_keys_are_schema_audited(self):
+        from booley.fusesoc.fusesoc_registry import (
+            _CAPI2_TARGET_ARRAY_FIELDS,
+            target_parameter_specs,
+        )
+
+        consumed: set[str] = set()
+
+        class _Recorder(dict):
+            def get(self, key, default=None):
+                consumed.add(key)
+                return super().get(key, default)
+
+        target_parameter_specs(_Recorder({"parameters": ["WIDTH=8"]}))
+
+        assert consumed
+        assert consumed <= set(_CAPI2_TARGET_ARRAY_FIELDS)
+
+
+def test_possible_target_parameters_preserve_values_and_conditionals() -> None:
+    target = {
+        "parameters": ["MESSAGE=hello world"],
+        "parameters_append": [
+            "tool_icarus ? (ENABLE_ZBB=1)",
+            "!tool_icarus ? (ENABLE_ZBB=0)",
+        ],
+    }
+
+    assert possible_target_parameter_names(target) == ["MESSAGE", "ENABLE_ZBB"]
+
+
+def test_target_parameter_definitions_return_only_local_declarations() -> None:
+    document = {
+        "parameters": {"WIDTH": {"datatype": "int", "paramtype": "vlogparam"}},
+    }
+    target = {"parameters": ["WIDTH=8", "DEPENDENCY_MODE=fast"]}
+
+    assert target_parameter_definitions(document, target) == {
+        "WIDTH": {"datatype": "int", "paramtype": "vlogparam"}
+    }
 
 
 class TestCoreTargetFlowOption:
