@@ -11,6 +11,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -21,6 +22,7 @@ from booley.fusesoc.core_security import (
     validate_project_cores,
 )
 from booley.targets.catalog import TargetCatalog
+from tests.conftest import symlink_or_skip
 
 # ---------------------------------------------------------------------------
 # Helpers: build .core docs as parsed dicts (mirrors test_fusesoc_registry style).
@@ -315,12 +317,60 @@ _GEN_CORE = """\
 
 
 class TestScriptProvenance:
+    @pytest.mark.parametrize(
+        ("scope", "expected"),
+        [
+            (["scripts/gen.py"], {"in_scope_script"}),
+            (["scripts"], {"in_scope_script"}),
+            (["scripts/"], {"in_scope_script"}),
+            (["scripts/*.py"], {"in_scope_script"}),
+            (["scripts/*.py [new]"], {"in_scope_script"}),
+            (["script"], set()),
+            ([], set()),
+            (None, set()),
+            (["*"], {"unconfinable_script"}),
+            (["* [new]"], {"in_scope_script"}),
+        ],
+    )
+    def test_provenance_scope_matching_contract(self, tmp_path, scope, expected):
+        core = _write_core_with_script(
+            tmp_path, "scripts/gen.py", _GEN_CORE.format(script="scripts/gen.py")
+        )
+        doc = yaml.safe_load(core.read_text())
+        violations = validate_core(doc, core_file=core, project_root=tmp_path, scope=scope)
+        assert _kinds(violations) == expected
+
+    @pytest.mark.parametrize("via_symlink", [False, True])
+    def test_external_script_retains_canonical_scope_classification(
+        self, tmp_path: Path, via_symlink: bool
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        outside = tmp_path / "generator.py"
+        outside.write_text("# fixture generator\n")
+        token = "../generator.py"
+        if via_symlink:
+            symlink_or_skip(project / "generator.py", outside)
+            token = "generator.py"
+        core = project / "design.core"
+        doc = _doc(_GEN_CORE.format(script=token))
+        # Existing provenance matching is not a blanket filesystem confinement check.
+        for scope in (None, [], ["rtl"], ["generator.py"]):
+            assert validate_core(doc, core_file=core, project_root=project, scope=scope) == []
+        for scope, kind in [
+            ([str(outside.resolve())], "in_scope_script"),
+            (["*"], "unconfinable_script"),
+        ]:
+            violations = validate_core(doc, core_file=core, project_root=project, scope=scope)
+            assert _kinds(violations) == {kind}
+            assert str(outside.resolve()) in violations[0].message
+
     def test_out_of_scope_script_passes(self, tmp_path: Path):
         core = _write_core_with_script(
             tmp_path, "scripts/gen.py", _GEN_CORE.format(script="scripts/gen.py")
         )
         doc = yaml.safe_load(core.read_text())
-        # Scope covers only rtl/ — the generator script under scripts/ is immutable.
+        # Scope covers only rtl/ — the generator script is outside the declared Scope.
         v = validate_core(doc, core_file=core, project_root=tmp_path, scope=["rtl/*.sv"])
         assert v == []
 
