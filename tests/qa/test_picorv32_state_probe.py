@@ -11,10 +11,16 @@ from qa.scenarios.picorv32.state_probe import TransitionError, denied, grant_rep
 
 
 def _snapshot(grant, grant_epoch, session_epoch, valid, running, mount):
-    return {"project_root": "/qa-owned/project", "eda_kind": "vivado",
-            "grant_registration": grant, "grant_epoch": grant_epoch,
-            "session_grant_epoch": session_epoch, "session_valid": valid,
-            "session_running": running, "mount_probe": mount}
+    return {
+        "project_root": "/qa-owned/project",
+        "eda_kind": "vivado",
+        "grant_registration": grant,
+        "grant_epoch": grant_epoch,
+        "session_grant_epoch": session_epoch,
+        "session_valid": valid,
+        "session_running": running,
+        "mount_probe": mount,
+    }
 
 
 def _transition(tmp_path):
@@ -23,24 +29,40 @@ def _transition(tmp_path):
     denial_log = evidence / "fpga-while-revoked.log"
     denial_log.write_text(
         'argv: ["booley", "flow", "fpga"]\nexit: 2\n'
-        'ERROR: refusing Session Runtime startup: host-issued spec stamp is missing or corrupt\n'
+        "ERROR: refusing Session Runtime startup: host-issued spec stamp is missing or corrupt\n"
     )
     before = _snapshot("old-owned", 1, 1, True, True, True)
     revoked = _snapshot(None, 2, 1, False, False, False)
     regranted = _snapshot("new-owned", 3, 1, False, False, False)
     issued = _snapshot("new-owned", 3, 3, True, False, False)
     started = _snapshot("new-owned", 3, 3, True, True, True)
-    borrowed = {"grants": [{"project": "/borrowed/project", "registration": "shared"}],
-                "installations": [{"registration": "shared", "source": "/tools/vivado"}]}
-    return {"owner": {"project_root": "/qa-owned/project", "registration": "new-owned",
-                      "run_owned_registrations": ["old-owned", "new-owned"],
-                      "evidence_root": str(evidence)},
-            "states": {"before": before, "revoked": revoked, "regranted": regranted,
-                       "issued": issued, "started": started, "current": started},
-            "protected": {"before": borrowed, "after": copy.deepcopy(borrowed)},
-            "denial_evidence": {"declared_expected": "denied", "flow_executed": False,
-                                "log_path": str(denial_log),
-                                "log_sha256": hashlib.sha256(denial_log.read_bytes()).hexdigest()}}
+    borrowed = {
+        "grants": [{"project": "/borrowed/project", "registration": "shared"}],
+        "installations": [{"registration": "shared", "source": "/tools/vivado"}],
+    }
+    return {
+        "owner": {
+            "project_root": "/qa-owned/project",
+            "registration": "new-owned",
+            "run_owned_registrations": ["old-owned", "new-owned"],
+            "evidence_root": str(evidence),
+        },
+        "states": {
+            "before": before,
+            "revoked": revoked,
+            "regranted": regranted,
+            "issued": issued,
+            "started": started,
+            "current": started,
+        },
+        "protected": {"before": borrowed, "after": copy.deepcopy(borrowed)},
+        "denial_evidence": {
+            "declared_expected": "denied",
+            "flow_executed": False,
+            "log_path": str(denial_log),
+            "log_sha256": hashlib.sha256(denial_log.read_bytes()).hexdigest(),
+        },
+    }
 
 
 def test_existing_grant_replaced_and_reissued_session_restores_mount(tmp_path):
@@ -140,8 +162,13 @@ def test_state_probe_cli_rejects_non_mapping_json_without_traceback(tmp_path):
     snapshot = tmp_path / "state.json"
     snapshot.write_text(json.dumps([]))
     script = Path(__file__).resolve().parents[2] / "qa/scenarios/picorv32/state_probe.py"
-    result = subprocess.run(["python3", str(script), str(snapshot), "ready"],
-                            capture_output=True, text=True, timeout=10, check=False)
+    result = subprocess.run(
+        ["python3", str(script), str(snapshot), "ready"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
     assert result.returncode == 2
     assert "must be a JSON object" in result.stderr
     assert "Traceback" not in result.stderr

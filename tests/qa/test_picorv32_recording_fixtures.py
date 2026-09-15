@@ -35,8 +35,19 @@ def _git(*args: str) -> None:
 
 def _checkout(path: Path) -> None:
     _git("init", "-q", str(path))
-    _git("-C", str(path), "-c", "user.name=QA", "-c", "user.email=qa@example.invalid",
-         "commit", "-q", "--allow-empty", "-m", "fixture")
+    _git(
+        "-C",
+        str(path),
+        "-c",
+        "user.name=QA",
+        "-c",
+        "user.email=qa@example.invalid",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "fixture",
+    )
 
 
 def test_outer_marker_is_required_before_inventory_import(tmp_path):
@@ -91,16 +102,26 @@ def test_spike_rejects_truncated_identification_header(tmp_path):
 
 
 def _lint_report(rule: str, target: str) -> dict:
-    return {"warnings": [{"rule": rule, "file": "/work/qa_lint_fixture.sv",
-                          "line": 2, "message": "width mismatch"}],
-            "target_results": [{"target": target}]}
+    return {
+        "warnings": [
+            {
+                "rule": rule,
+                "file": "/work/qa_lint_fixture.sv",
+                "line": 2,
+                "message": "width mismatch",
+            }
+        ],
+        "target_results": [{"target": target}],
+    }
 
 
 def test_dedupe_requires_same_real_warning_in_both_targets():
     first = _lint_report("WIDTHTRUNC", "a")
     old_invalid = {"warnings": [], "target_results": [{"target": "b"}]}
-    combined = {"warnings": first["warnings"],
-                "target_results": [{"target": "a"}, {"target": "b"}]}
+    combined = {
+        "warnings": first["warnings"],
+        "target_results": [{"target": "a"}, {"target": "b"}],
+    }
     with pytest.raises(FixtureError, match="no common real warning"):
         lint_dedupe(first, old_invalid, combined)
     assert lint_dedupe(first, _lint_report("WIDTHTRUNC", "b"), combined)["targets"] == ["a", "b"]
@@ -112,10 +133,8 @@ def test_dedupe_requires_same_real_warning_in_both_targets():
 
 
 def test_native_waiver_only_removes_intended_warning():
-    intended = {"rule": "WIDTHTRUNC", "file": "/work/a.sv", "line": 2,
-                "message": "width mismatch"}
-    control = {"rule": "CONTROL", "file": "/work/a.sv", "line": 3,
-               "message": "control warning"}
+    intended = {"rule": "WIDTHTRUNC", "file": "/work/a.sv", "line": 2, "message": "width mismatch"}
+    control = {"rule": "CONTROL", "file": "/work/a.sv", "line": 3, "message": "control warning"}
     before = {"warnings": [intended, control]}
     after = {"warnings": [control]}
     assert lint_waiver(before, after, "WIDTHTRUNC", "CONTROL")["preserved"] == "CONTROL"
@@ -125,14 +144,24 @@ def test_native_waiver_only_removes_intended_warning():
     assert (FIXTURES / "lint/verible-waiver.txt").read_text() == (
         'waive --rule=no-trailing-spaces --location=".*qa_lint_fixture\\.sv"\n'
     )
-    verible = {"rule": "no-trailing-spaces", "file": "/work/a.sv", "line": 2,
-               "message": "trailing whitespace"}
-    assert lint_waiver({"warnings": [verible]},
-                       {"warnings": []}, "no-trailing-spaces")["suppressed"] == "no-trailing-spaces"
+    verible = {
+        "rule": "no-trailing-spaces",
+        "file": "/work/a.sv",
+        "line": 2,
+        "message": "trailing whitespace",
+    }
+    assert (
+        lint_waiver({"warnings": [verible]}, {"warnings": []}, "no-trailing-spaces")["suppressed"]
+        == "no-trailing-spaces"
+    )
     unrelated_same_rule = dict(intended, file="/work/b.sv", line=8)
     with pytest.raises(FixtureError, match="exactly one intended warning"):
-        lint_waiver({"warnings": [intended, unrelated_same_rule, control]},
-                    {"warnings": [control]}, "WIDTHTRUNC", "CONTROL")
+        lint_waiver(
+            {"warnings": [intended, unrelated_same_rule, control]},
+            {"warnings": [control]},
+            "WIDTHTRUNC",
+            "CONTROL",
+        )
 
 
 def test_verible_renderer_preserves_intended_trailing_space_bytes(tmp_path):
@@ -157,15 +186,21 @@ def test_mount_probe_discovers_release_layout(tmp_path):
         command.parent.mkdir(parents=True)
         command.write_text("#!/bin/sh\nexit 0\n")
         command.chmod(0o755)
-    assert vivado_executable(mount, source)["mount_executable"].endswith("Vivado/bin/vivado")
+    executable = Path(vivado_executable(mount, source)["mount_executable"])
+    assert executable.parts[-3:] == ("Vivado", "bin", "vivado")
     (mount / "Vivado/bin/vivado").unlink()
     with pytest.raises(FixtureError, match="mounted Vivado executable missing"):
         vivado_executable(mount, source)
 
 
 def test_exact_result_oracles_reject_wrong_output(tmp_path):
-    assert required_subjects({"isa.pdf": "Unprivileged and Privileged ISA; Debug"},
-                             ["Unprivileged", "Privileged", "Debug"])["files"] == 1
+    assert (
+        required_subjects(
+            {"isa.pdf": "Unprivileged and Privileged ISA; Debug"},
+            ["Unprivileged", "Privileged", "Debug"],
+        )["files"]
+        == 1
+    )
     with pytest.raises(FixtureError, match="subjects missing"):
         required_subjects({"isa.pdf": "Unprivileged ISA"}, ["Debug"])
     with pytest.raises(FixtureError, match="start/end relation"):
@@ -176,8 +211,14 @@ def test_exact_result_oracles_reject_wrong_output(tmp_path):
     assert stealth_native(["rtl/top.v", ".booley/x", "rtl/.hidden.v"])["native_count"] == 1
     with pytest.raises(FixtureError, match="list of nonempty strings"):
         oracle({"kind": "stealth-native", "paths": "rtl/top.v"})
-    child = {"trace": "t", "argv": ["wave"], "signals": ["x"], "clock": None,
-             "reset": None, "sampling": "default"}
+    child = {
+        "trace": "t",
+        "argv": ["wave"],
+        "signals": ["x"],
+        "clock": None,
+        "reset": None,
+        "sampling": "default",
+    }
     replay = dict(child, sampling="explicit")
     with pytest.raises(FixtureError, match="replay differs"):
         same_bwave_mode(child, replay)
@@ -189,31 +230,62 @@ def test_exact_result_oracles_reject_wrong_output(tmp_path):
     alias = tmp_path / "alias"
     alias.symlink_to(source)
     assert canonical_registration(alias, source)["canonical_source"] == str(source)
-    assert oracle({"kind": "verdict", "declared_expected": "denied", "observed": "pass"})["matches"] is False
+    assert (
+        oracle({"kind": "verdict", "declared_expected": "denied", "observed": "pass"})["matches"]
+        is False
+    )
 
 
 def test_synth_baseline_requires_successful_numeric_comparison_and_identities():
-    expected = {"candidate_target": "synth_core", "baseline_target": "synth_core",
-                "candidate_identity": "booley::candidate:0#synth_core",
-                "baseline_identity": "booley::baseline:0#synth_core",
-                "candidate_revision": "b" * 40, "baseline_revision": "a" * 40,
-                "delta_pct": 0.0, "timing_delta_pct": -1.5}
-    summary = {**expected, "flow_exit": 0, "infra_error": None,
-               "baseline": {"ref": "a" * 7, "area_kge": 42},
-               "delta_pct": 0.0, "timing_delta_pct": -1.5}
+    expected = {
+        "candidate_target": "synth_core",
+        "baseline_target": "synth_core",
+        "candidate_identity": "booley::candidate:0#synth_core",
+        "baseline_identity": "booley::baseline:0#synth_core",
+        "candidate_revision": "b" * 40,
+        "baseline_revision": "a" * 40,
+        "delta_pct": 0.0,
+        "timing_delta_pct": -1.5,
+    }
+    summary = {
+        **expected,
+        "flow_exit": 0,
+        "infra_error": None,
+        "baseline": {"ref": "a" * 7, "area_kge": 42},
+        "delta_pct": 0.0,
+        "timing_delta_pct": -1.5,
+    }
     summary.pop("candidate_revision")
     summary.pop("baseline_revision")
-    report = {"detail": {"implementation": {"results": {"synth_core": {
-        "identity": {"target_identity": expected["candidate_identity"]},
-        "provenance": {"producer": {"source_revision": expected["candidate_revision"]}},
-        "comparison": {"basis_valid": True, "basis_errors": [],
-                       "candidate_target_identity": expected["candidate_identity"],
-                       "baseline_target_identity": expected["baseline_identity"],
-                       "deltas": {"area_kge": {"delta_pct": 0.0},
-                                  "wns_ns": {"delta_pct": -1.5}},
-                       "baseline": {"provenance": {"producer": {
-                           "source_revision": expected["baseline_revision"]}}}},
-    }}}}}
+    report = {
+        "detail": {
+            "implementation": {
+                "results": {
+                    "synth_core": {
+                        "identity": {"target_identity": expected["candidate_identity"]},
+                        "provenance": {
+                            "producer": {"source_revision": expected["candidate_revision"]}
+                        },
+                        "comparison": {
+                            "basis_valid": True,
+                            "basis_errors": [],
+                            "candidate_target_identity": expected["candidate_identity"],
+                            "baseline_target_identity": expected["baseline_identity"],
+                            "deltas": {
+                                "area_kge": {"delta_pct": 0.0},
+                                "wns_ns": {"delta_pct": -1.5},
+                            },
+                            "baseline": {
+                                "provenance": {
+                                    "producer": {"source_revision": expected["baseline_revision"]}
+                                }
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
     assert synth_baseline(summary, report, expected)["baseline_revision"] == "a" * 40
     wrong = dict(summary, delta_pct="0.0")
     with pytest.raises(FixtureError, match="numeric delta_pct"):
@@ -225,49 +297,79 @@ def test_synth_baseline_requires_successful_numeric_comparison_and_identities():
     with pytest.raises(FixtureError, match="candidate_identity differs"):
         synth_baseline(wrong, report, expected)
     wrong_report = copy.deepcopy(report)
-    wrong_report["detail"]["implementation"]["results"]["synth_core"]["provenance"]["producer"]["source_revision"] = "c" * 40
+    wrong_report["detail"]["implementation"]["results"]["synth_core"]["provenance"]["producer"][
+        "source_revision"
+    ] = "c" * 40
     with pytest.raises(FixtureError, match="candidate revision differs"):
         synth_baseline(summary, wrong_report, expected)
 
 
 def test_vivado_implementation_requires_fresh_declared_artifacts_only(tmp_path):
-    report = {"exit_code": 0, "detail": {"implementation": {"grade": "pass", "passed": True},
-                                         "cache": {"target": {"cached": False}}}}
+    report = {
+        "exit_code": 0,
+        "detail": {
+            "implementation": {"grade": "pass", "passed": True},
+            "cache": {"target": {"cached": False}},
+        },
+    }
     report["detail"]["implementation"]["results"] = {"target": {"status": {"passed": True}}}
-    artifacts = {name: {"size": 1, "sha256": hashlib.sha256(b"x").hexdigest(),
-                        "mtime_ns": 2} for name in (
-        "routed-checkpoint.dcp", "routed-timing.rpt", "routed-utilization.rpt")}
+    artifacts = {
+        name: {"size": 1, "sha256": hashlib.sha256(b"x").hexdigest(), "mtime_ns": 2}
+        for name in ("routed-checkpoint.dcp", "routed-timing.rpt", "routed-utilization.rpt")
+    }
     for name in artifacts:
         (tmp_path / name).write_bytes(b"x")
     assert vivado_implementation(report, artifacts, {}, tmp_path)["grade"] == "pass"
     with pytest.raises(FixtureError, match="not fresh"):
-        vivado_implementation(report, artifacts, {"routed-checkpoint.dcp": {"mtime_ns": 2}},
-                              tmp_path)
+        vivado_implementation(
+            report, artifacts, {"routed-checkpoint.dcp": {"mtime_ns": 2}}, tmp_path
+        )
     with pytest.raises(FixtureError, match="missing declared"):
         vivado_implementation(report, {}, {}, tmp_path)
 
 
 def test_wrong_verdict_cli_exits_nonzero_and_retains_both_values(tmp_path):
     input_file = tmp_path / "verdict.json"
-    input_file.write_text(json.dumps({"kind": "verdict", "declared_expected": "denied",
-                                      "observed": "pass"}))
+    input_file.write_text(
+        json.dumps({"kind": "verdict", "declared_expected": "denied", "observed": "pass"})
+    )
     script = FIXTURES.parent / "fixture_validation.py"
-    result = subprocess.run(["python3", str(script), "oracle", str(input_file)],
-                            capture_output=True, text=True, timeout=10, check=False)
+    result = subprocess.run(
+        ["python3", str(script), "oracle", str(input_file)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
     assert result.returncode == 1
-    assert json.loads(result.stdout) == {"declared_expected": "denied",
-                                         "observed": "pass", "matches": False}
+    assert json.loads(result.stdout) == {
+        "declared_expected": "denied",
+        "observed": "pass",
+        "matches": False,
+    }
 
 
 def test_oracle_cli_rejects_malformed_nested_json_without_traceback(tmp_path):
     input_file = tmp_path / "malformed.json"
-    input_file.write_text(json.dumps({"kind": "vivado-implementation",
-                                      "report": {"exit_code": 0, "detail": []},
-                                      "artifacts": {}, "before": {},
-                                      "retained_dir": str(tmp_path)}))
+    input_file.write_text(
+        json.dumps(
+            {
+                "kind": "vivado-implementation",
+                "report": {"exit_code": 0, "detail": []},
+                "artifacts": {},
+                "before": {},
+                "retained_dir": str(tmp_path),
+            }
+        )
+    )
     script = FIXTURES.parent / "fixture_validation.py"
-    result = subprocess.run(["python3", str(script), "oracle", str(input_file)],
-                            capture_output=True, text=True, timeout=10, check=False)
+    result = subprocess.run(
+        ["python3", str(script), "oracle", str(input_file)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
     assert result.returncode == 2
     assert "must be a JSON object" in result.stderr
     assert "Traceback" not in result.stderr
