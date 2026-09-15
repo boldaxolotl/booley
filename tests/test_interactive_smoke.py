@@ -419,6 +419,37 @@ class TestBwaveRoundTrip:
 # ---------------------------------------------------------------------------
 
 
+def _fake_runtime_preview(project, build_spec, *, expected_image_id=None):
+    from booley.runtime import session_issuance as runtime_spec
+
+    project = project.resolve()
+    inputs = runtime_spec.SessionSpecInputs(project / ".booley_project", (), (), None, None)
+    spec = build_spec(inputs)
+    del expected_image_id
+    spec["image"] = "sha256:" + "a" * 64
+    prospective = SimpleNamespace(license_profile=None)
+    return runtime_spec.PreparedSessionSpec(spec, "test-spec-digest", inputs, prospective)
+
+
+def _fake_runtime_issue(project, prepared, *, force_dependencies=False):
+    from booley.runtime import devcontainer
+
+    del force_dependencies
+    devcontainer.write_devcontainer(project, prepared.spec)
+    return SimpleNamespace(license_profile=None)
+
+
+def _fake_runtime_inspect(project, prepared):
+    from booley.runtime import devcontainer
+    from booley.runtime import session_issuance as runtime_spec
+
+    path = devcontainer.devcontainer_path(project)
+    expected = devcontainer.render_devcontainer_json(prepared.spec)
+    if not path.is_file() or path.read_text(encoding="utf-8") != expected:
+        raise runtime_spec.RuntimeSpecError("spec is not current")
+    return SimpleNamespace(license_profile=None)
+
+
 class TestInitInteractive:
     """`_step_interactive` writes the untracked devcontainer spec, excludes
     Booley files, and (when docker is present) creates the long-lived objects.
@@ -427,50 +458,21 @@ class TestInitInteractive:
     @pytest.fixture(autouse=True)
     def _isolate_runtime_issuance(self, monkeypatch):
         """Exercise init's issuance boundary without host Docker or a CLI install."""
-        from booley.harness import init_cmd
-        from booley.runtime import devcontainer
+        from booley.harness.setup import interactive as interactive_init
         from booley.runtime import session_issuance as runtime_spec
 
-        def pin_image(spec, *, expected_image_id=None):
-            del expected_image_id
-            spec["image"] = "sha256:" + "a" * 64
-            return spec["image"]
-
-        def prepare(project, build_spec, *, expected_image_id=None):
-            project = project.resolve()
-            inputs = runtime_spec.SessionSpecInputs(
-                project_data_source=project / ".booley_project",
-                trusted_eda_mounts=(),
-                fixed_container_environment=(),
-                installation_name=None,
-                license_profile_name=None,
-            )
-            spec = build_spec(inputs)
-            pin_image(spec, expected_image_id=expected_image_id)
-            return runtime_spec.PreparedSessionSpec(spec, "test-spec-digest", inputs)
-
-        def issue(
-            project,
-            build_spec,
-            *,
-            expected_image_id=None,
-            force_dependencies=False,
-        ):
-            del force_dependencies
-            prepared = prepare(
-                project,
-                build_spec,
-                expected_image_id=expected_image_id,
-            )
-            devcontainer.write_devcontainer(project, prepared.spec)
-            return SimpleNamespace(license_profile=None)
-
-        monkeypatch.setattr(runtime_spec, "preview", prepare)
-        monkeypatch.setattr(runtime_spec, "issue", issue)
+        monkeypatch.setattr(runtime_spec, "preview", _fake_runtime_preview)
+        monkeypatch.setattr(runtime_spec, "issue_prepared", _fake_runtime_issue)
+        monkeypatch.setattr(runtime_spec, "inspect_prepared", _fake_runtime_inspect)
         monkeypatch.setattr(
-            init_cmd,
-            "_reconcile_issued_headless_runtime",
-            lambda _ctx, _issuance: True,
+            interactive_init.session_runtime,
+            "reconcile_stopped_headless_runtime",
+            lambda *_args: False,
+        )
+        monkeypatch.setattr(
+            interactive_init.session_runtime,
+            "plan_stopped_headless_runtime_reconciliation",
+            lambda *_args: SimpleNamespace(pending=False),
         )
 
     def _ctx(self, root):
@@ -617,7 +619,8 @@ class TestInitInteractive:
         # Nothing masked — including the valid-looking entry.
         assert not any("empty-mask" in m for m in spec["mounts"])
 
-    def test_refuses_tracked_devcontainer(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("check_only", [False, True])
+    def test_refuses_tracked_devcontainer(self, tmp_path, monkeypatch, check_only):
         import subprocess
 
         from booley.harness import init_cmd
@@ -641,9 +644,33 @@ class TestInitInteractive:
         )
 
         ctx = self._ctx(tmp_path)
+        ctx.check_only = check_only
         init_cmd._step_interactive(ctx)
         statuses = {r.name: r.status for r in ctx.results}
         assert statuses.get("interactive") == "err"
+
+    def test_normal_rerun_skips_current_spec_without_reissuing(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from booley.harness import init_cmd
+        from booley.runtime import session_issuance as runtime_spec
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
+        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        monkeypatch.setattr(
+            runtime_spec,
+            "issue_prepared",
+            lambda *_args, **_kwargs: pytest.fail("current spec was reissued"),
+        )
+
+        ctx = self._ctx(tmp_path)
+        init_cmd._step_interactive(ctx, agent_app="none")
+
+        assert ctx.results[-1].status == "skip"
+        assert ctx.results[-1].detail == "current"
 
     def test_check_only_writes_nothing(self, tmp_path, monkeypatch):
         import subprocess
@@ -660,15 +687,180 @@ class TestInitInteractive:
         statuses = {r.name: r.status for r in ctx.results}
         assert statuses.get("interactive") == "warn"
 
+    def test_check_only_reports_current_initialized_state_without_mutation(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+
+        from booley.harness import init_cmd
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
+        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+        init_cmd._step_interactive(self._ctx(tmp_path))
+        before = {
+            path.relative_to(tmp_path): (path.read_bytes(), path.stat().st_mode)
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        }
+
+        ctx = init_cmd.InitContext(
+            project_root=tmp_path,
+            check_only=True,
+            force=False,
+            verbose=False,
+            interactive=False,
+        )
+        init_cmd._step_interactive(ctx)
+
+        assert ctx.results[-1].status == "skip"
+        assert ctx.results[-1].detail == "current"
+        assert {
+            path.relative_to(tmp_path): (path.read_bytes(), path.stat().st_mode)
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        } == before
+
+    @pytest.mark.parametrize("state", ["missing", "stale"])
+    def test_check_only_reports_noncurrent_spec_without_rewriting_it(
+        self, tmp_path, monkeypatch, state
+    ):
+        import subprocess
+
+        from booley.harness import init_cmd
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
+        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        spec = tmp_path / ".devcontainer" / "devcontainer.json"
+        if state == "missing":
+            spec.unlink()
+            expected = None
+        else:
+            spec.write_bytes(b"{}\n")
+            expected = b"{}\n"
+
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+        init_cmd._step_interactive(ctx, agent_app="none")
+
+        assert ctx.results[-1].status == "warn"
+        assert "specification/issuance" in ctx.results[-1].detail
+        assert (spec.read_bytes() if spec.exists() else None) == expected
+
+    def test_check_only_reports_missing_exclusion_without_restoring_it(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+
+        from booley.harness import init_cmd
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
+        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        exclude = tmp_path / ".git" / "info" / "exclude"
+        body = exclude.read_text(encoding="utf-8").replace("/.claude\n", "")
+        exclude.write_text(body, encoding="utf-8")
+
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+        init_cmd._step_interactive(ctx, agent_app="none")
+
+        assert ctx.results[-1].status == "warn"
+        assert "Git exclusions" in ctx.results[-1].detail
+        assert exclude.read_text(encoding="utf-8") == body
+
+    def test_check_only_reports_runtime_cleanup_without_calling_reconciler(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+
+        from booley.harness import init_cmd
+        from booley.harness.setup import interactive as interactive_init
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
+        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        monkeypatch.setattr(
+            interactive_init.session_runtime,
+            "plan_stopped_headless_runtime_reconciliation",
+            lambda *_: SimpleNamespace(pending=True),
+        )
+        reconciled = []
+        monkeypatch.setattr(
+            interactive_init.session_runtime,
+            "reconcile_stopped_headless_runtime",
+            lambda *_: reconciled.append(True) or True,
+        )
+
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+        init_cmd._step_interactive(ctx, agent_app="none")
+
+        assert ctx.results[-1].status == "warn"
+        assert "stopped Session Runtime resources" in ctx.results[-1].detail
+        assert not reconciled
+
+    def test_check_only_reports_orphaned_relay_without_removing_it(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from booley.harness import init_cmd
+        from booley.harness.setup import interactive as interactive_init
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
+        init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
+        monkeypatch.setattr(
+            init_cmd.shutil, "which", lambda name: "/bin/docker" if name == "docker" else None
+        )
+        monkeypatch.setattr(interactive_init, "_unlicensed_relay_pending", lambda *_: True)
+        monkeypatch.setattr(
+            interactive_init,
+            "_remove_unlicensed_relay",
+            lambda *_: pytest.fail("check-only removed relay state"),
+        )
+
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+        init_cmd._step_interactive(ctx, agent_app="none")
+
+        assert ctx.results[-1].status == "warn"
+        assert "orphaned license relay" in ctx.results[-1].detail
+
+    def test_check_only_does_not_create_mask_source(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from booley.harness import init_cmd
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text(
+            '[sandbox]\nmask_paths = ["secret/oracle"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
+
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+        init_cmd._step_interactive(ctx, agent_app="none")
+
+        assert ctx.results[-1].status == "warn"
+        assert not (tmp_path / "xdg" / "booley" / "empty-mask").exists()
+
     def test_app_selection_never_infers_from_installed_clis(self, monkeypatch):
         from booley.harness import init_cmd
 
-        monkeypatch.setattr(init_cmd, "_detect_claude_code", lambda: True)
-        monkeypatch.setattr(init_cmd, "_detect_codex", lambda: True)
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/bin/{name}")
         assert init_cmd._select_interactive_app() == "none"
-        monkeypatch.setattr(init_cmd, "_detect_claude_code", lambda: False)
-        assert init_cmd._select_interactive_app() == "none"
-        monkeypatch.setattr(init_cmd, "_detect_codex", lambda: False)
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _name: None)
         assert init_cmd._select_interactive_app() == "none"
 
     def test_app_selection_honors_project_provider(self, tmp_path, monkeypatch):
@@ -680,8 +872,7 @@ class TestInitInteractive:
             '[agent]\nprovider = "codex"\nauth = "subscription"\n',
             encoding="utf-8",
         )
-        monkeypatch.setattr(init_cmd, "_detect_claude_code", lambda: True)
-        monkeypatch.setattr(init_cmd, "_detect_codex", lambda: True)
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/bin/{name}")
 
         assert init_cmd._select_interactive_app(tmp_path) == "codex"
 

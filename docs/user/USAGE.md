@@ -773,12 +773,13 @@ New Targets remain alongside the existing surface. Replacement candidates remain
 while their runnable predecessors are removed. Temporal Targets exist only for Ticket
 evidence and are removed. Every annotated selector and replacement predecessor is Criteria-bound;
 enqueue compares definitions semantically against the exact destination, rejects edits or
-deletions of existing Targets or filesets, and records the canonical plan and derived
-removals in the Ticket’s machine-only baseline metadata. A planned Target may add a dedicated
-fileset, provided no unchanged Target references it. Acceptance removes those derived Target
-definitions, unambiguously owned `tests.toml` tables, and newly authored filesets left
-unreferenced by a Temporal Target's removal. Existing or still-shared filesets, sources,
-parameters, constraints, generators, and hooks remain.
+deletions of existing Targets, filesets, or parameter declarations, and derives canonical
+Target identities and removals from the Ticket and its pinned commits. A planned Target may
+add a dedicated fileset or local parameter declaration, provided no unchanged Target
+references it. Acceptance removes those derived Target definitions, unambiguously owned
+`tests.toml` tables, and newly authored filesets or parameter declarations left unreferenced
+by a Temporal Target's removal. Existing or still-shared inputs, constraints, generators,
+and hooks remain.
 
 A waiting Ticket may consume a New or Replacement Target from a baseline-published
 dependency. Booley pins that future surface internally. After the dependency is accepted,

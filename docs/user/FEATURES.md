@@ -192,7 +192,8 @@ Project and must not contain `.booley_project/` or receive Project Git hooks.
 
 Stealth mode is opt-in during setup: setup asks specifically whether you want to enable the commit-message scrub and writes `[stealth] enabled = false` unless you say yes. For compatibility with existing projects, an omitted `enabled` key still uses the older on-by-default runtime fallback.
 
-When enabled, a commit-msg hook sanitizes AI-related history, and authored
+When enabled, a commit-msg hook rejects attribution footers and sanitizes other
+protected commit-message prose, and authored
 FuseSoC cores remain self-contained under `.booley_project/`. Booley projects
 ignored root-level core copies for FuseSoC, so pristine RTL needs no tracked
 integration files or source symlinks. Customize history sanitation with

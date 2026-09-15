@@ -32,7 +32,7 @@ class FakeDocker:
         self.calls: list[list[str]] = []
         self.rules = rules or []
 
-    def __call__(self, args, *, timeout=30):
+    def __call__(self, args, *, timeout=30, executable="docker"):
         self.calls.append(list(args))
         for predicate, response in self.rules:
             if predicate(args):

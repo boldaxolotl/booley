@@ -13,11 +13,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.core.build_paths import work_root_for
 from booley.flows.eda_parsers import extract_error_gist
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
 
-from .. import edam as edam_layer
 from .. import output_budget
 from ..flow_config import _load_flow_config
 from .mode import SimulationMode
@@ -410,7 +410,7 @@ class StandaloneMixin:
         """Resolve the frontend and non-vacuous RTL module scope."""
         self._open_run_log(
             "standalone",
-            edam_layer.work_root_for(self.args.work_dir, "sim", "standalone", variant="sweep"),
+            work_root_for(self.args.work_dir, "sim", "standalone", variant="sweep"),
         )
         planned = getattr(self, "_standalone_plan_recipe", None)
         if isinstance(planned, _StandalonePlanRecipe):

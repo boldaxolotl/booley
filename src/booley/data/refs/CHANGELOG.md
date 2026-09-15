@@ -31,6 +31,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Quality of life
 
+- Ticket Mode's Console now shows each direct Developer Agent B-Wave query,
+  including its subcommand, duration, and success or failure.
 - Built-in Flow timeouts now use one positive `timeout_ms` contract across
   configuration, CLI, and MCP calls. Each work unit gets the full active-time
   budget; time waiting for a job slot is excluded.
@@ -48,6 +50,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Simulation makes Target-declared `file_type: user` / `copyto` inputs available
+  in the configured run directory for Icarus, Verilator, and Cocotb runs. A
+  testbench can now open its declared firmware or vectors by the authored
+  relative path without a Project-root copy or symlink.
 - Doctor keeps its known-good and known-bad Simulation overlays in separate,
   freshly reset build variants. Stale timestamps or a cached good executable
   can no longer make the deliberate failure probe pass.

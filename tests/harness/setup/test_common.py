@@ -144,6 +144,34 @@ class TestWriteKnobs:
         guarded_write(target, "#!/bin/sh\necho hi\n", newline="\n")
         assert b"\r" not in target.read_bytes()
 
+    def test_dry_run_detects_crlf_without_rewriting(self, tmp_path: Path):
+        target = tmp_path / "hook"
+        target.write_bytes(f"{MARKER}\r\nbody\r\n".encode())
+
+        outcome = guarded_write(
+            target,
+            f"{MARKER}\nbody\n",
+            owner_marker=MARKER,
+            newline="\n",
+            dry_run=True,
+        )
+
+        assert outcome is WriteOutcome.WRITTEN
+        assert b"\r\n" in target.read_bytes()
+
+    def test_managed_lf_write_heals_crlf(self, tmp_path: Path):
+        target = tmp_path / "hook"
+        target.write_bytes(f"{MARKER}\r\nbody\r\n".encode())
+
+        guarded_write(
+            target,
+            f"{MARKER}\nbody\n",
+            owner_marker=MARKER,
+            newline="\n",
+        )
+
+        assert b"\r" not in target.read_bytes()
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
     def test_executable_bit_set_on_write(self, tmp_path: Path):
         target = tmp_path / "hook"
@@ -159,6 +187,46 @@ class TestWriteKnobs:
         outcome = guarded_write(target, content, owner_marker=MARKER, executable=True)
         assert outcome is WriteOutcome.UNCHANGED
         assert target.stat().st_mode & 0o111
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
+    def test_dry_run_reports_missing_executable_bit_without_healing(self, tmp_path: Path):
+        content = f"{MARKER}\nbody\n"
+        target = tmp_path / "hook"
+        target.write_text(content, encoding="utf-8")
+        target.chmod(0o644)
+
+        outcome = guarded_write(
+            target,
+            content,
+            owner_marker=MARKER,
+            executable=True,
+            dry_run=True,
+        )
+
+        assert outcome is WriteOutcome.WRITTEN
+        assert target.stat().st_mode & 0o111 == 0
+
+    def test_dry_run_ignores_unrepresentable_windows_executable_bits(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.harness.setup import common
+
+        content = f"{MARKER}\nbody\n"
+        target = tmp_path / "hook"
+        target.write_text(content, encoding="utf-8")
+        monkeypatch.setattr(common.os, "name", "nt")
+
+        outcome = guarded_write(
+            target,
+            content,
+            owner_marker=MARKER,
+            executable=True,
+            dry_run=True,
+        )
+
+        assert outcome is WriteOutcome.UNCHANGED
 
 
 # ---------------------------------------------------------------------------

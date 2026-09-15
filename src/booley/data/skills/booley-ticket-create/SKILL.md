@@ -21,10 +21,10 @@ booley-ticket-create --agent <structured input>   # agent mode — no interactio
 
 ## Output Boundary
 
-Ticket creation authors only the Ticket, Target definitions and unambiguously owned
-`tests.toml` tables approved at the Step 2f gate, and empty placeholder files for Scope
-paths marked `[new]`. A planned Target may be added to an existing Target-definition
-file, but existing Targets remain unchanged.
+Ticket creation authors only the Ticket, Target definitions, their referenced filesets and
+local parameter declarations, unambiguously owned `tests.toml` tables approved at the Step
+2f gate, and empty placeholder files for Scope paths marked `[new]`. A planned Target may be
+added to an existing Target-definition file, while existing definitions remain unchanged.
 
 The developer who runs the Ticket authors its implementation. A placeholder is a
 zero-byte file: do not put declarations, modules, packages, assertions, stimulus,
@@ -115,10 +115,11 @@ mandatory in both lightweight and detailed modes.
 body, excluding generated basis fields), followed by a **Target Plan** section. If the
 plan is omitted, show `Target Plan: none`. For New and Temporal Target entries, show the
 role, canonical name, destination file, acceptance result, complete Target definition,
-and complete owned `tests.toml` table. For a replacement, show its baseline and candidate,
-destination file, acceptance result, a focused Target-definition diff, and a focused
-owned-table diff. If either focused diff cannot be produced unambiguously, stop with an
-approval blocker. Ask: *"Create this ticket and Target Plan? (yes / edit / cancel)"*
+referenced filesets and local parameter declarations, and complete owned `tests.toml` table.
+For a replacement, show its baseline and candidate, destination file, acceptance result, a
+focused diff covering those same definitions, and a focused owned-table diff. If either
+focused diff cannot be produced unambiguously, stop with an approval blocker. Ask:
+*"Create this ticket and Target Plan? (yes / edit / cancel)"*
 
 For detailed mode, this is the first review artifact shown after grilling. If the user
 chooses `edit`, revise the complete ticket or Target definitions and show the entire review
@@ -149,7 +150,8 @@ mechanics require no further user confirmation.
 ## Step 4: Author and Enqueue
 
 Follow §C end to end after ticket approval: create the draft and workspace, author only
-the approved planned Target definitions and owned test tables there, validate, and enqueue. Author them
+the approved planned Target definitions, referenced inputs, and owned test tables there,
+validate, and enqueue. Author them
 exactly as approved at the 2f gate and create only empty placeholders for `[new]` Scope
 paths; do not implement any part of the Ticket. Basis publication remains an internal
 implementation detail: do not expose its SHAs or pause for another
@@ -222,7 +224,8 @@ Do not author generated metadata, SHAs, `target_plan`, `ticket_format`, or a
    gate (Step 2f). After approval, save the approved document at `$TICKET_PATH`
    and run `python -m booley.ticket_board create-file "$SLUG" --document-file "$TICKET_PATH"`.
    The command creates the draft in its Ticket Workspace.
-4. Author only approved new Target definitions and owned `tests.toml` tables.
+4. Author only approved new Target definitions, referenced filesets and local
+   parameter declarations, and owned `tests.toml` tables.
    A Scope `[new]` file may be absent or a zero-byte placeholder. Leave
    implementation and other support code unchanged.
 5. Run `python -m booley.ticket_board validate-ticket <draft-path>` and fix
@@ -284,8 +287,16 @@ style-lint Target when selecting lint Targets.
 Every new Target must be authored in the Ticket Workspace before enqueue and
 must have a mandatory compatible Flow Criterion. Every mention repeats its
 lifecycle suffix, even across mandatory and optional sections. The Target
-Plan is derived; do not add a `target_plan` field or section. If authored
-inputs change after enqueue, return the Ticket to draft and re-enqueue.
+Plan is derived; do not add a `target_plan` field or section. A planned Target
+may add a dedicated fileset or local parameter declaration, but cannot edit an
+existing definition or attach a new input to an unchanged Target. New
+conditional parameter declaration keys are unsupported; use a stable
+declaration name and conditional entries in the Target's parameter list.
+Acceptance removes only derived Target definitions, unambiguously owned
+`tests.toml` tables, and newly authored filesets or parameter declarations
+orphaned by Temporal Target removal. Existing and still-shared inputs,
+constraints, generators, and hooks remain. If authored inputs change after
+enqueue, return the Ticket to draft and re-enqueue.
 
 ## §E. Ticket Creation Guidance
 

@@ -1463,7 +1463,7 @@ class TestReportGeneration:
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_writes_config_report(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        flow._run()
+        result = flow._run()
         report_path = tmp_path / "reports/sim/1/targets/lite/simulation.json"
         assert report_path.exists()
         report = json.loads(report_path.read_text())
@@ -1474,6 +1474,7 @@ class TestReportGeneration:
         assert len(report["tests"]) == 2
         assert report["tests"][0]["name"] == "smoke"
         assert report["tests"][0]["cycles"] == 2561
+        assert result.display_label == "target lite · 2 tests"
 
     def test_native_report_persists_phase_and_resource_telemetry(self, tmp_path: Path):
         output = (

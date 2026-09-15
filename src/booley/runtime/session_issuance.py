@@ -32,7 +32,7 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
-from booley.runtime.devcontainer import EGRESS_NETWORK
+from booley.runtime.devcontainer import EGRESS_NETWORK, devcontainer_path, render_devcontainer_json
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
@@ -123,6 +123,7 @@ class PreparedSessionSpec:
     spec: dict[str, Any]
     digest: str
     inputs: SessionSpecInputs
+    prospective_issuance: Issuance | None = None
 
 
 SpecBuilder = Callable[[SessionSpecInputs], dict[str, Any]]
@@ -430,36 +431,46 @@ def preview(
     """Build, pin, and seal a Runtime spec without persistent side effects."""
     project = project_root.resolve(strict=True)
     try:
-        with eda_requirements.lease_build_requirements(
+        requirements = eda_requirements.inspect_build_requirements(
             project,
             vivado_enabled=flow_enabled("fpga", project),
-        ) as leased:
-            return _prepare_spec(
-                project,
-                build_spec,
-                leased,
-                expected_image_id=expected_image_id,
-            )
+        )
+        return _prepare_spec(
+            project,
+            build_spec,
+            requirements,
+            expected_image_id=expected_image_id,
+        )
     except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
         raise RuntimeSpecError(str(exc)) from exc
+
+
+def inspect_prepared(project_root: Path, prepared: PreparedSessionSpec) -> Issuance:
+    """Authenticate an issued spec and require exact prepared document content."""
+    project = project_root.resolve(strict=True)
+    path = devcontainer_path(project)
+    if not path.is_file():
+        raise RuntimeSpecError("prepared Session Runtime specification is missing")
+    try:
+        actual = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeSpecError("prepared Session Runtime specification cannot be read") from exc
+    if prepared.digest != _spec_digest(prepared.spec):
+        raise RuntimeSpecError("prepared Session Runtime specification digest is inconsistent")
+    if actual != render_devcontainer_json(prepared.spec):
+        raise RuntimeSpecError("devcontainer.json differs from the prepared specification")
+    return validate(project, prepared.spec, path)
 
 
 def _prepare_spec(
     project: Path,
     build_spec: SpecBuilder,
-    leased: eda_requirements.LeasedSessionRequirements,
+    requirements: eda_requirements.SessionRequirementsSnapshot,
     *,
     expected_image_id: str | None,
 ) -> PreparedSessionSpec:
-    build_requirements = leased.build
-    project_data_path = authorized_project_data_source(project)
-    inputs = SessionSpecInputs(
-        project_data_source=project_data_path,
-        trusted_eda_mounts=build_requirements.trusted_mounts,
-        fixed_container_environment=build_requirements.container_environment,
-        installation_name=build_requirements.installation_name,
-        license_profile_name=build_requirements.license_profile_name,
-    )
+    inputs = _session_spec_inputs(project, requirements.build)
+    project_data_path = inputs.project_data_source
     spec = build_spec(inputs)
     if not isinstance(spec, dict):
         raise RuntimeSpecError("Session Runtime spec builder must return a dictionary")
@@ -472,8 +483,85 @@ def _prepare_spec(
         project_data_path,
     )
     _pin_devcontainer_mount(spec, project)
-    digest = _seal_with_requirements(project, spec, project_data_path, leased.runtime)
-    return PreparedSessionSpec(spec, digest, inputs)
+    digest = _seal_with_requirements(project, spec, project_data_path, requirements.runtime)
+    prospective = _prospective_issuance(
+        project,
+        spec,
+        digest,
+        requirements.runtime,
+        project_data_path,
+    )
+    return PreparedSessionSpec(spec, digest, inputs, prospective)
+
+
+def _prospective_issuance(
+    project: Path,
+    spec: dict[str, Any],
+    digest: str,
+    requirements: eda_requirements.SessionEdaRequirements,
+    project_data_path: Path,
+) -> Issuance:
+    return _issuance(
+        project,
+        spec,
+        digest,
+        requirements,
+        file_sha256=None,
+        project_data_source=str(project_data_path),
+    )
+
+
+def _session_spec_inputs(
+    project: Path,
+    requirements: eda_requirements.SessionBuildRequirements,
+) -> SessionSpecInputs:
+    return SessionSpecInputs(
+        project_data_source=authorized_project_data_source(project),
+        trusted_eda_mounts=requirements.trusted_mounts,
+        fixed_container_environment=requirements.container_environment,
+        installation_name=requirements.installation_name,
+        license_profile_name=requirements.license_profile_name,
+    )
+
+
+def issue_prepared(
+    project_root: Path,
+    prepared: PreparedSessionSpec,
+    *,
+    force_dependencies: bool = False,
+) -> Issuance:
+    """Persist one exact preview after revalidating its authority inputs."""
+    project = project_root.resolve(strict=True)
+    if prepared.digest != _spec_digest(prepared.spec):
+        raise RuntimeSpecError("prepared Session Runtime specification digest is inconsistent")
+    try:
+        with eda_requirements.lease_build_requirements(
+            project,
+            vivado_enabled=flow_enabled("fpga", project),
+        ) as leased:
+            if prepared.inputs != _session_spec_inputs(project, leased.build):
+                raise RuntimeSpecError(
+                    "Session Runtime authority changed after its specification was prepared"
+                )
+            prospective = _prospective_issuance(
+                project,
+                prepared.spec,
+                prepared.digest,
+                leased.runtime,
+                prepared.inputs.project_data_source,
+            )
+            if prepared.prospective_issuance != prospective:
+                raise RuntimeSpecError(
+                    "Session Runtime policy changed after its specification was prepared"
+                )
+            requirements = eda_requirements.prepare_runtime_dependencies(
+                project,
+                leased,
+                force_relay=force_dependencies,
+            )
+            return _persist_prepared(project, prepared, requirements=requirements)
+    except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
+        raise RuntimeSpecError(str(exc)) from exc
 
 
 def issue(
@@ -491,8 +579,6 @@ def issue(
             with eda_requirements.lease_build_requirements(
                 project,
                 vivado_enabled=flow_enabled("fpga", project),
-                prepare_relay=True,
-                force_relay=force_dependencies,
             ) as leased:
                 prepared = _prepare_spec(
                     project,
@@ -500,7 +586,12 @@ def issue(
                     leased,
                     expected_image_id=expected_image_id,
                 )
-                return _persist_prepared(project, prepared, requirements=leased.runtime)
+                requirements = eda_requirements.prepare_runtime_dependencies(
+                    project,
+                    leased,
+                    force_relay=force_dependencies,
+                )
+                return _persist_prepared(project, prepared, requirements=requirements)
         except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
             raise RuntimeSpecError(str(exc)) from exc
     if isinstance(prepared_or_spec, PreparedSessionSpec):

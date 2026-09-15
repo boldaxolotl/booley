@@ -5,10 +5,9 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
-The latest measurements were verified on 14 SEP 2026 against source and analyzer
-at `8f7d1479`, with `35062dda` as the integration base. Earlier snapshots
-retain their original revision and date.
-The direction rules are normative; dated graph snapshots are diagnostic evidence.
+Current measurements include the integrated #530, #531, and #532 changes.
+Historical snapshots retain their original revisions and dates. Direction rules
+are normative; dated graph snapshots are diagnostic evidence.
 
 ## Source map
 
@@ -17,9 +16,9 @@ The package layout maps to the canonical concepts indexed by the
 
 | Canonical concept | Principal source owners | Responsibility |
 | --- | --- | --- |
-| Host Bootstrap | `booley.harness.bootstrap`, `booley.harness.bootstrap_cli`, `booley.harness.host_sidecars` | Reconcile Project-independent host prerequisites and shared infrastructure. |
-| Project Initialization | `booley.harness.init_cmd`, `booley.harness.setup`, `booley.agent_workspace` | Validate and reconcile one Project before issuing its Session Runtime. |
-| Session Runtime | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment` | Own shared execution records, processes, paths, and runtime lifecycle. |
+| Host Bootstrap | `booley.harness.bootstrap`, `booley.harness.bootstrap_cli`, `booley.harness.host_sidecars`, `booley.harness.host_diagnostics` | Inspect and reconcile Project-independent host prerequisites and shared infrastructure. |
+| Project Initialization | `booley.harness.init_cmd`, `booley.harness.setup` (including `readiness`), `booley.agent_workspace` | Validate and reconcile one Project before issuing its Session Runtime. |
+| Session Runtime | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment`, `booley.runtime.inspection` | Inspect and own shared execution records, processes, paths, and runtime lifecycle. |
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
 | Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
@@ -31,7 +30,7 @@ The package layout maps to the canonical concepts indexed by the
 | B-Wave | `booley.bwave` | Answer structured waveform questions and control human viewing. |
 
 Supporting mechanism packages keep their names. `booley.audit` owns typed
-environment and configuration analysis; `booley.config` owns configuration;
+environment and configuration analysis and typed diagnostic report values; `booley.config` owns configuration;
 `booley.eda` owns trusted EDA registrations and Grants; `booley.review` renders
 review artifacts from resolved immutable evidence; `booley.projects` owns Project inventory commands; `booley.core` owns
 dependency-light primitives; and `booley.dev_support`, `booley.docker`, `booley.data`,
@@ -117,6 +116,50 @@ native executable discovery. The Runtime storage/locking modules and
 `runtime.paths.package_data_dir` remain downward compatibility exports. D25
 prevents these three shared mechanisms from acquiring caller policy.
 
+## Doctor diagnostic boundary
+
+Doctor composes and renders complete typed reports. `runtime.inspection` owns
+Runtime evidence collection and validation; `harness.host_diagnostics` owns host
+health composition; `harness.setup.readiness` owns Project loading and explicit
+inspection/reconciliation operations. These owners do not accept Doctor callbacks
+or import command orchestration or rendering. D1/D6 protect audit/Runtime; D26
+protects the two new Harness owners, including deferred and type-only imports.
+
+Inspection retains bounded subprocess and conditional authority-lock effects;
+Project repair operations remain explicit and preserve their interleaved phase
+order. The exact interfaces, effects, owner-local tests and before/after fan-out
+for [#532](https://github.com/boldaxolotl/booley/issues/532) are recorded in
+[the implementation evidence](DOCTOR-DIAGNOSTICS.md).
+
+## Target/FuseSoC and execution separation
+
+Target inspection owns selection and presentation; FuseSoC owns design resolution
+and core provenance checks. Neither needs Runtime execution to calculate shared
+paths or compare Scope entries. D27 forbids Targets from importing Flows or
+Runtime. D28 forbids FuseSoC from importing Runtime. These rules include deferred
+and type-only imports and have no waiver or composition exception.
+
+- `core.build_paths.work_root_for` owns the canonical checkout-local Edalize
+  directory identity. It reuses the neutral checkout guard and Project-directory
+  name, preserves config sanitization and variant suffixes, and creates no files.
+  Ambient Project-directory overrides do not redirect these existing per-worktree
+  build caches. Flow callers retain directory creation, leases and execution;
+  Target detail retains its existing payload and exception handling.
+- `core.scope_matching` owns pure literal/glob matching and Scope entry syntax.
+  Runtime retains filesystem glob expansion, dirty-status/new-file policy and
+  Git staging. Harness retains forbidden-path policy. The standalone pre-commit
+  hook remains self-contained and keeps its distinct behavior.
+- Core provenance classification is unchanged. Out-of-Scope matching is not proof
+  of a read-only mount, and the existing imperative-script checks do not impose
+  blanket rejection on all external paths. EDAM file confinement remains with
+  its existing owner; this extraction introduces no new execution authority.
+
+The measured Target/FuseSoC pair is approved separately from the remaining
+11-package cyclic group. A regression using the checked-in SCC metadata rejects
+recombination even independently of the direction rules. See
+[the #530 evidence](../research/target-fusesoc-530-evidence.md) for exact revisions,
+full reports, migration fan-out, and verification.
+
 ## Graph semantics
 
 The analyzer uses `ast` to parse every `*.py` file below `src/booley`. It records
@@ -172,6 +215,9 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D23 | Prefix `booley.config` | Prefix `booley.eda` | Forbid | Config owns declarative requests without depending on EDA provisioning policy. |
 | D24 | Prefix `booley.eda` | Prefix `booley.runtime` | Forbid | EDA uses neutral host mechanisms without depending on Runtime execution or issuance. |
 | D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets`, `booley.ticket_board` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
+| D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.harness.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
+| D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
+| D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 
 ## Ticket review lifecycle boundary
 
@@ -340,7 +386,7 @@ The comparison revision `1fdc706e` is `main` immediately before 10 SEP in
 Asia/Tbilisi (UTC+04:00). These snapshots describe source imports, not runtime
 performance or product qualification.
 
-| Diagnostic | 02 SEP baseline `094d1c5d` | Before 10 SEP `1fdc706e` | Current `d7b67321` |
+| Diagnostic | 02 SEP baseline `094d1c5d` | Before 10 SEP `1fdc706e` | 11 SEP `d7b67321` |
 | --- | ---: | ---: | ---: |
 | Parsed Python modules | 370 | 476 | 483 |
 | Located dependency facts | 1,761 | 2,337 | 2,376 |
@@ -350,9 +396,9 @@ performance or product qualification.
 | Exact composition permissions | 7 | 3 | 3 |
 | Live legacy waivers | 2 | 2 | 0 |
 
-The current SCC is the same 18-member set listed in the historical baseline.
+The 11 SEP SCC was the same 18-member set listed in the historical baseline.
 `booley.evidence`, like `booley.core`, `booley.data`, and `booley.docker`, remains
-outside it. The current 15 mutual pairs are:
+outside it. The 11 SEP snapshot had these 15 mutual pairs:
 
 ```text
 booley.bwave <-> booley.flows
@@ -380,17 +426,19 @@ Config-to-Runtime, Criteria-to-Flow, and Flow-to-Ticket-Board separations had
 already landed by `1fdc706e`; they are not additional 10 SEP reductions.
 
 Named composition hotspot fan-out is the number of unique imported modules.
-These diagnostic values do not gate changes:
+These diagnostic values do not gate changes. These columns are historical. The #532 measurements are recorded in
+[the Doctor evidence](DOCTOR-DIAGNOSTICS.md), and the current integrated
+snapshot below records the latest source and analyzer:
 
-| Canonical role | Exact module | 02 SEP baseline | Before 10 SEP | Current |
+| Canonical role | Exact module | 02 SEP baseline | Before 10 SEP | 11 SEP |
 | --- | --- | ---: | ---: | ---: |
-| Host/Project diagnostic composition | `booley.harness.doctor` | 62 | 66 | 66 |
-| Command composition | `booley.harness.booley` | 52 | 57 | 58 |
-| Project Initialization | `booley.harness.init_cmd` | 42 | 42 | 42 |
-| Harness | `booley.harness.developer` | 40 | 44 | 45 |
+| Host/Project diagnostic composition | `booley.harness.doctor` | 62 | 66 | 57 |
+| Command composition | `booley.harness.booley` | 52 | 57 | 57 |
+| Project Initialization | `booley.harness.init_cmd` | 42 | 42 | 39 |
+| Harness | `booley.harness.developer` | 40 | 44 | 44 |
 | Simulation Flow | `booley.flows.sim.flow` | 35 | 48 | 48 |
 | Synthesis Flow | `booley.flows.synth.flow` | 30 | 35 | 35 |
-| MCP composition | `booley.mcp.server` | 29 | 30 | 32 |
+| MCP composition | `booley.mcp.server` | 29 | 30 | 33 |
 | FPGA Flow | `booley.flows.fpga.flow` | 26 | 32 | 32 |
 | Mutation Specialist | `booley.specialists.mutation_tester` | 24 | 25 | 25 |
 | Coverage Specialist | `booley.specialists.coverage_analyst` | 22 | 8 | 13 |
@@ -409,7 +457,7 @@ When one of these modules changes, record before-and-after output in
 [#279](https://github.com/boldaxolotl/booley/issues/279). This lets later fan-out
 work distinguish legitimate composition from unjustified knowledge growth.
 
-## Current snapshot: 14 SEP 2026 — Config/EDA/Runtime separation
+## Historical snapshot: 14 SEP 2026 — Config/EDA/Runtime separation
 
 [#531](https://github.com/boldaxolotl/booley/issues/531) removes both Config→EDA
 edges and all four EDA→Runtime edges. Its original source/analyzer comparison is:
@@ -430,13 +478,123 @@ final source/analyzer `8f7d1479` has 499 modules, 2,472 facts, and 2,030 edges;
 the integration base `35062dda` has 494 modules, 2,458 facts, and 2,017 edges.
 The 13→11 mutual-pair reduction and exact 18-member SCC are unchanged.
 
-Retain the existing exact SCC metadata; the new production metadata test requires
+At that revision the exact SCC metadata was retained; the new production metadata test requires
 it to equal the measured nontrivial groups, forcing tightening when a split lands.
 Separate seeded tests prove neutral packages cannot join the remaining group.
 
 Full ownership, edge inventories, affected caller fan-out, compatibility behavior,
 and reproduction commands are in the
 [#531 follow-up evidence](../research/session-runtime-issuance-487-evidence.md#follow-up-531--complete-configedaruntime-source-directions).
+
+## Historical snapshot: 14 SEP 2026 — Target/FuseSoC separation
+
+Compared the source and analyzer at `35062dda` with implementation revision
+`1a98ec85` for [#530](https://github.com/boldaxolotl/booley/issues/530).
+Both reports were generated from Git archives of those exact revisions after
+refreshing the branch with the approved confidentiality repair and Ticket
+changes from `main`. The original extraction measurements remain in the
+implementation evidence; the measured split and affected caller fan-out are
+unchanged.
+
+| Diagnostic | Before `35062dda` | After `1a98ec85` |
+| --- | ---: | ---: |
+| Parsed Python modules | 494 | 496 |
+| Located dependency facts | 2,458 | 2,467 |
+| Unique module-to-module edges | 2,017 | 2,026 |
+| Direct mutual package pairs | 13 | 11 |
+| Cyclic package group sizes | 18 | 16 and 2 |
+| Exact composition permissions | 4 | 4 |
+| Live legacy waivers | 0 | 0 |
+
+At that revision the approved groups matched the measured split (all names prefixed `booley.`):
+
+```text
+agent_workspace, audit, bwave, config, criteria, dev_support, eda, feedback,
+flows, harness, mcp, projects, review, runtime, specialists, ticket_board
+
+fusesoc, targets
+```
+
+The `flows <-> targets` and `fusesoc <-> runtime` mutual pairs are removed.
+The remaining pairs are:
+
+```text
+booley.bwave <-> booley.flows
+booley.config <-> booley.eda
+booley.dev_support <-> booley.runtime
+booley.eda <-> booley.runtime
+booley.feedback <-> booley.harness
+booley.fusesoc <-> booley.targets
+booley.harness <-> booley.mcp
+booley.harness <-> booley.runtime
+booley.harness <-> booley.ticket_board
+booley.mcp <-> booley.specialists
+booley.mcp <-> booley.ticket_board
+```
+
+Affected caller and owner fan-out counts unique imported in-repository modules:
+
+| Module | Before | After |
+| --- | ---: | ---: |
+| `booley.core.build_paths` | absent | 2 |
+| `booley.core.scope_matching` | absent | 0 |
+| `booley.targets.target_surface` | 5 | 5 |
+| `booley.fusesoc.core_security` | 3 | 3 |
+| `booley.runtime.git` | 2 | 3 |
+| `booley.harness.scope_policy` | 2 | 3 |
+| `booley.dev_support.demo_contract` | 12 | 12 |
+| `booley.dev_support.scope_precommit_hook` | 2 | 2 |
+| `booley.flows.edam` | 3 | 2 |
+| `booley.flows.sim.build` | 10 | 11 |
+| `booley.flows.sim.execution.engine` | 25 | 26 |
+| `booley.flows.sim.flow` | 48 | 49 |
+| `booley.flows.sim.standalone` | 7 | 7 |
+| `booley.flows.sim.verilator_coverage_execution` | 15 | 15 |
+| `booley.flows.lint.flow` | 16 | 17 |
+| `booley.flows.synth.flow` | 35 | 36 |
+| `booley.flows.fpga.flow` | 32 | 33 |
+
+Fan-out increases where a caller retains its execution dependencies and now also
+names the neutral mechanism it uses. They are not new orchestration layers.
+Target detail and core provenance retain their fan-out while losing upward
+knowledge; the Scope matcher has no in-repository dependencies. All other named
+composition hotspots are unchanged. Full named-hotspot and top-30 reports are in
+[the implementation evidence](../research/target-fusesoc-530-evidence.md).
+
+## Historical snapshot: 14 SEP 2026 — combined separation
+
+Compared source and analyzer at `9b252746` (main with #531) with `4a5b552d`
+(resolved integration). Integration of #530 with #531 removes the remaining return paths. The measured
+cyclic groups now contain 11 members and the separate Target/FuseSoC pair, with
+nine direct mutual pairs. Config, EDA, Audit, Review, and Projects all leave the
+execution group; the original 12-member projection predates the Ticket changes.
+The integrated source has 501 modules, 2,481 dependency facts, and 2,039 unique
+edges. Approved SCC metadata is tightened to these exact groups:
+
+```text
+agent_workspace, bwave, criteria, dev_support, feedback, flows, harness, mcp,
+runtime, specialists, ticket_board
+
+fusesoc, targets
+```
+
+D23–D25 retain the Config/EDA/shared-mechanism rules landed by #531. The
+Target/FuseSoC rules are numbered D26 and D27 to preserve those rule identities.
+Full before-and-after reports and exact revisions are recorded in
+[the #530 integration evidence](../research/target-fusesoc-530-evidence.md).
+
+## Current snapshot: 15 SEP 2026 — Doctor integration
+
+Compared source/analyzer `8d1af171` (main) with `41eeebf7` (integration).
+After integrating #532 and the B-Wave guidance update, the source has 505 Python
+modules, 2,505 dependency facts, and 2,064 unique edges. The measured cyclic
+groups remain the 11-member execution group and the separate Target/FuseSoC
+pair listed above; nine direct mutual package pairs remain. Doctor fan-out is
+57 on both sides of this integration comparison, preserving #532's improvement.
+
+D26 retains Doctor's diagnostic-owner boundary. Target/FuseSoC use D27 and D28;
+all three rules have no waiver or composition exception. Exact revisions and
+full archived reports are in [the #530 evidence](../research/target-fusesoc-530-evidence.md).
 
 ## Required gate
 

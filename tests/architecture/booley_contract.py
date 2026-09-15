@@ -91,6 +91,18 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D27",
+        (prefix("booley.targets"),),
+        (prefix("booley.flows"), prefix("booley.runtime")),
+        "Target inspection uses shared build identity without Flow execution or Runtime",
+    ),
+    DirectionRule(
+        "D28",
+        (prefix("booley.fusesoc"),),
+        (prefix("booley.runtime"),),
+        "FuseSoC provenance consumes pure Scope matching without Runtime or Git execution",
+    ),
+    DirectionRule(
         "D23",
         (prefix("booley.config"),),
         (prefix("booley.eda"),),
@@ -134,6 +146,18 @@ DIRECTION_RULES = (
             )
         ),
         "Shared private storage, locking, and package resources do not own caller policy",
+    ),
+    DirectionRule(
+        "D26",
+        (exact("booley.harness.host_diagnostics"), exact("booley.harness.setup.readiness")),
+        (
+            exact("booley.harness.doctor"),
+            exact("booley.harness.init_cmd"),
+            exact("booley.harness.booley"),
+            exact("booley.harness.colors"),
+            exact("booley.harness.setup.common"),
+        ),
+        "diagnostic owners return observations without command orchestration or rendering",
     ),
     DirectionRule(
         "D22",
@@ -344,32 +368,26 @@ COMPOSITION_PERMISSIONS = (
 
 LEGACY_WAIVERS = ()
 
-# Measured at #531: still 18 members until #530 removes the Target/FuseSoC
-# return paths. The production SCC metadata test requires tightening on a split.
+# Measured after integrating #530 and #531. The production SCC metadata test
+# requires tightening on every split.
 APPROVED_LEGACY_SCCS = (
     frozenset(
         f"booley.{name}"
         for name in (
             "agent_workspace",
-            "audit",
             "bwave",
-            "config",
             "criteria",
             "dev_support",
-            "eda",
             "feedback",
             "flows",
-            "fusesoc",
             "harness",
             "mcp",
-            "projects",
-            "review",
             "runtime",
             "specialists",
-            "targets",
             "ticket_board",
         )
     ),
+    frozenset(("booley.fusesoc", "booley.targets")),
 )
 
 BOOLEY_SOURCE_DEPENDENCY_CONTRACT = ArchitectureContract(

@@ -79,8 +79,8 @@ def test_shared_runtime_does_not_depend_on_harness() -> None:
 def test_session_issuance_is_one_deep_boundary_for_independent_callers() -> None:
     """Deleting the facade breaks four callers with distinct policy needs."""
     consumers = {
-        "harness/init_cmd.py": {"preview", "issue"},
-        "harness/doctor.py": {"validate", "requested_license", "keeper_image"},
+        "harness/setup/interactive.py": {"preview", "issue_prepared"},
+        "runtime/inspection.py": {"validate", "requested_license", "keeper_image"},
         "runtime/session_runtime.py": {"authenticate", "validate", "labels"},
         "runtime/session_refresh.py": {
             "load_issued_snapshot",

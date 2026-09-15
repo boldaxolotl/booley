@@ -427,6 +427,66 @@ def test_prospective_surface_refresh_rebuilds_its_catalog(tmp_path: Path) -> Non
     assert refreshed.select("lint", for_flow="lint").identity.endswith("#lint")
 
 
+def test_inspection_rejects_invalid_parameter_before_missing_source_deferral(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "invalid.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:ip:invalid:1.0\n"
+        "filesets:\n"
+        "  rtl: {files: [rtl/not-yet-authored.sv]}\n"
+        "parameters:\n"
+        "  ENABLE_ZBB: {datatype: int, paramtype: vlogparam, default: 0}\n"
+        "targets:\n"
+        "  lint_new:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n"
+        "    parameters: [ENABLE_ZBB=not-an-int]\n"
+        "    toplevel: future\n",
+        encoding="utf-8",
+    )
+
+    catalog = TargetCatalog.build(tmp_path)
+
+    with pytest.raises(fusesoc_registry.FuseSocError, match="invalid literal"):
+        catalog.inspect(catalog.select("lint_new"))
+
+
+def test_inspection_resolves_parameter_supplied_by_dependency(tmp_path: Path) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl" / "top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    (tmp_path / "dependency.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:ip:dependency:1.0\n"
+        "parameters:\n"
+        "  WIDTH: {datatype: int, paramtype: vlogparam, default: 8}\n"
+        "targets:\n"
+        "  default: {parameters: [WIDTH]}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "top.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:ip:top:1.0\n"
+        "filesets:\n"
+        "  rtl: {files: [rtl/top.sv], depend: [acme:ip:dependency:1.0]}\n"
+        "targets:\n"
+        "  lint:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n"
+        "    parameters: [WIDTH=16]\n"
+        "    toplevel: top\n",
+        encoding="utf-8",
+    )
+
+    inspection = TargetCatalog.build(tmp_path).inspect(
+        TargetCatalog.build(tmp_path).select("lint")
+    )
+
+    assert inspection.parameters["WIDTH"]["default"] == 16
+
+
 def test_handle_setup_does_not_resolve_selector_again(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,

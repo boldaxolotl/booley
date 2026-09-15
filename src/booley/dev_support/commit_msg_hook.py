@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Git commit-msg hook: sanitize then validate commit messages.
+"""Git commit-msg hook: reject attribution, sanitize, then validate.
 
-1. Sanitize: redact banned phrases from the subject *and* the body — both must
-   survive, so banned phrases are substituted in place rather than the text
-   being dropped. Attribution trailers (``Co-Authored-By:``, the "Generated
-   with" footer) are the one thing removed outright: redacting one leaves a
-   mangled trailer that still smells of its origin, and it carries no authorial
-   content worth keeping.
-2. Validate via validate_commit_msg.validate_message().
+1. Reject recognized machine-attribution footers from the raw message without
+   rewriting it, so the author can remove the footer and retry.
+2. Sanitize ordinary content: redact banned phrases from the subject *and* the
+   body in place so authored rationale survives.
+3. Validate via validate_commit_msg.validate_message().
 
-Installed by the setup stage (harness/setup/workspace.py) into .git/hooks/commit-msg.
+Project Initialization vendors this module for the Project hook; Ticket
+worktrees receive the same source through harness/setup/workspace.py.
 
 **Bodies are kept.** They used to be truncated away on every non-merge commit
 ("single-line messages only"), which quietly destroyed authored work: a long
@@ -34,30 +33,31 @@ _DEV_SUPPORT_DIR = str(Path(__file__).resolve().parent)
 if _DEV_SUPPORT_DIR not in sys.path:
     sys.path.insert(0, _DEV_SUPPORT_DIR)
 
-from commit_msg_utils import redact_banned, stealth_enabled
+from commit_msg_utils import find_banned, redact_banned, stealth_enabled
 
-# Body lines dropped outright rather than redacted: git trailers and footers
-# whose whole purpose is to attribute the commit to an assistant. Redacting one
-# yields debris ("redacted: redacted <noreply@...>") that is both ugly and still
-# recognizably an attribution trailer, and unlike a prose line it carries no
-# content the author would miss.
-# Only these two shapes are DROPPED. Both are machine-written attributions with
-# no authorial content, and both would redact into debris
-# ("redacted: redacted <noreply@...>") that still reads as an attribution.
-#
-# Nothing else is dropped, deliberately. An earlier draft also dropped any
-# "Generated with <agent>" line — but "generated" is itself on the banned list,
-# so that rule fired on *every* such line, honest prose included ("Generated
-# with care by the whole team"), silently deleting a real sentence. Everything
-# outside these two patterns is redacted in place instead: a mangled word is
-# recoverable, a deleted line is not.
-_ATTRIBUTION_LINE_RE = re.compile(
+
+class AttributionPolicyError(ValueError):
+    """A commit message contains a machine-attribution footer."""
+
+
+# These existing structural forms are unambiguous attribution markers and are
+# rejected regardless of Project vocabulary. They used to be silently dropped,
+# which made the hook's policy depend on footer spelling and destroyed the raw
+# message the author needed to correct.
+_STRUCTURAL_ATTRIBUTION_LINE_RE = re.compile(
     r"""^\s*(?:
           co-authored-by\s*:          # the git trailer itself
         | \U0001F916                  # 🤖 — the "Generated with ..." footer marker
     )""",
     re.IGNORECASE | re.VERBOSE,
 )
+
+_GENERATED_WITH_LINE_RE = re.compile(
+    r"^\s*generated\s+with\s+(?P<payload>.+?)\s*$",
+    re.IGNORECASE,
+)
+
+_MARKDOWN_LINK_RE = re.compile(r"^\[(?P<label>[^]]+)\]\([^)]+\)$")
 
 
 def split_subject_body(msg: str) -> tuple[str, str]:
@@ -82,25 +82,57 @@ def _trim_blank_edges(body: str) -> str:
     return "\n".join(lines)
 
 
+def _payload_names_protected_identity(
+    payload: str,
+    project_root: Path | None = None,
+) -> bool:
+    """Return whether an attribution payload is exactly one protected name."""
+    link = _MARKDOWN_LINK_RE.fullmatch(payload)
+    visible_name = (link.group("label") if link else payload).strip()
+    return any(
+        visible_name.casefold() == protected_name.casefold()
+        for protected_name in find_banned(visible_name, project_root)
+    )
+
+
+def _has_machine_attribution(body: str, project_root: Path | None = None) -> bool:
+    """Return whether the body contains a recognized attribution footer."""
+    lines = body.split("\n")
+    for line in lines:
+        if _STRUCTURAL_ATTRIBUTION_LINE_RE.match(line):
+            return True
+
+    # Plain "Generated with ..." text is ambiguous, so only the final nonblank
+    # body line has footer shape. Its visible payload must be exactly one
+    # protected vocabulary entry: merely mentioning a protected term inside an
+    # authored sentence remains ordinary prose and takes the redaction path.
+    footer = next((line for line in reversed(lines) if line.strip()), "")
+    match = _GENERATED_WITH_LINE_RE.fullmatch(footer)
+    return bool(match and _payload_names_protected_identity(match.group("payload"), project_root))
+
+
 def sanitize_body(body: str, project_root: Path | None = None) -> str:
-    """Redact a commit body in place, dropping only attribution trailers.
+    """Redact a commit body in place without deleting authored lines.
 
     Returns the body with no leading/trailing blank lines, so the caller can
     re-attach it under exactly one blank separator line (git's convention)
     regardless of how the author spaced the original.
     """
-    kept = [ln for ln in body.split("\n") if not _ATTRIBUTION_LINE_RE.match(ln)]
-    return _trim_blank_edges("\n".join(redact_banned(ln, project_root) for ln in kept))
+    return _trim_blank_edges(
+        "\n".join(redact_banned(line, project_root) for line in body.split("\n"))
+    )
 
 
 def sanitize_message(msg: str, project_root: Path | None = None) -> str:
-    """Sanitize a commit message: redact banned content, drop comment lines.
+    """Reject attribution or sanitize a commit message in place.
 
-    Both subject and body are redacted in place. This is the real leak surface:
-    the message lands in history verbatim, so a bare *validation* check would
-    only reject the commit rather than scrub it.
+    Raises :class:`AttributionPolicyError` before redaction when the raw body
+    contains recognized attribution. Otherwise both subject and body are
+    redacted in place and git comment lines are dropped.
     """
     raw_subject, body = split_subject_body(msg)
+    if _has_machine_attribution(body, project_root):
+        raise AttributionPolicyError
     subject = redact_banned(raw_subject, project_root)
     clean_body = sanitize_body(body, project_root)
     if clean_body:
@@ -133,16 +165,15 @@ def _notify_if_redacted(
         changed = True
     # Checked independently of the subject: an `elif` here meant a redacted
     # subject swallowed the body notice, so body edits happened without a word.
-    # The body is no longer dropped — it is redacted and kept — but the author
-    # still deserves to know their wording changed. Compare against the body
+    # The body is redacted and kept, but the author still deserves to know their
+    # wording changed. Compare against the body
     # with only its blank edges trimmed: that is what sanitize_body() would
     # return if it had nothing to redact, so any difference is a real edit and
     # re-spacing alone never trips the notice.
     if _trim_blank_edges(raw_body) != sanitize_body(raw_body, project_root):
         print(
             "commit-msg: stealth-mode redaction rewrote the commit body "
-            "(banned phrases substituted, attribution trailers removed); "
-            "the body itself is kept",
+            "(banned phrases substituted); the body itself is kept",
             file=sys.stderr,
         )
         changed = True
@@ -155,6 +186,35 @@ def _notify_if_redacted(
             "enabled = false in the project config TOML to keep messages verbatim",
             file=sys.stderr,
         )
+
+
+def _validate_sanitized_message(sanitized: str, project_root: Path | None) -> int:
+    """Validate sanitized text, honoring the validation-only escape hatch."""
+    from validate_commit_msg import validate_message
+
+    errors = validate_message(sanitized, project_root=project_root)
+    if not errors:
+        return 0
+
+    # Opt-out for human/upstream-style commits on non-Booley IP (SETUP-10):
+    # skip only the configured validation checks. Attribution rejection and
+    # sanitization have already run and cannot be bypassed here.
+    if os.environ.get("BOOLEY_SKIP_COMMIT_VALIDATION"):
+        print(
+            "commit-msg: convention check skipped "
+            "(BOOLEY_SKIP_COMMIT_VALIDATION set); message still sanitized",
+            file=sys.stderr,
+        )
+        return 0
+    print("Commit message validation FAILED:", file=sys.stderr)
+    for error in errors:
+        print(f"  - {error}", file=sys.stderr)
+    print(
+        "  (set BOOLEY_SKIP_COMMIT_VALIDATION=1 to skip this convention "
+        "check for one commit; sanitization still applies)",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def main() -> int:
@@ -179,36 +239,20 @@ def main() -> int:
         return 1
 
     raw = msg_file.read_text(encoding="utf-8", errors="replace")
-    sanitized = sanitize_message(raw, project_root)
-    msg_file.write_text(sanitized, encoding="utf-8")
-    _notify_if_redacted(raw, sanitized, project_root)
-
-    # Validate the sanitized message
-    from validate_commit_msg import validate_message
-
-    errors = validate_message(sanitized, project_root=project_root)
-    if errors:
-        # Opt-out for human/upstream-style commits on non-Booley IP (SETUP-10):
-        # skip only the type(scope): summary CONVENTION check. Sanitization
-        # above already ran, so the IP-leak scrub is NOT bypassed — unlike
-        # `git commit --no-verify`, which disables the whole hook.
-        if os.environ.get("BOOLEY_SKIP_COMMIT_VALIDATION"):
-            print(
-                "commit-msg: convention check skipped "
-                "(BOOLEY_SKIP_COMMIT_VALIDATION set); message still sanitized",
-                file=sys.stderr,
-            )
-            return 0
-        print("Commit message validation FAILED:", file=sys.stderr)
-        for e in errors:
-            print(f"  - {e}", file=sys.stderr)
+    try:
+        sanitized = sanitize_message(raw, project_root)
+    except AttributionPolicyError:
         print(
-            "  (set BOOLEY_SKIP_COMMIT_VALIDATION=1 to skip this convention "
-            "check for one commit; sanitization still applies)",
+            "commit-msg: attribution footer is not allowed in stealth mode; "
+            "remove the footer and retry the commit",
             file=sys.stderr,
         )
         return 1
-    return 0
+    msg_file.write_text(sanitized, encoding="utf-8")
+    _notify_if_redacted(raw, sanitized, project_root)
+
+    # Validate the sanitized, attribution-free message.
+    return _validate_sanitized_message(sanitized, project_root)
 
 
 if __name__ == "__main__":

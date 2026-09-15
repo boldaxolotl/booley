@@ -127,19 +127,26 @@ def bold_fg256(code: int) -> Callable[[str], str]:
     return lambda text: _style(text, _BOLD, ansi)
 
 
-# --- Jewel Tones palette (B) — named helpers for use outside MCP endpoint boxes ---
+# --- Jewel Tones palette (B) -------------------------------------------------
+PALETTE_ORANGE = 208
+PALETTE_MINT = 49
+PALETTE_LAVENDER = 141
+PALETTE_DODGER_BLUE = 39
+PALETTE_MAUVE = 145
+
+# Named helpers for use outside MCP endpoint boxes.
 # Names retained for stability; codes updated to match Palette B in terminal.py.
 # Accent (UI chrome emphasis: headers, bars, code spans) — Dodger Blue
-accent = fg256(39)
-bold_accent = bold_fg256(39)
+accent = fg256(PALETTE_DODGER_BLUE)
+bold_accent = bold_fg256(PALETTE_DODGER_BLUE)
 # Chrome (structural: box drawing, totals, neutral labels) — Mauve
-chrome = fg256(145)
-bold_chrome = bold_fg256(145)
+chrome = fg256(PALETTE_MAUVE)
+bold_chrome = bold_fg256(PALETTE_MAUVE)
 # Amber (highlight: banner eyes, ticket slugs) — Orange in Palette B
-amber = fg256(208)
-bold_amber = bold_fg256(208)
+amber = fg256(PALETTE_ORANGE)
+bold_amber = bold_fg256(PALETTE_ORANGE)
 # Lilac (review status on the board) — Lavender in Palette B
-lilac = fg256(141)
+lilac = fg256(PALETTE_LAVENDER)
 
 
 # Matches CSI color/style codes plus OSC 8 hyperlink open/close markers

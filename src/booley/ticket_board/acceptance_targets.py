@@ -586,7 +586,11 @@ def _validate_changed_targets(
         if target in seen:
             continue
         seen.add(target)
-        missing_inputs = _missing_target_inputs(catalog, target)
+        try:
+            missing_inputs = _missing_target_inputs(catalog, target)
+        except FuseSocError as exc:
+            errors.append(f"changed Target {target!r} inspection failed: {exc}")
+            continue
         missing = sorted({item.path for item in missing_inputs})
         nondeferable = _nondeferable_missing_inputs(missing_inputs)
         if nondeferable:
@@ -707,7 +711,11 @@ def _validate_binding(
         except FuseSocError as exc:
             errors.append(f"{binding.label}: {role} target {target!r}: {exc}")
             continue
-        missing_inputs = _missing_target_inputs(catalog, handle.selector)
+        try:
+            missing_inputs = _missing_target_inputs(catalog, handle.selector)
+        except FuseSocError as exc:
+            errors.append(f"{binding.label}: {role} target {target!r} inspection failed: {exc}")
+            continue
         missing = sorted({item.path for item in missing_inputs})
         if not missing:
             continue

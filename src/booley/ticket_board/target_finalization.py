@@ -1,9 +1,9 @@
 """Plan and apply narrow Target deletion to an accepted merge candidate.
 
 The finalizer deliberately edits source spans instead of serializing parsed
-YAML/TOML.  Acceptance may remove only a selected ``targets.<name>`` definition
-and its unambiguously-owned ``tests.toml`` tables; every other byte remains as
-authored.
+YAML/TOML. Acceptance may remove only a selected ``targets.<name>`` definition,
+its orphaned newly-authored inputs, and its unambiguously-owned ``tests.toml``
+tables; every other byte remains as authored.
 """
 
 from __future__ import annotations
@@ -11,10 +11,10 @@ from __future__ import annotations
 import re
 import tomllib
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import yaml
 from yaml.nodes import MappingNode, ScalarNode
@@ -54,12 +54,21 @@ class PlannedFilesetRemoval:
     name: str
 
 
+@dataclass(frozen=True, order=True)
+class PlannedParameterRemoval:
+    """One newly-authored parameter orphaned by a planned Target removal."""
+
+    core_path: str
+    name: str
+
+
 @dataclass(frozen=True)
 class TargetRemovalPlan:
     """A deterministic, basis-validated set of acceptance-time removals."""
 
     targets: tuple[PlannedTargetRemoval, ...]
     filesets: tuple[PlannedFilesetRemoval, ...] = ()
+    parameters: tuple[PlannedParameterRemoval, ...] = ()
 
     @property
     def canonical_targets(self) -> tuple[str, ...]:
@@ -200,31 +209,43 @@ def _target_fileset_references(targets: Mapping[str, Any]) -> set[str]:
     }
 
 
-def _plan_orphaned_filesets(
+def _target_parameter_references(targets: Mapping[str, Any]) -> set[str]:
+    return {
+        name
+        for body in targets.values()
+        if isinstance(body, Mapping)
+        for name in fusesoc_registry.possible_target_parameter_names(body)
+    }
+
+
+_InputRemoval = TypeVar("_InputRemoval", PlannedFilesetRemoval, PlannedParameterRemoval)
+
+
+def _mapping_names(document: Mapping[str, Any], section: str) -> set[str]:
+    value = document.get(section)
+    return set(value) if isinstance(value, Mapping) else set()
+
+
+def _plan_orphaned_inputs(
     root: Path,
     removals: Iterable[PlannedTargetRemoval],
     baseline_cores: Mapping[str, bytes | None],
-) -> list[PlannedFilesetRemoval]:
-    if not baseline_cores:
-        return []
+    section: str,
+    target_references: Callable[[Mapping[str, Any]], set[str]],
+    removal_type: Callable[[str, str], _InputRemoval],
+) -> list[_InputRemoval]:
     by_core: dict[str, set[str]] = defaultdict(set)
     for removal in removals:
         by_core[removal.core_path].add(removal.name)
-    planned: list[PlannedFilesetRemoval] = []
+    planned: list[_InputRemoval] = []
     for relative, removed_names in by_core.items():
-        core_path = root / relative
-        current = _read_core_mapping(core_path.read_text(encoding="utf-8"), core_path)
         if relative not in baseline_cores:
             continue
+        core_path = root / relative
+        current = _read_core_mapping(core_path.read_text(encoding="utf-8"), core_path)
         baseline_content = baseline_cores[relative]
         baseline = (
             _read_core_mapping(baseline_content, core_path) if baseline_content is not None else {}
-        )
-        current_filesets = current.get("filesets")
-        baseline_filesets = baseline.get("filesets")
-        current_names = set(current_filesets) if isinstance(current_filesets, Mapping) else set()
-        baseline_names = (
-            set(baseline_filesets) if isinstance(baseline_filesets, Mapping) else set()
         )
         targets = current.get("targets")
         if not isinstance(targets, Mapping):
@@ -233,13 +254,47 @@ def _plan_orphaned_filesets(
         retained_targets = {
             name: body for name, body in targets.items() if name not in removed_names
         }
-        removed_references = _target_fileset_references(removed_targets)
-        retained_references = _target_fileset_references(retained_targets)
+        removed_references = target_references(removed_targets)
+        retained_references = target_references(retained_targets)
+        current_names = _mapping_names(current, section)
+        baseline_names = _mapping_names(baseline, section)
         for name in sorted(
             (current_names - baseline_names) & removed_references - retained_references
         ):
-            planned.append(PlannedFilesetRemoval(relative, name))
+            planned.append(removal_type(relative, name))
     return planned
+
+
+def plan_orphaned_target_input_removals(
+    project_root: Path | str,
+    plan: TargetRemovalPlan,
+    baseline_cores: Mapping[str, bytes | None],
+) -> TargetRemovalPlan:
+    """Add removals for newly-authored inputs orphaned by Target removal."""
+    root = Path(project_root).resolve()
+    filesets = _plan_orphaned_inputs(
+        root,
+        plan.targets,
+        baseline_cores,
+        "filesets",
+        _target_fileset_references,
+        PlannedFilesetRemoval,
+    )
+    parameters = _plan_orphaned_inputs(
+        root,
+        plan.targets,
+        baseline_cores,
+        "parameters",
+        _target_parameter_references,
+        PlannedParameterRemoval,
+    )
+    result = TargetRemovalPlan(
+        plan.targets,
+        tuple(sorted(filesets)),
+        tuple(sorted(parameters)),
+    )
+    _validate_plan_spans(root, result)
+    return result
 
 
 def plan_orphaned_fileset_removals(
@@ -247,12 +302,8 @@ def plan_orphaned_fileset_removals(
     plan: TargetRemovalPlan,
     baseline_cores: Mapping[str, bytes | None],
 ) -> TargetRemovalPlan:
-    """Add removals for newly-authored filesets orphaned by Target removal."""
-    root = Path(project_root).resolve()
-    filesets = _plan_orphaned_filesets(root, plan.targets, baseline_cores)
-    result = TargetRemovalPlan(plan.targets, tuple(sorted(filesets)))
-    _validate_plan_spans(root, result)
-    return result
+    """Compatibility wrapper for planning all orphaned Target inputs."""
+    return plan_orphaned_target_input_removals(project_root, plan, baseline_cores)
 
 
 def _line_start(text: str, index: int) -> int:
@@ -424,6 +475,7 @@ def _apply_replacements(text: str, replacements: Iterable[tuple[int, int, str]])
 def _validate_plan_spans(root: Path, plan: TargetRemovalPlan) -> None:
     by_core: dict[str, set[str]] = defaultdict(set)
     filesets_by_core: dict[str, set[str]] = defaultdict(set)
+    parameters_by_core: dict[str, set[str]] = defaultdict(set)
     tests_keys: set[str] = set()
     for removal in plan.targets:
         by_core[removal.core_path].add(removal.name)
@@ -431,18 +483,22 @@ def _validate_plan_spans(root: Path, plan: TargetRemovalPlan) -> None:
             tests_keys.add(removal.tests_key)
     for removal in plan.filesets:
         filesets_by_core[removal.core_path].add(removal.name)
+    for removal in plan.parameters:
+        parameters_by_core[removal.core_path].add(removal.name)
     for relative, names in by_core.items():
         path = root / relative
         text = path.read_text(encoding="utf-8")
         _core_replacements(text, names, path)
         if filesets_by_core[relative]:
             _core_replacements(text, filesets_by_core[relative], path, section="filesets")
+        if parameters_by_core[relative]:
+            _core_replacements(text, parameters_by_core[relative], path, section="parameters")
     if tests_keys:
         tests_path = resolve_checkout_project_dir(root) / "tests.toml"
         _tests_replacements(tests_path.read_text(encoding="utf-8"), tests_keys)
 
 
-def _validate_retained_filesets(root: Path, plan: TargetRemovalPlan) -> None:
+def _validate_retained_target_inputs(root: Path, plan: TargetRemovalPlan) -> None:
     for relative in sorted({item.core_path for item in plan.targets}):
         path = root / relative
         try:
@@ -458,12 +514,13 @@ def _validate_retained_filesets(root: Path, plan: TargetRemovalPlan) -> None:
                         f"finalized Target {name!r} in {path} is not a mapping"
                     )
                 fusesoc_registry.target_fileset_definitions(document, body)
+                fusesoc_registry.target_parameter_definitions(document, body)
         except FuseSocError as exc:
             raise TargetFinalizationError(f"finalized .core {path} is invalid: {exc}") from exc
 
 
 def _validate_finalized(root: Path, plan: TargetRemovalPlan) -> None:
-    _validate_retained_filesets(root, plan)
+    _validate_retained_target_inputs(root, plan)
     try:
         catalog = TargetCatalog.build(root)
     except FuseSocError as exc:
@@ -507,6 +564,7 @@ def apply_target_removals(project_root: Path | str, plan: TargetRemovalPlan) -> 
     root = Path(project_root).resolve()
     by_core: dict[str, set[str]] = defaultdict(set)
     filesets_by_core: dict[str, set[str]] = defaultdict(set)
+    parameters_by_core: dict[str, set[str]] = defaultdict(set)
     tests_keys: set[str] = set()
     for removal in plan.targets:
         by_core[removal.core_path].add(removal.name)
@@ -514,6 +572,8 @@ def apply_target_removals(project_root: Path | str, plan: TargetRemovalPlan) -> 
             tests_keys.add(removal.tests_key)
     for removal in plan.filesets:
         filesets_by_core[removal.core_path].add(removal.name)
+    for removal in plan.parameters:
+        parameters_by_core[removal.core_path].add(removal.name)
     changed: set[Path] = set()
     for relative, names in by_core.items():
         path = root / relative
@@ -522,6 +582,15 @@ def apply_target_removals(project_root: Path | str, plan: TargetRemovalPlan) -> 
         if filesets_by_core[relative]:
             replacements.extend(
                 _core_replacements(text, filesets_by_core[relative], path, section="filesets")
+            )
+        if parameters_by_core[relative]:
+            replacements.extend(
+                _core_replacements(
+                    text,
+                    parameters_by_core[relative],
+                    path,
+                    section="parameters",
+                )
             )
         path.write_text(
             _apply_replacements(text, replacements),

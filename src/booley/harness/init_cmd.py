@@ -75,6 +75,7 @@ from booley.harness.image_lifecycle import (
 from booley.harness.image_lifecycle import Intent as ImageLifecycleIntent
 from booley.harness.image_lifecycle import Status as ImageLifecycleStatus
 from booley.harness.image_lifecycle import reconcile as reconcile_images
+from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import (
     InitContext,
     StepResult,
@@ -136,6 +137,7 @@ from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
     resolve_project_dir,
 )
+from booley.runtime.session_issuance import SessionSpecInputs
 from booley.runtime.timefmt import detect_host_timezone
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
@@ -1212,20 +1214,6 @@ def _mask_source_dir() -> Path:
     return auth_token.config_dir() / "empty-mask"
 
 
-def _detect_claude_code() -> bool:
-    """Heuristic: Claude Code is installed if its config dir or CLI exists."""
-    if (Path.home() / ".claude").is_dir():
-        return True
-    return shutil.which("claude") is not None
-
-
-def _detect_codex() -> bool:
-    """Heuristic: Codex is installed if its config dir or CLI exists."""
-    if (Path.home() / ".codex").is_dir():
-        return True
-    return shutil.which("codex") is not None
-
-
 def _select_interactive_app(project_root: Path | None = None) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
@@ -1387,50 +1375,175 @@ def _devcontainer_is_tracked(project_root: Path) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-def _cleanup_unlicensed_relay(project_root: Path) -> bool:
-    """Remove deterministic relay leftovers when a reseed no longer has a profile."""
-    from booley.eda.provisioning.licensing.flexnet_docker import (
-        remove_relay,
-        resources_for_session,
-    )
-
-    resources = resources_for_session(str(project_root.resolve()))
-    exists = (
-        idk.container_exists(resources.relay_container)
-        or idk.network_exists(resources.private_network)
-        or idk.network_exists(resources.outbound_network)
-    )
-    if not exists:
-        return False
-    remove_relay(resources)
-    return True
-
-
 _NANGATE_PDK_NOT_REQUESTED = object()
 
 
-def _reconcile_issued_headless_runtime(
+@dataclass(frozen=True, slots=True)
+class _InteractiveSpecSources:
+    project_root: Path
+    app: str
+    nangate_pdk_root: Path | object
+    runtime_image_id: str | None
+    auth_source: Path | None
+    token_seed: Path | None
+    config_seed: Path | None
+    host_skills: tuple[tuple[str, str], ...]
+    mask_paths: tuple[str, ...]
+
+    def build(self, inputs: SessionSpecInputs) -> dict:
+        trusted_eda_mounts = list(inputs.trusted_eda_mounts)
+        if isinstance(self.nangate_pdk_root, Path):
+            trusted_eda_mounts.append(
+                (docker_mount_path(self.nangate_pdk_root), nangate_pdk.CONTAINER_ROOT)
+            )
+        return dc.build_devcontainer_spec(
+            self.app,
+            image=self.runtime_image_id or pi.project_sandbox_image(self.project_root),
+            project_dir_source=docker_mount_path(inputs.project_data_source),
+            project_id=dc.canonical_project_id(self.project_root),
+            auth_token_source=(docker_mount_path(self.auth_source) if self.auth_source else None),
+            config_seed_source=(docker_mount_path(self.config_seed) if self.config_seed else None),
+            mcp_start_command=dc.mcp_post_start_command(),
+            memory=_project_sandbox_memory(self.project_root),
+            forward_oauth_token=bool(auth_token.resolve_token(self.app)),
+            token_seed_source=(docker_mount_path(self.token_seed) if self.token_seed else None),
+            host_skills=list(self.host_skills),
+            trusted_eda_mounts=trusted_eda_mounts,
+            protected_devcontainer_source=docker_mount_path(
+                self.project_root.resolve() / ".devcontainer"
+            ),
+            fixed_container_env=dict(inputs.fixed_container_environment) or None,
+            mask_paths=list(self.mask_paths),
+            mask_source=docker_mount_path(_mask_source_dir()) if self.mask_paths else "",
+            local_timezone=detect_host_timezone(),
+        )
+
+
+def _interactive_spec_sources(
     ctx: InitContext,
-    issuance: object,
+    nangate_pdk_root: Path | object,
+    agent_app: str | None,
+    runtime_image_id: str | None,
+) -> _InteractiveSpecSources:
+    app = agent_app or _select_interactive_app(ctx.project_root)
+    return _InteractiveSpecSources(
+        project_root=ctx.project_root,
+        app=app,
+        nangate_pdk_root=nangate_pdk_root,
+        runtime_image_id=runtime_image_id,
+        auth_source=_resolve_auth_token_source(app),
+        token_seed=_resolve_token_seed_source(app),
+        config_seed=_resolve_config_seed_source(app),
+        host_skills=tuple(_resolve_host_skills_sources(ctx.project_root)),
+        mask_paths=tuple(_project_mask_paths(ctx.project_root)),
+    )
+
+
+def _report_interactive_state(
+    ctx: InitContext, plan: interactive_init.InteractiveInitPlan
+) -> None:
+    if plan.pending_details:
+        detail = "would reconcile " + ", ".join(plan.pending_details)
+        warn(detail)
+        ctx.record("interactive", "warn", detail)
+        return
+    skip("Interactive Mode specification, issuance, and exclusions are current")
+    ctx.record("interactive", "skip", "current")
+
+
+def _report_interactive_changes(
+    ctx: InitContext,
+    sources: _InteractiveSpecSources,
+    changes: interactive_init.InteractiveInitChanges,
+) -> None:
+    if not changes.changed:
+        skip("Interactive Mode specification, issuance, and exclusions are current")
+        ctx.record("interactive", "skip", "current")
+        return
+    if changes.issued:
+        path = dc.devcontainer_path(ctx.project_root)
+        ok(f"wrote {path.relative_to(ctx.project_root)} (app={sources.app})")
+        _report_seeded_mounts(
+            sources.app,
+            bool(sources.auth_source),
+            bool(sources.config_seed),
+            list(sources.host_skills),
+            list(sources.mask_paths),
+        )
+    if changes.relay_removed:
+        ok("removed orphaned license relay from unlicensed Project")
+    if changes.runtime_reconciled:
+        ok("reconciled stopped Session Runtime resources from their prior issuance")
+    if changes.exclusions_changed:
+        ok("excluded .devcontainer/, .booley_project/, .claude/ from git (info/exclude)")
+    notes = [f"app={sources.app}"]
+    if changes.issuance.license_profile is not None:
+        notes.append("license-relay-image:present")
+    ctx.record("interactive", "ok", ", ".join(notes))
+
+
+def _interactive_precondition_failed(
+    ctx: InitContext,
+    nangate_pdk_root: Path | object | None,
 ) -> bool:
-    """Reconcile prior stopped runtime state and translate errors into init results."""
-    from booley.runtime import session_runtime
+    if _devcontainer_is_tracked(ctx.project_root):
+        err(".devcontainer/ is tracked by git — refusing to clobber it")
+        info("  Interactive Mode is unavailable for this repo until it is removed")
+        ctx.record("interactive", "err", "tracked .devcontainer")
+        return True
+    project_data_missing = (
+        "BOOLEY_PROJECT_DIR" not in os.environ
+        and not (ctx.project_root / ".booley_project").is_dir()
+    )
+    if ctx.check_only and project_data_missing:
+        warn("would seed the Session Runtime after creating the private project directory")
+        ctx.record("interactive", "warn", "project directory would be created first")
+        return True
+    if nangate_pdk_root is None:
+        err("Session Runtime not seeded because the Nangate45 setup download failed")
+        ctx.record("interactive", "err", "Nangate45 cache unavailable")
+        return True
+    return False
+
+
+def _inspect_interactive_plan(
+    ctx: InitContext,
+    request: interactive_init.InteractiveInitRequest,
+) -> interactive_init.InteractiveInitPlan | None:
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
+    from booley.runtime import session_issuance, session_runtime
 
     try:
-        reconciled = session_runtime.reconcile_stopped_headless_runtime(
-            ctx.project_root,
-            issuance,
-        )
+        return interactive_init.inspect(request)
+    except (session_issuance.RuntimeSpecError, RelayDockerError) as exc:
+        detail = str(exc)
+        err(f"commercial EDA authorization failed closed: {detail}")
     except session_runtime.SessionError as exc:
-        err(f"could not reconcile stopped Session Runtime: {exc}")
-        ctx.record("interactive", "err", str(exc))
-        return False
-    if reconciled:
-        ok("reconciled stopped Session Runtime resources from their prior issuance")
-    return True
+        detail = str(exc)
+        err(f"could not inspect stopped Session Runtime: {detail}")
+    ctx.record("interactive", "err", detail)
+    return None
 
 
-def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
+def _apply_interactive_plan(
+    ctx: InitContext,
+    plan: interactive_init.InteractiveInitPlan,
+) -> interactive_init.InteractiveInitChanges | None:
+    from booley.runtime import session_issuance, session_runtime
+
+    try:
+        return interactive_init.apply(plan, force=ctx.force)
+    except session_issuance.RuntimeSpecError as exc:
+        detail = str(exc)
+        err(f"could not issue Session Runtime specification: {detail}")
+    except session_runtime.SessionError as exc:
+        detail = str(exc)
+        err(f"could not reconcile stopped Session Runtime: {detail}")
+    ctx.record("interactive", "err", detail)
+    return None
+
+
+def _step_interactive(
     ctx: InitContext,
     *,
     nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
@@ -1439,133 +1552,26 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
     ctx.step_banner("Interactive Mode (Reopen in Container)")
-
-    if (
-        ctx.check_only
-        and "BOOLEY_PROJECT_DIR" not in os.environ
-        and not (ctx.project_root / ".booley_project").is_dir()
-    ):
-        warn("would seed the Session Runtime after creating the private project directory")
-        ctx.record("interactive", "warn", "project directory would be created first")
+    if _interactive_precondition_failed(ctx, nangate_pdk_root):
         return
 
-    if _devcontainer_is_tracked(ctx.project_root):
-        err(".devcontainer/ is tracked by git — refusing to clobber it")
-        info("  Interactive Mode is unavailable for this repo until it is removed")
-        ctx.record("interactive", "err", "tracked .devcontainer")
-        return
-
-    if nangate_pdk_root is None:
-        err("Session Runtime not seeded because the Nangate45 setup download failed")
-        ctx.record("interactive", "err", "Nangate45 cache unavailable")
-        return
-
-    app = agent_app or _select_interactive_app(ctx.project_root)
-    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
-    from booley.runtime import session_issuance
-
-    auth_source = _resolve_auth_token_source(app)
-    token_seed = _resolve_token_seed_source(app)
-    config_seed = _resolve_config_seed_source(app)
-    host_skills = _resolve_host_skills_sources(ctx.project_root)
-    mask_paths = _project_mask_paths(ctx.project_root)
-    if mask_paths and not ctx.check_only:
-        # The mask binds' empty source dir must exist before `docker run`:
-        # --mount (unlike -v) hard-fails on a missing bind source. Created
-        # here, not in the spec builder, so build_devcontainer_spec stays pure.
-        _mask_source_dir().mkdir(parents=True, exist_ok=True)
-
-    def build_spec(inputs: session_issuance.SessionSpecInputs) -> dict:
-        trusted_eda_mounts = list(inputs.trusted_eda_mounts)
-        if isinstance(nangate_pdk_root, Path):
-            trusted_eda_mounts.append(
-                (docker_mount_path(nangate_pdk_root), nangate_pdk.CONTAINER_ROOT)
-            )
-        fixed_container_env = dict(inputs.fixed_container_environment) or None
-        return dc.build_devcontainer_spec(
-            app,
-            image=runtime_image_id or pi.project_sandbox_image(ctx.project_root),
-            project_dir_source=docker_mount_path(inputs.project_data_source),
-            project_id=dc.canonical_project_id(ctx.project_root),
-            auth_token_source=docker_mount_path(auth_source) if auth_source else None,
-            config_seed_source=docker_mount_path(config_seed) if config_seed else None,
-            mcp_start_command=dc.mcp_post_start_command(),
-            memory=_project_sandbox_memory(ctx.project_root),
-            forward_oauth_token=bool(auth_token.resolve_token(app)),
-            token_seed_source=docker_mount_path(token_seed) if token_seed else None,
-            host_skills=host_skills,
-            trusted_eda_mounts=trusted_eda_mounts,
-            protected_devcontainer_source=docker_mount_path(
-                ctx.project_root.resolve() / ".devcontainer"
-            ),
-            fixed_container_env=fixed_container_env,
-            mask_paths=mask_paths,
-            mask_source=docker_mount_path(_mask_source_dir()) if mask_paths else "",
-            local_timezone=detect_host_timezone(),
-        )
-
-    if ctx.check_only:
-        try:
-            prepared = session_issuance.preview(
-                ctx.project_root,
-                build_spec,
-                expected_image_id=runtime_image_id,
-            )
-        except (session_issuance.RuntimeSpecError, RelayDockerError) as exc:
-            err(f"commercial EDA authorization failed closed: {exc}")
-            ctx.record("interactive", "err", str(exc))
-            return
-        licensed = prepared.inputs.license_profile_name is not None
-        warn(
-            "would write .devcontainer/devcontainer.json + exclude Booley files "
-            "and run outputs (build/, util/)"
-        )
-        if licensed:
-            warn("would build the pinned booley-flexnet-relay image if absent")
-        if host_skills:
-            warn(f"would mount {len(host_skills)} host skill(s) read-only into the sandbox")
-        if mask_paths:
-            warn(
-                f"would mask {len(mask_paths)} path(s) from the container: {', '.join(mask_paths)}"
-            )
-        ctx.record("interactive", "warn", f"app={app} (check-only)")
-        return
-
-    try:
-        issuance = session_issuance.issue(
-            ctx.project_root,
-            build_spec,
-            expected_image_id=runtime_image_id,
-            force_dependencies=ctx.force,
-        )
-    except session_issuance.RuntimeSpecError as exc:
-        err(f"could not issue Session Runtime specification: {exc}")
-        ctx.record("interactive", "err", str(exc))
-        return
-    licensed = issuance.license_profile is not None
-    if not licensed and shutil.which("docker") and _cleanup_unlicensed_relay(ctx.project_root):
-        ok("removed orphaned license relay from unlicensed Project")
-    path = dc.devcontainer_path(ctx.project_root)
-    if not _reconcile_issued_headless_runtime(ctx, issuance):
-        return
-    ok(f"wrote {path.relative_to(ctx.project_root)} (app={app})")
-    _report_seeded_mounts(app, bool(auth_source), bool(config_seed), host_skills, mask_paths)
-    # Only Booley-owned top-level artifacts. A bare `build`/`util` entry would
-    # match ANY dir of that name at any depth (git exclude semantics), silently
-    # swallowing files in repos that own those names (Ibex owns util/*.py) —
-    # SETUP-20. Booley's own Flow and Specialist outputs live under .booley_project/.runtime/
-    # (covered by the .booley_project entry; asic_synthesize is redirected there
-    # by SETUP-27), so we no longer need to hide root build/ or util/.
-    add_git_excludes(
-        ctx.project_root,
-        [".devcontainer", ".booley_project", ".claude"],
+    sources = _interactive_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
+    request = interactive_init.InteractiveInitRequest(
+        project_root=ctx.project_root,
+        build_spec=sources.build,
+        expected_image_id=runtime_image_id,
+        mask_source=_mask_source_dir() if sources.mask_paths else None,
     )
-    ok("excluded .devcontainer/, .booley_project/, .claude/ from git (info/exclude)")
-
-    notes = [f"app={app}"]
-    if licensed:
-        notes.append("license-relay-image:present")
-    ctx.record("interactive", "ok", ", ".join(notes))
+    plan = _inspect_interactive_plan(ctx, request)
+    if plan is None:
+        return
+    if ctx.check_only or (not plan.pending_details and not ctx.force):
+        _report_interactive_state(ctx, plan)
+        return
+    changes = _apply_interactive_plan(ctx, plan)
+    if changes is None:
+        return
+    _report_interactive_changes(ctx, sources, changes)
 
 
 # ---------------------------------------------------------------------------

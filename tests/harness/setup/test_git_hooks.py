@@ -193,6 +193,174 @@ class TestProjectCommitMsgHookVendoring:
         assert hook.is_file(), "commit-msg hook not installed"
         assert b"\r" not in hook.read_bytes(), "hook written with CRLF (D0a)"
 
+    def test_installed_hook_rejects_compound_attribution_without_rewriting(
+        self, tmp_path: Path, monkeypatch, request: pytest.FixtureRequest
+    ):
+        """The vendored hook rejects before either attribution form is altered."""
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import reset_cache
+
+        repo = tmp_path / "project"
+        project_dir = tmp_path / "project-state"
+        _run_git(tmp_path, "init", "-q", "-b", "main", str(repo))
+        _run_git(repo, "config", "user.name", "T")
+        _run_git(repo, "config", "user.email", "t@example.test")
+        (repo / ".gitignore").write_text(".booley_project/\n", encoding="utf-8")
+        config = repo / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text(
+            '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n',
+            encoding="utf-8",
+        )
+        (repo / "baseline.txt").write_text("baseline\n", encoding="utf-8")
+        _run_git(repo, "add", ".gitignore", "baseline.txt")
+        _run_git(repo, "commit", "-qm", "baseline")
+        baseline = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        reset_cache()
+        request.addfinalizer(reset_cache)
+        _step_project_git_hooks(_ctx(repo))
+
+        (repo / "change.txt").write_text("change\n", encoding="utf-8")
+        _run_git(repo, "add", "change.txt")
+        original = (
+            "fix(core): repair edge case\n\n"
+            "Useful rationale.\n\n"
+            "Co-Authored-By: Person <person@example.test>\n"
+            "Generated with assistant-identity\n"
+        )
+        message = tmp_path / "message.txt"
+        message.write_text(original, encoding="utf-8")
+
+        result = _run_git(repo, "commit", "-F", str(message), check=False)
+
+        assert result.returncode != 0
+        assert _run_git(repo, "rev-parse", "HEAD").stdout.strip() == baseline
+        assert (repo / ".git" / "COMMIT_EDITMSG").read_text(encoding="utf-8") == original
+        assert "assistant-identity" not in result.stderr
+        assert "person@example.test" not in result.stderr
+        assert "remove" in result.stderr.lower()
+        assert "retry" in result.stderr.lower()
+
+    def test_check_only_reports_current_installation_without_mutation(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import reset_cache
+
+        _git_init(tmp_path)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        reset_cache()
+        _step_project_git_hooks(_ctx(tmp_path))
+        before = {
+            path: (path.read_bytes(), path.stat().st_mode)
+            for path in (tmp_path / ".booley_project" / "hooks").iterdir()
+        }
+        before.update(
+            {
+                path: (path.read_bytes(), path.stat().st_mode)
+                for path in (
+                    tmp_path / ".git" / "hooks" / "commit-msg",
+                    tmp_path / ".git" / "hooks" / "pre-push",
+                )
+            }
+        )
+
+        ctx = _ctx(tmp_path, check_only=True)
+        _step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "skip"
+        assert ctx.results[-1].detail == "current"
+        assert {path: (path.read_bytes(), path.stat().st_mode) for path in before} == before
+
+    def test_check_only_reports_missing_vendored_script_without_creating_it(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import reset_cache
+
+        _git_init(tmp_path)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        reset_cache()
+        _step_project_git_hooks(_ctx(tmp_path))
+        missing = tmp_path / ".booley_project" / "hooks" / "commit_msg_utils.py"
+        missing.unlink()
+
+        ctx = _ctx(tmp_path, check_only=True)
+        _step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "warn"
+        assert "commit_msg_utils.py" in ctx.results[-1].detail
+        assert not missing.exists()
+
+    def test_check_only_reports_stale_helper_without_overwriting_it(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import reset_cache
+
+        _git_init(tmp_path)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        reset_cache()
+        _step_project_git_hooks(_ctx(tmp_path))
+        helper = tmp_path / ".booley_project" / "hooks" / "boundary.py"
+        helper.write_text("stale helper\n", encoding="utf-8")
+
+        ctx = _ctx(tmp_path, check_only=True)
+        _step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "warn"
+        assert "boundary.py" in ctx.results[-1].detail
+        assert helper.read_text(encoding="utf-8") == "stale helper\n"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
+    def test_check_only_reports_non_executable_delegator_without_chmod(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import reset_cache
+
+        _git_init(tmp_path)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        reset_cache()
+        _step_project_git_hooks(_ctx(tmp_path))
+        hook = tmp_path / ".git" / "hooks" / "pre-push"
+        hook.chmod(0o644)
+
+        ctx = _ctx(tmp_path, check_only=True)
+        _step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "warn"
+        assert "pre-push" in ctx.results[-1].detail
+        assert hook.stat().st_mode & 0o111 == 0
+
+    def test_check_only_previews_foreign_hook_backup_without_writing(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import reset_cache
+
+        _git_init(tmp_path)
+        (tmp_path / ".booley_project").mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        reset_cache()
+        hook = tmp_path / ".git" / "hooks" / "pre-push"
+        hook.write_text("#!/bin/sh\necho foreign\n", encoding="utf-8")
+
+        ctx = _ctx(tmp_path, check_only=True)
+        _step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "warn"
+        assert "back up pre-push" in ctx.results[-1].detail
+        assert hook.read_text(encoding="utf-8") == "#!/bin/sh\necho foreign\n"
+        assert not hook.with_name("pre-push.pre-booley").exists()
+
 
 class TestInstalledPrePushGuard:
     def test_external_runtime_alias_cannot_hide_tracked_project_state(

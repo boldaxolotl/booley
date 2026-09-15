@@ -1,6 +1,6 @@
 """Tests for git_utils.py — focused on untested functions and real-git integration.
 
-Existing test_utils.py covers the re-exported scope helpers (expand_scope_globs,
+Existing test_utils.py covers the Scope and Git helpers (expand_scope_globs,
 scope_matches_file, is_scope_unknown, commit_scope with mocks).  This file adds:
   - git_run basics
   - commit_scope integration with a real tmp git repo (main-worktree guard,
@@ -15,13 +15,14 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.core.scope_matching import has_glob_chars
 from booley.harness.blocking import BlockingError
 from booley.runtime.git import (
     BOOLEY_EXCLUDE_HEADER,
     _git_common_dir,
-    _has_glob_chars,
     add_git_excludes,
     commit_scope,
+    git_excludes_pending,
     git_run,
 )
 
@@ -61,22 +62,22 @@ def _make_worktree(repo: Path, wt_path: Path, branch: str = "test-branch") -> Pa
 
 
 # ===========================================================================
-# _has_glob_chars
+# has_glob_chars
 # ===========================================================================
 
 
 class TestHasGlobChars:
     def test_plain_path(self):
-        assert not _has_glob_chars("rtl/foo.sv")
+        assert not has_glob_chars("rtl/foo.sv")
 
     def test_star(self):
-        assert _has_glob_chars("rtl/*.sv")
+        assert has_glob_chars("rtl/*.sv")
 
     def test_question_mark(self):
-        assert _has_glob_chars("rtl/foo?.sv")
+        assert has_glob_chars("rtl/foo?.sv")
 
     def test_bracket(self):
-        assert _has_glob_chars("rtl/foo[12].sv")
+        assert has_glob_chars("rtl/foo[12].sv")
 
 
 # ===========================================================================
@@ -311,6 +312,19 @@ def _is_ignored(wt: Path, rel: str) -> bool:
 
 
 class TestAddGitExcludes:
+    def test_pending_inspection_is_read_only_and_tracks_reconciliation(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        exclude = repo / ".git" / "info" / "exclude"
+        before = exclude.read_bytes()
+
+        assert git_excludes_pending(repo, [".devcontainer", ".booley_project"])
+        assert exclude.read_bytes() == before
+
+        add_git_excludes(repo, [".devcontainer", ".booley_project"])
+        current = exclude.read_bytes()
+        assert not git_excludes_pending(repo, [".devcontainer", ".booley_project"])
+        assert exclude.read_bytes() == current
+
     def test_main_worktree_excludes_and_is_honored(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
 

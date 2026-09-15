@@ -33,6 +33,7 @@ from booley.core.boundary import (
     as_str,
     require_bool,
 )
+from booley.core.build_paths import work_root_for
 from booley.evidence.fields import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_RECIPE_SNAPSHOT_DETAIL,
@@ -377,7 +378,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     ) -> WorkUnitPlan:
         """Project one resolved FPGA recipe into the shared plan contract."""
         root = Path(self.args.work_dir)
-        work_root = edam_layer.work_root_for(root, "fpga", target)
+        work_root = work_root_for(root, "fpga", target)
         handle = self._target_handle(target)
         return WorkUnitPlan(
             unit_id=stable_unit_id(
@@ -571,7 +572,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     def _resolve_fpga_target(self, target: str, *, build_root: Path | None) -> Any:
         """Resolve one Target at the selected candidate or baseline revision."""
         work_dir = Path(self.args.work_dir)
-        selected_root = build_root or edam_layer.work_root_for(
+        selected_root = build_root or work_root_for(
             work_dir,
             self.name,
             target,
@@ -608,7 +609,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         """Materialize the validated Vivado recipe and return its executable command."""
         work_dir = Path(self.args.work_dir)
         recipe = self._fpga_recipe_for_execution(target)
-        work_root = edam_layer.work_root_for(work_dir, "fpga", target)
+        work_root = work_root_for(work_dir, "fpga", target)
         edam = self._materialize_fpga_project(recipe, work_root)
         fingerprint = fpga_cache.input_fingerprint(
             recipe.resolved,
@@ -867,7 +868,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         """Point a cache hit at the previous successful run log when it exists."""
         if Path(self.args.work_dir) != getattr(self, "_project_root", None):
             return
-        path = edam_layer.work_root_for(self.args.work_dir, self.name, target) / "run.log"
+        path = work_root_for(self.args.work_dir, self.name, target) / "run.log"
         if path.is_file():
             metrics.log_path = posix_relpath(path, self.args.work_dir)
 
@@ -883,7 +884,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         """
         from booley.flows.run_log import write_run_log
 
-        log_dir = edam_layer.work_root_for(self.args.work_dir, self.name, target)
+        log_dir = work_root_for(self.args.work_dir, self.name, target)
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = write_run_log(log_dir, text)

@@ -26,6 +26,7 @@ from booley.config.project_config import (
     lookup_target_section,
 )
 from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
+from booley.core.build_paths import work_root_for
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.display import format_flow_display_label
@@ -833,6 +834,15 @@ def _build_display_lines(
     return lines
 
 
+def _completed_display_label(
+    targets: list[str],
+    results: list[TargetResult],
+) -> str | None:
+    """Describe the test scope observed by a completed Simulation Flow."""
+    tests = [test.name for result in results for test in result.tests]
+    return format_flow_display_label(targets, tests=tests if tests else None)
+
+
 def _target_display_lines(result: TargetResult) -> list[str]:
     """Build the final display block for one completed Target."""
     icon = "?" if result.inconclusive else ("✓" if result.passed else "✗")
@@ -1430,7 +1440,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         revision: str | None,
     ) -> WorkUnitPlan:
         """Normalize one resolved Simulation command into the shared plan model."""
-        build_root = edam_layer.work_root_for(
+        build_root = work_root_for(
             self.args.work_dir,
             "sim",
             target,
@@ -1819,6 +1829,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
             criterion_met=overall_pass,
             display_lines=_build_display_lines(all_results, total_elapsed),
+            display_label=_completed_display_label(targets, all_results),
             detail=detail,
             report_text=report_text,
         )
@@ -1954,7 +1965,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if len(command) == 1 and command[0].startswith("ERROR:"):
             raise ValueError(command[0])
         sources, constraints = normalize_plan_inputs(inspection.inputs, self.args.work_dir)
-        build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
+        build_root = work_root_for(self.args.work_dir, "sim", target)
         recipe = {
             "environment_fingerprint": plan_value_fingerprint(self._target_sim_env(target)),
             "flow_options": inspection.flow_options,
@@ -2041,7 +2052,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             ),
             expected_artifacts=(
                 normalize_plan_path(
-                    edam_layer.work_root_for(
+                    work_root_for(
                         self.args.work_dir,
                         "sim",
                         "standalone",
@@ -2137,7 +2148,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _run_one_elab_only(self, target: str) -> ElabOnlyTargetResult:
         """Run one canonical untraced Simulation build and archive its output."""
         started = time.monotonic()
-        work_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
+        work_root = work_root_for(self.args.work_dir, "sim", target)
         self._open_run_log(target, work_root)
         prepared = self._prepare_elab_only_target(target, started)
         if isinstance(prepared, ElabOnlyTargetResult):
@@ -2216,9 +2227,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             log_dir = invocation_dir / "artifacts" / _artifact_path_component(f"sim_{target}")
         else:
             token = new_attempt_token()[:12]
-            log_dir = edam_layer.work_root_for(self.args.work_dir, "sim", target) / (
-                f"elab-only-{token}"
-            )
+            log_dir = work_root_for(self.args.work_dir, "sim", target) / f"elab-only-{token}"
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             path = write_run_log(log_dir, output, max_bytes=None)
@@ -2334,7 +2343,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return self._dry_run_result(self._flow_plan)
 
     def _elab_only_dry_command(self, target: str) -> list[str]:
-        build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
+        build_root = work_root_for(self.args.work_dir, "sim", target)
         try:
             handle = self._target_handle(target)
             setup = fusesoc_registry.setup_command_for_handle(

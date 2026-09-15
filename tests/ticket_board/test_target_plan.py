@@ -374,6 +374,104 @@ def test_new_core_can_author_planned_target_fileset(repository: Path) -> None:
     assert analysis.authored_filesets == ("new.core#tb_new",)
 
 
+def test_new_core_can_author_target_referenced_parameter(repository: Path) -> None:
+    path = repository / "new.core"
+    path.write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:new:1.0\n"
+        "parameters:\n"
+        "  ENABLE_ZBB: {datatype: int, paramtype: vlogparam, default: 0}\n"
+        "targets:\n"
+        "  lint_new: {flow: lint, parameters: [ENABLE_ZBB=1]}\n",
+        encoding="utf-8",
+    )
+
+    analysis = _analyze(_persistent_fields(), repository, ((repository, (path.name,)),))
+
+    assert analysis.authored_parameters == ("new.core#ENABLE_ZBB",)
+
+
+@pytest.mark.parametrize("baseline_parameters", ["", "parameters: {}\n"])
+def test_existing_core_can_add_parameter_section_or_fill_empty_mapping(
+    repository: Path, baseline_parameters: str
+) -> None:
+    path = repository / "toy.core"
+    baseline = path.read_text(encoding="utf-8")
+    if baseline_parameters:
+        baseline = baseline.replace("targets:\n", baseline_parameters + "targets:\n")
+        path.write_text(baseline, encoding="utf-8")
+        _git(repository, "add", "toy.core")
+        _git(repository, "commit", "-qm", "add empty parameters")
+    declaration = "parameters:\n  ENABLE_ZBB: {datatype: int, paramtype: vlogparam, default: 0}\n"
+    if baseline_parameters:
+        current = baseline.replace(baseline_parameters, declaration)
+    else:
+        current = baseline.replace("targets:\n", declaration + "targets:\n")
+    path.write_text(
+        current + "  lint_new: {flow: lint, parameters: [ENABLE_ZBB=1]}\n",
+        encoding="utf-8",
+    )
+
+    analysis = _analyze(_persistent_fields(), repository, ((repository, (path.name,)),))
+
+    assert analysis.authored_parameters == ("toy.core#ENABLE_ZBB",)
+
+
+def test_parameter_reference_preserves_space_containing_value_and_append(repository: Path) -> None:
+    path = repository / "toy.core"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(
+            "targets:\n",
+            "parameters:\n"
+            "  MESSAGE: {datatype: str, paramtype: vlogdefine, default: quiet}\n"
+            "targets:\n",
+        )
+        + "  lint_new:\n"
+        + "    flow: lint\n"
+        + "    parameters_append: ['tool_verilator ? (MESSAGE=hello world)']\n",
+        encoding="utf-8",
+    )
+
+    analysis = _analyze(_persistent_fields(), repository, ((repository, (path.name,)),))
+
+    assert analysis.authored_parameters == ("toy.core#MESSAGE",)
+
+
+def test_unreferenced_added_parameter_is_rejected(repository: Path) -> None:
+    _add_candidate(repository)
+    path = repository / "toy.core"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "targets:\n",
+            "parameters:\n  UNUSED: {datatype: int, paramtype: vlogparam, default: 0}\ntargets:\n",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TargetPlanValidationError, match="not referenced"):
+        _analyze(_replacement_fields(), repository, ((repository, (path.name,)),))
+
+
+def test_conditional_parameter_declaration_key_is_rejected(repository: Path) -> None:
+    path = repository / "toy.core"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(
+            "targets:\n",
+            "parameters:\n"
+            "  'tool_verilator ? (ENABLE_ZBB)': "
+            "{datatype: int, paramtype: vlogparam, default: 0}\n"
+            "targets:\n",
+        )
+        + "  lint_new: {flow: lint, parameters: [ENABLE_ZBB=1]}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TargetPlanValidationError, match="conditional key"):
+        _analyze(_persistent_fields(), repository, ((repository, (path.name,)),))
+
+
 def test_added_fileset_cannot_resolve_dangling_baseline_reference(repository: Path) -> None:
     path = repository / "toy.core"
     baseline = path.read_text(encoding="utf-8").replace(
@@ -417,6 +515,33 @@ def test_existing_fileset_cannot_be_modified(repository: Path) -> None:
 
     with pytest.raises(TargetPlanValidationError, match="modify or delete existing filesets"):
         _analyze(_replacement_fields(), repository, ((repository, (path.name,)),))
+
+
+@pytest.mark.parametrize("change", ["modify", "delete"])
+def test_existing_parameter_cannot_be_modified_or_deleted(repository: Path, change: str) -> None:
+    path = repository / "toy.core"
+    baseline = path.read_text(encoding="utf-8").replace(
+        "targets:\n",
+        "parameters:\n  WIDTH: {datatype: int, paramtype: vlogparam, default: 8}\ntargets:\n",
+    )
+    path.write_text(baseline, encoding="utf-8")
+    _git(repository, "add", "toy.core")
+    _git(repository, "commit", "-qm", "add baseline parameter")
+    changed = (
+        baseline.replace("default: 8", "default: 16")
+        if change == "modify"
+        else baseline.replace(
+            "parameters:\n  WIDTH: {datatype: int, paramtype: vlogparam, default: 8}\n",
+            "",
+        )
+    )
+    path.write_text(
+        changed + "  lint_new: {flow: lint, parameters: [WIDTH]}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TargetPlanValidationError, match="modify or delete existing parameters"):
+        _analyze(_persistent_fields(), repository, ((repository, (path.name,)),))
 
 
 def test_new_core_rejects_unowned_top_level_build_content(repository: Path) -> None:
@@ -674,24 +799,25 @@ def test_source_boundaries_handle_absence_and_decode_failures() -> None:
 
 
 def test_test_table_policy_rejects_shared_changed_and_unplanned_tables() -> None:
-    empty = ((), (), ())
-    shared = target_plan._SurfaceDelta(*empty, ("test_lists",), (), ())
+    shared = target_plan._SurfaceDelta(test_tables=target_plan._ChangeSet(added=("test_lists",)))
     catalog = object()
     with pytest.raises(TargetPlanValidationError, match="shared"):
         target_plan._validate_test_tables(shared, None, frozenset(), catalog)
 
-    modified = target_plan._SurfaceDelta(*empty, (), ("existing",), ())
+    modified = target_plan._SurfaceDelta(
+        test_tables=target_plan._ChangeSet(modified=("existing",))
+    )
     with pytest.raises(TargetPlanValidationError, match="modify or delete"):
         target_plan._validate_test_tables(modified, None, frozenset(), catalog)
 
-    authored = target_plan._SurfaceDelta(*empty, ("future",), (), ())
+    authored = target_plan._SurfaceDelta(test_tables=target_plan._ChangeSet(added=("future",)))
     with pytest.raises(TargetPlanValidationError, match="target_plan omission"):
         target_plan._validate_test_tables(authored, None, frozenset(), catalog)
 
 
 def test_surface_coverage_reports_provider_and_plan_mismatches() -> None:
     definition = target_plan._TargetDefinition("acme:lib:toy:1.0#future", "future", {})
-    delta = target_plan._SurfaceDelta((definition,), (), (), (), (), ())
+    delta = target_plan._SurfaceDelta(targets=target_plan._ChangeSet(added=(definition,)))
     with pytest.raises(TargetPlanValidationError, match="provider Targets changed"):
         target_plan._validate_surface_coverage(
             delta, None, frozenset({"acme:lib:toy:1.0#missing"})

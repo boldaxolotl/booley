@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
+from booley.core.build_paths import work_root_for
 from booley.flows import edam as edam_layer
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import begin_run_log, write_run_log
@@ -43,6 +44,12 @@ from booley.flows.sim.config import (
     resolve_trace_files,
 )
 from booley.flows.sim.runner import resolve_sim_sentinels
+from booley.flows.sim.runtime_inputs import (
+    RuntimeInputError,
+    declared_runtime_inputs,
+    materialize_runtime_inputs,
+    preview_runtime_inputs,
+)
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
 from booley.fusesoc import fusesoc_registry, selftest_overlay
@@ -227,17 +234,19 @@ class SimulationExecution:
                 else _pre_sim_failure
             )
             return failure(handle, attempt, pre_sim, started)
-        trace_policy = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
-        compatibility_policy = CompatibilityArtifactPolicy.capture(attempt.prepared.build_root)
-        executed = self._execute_adapter(attempt)
+        trace_policy, compatibility_policy = _artifact_policies(handle, attempt)
+        try:
+            executed = self._execute_adapter(handle, attempt)
+        except RuntimeInputError as exc:
+            return _runtime_input_failure(handle, attempt, pre_sim, str(exc), started)
         process = executed.process
         processing_started = time.monotonic()
         build = classify_build_outcome(process, attempt.identity.attempt_token)
-        if build.failure_kind == "infrastructure":
-            return _infrastructure_failure(handle, attempt, build, pre_sim, started)
-        adapter_error = _adapter_attempt_error(executed, build)
-        if adapter_error is not None:
-            return _transport_failure(handle, attempt, build, pre_sim, adapter_error, started)
+        early_failure = _adapter_failure_outcome(
+            handle, attempt, executed, build, pre_sim, started
+        )
+        if early_failure is not None:
+            return early_failure
         adapter = None if build.design_failed else executed.result
         try:
             return self._completed_group(
@@ -255,14 +264,22 @@ class SimulationExecution:
         except SimulationArtifactPersistenceError as exc:
             return _artifact_failure(handle, attempt, build, pre_sim, str(exc), started)
 
-    def _execute_adapter(self, attempt: _Attempt) -> AdapterAttemptOutcome:
+    def _execute_adapter(self, handle: TargetHandle, attempt: _Attempt) -> AdapterAttemptOutcome:
         request = AdapterAttemptRequest(
             attempt.command,
             attempt.wrapper_timeout_s,
             attempt.identity,
             attempt.prepared.build_root,
         )
-        return execute_adapter_attempt(self._invoke, request)
+        run_cwd = Path(attempt.work.run_cwd)
+        if not run_cwd.is_absolute():
+            run_cwd = handle.project_root / run_cwd
+        with materialize_runtime_inputs(
+            attempt.prepared.build_root,
+            run_cwd,
+            attempt.work.runtime_inputs,
+        ):
+            return execute_adapter_attempt(self._invoke, request)
 
     def _prepare_attempt(self, handle: TargetHandle, test_names: tuple[str, ...]) -> _Attempt:
         started = time.monotonic()
@@ -315,7 +332,7 @@ class SimulationExecution:
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
         policy = _build_policy(self._options.trace)
-        build_root = edam_layer.work_root_for(
+        build_root = work_root_for(
             handle.project_root,
             "sim",
             handle.selector,
@@ -413,7 +430,7 @@ class SimulationExecution:
     ) -> tuple[str, ...]:
         root = handle.project_root
         policy = _build_policy(self._options.trace)
-        build_root = edam_layer.work_root_for(
+        build_root = work_root_for(
             root,
             "sim",
             handle.selector,
@@ -593,6 +610,7 @@ def prepare_simulation_work(
         trace_scope=prepared.toplevel,
         trace_args=tuple(resolve_trace_args(root)),
         trace_files=tuple(resolve_trace_files(root)),
+        runtime_inputs=declared_runtime_inputs(prepared.resolved),
         pass_sentinels=tuple(passes),
         fail_sentinels=tuple(fails),
         top=prepared.toplevel,
@@ -629,6 +647,7 @@ def _preview_work(
         trace_scope=inspection.toplevel,
         trace_args=tuple(resolve_trace_args(root)),
         trace_files=tuple(resolve_trace_files(root)),
+        runtime_inputs=preview_runtime_inputs(getattr(inspection, "inputs", ())),
         pass_sentinels=tuple(passes),
         fail_sentinels=tuple(fails),
         top=inspection.toplevel,
@@ -689,6 +708,15 @@ def _pre_sim_failure(
     return _group_outcome(handle, attempt, tests, None, evidence, (), started)
 
 
+def _artifact_policies(
+    handle: TargetHandle,
+    attempt: _Attempt,
+) -> tuple[TraceArtifactPolicy | None, CompatibilityArtifactPolicy]:
+    trace = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
+    compatibility = CompatibilityArtifactPolicy.capture(attempt.prepared.build_root)
+    return trace, compatibility
+
+
 def _pre_sim_infrastructure_failure(
     handle: TargetHandle,
     attempt: _Attempt,
@@ -716,6 +744,22 @@ def _infrastructure_failure(
     return _error_outcome(handle, attempt, build, pre_sim, failure, started)
 
 
+def _adapter_failure_outcome(
+    handle: TargetHandle,
+    attempt: _Attempt,
+    executed: AdapterAttemptOutcome,
+    build: BuildOutcome,
+    pre_sim: PreSimEvidence | None,
+    started: float,
+) -> SimulationTargetOutcome | None:
+    if build.failure_kind == "infrastructure":
+        return _infrastructure_failure(handle, attempt, build, pre_sim, started)
+    adapter_error = _adapter_attempt_error(executed, build)
+    if adapter_error is not None:
+        return _transport_failure(handle, attempt, build, pre_sim, adapter_error, started)
+    return None
+
+
 def _transport_failure(
     handle: TargetHandle,
     attempt: _Attempt,
@@ -726,6 +770,18 @@ def _transport_failure(
 ) -> SimulationTargetOutcome:
     failure = SimulationInfrastructureFailure("adapter_protocol", detail, detail=detail)
     return _error_outcome(handle, attempt, build, pre_sim, failure, started)
+
+
+def _runtime_input_failure(
+    handle: TargetHandle,
+    attempt: _Attempt,
+    pre_sim: PreSimEvidence | None,
+    detail: str,
+    started: float,
+) -> SimulationTargetOutcome:
+    message = f"Simulation runtime input setup failed: {detail}"
+    failure = SimulationInfrastructureFailure("runtime_input", message, detail=message)
+    return _error_outcome(handle, attempt, None, pre_sim, failure, started)
 
 
 def _artifact_failure(
