@@ -12,6 +12,7 @@ circular import.
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -155,7 +156,10 @@ def _planned_write_outcome(
 
 def _executable_mode_pending(target: Path, outcome: WriteOutcome, executable: bool) -> bool:
     return bool(
-        outcome is WriteOutcome.UNCHANGED and executable and target.stat().st_mode & 0o111 != 0o111
+        os.name != "nt"
+        and outcome is WriteOutcome.UNCHANGED
+        and executable
+        and target.stat().st_mode & 0o111 != 0o111
     )
 
 

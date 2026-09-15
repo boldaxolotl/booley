@@ -641,6 +641,7 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
     trusted_validator: Path,
 ) -> None:
     del trusted_validator
+    reset_cache()
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()

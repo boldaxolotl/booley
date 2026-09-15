@@ -206,6 +206,28 @@ class TestWriteKnobs:
         assert outcome is WriteOutcome.WRITTEN
         assert target.stat().st_mode & 0o111 == 0
 
+    def test_dry_run_ignores_unrepresentable_windows_executable_bits(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.harness.setup import common
+
+        content = f"{MARKER}\nbody\n"
+        target = tmp_path / "hook"
+        target.write_text(content, encoding="utf-8")
+        monkeypatch.setattr(common.os, "name", "nt")
+
+        outcome = guarded_write(
+            target,
+            content,
+            owner_marker=MARKER,
+            executable=True,
+            dry_run=True,
+        )
+
+        assert outcome is WriteOutcome.UNCHANGED
+
 
 # ---------------------------------------------------------------------------
 # Step numbering (F-2)

@@ -741,7 +741,7 @@ class TestInitInteractive:
             spec.unlink()
             expected = None
         else:
-            spec.write_text("{}\n", encoding="utf-8")
+            spec.write_bytes(b"{}\n")
             expected = b"{}\n"
 
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
