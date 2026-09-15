@@ -34,12 +34,13 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # Probe naming convention: everything an orchestrator dispatches to is named
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit).
-_PROBE_NAME_RE = re.compile(r"^(_check_|_run_|_audit_)")
+_PROBE_NAME_RE = re.compile(
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$)"
+)
 
 # The orchestrators whose call lists this ratchet pins. run_doctor is the
 # root; the _run_* entries are the phase groupings it delegates to.
 ORCHESTRATORS = (
-    "_run_host_checks",
     "_run_container_checks",
     "_run_mcp_checks",
     "_run_ticket_preflight_parity_checks",
@@ -60,13 +61,6 @@ ORCHESTRATORS = (
 # probe in or out of an orchestrator ON PURPOSE, update the matching set here.
 # ---------------------------------------------------------------------------
 EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
-    "_run_host_checks": frozenset(
-        {
-            "_check_docker",
-            "_check_host_clock",
-            "_check_legacy_distribution",
-        }
-    ),
     "_run_container_checks": frozenset(
         {
             "_check_container_runtime_payload",
@@ -81,13 +75,11 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_mcp_checks": frozenset(
         {
+            "inspect_runtime",
+            "inspect_retained_resources",
             "_check_devcontainer_excludes",
-            "_check_devcontainer_spec",
-            "_check_issued_session_runtime",
             "_check_interactive_logs_gitignore",
             "_check_interactive_logs_tracked",
-            "_check_interactive_state_volumes",
-            "_check_issued_image_keepers",
             "_check_wcp_server",
             "_run_agent_credential_checks",
             "_run_mcp_probe",
@@ -119,15 +111,15 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_project_phase": frozenset(
         {
-            "_audit_project_setup",
-            "_check_agents_md",
+            "inspect_host",
+            "load_project",
+            "check_guidance",
+            "check_stealth_cores",
             "_check_board_orphans",
             "_check_line_endings",
-            "_check_stealth_cores",
             "_check_upgrade_review",
             "_check_worktree_core_shadow_guard",
             "_check_worktree_prune_guard",
-            "_run_host_checks",
         }
     ),
     "_run_runtime_phase": frozenset(

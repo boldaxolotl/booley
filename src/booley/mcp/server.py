@@ -979,32 +979,18 @@ _BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "bwave",
         "description": (
-            "RTL debug helper for simulation traces. Works with .fst "
-            "waveform stores and raw .vcd traces. Registering a sim "
-            "directory auto-builds an .fst store; a .vcd passed directly "
-            "is recorded as-is and must be "
-            "converted with `bwave build` before it can be queried. Before "
-            'constructing commands, call with extra_args=["skill"] for '
-            'agent workflow guidance, then extra_args=["--help"] for '
-            "current syntax. Pass arguments exactly as they appear after "
-            "`bwave` in the CLI help. To show the human a waveform (only "
-            "for seeing — reading values needs no viewer), first locate the "
-            "signals and time window with query commands, then call "
-            '["gui", "@ALIAS", "--group", "FIFO=tb.dut.fifo.*%h@green", "--time", '
-            '"1200c:1400c"] — this drives the VaporView viewer in the '
-            "user's VS Code window. For every user-facing view, split signals "
-            "into logical groups, with different module instances in different groups; "
-            "within one module split by category when useful, such as AHB, FSM "
-            "state/outputs, and datapath. Choose an appropriate %b/%h/%d radix "
-            "for each selector. Use red for clocks/resets, blue for registers, "
-            "and green for other signals via @red/@blue/@green suffixes. Group "
-            "names and signal paths remain the non-color meaning. A new view gets the trace's clock as "
-            "row 1 automatically (--no-clock opts out); --time brackets the "
-            "range with the viewer's START/END markers so the human reads "
-            "the span off the screen; --cursor moves START; --append adds "
-            "signals to the current view. The signal list it prints is read "
-            "back from the viewer — anything dropped is named in a stderr "
-            "WARNING; relay it."
+            "RTL debug helper for simulation traces. Use B-Wave instead of "
+            "temporary $display/debug prints to inspect signal values, state "
+            "transitions, handshakes, latency, and datapath divergence. Reuse "
+            "a current trace or rerun the failing simulation with tracing, "
+            "then query a bounded signal/time window. Use temporary prints "
+            "only when B-Wave is unavailable or cannot capture/query the "
+            "needed evidence; explain the limitation. Diagnose compile/elaboration "
+            "failures from compiler output. Queries need no GUI; use the viewer "
+            "to show humans a scoped, logically grouped view and relay warnings "
+            'about omitted signals. Before use, call extra_args=["skill"] for '
+            'workflow and presentation guidance, then extra_args=["--help"] '
+            "for syntax."
         ),
         "schema": {
             "type": "object",
@@ -1012,15 +998,7 @@ _BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
                 "extra_args": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": (
-                        "Arguments after the `bwave` CLI name. For agent "
-                        'guidance, use ["skill"]. For help, use '
-                        '["--help"] or ["COMMAND", "--help"]. Examples: '
-                        '["register", "sim/work", "--as", "dut"], '
-                        '["@dut", "wave", "-s", "*state*", "-t", '
-                        '"100:200"], ["markers", "@dut", "set", '
-                        '"start", "100"].'
-                    ),
+                    "description": "Arguments after `bwave`, as documented by CLI help.",
                 },
             },
             "required": ["extra_args"],

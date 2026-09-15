@@ -260,3 +260,19 @@ def _link_file_windows(link: Path, canon: Path, target: Path) -> None:
 
 # Exclude writing lives in ``harness.git_utils.add_git_excludes`` (worktree-aware:
 # writes to ``$GIT_COMMON_DIR/info/exclude``, the file git actually honors).
+
+
+def guidance_links_current(project_root: Path, canon: Path) -> bool:
+    """True when every root entry is a live link or matching tracked file."""
+    try:
+        resolved_canon = canon.resolve(strict=True)
+    except OSError:
+        return False
+    for name in LINK_NAMES:
+        link = project_root / name
+        try:
+            if not guidance_entry_current(project_root, link, resolved_canon):
+                return False
+        except OSError:
+            return False
+    return True

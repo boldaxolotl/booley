@@ -338,8 +338,13 @@ class TestDoctorCheck:
     def _run(monkeypatch, *, claude=True, codex=False, provider="claude"):
         from booley.harness import doctor
 
-        monkeypatch.setattr(doctor, "_detect_claude_code", lambda: claude)
-        monkeypatch.setattr(doctor, "_detect_codex", lambda: codex)
+        monkeypatch.setattr(
+            doctor.host_environment,
+            "inspect_agent_installation",
+            lambda provider: doctor.host_environment.AgentInstallation(
+                claude if provider == "claude" else codex, None
+            ),
+        )
         sink: dict[str, list[str]] = {"pass": [], "warn": [], "skip": []}
         doctor._check_oauth_token(
             provider,
@@ -566,8 +571,11 @@ class TestUnusedProviderIsSilent:
 
         monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
         monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
-        monkeypatch.setattr(doctor, "_detect_claude_code", lambda: True)
-        monkeypatch.setattr(doctor, "_detect_codex", lambda: True)  # stale login
+        monkeypatch.setattr(
+            doctor.host_environment,
+            "inspect_agent_installation",
+            lambda _provider: doctor.host_environment.AgentInstallation(True, None),
+        )  # Both providers have installation state, but only the selected one is audited.
         auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
         audit = TestConfiguredProvider._audit(tmp_path, {})  # [agent] without provider
         provider = doctor._configured_provider(audit)
