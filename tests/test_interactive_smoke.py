@@ -663,12 +663,9 @@ class TestInitInteractive:
     def test_app_selection_never_infers_from_installed_clis(self, monkeypatch):
         from booley.harness import init_cmd
 
-        monkeypatch.setattr(init_cmd, "_detect_claude_code", lambda: True)
-        monkeypatch.setattr(init_cmd, "_detect_codex", lambda: True)
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/bin/{name}")
         assert init_cmd._select_interactive_app() == "none"
-        monkeypatch.setattr(init_cmd, "_detect_claude_code", lambda: False)
-        assert init_cmd._select_interactive_app() == "none"
-        monkeypatch.setattr(init_cmd, "_detect_codex", lambda: False)
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _name: None)
         assert init_cmd._select_interactive_app() == "none"
 
     def test_app_selection_honors_project_provider(self, tmp_path, monkeypatch):
@@ -680,8 +677,7 @@ class TestInitInteractive:
             '[agent]\nprovider = "codex"\nauth = "subscription"\n',
             encoding="utf-8",
         )
-        monkeypatch.setattr(init_cmd, "_detect_claude_code", lambda: True)
-        monkeypatch.setattr(init_cmd, "_detect_codex", lambda: True)
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/bin/{name}")
 
         assert init_cmd._select_interactive_app(tmp_path) == "codex"
 

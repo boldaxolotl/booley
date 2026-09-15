@@ -255,16 +255,17 @@ class TestDoctorModelsTable:
     """Doctor surfaces a bad [models] before the first ticket dies on it."""
 
     def _run(self, models):
-        from booley.harness import doctor
+        from booley.audit.agent_schema import audit_models_table
+        from tests.diagnostic_helpers import _record_audit
 
         passes: list[str] = []
         warns: list[str] = []
         fails: list[str] = []
-        valid = doctor._validate_models_table(
-            {} if models is None else {"models": models},
-            passes.append,
-            lambda msg, fix="": warns.append(msg),
-            lambda msg, fix="": fails.append(msg),
+        valid = _record_audit(
+            audit_models_table({} if models is None else {"models": models}),
+            passed=passes.append,
+            warned=lambda msg, fix="": warns.append(msg),
+            failed=lambda msg, fix="": fails.append(msg),
         )
         return valid, passes, warns, fails
 

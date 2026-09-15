@@ -136,6 +136,18 @@ DIRECTION_RULES = (
         "Shared private storage, locking, and package resources do not own caller policy",
     ),
     DirectionRule(
+        "D26",
+        (exact("booley.harness.host_diagnostics"), exact("booley.harness.setup.readiness")),
+        (
+            exact("booley.harness.doctor"),
+            exact("booley.harness.init_cmd"),
+            exact("booley.harness.booley"),
+            exact("booley.harness.colors"),
+            exact("booley.harness.setup.common"),
+        ),
+        "diagnostic owners return observations without command orchestration or rendering",
+    ),
+    DirectionRule(
         "D22",
         (prefix("booley.ticket_board"),),
         (prefix("booley.review"),),
