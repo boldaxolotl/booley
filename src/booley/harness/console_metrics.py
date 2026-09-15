@@ -11,6 +11,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 _SANDBOX_WORKTREE = Path("/work")
+_SESSION_WORKTREE_PREFIX = "/booley-project/worktrees"
 
 
 class WorktreeLineCounter:
@@ -25,6 +26,7 @@ class WorktreeLineCounter:
     ) -> None:
         self._worktree = worktree.resolve()
         self._reported_root = reported_root.resolve() if reported_root is not None else None
+        self._git_dir = self._resolve_git_dir()
         self._base_sha = self._resolve_base(base_ref)
 
     def snapshot(self) -> tuple[int, int] | None:
@@ -55,9 +57,12 @@ class WorktreeLineCounter:
         # The agent reports Session Runtime paths using POSIX syntax even when
         # the host-side Console runs on Windows, where Path('/work/...') is not
         # considered absolute.
-        if raw_path == "/work":
+        runtime_worktree = f"{_SESSION_WORKTREE_PREFIX}/{self._worktree.name}"
+        if raw_path in ("/work", runtime_worktree):
             return None
-        if raw_path.startswith("/work/"):
+        if raw_path.startswith(f"{runtime_worktree}/"):
+            raw_path = raw_path.removeprefix(f"{runtime_worktree}/")
+        elif raw_path.startswith("/work/"):
             raw_path = raw_path.removeprefix("/work/")
         elif os.name == "nt" and raw_path.startswith("/"):
             # A POSIX absolute path outside the Session Runtime workspace is
@@ -82,6 +87,27 @@ class WorktreeLineCounter:
             return None
         return normalized.removeprefix("./")
 
+    def _resolve_git_dir(self) -> Path | None:
+        """Map a runtime-authored linked-worktree pointer onto the host repo."""
+        dot_git = self._worktree / ".git"
+        if dot_git.is_dir():
+            return dot_git
+        try:
+            pointer = dot_git.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not pointer.startswith("gitdir: "):
+            return None
+        git_dir = Path(pointer.removeprefix("gitdir: "))
+        if not git_dir.is_absolute():
+            git_dir = self._worktree / git_dir
+        if git_dir.is_dir():
+            return git_dir.resolve()
+        if self._reported_root is None:
+            return None
+        host_git_dir = self._reported_root / ".git" / "worktrees" / git_dir.name
+        return host_git_dir.resolve() if host_git_dir.is_dir() else None
+
     def _resolve_base(self, base_ref: str) -> str | None:
         merged = self._git("merge-base", "HEAD", base_ref)
         if merged and merged.strip():
@@ -90,9 +116,18 @@ class WorktreeLineCounter:
         return resolved.strip() if resolved and resolved.strip() else None
 
     def _git(self, *args: str) -> str | None:
+        command = ["git"]
+        if self._git_dir is not None:
+            command.extend(
+                [
+                    f"--git-dir={self._git_dir}",
+                    f"--work-tree={self._worktree}",
+                ]
+            )
+        command.extend(args)
         try:
             result = subprocess.run(
-                ["git", *args],
+                command,
                 cwd=self._worktree,
                 capture_output=True,
                 text=True,
