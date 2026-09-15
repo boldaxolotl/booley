@@ -36,6 +36,12 @@ def test_claude_sdk_floor_owns_windows_launcher_safety() -> None:
     assert "claude-agent-sdk>=0.2.140" in project["project"]["dependencies"]
 
 
+def test_development_wheel_can_build_without_repository_extras() -> None:
+    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "build>=1.0" in project["project"]["dependencies"]
+
+
 def test_windows_worker_temp_shares_workspace_drive(monkeypatch, pytestconfig) -> None:
     """FuseSoC cannot relativize a temp core across Windows drive letters."""
     suite_config = _suite_config(pytestconfig)

@@ -102,6 +102,9 @@ def validate_publication_topology(
 ) -> tuple[str, ...]:
     jobs = _mapping(workflow.get("jobs"), "publish workflow jobs")
     source_validation = _mapping(jobs.get("source-validation"), "source-validation job")
+    build_package = _mapping(jobs.get("build-package"), "build-package job")
+    test_wheel = _mapping(jobs.get("test-wheel"), "test-wheel job")
+    test_sdist = _mapping(jobs.get("test-sdist"), "test-sdist job")
     granted = _mapping(source_validation.get("permissions"), "source-validation permissions")
     required = _mapping(source_workflow.get("permissions"), "test workflow permissions")
     errors: list[str] = []
@@ -110,6 +113,29 @@ def validate_publication_topology(
         granted_level = _PERMISSION_LEVELS.get(str(granted.get(scope, "none")), -1)
         if granted_level < required_level:
             errors.append(f"source-validation must grant {scope}: {access} required by test.yml")
+    build_steps = _steps(build_package)
+    tag_validation = _named_step(build_package, "Verify tag matches package version")
+    package_build = _named_step(build_package, "Build sdist and wheel")
+    if (
+        tag_validation is None
+        or package_build is None
+        or build_steps.index(tag_validation) >= build_steps.index(package_build)
+        or not any(
+            "write_build_stamp(Path.cwd(), official_release=True)" in command
+            for command in _commands(build_package)
+        )
+    ):
+        errors.append("build-package must attest the official release wheel")
+    if not any("rm -rf build/" in command for command in _commands(build_package)):
+        errors.append("build-package must clean stale wheel staging")
+    if not any(
+        "embedded_official_release() is True" in command for command in _commands(test_wheel)
+    ):
+        errors.append("test-wheel must verify the official release attestation")
+    if not any(
+        "embedded_official_release() is True" in command for command in _commands(test_sdist)
+    ):
+        errors.append("test-sdist must verify the official release attestation")
     return tuple(errors)
 
 

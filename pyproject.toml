@@ -21,6 +21,10 @@ classifiers = [
 ]
 
 dependencies = [
+    # Development wheels rebuild their matching Runtime Image from an embedded,
+    # verified source context. The build frontend is therefore a runtime need,
+    # not only a repository-development convenience.
+    "build>=1.0",
     # 0.2.140 admits MCP SDK 2.x while retaining safe CLI discovery: native executables are
     # preferred on Windows and .cmd/.bat launchers fail closed instead of
     # crossing cmd.exe's argument-reparsing boundary.
@@ -76,10 +80,6 @@ dev = [
     # The repository-owned confidential vocabulary uses AES-GCM in its local
     # guard and the trusted CI scanner.
     "cryptography==46.0.5",
-    # `booley init` shells out to `python -m build` for the sandbox-image wheel
-    # (init_docker_image._docker_build_wheel); without it a fresh dev venv fails
-    # Step 9 with "No module named build" (SETUP/F-4).
-    "build>=1.0",
     "hypothesis>=6.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

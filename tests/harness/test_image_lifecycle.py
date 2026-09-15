@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -575,6 +576,7 @@ def test_packaged_distribution_missing_base_pulls_verified_release(
     from booley.harness.setup import docker_image as init_docker_image
 
     _docker, pulls = _wire_distribution_pull(tmp_path, monkeypatch)
+    monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: True)
     monkeypatch.setattr(
         init_docker_image,
         "_step_docker_image",
@@ -584,6 +586,51 @@ def test_packaged_distribution_missing_base_pulls_verified_release(
     result = harness_lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
 
     assert pulls == [("0.2.6", lifecycle.BASE_IMAGE)]
+    assert result.status is lifecycle.Status.CHANGED
+
+
+def test_development_distribution_missing_base_builds_locally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image as init_docker_image
+
+    docker, pulls = _wire_distribution_pull(tmp_path, monkeypatch)
+    context_root = tmp_path / "verified-context"
+    context_docker = context_root / "src" / "booley" / "data" / "docker"
+    context_docker.mkdir(parents=True)
+    calls: list[tuple[Path, bool, str | None, bool]] = []
+
+    @contextmanager
+    def _context():
+        yield context_root
+
+    def _local_build(ctx, docker_dir, exists, fingerprint, *, preserve_build_stamp=False):
+        calls.append((docker_dir, exists, fingerprint, preserve_build_stamp))
+        payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", fingerprint)
+        FakeBuilder(docker).build(
+            lifecycle._base_node(payload),
+            force=False,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
+
+    monkeypatch.setattr(harness_lifecycle, "extracted_development_context", _context)
+    monkeypatch.setattr(init_docker_image, "_docker_local_build", _local_build)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "embedded_official_release",
+        lambda: False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_try_pull_image",
+        lambda *_args, **_kwargs: pytest.fail("development wheel attempted a registry pull"),
+    )
+
+    result = harness_lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+
+    assert pulls == []
+    assert calls == [(context_docker, False, "payload-new", True)]
     assert result.status is lifecycle.Status.CHANGED
 
 
@@ -662,6 +709,12 @@ def test_check_reports_selected_artifact_source_without_mutation(
             origin=VersionOrigin(origin),
             **attribution_kwargs,
         ),
+    )
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "embedded_official_release",
+        lambda: origin == "distribution",
+        raising=False,
     )
     docker = FakeDocker({})
     _wire(monkeypatch, docker)

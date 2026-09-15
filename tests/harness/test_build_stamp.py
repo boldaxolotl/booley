@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tarfile
+import types
 from pathlib import Path
 
 import pytest
@@ -21,7 +23,12 @@ from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
 from booley.runtime.build_stamp import (
     STAMP_RELPATH,
+    _extract_development_context,
+    _validate_context_members,
+    _write_development_context,
     build_stamp,
+    development_context_path,
+    embedded_official_release,
     iter_payload_files,
     resolve_build_commit,
     resolve_payload_fingerprint,
@@ -31,6 +38,7 @@ from booley.runtime.build_stamp import (
 )
 
 BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
 WHEEL_NAME = "booley_rtl-0.2.3-py3-none-any.whl"
 
 
@@ -94,7 +102,7 @@ class TestResolveBuildCommit:
 
 class TestWriteBuildStamp:
     def test_writes_an_importable_module(self, repo: Path):
-        commit = write_build_stamp(repo)
+        commit = write_build_stamp(repo, include_development_context=False)
         text = stamp_path(repo).read_text(encoding="utf-8")
 
         assert stamp_path(repo) == repo / STAMP_RELPATH
@@ -102,6 +110,27 @@ class TestWriteBuildStamp:
         exec(compile(text, "_build_commit.py", "exec"), namespace)
         assert namespace["COMMIT"] == commit != ""
         assert namespace["PAYLOAD_FINGERPRINT"] == resolve_payload_fingerprint(repo)
+        assert namespace["OFFICIAL_RELEASE"] is False
+        assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
+
+    def test_marks_an_official_release_build_explicitly(self, repo: Path):
+        context = development_context_path(repo)
+        context.parent.mkdir(parents=True, exist_ok=True)
+        context.write_bytes(b"stale")
+        write_build_stamp(repo, official_release=True)
+        text = stamp_path(repo).read_text(encoding="utf-8")
+
+        namespace: dict = {}
+        exec(compile(text, "_build_commit.py", "exec"), namespace)
+
+        assert namespace["OFFICIAL_RELEASE"] is True
+        assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
+        assert not context.exists()
+
+    @pytest.mark.parametrize("value", [1, "false", None])
+    def test_rejects_non_boolean_release_flags(self, repo: Path, value: object):
+        with pytest.raises(TypeError, match="literal booleans"):
+            write_build_stamp(repo, official_release=value)  # type: ignore[arg-type]
 
     def test_payload_fingerprint_changes_for_dirty_source_at_same_head(self, repo: Path):
         before = resolve_payload_fingerprint(repo)
@@ -119,6 +148,91 @@ class TestWriteBuildStamp:
             raise RuntimeError("build blew up")
 
         assert not stamp_path(repo).exists()
+
+
+class TestEmbeddedOfficialRelease:
+    def test_missing_marker_is_development(self, monkeypatch):
+        monkeypatch.delitem(sys.modules, "booley._build_commit", raising=False)
+
+        assert embedded_official_release() is False
+
+    @pytest.mark.parametrize("value", ["true", 1, None, object()])
+    def test_malformed_values_fail_closed(self, monkeypatch, value: object):
+        stamp = types.ModuleType("booley._build_commit")
+        stamp.OFFICIAL_RELEASE = value
+        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+
+        assert embedded_official_release() is False
+
+    def test_literal_true_is_official(self, monkeypatch):
+        stamp = types.ModuleType("booley._build_commit")
+        stamp.OFFICIAL_RELEASE = True
+        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+
+        assert embedded_official_release() is True
+
+
+class TestDevelopmentBuildContext:
+    def test_archive_is_deterministic_and_reconstructs_the_payload(self, tmp_path: Path):
+        first = tmp_path / "first.tar.gz"
+        second = tmp_path / "second.tar.gz"
+
+        digest = _write_development_context(SOURCE_ROOT, first)
+        assert _write_development_context(SOURCE_ROOT, second) == digest
+        assert first.read_bytes() == second.read_bytes()
+
+        stamp = tmp_path / "_build_commit.py"
+        stamp.write_text("COMMIT = 'test'\n", encoding="utf-8")
+        extracted = tmp_path / "extracted"
+        _extract_development_context(
+            first,
+            extracted,
+            expected_sha256=digest,
+            expected_payload_fingerprint=resolve_payload_fingerprint(SOURCE_ROOT) or "",
+            stamp_source=stamp,
+        )
+
+        assert resolve_payload_fingerprint(extracted) == resolve_payload_fingerprint(SOURCE_ROOT)
+        assert stamp_path(extracted).read_text(encoding="utf-8") == "COMMIT = 'test'\n"
+        assert development_context_path(extracted).read_bytes() == first.read_bytes()
+        ctx = InitContext()
+        docker_dir = extracted / "src" / "booley" / "data" / "docker"
+        assert init_docker_image._local_build_inputs(ctx, docker_dir) is not None
+
+    def test_hash_mismatch_writes_nothing(self, tmp_path: Path):
+        archive = tmp_path / "context.tar.gz"
+        _write_development_context(SOURCE_ROOT, archive)
+        destination = tmp_path / "extracted"
+
+        with pytest.raises(ValueError, match="hash does not match"):
+            _extract_development_context(
+                archive,
+                destination,
+                expected_sha256="0" * 64,
+                expected_payload_fingerprint=resolve_payload_fingerprint(SOURCE_ROOT) or "",
+                stamp_source=tmp_path / "missing-stamp.py",
+            )
+
+        assert not destination.exists()
+
+    @pytest.mark.parametrize(
+        "member",
+        [
+            tarfile.TarInfo("../escape"),
+            tarfile.TarInfo("/absolute"),
+            tarfile.TarInfo("back\\slash"),
+            tarfile.TarInfo("directory/"),
+        ],
+    )
+    def test_rejects_unsafe_archive_members(self, member: tarfile.TarInfo):
+        member.type = tarfile.DIRTYPE if member.name.endswith("/") else tarfile.REGTYPE
+
+        with pytest.raises(ValueError, match="unsafe"):
+            _validate_context_members([member])
+
+    def test_rejects_duplicate_archive_members(self):
+        with pytest.raises(ValueError, match="unsafe"):
+            _validate_context_members([tarfile.TarInfo("same"), tarfile.TarInfo("same")])
 
 
 class TestInitStampsItsWheel:
@@ -140,6 +254,21 @@ class TestInitStampsItsWheel:
         assert init_docker_image._docker_build_wheel(InitContext(), repo) is True
         assert seen == [True]
         assert not stamp_path(repo).exists()
+
+    def test_verified_stamp_is_preserved_for_embedded_context(self, repo: Path, monkeypatch):
+        stamp_path(repo).write_text("COMMIT = 'embedded'\n", encoding="utf-8")
+        seen: list[str] = []
+
+        def _fake_run(cmd, **kwargs):
+            seen.append(stamp_path(repo).read_text(encoding="utf-8"))
+            _write_wheel(repo)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        assert init_docker_image._docker_build_wheel(InitContext(), repo, preserve_stamp=True)
+        assert seen == ["COMMIT = 'embedded'\n"]
+        assert stamp_path(repo).is_file()
 
     def test_wheel_build_removes_stale_staging_tree(self, repo: Path, monkeypatch):
         stale_module = repo / "build" / "lib" / "booley" / "tools" / "legacy.py"
@@ -234,9 +363,12 @@ class TestStampIsNotFingerprinted:
         (root / "src" / "booley" / "real.py").write_text("x = 1\n", encoding="utf-8")
 
         before = init_docker_image._image_build_fingerprint(root)
-        write_build_stamp(root)
+        write_build_stamp(root, include_development_context=False)
 
         assert init_docker_image._image_build_fingerprint(root) == before
         assert STAMP_RELPATH not in [
+            p.relative_to(root).as_posix() for p in iter_payload_files(root)
+        ]
+        assert development_context_path(root).relative_to(root).as_posix() not in [
             p.relative_to(root).as_posix() for p in iter_payload_files(root)
         ]
