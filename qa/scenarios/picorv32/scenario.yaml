@@ -900,18 +900,26 @@ steps:
   - inputs.project-pin
 - id: doctor.deep
   phase: prepare
-  action: Run deep Doctor after plain Doctor; require warning-free result.
+  action: |-
+    Qualify the pinned PicoRV32 deep Doctor baseline after plain Doctor. First run `booley doctor --deep` without the Scenario waiver and retain its report plus the `synth_core` diagnostics. Continue only when the sole active warning is the reviewed identity `flow.synth-deep-warning:synth_core`, its underlying diagnostics are attributable to the pinned upstream RTL/toolchain, and there are no failures. Merge the exact unexpired, identity-bound Scenario waiver into `.booley_project/doctor-waivers.toml` without replacing other reviewed entries, then rerun `booley doctor --deep`.
   checks:
   - id: doctor.deep
     capabilities:
     - DOCTOR-DIAGNOSTICS
-    stimulus: Run deep Doctor after plain Doctor; require warning-free result.
-    expected: Run deep Doctor after plain Doctor; require warning-free result.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Deep report and all selected deep checks.
+    stimulus: |-
+      Run the pre-waiver deep Doctor and inspect the selected `synth_core` Flow diagnostics. Only after proving that `flow.synth-deep-warning:synth_core` is the sole active warning for the pinned PicoRV32 source and recorded sv2v/Yosys/OpenROAD identities, install the Scenario-owned waiver with exact check, subject, reason, and expiry while preserving every existing entry; rerun deep Doctor against otherwise unchanged inputs.
+    expected: |-
+      The pre-waiver report has no failures and no active warning outside the reviewed `flow.synth-deep-warning:synth_core` identity. The final report exits zero, shows that exact finding as `WAIVED`, and has zero unwaived active warnings and zero failures. An expired, stale, missing, or broadened waiver, a changed or additional warning, a failure, or drift in the pinned source/tool identities fails the Check; raw warning count alone is never a pass condition.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#doctor-waivers-doctor-waiverstoml
+    evidence: |-
+      Separate unmodified pre-waiver and final `last.json`/`last.log` copies with command exits and all selected deep checks; the installed waiver text/hash, exact `check` and `subject`, reason, expiry and proof it is unexpired; complete `synth_core` diagnostics and comparison proving no changed or additional warning; pinned Project/upstream commits plus Booley, sv2v, Yosys and OpenROAD identities; before/after Project configuration and clean final report.
     capture: evidence/picorv32-published-demo-continuity.doctor.deep
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/doctor-synth-warning-waiver.toml
+    audience: scenario-operator
+    sha256: c5d014145e5ec88ec343f90e8f07270ec927b6505a56a8580687db9a8d624ca9
 - id: doctor.plain-recheck
   phase: prepare
   action: Run final plain Doctor; require warning-free result before baseline.
@@ -1920,36 +1928,36 @@ steps:
 - id: inventory.SYNTHESIS-FLOW.synth-frontend-incompatible
   phase: baseline
   action: |-
-    Exercise `synth-frontend-missing`, `synth-frontend-incompatible`: distinct faults.
+    Select an intentionally incompatible but available `sv2v` frontend in a disposable copy of the physical `synth_core` setup, prove that executable resolves and runs, then invoke `booley flow synth --target synth_core`.
   checks:
   - id: inventory.SYNTHESIS-FLOW.synth-frontend-incompatible
     capabilities:
     - SYNTHESIS-FLOW
     stimulus: |-
-      Exercise `synth-frontend-missing`, `synth-frontend-incompatible`: distinct faults.
+      Select an intentionally incompatible but available `sv2v` frontend in a disposable copy of the physical `synth_core` setup, prove that executable resolves and runs, then invoke `booley flow synth --target synth_core`.
     expected: |-
-      Appropriate config/execution failure.
+      Synthesis returns nonzero and explicitly diagnoses the available frontend as incompatible. A missing/not-found frontend or an RTL/design failure does not satisfy this Check.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#synth
     evidence: |-
-      Yosys/OpenROAD/frontend logs and versions, SDC/default clock, selected profile/expert override, metrics/baseline recipe. No signoff claim. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact command and effective `PATH`; successful incompatible-frontend resolution/version probe; exit values at every recorded wrapper/Flow layer; stdout/stderr and frontend/Yosys/OpenROAD logs; report/metrics presence or absence; source/Target/runtime identities; before/after setup and restored supported-frontend synthesis state. No signoff claim.
     capture: evidence/picorv32-published-demo-continuity.inventory.SYNTHESIS-FLOW.synth-frontend-incompatible
   requires:
   - inputs.project-pin
 - id: inventory.SYNTHESIS-FLOW.synth-frontend-missing
   phase: baseline
   action: |-
-    Exercise `synth-frontend-missing`, `synth-frontend-incompatible`: distinct faults.
+    In a disposable environment, remove `sv2v` from the effective `PATH` while preserving the selected physical `synth_core` Target and proving the remaining synthesis commands still resolve; invoke `booley flow synth --target synth_core`, then restore the supported frontend state.
   checks:
   - id: inventory.SYNTHESIS-FLOW.synth-frontend-missing
     capabilities:
     - SYNTHESIS-FLOW
     stimulus: |-
-      Exercise `synth-frontend-missing`, `synth-frontend-incompatible`: distinct faults.
+      In a disposable environment, remove `sv2v` from the effective `PATH` while preserving the selected physical `synth_core` Target and proving the remaining synthesis commands still resolve; invoke `booley flow synth --target synth_core`, then restore the supported frontend state.
     expected: |-
-      Appropriate config/execution failure.
+      Synthesis returns nonzero and explicitly identifies `sv2v` as unavailable or not found. No particular wrapper or top-level exit code is required. An available-but-incompatible frontend or an RTL/design failure does not satisfy this Check.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#synth
     evidence: |-
-      Yosys/OpenROAD/frontend logs and versions, SDC/default clock, selected profile/expert override, metrics/baseline recipe. No signoff claim. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact command and effective `PATH`; probes proving `sv2v` absent while the remaining required synthesis commands resolve; exit values at every recorded wrapper/Flow layer; stdout/stderr and frontend/Yosys/OpenROAD logs; report/metrics presence or absence; source/Target/runtime identities; before/after setup and a successful restored supported-frontend probe. No signoff claim.
     capture: evidence/picorv32-published-demo-continuity.inventory.SYNTHESIS-FLOW.synth-frontend-missing
   requires:
   - inputs.project-pin
