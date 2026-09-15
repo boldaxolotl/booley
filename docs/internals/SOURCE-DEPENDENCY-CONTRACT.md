@@ -585,6 +585,7 @@ Full before-and-after reports and exact revisions are recorded in
 
 ## Current snapshot: 15 SEP 2026 — Doctor integration
 
+Compared source/analyzer `8d1af171` (main) with `41eeebf7` (integration).
 After integrating #532 and the B-Wave guidance update, the source has 505 Python
 modules, 2,505 dependency facts, and 2,064 unique edges. The measured cyclic
 groups remain the 11-member execution group and the separate Target/FuseSoC

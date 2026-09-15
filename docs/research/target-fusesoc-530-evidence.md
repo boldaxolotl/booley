@@ -452,3 +452,164 @@ Named composition hotspot fan-out (diagnostic only):
 - booley.specialists.mutation_tester: 25
 - booley.specialists.coverage_analyst: 13
 ```
+
+## Doctor integration refresh: 15 SEP 2026
+
+Mergify dequeued #535 after #536/#537 landed because the dependency contract
+documentation conflicted. The merged rule table also reused D26. Resolution
+preserves Doctor's landed D26 rule and assigns Target/FuseSoC D27/D28. No
+production changes were required for conflict resolution.
+
+- Before source and analyzer: `8d1af1717162b3c0ad869329ffa6677e9f65dfc9` (main with #531/#532).
+- After source and analyzer: `41eeebf7050b4c4cda4780e9c8e130b723f13320` (resolved integration).
+- Both complete reports below come from Git archives at those revisions.
+
+| Diagnostic | Current main | Integrated #530 |
+| --- | ---: | ---: |
+| Python modules | 503 | 505 |
+| Located dependency facts | 2,496 | 2,505 |
+| Unique normalized edges | 2,055 | 2,064 |
+| Cyclic group sizes | 18 | 11 and 2 |
+| Mutual package pairs | 11 | 9 |
+
+All affected caller/owner fan-out values in the original table were verified
+against both archives and remain unchanged. Doctor fan-out is now 57 on both
+sides; #532's new diagnostic-owner boundaries remain enforced alongside #530.
+Validation: 1,982 tests passed, seven explicit skips (six unavailable loopback
+socket tests and one Windows-only test); Pyright reported zero errors/warnings;
+Ruff lint and format checks passed for all source and tests.
+
+### Before Doctor integration refresh
+
+```text
+Parsed Python modules: 503
+Normalized dependency facts: 2496
+Unique normalized edges: 2055
+
+Cyclic top-level package groups:
+- booley.agent_workspace, booley.audit, booley.bwave, booley.config, booley.criteria, booley.dev_support, booley.eda, booley.feedback, booley.flows, booley.fusesoc, booley.harness, booley.mcp, booley.projects, booley.review, booley.runtime, booley.specialists, booley.targets, booley.ticket_board
+
+Mutual top-level package pairs:
+- booley.bwave <-> booley.flows
+- booley.dev_support <-> booley.runtime
+- booley.feedback <-> booley.harness
+- booley.flows <-> booley.targets
+- booley.fusesoc <-> booley.runtime
+- booley.fusesoc <-> booley.targets
+- booley.harness <-> booley.mcp
+- booley.harness <-> booley.runtime
+- booley.harness <-> booley.ticket_board
+- booley.mcp <-> booley.specialists
+- booley.mcp <-> booley.ticket_board
+
+Top 30 file fan-out:
+- booley.harness.booley: 57
+- booley.harness.doctor: 57
+- booley.flows.sim.flow: 48
+- booley.harness.developer: 44
+- booley.harness.init_cmd: 39
+- booley.flows.synth.flow: 35
+- booley.mcp.server: 33
+- booley.flows.fpga.flow: 32
+- booley.ticket_board.cli_handlers: 26
+- booley.ticket_board.operations: 26
+- booley.flows.sim.execution.engine: 25
+- booley.specialists.mutation_tester: 25
+- booley.harness.setup.intake: 24
+- booley.harness.setup.workspace: 22
+- booley.ticket_board.io: 22
+- booley.flows.endpoint_acceptance: 19
+- booley.ticket_board.review_lifecycle: 19
+- booley.ticket_board.review_preparation: 19
+- booley.flows.base: 18
+- booley.specialists.specialist: 18
+- booley.ticket_board.amendment: 18
+- booley.flows.lint.flow: 16
+- booley.harness._ticket_ops: 16
+- booley.ticket_board.flow_execution: 16
+- booley.ticket_board.workspace_ops: 16
+- booley.flows.sim.verilator_coverage_execution: 15
+- booley.harness.setup.readiness: 15
+- booley.ticket_board.basis_refresh: 15
+- booley.specialists.reviewer: 14
+- booley.ticket_board: 14
+
+Named composition hotspot fan-out (diagnostic only):
+- booley.harness.doctor: 57
+- booley.harness.booley: 57
+- booley.harness.init_cmd: 39
+- booley.harness.developer: 44
+- booley.flows.sim.flow: 48
+- booley.flows.synth.flow: 35
+- booley.mcp.server: 33
+- booley.flows.fpga.flow: 32
+- booley.specialists.mutation_tester: 25
+- booley.specialists.coverage_analyst: 13
+```
+
+### After Doctor integration refresh
+
+```text
+Parsed Python modules: 505
+Normalized dependency facts: 2505
+Unique normalized edges: 2064
+
+Cyclic top-level package groups:
+- booley.agent_workspace, booley.bwave, booley.criteria, booley.dev_support, booley.feedback, booley.flows, booley.harness, booley.mcp, booley.runtime, booley.specialists, booley.ticket_board
+- booley.fusesoc, booley.targets
+
+Mutual top-level package pairs:
+- booley.bwave <-> booley.flows
+- booley.dev_support <-> booley.runtime
+- booley.feedback <-> booley.harness
+- booley.fusesoc <-> booley.targets
+- booley.harness <-> booley.mcp
+- booley.harness <-> booley.runtime
+- booley.harness <-> booley.ticket_board
+- booley.mcp <-> booley.specialists
+- booley.mcp <-> booley.ticket_board
+
+Top 30 file fan-out:
+- booley.harness.booley: 57
+- booley.harness.doctor: 57
+- booley.flows.sim.flow: 49
+- booley.harness.developer: 44
+- booley.harness.init_cmd: 39
+- booley.flows.synth.flow: 36
+- booley.flows.fpga.flow: 33
+- booley.mcp.server: 33
+- booley.flows.sim.execution.engine: 26
+- booley.ticket_board.cli_handlers: 26
+- booley.ticket_board.operations: 26
+- booley.specialists.mutation_tester: 25
+- booley.harness.setup.intake: 24
+- booley.harness.setup.workspace: 22
+- booley.ticket_board.io: 22
+- booley.flows.endpoint_acceptance: 19
+- booley.ticket_board.review_lifecycle: 19
+- booley.ticket_board.review_preparation: 19
+- booley.flows.base: 18
+- booley.specialists.specialist: 18
+- booley.ticket_board.amendment: 18
+- booley.flows.lint.flow: 17
+- booley.harness._ticket_ops: 16
+- booley.ticket_board.flow_execution: 16
+- booley.ticket_board.workspace_ops: 16
+- booley.flows.sim.verilator_coverage_execution: 15
+- booley.harness.setup.readiness: 15
+- booley.ticket_board.basis_refresh: 15
+- booley.specialists.reviewer: 14
+- booley.ticket_board: 14
+
+Named composition hotspot fan-out (diagnostic only):
+- booley.harness.doctor: 57
+- booley.harness.booley: 57
+- booley.harness.init_cmd: 39
+- booley.harness.developer: 44
+- booley.flows.sim.flow: 49
+- booley.flows.synth.flow: 36
+- booley.mcp.server: 33
+- booley.flows.fpga.flow: 33
+- booley.specialists.mutation_tester: 25
+- booley.specialists.coverage_analyst: 13
+```
