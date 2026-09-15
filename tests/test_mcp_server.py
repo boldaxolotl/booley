@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -667,11 +667,6 @@ class TestTryReadReport:
         assert self._try_read_report() is None
 
     def test_non_persisting_dry_run_does_not_attach_stale_report(self, monkeypatch):
-        async def fake_run(_cmd, timeout=600, env=None):
-            del timeout, env
-            return 0, '{"flow": "lint", "schema_version": 1}', "", False
-
-        monkeypatch.setattr(self.mcp_server, "_run_subprocess", fake_run)
         monkeypatch.setattr(
             self.mcp_server,
             "_try_read_report",
@@ -681,6 +676,10 @@ class TestTryReadReport:
             self.mcp_server,
             "TextContent",
             lambda **kwargs: SimpleNamespace(type=kwargs["type"], text=kwargs["text"]),
+        )
+        jobs = MagicMock()
+        jobs.run_synchronous = AsyncMock(
+            return_value=(0, '{"flow": "lint", "schema_version": 1}', "", False)
         )
 
         result = asyncio.run(
@@ -693,7 +692,7 @@ class TestTryReadReport:
                     "non_persisting_dry_run": True,
                 },
                 {},
-                MagicMock(),
+                jobs,
             )
         )
 
