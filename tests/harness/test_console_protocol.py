@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from booley.flows import endpoint_events
 from booley.harness.developer_display import DisplayWatcher, _push_initial_criteria
 from booley.harness.terminal import (
     get_console_app,
@@ -77,6 +78,66 @@ class TestToolEndSummary:
 
 
 class TestCriteriaUpdateEvent:
+    def test_display_projection_bounds_untrusted_fields(self):
+        assert endpoint_events._truncate_utf8("short") == "short"
+        assert endpoint_events._truncate_utf8("abcdef", 5) == "ab…"
+        assert endpoint_events._bounded_criteria("not-a-mapping") == {}
+
+        safe = endpoint_events._display_safe_event(
+            {
+                "type": "criteria_update",
+                "endpoint": "x" * 3_000,
+                "display_lines": [str(index) for index in range(20)],
+                "criteria": {
+                    "ignored": "not-a-mapping",
+                    "lint": {
+                        "met": 1,
+                        "presentation": {"label": "Lint", "detail": "clean"},
+                    },
+                },
+            }
+        )
+
+        assert safe["endpoint"].endswith("…")
+        assert len(safe["display_lines"]) == 16
+        assert safe["display_lines_truncated"] == 4
+        assert safe["criteria"] == {
+            "lint": {
+                "met": True,
+                "presentation": {"label": "Lint", "detail": "clean"},
+            }
+        }
+
+    def test_oversized_records_fall_back_to_minimal_or_dropped(self, monkeypatch):
+        oversized = {
+            "type": "endpoint_end",
+            "endpoint": "lint",
+            "unexpected": "x" * (endpoint_events.MAX_DISPLAY_EVENT_BYTES + 1),
+        }
+        minimal = json.loads(endpoint_events._serialize_display_event(oversized))
+        assert minimal == {"type": "endpoint_end", "endpoint": "lint", "truncated": True}
+
+        monkeypatch.setattr(endpoint_events, "MAX_DISPLAY_EVENT_BYTES", 50)
+        dropped = json.loads(endpoint_events._serialize_display_event(oversized))
+        assert dropped == {"type": "display_event_dropped", "truncated": True}
+
+    def test_minimal_criteria_marks_omitted_entries(self, monkeypatch):
+        monkeypatch.setattr(endpoint_events, "MAX_DISPLAY_EVENT_BYTES", 70)
+        minimal = endpoint_events._minimal_display_event(
+            {
+                "type": "criteria_update",
+                "criteria": {"criterion-with-a-long-name": {"met": True}},
+            }
+        )
+
+        assert minimal["criteria"] == {}
+        assert minimal["omitted_criteria"] is True
+
+    def test_write_failure_is_best_effort(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
+        with patch("pathlib.Path.open", side_effect=OSError("read only")):
+            endpoint_events._write_display_event({"type": "endpoint_start"})
+
     def test_criteria_update_emitted_on_set_criterion(self, tmp_path: Path):
         from booley.criteria.state import CriterionEntry, DevelopmentState
 

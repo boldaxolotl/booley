@@ -123,6 +123,27 @@ class TestRecordRoundTrip:
         assert root is not None
         assert not list(root.glob("*.tmp"))
 
+    def test_delete_record_removes_synchronous_activity(self, _jobs_env):
+        rec = jobrec.JobRecord(
+            run_id="lint-sync-1",
+            endpoint="lint",
+            started_at="t",
+            timeout_s=60,
+        )
+        jobrec.write_record(rec, root=_jobs_env)
+
+        jobrec.delete_record(rec.run_id, root=_jobs_env)
+
+        assert jobrec.read_record(rec.run_id, root=_jobs_env) is None
+
+    def test_delete_record_is_best_effort(self, _jobs_env, monkeypatch):
+        def fail_unlink(*_args, **_kwargs):
+            raise OSError
+
+        monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+        jobrec.delete_record("lint-sync-1", root=_jobs_env)
+
 
 class TestDisabledStorage:
     def test_explicit_none_disables_storage(self):

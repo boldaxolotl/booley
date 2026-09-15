@@ -6,6 +6,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -306,6 +307,67 @@ class TestReportFetch:
         assert active[0].endpoint == "lint"
         assert active[0].status == jobrec.STATUS_RUNNING
         assert remaining == []
+
+    def test_visible_inline_endpoint_delegates_to_job_manager(self):
+        import asyncio
+
+        jobs = _JobManager(_FakeLifetime())
+        jobs.run_synchronous = AsyncMock(return_value=(0, "ok", "", False))
+
+        result = asyncio.run(
+            mcp_server._run_inline_endpoint("lint", ["lint"], 60, jobs, publish_activity=True)
+        )
+
+        assert result == (0, "ok", "", False)
+        jobs.run_synchronous.assert_awaited_once_with("lint", ["lint"], 60)
+
+    def test_administrative_inline_timeout_closes_display(self, monkeypatch):
+        import asyncio
+
+        async def timed_out(*_args, **_kwargs):
+            return 124, "", "timeout", True
+
+        monkeypatch.setattr(mcp_server, "_run_subprocess", timed_out)
+        write_end = MagicMock()
+        monkeypatch.setattr(mcp_server, "_write_synthetic_endpoint_end", write_end)
+
+        result = asyncio.run(
+            mcp_server._run_inline_endpoint(
+                "submit_run_report",
+                ["report"],
+                15,
+                _JobManager(_FakeLifetime()),
+                publish_activity=False,
+            )
+        )
+
+        assert result == (124, "", "timeout", True)
+        assert write_end.call_args.args[:2] == ("submit_run_report", 15)
+        assert write_end.call_args.kwargs["identity"].invocation_id
+
+    def test_administrative_inline_cancellation_closes_display(self, monkeypatch):
+        import asyncio
+
+        async def cancelled(*_args, **_kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(mcp_server, "_run_subprocess", cancelled)
+        write_end = MagicMock()
+        monkeypatch.setattr(mcp_server, "_write_synthetic_endpoint_end", write_end)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                mcp_server._run_inline_endpoint(
+                    "submit_run_report",
+                    ["report"],
+                    15,
+                    _JobManager(_FakeLifetime()),
+                    publish_activity=False,
+                )
+            )
+
+        assert write_end.call_args.args[:2] == ("submit_run_report", 0)
+        assert write_end.call_args.kwargs["outcome"] == "aborted"
 
     def test_latest_report_no_reports_dir(self, tmp_path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
