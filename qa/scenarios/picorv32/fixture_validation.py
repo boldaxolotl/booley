@@ -1,17 +1,19 @@
 """Read-only preflight and verdict oracles for PicoRV32 run-owned stimuli.
 
-These checks validate operator inputs and retained reports. They never run a
+These checks validate Scenario Operator inputs and retained reports. They never run a
 Booley Flow or turn a fixture self-test into a product Check Result.
 """
 
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import struct
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 
@@ -89,14 +91,14 @@ def spike_elf(path: Path, ram_start: int, ram_end: int) -> dict:
     return {"segments": segments, "ram_start": ram_start, "ram_end": ram_end}
 
 
-def _warning_keys(report: dict) -> set[tuple]:
-    return {(item["rule"], Path(item["file"]).name, item["line"], item["message"])
-            for item in report.get("warnings", [])}
+def _warning_keys(report: dict) -> list[tuple]:
+    return [(item["rule"], item["file"], item["line"], item["message"])
+            for item in report.get("warnings", [])]
 
 
 def lint_dedupe(first: dict, second: dict, combined: dict) -> dict:
     """Prove the same real warning occurs for both Targets and once in aggregate."""
-    first_keys, second_keys, combined_keys = map(_warning_keys, (first, second, combined))
+    first_keys, second_keys, combined_keys = map(set, map(_warning_keys, (first, second, combined)))
     common = first_keys & second_keys
     _require(bool(common), "no common real warning in both Target reports")
     _require(common <= combined_keys, "aggregate report omitted the common warning")
@@ -110,15 +112,75 @@ def lint_dedupe(first: dict, second: dict, combined: dict) -> dict:
 def lint_waiver(before: dict, after: dict, intended_rule: str,
                 control_rule: str | None = None) -> dict:
     """Require only the intended native warning to disappear."""
-    earlier = {row["rule"] for row in before.get("warnings", [])}
-    later = {row["rule"] for row in after.get("warnings", [])}
-    _require(intended_rule in earlier, "intended warning absent before waiver")
+    earlier = Counter(_warning_keys(before))
+    later = Counter(_warning_keys(after))
+    intended = Counter({key: count for key, count in earlier.items()
+                        if key[0] == intended_rule})
+    _require(bool(intended), "intended warning absent before waiver")
+    _require(sum(intended.values()) == 1,
+             "waiver stimulus must contain exactly one intended warning")
     if control_rule is not None:
-        _require(control_rule in earlier and control_rule in later,
+        controls = Counter({key: count for key, count in earlier.items()
+                            if key[0] == control_rule})
+        _require(bool(controls) and all(later[key] == count for key, count in controls.items()),
                  "unrelated control warning did not survive waiver")
-    _require(intended_rule not in later, "intended warning remains after waiver")
-    _require(later == earlier - {intended_rule}, "waiver changed another warning")
+    _require(all(key[0] != intended_rule for key in later),
+             "intended warning remains after waiver")
+    _require(later == earlier - intended, "waiver changed another warning")
     return {"suppressed": intended_rule, "preserved": control_rule}
+
+
+def synth_baseline(summary: dict, report: dict, expected: dict) -> dict:
+    """Validate the successful paired synthesis comparison and its identities."""
+    _require(type(summary.get("flow_exit")) is int and summary["flow_exit"] == 0,
+             "synthesis comparison did not exit successfully")
+    _require(summary.get("infra_error") in (None, ""),
+             "synthesis comparison has an infrastructure error")
+    for field in ("candidate_target", "baseline_target", "candidate_identity",
+                  "baseline_identity"):
+        value = summary.get(field)
+        _require(isinstance(value, str) and bool(value.strip()),
+                 f"synthesis comparison lacks {field}")
+        _require(value == expected.get(field), f"synthesis {field} differs from declared identity")
+    baseline = summary.get("baseline")
+    _require(isinstance(baseline, dict), "synthesis comparison lacks baseline report")
+    ref = baseline.get("ref")
+    expected_candidate_ref = expected.get("candidate_revision")
+    expected_ref = expected.get("baseline_revision")
+    _require(isinstance(expected_candidate_ref, str)
+             and re.fullmatch(r"[0-9a-f]{40}", expected_candidate_ref) is not None,
+             "declared candidate revision is not a full commit ID")
+    _require(isinstance(ref, str) and isinstance(expected_ref, str)
+             and bool(ref.strip()) and re.fullmatch(r"[0-9a-f]{40}", expected_ref) is not None
+             and expected_ref.startswith(ref),
+             "synthesis baseline ref differs from declared revision")
+    for field in ("delta_pct", "timing_delta_pct"):
+        value = summary.get(field)
+        _require(type(value) in (int, float) and math.isfinite(value),
+                 f"synthesis comparison lacks numeric {field}")
+    results = report.get("detail", {}).get("implementation", {}).get("results", {})
+    result = results.get(summary["candidate_target"])
+    _require(isinstance(result, dict), "synthesis report lacks candidate Target result")
+    comparison = result.get("comparison")
+    _require(isinstance(comparison, dict) and comparison.get("basis_valid") is True
+             and comparison.get("basis_errors") == [],
+             "synthesis report has an invalid comparison basis")
+    candidate_revision = result.get("provenance", {}).get("producer", {}).get("source_revision")
+    baseline_revision = comparison.get("baseline", {}).get("provenance", {}).get(
+        "producer", {}).get("source_revision")
+    _require(candidate_revision == expected_candidate_ref,
+             "synthesis candidate revision differs from declared commit")
+    _require(baseline_revision == expected_ref,
+             "synthesis baseline revision differs from declared commit")
+    _require(result.get("identity", {}).get("target_identity") == summary["candidate_identity"]
+             and comparison.get("candidate_target_identity") == summary["candidate_identity"]
+             and comparison.get("baseline_target_identity") == summary["baseline_identity"],
+             "synthesis report Target identities contradict the summary")
+    return {"candidate_identity": summary["candidate_identity"],
+            "baseline_identity": summary["baseline_identity"],
+            "candidate_revision": candidate_revision,
+            "baseline_revision": baseline_revision, "delta_pct": summary["delta_pct"],
+            "timing_delta_pct": summary["timing_delta_pct"]}
 
 
 def lint_command(argv: list[str]) -> dict:
@@ -186,7 +248,8 @@ def canonical_registration(requested: Path, registered: Path) -> dict:
 def vivado_implementation(report: dict, artifacts: dict, before: dict,
                            retained_dir: Path) -> dict:
     """Grade the declared fresh routed output without inventing a bitstream rule."""
-    _require(report.get("exit_code") == 0, "Vivado Flow did not exit successfully")
+    _require(type(report.get("exit_code")) is int and report["exit_code"] == 0,
+             "Vivado Flow did not exit successfully")
     detail = report.get("detail", {})
     implementation = detail.get("implementation", {})
     _require(implementation.get("grade") == "pass" and implementation.get("passed") is True,
@@ -222,6 +285,22 @@ def stealth_native(paths: list[str]) -> dict:
 def same_bwave_mode(child: dict, replay: dict) -> dict:
     """Require an exact replay before declaring a child's B-Wave divergence."""
     fields = ("trace", "argv", "signals", "clock", "reset", "sampling")
+    for record, name in ((child, "child"), (replay, "replay")):
+        _require(all(field in record for field in fields),
+                 f"B-Wave {name} query is incomplete")
+        _require(isinstance(record["trace"], str) and bool(record["trace"]),
+                 f"B-Wave {name} trace is invalid")
+        for field in ("argv", "signals"):
+            value = record[field]
+            _require(isinstance(value, list) and bool(value)
+                     and all(isinstance(item, str) and bool(item) for item in value),
+                     f"B-Wave {name} {field} is invalid")
+        for field in ("clock", "reset"):
+            _require(record[field] is None
+                     or (isinstance(record[field], str) and bool(record[field])),
+                     f"B-Wave {name} {field} is invalid")
+        _require(isinstance(record["sampling"], str) and bool(record["sampling"]),
+                 f"B-Wave {name} sampling is invalid")
     _require(all(child.get(field) == replay.get(field) for field in fields),
              "B-Wave replay differs from child query or defaults")
     return {"exact_replay": True}
@@ -243,6 +322,8 @@ def oracle(record: dict) -> dict:
     elif kind == "lint-waiver":
         result = lint_waiver(record["before"], record["after"],
                              record["intended_rule"], record.get("control_rule"))
+    elif kind == "synth-baseline":
+        result = synth_baseline(record["summary"], record["report"], record["expected"])
     elif kind == "riscv-subjects":
         result = required_subjects(record["pdf_text"], record["subjects"])
     elif kind == "vivado-implementation":
@@ -260,7 +341,7 @@ def oracle(record: dict) -> dict:
 
 
 def _parser() -> argparse.ArgumentParser:
-    """Build the small operator-facing preflight CLI."""
+    """Build the small Scenario Operator-facing preflight CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="kind", required=True)
     topology = sub.add_parser("git-topology")

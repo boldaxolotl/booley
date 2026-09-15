@@ -5,7 +5,10 @@ EDA, session, and mount evidence. This probe never mutates a Grant or Session.
 """
 
 import argparse
+import hashlib
 import json
+import re
+from collections import Counter
 from pathlib import Path
 
 
@@ -24,15 +27,56 @@ def _state(states: dict, name: str) -> dict:
     return value
 
 
+def _owner(record: dict) -> dict:
+    owner = record.get("owner")
+    _need(isinstance(owner, dict), "run-owned identity is missing")
+    for field in ("project_root", "registration"):
+        _need(isinstance(owner.get(field), str) and bool(owner[field]),
+              f"run-owned {field} is missing")
+    registrations = owner.get("run_owned_registrations")
+    _need(isinstance(registrations, list)
+          and all(isinstance(item, str) and bool(item) for item in registrations),
+          "run-owned registration ledger is invalid")
+    return owner
+
+
 def _identity(snapshot: dict, owner: dict, name: str) -> None:
     _need(snapshot.get("project_root") == owner["project_root"],
           f"{name}: Project root differs from run-owned identity")
     _need(snapshot.get("eda_kind") == "vivado", f"{name}: EDA kind is not Vivado")
 
 
+def _epoch(snapshot: dict, field: str, name: str) -> int:
+    value = snapshot.get(field)
+    _need(type(value) is int and value >= 0, f"{name}: {field} is not a valid integer epoch")
+    return value
+
+
+def _protected_unchanged(record: dict) -> None:
+    protected = record.get("protected")
+    _need(isinstance(protected, dict), "borrowed inventory snapshots are missing")
+    before = protected.get("before")
+    after = protected.get("after")
+    _need(isinstance(before, dict) and isinstance(after, dict),
+          "borrowed before/after inventory snapshots are missing")
+    _need(set(before) == {"grants", "installations"}
+          and set(after) == {"grants", "installations"},
+          "borrowed inventory must contain grants and installations")
+    for kind in ("grants", "installations"):
+        _need(isinstance(before[kind], list) and isinstance(after[kind], list),
+              f"borrowed {kind} inventory must be a list")
+        _need(all(isinstance(item, dict) for item in before[kind] + after[kind]),
+              f"borrowed {kind} inventory rows must be mappings")
+        old = Counter(json.dumps(item, sort_keys=True, separators=(",", ":"))
+                      for item in before[kind])
+        new = Counter(json.dumps(item, sort_keys=True, separators=(",", ":"))
+                      for item in after[kind])
+        _need(old == new, f"borrowed {kind} changed during run-owned transition")
+
+
 def grant_replacement(record: dict) -> dict:
     """Validate revoke, regrant, issuance, start, and mount in that order."""
-    owner = record["owner"]
+    owner = _owner(record)
     states = record["states"]
     before = _state(states, "before")
     revoked = _state(states, "revoked")
@@ -43,6 +87,7 @@ def grant_replacement(record: dict) -> dict:
                            ("regranted", regranted), ("issued", issued),
                            ("started", started)):
         _identity(snapshot, owner, name)
+        _epoch(snapshot, "grant_epoch", name)
     old = before.get("grant_registration")
     _need(old is None or old in owner["run_owned_registrations"],
           "existing Grant is borrowed; do not revoke it")
@@ -54,43 +99,68 @@ def grant_replacement(record: dict) -> dict:
           "Grant changed during host Session issuance")
     _need(started.get("grant_registration") == owner["registration"],
           "Grant changed before Session start")
-    _need(issued.get("session_grant_epoch") == issued.get("grant_epoch")
+    _need(_epoch(issued, "session_grant_epoch", "issued")
+          == _epoch(issued, "grant_epoch", "issued")
           and issued.get("session_valid") is True,
           "stale Session spec; run booley init --seed after regrant")
-    _need(started.get("session_grant_epoch") == started.get("grant_epoch")
+    _need(_epoch(started, "session_grant_epoch", "started")
+          == _epoch(started, "grant_epoch", "started")
           and started.get("session_valid") is True and started.get("session_running") is True,
           "Session not validated and running after issuance")
     _need(started.get("mount_probe") is True,
           "intended Vivado mount/command probe did not succeed")
+    _protected_unchanged(record)
     return {"ready": True, "project_root": owner["project_root"],
             "registration": owner["registration"]}
 
 
 def ready(record: dict, name: str = "current") -> dict:
     """Gate Doctor or FPGA execution on the current run-owned state."""
-    owner = record["owner"]
+    owner = _owner(record)
     current = _state(record["states"], name)
     _identity(current, owner, name)
     _need(current.get("grant_registration") == owner["registration"],
           "run-owned Vivado Grant is missing")
-    _need(current.get("session_grant_epoch") == current.get("grant_epoch")
+    _need(_epoch(current, "session_grant_epoch", name)
+          == _epoch(current, "grant_epoch", name)
           and current.get("session_valid") is True,
           "stale Session spec; run booley init --seed")
     _need(current.get("session_running") is True, "Session is not running")
     _need(current.get("mount_probe") is True, "Vivado mount/command probe missing")
+    _protected_unchanged(record)
     return {"ready": True, "project_root": owner["project_root"]}
 
 
 def denied(record: dict) -> dict:
     """Grade the negative Check from its own denial, independent of recovery."""
-    owner = record["owner"]
+    owner = _owner(record)
     snapshot = _state(record["states"], "revoked")
     _identity(snapshot, owner, "revoked")
     _need(snapshot.get("grant_registration") is None, "Grant remains attached")
     result = record.get("denial_evidence", {})
     _need(result.get("declared_expected") == "denied", "denial expectation missing")
-    _need(result.get("observed") == "denied" and result.get("flow_executed") is False,
-          "revoked-Grant denial not independently observed")
+    _need(result.get("flow_executed") is False,
+          "revoked-Grant denial did not prevent FPGA execution")
+    _need(isinstance(owner.get("evidence_root"), str) and bool(owner["evidence_root"]),
+          "retained evidence root is missing")
+    evidence_root = Path(owner["evidence_root"]).resolve(strict=True)
+    log_path = Path(result["log_path"]).resolve(strict=True)
+    _need(evidence_root.is_dir() and log_path.is_file()
+          and log_path.is_relative_to(evidence_root),
+          "denial log is outside the retained evidence root")
+    content = log_path.read_bytes()
+    _need(hashlib.sha256(content).hexdigest() == result.get("log_sha256"),
+          "denial log digest does not match retained evidence")
+    text = content.decode("utf-8")
+    _need(re.search(r"(?m)^exit:\s*2\s*$", text) is not None,
+          "denial log does not record exit 2")
+    _need('"flow", "fpga"' in text or re.search(r"\bbooley\s+flow\s+fpga\b", text),
+          "denial log does not identify the FPGA command")
+    authority_denials = ("host-issued spec stamp", "no exact vivado grant",
+                         "has no exact vivado grant")
+    _need(any(fragment in text.casefold() for fragment in authority_denials),
+          "denial log does not contain a recognized authority denial")
+    _protected_unchanged(record)
     return {"denial_pass": True, "project_root": owner["project_root"]}
 
 

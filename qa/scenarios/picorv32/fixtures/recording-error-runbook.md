@@ -55,7 +55,7 @@ The Project path and refs come from this run's ledger, not from a copied run.
   demonstrate waiver behavior.
 * Before `lint-hard`, run `lint-command booley session enter -- booley ... lint
   ...` with the exact argv that will be executed. Exit 125 from a malformed
-  `session enter` command is an operator command error, not a lint verdict.
+  `session enter` command is a Scenario Operator command error, not a lint verdict.
 * For `grant-recovery`, use `vivado-mount MOUNT REGISTERED_SOURCE` after
   registry and runtime metadata identify the canonical source and mount.
   The validator resolves `bin/vivado` or `Vivado/bin/vivado` from that source;
@@ -64,9 +64,12 @@ The Project path and refs come from this run's ledger, not from a copied run.
 For retained structured reports, pass `oracle INPUT.json`. The input has a
 `kind` plus the named data: `lint-dedupe` takes `first`, `second`, `combined`
 lint reports; `lint-waiver` takes `before`, `after`, `intended_rule` and optional
-`control_rule`; `vivado-implementation` takes `report`, `artifacts`, `before`,
-and `retained_dir`; `stealth-native` takes `paths`; `bwave-mode` takes `child`
-and `replay`; `verdict` takes `declared_expected` and `observed`. The verdict
+`control_rule`; `synth-baseline` takes the retained `summary`, full `report`,
+and `expected` candidate/baseline Target names, Target identities, and full
+`candidate_revision` and `baseline_revision` commit IDs;
+`vivado-implementation` takes `report`, `artifacts`, `before`, and
+`retained_dir`; `stealth-native` takes `paths`; `bwave-mode` takes `child` and
+`replay`; `verdict` takes `declared_expected` and `observed`. The verdict
 oracle prints both values and exits nonzero on disagreement. Retain its JSON
 beside the unmodified product report.
 
@@ -99,16 +102,21 @@ The remaining verdicts use these explicit boundaries:
 
 Use the run-owned exact Project root and registration IDs, saving host `--json`
 and Session command outputs before and after each transition. The read-only
-`state_probe.py` accepts a compact JSON snapshot with `owner` and `states`.
-`owner` has `project_root`, `registration`, and `run_owned_registrations`.
+`state_probe.py` accepts a compact JSON snapshot with `owner`, `states`, and
+`protected`. `owner` has `project_root`, `registration`,
+`run_owned_registrations`, and the retained `evidence_root`.
 Each state contains that `project_root`, `eda_kind: vivado`,
 `grant_registration`, integer `grant_epoch`, `session_grant_epoch`, Boolean
 `session_valid`, `session_running`, and `mount_probe`. Use `null` for a missing
 Grant/issuance. Epochs are evidence labels for the exact Grant transition and
 issued spec; never guess them from wall-clock time. The `states` keys are
 `before`, `revoked`, `regranted`, `issued`, and `started`; for downstream Checks
-also include `current`. `denial_evidence` holds `declared_expected: denied`,
-`observed: denied`, and `flow_executed: false` from the negative Check alone.
+also include `current`. `protected.before` and `protected.after` each hold the
+complete borrowed `grants` and `installations` lists; the probe requires them
+to remain identical. `denial_evidence` holds `declared_expected: denied`,
+`flow_executed: false`, `log_path`, and `log_sha256` from the negative Check
+alone. The retained log must identify the FPGA command, record exit 2, and
+contain the authority denial.
 
 1. Inspect the existing Grant and Session. If a different Grant is attached,
    revoke it only when the ledger proves it belongs to this run. Never modify

@@ -1,5 +1,6 @@
 """Regression gates for the invalid stimuli and wrong verdicts in the sealed run."""
 
+import copy
 import hashlib
 import json
 import struct
@@ -20,6 +21,7 @@ from qa.scenarios.picorv32.fixture_validation import (
     same_bwave_mode,
     spike_elf,
     stealth_native,
+    synth_baseline,
     vivado_executable,
     vivado_implementation,
 )
@@ -101,8 +103,12 @@ def test_dedupe_requires_same_real_warning_in_both_targets():
 
 
 def test_native_waiver_only_removes_intended_warning():
-    before = {"warnings": [{"rule": "WIDTHTRUNC"}, {"rule": "CONTROL"}]}
-    after = {"warnings": [{"rule": "CONTROL"}]}
+    intended = {"rule": "WIDTHTRUNC", "file": "/work/a.sv", "line": 2,
+                "message": "width mismatch"}
+    control = {"rule": "CONTROL", "file": "/work/a.sv", "line": 3,
+               "message": "control warning"}
+    before = {"warnings": [intended, control]}
+    after = {"warnings": [control]}
     assert lint_waiver(before, after, "WIDTHTRUNC", "CONTROL")["preserved"] == "CONTROL"
     with pytest.raises(FixtureError, match="control warning"):
         lint_waiver(before, {"warnings": []}, "WIDTHTRUNC", "CONTROL")
@@ -110,8 +116,14 @@ def test_native_waiver_only_removes_intended_warning():
     assert (FIXTURES / "lint/verible-waiver.txt").read_text() == (
         'waive --rule=no-trailing-spaces --location=".*qa_lint_fixture\\.sv"\n'
     )
-    assert lint_waiver({"warnings": [{"rule": "no-trailing-spaces"}]},
+    verible = {"rule": "no-trailing-spaces", "file": "/work/a.sv", "line": 2,
+               "message": "trailing whitespace"}
+    assert lint_waiver({"warnings": [verible]},
                        {"warnings": []}, "no-trailing-spaces")["suppressed"] == "no-trailing-spaces"
+    unrelated_same_rule = dict(intended, file="/work/b.sv", line=8)
+    with pytest.raises(FixtureError, match="exactly one intended warning"):
+        lint_waiver({"warnings": [intended, unrelated_same_rule, control]},
+                    {"warnings": [control]}, "WIDTHTRUNC", "CONTROL")
 
 
 def test_verible_renderer_preserves_intended_trailing_space_bytes(tmp_path):
@@ -159,12 +171,46 @@ def test_exact_result_oracles_reject_wrong_output(tmp_path):
     with pytest.raises(FixtureError, match="replay differs"):
         same_bwave_mode(child, replay)
     assert same_bwave_mode(child, child)["exact_replay"]
+    with pytest.raises(FixtureError, match="incomplete"):
+        same_bwave_mode({}, {})
     source = tmp_path / "source"
     source.mkdir()
     alias = tmp_path / "alias"
     alias.symlink_to(source)
     assert canonical_registration(alias, source)["canonical_source"] == str(source)
     assert oracle({"kind": "verdict", "declared_expected": "denied", "observed": "pass"})["matches"] is False
+
+
+def test_synth_baseline_requires_successful_numeric_comparison_and_identities():
+    expected = {"candidate_target": "synth_core", "baseline_target": "synth_core",
+                "candidate_identity": "booley::candidate:0#synth_core",
+                "baseline_identity": "booley::baseline:0#synth_core",
+                "candidate_revision": "b" * 40, "baseline_revision": "a" * 40}
+    summary = {**expected, "flow_exit": 0, "infra_error": None,
+               "baseline": {"ref": "a" * 7, "area": 42},
+               "delta_pct": 0.0, "timing_delta_pct": -1.5}
+    summary.pop("candidate_revision")
+    summary.pop("baseline_revision")
+    report = {"detail": {"implementation": {"results": {"synth_core": {
+        "identity": {"target_identity": expected["candidate_identity"]},
+        "provenance": {"producer": {"source_revision": expected["candidate_revision"]}},
+        "comparison": {"basis_valid": True, "basis_errors": [],
+                       "candidate_target_identity": expected["candidate_identity"],
+                       "baseline_target_identity": expected["baseline_identity"],
+                       "baseline": {"provenance": {"producer": {
+                           "source_revision": expected["baseline_revision"]}}}},
+    }}}}}
+    assert synth_baseline(summary, report, expected)["baseline_revision"] == "a" * 40
+    wrong = dict(summary, delta_pct="0.0")
+    with pytest.raises(FixtureError, match="numeric delta_pct"):
+        synth_baseline(wrong, report, expected)
+    wrong = dict(summary, candidate_identity="booley::wrong:0#synth_core")
+    with pytest.raises(FixtureError, match="candidate_identity differs"):
+        synth_baseline(wrong, report, expected)
+    wrong_report = copy.deepcopy(report)
+    wrong_report["detail"]["implementation"]["results"]["synth_core"]["provenance"]["producer"]["source_revision"] = "c" * 40
+    with pytest.raises(FixtureError, match="candidate revision differs"):
+        synth_baseline(summary, wrong_report, expected)
 
 
 def test_vivado_implementation_requires_fresh_declared_artifacts_only(tmp_path):
