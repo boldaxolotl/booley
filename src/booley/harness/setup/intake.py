@@ -700,22 +700,8 @@ def _freeze_recipe_family(
     )
     from booley.evidence.recipe import recipe_snapshot_fingerprint
 
-    keys = [key for key in expanded if key.startswith(prefix)]
     recipe_root = ticket_runtime_dir(ctx.logs_dir) / "recipe-freeze" / prefix.rstrip("_")
-    prepared: list[tuple[str, str, dict[str, Any], bool]] = []
-    for key in keys:
-        params = criterion_params.setdefault(key, {})
-        candidate = params.get(TARGET_IDENTITY_PARAM)
-        if not isinstance(candidate, str) or not candidate:
-            raise FatalError(f"{flow_label} criterion {key!r} has no Target", slug=ctx.slug)
-        needs_baseline = _pin_recipe_baseline(ctx, key, params, flow_label)
-        baseline = params.get(BASELINE_TARGET_PARAM, candidate)
-        if not isinstance(baseline, str) or not baseline:
-            raise FatalError(
-                f"{flow_label} criterion {key!r} has invalid baseline Target metadata",
-                slug=ctx.slug,
-            )
-        prepared.append((key, baseline if needs_baseline else candidate, params, needs_baseline))
+    prepared = _prepare_recipe_targets(ctx, expanded, criterion_params, prefix, flow_label)
 
     with _baseline_recipe_root(ctx, any(item[3] for item in prepared), flow_label) as base_root:
         for key, recipe_target, params, needs_baseline in prepared:
@@ -735,6 +721,30 @@ def _freeze_recipe_family(
                 continue
             params[RECIPE_FINGERPRINT_PARAM] = recipe_snapshot_fingerprint(snapshot)
             params[RECIPE_SNAPSHOT_PARAM] = snapshot
+
+
+def _prepare_recipe_targets(
+    ctx: TicketContext,
+    expanded: dict[str, bool],
+    criterion_params: dict[str, dict[str, Any]],
+    prefix: str,
+    flow_label: str,
+) -> list[tuple[str, str, dict[str, Any], bool]]:
+    prepared = []
+    for key in (item for item in expanded if item.startswith(prefix)):
+        params = criterion_params.setdefault(key, {})
+        candidate = params.get(TARGET_IDENTITY_PARAM)
+        if not isinstance(candidate, str) or not candidate:
+            raise FatalError(f"{flow_label} criterion {key!r} has no Target", slug=ctx.slug)
+        needs_baseline = _pin_recipe_baseline(ctx, key, params, flow_label)
+        baseline = params.get(BASELINE_TARGET_PARAM, candidate)
+        if not isinstance(baseline, str) or not baseline:
+            raise FatalError(
+                f"{flow_label} criterion {key!r} has invalid baseline Target metadata",
+                slug=ctx.slug,
+            )
+        prepared.append((key, baseline if needs_baseline else candidate, params, needs_baseline))
+    return prepared
 
 
 @contextlib.contextmanager

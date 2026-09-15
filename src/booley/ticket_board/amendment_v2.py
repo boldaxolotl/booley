@@ -19,71 +19,16 @@ from .amendment_proposal import (
 from .ticket_document import TicketAuthoringView, TicketCriterion, TicketSpec
 
 
-def build_v2_amendment_proposal(  # noqa: PLR0912, PLR0915
+def build_v2_amendment_proposal(
     spec: TicketSpec, request: Any, root: Path, view: TicketAuthoringView
 ) -> AmendmentProposal:
     """Apply only monotone, instance-addressed edits to v2 authoring fields."""
-    # Validate and apply the entire request atomically before any publication.
     try:
-        data = require_dict(request, field="amendment")
-        if set(data) - {"actor", "reason", "feedback", "criteria", "scope_add"}:
-            raise AmendmentProposalError("amendment has unknown fields")
-        actor = require_str(data, "actor").strip()
-        reason = require_str(data, "reason").strip()
-        feedback = data.get("feedback", "")
-        if not actor or len(actor) > 200 or any(char in actor for char in "\r\n"):
-            raise AmendmentProposalError("amendment actor must name one Human on one line")
-        if not reason:
-            raise AmendmentProposalError("amendment reason must be nonblank")
-        if not isinstance(feedback, str):
-            raise AmendmentProposalError("feedback must be a string")
-        edits = data.get("criteria", [])
-        additions = data.get("scope_add", [])
-        if not isinstance(edits, list) or not isinstance(additions, list):
-            raise AmendmentProposalError("criteria and scope_add must be lists")
+        actor, reason, feedback, edits, additions = _request_fields(request)
         revised = deepcopy(dict(spec.fields))
-        changes: list[CriterionChange] = []
         seen: set[str] = set()
         by_identity = {row.identity: row for row in spec.criteria}
-        for raw in edits:
-            edit = require_dict(raw, field="criterion edit")
-            if set(edit) - {"criterion", "thresholds", "make_optional"}:
-                raise AmendmentProposalError("criterion edit has unknown fields")
-            name = require_str(edit, "criterion").strip()
-            if not name or name in seen:
-                raise AmendmentProposalError("criterion edits require unique, nonblank instances")
-            seen.add(name)
-            row = by_identity.get(name)
-            if row is None:
-                raise AmendmentProposalError(f"unknown Criterion instance {name!r}")
-            make_optional = edit.get("make_optional", False)
-            thresholds = edit.get("thresholds", {})
-            if not isinstance(make_optional, bool):
-                raise AmendmentProposalError("make_optional must be boolean")
-            if not isinstance(thresholds, dict):
-                raise AmendmentProposalError("thresholds must be a mapping")
-            if make_optional and not row.mandatory:
-                raise AmendmentProposalError(f"{name!r} is already optional")
-            if not make_optional and not thresholds:
-                raise AmendmentProposalError(f"{name!r} has no change")
-            leaf, parent, key = _locate(revised, row, view)
-            deltas: dict[str, tuple[Any, Any]] = {}
-            for param, new in thresholds.items():
-                old, family = _threshold(leaf, row, param)
-                direction = _relaxation_direction(family, param)
-                before = _threshold_number(family, param, old)
-                after = _threshold_number(family, param, new)
-                if (direction == "lower" and after >= before) or (
-                    direction == "higher" and after <= before
-                ):
-                    raise AmendmentProposalError(f"{name}.{param} must relax")
-                _set_threshold(leaf, row, param, new)
-                deltas[param] = (old, new)
-            if make_optional:
-                _move_optional(revised, row, parent, key, leaf, view)
-            changes.append(
-                CriterionChange(name, row.mandatory, row.mandatory and not make_optional, deltas)
-            )
+        changes = [_apply_criterion_edit(revised, raw, by_identity, seen, view) for raw in edits]
         scope_added = _add_scope(revised, additions, root)
         if not changes and not scope_added:
             raise AmendmentProposalError("no acceptance change; use ordinary unblock for feedback")
@@ -94,6 +39,78 @@ def build_v2_amendment_proposal(  # noqa: PLR0912, PLR0915
         if isinstance(exc, AmendmentProposalError):
             raise
         raise AmendmentProposalError(str(exc)) from exc
+
+
+def _request_fields(request: Any) -> tuple[str, str, str, list[Any], list[Any]]:
+    data = require_dict(request, field="amendment")
+    if set(data) - {"actor", "reason", "feedback", "criteria", "scope_add"}:
+        raise AmendmentProposalError("amendment has unknown fields")
+    actor = require_str(data, "actor").strip()
+    reason = require_str(data, "reason").strip()
+    feedback = data.get("feedback", "")
+    if not actor or len(actor) > 200 or any(char in actor for char in "\r\n"):
+        raise AmendmentProposalError("amendment actor must name one Human on one line")
+    if not reason:
+        raise AmendmentProposalError("amendment reason must be nonblank")
+    if not isinstance(feedback, str):
+        raise AmendmentProposalError("feedback must be a string")
+    edits = data.get("criteria", [])
+    additions = data.get("scope_add", [])
+    if not isinstance(edits, list) or not isinstance(additions, list):
+        raise AmendmentProposalError("criteria and scope_add must be lists")
+    return actor, reason, feedback, edits, additions
+
+
+def _apply_criterion_edit(
+    revised: dict[str, Any],
+    raw: Any,
+    by_identity: dict[str, TicketCriterion],
+    seen: set[str],
+    view: TicketAuthoringView,
+) -> CriterionChange:
+    edit = require_dict(raw, field="criterion edit")
+    if set(edit) - {"criterion", "thresholds", "make_optional"}:
+        raise AmendmentProposalError("criterion edit has unknown fields")
+    name = require_str(edit, "criterion").strip()
+    if not name or name in seen:
+        raise AmendmentProposalError("criterion edits require unique, nonblank instances")
+    seen.add(name)
+    row = by_identity.get(name)
+    if row is None:
+        raise AmendmentProposalError(f"unknown Criterion instance {name!r}")
+    make_optional = edit.get("make_optional", False)
+    thresholds = edit.get("thresholds", {})
+    if not isinstance(make_optional, bool):
+        raise AmendmentProposalError("make_optional must be boolean")
+    if not isinstance(thresholds, dict):
+        raise AmendmentProposalError("thresholds must be a mapping")
+    if make_optional and not row.mandatory:
+        raise AmendmentProposalError(f"{name!r} is already optional")
+    if not make_optional and not thresholds:
+        raise AmendmentProposalError(f"{name!r} has no change")
+    leaf, parent, key = _locate(revised, row, view)
+    deltas = _relax_thresholds(leaf, row, name, thresholds)
+    if make_optional:
+        _move_optional(revised, row, parent, key, leaf, view)
+    return CriterionChange(name, row.mandatory, row.mandatory and not make_optional, deltas)
+
+
+def _relax_thresholds(
+    leaf: Any, row: TicketCriterion, name: str, thresholds: dict[str, Any]
+) -> dict[str, tuple[Any, Any]]:
+    deltas: dict[str, tuple[Any, Any]] = {}
+    for param, new in thresholds.items():
+        old, family = _threshold(leaf, row, param)
+        direction = _relaxation_direction(family, param)
+        before = _threshold_number(family, param, old)
+        after = _threshold_number(family, param, new)
+        if (direction == "lower" and after >= before) or (
+            direction == "higher" and after <= before
+        ):
+            raise AmendmentProposalError(f"{name}.{param} must relax")
+        _set_threshold(leaf, row, param, new)
+        deltas[param] = (old, new)
+    return deltas
 
 
 def _target_key(entries: dict[str, Any], row: TicketCriterion, view: TicketAuthoringView) -> str:
@@ -169,7 +186,7 @@ def _set_threshold(leaf: dict[str, Any], row: TicketCriterion, param: str, value
         leaf[param] = value
 
 
-def _move_optional(  # noqa: PLR0912, PLR0915
+def _move_optional(
     fields: dict[str, Any],
     row: TicketCriterion,
     parent: dict[str, Any],
@@ -177,62 +194,13 @@ def _move_optional(  # noqa: PLR0912, PLR0915
     leaf: Any,
     view: TicketAuthoringView,
 ) -> None:
-    # Each capability has a distinct nested authoring shape; keep moves together.
     mandatory = fields["CRITERIA_MANDATORY"]
     optional = fields.setdefault("CRITERIA_OPTIONAL", {})
     capability = row.capability
     if capability == "REVIEW":
-        values = [leaf] if isinstance(leaf, str) else list(leaf)
-        values.remove(row.parameter)
-        if values:
-            parent[key] = values[0] if len(values) == 1 else values
-        else:
-            del parent[key]
-            if not parent:
-                del mandatory[capability][row.target]
-            if not mandatory[capability]:
-                del mandatory[capability]
-        destination = optional.setdefault(capability, {}).setdefault(row.target, {})
-        prior = destination.get(key)
-        outcomes = [] if prior is None else [prior] if isinstance(prior, str) else list(prior)
-        outcomes.append(row.parameter)
-        destination[key] = outcomes[0] if len(outcomes) == 1 else outcomes
+        _move_review_optional(mandatory, optional, row, parent, key, leaf)
     elif capability in {"SYNTH", "FPGA", "CYCLE_COUNT", "COVERAGE", "SIM"}:
-        declaration = mandatory[capability]
-        target = _target_key(declaration, row, view)
-        source = declaration[target]
-        destination = optional.setdefault(capability, {}).setdefault(target, {})
-        if capability in {"SYNTH", "FPGA"} and source == "pass":
-            optional[capability][target] = declaration.pop(target)
-        elif capability == "COVERAGE":
-            destination["tests"] = source["tests"]
-            destination.setdefault("metrics", {})[row.parameter] = source["metrics"].pop(
-                row.parameter
-            )
-            if not source["metrics"]:
-                del declaration[target]
-        elif capability in {"SYNTH", "FPGA"}:
-            if "baseline" in source:
-                destination["baseline"] = source["baseline"]
-            destination[row.parameter] = source.pop(row.parameter)
-            if set(source) <= {"baseline"}:
-                del declaration[target]
-        elif capability == "CYCLE_COUNT":
-            policy = source[row.test]
-            test_dest = destination.setdefault(row.test, {})
-            if "baseline" in policy:
-                test_dest["baseline"] = policy["baseline"]
-            test_dest[row.parameter] = policy.pop(row.parameter)
-            if set(policy) <= {"baseline"}:
-                del source[row.test]
-            if not source:
-                del declaration[target]
-        else:
-            destination[row.test] = source.pop(row.test)
-            if not source:
-                del declaration[target]
-        if not declaration:
-            del mandatory[capability]
+        _move_flow_optional(mandatory, optional, row, view)
     elif capability in {"LINT", "ELAB", "MUTATION"}:
         destination = optional.setdefault(capability, {})
         destination[key] = parent.pop(key)
@@ -240,3 +208,104 @@ def _move_optional(  # noqa: PLR0912, PLR0915
             del mandatory[capability]
     else:
         optional[capability] = mandatory.pop(capability)
+
+
+def _move_review_optional(
+    mandatory: dict[str, Any],
+    optional: dict[str, Any],
+    row: TicketCriterion,
+    parent: dict[str, Any],
+    key: str,
+    leaf: Any,
+) -> None:
+    values = [leaf] if isinstance(leaf, str) else list(leaf)
+    values.remove(row.parameter)
+    if values:
+        parent[key] = values[0] if len(values) == 1 else values
+    else:
+        del parent[key]
+        if not parent:
+            del mandatory["REVIEW"][row.target]
+        if not mandatory["REVIEW"]:
+            del mandatory["REVIEW"]
+    destination = optional.setdefault("REVIEW", {}).setdefault(row.target, {})
+    prior = destination.get(key)
+    outcomes = [] if prior is None else [prior] if isinstance(prior, str) else list(prior)
+    outcomes.append(row.parameter)
+    destination[key] = outcomes[0] if len(outcomes) == 1 else outcomes
+
+
+def _move_flow_optional(
+    mandatory: dict[str, Any],
+    optional: dict[str, Any],
+    row: TicketCriterion,
+    view: TicketAuthoringView,
+) -> None:
+    capability = row.capability
+    declaration = mandatory[capability]
+    target = _target_key(declaration, row, view)
+    source = declaration[target]
+    destination = optional.setdefault(capability, {}).setdefault(target, {})
+    if capability in {"SYNTH", "FPGA"} and source == "pass":
+        optional[capability][target] = declaration.pop(target)
+    elif capability == "COVERAGE":
+        _move_coverage_threshold(declaration, target, source, destination, row)
+    elif capability in {"SYNTH", "FPGA"}:
+        _move_implementation_threshold(optional, declaration, target, source, destination, row)
+    elif capability == "CYCLE_COUNT":
+        _move_cycle_threshold(declaration, target, source, destination, row)
+    else:
+        destination[row.test] = source.pop(row.test)
+        if not source:
+            del declaration[target]
+    if not declaration:
+        del mandatory[capability]
+
+
+def _move_coverage_threshold(
+    declaration: dict[str, Any],
+    target: str,
+    source: dict[str, Any],
+    destination: dict[str, Any],
+    row: TicketCriterion,
+) -> None:
+    destination["tests"] = source["tests"]
+    destination.setdefault("metrics", {})[row.parameter] = source["metrics"].pop(row.parameter)
+    if not source["metrics"]:
+        del declaration[target]
+
+
+def _move_implementation_threshold(
+    optional: dict[str, Any],
+    declaration: dict[str, Any],
+    target: str,
+    source: dict[str, Any],
+    destination: Any,
+    row: TicketCriterion,
+) -> None:
+    if destination == "pass":
+        destination = {}
+        optional[row.capability][target] = destination
+    if "baseline" in source:
+        destination["baseline"] = source["baseline"]
+    destination[row.parameter] = source.pop(row.parameter)
+    if set(source) <= {"baseline"}:
+        del declaration[target]
+
+
+def _move_cycle_threshold(
+    declaration: dict[str, Any],
+    target: str,
+    source: dict[str, Any],
+    destination: dict[str, Any],
+    row: TicketCriterion,
+) -> None:
+    policy = source[row.test]
+    test_dest = destination.setdefault(row.test, {})
+    if "baseline" in policy:
+        test_dest["baseline"] = policy["baseline"]
+    test_dest[row.parameter] = policy.pop(row.parameter)
+    if set(policy) <= {"baseline"}:
+        del source[row.test]
+    if not source:
+        del declaration[target]

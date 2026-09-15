@@ -44,7 +44,6 @@ from .ticket_baseline import (
 )
 from .ticket_document import (
     TicketDocument,
-    TicketSpec,
     convert_ticket_document,
     ticket_conversion_context,
 )
@@ -201,8 +200,8 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
     fields, body = dict(document.spec.fields), document.spec.body
     basis = load_ticket_baseline_from_document(root, slug, document)
     heads = validate_current_basis_refs(root, basis)
-    proposal = _validated_proposal(root, slug, basis, document.spec, request)
-    revised_document = _convert_ticket(root, slug, _render_ticket(proposal.fields, body))
+    proposal = _validated_proposal(root, slug, basis, document, request)
+    revised_document = _converted_proposal(root, slug, document, proposal)
     repositories = _repositories(root, basis)
     prior_scope = fields.get("scope", [])
     source_state = _status_snapshot(root, basis, prior_scope, repositories)
@@ -243,21 +242,25 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
     return preview, proposal
 
 
+def _converted_proposal(
+    root: Path, slug: str, document: TicketDocument, proposal: AmendmentProposal
+) -> TicketDocument:
+    candidate = {**proposal.fields, **document.generated}
+    return _convert_ticket(root, slug, _render_ticket(candidate, document.spec.body))
+
+
 def _validated_proposal(
-    root: Path, slug: str, basis: TicketBaseline, spec: TicketSpec, request: Any
+    root: Path, slug: str, basis: TicketBaseline, document: TicketDocument, request: Any
 ) -> AmendmentProposal:
+    spec = document.spec
     with tempfile.TemporaryDirectory(prefix="booley-amend-preview-") as directory:
         reference = materialize_basis_checkout(root, basis, Path(directory) / "basis")
         assert_live_inputs_unchanged(basis, root, reference)
         with ticket_conversion_context(root, slug, "executable") as context:
             view = context.resolve_view({"machine": basis.ticket_identity()})
             proposal = build_v2_amendment_proposal(spec, request, root, view)
-        if not proposal.fields["CRITERIA_MANDATORY"]:
-            proposal.fields["acceptance_amendment"] = {
-                "slug": slug,
-                "operation_id": "0" * 32,
-            }
-        revised = _convert_ticket(root, slug, _render_ticket(proposal.fields, spec.body))
+        candidate = {**proposal.fields, **document.generated}
+        revised = _convert_ticket(root, slug, _render_ticket(candidate, spec.body))
         errors = validate_ticket_spec(revised.spec, project_root=reference)
         if errors:
             raise AmendmentError("invalid amended Ticket: " + "; ".join(errors))
@@ -448,7 +451,10 @@ def _amendment_machine(
     revised = _convert_ticket(
         root,
         journal["slug"],
-        _render_ticket(journal["revised_fields"], journal["body"]),
+        _render_ticket(
+            {**journal["revised_fields"], "machine": old.machine or old.ticket_identity()},
+            journal["body"],
+        ),
     )
     machine = ticket_machine_from_spec(basis, revised.spec, journal["operation_id"])
     prior_conversions = (old.machine or {}).get("amendment", {}).get("optional_conversions", [])

@@ -143,7 +143,47 @@ def test_v2_serializer_keeps_generated_metadata_separate() -> None:
 
     assert parsed.document is not None
     assert parsed.document.generated == {"machine": {"schema": 1}}
+    assert "machine" not in parsed.document.spec.fields
     assert parsed.document.spec.semantic_digest() == original.document.spec.semantic_digest()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("created", "not-a-timestamp", "created must be"),
+        ("feature_branch", 42, "feature_branch must be"),
+        ("acceptance_amendment", "legacy", "acceptance_amendment"),
+    ],
+)
+def test_executable_conversion_rejects_invalid_generated_metadata(
+    field: str, value: object, message: str
+) -> None:
+    context = TicketConversionContext("executable", _context().resolve_view)
+    text = _ticket("  LINT: {lint_core: clean}\n").replace(
+        "on_success: [merge]",
+        f"on_success: [merge]\nmachine: {{schema: 1}}\n{field}: {value!r}",
+    )
+
+    converted = convert_ticket_document(text, context)
+
+    assert converted.document is None
+    assert message in converted.diagnostics[0].message
+
+
+def test_conversion_rejects_coverage_test_suites_that_execution_cannot_combine() -> None:
+    ticket = _ticket(
+        "  COVERAGE: {sim_core: {tests: [smoke], metrics: {line: {min_pct: 90}}}}\n"
+    ).replace(
+        "---\n\n## Description",
+        "CRITERIA_OPTIONAL:\n"
+        "  COVERAGE: {sim_core: {tests: [regression], metrics: {branch: {min_pct: 80}}}}\n"
+        "---\n\n## Description",
+    )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    assert "conflicting test suites" in converted.diagnostics[0].message
 
 
 def test_semantic_digest_detects_authored_drift_but_ignores_machine_metadata() -> None:
@@ -701,20 +741,11 @@ def test_create_document_rejects_invalid_slug_and_duplicate_without_overwrite(
 def test_create_document_reports_atomic_file_creation_race(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
     from booley.ticket_board import io
 
     (tmp_path / ".booley_project").mkdir()
     board = TicketIO(tmp_path / ".booley_project" / "tickets", project_root=tmp_path)
-    real_open = os.open
-
-    def already_claimed(path: str, flags: int, *args: object, **kwargs: object) -> int:
-        if str(path).endswith("race.md"):
-            raise FileExistsError(path)
-        return real_open(path, flags, *args, **kwargs)
-
-    monkeypatch.setattr(io.os, "open", already_claimed)
+    monkeypatch.setattr(io, "atomic_write_once", lambda *_args, **_kwargs: False)
     assert board.create_ticket_document("race", _ticket("  REVIEW: {rtl: {bugs: done}}\n")) is None
     assert not (board.tickets_dir / "board" / "drafts" / "race.md").exists()
 

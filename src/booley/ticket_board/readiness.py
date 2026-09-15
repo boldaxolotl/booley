@@ -145,12 +145,7 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
         with ticket_conversion_context(root, slug, "executable") as context:
             conversion = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
         if conversion.document is None:
-            return ReadinessResult(
-                ticket,
-                tuple(
-                    f"{item.line}:{item.column}: {item.message}" for item in conversion.diagnostics
-                ),
-            )
+            return ReadinessResult(ticket, _conversion_errors(conversion))
         results = _validate_checkout_basis(root, tickets_dir, slug, conversion.document)
     else:
         from booley.flows.execution import flow_enabled
@@ -173,12 +168,7 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
         with ticket_conversion_context(root, slug, "draft") as context:
             conversion = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
         if conversion.document is None:
-            return ReadinessResult(
-                ticket,
-                tuple(
-                    f"{item.line}:{item.column}: {item.message}" for item in conversion.diagnostics
-                ),
-            )
+            return ReadinessResult(ticket, _conversion_errors(conversion))
         results = validate_ticket_spec(
             conversion.document.spec,
             check_files=True,
@@ -188,3 +178,7 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
     warnings = tuple(item for item in results if item.startswith("[warning] "))
     errors = [item for item in results if not item.startswith("[warning] ")]
     return ReadinessResult(ticket, tuple(errors), warnings)
+
+
+def _conversion_errors(conversion) -> tuple[str, ...]:
+    return tuple(f"{item.line}:{item.column}: {item.message}" for item in conversion.diagnostics)

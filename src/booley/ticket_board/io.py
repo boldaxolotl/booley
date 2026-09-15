@@ -73,6 +73,7 @@ from .paths import (
     migrate_runtime_file,
     ticket_log_dir,
 )
+from .persistence import WriteOnceConflictError, atomic_write_once
 
 # Extracted to scanner.py — re-export for backward compatibility
 from .scanner import find_ticket_file, scan_all_tickets
@@ -263,7 +264,7 @@ class TicketIO:
     def load_basis(
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
     ) -> TicketBaseline:
-        """Load an executable basis from Board authority and cross-check its snapshot."""
+        """Load an executable basis from Ticket Board authority and cross-check its snapshot."""
         with self._ticket_lock(slug, review_operation=True):
             return self._load_basis_unlocked(slug, runtime_ticket_path=runtime_ticket_path)
 
@@ -280,7 +281,7 @@ class TicketIO:
             self.tickets_dir, slug, project_root=self._project_root
         )
         if board_path is None or status in {None, "draft"}:
-            raise TicketBaselineError(f"executable Board Ticket {slug!r} is unavailable")
+            raise TicketBaselineError(f"executable Ticket Board entry {slug!r} is unavailable")
         try:
             board_document = self._convert_ticket(board_path, slug, "executable")
         except ValueError as exc:
@@ -301,7 +302,7 @@ class TicketIO:
         return basis
 
     def load_document(self, slug: str, *, runtime_ticket_path: str | Path | None = None):
-        """Read the converted executable Ticket after validating Board authority."""
+        """Read the converted executable Ticket after validating Ticket Board authority."""
         self.load_basis(slug, runtime_ticket_path=runtime_ticket_path)
         if runtime_ticket_path is not None:
             return self._convert_ticket(Path(runtime_ticket_path), slug, "executable")
@@ -309,7 +310,7 @@ class TicketIO:
             self.tickets_dir, slug, project_root=self._project_root
         )
         if board_path is None or status in {None, "draft"}:
-            raise FileNotFoundError(f"executable Board Ticket {slug!r} is unavailable")
+            raise FileNotFoundError(f"executable Ticket Board entry {slug!r} is unavailable")
         return self._convert_ticket(board_path, slug, "executable")
 
     def _load_or_bootstrap_progress(self, slug, file_path):
@@ -719,16 +720,13 @@ class TicketIO:
         drafts_dir.mkdir(parents=True, exist_ok=True)
         file_path = drafts_dir / f"{slug}.md"
         try:
-            fd = os.open(str(file_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+            created = atomic_write_once(file_path, content.encode(), mode=0o644)
+        except WriteOnceConflictError:
             print(f"Error: ticket file already exists: {file_path}", file=sys.stderr)
             return None
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                stream.write(content)
-        except BaseException:
-            file_path.unlink(missing_ok=True)
-            raise
+        if not created:
+            print(f"Error: ticket file already exists: {file_path}", file=sys.stderr)
+            return None
         self._materialize_ticket_workspace(file_path, slug)
         return file_path
 

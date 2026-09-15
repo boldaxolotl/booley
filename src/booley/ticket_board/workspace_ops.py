@@ -1081,12 +1081,7 @@ def _prepare_converted_basis(
     if not outer.is_dir():
         raise TicketBaselineOperationError(f"Ticket Workspace is not open: {outer}")
     _prepare_workspace_project(root, outer, ticket, slug)
-    context = TicketConversionContext(stage, lambda _generated: ticket_authoring_view(outer))
-    converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
-    if converted.document is None:
-        details = "; ".join(item.message for item in converted.diagnostics)
-        raise TicketBaselineOperationError(f"Ticket document is invalid: {details}")
-    spec = converted.document.spec
+    spec = _converted_ticket_spec(ticket, outer, stage)
     fields = dict(spec.fields)
     project, outer_changes, project_changes, outer_base, project_base = _authoring_changes(
         root, ticket, slug, outer, fields
@@ -1094,12 +1089,52 @@ def _prepare_converted_basis(
     repositories = [(outer, tuple(outer_changes), outer_base)]
     if project is not None:
         repositories.append((project, tuple(project_changes), project_base))
+    providers, target_plan = _analyze_converted_basis_targets(
+        root, outer, ticket, slug, generation, provider_materialization, spec, repositories
+    )
+    _validate_converted_basis_spec(spec, outer, providers, target_plan)
+    return (
+        _BasisPreparation(
+            ticket,
+            fields,
+            outer,
+            outer_changes,
+            project,
+            project_changes,
+            outer_base,
+            project_base,
+            target_plan,
+            providers,
+        ),
+        spec,
+    )
+
+
+def _converted_ticket_spec(ticket: Path, outer: Path, stage: str) -> TicketSpec:
+    context = TicketConversionContext(stage, lambda _generated: ticket_authoring_view(outer))
+    converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        details = "; ".join(item.message for item in converted.diagnostics)
+        raise TicketBaselineOperationError(f"Ticket document is invalid: {details}")
+    return converted.document.spec
+
+
+def _analyze_converted_basis_targets(
+    root: Path,
+    outer: Path,
+    ticket: Path,
+    slug: str,
+    generation: str | None,
+    provider_materialization: ProviderMaterialization | None,
+    spec: TicketSpec,
+    repositories: list[tuple[Path, tuple[str, ...], str]],
+) -> tuple[ProviderMaterialization, TargetPlanAnalysis]:
     try:
         providers = provider_materialization or validate_planned_dependencies(
             root, slug, generation or _draft_generation(root, slug), ticket
         )
         validate_materialized_surfaces(outer, providers)
-        target_plan = analyze_ticket_spec_target_plan(
+        plan = analyze_ticket_spec_target_plan(
             spec,
             outer,
             target_surface_files(tuple(repositories)),
@@ -1107,8 +1142,17 @@ def _prepare_converted_basis(
             exported_provider_targets=providers.exported_targets,
             provider_test_tables=providers.test_tables,
         )
+        return providers, plan
     except (PlannedDependencyError, TargetPlanValidationError) as exc:
         raise TicketBaselineOperationError(f"Ticket baseline validation failed: {exc}") from exc
+
+
+def _validate_converted_basis_spec(
+    spec: TicketSpec,
+    outer: Path,
+    providers: ProviderMaterialization,
+    target_plan: TargetPlanAnalysis,
+) -> None:
     errors = validate_ticket_spec(
         spec,
         project_root=outer,
@@ -1130,21 +1174,6 @@ def _prepare_converted_basis(
         raise TicketBaselineOperationError(
             "Ticket baseline validation failed: " + "; ".join(errors)
         )
-    return (
-        _BasisPreparation(
-            ticket,
-            fields,
-            outer,
-            outer_changes,
-            project,
-            project_changes,
-            outer_base,
-            project_base,
-            target_plan,
-            providers,
-        ),
-        spec,
-    )
 
 
 def validate_ticket_baseline_inputs(

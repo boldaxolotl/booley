@@ -274,9 +274,26 @@ def validate_demo(
         root, fields, contract.generated_inputs
     )
     errors.extend(generated_errors)
+    errors.extend(_validate_second_preparation(root, ticket, contract, fields, first_digests))
+    after = (_status(root), _status(project))
+    if before != after:
+        errors.append("project preparation changed Git-visible checkout state")
+    if any(after):
+        errors.append("demo checkouts are not pristine after preparation")
+    return errors
 
-    second = check_ticket_ready(root, contract.ticket_slug)
-    errors.extend(f"second preparation: {error}" for error in second.errors)
+
+def _validate_second_preparation(
+    root: Path,
+    ticket: Path,
+    contract: DemoContract,
+    fields: Mapping[str, Any],
+    first_digests: Mapping[str, str],
+) -> list[str]:
+    errors = [
+        f"second preparation: {error}"
+        for error in check_ticket_ready(root, contract.ticket_slug).errors
+    ]
     errors.extend(
         f"second preparation: {error}"
         for error in _prepare_demo_project(root, ticket, contract.ticket_slug)
@@ -287,11 +304,6 @@ def validate_demo(
     errors.extend(f"second preparation: {error}" for error in generated_errors)
     if first_digests != second_digests:
         errors.append("project preparation is not idempotent: generated input digests changed")
-    after = (_status(root), _status(project))
-    if before != after:
-        errors.append("project preparation changed Git-visible checkout state")
-    if any(after):
-        errors.append("demo checkouts are not pristine after preparation")
     return errors
 
 

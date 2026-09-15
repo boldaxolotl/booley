@@ -53,48 +53,8 @@ class CoverageAcceptance:
 def _apply_campaign(
     shadow: DevelopmentState, plan: CoverageTargetPlan, campaign: CoverageCampaign, path: Path
 ) -> list[CriterionChange]:
-    changes = []
     common = _simulation_detail(plan, campaign, path)
-    if plan.criterion is not None:
-        detail = {
-            **common,
-            "evaluation": dict(campaign.evaluation),
-            "criterion_fingerprint": campaign.evaluation.get("criterion_fingerprint"),
-        }
-        # Encode nested immutable mappings before the state/ledger JSON boundary.
-        from .coverage_campaign import encode_coverage_campaign
-
-        detail["evaluation"] = encode_coverage_campaign(campaign)["evaluation"]
-        detail[SOURCE_FINGERPRINT_DETAIL_KEY] = _freshness(plan, plan.criterion_key)
-        aliases = shadow.flow_key_aliases.get(plan.criterion_key, [])
-        if aliases:
-            metrics = {
-                item.get("metric"): item.get("verdict")
-                for item in detail["evaluation"].get("metrics", [])
-                if isinstance(item, dict)
-            }
-            valid_suite = detail["evaluation"].get("suite", {}).get(
-                "status"
-            ) == "match" and not detail["evaluation"].get("diagnostics")
-            for key in aliases:
-                entry = shadow.criteria.get(key)
-                if entry is None:
-                    continue
-                policy = entry.params.get("metrics", {})
-                metric = next(iter(policy), None)
-                changes.extend(
-                    shadow.set_criterion(
-                        key,
-                        bool(valid_suite and metrics.get(metric) == "pass"),
-                        detail={**detail, "criterion_metric": metric},
-                    )
-                )
-        else:
-            changes.extend(
-                shadow.set_criterion(
-                    plan.criterion_key, campaign.evaluation["status"] == "pass", detail=detail
-                )
-            )
+    changes = _apply_coverage_criterion(shadow, plan, campaign, common)
     if all(run.simulation_verdict != "inconclusive" for run in campaign.runs):
         key = f"sim_pass_{plan.handle.name}"
         if key in shadow.criteria or key in shadow.flow_key_aliases:
@@ -105,6 +65,57 @@ def _apply_campaign(
                     detail={**common, SOURCE_FINGERPRINT_DETAIL_KEY: _freshness(plan, key)},
                 )
             )
+    return changes
+
+
+def _apply_coverage_criterion(
+    shadow: DevelopmentState,
+    plan: CoverageTargetPlan,
+    campaign: CoverageCampaign,
+    common: dict[str, Any],
+) -> list[CriterionChange]:
+    if plan.criterion is None:
+        return []
+    from .coverage_campaign import encode_coverage_campaign
+
+    detail = {
+        **common,
+        "evaluation": encode_coverage_campaign(campaign)["evaluation"],
+        "criterion_fingerprint": campaign.evaluation.get("criterion_fingerprint"),
+        SOURCE_FINGERPRINT_DETAIL_KEY: _freshness(plan, plan.criterion_key),
+    }
+    aliases = shadow.flow_key_aliases.get(plan.criterion_key, [])
+    if not aliases:
+        return shadow.set_criterion(
+            plan.criterion_key, campaign.evaluation["status"] == "pass", detail=detail
+        )
+    return _apply_coverage_aliases(shadow, aliases, detail)
+
+
+def _apply_coverage_aliases(
+    shadow: DevelopmentState, aliases: list[str], detail: dict[str, Any]
+) -> list[CriterionChange]:
+    metrics = {
+        item.get("metric"): item.get("verdict")
+        for item in detail["evaluation"].get("metrics", [])
+        if isinstance(item, dict)
+    }
+    valid_suite = detail["evaluation"].get("suite", {}).get("status") == "match" and not detail[
+        "evaluation"
+    ].get("diagnostics")
+    changes = []
+    for key in aliases:
+        entry = shadow.criteria.get(key)
+        if entry is None:
+            continue
+        metric = next(iter(entry.params.get("metrics", {})), None)
+        changes.extend(
+            shadow.set_criterion(
+                key,
+                bool(valid_suite and metrics.get(metric) == "pass"),
+                detail={**detail, "criterion_metric": metric},
+            )
+        )
     return changes
 
 

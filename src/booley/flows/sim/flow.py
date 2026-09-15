@@ -2371,18 +2371,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         handles = {target: self._target_handle(target) for target in targets}
         for key, entry in self.state.criteria.items():
             params = entry.params or {}
-            target = next(
-                (
-                    selector
-                    for selector, handle in handles.items()
-                    if criterion_matches_target(
-                        params,
-                        identity=handle.identity,
-                        selector=handle.selector,
-                    )
-                ),
-                None,
-            )
+            target = self._matching_cycle_target(handles, params)
             if not key.startswith("cycle_count_") or target is None:
                 continue
             ref = params.get(BASELINE_REF_PARAM)
@@ -2411,6 +2400,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 "sim: Cycle Count ticket baseline ref cannot be resolved to a commit",
             )
         return resolved, selected, None
+
+    @staticmethod
+    def _matching_cycle_target(handles: dict[str, Any], params: dict[str, Any]) -> str | None:
+        return next(
+            (
+                selector
+                for selector, handle in handles.items()
+                if criterion_matches_target(
+                    params, identity=handle.identity, selector=handle.selector
+                )
+            ),
+            None,
+        )
 
     def _cycle_baseline_test_names(
         self, test_names_map: dict[str, list[str]]

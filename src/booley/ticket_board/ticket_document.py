@@ -18,8 +18,10 @@ from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import AliasToken, AnchorToken, TagToken
 
 from booley.core.models import OnSuccess, TargetPlan, TargetPlanEntry, TargetPlanRole
+from booley.criteria.coverage import validate_coverage_metrics
 from booley.criteria.templates import _validate_criterion_params, encode_criterion_component
 from booley.criteria.thresholds import describe_threshold
+from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT, parse_timestamp
 from booley.targets.domain import FuseSocError, UnknownTargetError
 
 TicketStage = Literal["draft", "executable"]
@@ -56,7 +58,7 @@ _REVIEW_FOCUS = {
     "rtl": frozenset({"bugs", "spec", "protocol", "security", "optimization", "code_style"}),
     "tb": frozenset({"quality"}),
 }
-_COVERAGE_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
+_GENERATED_KEYS = frozenset({"machine", "acceptance_amendment", "created", "feature_branch"})
 
 
 @dataclass(frozen=True)
@@ -191,7 +193,7 @@ class TicketConversion:
 
 @dataclass(frozen=True)
 class TicketAuthoringView:
-    """Frozen Target and registered-test access supplied by the Board."""
+    """Frozen Target and registered-test access supplied by the Ticket Board."""
 
     resolve_target: Callable[[str, str | None], str]
     tests_for_target: Callable[[str], tuple[str, ...]]
@@ -200,7 +202,7 @@ class TicketAuthoringView:
 
 @dataclass(frozen=True)
 class TicketConversionContext:
-    """Trusted Board stage and resolver for the appropriate Project view."""
+    """Trusted Ticket Board stage and resolver for the appropriate Project view."""
 
     stage: TicketStage
     resolve_view: Callable[[Mapping[str, Any]], TicketAuthoringView]
@@ -534,6 +536,24 @@ def _validate_authored_fields(
         raise ValueError("Ticket body must contain a ## Description section")
 
 
+def _validate_generated_fields(generated: dict[str, Any]) -> None:
+    created = generated.get("created")
+    if created is not None:
+        if not isinstance(created, str):
+            raise ValueError("created must be a canonical UTC RFC 3339 timestamp")
+        try:
+            canonical = parse_timestamp(created).strftime(MACHINE_TIMESTAMP_FORMAT)
+        except ValueError as exc:
+            raise ValueError("created must be a canonical UTC RFC 3339 timestamp") from exc
+        if canonical != created:
+            raise ValueError("created must be a canonical UTC RFC 3339 timestamp")
+    feature_branch = generated.get("feature_branch")
+    if feature_branch is not None and not isinstance(feature_branch, str):
+        raise ValueError("feature_branch must be a string")
+    if "acceptance_amendment" in generated:
+        raise ValueError("acceptance_amendment is obsolete; use machine.amendment")
+
+
 def convert_ticket_document(text: str, context: TicketConversionContext) -> TicketConversion:
     """Convert the complete human Ticket through one validated boundary."""
     try:
@@ -557,19 +577,17 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
             _reference_selectors(mandatory, optional, tuple(mentions)),
             fields,
         )
-        generated = {
-            key: fields[key]
-            for key in ("machine", "acceptance_amendment", "created", "feature_branch")
-            if key in fields
-        }
+        generated = {key: fields[key] for key in _GENERATED_KEYS if key in fields}
         if context.stage == "draft" and generated:
             raise ValueError("Draft Ticket cannot contain generated execution metadata")
         if context.stage == "executable" and "machine" not in generated:
             raise ValueError("Executable Ticket requires machine baseline metadata")
+        _validate_generated_fields(generated)
         view = context.resolve_view(generated)
         criteria = _normalize_criteria(mandatory, optional, view, locations)
         target_plan = _derive_target_plan(tuple(mentions), criteria, flags, view)
-        spec = TicketSpec(fields, body, criteria, tuple(mentions), flags, target_plan)
+        authored = {key: value for key, value in fields.items() if key not in _GENERATED_KEYS}
+        spec = TicketSpec(authored, body, criteria, tuple(mentions), flags, target_plan)
         return TicketConversion(preview, (), TicketDocument(spec, generated))
     except _TargetResolutionError as exc:
         code = (
@@ -590,11 +608,10 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
 
 def serialize_ticket_document(document: TicketDocument, context: TicketConversionContext) -> str:
     """Render v2 frontmatter and prove it preserves the converted Ticket meaning."""
-    generated_keys = {"machine", "acceptance_amendment", "created", "feature_branch"}
-    if set(document.generated) - generated_keys:
+    if set(document.generated) - _GENERATED_KEYS:
         raise ValueError("Ticket has unsupported generated metadata")
     fields = {
-        key: value for key, value in document.spec.fields.items() if key not in generated_keys
+        key: value for key, value in document.spec.fields.items() if key not in _GENERATED_KEYS
     }
     fields.update(document.generated)
     rendered = (
@@ -687,6 +704,7 @@ def _validate_cross_criteria(
     rows: list[TicketCriterion],
     annotations: Mapping[str, tuple[str | None, str | None]],
 ) -> None:
+    _validate_coverage_suites(rows)
     baselines: dict[tuple[str, str, str], str | None] = {}
     policies: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in rows:
@@ -716,6 +734,17 @@ def _validate_cross_criteria(
             capability
         ]
         _validate_criterion_params(key, policy)
+
+
+def _validate_coverage_suites(rows: list[TicketCriterion]) -> None:
+    suites: dict[str, str | list[str]] = {}
+    for row in rows:
+        if row.capability != "COVERAGE":
+            continue
+        tests = row.value["tests"]
+        prior = suites.setdefault(row.target or "", tests)
+        if prior != tests:
+            raise ValueError(f"COVERAGE Target {row.target!r} has conflicting test suites")
 
 
 _RUNTIME_FAMILY = {
@@ -1081,22 +1110,10 @@ def _coverage_rows(
         raise ValueError(f"COVERAGE {target!r} needs all or registered named tests")
     if tests == "all" and not registered:
         raise ValueError(f"COVERAGE {target!r} has no registered tests")
-    metrics = _nonempty_mapping(raw["metrics"], "COVERAGE metrics")
-    if set(metrics) - _COVERAGE_METRICS:
-        raise ValueError(
-            f"COVERAGE has unknown metrics: {sorted(set(metrics) - _COVERAGE_METRICS)}"
-        )
+    metrics = validate_coverage_metrics(raw["metrics"], field="COVERAGE")
     rows = []
     for metric, policy in metrics.items():
-        if not isinstance(policy, dict) or set(policy) != {"min_pct"}:
-            raise ValueError(f"COVERAGE {metric} requires min_pct")
         threshold = policy["min_pct"]
-        if (
-            isinstance(threshold, bool)
-            or not isinstance(threshold, (int, float))
-            or not 0 < threshold <= 100
-        ):
-            raise ValueError(f"COVERAGE {metric} min_pct must be greater than 0 and at most 100")
         rows.append(
             _criterion(
                 "COVERAGE",

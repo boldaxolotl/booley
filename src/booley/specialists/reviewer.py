@@ -308,7 +308,7 @@ def _load_ticket_text() -> tuple[str, str]:
 
 
 def _load_ticket_document():
-    """Resolve the sealed runtime copy through Board Ticket authority."""
+    """Resolve the sealed runtime copy through Ticket Board authority."""
     from booley.ticket_board.helpers import (
         detect_project_root,
         resolve_runtime_ticket_slug,

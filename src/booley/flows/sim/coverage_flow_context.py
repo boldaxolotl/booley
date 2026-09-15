@@ -9,6 +9,7 @@ from pathlib import Path
 from booley.config.project_config import load_test_configuration_field
 from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
+from booley.criteria.coverage import validate_coverage_metrics
 from booley.criteria.state import DevelopmentState
 from booley.flows.execution_persistence import AcceptanceRecorder
 from booley.runtime.project_dir import resolve_project_dir
@@ -69,32 +70,11 @@ def coverage_acceptance(
     return CoverageAcceptance(state, recorder)
 
 
-def _validated_metrics(key: str, value: object) -> dict[str, dict[str, int | float]]:
-    if not isinstance(value, dict) or not value:
-        raise ValueError(f"{key}: Coverage metrics must be a nonempty mapping")
-    for metric, policy in value.items():
-        if metric not in {"line", "branch", "expression", "toggle", "cover_property"}:
-            raise ValueError(f"{key}: unknown Coverage metric {metric!r}")
-        if not isinstance(policy, dict) or set(policy) != {"min_pct"}:
-            raise ValueError(f"{key}: {metric} requires min_pct")
-        threshold = policy["min_pct"]
-        if (
-            isinstance(threshold, bool)
-            or not isinstance(threshold, (int, float))
-            or not 0 < threshold <= 100
-        ):
-            raise ValueError(f"{key}: {metric}.min_pct must be in (0, 100]")
-    return value
-
-
 def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, CoverageCriterion]:
     catalog = TargetCatalog.build(root)
     grouped: dict[str, tuple[str, dict[str, dict[str, int | float]], str | list[str]]] = {}
     for key, entry in state.criteria.items():
-        if any(key == legacy or key.startswith(legacy + "_") for legacy in _LEGACY):
-            raise ValueError(
-                f"Legacy {key}: replace with coverage: [{{targets: [...], metrics: {{...}}, tests: all}}]"
-            )
+        _reject_legacy_coverage(key)
         if not key.startswith("coverage_"):
             continue
         params = entry.params
@@ -103,7 +83,7 @@ def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, Coverag
         )
         if "_target_selector" in params and params.get("target") != target.identity:
             raise ValueError(f"{key}: Coverage Criterion Target identity is stale")
-        metrics = _validated_metrics(key, params.get("metrics"))
+        metrics = validate_coverage_metrics(params.get("metrics"), field=key)
         tests = params.get("tests")
         if tests != "all" and (not isinstance(tests, list) or not tests):
             raise ValueError(f"{key}: tests must be all or an exact non-empty suite")
@@ -138,3 +118,10 @@ def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, Coverag
             None if tests == "all" else tuple(tests),
         )
     return policies
+
+
+def _reject_legacy_coverage(key: str) -> None:
+    if any(key == legacy or key.startswith(legacy + "_") for legacy in _LEGACY):
+        raise ValueError(
+            f"Legacy {key}: replace with coverage: [{{targets: [...], metrics: {{...}}, tests: all}}]"
+        )

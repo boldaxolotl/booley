@@ -261,6 +261,19 @@ def test_v2_amendment_can_move_last_requirement_to_optional(tmp_path: Path, crit
     assert proposal.fields["CRITERIA_OPTIONAL"]
 
 
+def test_v2_amendment_merges_threshold_into_existing_optional_synth_run(tmp_path: Path) -> None:
+    spec, view = _spec(
+        "  SYNTH: {synth_a: {area_um2_max: 100}}\nCRITERIA_OPTIONAL:\n  SYNTH: {synth_a: pass}\n"
+    )
+    threshold = next(row for row in spec.criteria if row.parameter == "area_um2_max")
+
+    proposal = build_v2_amendment_proposal(
+        spec, _request(threshold.identity, make_optional=True), tmp_path, view
+    )
+
+    assert proposal.fields["CRITERIA_OPTIONAL"]["SYNTH"]["synth_a"] == {"area_um2_max": 100}
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [

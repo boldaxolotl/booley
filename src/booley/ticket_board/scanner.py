@@ -229,38 +229,45 @@ def scan_all_tickets(
             continue
         dir_status = DIR_STATUS_MAP.get(d, d)
         for md_file in sorted(dir_path.glob("*.md")):
-            try:
-                with md_file.open(encoding="utf-8") as f:
-                    text = f.read()
-            except OSError:
-                continue
-            stage = "draft" if d == "drafts" else "executable"
-            with ticket_conversion_context(root, md_file.stem, stage) as context:
-                converted = convert_ticket_document(text, context)
-            if converted.document is None:
-                preview = converted.preview
-                result.append(
-                    {
-                        "file": f"{d}/{md_file.name}",
-                        "summary": preview.summary if preview else md_file.stem,
-                        "status": dir_status,
-                        "ticket_error": "; ".join(
-                            f"{item.line}:{item.column}: {item.message}"
-                            for item in converted.diagnostics
-                        ),
-                    }
-                )
-                continue
-            spec = converted.document.spec
-            fields = {**spec.fields, **converted.document.generated}
-            progress = load_progress(logs_dir, md_file.stem)
-            rt = progress if progress is not None else fields
-
-            entry = _build_ticket_entry(md_file, d, dir_status, fields, rt)
-            entry["criteria"] = spec.semantic_record()["criteria"]
-            entry["target_plan"] = spec.target_plan.as_list() if spec.target_plan else []
-            _enrich_from_acceptance(entry, tickets_dir, md_file.stem)
-            _enrich_from_state(entry, logs_dir, md_file.stem)
-            result.append(entry)
+            entry = _scan_ticket(md_file, d, dir_status, root, tickets_dir, logs_dir)
+            if entry is not None:
+                result.append(entry)
 
     return result
+
+
+def _scan_ticket(
+    path: Path,
+    directory: str,
+    status: str,
+    root: Path,
+    tickets_dir: Path,
+    logs_dir: Path,
+) -> dict[str, Any] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    stage = "draft" if directory == "drafts" else "executable"
+    with ticket_conversion_context(root, path.stem, stage) as context:
+        converted = convert_ticket_document(text, context)
+    if converted.document is None:
+        preview = converted.preview
+        return {
+            "file": f"{directory}/{path.name}",
+            "summary": preview.summary if preview else path.stem,
+            "status": status,
+            "ticket_error": "; ".join(
+                f"{item.line}:{item.column}: {item.message}" for item in converted.diagnostics
+            ),
+        }
+    spec = converted.document.spec
+    fields = {**spec.fields, **converted.document.generated}
+    progress = load_progress(logs_dir, path.stem)
+    runtime_fields = progress if progress is not None else fields
+    entry = _build_ticket_entry(path, directory, status, fields, runtime_fields)
+    entry["criteria"] = spec.semantic_record()["criteria"]
+    entry["target_plan"] = spec.target_plan.as_list() if spec.target_plan else []
+    _enrich_from_acceptance(entry, tickets_dir, path.stem)
+    _enrich_from_state(entry, logs_dir, path.stem)
+    return entry

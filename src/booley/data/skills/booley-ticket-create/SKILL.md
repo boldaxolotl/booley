@@ -207,7 +207,7 @@ A reproduced bug may use `fail -> pass` on its exact registered SIM test; an
 ordinary passing test uses `pass`. If the bug has no failing test, recommend a
 verification ticket that creates one and a dependent fix ticket.
 
-Only the Board publishes `machine`, `created`, and `feature_branch`.
+Only the Ticket Board publishes `machine`, `created`, and `feature_branch`.
 Do not author generated metadata, SHAs, `target_plan`, `ticket_format`, or a
 `criteria` wrapper. An annotated Target requires `merge` in `on_success`;
 `cleanup` is otherwise independent of merge.
@@ -235,9 +235,9 @@ Do not author generated metadata, SHAs, `target_plan`, `ticket_format`, or a
    policy.
 
 If the current `create-file` CLI cannot accept the complete v2 document, stop
-and report that tool mismatch; do not translate the Ticket to the retired
+and report that CLI mismatch; do not translate the Ticket to the retired
 `--criteria`, `--target-plan`, or mapping `--on-success` forms. Never hand-write
-generated Board metadata.
+generated Ticket Board metadata.
 
 ## §D. Criteria Catalog
 

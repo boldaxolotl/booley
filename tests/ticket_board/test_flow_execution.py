@@ -32,7 +32,9 @@ def test_recorder_rejects_malformed_acceptance_basis(
     state.init_criteria({"lint_clean_demo": True}, strict=True)
     changes = state.set_criterion("lint_clean_demo", True)
 
-    with pytest.raises(AcceptanceRecordingError, match=r"executable Board Ticket.*unavailable"):
+    with pytest.raises(
+        AcceptanceRecordingError, match=r"executable Ticket Board entry.*unavailable"
+    ):
         TicketAcceptanceRecorder(log_dir=tmp_path / "logs").record_changes(
             state,
             changes,

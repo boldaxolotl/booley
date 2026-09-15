@@ -263,14 +263,9 @@ class DirectTicketOps:
             else "draft"
         )
         tio = self._tio(project_root)
-        workspace = None
-        if p.parent.name == "drafts" and (project_root / ".git").exists():
-            from booley.ticket_board.workspace_ops import ensure_ticket_workspace
-
-            try:
-                workspace = ensure_ticket_workspace(project_root, p, p.stem).outer
-            except (RuntimeError, ValueError, OSError) as exc:
-                return {"errors": [f"Ticket workspace preparation failed: {exc}"]}
+        workspace, workspace_error = self._validation_workspace(project_root, p)
+        if workspace_error is not None:
+            return workspace_error
         with ticket_conversion_context(project_root, p.stem, stage) as context:
             converted = convert_ticket_document(p.read_text(encoding="utf-8"), context)
         if converted.document is None:
@@ -302,6 +297,19 @@ class DirectTicketOps:
         if errors:
             return {"errors": errors}
         return {"errors": [], "valid": True}
+
+    @staticmethod
+    def _validation_workspace(
+        project_root: Path, path: Path
+    ) -> tuple[Path | None, dict[str, Any] | None]:
+        if path.parent.name != "drafts" or not (project_root / ".git").exists():
+            return None, None
+        from booley.ticket_board.workspace_ops import ensure_ticket_workspace
+
+        try:
+            return ensure_ticket_workspace(project_root, path, path.stem).outer, None
+        except (RuntimeError, ValueError, OSError) as exc:
+            return None, {"errors": [f"Ticket workspace preparation failed: {exc}"]}
 
     def resume(self, project_root: Path, slug: str) -> dict[str, Any]:
         tio = self._tio(project_root)
