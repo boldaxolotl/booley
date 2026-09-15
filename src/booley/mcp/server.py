@@ -3259,6 +3259,32 @@ def _endpoint_command(
     return ["python", "-m", module_path, *argv]
 
 
+async def _run_inline_endpoint(
+    name: str,
+    cmd: list[str],
+    timeout: int,
+    jobs: _JobManager,
+    *,
+    publish_activity: bool,
+) -> tuple[int, str, str, bool]:
+    """Run inline work, recording only user-visible endpoint activity."""
+    if publish_activity:
+        return await jobs.run_synchronous(name, cmd, timeout)
+    identity = DisplayIdentity.current(uuid.uuid4().hex)
+    try:
+        result = await _run_subprocess(
+            cmd,
+            timeout=timeout,
+            env=_endpoint_subprocess_env(BOOLEY_DISPLAY_INVOCATION_ID=identity.invocation_id),
+        )
+    except asyncio.CancelledError:
+        _write_synthetic_endpoint_end(name, 0, identity=identity, outcome="aborted")
+        raise
+    if result[3]:
+        _write_synthetic_endpoint_end(name, timeout, identity=identity)
+    return result
+
+
 async def _dispatch_booley_mcp_tool(
     name: str,
     arguments: dict[str, Any],
@@ -3288,7 +3314,13 @@ async def _dispatch_booley_mcp_tool(
     if name in _ASYNC_JOB_MCP_TOOLS:
         return await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs)
 
-    exit_code, stdout, stderr, _timed_out = await jobs.run_synchronous(name, cmd, mcp_tool_timeout)
+    exit_code, stdout, stderr, _timed_out = await _run_inline_endpoint(
+        name,
+        cmd,
+        mcp_tool_timeout,
+        jobs,
+        publish_activity=bool(mcp_tool_def.get("is_flow") or mcp_tool_def.get("is_specialist")),
+    )
     skip_report = bool(arguments.get("dry_run")) and bool(
         mcp_tool_def.get("non_persisting_dry_run")
     )
