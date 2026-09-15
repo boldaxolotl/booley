@@ -1581,6 +1581,11 @@ class TestCancel:
             got = jobrec.read_record("simulate-c-2", root=session_jobs_dir())
             assert got is not None and got.status == jobrec.STATUS_CANCELLED
             assert got.exit_code == 130
+            terminal = json.loads(
+                (_report_env / "display.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+            )
+            assert terminal["invocation_id"] == "simulate-c-2"
+            assert terminal["outcome"] == "cancelled"
         finally:
             if child.poll() is None:
                 child.kill()
@@ -1706,6 +1711,28 @@ class TestCancel:
         record = jobrec.read_record(run_id, root=session_jobs_dir())
         assert record is not None and record.status == jobrec.STATUS_CANCELLED
         assert "CANCELLED" in jobs.result_text(run_id)
+        events = [
+            json.loads(line)
+            for line in (_report_env / "display.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        terminal = events[-1]
+        assert terminal["type"] == "endpoint_end"
+        assert terminal["invocation_id"] == run_id
+        assert terminal["outcome"] == "cancelled"
+
+    def test_orphan_display_reconciliation_never_reads_the_journal(self, _report_env, monkeypatch):
+        display = _report_env / "display.jsonl"
+        display.write_text("{}\n", encoding="utf-8")
+        original = Path.read_text
+
+        def guarded_read(path: Path, *args, **kwargs):
+            if path == display:
+                raise AssertionError("display journal must not be scanned at bootstrap")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded_read)
+
+        mcp_server._reconcile_orphaned_locks()
 
     def test_server_shutdown_cancellation_is_not_mislabeled_as_user_cancel(
         self,
@@ -1738,6 +1765,7 @@ class TestCancel:
         run_id = asyncio.run(scenario())
         record = jobrec.read_record(run_id, root=session_jobs_dir())
         assert record is not None and record.status == jobrec.STATUS_RUNNING
+        assert not (_report_env / "display.jsonl").exists()
 
     def test_cancel_endpoint_visible_wherever_poll_is(self, monkeypatch):
         # Like poll, cancel must be reachable in Ticket-Mode too: any server

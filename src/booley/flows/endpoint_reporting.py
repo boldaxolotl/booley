@@ -167,7 +167,13 @@ class _StdoutWitness:
 
 def emit_progress(endpoint: EndpointState, line: str) -> None:
     """Write a progress line to display.jsonl for live host terminal output."""
-    _write_display_event(_endpoint_progress_event(endpoint.name, line))
+    _write_display_event(
+        _endpoint_progress_event(
+            endpoint.name,
+            line,
+            invocation_id=endpoint._invocation_id,
+        )
+    )
 
 
 def emit_completion(endpoint: EndpointState, line: str, *, repeats_at_end: bool = False) -> None:
@@ -178,6 +184,7 @@ def emit_completion(endpoint: EndpointState, line: str, *, repeats_at_end: bool 
             line,
             completion=True,
             repeats_at_end=repeats_at_end,
+            invocation_id=endpoint._invocation_id,
         )
     )
 
@@ -465,6 +472,7 @@ def _finish_main(
                 duration,
                 display_label=display_label,
                 dry_run=dry_run,
+                invocation_id=endpoint._invocation_id,
             ),
         )
     return result.exit_code

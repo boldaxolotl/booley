@@ -31,6 +31,7 @@ import shlex
 import socket
 import sys
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -86,7 +87,7 @@ from booley.runtime.process_group import (
     terminate_async_process_group,
 )
 from booley.runtime.timefmt import compact_utc_now, format_human_datetime, utc_now_rfc3339
-from booley.ticket_board.paths import existing_ticket_runtime_file, ticket_runtime_dir
+from booley.ticket_board.paths import ticket_runtime_dir
 
 if TYPE_CHECKING:
     from mcp.server.context import ServerRequestContext
@@ -384,75 +385,13 @@ class _McpLifetime:
 
 
 def _count_orphaned_starts(display_path: Path) -> dict[str, int]:
-    """Count unmatched endpoint_start events in display.jsonl."""
-    try:
-        lines = display_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return {}
-    unmatched: dict[str, int] = {}
-    for line in lines:
-        try:
-            ev = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        endpoint = ev.get("endpoint", "")
-        if not endpoint:
-            continue
-        if ev.get("type") == "endpoint_start":
-            unmatched[endpoint] = unmatched.get(endpoint, 0) + 1
-        elif ev.get("type") == "endpoint_end" and unmatched.get(endpoint, 0) > 0:
-            unmatched[endpoint] -= 1
-    return unmatched
+    """Compatibility stub; display events no longer govern run ownership."""
+    del display_path
+    return {}
 
 
 def _reconcile_orphaned_locks() -> None:
-    """Write endpoint_end for any orphaned endpoint_start from a prior session.
-
-    Only safe to run from an outer (TOP_LEVEL) bootstrap context. Nested
-    servers spawned mid-session (e.g. a sub-agent's MCP server inside the
-    sandbox container) would see the parent's legitimately in-flight
-    endpoint_start as "unmatched" and emit spurious endpoint_end events. See
-    ``booley.runtime.bootstrap_mode`` for the chokepoint that gates this.
-    """
-    from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
-
-    if not should_run_outer_bookkeeping():
-        return
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
-    if not logs_dir:
-        return
-    display_path = existing_ticket_runtime_file(logs_dir, "display.jsonl")
-    if not display_path.exists():
-        return
-
-    unmatched = _count_orphaned_starts(display_path)
-    now_ts = utc_now_rfc3339()
-    reconciled = [
-        json.dumps(
-            {
-                "type": "endpoint_end",
-                "endpoint": endpoint,
-                "exit_code": 2,
-                "duration_s": 0,
-                "report_text": "Reconciled: orphaned lock from prior session",
-                "timestamp": now_ts,
-            }
-        )
-        for endpoint, count in unmatched.items()
-        for _ in range(count)
-    ]
-    if not reconciled:
-        return
-    try:
-        with display_path.open("a", encoding="utf-8") as f:
-            for line in reconciled:
-                f.write(line + "\n")
-        logger.info(
-            "Reconciled %d orphaned endpoint event(s) from prior session",
-            len(reconciled),
-        )
-    except OSError:
-        logger.warning("Failed to reconcile orphaned locks", exc_info=True)
+    """Compatibility no-op; JobRecords and slot claims own run lifecycle."""
 
 
 def _reconcile_orphaned_jobs() -> None:
@@ -1420,34 +1359,35 @@ async def _cancel_async_process_tree(
     await terminate_async_process_group(proc, group, grace_seconds=_CANCEL_GRACE_SECONDS)
 
 
-def _write_synthetic_endpoint_end(mcp_tool_name: str, timeout_s: int) -> None:
-    """Write a synthetic endpoint_end after the MCP server kills a timed-out endpoint.
-
-    The endpoint subprocess writes endpoint_start on entry and endpoint_end on exit, but a
-    timeout kill prevents endpoint_end from being written — leaving an orphaned
-    endpoint_start that blocks subsequent calls via the concurrency guard.
-    """
-
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
-    if not logs_dir:
-        return
-    event = {
+def _write_synthetic_endpoint_end(
+    mcp_tool_name: str,
+    duration_s: int,
+    *,
+    invocation_id: str | None = None,
+    outcome: str = "timed_out",
+    display_scope: str | None = None,
+) -> None:
+    """Close presentation state when a killed child cannot publish its own end."""
+    cancelled = outcome == "cancelled"
+    event: dict[str, Any] = {
         "type": "endpoint_end",
         "endpoint": mcp_tool_name,
-        "exit_code": 2,
-        "duration_s": timeout_s,
-        "report_text": f"Killed by MCP server after {timeout_s}s timeout",
+        "exit_code": 130 if cancelled else 2,
+        "duration_s": duration_s,
+        "outcome": outcome,
+        "report_text": (
+            "Cancelled by request"
+            if cancelled
+            else f"Killed by MCP server after {duration_s}s timeout"
+        ),
         "timestamp": utc_now_rfc3339(),
     }
-    try:
-        runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
-        runtime_dir = Path(runtime_env) if runtime_env else ticket_runtime_dir(logs_dir)
-        path = runtime_dir / "display.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event) + "\n")
-    except OSError:
-        logger.debug("Failed to write synthetic endpoint_end", exc_info=True)
+    if invocation_id:
+        event["invocation_id"] = invocation_id
+    event["display_scope"] = display_scope or (
+        "nested" if os.environ.get("BOOLEY_NESTED_AGENT") == "1" else "developer"
+    )
+    _write_display_event(event)
 
 
 # One MCP tool call's MCP payload: plain text blocks, or the SDK's combination
@@ -2397,8 +2337,14 @@ async def _dispatch_bwave(
     cmd = builder(arguments)
     extra_args = arguments.get("extra_args", [])
     display_label = shlex.join(extra_args) if extra_args else None
+    invocation_id = uuid.uuid4().hex
     _write_display_event(
-        _endpoint_start_event(name, None, display_label=display_label),
+        _endpoint_start_event(
+            name,
+            None,
+            display_label=display_label,
+            invocation_id=invocation_id,
+        ),
     )
     started = time.monotonic()
     exit_code = 2
@@ -2418,6 +2364,7 @@ async def _dispatch_bwave(
                 EndpointOutcome(exit_code=exit_code),
                 time.monotonic() - started,
                 display_label=display_label,
+                invocation_id=invocation_id,
             ),
         )
 
@@ -2697,6 +2644,9 @@ class _JobManager:
             timeout_s=timeout,
             argv=cmd,
             lease_id=current_lease_id(),
+            display_scope=(
+                "nested" if os.environ.get("BOOLEY_NESTED_AGENT") == "1" else "developer"
+            ),
         )
         jobrec.write_record(rec, root=self._jobs_root)
         # The submit CALL returns in seconds (mark_mcp_endpoint_end fires then), so hold
@@ -2761,7 +2711,12 @@ class _JobManager:
                 on_first_active=_stamp_run_started,
             )
             if timed_out:
-                _write_synthetic_endpoint_end(name, timeout)
+                _write_synthetic_endpoint_end(
+                    name,
+                    timeout,
+                    invocation_id=run_id,
+                    display_scope=rec.display_scope,
+                )
             self._results[run_id] = (exit_code, stdout, stderr, timed_out)
             rec.status = jobrec.terminal_status(exit_code, timed_out)
             rec.exit_code = exit_code
@@ -2781,6 +2736,13 @@ class _JobManager:
                 False,
             )
             jobrec.write_record(rec, root=self._jobs_root)
+            _write_synthetic_endpoint_end(
+                name,
+                0,
+                invocation_id=run_id,
+                outcome="cancelled",
+                display_scope=rec.display_scope,
+            )
         finally:
             # Release the lifetime hold. On server shutdown this runs during
             # cancellation; the record stays non-terminal and the next
@@ -2826,6 +2788,16 @@ class _JobManager:
             jobrec.write_record(rec, root=self._jobs_root)
         if task is None and rec.pid is not None:
             await _cancel_adopted_process_group(rec.pid)
+            _write_synthetic_endpoint_end(
+                rec.endpoint,
+                0,
+                invocation_id=rec.run_id,
+                outcome="cancelled",
+                display_scope=rec.display_scope,
+            )
+        final = jobrec.read_record(run_id, root=self._jobs_root)
+        if final is None or final.status != jobrec.STATUS_CANCELLED:
+            return "finished"
         return "queued" if was_queued else "running"
 
     async def wait(self, run_id: str, timeout: float) -> bool | None:
@@ -3249,13 +3221,18 @@ async def _dispatch_booley_mcp_tool(
     if name in _ASYNC_JOB_MCP_TOOLS:
         return await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs)
 
+    display_invocation_id = uuid.uuid4().hex
     exit_code, stdout, stderr, timed_out = await _run_subprocess(
         cmd,
         timeout=mcp_tool_timeout,
-        env=_endpoint_subprocess_env(),
+        env=_endpoint_subprocess_env(BOOLEY_DISPLAY_INVOCATION_ID=display_invocation_id),
     )
     if timed_out:
-        _write_synthetic_endpoint_end(name, mcp_tool_timeout)
+        _write_synthetic_endpoint_end(
+            name,
+            mcp_tool_timeout,
+            invocation_id=display_invocation_id,
+        )
     skip_report = bool(arguments.get("dry_run")) and bool(
         mcp_tool_def.get("non_persisting_dry_run")
     )
@@ -3607,7 +3584,6 @@ def _build_server(
     lifetime: _McpLifetime | None = None,
 ) -> tuple[Server, list[dict[str, Any]]]:
     """Build the MCP v2 adapter around the Booley MCP application."""
-    _reconcile_orphaned_locks()
     _reconcile_orphaned_jobs()
     lifetime = lifetime or _McpLifetime(None, None)
     application, mcp_tools, discovery_errors = _build_mcp_catalog(lifetime)

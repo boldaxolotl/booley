@@ -91,6 +91,9 @@ class JobRecord:
     pid: int | None = None
     status: str = STATUS_RUNNING
     exit_code: int | None = None
+    # Presentation scope of the submitting MCP server. Nested Specialist jobs
+    # are real Jobs but must not replace the Developer Agent's heartbeat text.
+    display_scope: str = "developer"
     # Optional durable parent operation. Detached work keeps the same lease so
     # its later evidence cannot escape the review execution that admitted it.
     lease_id: str | None = None
@@ -109,6 +112,12 @@ class JobRecord:
         # Tolerate unknown keys from a future writer — read only what we model.
         known = {f: d.get(f) for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in known.items() if v is not None})
+
+
+def _validate_display_scope(value: object) -> None:
+    scope = require_str({"display_scope": value}, "display_scope")
+    if scope not in {"developer", "nested"}:
+        raise BoundaryError(f"unsupported Job display scope {scope}")
 
 
 def terminal_status(exit_code: int, timed_out: bool) -> str:
@@ -211,6 +220,7 @@ def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
         raise BoundaryError("Job pid must be positive")
     if record.exit_code is not None:
         require_int(record.exit_code, field="Job exit code")
+    _validate_display_scope(record.display_scope)
     if record.lease_id is not None:
         require_str({"lease_id": record.lease_id}, "lease_id")
     started_at = parse_stamp(record.started_at)

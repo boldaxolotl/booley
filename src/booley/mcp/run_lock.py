@@ -8,9 +8,9 @@ ADR 0028 deleted that path — admission now lives in the shared slot store
 ``endpoint_start``/``endpoint_end`` events remain **bookkeeping only**: they drive the
 Console and telemetry, never admission.
 
-What survives here is the event-stream parsing used by that bookkeeping
-(display reconciliation, status rendering, tests). Never imports ``base`` —
-one-way dependency.
+What survives here is compatibility parsing for Project-local extensions and
+tests. Runtime status and reconciliation use durable JobRecords instead.
+Never imports ``base`` — one-way dependency.
 """
 
 from __future__ import annotations

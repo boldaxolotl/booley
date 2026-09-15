@@ -25,9 +25,11 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.runtime import job_records as jobrec
+from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import parse_timestamp
 from booley.ticket_board.helpers import tickets_dir_from_project_root
-from booley.ticket_board.paths import existing_ticket_runtime_file
+from booley.ticket_board.paths import ticket_runtime_dir
 
 logger = logging.getLogger("booley")
 
@@ -52,7 +54,7 @@ _STEP_GERUNDS: dict[str, str] = {
     "synthesis": "synthesizing",
     "acceptance-check": "checking acceptance",
     "summary": "summarizing",
-    # MCP endpoint names (from display.jsonl during developer)
+    # MCP endpoint names (from active JobRecords during developer work)
     "tb_coder": "implementing",
     "reviewer": "reviewing",
     "lint": "linting",
@@ -63,42 +65,23 @@ _STEP_GERUNDS: dict[str, str] = {
 }
 
 
-def _active_endpoint_from_display(ticket_logs_dir: Path) -> tuple[str, str | None] | None:
-    """Read display.jsonl to find the currently active MCP endpoint (started but not ended).
-
-    Returns ``(endpoint_name, target)`` or ``None``.
-    """
-    display_path = existing_ticket_runtime_file(ticket_logs_dir, "display.jsonl")
-    if not display_path.exists():
+def _active_endpoint_from_jobs(ticket_logs_dir: Path) -> tuple[str, str | None] | None:
+    """Return the newest live Developer-scope Job using bounded record reads."""
+    jobs_root = ticket_runtime_dir(ticket_logs_dir) / "jobs"
+    active = [
+        rec
+        for rec in jobrec.list_records(jobs_root)
+        if rec.display_scope == "developer" and jobrec.is_active(rec, is_pid_alive)
+    ]
+    if not active:
         return None
-    try:
-        open_endpoints: dict[str, str | None] = {}
-        last_open: str | None = None
-        for raw_line in display_path.read_text(encoding="utf-8").splitlines():
-            stripped = raw_line.strip()
-            if not stripped:
-                continue
-            try:
-                event = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            etype = event.get("type", "")
-            endpoint = event.get("endpoint", "")
-            if etype == "endpoint_start" and endpoint:
-                open_endpoints[endpoint] = event.get("target")
-                last_open = endpoint
-            elif etype == "endpoint_end" and endpoint:
-                open_endpoints.pop(endpoint, None)
-                if last_open == endpoint:
-                    last_open = None
-        if last_open and last_open in open_endpoints:
-            return (last_open, open_endpoints[last_open])
-        if open_endpoints:
-            first = next(iter(open_endpoints))
-            return (first, open_endpoints[first])
-    except OSError:
-        pass
-    return None
+    newest = max(active, key=lambda rec: rec.run_started_at or rec.started_at)
+    return newest.endpoint, None
+
+
+def _active_endpoint_from_display(ticket_logs_dir: Path) -> tuple[str, str | None] | None:
+    """Compatibility name for the JobRecord-backed activity lookup."""
+    return _active_endpoint_from_jobs(ticket_logs_dir)
 
 
 def _read_checkpoint_status(project_root: Path) -> str | None:
@@ -123,7 +106,7 @@ def _read_checkpoint_status(project_root: Path) -> str | None:
         ticket_log_dir = (
             best_file.parent.parent if best_file.parent.name == ".runtime" else best_file.parent
         )
-        result = _active_endpoint_from_display(ticket_log_dir)
+        result = _active_endpoint_from_jobs(ticket_log_dir)
         if result:
             step, target = result
 

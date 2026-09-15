@@ -39,6 +39,7 @@ from booley.harness.blocking import EXIT_USER_QUIT
 from booley.harness.booley_status_display import (  # noqa: F401  # re-exported for backward compatibility
     _STEP_GERUNDS,
     _active_endpoint_from_display,
+    _active_endpoint_from_jobs,
     _find_latest_status_file,
     _format_age,
     _read_checkpoint_status,

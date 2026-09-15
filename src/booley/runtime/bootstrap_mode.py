@@ -47,15 +47,13 @@ class BootstrapMode(enum.Enum):
 
 
 def should_run_outer_bookkeeping() -> bool:
-    """True iff this process owns outer-harness display hygiene.
+    """True iff this process owns outer-harness durable-record hygiene.
 
-    Currently the chokepoint for two sites, both display/record cleanup
-    (admission itself lives in the shared slot store — ADR 0028 — and never
-    consults bootstrap mode):
+    Admission itself lives in the shared slot store (ADR 0028) and never
+    consults bootstrap mode. This remains the chokepoint for:
 
-    * ``mcp_server._reconcile_orphaned_locks`` (orphan display-event cleanup)
     * ``mcp_server._reconcile_orphaned_jobs`` (ghost job-record cleanup)
 
-    Both must short-circuit in NESTED mode — see the module docstring.
+    It must short-circuit in NESTED mode — see the module docstring.
     """
     return BootstrapMode.detect().is_top_level

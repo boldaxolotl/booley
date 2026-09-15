@@ -1591,8 +1591,8 @@ class TestReadCheckpointStatus:
         (runtime_dir / "status.json").write_text("{invalid json", encoding="utf-8")
         assert tlr._read_checkpoint_status(project_root) is None
 
-    def test_developer_step_reads_active_endpoint_from_display(self, project_root: Path):
-        """When status says 'developer', heartbeat checks display.jsonl for an active endpoint."""
+    def test_developer_step_reads_active_endpoint_from_job_record(self, project_root: Path):
+        """Developer heartbeat derives active work from bounded Job records."""
         logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
         runtime_dir = logs_dir / ".runtime"
         runtime_dir.mkdir(parents=True)
@@ -1607,14 +1607,46 @@ class TestReadCheckpointStatus:
             ),
             encoding="utf-8",
         )
-        # Endpoint started but not ended → active
-        (runtime_dir / "display.jsonl").write_text(
-            json.dumps({"type": "endpoint_start", "endpoint": "tb_coder"}) + "\n",
-            encoding="utf-8",
+        from booley.runtime import job_records as jobrec
+
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="synth-active-1",
+                endpoint="synth",
+                started_at=ts,
+                timeout_s=600,
+                pid=__import__("os").getpid(),
+            ),
+            root=runtime_dir / "jobs",
         )
         result = tlr._read_checkpoint_status(project_root)
-        assert "implementing" in result
-        assert "tb_coder" in result
+        assert "synthesizing" in result
+        assert "synth" in result
+
+    def test_developer_status_never_reads_large_display_journal(
+        self, project_root: Path, monkeypatch
+    ):
+        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
+        runtime_dir = logs_dir / ".runtime"
+        runtime_dir.mkdir(parents=True)
+        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        status_path = runtime_dir / "status.json"
+        status_path.write_text(
+            json.dumps({"slug": "my-ticket", "step": "developer", "last_updated": ts}),
+            encoding="utf-8",
+        )
+        display = runtime_dir / "display.jsonl"
+        display.write_text("legacy journal must stay unread\n", encoding="utf-8")
+        original = Path.read_text
+
+        def guarded_read(path: Path, *args, **kwargs):
+            if path == display:
+                raise AssertionError("heartbeat must not read display.jsonl")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded_read)
+
+        assert "running developer" in tlr._read_checkpoint_status(project_root)
 
     def test_developer_falls_back_when_no_display(self, project_root: Path):
         """Without display.jsonl, 'developer' step shown as-is."""
@@ -1680,48 +1712,52 @@ class TestReadCheckpointStatus:
         assert "legacy" in result
 
 
-class TestActiveEndpointFromDisplay:
+class TestActiveEndpointFromJobs:
+    @staticmethod
+    def _write_job(tmp_path: Path, run_id: str, endpoint: str, **changes) -> None:
+        import os
+
+        from booley.runtime import job_records as jobrec
+
+        values = {
+            "run_id": run_id,
+            "endpoint": endpoint,
+            "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timeout_s": 600,
+            "pid": os.getpid(),
+        }
+        values.update(changes)
+        jobrec.write_record(jobrec.JobRecord(**values), root=tmp_path / ".runtime" / "jobs")
+
     def test_returns_open_endpoint(self, tmp_path: Path):
-        display = tmp_path / ".runtime" / "display.jsonl"
-        display.parent.mkdir()
-        display.write_text(
-            json.dumps({"type": "endpoint_start", "endpoint": "sim"}) + "\n",
-            encoding="utf-8",
-        )
+        self._write_job(tmp_path, "sim-1", "sim")
         assert tlr._active_endpoint_from_display(tmp_path) == ("sim", None)
 
     def test_returns_none_when_endpoint_closed(self, tmp_path: Path):
-        display = tmp_path / ".runtime" / "display.jsonl"
-        display.parent.mkdir()
-        events = [
-            json.dumps({"type": "endpoint_start", "endpoint": "lint"}),
-            json.dumps({"type": "endpoint_end", "endpoint": "lint", "exit_code": 0}),
-        ]
-        display.write_text("\n".join(events) + "\n", encoding="utf-8")
+        from booley.runtime import job_records as jobrec
+
+        self._write_job(
+            tmp_path,
+            "lint-1",
+            "lint",
+            status=jobrec.STATUS_DONE,
+            exit_code=0,
+        )
         assert tlr._active_endpoint_from_display(tmp_path) is None
 
     def test_returns_latest_open_endpoint(self, tmp_path: Path):
-        display = tmp_path / ".runtime" / "display.jsonl"
-        display.parent.mkdir()
-        events = [
-            json.dumps({"type": "endpoint_start", "endpoint": "lint"}),
-            json.dumps({"type": "endpoint_end", "endpoint": "lint", "exit_code": 0}),
-            json.dumps({"type": "endpoint_start", "endpoint": "tb_coder"}),
-        ]
-        display.write_text("\n".join(events) + "\n", encoding="utf-8")
+        older = (datetime.now(UTC) - timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        newer = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._write_job(tmp_path, "lint-1", "lint", started_at=older)
+        self._write_job(tmp_path, "tb-1", "tb_coder", started_at=newer)
         assert tlr._active_endpoint_from_display(tmp_path) == ("tb_coder", None)
 
-    def test_returns_none_when_no_file(self, tmp_path: Path):
+    def test_returns_none_when_no_records(self, tmp_path: Path):
         assert tlr._active_endpoint_from_display(tmp_path) is None
 
-    def test_skips_malformed_json(self, tmp_path: Path):
-        display = tmp_path / ".runtime" / "display.jsonl"
-        display.parent.mkdir()
-        display.write_text(
-            "not json\n" + json.dumps({"type": "endpoint_start", "endpoint": "reviewer"}) + "\n",
-            encoding="utf-8",
-        )
-        assert tlr._active_endpoint_from_display(tmp_path) == ("reviewer", None)
+    def test_ignores_nested_specialist_jobs(self, tmp_path: Path):
+        self._write_job(tmp_path, "review-1", "reviewer", display_scope="nested")
+        assert tlr._active_endpoint_from_display(tmp_path) is None
 
 
 # ===========================================================================
