@@ -792,8 +792,8 @@ is never a Project, does not read this policy, and must not own
 enabled = false              # setup default; set true to opt in
 # ignore_native_cores = true # use only stealth-authored cores during Booley resolution
 # banned_words = ["claude", "anthropic", "codex", "booley", ...]  # override
-#                            # the built-in list; empty [] effectively disables
-#                            # sanitization while keeping the hook installed
+#                            # the built-in list; empty [] disables vocabulary
+#                            # redaction, but structural attribution is rejected
 # enforce_convention = true  # enforce type(scope): summary subjects
 #                            # (default: off — opt in)
 # max_body_lines = 0         # cap the commit body (0 = subject line only);
@@ -826,16 +826,24 @@ source paths generated for the current workspace, so no source symlinks or RTL
 copies are created. Run `booley init` or a Booley Flow rather than raw FuseSoC
 when relying on this switch.
 
-When enabled, a commit-msg hook sanitizes the built-in banned-word list out of
-your commit messages. An already-installed hook no-ops at commit time when the
-flag is off. `banned_words` replaces (not extends) the built-in list.
+When enabled, a commit-msg hook rejects recognized machine-attribution footers,
+then sanitizes the built-in banned-word list out of all other commit-message
+prose. An already-installed hook no-ops at commit time when the flag is off.
+`banned_words` replaces (not extends) the built-in list.
 
 **Your message is redacted, not truncated.** Subject *and* body are kept, with
-banned phrases substituted in place; the hook prints what it rewrote. The only
-lines removed outright are **attribution trailers** (`Co-Authored-By:`, the
-"Generated with …" footer), which carry no authorial content. Sanitization is a
-scrub, not a word limit, so by default you write the long commit body and keep
-the rationale.
+banned phrases substituted in place; the hook prints what it rewrote. Recognized
+attribution is different: `Co-Authored-By:` and robot-prefixed footer lines are
+always rejected, while a plain "Generated with …" footer is rejected only when
+its payload matches the active banned-word vocabulary. The hook leaves the raw
+message unchanged and tells you to remove the footer and retry. This avoids both
+silent deletion and recognizable redaction debris while preserving ordinary
+prose such as "Generated with care by the whole team."
+
+An empty `banned_words = []` disables vocabulary redaction and therefore cannot
+confirm that an ambiguous plain "Generated with …" line names a protected
+identity. The two structurally unambiguous footer forms remain rejected while
+Stealth Mode is enabled.
 
 #### Enforcing the subject convention (`enforce_convention`)
 
@@ -853,10 +861,10 @@ enforce_convention = true
 ```
 
 With it on, a non-conforming subject is rejected (merge commits are exempt).
-Independent of the toggle: the banned-word scrub and `max_body_lines` cap are
-always in force when stealth is enabled. `BOOLEY_SKIP_COMMIT_VALIDATION=1` lands
-one commit past the convention check and the body cap — sanitization still runs,
-in every case.
+Independent of the toggle: attribution rejection, the banned-word scrub, and
+the `max_body_lines` cap are in force when stealth is enabled.
+`BOOLEY_SKIP_COMMIT_VALIDATION=1` lands one commit past the convention check and
+the body cap. It cannot bypass attribution rejection or sanitization.
 
 #### Capping the body (`max_body_lines`)
 

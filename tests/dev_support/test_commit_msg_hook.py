@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.dev_support.commit_msg_hook import main, sanitize_message
+from booley.dev_support.commit_msg_hook import AttributionPolicyError, main, sanitize_message
 
 
 @pytest.fixture(autouse=True)
@@ -42,19 +42,84 @@ class TestSanitizeMessage:
         assert "docker" not in result
         assert "Ran the redacted build to check the fix." in result
 
-    def test_attribution_trailers_dropped_not_redacted(self):
-        """Redacting a trailer leaves debris; drop it, keep the rationale above."""
-        msg = (
-            "fix(core): repair widget\n\n"
-            "The widget dropped every other frame.\n\n"
-            "🤖 Generated with [Claude Code](https://claude.com/claude-code)\n"
-            "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+    @pytest.mark.parametrize(
+        "footer",
+        [
+            "🤖 Generated with assistant-identity",
+            "Co-Authored-By: Person <person@example.test>",
+        ],
+    )
+    def test_attribution_trailers_rejected_without_echoing_identity(self, footer: str):
+        """Attribution cannot reach redaction and leave recognizable debris."""
+        msg = f"fix(core): repair widget\n\nThe widget dropped every other frame.\n\n{footer}\n"
+        with pytest.raises(AttributionPolicyError) as exc_info:
+            sanitize_message(msg)
+        assert exc_info.value.args == ()
+
+    @pytest.mark.parametrize(
+        "footer",
+        [
+            "  GENERATED   WITH   assistant-identity  ",
+            "Generated with [assistant-identity](https://example.test/assistant-identity)",
+        ],
+    )
+    def test_plain_attribution_variants_use_project_vocabulary(self, tmp_path: Path, footer: str):
+        config = tmp_path / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text(
+            '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
+            encoding="utf-8",
         )
-        result = sanitize_message(msg)
-        assert "The widget dropped every other frame." in result
-        assert "Co-Authored-By" not in result
-        assert "🤖" not in result
-        assert "noreply" not in result
+
+        with pytest.raises(AttributionPolicyError):
+            sanitize_message(f"fix(core): repair widget\n\n{footer}\n", tmp_path)
+
+    def test_plain_generated_prose_without_identity_is_sanitized_not_rejected(
+        self, tmp_path: Path
+    ):
+        config = tmp_path / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text(
+            '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
+            encoding="utf-8",
+        )
+
+        result = sanitize_message(
+            "fix(core): repair widget\n\nGenerated with care by the whole team.\n",
+            tmp_path,
+        )
+
+        assert result == ("fix(core): repair widget\n\nredacted with care by the whole team.\n")
+
+    def test_empty_vocabulary_leaves_plain_shape_but_rejects_structural_shape(
+        self, tmp_path: Path
+    ):
+        config = tmp_path / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text("[stealth]\nbanned_words = []\n", encoding="utf-8")
+        plain = "fix(core): repair widget\n\nGenerated with assistant-identity\n"
+
+        assert sanitize_message(plain, tmp_path) == plain
+        with pytest.raises(AttributionPolicyError):
+            sanitize_message(
+                "fix(core): repair widget\n\nCo-Authored-By: Person <person@example.test>\n",
+                tmp_path,
+            )
+
+    def test_attribution_in_git_comment_is_ignored(self, tmp_path: Path):
+        config = tmp_path / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text(
+            '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
+            encoding="utf-8",
+        )
+
+        result = sanitize_message(
+            "fix(core): repair widget\n# Generated with assistant-identity\n",
+            tmp_path,
+        )
+
+        assert result == "fix(core): repair widget\n"
 
     def test_body_separated_from_subject_by_one_blank_line(self):
         """Git convention, regardless of how the author spaced the original."""
@@ -84,12 +149,10 @@ class TestSanitizeMessage:
         assert result.startswith("Merge branch 'feature'\n")
         assert "Some merge details." in result
 
-    def test_merge_commit_strips_banned_lines(self):
+    def test_merge_commit_rejects_attribution(self):
         msg = "Merge branch 'dev'\n\nClean line\nCo-Authored-By: bot\nAnother clean line\n"
-        result = sanitize_message(msg)
-        assert "Co-Authored-By" not in result
-        assert "Clean line" in result
-        assert "Another clean line" in result
+        with pytest.raises(AttributionPolicyError):
+            sanitize_message(msg)
 
     def test_merge_scope_syntax(self):
         """merge(scope): ... is treated as a merge commit."""
@@ -200,6 +263,108 @@ class TestMain:
 
         assert rc == 1
 
+    def test_plain_attribution_rejected_before_message_rewrite(self, tmp_path: Path, capsys):
+        """A footer naming a configured identity stays intact for correction."""
+        project_root = tmp_path / "project"
+        config_dir = project_root / ".booley_project"
+        config_dir.mkdir(parents=True)
+        (config_dir / "booley.toml").write_text(
+            '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n',
+            encoding="utf-8",
+        )
+        msg_file = tmp_path / "COMMIT_EDITMSG"
+        original = (
+            "fix(core): repair edge case\n\n"
+            "Useful rationale.\n\n"
+            "Generated with assistant-identity\n"
+        )
+        msg_file.write_text(original, encoding="utf-8")
+
+        with (
+            patch("booley.dev_support.commit_msg_hook.sys.argv", ["commit-msg", str(msg_file)]),
+            patch("validate_commit_msg._current_repo_root", return_value=project_root),
+        ):
+            result = main()
+
+        diagnostic = capsys.readouterr().err
+        assert result == 1
+        assert msg_file.read_text(encoding="utf-8") == original
+        assert "assistant-identity" not in diagnostic
+        assert "remove" in diagnostic.lower()
+        assert "retry" in diagnostic.lower()
+
+    @pytest.mark.parametrize(
+        "footer",
+        [
+            "  co-authored-by  : Person <person@example.test>",
+            "  🤖 Generated with private-identity",
+        ],
+    )
+    def test_structural_attribution_rejected_before_message_rewrite(
+        self, tmp_path: Path, capsys, footer: str
+    ):
+        msg_file = tmp_path / "COMMIT_EDITMSG"
+        original = f"fix(core): repair edge case\n\nUseful rationale.\n\n{footer}\n"
+        msg_file.write_text(original, encoding="utf-8")
+
+        with patch(
+            "booley.dev_support.commit_msg_hook.sys.argv",
+            ["commit-msg", str(msg_file)],
+        ):
+            result = main()
+
+        diagnostic = capsys.readouterr().err
+        assert result == 1
+        assert msg_file.read_text(encoding="utf-8") == original
+        assert footer.strip() not in diagnostic
+        assert "remove" in diagnostic.lower()
+
+    def test_skip_validation_does_not_bypass_attribution_rejection(
+        self, tmp_path: Path, monkeypatch
+    ):
+        project_root = tmp_path / "project"
+        config = project_root / ".booley_project" / "booley.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
+            encoding="utf-8",
+        )
+        msg_file = tmp_path / "COMMIT_EDITMSG"
+        original = "fix(core): repair edge case\n\nGenerated with assistant-identity\n"
+        msg_file.write_text(original, encoding="utf-8")
+        monkeypatch.setenv("BOOLEY_SKIP_COMMIT_VALIDATION", "1")
+
+        with (
+            patch("booley.dev_support.commit_msg_hook.sys.argv", ["commit-msg", str(msg_file)]),
+            patch("validate_commit_msg._current_repo_root", return_value=project_root),
+        ):
+            result = main()
+
+        assert result == 1
+        assert msg_file.read_text(encoding="utf-8") == original
+
+    def test_stealth_disabled_leaves_attribution_message_unchanged(self, tmp_path: Path, capsys):
+        project_root = tmp_path / "project"
+        config = project_root / ".booley_project" / "booley.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            '[stealth]\nenabled = false\nbanned_words = ["generated", "assistant-identity"]\n',
+            encoding="utf-8",
+        )
+        msg_file = tmp_path / "COMMIT_EDITMSG"
+        original = "fix(core): repair edge case\n\nGenerated with assistant-identity\n"
+        msg_file.write_text(original, encoding="utf-8")
+
+        with (
+            patch("booley.dev_support.commit_msg_hook.sys.argv", ["commit-msg", str(msg_file)]),
+            patch("validate_commit_msg._current_repo_root", return_value=project_root),
+        ):
+            result = main()
+
+        assert result == 0
+        assert msg_file.read_text(encoding="utf-8") == original
+        assert capsys.readouterr().err == ""
+
     def test_skip_env_bypasses_convention_but_still_sanitizes(self, tmp_path: Path, monkeypatch):
         """SETUP-10: BOOLEY_SKIP_COMMIT_VALIDATION skips the convention check,
         but the IP-leak scrub still runs — the banned word goes, the prose stays."""
@@ -302,18 +467,16 @@ class TestRedactionNotice:
 
     def test_redacted_subject_does_not_mask_the_body_notice(self, tmp_path: Path, capsys):
         # Both notices must fire independently: an `elif` here once let a
-        # redacted subject swallow the body notice, so body edits (trailers
-        # included) happened without a word.
+        # redacted subject swallow the body notice, so body edits happened
+        # without a word.
         written = self._run(
             tmp_path,
-            "feat(booley): wire the thing\n\nLong body.\n\nCo-Authored-By: Someone\n",
+            "feat(booley): wire the thing\n\nBuilt the docker image.\n",
         )
         err = capsys.readouterr().err
         assert "stealth-mode redaction" in err
         assert "rewrote the commit body" in err
-        # The prose survives; only the trailer is gone.
-        assert "Long body." in written
-        assert "Co-Authored-By" not in written
+        assert "Built the redacted image." in written
 
     def test_sanitization_notice_names_the_opt_out(self, tmp_path: Path, capsys):
         self._run(tmp_path, "fix(core): repair edge case\n\nbuilt the docker image\n")

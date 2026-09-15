@@ -2,7 +2,7 @@
 
 Extracted from ``init_cmd.py`` (Single Responsibility): the ``git_hooks`` step
 installs the leak guard into the project-agnostic ``.booley/`` repo, and the
-``project_git_hooks`` step vendors the commit-message sanitizer scripts into
+``project_git_hooks`` step vendors the commit-message policy scripts into
 ``.booley_project/hooks/`` and installs a repo-relative ``commit-msg``
 delegator into the project's own ``.git/hooks/``. Steps are named by their
 record key, never by a display number — the banner numbers are allocated at
@@ -155,8 +155,8 @@ def _build_hook_delegator_body(
 
     Only the last-resort fallback differs per hook, and *fail_open* picks it:
 
-    - ``True`` (commit-msg): skip with one explanatory line. The sanitizer is a
-      convenience; a missing script must never wedge local committing (F-42).
+    - ``True`` (commit-msg): skip with one explanatory line. The policy hook is
+      a convenience; a missing script must never wedge local committing (F-42).
     - ``False`` (pre-push): refuse the push. That hook exists for one reason —
       to block — so treating "I could not check" as "nothing to report" is the
       one answer it must never give. ``.booley_project/`` is git-ignored, so a
@@ -238,10 +238,10 @@ def _build_commit_msg_hook_body(project_root: Path, hooks_dst: Path) -> str:
         project_root,
         hooks_dst,
         "commit_msg_hook.py",
-        "commit-msg hook (sanitize + validate) — strips AI/tooling\n"
-        "# attribution (Co-Authored-By, claude, generated, ...) and project-\n"
-        "# internal terms from commit messages",
-        # A sanitizer that cannot run is an inconvenience; a commit that cannot
+        "commit-msg hook (reject attribution + sanitize + validate) — rejects\n"
+        "# recognized attribution footers and redacts protected terms from\n"
+        "# other commit-message prose",
+        # A policy hook that cannot run is an inconvenience; a commit that cannot
         # be made is a wedge. Skip (F-42).
         fail_open=True,
     )
@@ -273,12 +273,12 @@ def _build_pre_push_hook_body(project_root: Path, hooks_dst: Path) -> str:
 
 
 def _step_project_git_hooks(ctx: InitContext) -> None:
-    """Install the commit-msg sanitizer + pre-push leak guard.
+    """Install the commit-msg policy hook + pre-push leak guard.
 
     The ``git_hooks`` step installs the leak guard into the project-agnostic
     .booley/ repo.
     This step covers the repo the user actually commits from: it vendors the
-    sanitizer scripts into .booley_project/hooks/ and installs repo-relative
+    policy scripts into .booley_project/hooks/ and installs repo-relative
     commit-msg and pre-push delegators into the project's own .git/hooks/.
     The pre-push guard re-checks outgoing commits because ``git revert`` and
     ``--no-verify`` bypass commit-msg entirely (F-17).
@@ -300,8 +300,8 @@ def _step_project_git_hooks(ctx: InitContext) -> None:
     }
     missing.extend(name for name, source in helper_sources.items() if not source.is_file())
     if missing:
-        skip(f"sanitizer scripts not found in developer-support dir: {', '.join(missing)}")
-        ctx.record("project_git_hooks", "skip", "sanitizer scripts missing")
+        skip(f"commit policy scripts not found in developer-support dir: {', '.join(missing)}")
+        ctx.record("project_git_hooks", "skip", "commit policy scripts missing")
         return
 
     # Locate the project repo's hooks dir (handles worktrees, where .git is a
@@ -329,7 +329,9 @@ def _step_project_git_hooks(ctx: InitContext) -> None:
     ]
 
     if ctx.check_only:
-        warn("would vendor sanitizer scripts and install project commit-msg and pre-push hooks")
+        warn(
+            "would vendor commit policy scripts and install project commit-msg and pre-push hooks"
+        )
         ctx.record("project_git_hooks", "warn", "would install")
         return
 

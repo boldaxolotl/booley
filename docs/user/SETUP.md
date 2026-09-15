@@ -275,16 +275,16 @@ Mode session.
 asks whether to enable stealth mode and writes `[stealth] enabled = false`
 unless you say yes. A missing `enabled` key retains the older on-by-default
 runtime fallback for compatibility with existing projects. When enabled,
-stealth mode scrubs project-identifying details out of commit messages so
-private IP names don't leak into git history. The project commit-msg hook
-installed by `booley init` only *sanitizes* your messages that way; it does
-**not** force a
+stealth mode keeps project-identifying details out of commit messages so private
+IP names don't leak into git history. The project commit-msg hook installed by
+`booley init` rejects recognized attribution footers and sanitizes other
+protected terms; it does **not** force a
 `type(scope): summary` subject, so human and upstream-style commits on code you
 don't own land as-is. A team that wants that convention across its own history
 turns it on with `[stealth] enforce_convention = true` (see
 [CONFIG.md](CONFIG.md#enforcing-the-subject-convention-enforce_convention)).
 Once enabled, `BOOLEY_SKIP_COMMIT_VALIDATION=1` lands one non-conforming commit
-anyway: it skips only the convention check; the IP-leak sanitization still runs
+anyway: it skips validation but not attribution rejection or sanitization
 (unlike `git commit --no-verify`, which disables the hook entirely and lets
 project details leak into history). Stealth mode itself is covered in
 [CONFIG.md](CONFIG.md#stealth-mode-stealth).
