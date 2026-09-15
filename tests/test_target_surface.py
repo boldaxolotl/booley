@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
@@ -976,6 +977,41 @@ class TestRenderListing:
 
 
 class TestDetail:
+    def test_cheap_detail_does_not_calculate_or_resolve_builds(self, project, monkeypatch):
+        def unexpected(*args, **kwargs):
+            pytest.fail("cheap detail must not calculate or resolve builds")
+
+        monkeypatch.setattr(target_surface, "work_root_for", unexpected)
+        monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", unexpected)
+        payload = detail_payload(project, "sim", resolve=False)
+        assert payload["name"] == "sim"
+        assert "resolved" not in payload and "resolved_error" not in payload
+        assert not (project / ".booley_project" / ".runtime" / "edalize").exists()
+
+    def test_source_checkout_rejection_is_not_a_resolution_error(self, project):
+        (project / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+        with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
+            detail_payload(project, "sim")
+        assert not (project / ".booley_project" / ".runtime" / "edalize").exists()
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ("\n  first diagnostic\nsecond diagnostic\n", "first diagnostic"),
+            ("   ", "FuseSocError"),
+        ],
+    )
+    def test_resolution_error_payload_keeps_first_line_or_class(
+        self, project, monkeypatch, message, expected
+    ):
+        def fail_resolution(*args, **kwargs):
+            raise fusesoc_registry.FuseSocError(message)
+
+        monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", fail_resolution)
+        payload = detail_payload(project, "sim")
+        assert payload["resolved_error"] == expected
+        assert "resolved" not in payload
+
     def test_cheap_half(self, project: Path):
         payload = detail_payload(project, "sim", resolve=False)
         assert payload["selector"] == "sim"
@@ -1021,13 +1057,11 @@ class TestDetail:
         )
 
     def test_resolved_half_reads_edam(self, project: Path):
-        from booley.flows import edam as edam_layer
-
         for rel in ("alpha/rtl/alpha.sv", "alpha/tb/tb_alpha.sv"):
             (project / rel).parent.mkdir(parents=True, exist_ok=True)
             (project / rel).touch()
 
-        build_root = edam_layer.work_root_for(project, "targets", "sim")
+        build_root = project / ".booley_project" / ".runtime" / "edalize" / "targets" / "sim"
         edam_text = textwrap.dedent(
             """\
             name: acme_ip_alpha_1.0
@@ -1057,6 +1091,12 @@ class TestDetail:
         assert resolved["tb_files"] == 1
         assert resolved["sdc_files"] == ["constraints/alpha.sdc"]
         assert resolved["xdc_files"] == []
+        assert resolved["build_root"] == (
+            ".booley_project/.runtime/edalize/targets/sim/acme_ip_alpha_1.0/sim"
+        )
+        assert resolved["parameters"] == {
+            "WIDTH": {"datatype": "int", "default": 8, "paramtype": "vlogparam"}
+        }
 
         text = render_detail(payload)
         assert "WIDTH (int) = 8" in text

@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
+from booley.core.build_paths import work_root_for
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TARGET_AWARE_FLOWS, TargetHandle
@@ -273,9 +274,7 @@ def detail_payload(
     if not resolve:
         return payload
 
-    from booley.flows import edam as edam_layer
-
-    build_root = edam_layer.work_root_for(root, "targets", selected.name)
+    build_root = work_root_for(root, "targets", selected.name)
     try:
         resolved = fusesoc_registry.resolve_target_handle(
             handle,

@@ -120,6 +120,7 @@ _EXHAUSTIVE_RECOVERY_FILES = {
     "pyproject.toml",
     "src/booley/flows/baseline_worktree.py",
     "src/booley/runtime/git.py",
+    "src/booley/core/scope_matching.py",
     "tests/conftest.py",
 }
 

@@ -6,7 +6,7 @@ import pytest
 
 from tests.architecture.booley_contract import BOOLEY_SOURCE_DEPENDENCY_CONTRACT
 from tests.architecture.contract import ArchitectureContract, evaluate_contract
-from tests.architecture.import_graph import Dependency
+from tests.architecture.import_graph import Dependency, analyze_imports
 
 
 def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
@@ -30,6 +30,11 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
 @pytest.mark.parametrize(
     ("rule", "source", "target", "path"),
     (
+        ("D27", "booley.targets", "booley.flows", "targets/__init__.py"),
+        ("D27", "booley.targets.target_surface", "booley.flows.edam", "seed.py"),
+        ("D27", "booley.targets.catalog", "booley.runtime.git", "seed.py"),
+        ("D28", "booley.fusesoc", "booley.runtime", "fusesoc/__init__.py"),
+        ("D28", "booley.fusesoc.core_security", "booley.runtime.git", "seed.py"),
         ("D18", "booley.config.agent", "booley.runtime.agent_backend", "seed.py"),
         ("D21", "booley.review.generation", "booley.ticket_board.io", "seed.py"),
         ("D21", "booley.review.generation", "booley.harness.booley", "seed.py"),
@@ -143,6 +148,73 @@ def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
 
 def _directions_only() -> ArchitectureContract:
     return ArchitectureContract(rules=BOOLEY_SOURCE_DEPENDENCY_CONTRACT.rules)
+
+
+@pytest.mark.parametrize(
+    ("source", "target", "rule"),
+    [
+        ("targets/probe.py", "flows/edam.py", "D27"),
+        ("targets/__init__.py", "runtime/git.py", "D27"),
+        ("fusesoc/core_security.py", "runtime/git.py", "D28"),
+    ],
+)
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import {module} as dependency\n",
+        "def deferred():\n    import {module}\n",
+        "if enabled:\n    import {module}\n",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import {module}\n",
+    ],
+)
+def test_target_separation_catches_all_source_import_locations(
+    tmp_path: Path, source: str, target: str, rule: str, statement: str
+) -> None:
+    package = tmp_path / "booley"
+    for relative in ("__init__.py", source, target):
+        path = package / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+    module = "booley." + target.removesuffix(".py").replace("/", ".")
+    (package / source).write_text(statement.format(module=module))
+    problems = evaluate_contract(analyze_imports(package), _directions_only())
+    assert rule in {problem.rule for problem in problems}
+
+
+def test_target_separation_allows_downward_mechanisms() -> None:
+    dependencies = (
+        _dependency("booley.targets.target_surface", "booley.core.build_paths"),
+        _dependency("booley.fusesoc.core_security", "booley.core.scope_matching"),
+        _dependency("booley.flows.sim.flow", "booley.core.build_paths"),
+        _dependency("booley.runtime.git", "booley.core.scope_matching"),
+        _dependency("booley.targets.catalog", "booley.fusesoc.fusesoc_registry"),
+        _dependency("booley.fusesoc.fusesoc_registry", "booley.targets.domain"),
+    )
+    for dependency in dependencies:
+        assert evaluate_contract((dependency,), _directions_only()) == ()
+
+
+def test_approved_target_group_cannot_recombine_with_execution() -> None:
+    contract = ArchitectureContract(
+        approved_sccs=BOOLEY_SOURCE_DEPENDENCY_CONTRACT.approved_sccs,
+    )
+    separate = (
+        _dependency("booley.targets.catalog", "booley.fusesoc.fusesoc_registry"),
+        _dependency("booley.fusesoc.fusesoc_registry", "booley.targets.domain"),
+        _dependency("booley.flows.edam", "booley.runtime.git"),
+        _dependency("booley.runtime.git", "booley.flows.edam"),
+    )
+    assert evaluate_contract(separate, contract) == ()
+    recombined = (
+        *separate,
+        _dependency("booley.targets.target_surface", "booley.flows.edam"),
+        _dependency("booley.runtime.git", "booley.fusesoc.core_security"),
+    )
+    problems = evaluate_contract(recombined, contract)
+    assert len(problems) == 1
+    assert problems[0].kind == "scc"
+    assert "booley.targets" in problems[0].message
+    assert "booley.runtime" in problems[0].message
 
 
 def _dependency(source: str, target: str, *, line: int = 1, path: str = "seed.py") -> Dependency:

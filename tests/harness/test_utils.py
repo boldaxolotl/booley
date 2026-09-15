@@ -8,18 +8,30 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.core.scope_matching import (
+    is_scope_unknown,
+    scope_matches_file,
+)
 from booley.harness.blocking import BlockingError
 from booley.runtime.git import (
     commit_scope,
     expand_scope_globs,
-    is_scope_unknown,
     scope_matches_dirty_file,
-    scope_matches_file,
 )
 
 # ===========================================================================
 # commit_scope
 # ===========================================================================
+
+
+@pytest.mark.parametrize("status", ["??", "A ", " M", "M ", "AM", " D", "D ", "MD"])
+def test_new_scope_deletion_policy_remains_status_aware(status: str) -> None:
+    scope = ["rtl/*.sv [new]"]
+    expected = "D" not in status[:2]
+    assert scope_matches_dirty_file(scope, "rtl/top.sv", status) is expected
+    assert scope_matches_dirty_file(["* [new]"], "rtl/top.sv", status)
+    assert scope_matches_dirty_file([*scope, "rtl/top.sv"], "rtl/top.sv", status)
+    assert not scope_matches_dirty_file([], "rtl/top.sv", status)
 
 
 class TestCommitScope:
