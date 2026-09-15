@@ -22,6 +22,7 @@ from booley.runtime.git import (
     _git_common_dir,
     add_git_excludes,
     commit_scope,
+    git_excludes_pending,
     git_run,
 )
 
@@ -311,6 +312,19 @@ def _is_ignored(wt: Path, rel: str) -> bool:
 
 
 class TestAddGitExcludes:
+    def test_pending_inspection_is_read_only_and_tracks_reconciliation(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        exclude = repo / ".git" / "info" / "exclude"
+        before = exclude.read_bytes()
+
+        assert git_excludes_pending(repo, [".devcontainer", ".booley_project"])
+        assert exclude.read_bytes() == before
+
+        add_git_excludes(repo, [".devcontainer", ".booley_project"])
+        current = exclude.read_bytes()
+        assert not git_excludes_pending(repo, [".devcontainer", ".booley_project"])
+        assert exclude.read_bytes() == current
+
     def test_main_worktree_excludes_and_is_honored(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
 

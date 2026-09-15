@@ -241,9 +241,8 @@ those relative paths are authored against — usually the testbench dir:
 run_cwd = "tests/work"   # relative to the repo root; unset = run from project root
 ```
 
-Only the direct-binary (Verilator) run honors this as a literal cwd; the Icarus
-`make run` target stays anchored to its build directory. Its resolved value is
-exported to pre-sim commands as `BOOLEY_RUN_CWD`.
+Every Simulation adapter honors this as its literal cwd. Its resolved value is
+exported to Pre-Sim Commands as `BOOLEY_RUN_CWD`.
 
 **The directory must already exist.** Booley does not create it — the sim run
 spawns with this as its cwd, and a missing one fails the spawn. If your run dir
@@ -792,8 +791,8 @@ is never a Project, does not read this policy, and must not own
 enabled = false              # setup default; set true to opt in
 # ignore_native_cores = true # use only stealth-authored cores during Booley resolution
 # banned_words = ["claude", "anthropic", "codex", "booley", ...]  # override
-#                            # the built-in list; empty [] effectively disables
-#                            # sanitization while keeping the hook installed
+#                            # the built-in list; empty [] disables vocabulary
+#                            # redaction, but structural attribution is rejected
 # enforce_convention = true  # enforce type(scope): summary subjects
 #                            # (default: off — opt in)
 # max_body_lines = 0         # cap the commit body (0 = subject line only);
@@ -826,16 +825,27 @@ source paths generated for the current workspace, so no source symlinks or RTL
 copies are created. Run `booley init` or a Booley Flow rather than raw FuseSoC
 when relying on this switch.
 
-When enabled, a commit-msg hook sanitizes the built-in banned-word list out of
-your commit messages. An already-installed hook no-ops at commit time when the
-flag is off. `banned_words` replaces (not extends) the built-in list.
+When enabled, a commit-msg hook rejects recognized machine-attribution footers,
+then sanitizes the built-in banned-word list out of all other commit-message
+prose. An already-installed hook no-ops at commit time when the flag is off.
+`banned_words` replaces (not extends) the built-in list.
 
 **Your message is redacted, not truncated.** Subject *and* body are kept, with
-banned phrases substituted in place; the hook prints what it rewrote. The only
-lines removed outright are **attribution trailers** (`Co-Authored-By:`, the
-"Generated with …" footer), which carry no authorial content. Sanitization is a
-scrub, not a word limit, so by default you write the long commit body and keep
-the rationale.
+banned phrases substituted in place; the hook prints what it rewrote. Recognized
+attribution is different: `Co-Authored-By:` and robot-prefixed footer lines are
+always rejected, while a plain "Generated with …" footer is rejected only when
+it is the final nonblank body line and its entire visible payload matches one
+entry in the active banned-word vocabulary. Markdown-linked payloads are
+compared by their visible label. The hook leaves the raw message unchanged and
+tells you to remove the footer and retry. This avoids both silent deletion and
+recognizable redaction debris while preserving ordinary prose such as
+"Generated with care by the whole team" or "Generated with Docker for
+reproducibility."
+
+An empty `banned_words = []` disables vocabulary redaction and therefore cannot
+confirm that an ambiguous plain "Generated with …" line names a protected
+identity. The two structurally unambiguous footer forms remain rejected while
+Stealth Mode is enabled.
 
 #### Enforcing the subject convention (`enforce_convention`)
 
@@ -853,10 +863,10 @@ enforce_convention = true
 ```
 
 With it on, a non-conforming subject is rejected (merge commits are exempt).
-Independent of the toggle: the banned-word scrub and `max_body_lines` cap are
-always in force when stealth is enabled. `BOOLEY_SKIP_COMMIT_VALIDATION=1` lands
-one commit past the convention check and the body cap — sanitization still runs,
-in every case.
+Independent of the toggle: attribution rejection, the banned-word scrub, and
+the `max_body_lines` cap are in force when stealth is enabled.
+`BOOLEY_SKIP_COMMIT_VALIDATION=1` lands one commit past the convention check and
+the body cap. It cannot bypass attribution rejection or sanitization.
 
 #### Capping the body (`max_body_lines`)
 
@@ -1266,6 +1276,10 @@ A few conventions worth calling out in that example:
   simulation harness and does not need the SystemVerilog dump module.
 - **A `file_type: user` file with `copyto:`** stages a non-RTL data file (a
   `$readmemh` image, a vectors file) into the build tree at the name the TB opens.
+  Before the simulator starts, Booley exposes that declared relative path in the
+  configured `run_cwd`; the temporary entry is removed after the run. An identical
+  file already present there is preserved, while a different file at the same path
+  is an input-setup error rather than being overwritten.
 - **`flow_options.arch`** (and any other Edalize-only knob) is plumbing Booley
   passes through to the toolchain. The built-in synth path drives its own
   PDK/target via the OpenROAD engine and ignores `arch`.
@@ -1785,6 +1799,12 @@ Keep the override at the call site (the `post-setup` hook).
 Project Initialization owns this flavor image, building it if missing and
 rebuilding it when the Host Bootstrap-owned base moves (see the table above for
 what it does with a name it doesn't recognise).
+
+When Booley is running from a source checkout, both the base and this flavor are
+built locally from the same checkout identity; Project Initialization does not
+try a same-version release image first. An installed Booley distribution may
+acquire its published flavor, but adopts it only after exact payload, recipe,
+and base-digest provenance validation.
 
 To build or refresh it by hand (this also rebuilds the base first):
 

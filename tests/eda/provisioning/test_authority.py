@@ -98,6 +98,19 @@ def test_issuance_resolves_the_installation_selected_only_by_the_grant(
         assert profile is None
 
 
+def test_inspection_without_grant_does_not_create_authority_state(
+    tmp_path: Path,
+    private_state: Path,
+) -> None:
+    del private_state
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+
+    assert authority.resolve_for_inspection(project, False) == (None, None)
+    assert not authority.state_dir().exists()
+
+
 def test_issuance_rejects_host_provisioning_without_an_installation_grant(
     tmp_path: Path, private_state: Path
 ) -> None:
