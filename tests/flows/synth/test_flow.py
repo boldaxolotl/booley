@@ -841,6 +841,58 @@ class TestIntentionalLatches:
         out = "Printing statistics.\n     $_DLATCH_P_    3\nblah $dlatch blah\n"
         assert _count_latches(out) == 3
 
+    def test_count_latches_accepts_count_first_stat_tally(self):
+        from booley.flows.synth.flow import _count_latches
+
+        out = "Printing statistics.\n        1   $_DLATCH_P_\n"
+        assert _count_latches(out) == 1
+
+    def test_count_latches_does_not_sum_repeated_stat_blocks(self):
+        from booley.flows.synth.flow import _count_latches
+
+        stat = "Printing statistics.\n        1   $_DLATCH_P_\n"
+        out = stat + "Executing Verilog backend.\n" + stat + "--- stat_top.txt ---\n" + stat
+        assert _count_latches(out) == 1
+
+    def test_count_latches_accumulates_variants_in_final_stat_block(self):
+        from booley.flows.synth.flow import _count_latches
+
+        out = "Printing statistics.\n        2   $_DLATCH_P_\n     $_DLATCH_N_    3\n"
+        assert _count_latches(out) == 5
+
+    def test_count_latches_final_clean_stat_overrides_earlier_mentions(self):
+        from booley.flows.synth.flow import _count_latches
+
+        out = (
+            "Warning: found $dlatch in cell A\n"
+            "Printing statistics.\n"
+            "        1   $_DLATCH_P_\n"
+            "Executing Verilog backend.\n"
+            "Printing statistics.\n"
+            "        4   $_DFF_PP0_\n"
+        )
+        assert _count_latches(out) == 0
+
+    def test_count_latches_ignores_tally_shaped_appended_diagnostic(self):
+        from booley.flows.synth.flow import _count_latches
+
+        out = (
+            "13. Printing statistics.\n"
+            "        1 cells\n"
+            "        1   $_DLATCH_P_\n"
+            "\nWarnings: 1 unique messages, 1 total\n"
+            "End of script.\n"
+            "ERROR: diagnostic excerpt follows:\n"
+            "        9   $_DLATCH_N_\n"
+        )
+        assert _count_latches(out) == 1
+
+    def test_count_latches_falls_back_after_incomplete_stat_marker(self):
+        from booley.flows.synth.flow import _count_latches
+
+        out = "Warning: found $dlatch in cell A\n13. Printing statistics.\n"
+        assert _count_latches(out) == 1
+
     def test_count_latches_stat_ran_with_no_dlatch_row_is_zero(self):
         """F-29 regression: transient $dlatch log chatter on a clean netlist.
 
@@ -1875,6 +1927,51 @@ class TestFileBasedInterpretation:
         assert "12,345 cells" in result.report_text
         st = DevelopmentState.load(state_file)
         assert st.is_met("synthesis_ok_lite")
+
+    def test_unknown_area_failure_preserves_latch_conditions(self, flow_and_state, tmp_path: Path):
+        flow, state_file = flow_and_state
+        build_dir = self._build_dir(tmp_path)
+        stat_output = (
+            "13. Printing statistics.\n"
+            "\n=== dut ===\n"
+            "\n        1 cells\n"
+            "        1   $_DLATCH_P_\n"
+            "\n   Area for cell type $_DLATCH_P_ is unknown!\n"
+        )
+
+        def mock_execute(cmd, **_kwargs):
+            build_dir.mkdir(parents=True, exist_ok=True)
+            (build_dir / "yosys.log").write_text(stat_output, encoding="utf-8")
+            (build_dir / "stat_dut.txt").write_text(stat_output, encoding="utf-8")
+            (build_dir / "check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
+            fresh = time.time() + 1
+            for artifact in build_dir.iterdir():
+                os.utime(artifact, (fresh, fresh))
+            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+
+        with patch.object(flow, "_execute", side_effect=mock_execute):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_FAILURE
+        assert "synthesis log reports an error despite exit 0" in result.report_text
+        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+        run_log = tmp_path / report["artifacts"]["log"]
+        assert "Area for cell type $_DLATCH_P_ is unknown!" in run_log.read_text()
+        assert report["passed"] is False
+        assert report["returncode"] == 1
+        assert report["termination"] == "eda_tool_failure"
+        assert report["ppa_complete"] is False
+        assert report["area_um2"] is None
+        conditions = report["implementation"]["conditions"]
+        assert conditions["latches"] == 1
+        assert conditions["unexpected_latches"] == 1
+        assert conditions["has_critical"] is True
+        criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
+        assert criterion.met is False
+        assert criterion.detail["latches"] == 1
+        assert criterion.detail["has_critical"] is True
 
     def test_final_check_structural_findings_fail_and_reach_every_report_surface(
         self, flow_and_state, tmp_path: Path
