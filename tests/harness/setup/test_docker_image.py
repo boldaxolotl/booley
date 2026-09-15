@@ -157,7 +157,11 @@ def test_local_build_constructs_base_before_candidate_with_named_context(
     (tmp_path / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
     calls = []
 
-    monkeypatch.setattr(init_docker_image, "_docker_build_wheel", lambda *_args: True)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_build_wheel",
+        lambda *_args, **_kwargs: True,
+    )
     monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda *_args: False)
     monkeypatch.setattr(
         init_docker_image, "_docker_image_id", lambda _image: "sha256:runtime-base"
