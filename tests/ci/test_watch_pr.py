@@ -26,6 +26,22 @@ NEXT_HEAD = "b" * 40
 URL = "https://github.com/example/repo/pull/7"
 
 
+def write_fake_gh(tmp_path: Path, source: str) -> Path:
+    script = tmp_path / "fake_gh.py"
+    script.write_text(source, encoding="utf-8")
+    if os.name == "nt":
+        launcher = tmp_path / "gh.cmd"
+        launcher.write_text(
+            f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        launcher = tmp_path / "gh"
+        launcher.write_text(f"#!/usr/bin/env python3\n{source}", encoding="utf-8")
+        launcher.chmod(launcher.stat().st_mode | 0o111)
+    return launcher
+
+
 class FakeClock:
     def __init__(self, *, monotonic: float = 0) -> None:
         self.current = monotonic
@@ -345,11 +361,10 @@ def test_every_outcome_has_an_explicit_exit_mapping() -> None:
 
 
 def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path) -> None:
-    fake_gh = tmp_path / "gh"
     log = tmp_path / "commands.log"
     long_url = "https://github.com/example/repo/pull/" + "x" * 10_000
-    fake_gh.write_text(
-        "#!/usr/bin/python3\n"
+    write_fake_gh(
+        tmp_path,
         "import json, os, sys\n"
         f"open({str(log)!r}, 'a', encoding='utf-8').write(' '.join(sys.argv[1:]) + '\\n')\n"
         "if sys.argv[1:3] == ['pr', 'view']:\n"
@@ -360,9 +375,7 @@ def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path
         "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n"
         "else:\n"
         "    raise SystemExit('unexpected command')\n",
-        encoding="utf-8",
     )
-    fake_gh.chmod(fake_gh.stat().st_mode | 0o111)
     result = subprocess.run(
         [
             "python3",
@@ -426,16 +439,13 @@ def test_cli_rejects_overlong_repo_without_echoing_it() -> None:
     assert all(len(line) <= watch_pr.MAX_OUTPUT_LINE_LENGTH for line in result.stderr.splitlines())
 
 
-def test_cancel_terminates_active_child_process(tmp_path: Path) -> None:
-    fake_gh = tmp_path / "gh"
-    fake_gh.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
-    fake_gh.chmod(fake_gh.stat().st_mode | 0o111)
-    transport = watch_pr.GhTransport(clock=watch_pr.SystemClock(), executable=str(fake_gh))
+def test_cancel_terminates_active_child_process() -> None:
+    transport = watch_pr.GhTransport(clock=watch_pr.SystemClock(), executable=sys.executable)
     errors: list[BaseException] = []
 
     def run_child() -> None:
         try:
-            transport._run(["api", "read-only"], 20, accepted={0})
+            transport._run(["-c", "import time; time.sleep(30)"], 20, accepted={0})
         except watch_pr.CancelledWatchError as error:
             errors.append(error)
 
@@ -454,9 +464,8 @@ def test_cancel_terminates_active_child_process(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal behavior")
 def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
-    fake_gh = tmp_path / "gh"
-    fake_gh.write_text(
-        "#!/usr/bin/python3\n"
+    write_fake_gh(
+        tmp_path,
         "import json, sys\n"
         "if sys.argv[1:3] == ['pr', 'view']:\n"
         f"    print(json.dumps({{'url': {URL!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'baseRefName': 'main', 'labels': [], 'statusCheckRollup': []}}))\n"
@@ -464,9 +473,7 @@ def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
         "    print('[]')\n"
         "elif sys.argv[1] == 'api':\n"
         "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n",
-        encoding="utf-8",
     )
-    fake_gh.chmod(fake_gh.stat().st_mode | 0o111)
     process = subprocess.Popen(
         [
             "python3",
