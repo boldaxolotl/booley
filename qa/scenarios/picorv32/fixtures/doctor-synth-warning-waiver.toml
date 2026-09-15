@@ -1,0 +1,7 @@
+version = 1
+
+[[waiver]]
+check = "flow.synth-deep-warning"
+subject = "synth_core"
+reason = "The pinned PicoRV32 synth_core baseline has reviewed upstream RTL and OpenROAD warnings; its exact warning signature is checked separately by the Public QA Scenario."
+expires = 2027-09-30
