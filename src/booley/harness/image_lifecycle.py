@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from booley.runtime import image_lifecycle as runtime_lifecycle
 from booley.runtime import project_image
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.version_attribution import VersionOrigin
+
+if TYPE_CHECKING:
+    from booley.harness.setup.common import InitContext
 
 BASE_IMAGE = runtime_lifecycle.BASE_IMAGE
 FLAVOR_RECIPES = runtime_lifecycle.FLAVOR_RECIPES
 BuildPort = runtime_lifecycle.BuildPort
+ArtifactSource = runtime_lifecycle.ArtifactSource
+ArtifactPolicy = runtime_lifecycle.ArtifactPolicy
 DockerPort = runtime_lifecycle.DockerPort
 HostImageScope = runtime_lifecycle.HostImageScope
 ImageCleanup = runtime_lifecycle.ImageCleanup
@@ -29,23 +36,35 @@ class _LegacyBuildAdapter:
         self.project_root = project_root
         self.verbose = verbose
 
-    def build(self, node: ImageNode, *, force: bool) -> None:
-        from booley.harness import init_cmd
-        from booley.harness.setup.common import InitContext
-        from booley.harness.setup.docker_image import (
-            _step_docker_image,
-            _try_pull_image,
-            ensure_flavor_image,
-        )
+    def build(
+        self,
+        node: ImageNode,
+        *,
+        force: bool,
+        source: ArtifactSource,
+    ) -> str | None:
+        if source is ArtifactSource.VERIFIED_RELEASE_PULL:
+            return self._pull_release(node)
+        self._build_local(node, force=force)
+        return None
+
+    def _pull_release(self, node: ImageNode) -> str:
+        from booley.harness.setup.docker_image import _try_pull_image, remote_tag
 
         shipped = node.reference == BASE_IMAGE or node.reference in FLAVOR_RECIPES
-        source_root = docker_data_dir().parents[3]
-        if shipped and not (source_root / "pyproject.toml").is_file():
-            if not _try_pull_image(node.payload.version, node.reference):
-                raise ImageLifecycleError(
-                    f"could not pull current packaged Runtime Image {node.reference}"
-                )
-            return
+        if not shipped:
+            raise ImageLifecycleError(
+                f"no published Runtime Image source exists for {node.reference}"
+            )
+        if not _try_pull_image(node.payload.version, node.reference, adopt=False):
+            raise ImageLifecycleError(
+                f"could not pull current packaged Runtime Image {node.reference}"
+            )
+        return remote_tag(node.reference, node.payload.version)
+
+    def _build_local(self, node: ImageNode, *, force: bool) -> None:
+        from booley.harness.setup.common import InitContext
+        from booley.harness.setup.docker_image import _step_docker_image, ensure_flavor_image
 
         context = InitContext(
             project_root=self.project_root,
@@ -54,31 +73,36 @@ class _LegacyBuildAdapter:
             show_step_banners=False,
         )
         if node.reference == BASE_IMAGE:
-            _step_docker_image(context, node.reference)
+            _step_docker_image(context, node.reference, allow_pull=False)
         elif node.reference in FLAVOR_RECIPES:
-            ensure_flavor_image(context, node.reference)
+            ensure_flavor_image(context, node.reference, allow_pull=False)
         else:
-            docker_dir = resolve_checkout_project_dir(self.project_root) / "docker"
-            user_owned = any(
-                path.is_file() and not project_image.is_managed_generated_file(path)
-                for path in (docker_dir / "Dockerfile", docker_dir / "requirements.txt")
-            )
-            if user_owned:
-                if not (docker_dir / "Dockerfile").is_file():
-                    raise ImageLifecycleError(
-                        f"cannot refresh {node.reference}: {docker_dir / 'Dockerfile'} is missing"
-                    )
-                if not project_image.build_project_image(
-                    node.reference,
-                    docker_dir,
-                    verbose=self.verbose,
-                ):
-                    raise ImageLifecycleError(f"failed to rebuild {node.reference}")
-            else:
-                init_cmd._step_project_image(context)
+            self._build_project(node, context)
         failures = [result.detail for result in context.results if result.status == "err"]
         if failures:
             raise ImageLifecycleError("; ".join(failures))
+
+    def _build_project(self, node: ImageNode, context: InitContext) -> None:
+        from booley.harness import init_cmd
+
+        docker_dir = resolve_checkout_project_dir(self.project_root) / "docker"
+        user_owned = any(
+            path.is_file() and not project_image.is_managed_generated_file(path)
+            for path in (docker_dir / "Dockerfile", docker_dir / "requirements.txt")
+        )
+        if not user_owned:
+            init_cmd._step_project_image(context)
+            return
+        if not (docker_dir / "Dockerfile").is_file():
+            raise ImageLifecycleError(
+                f"cannot refresh {node.reference}: {docker_dir / 'Dockerfile'} is missing"
+            )
+        if not project_image.build_project_image(
+            node.reference,
+            docker_dir,
+            verbose=self.verbose,
+        ):
+            raise ImageLifecycleError(f"failed to rebuild {node.reference}")
 
 
 def _docker_adapter() -> DockerPort:
@@ -87,6 +111,20 @@ def _docker_adapter() -> DockerPort:
 
 def _build_adapter(project_root: Path, _docker: DockerPort, *, verbose: bool) -> BuildPort:
     return _LegacyBuildAdapter(project_root, verbose=verbose)
+
+
+def _artifact_policy() -> ArtifactPolicy:
+    """Select artifact acquisition from the authoritative installation identity."""
+    import booley
+
+    if booley.version_attribution.origin is VersionOrigin.SOURCE:
+        return ArtifactPolicy.LOCAL_ONLY
+    if booley.version_attribution.origin is VersionOrigin.DISTRIBUTION:
+        return ArtifactPolicy.VERIFIED_RELEASE_ONLY
+    raise ImageLifecycleError(
+        "cannot select managed Runtime Images because the running Booley code is "
+        "neither an attributed source checkout nor an installed distribution"
+    )
 
 
 def reconcile(
@@ -110,4 +148,5 @@ def reconcile(
         verbose=verbose,
         docker=docker,
         builder=builder,
+        artifact_policy=_artifact_policy(),
     )

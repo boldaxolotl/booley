@@ -60,6 +60,32 @@ class Intent(StrEnum):
     REFRESH = "refresh"
 
 
+class ArtifactSource(StrEnum):
+    """Authorized source for one managed Runtime Image mutation."""
+
+    LOCAL_BUILD = "local-build"
+    VERIFIED_RELEASE_PULL = "verified-release-pull"
+
+
+class ArtifactPolicy(StrEnum):
+    """Ordered acquisition policy for Booley-shipped Runtime Images."""
+
+    LOCAL_ONLY = "local-only"
+    VERIFIED_RELEASE_ONLY = "verified-release-only"
+    VERIFIED_RELEASE_THEN_LOCAL = "verified-release-then-local"
+
+    @property
+    def sources(self) -> tuple[ArtifactSource, ...]:
+        return {
+            ArtifactPolicy.LOCAL_ONLY: (ArtifactSource.LOCAL_BUILD,),
+            ArtifactPolicy.VERIFIED_RELEASE_ONLY: (ArtifactSource.VERIFIED_RELEASE_PULL,),
+            ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL: (
+                ArtifactSource.VERIFIED_RELEASE_PULL,
+                ArtifactSource.LOCAL_BUILD,
+            ),
+        }[self]
+
+
 class Status(StrEnum):
     """Observable outcome of image-lifecycle reconciliation."""
 
@@ -188,7 +214,15 @@ class DockerPort(Protocol):
 
 
 class BuildPort(Protocol):
-    def build(self, node: ImageNode, *, force: bool) -> None: ...
+    """Acquire a node and optionally return a staged reference for validation."""
+
+    def build(
+        self,
+        node: ImageNode,
+        *,
+        force: bool,
+        source: ArtifactSource,
+    ) -> str | None: ...
 
 
 def _build_adapter(
@@ -419,29 +453,77 @@ def _with_parent_artifacts(
     return tuple(resolved)
 
 
-def _node_current(node: ImageNode, docker: DockerPort) -> bool:
-    if docker.image_id(node.reference) is None:
+def _node_current(
+    node: ImageNode,
+    docker: DockerPort,
+    reference: str | None = None,
+) -> bool:
+    inspected = reference or node.reference
+    if docker.image_id(inspected) is None:
         return False
-    schema = docker.label(node.reference, LABEL_SCHEMA)
+    schema = docker.label(inspected, LABEL_SCHEMA)
     if schema == LEGACY_PROVENANCE_SCHEMA:
-        return _schema_one_node_current(node, docker)
+        return _schema_one_node_current(node, inspected, docker)
     if schema is None:
-        return _legacy_node_current(node, docker)
+        return _legacy_node_current(node, inspected, docker)
     return (
         schema == PROVENANCE_SCHEMA
-        and _schema_two_parent_current(node, docker)
+        and _schema_two_parent_current(node, inspected, docker)
         and all(
-            name == LABEL_PARENT_ARTIFACT or docker.label(node.reference, name) == expected
+            name == LABEL_PARENT_ARTIFACT or docker.label(inspected, name) == expected
             for name, expected in node.expected_labels
         )
     )
 
 
-def _schema_two_parent_current(node: ImageNode, docker: DockerPort) -> bool:
+def _node_artifact_source(
+    node: ImageNode,
+    inspected: str,
+    docker: DockerPort,
+) -> ArtifactSource | None:
+    origin = docker.label(inspected, LABEL_BUILD_ORIGIN)
+    if origin == "local":
+        return ArtifactSource.LOCAL_BUILD
+    if origin == "registry":
+        return ArtifactSource.VERIFIED_RELEASE_PULL
+    legacy = docker.label(inspected, LEGACY_FINGERPRINT_LABEL)
+    if legacy and legacy.startswith("pulled:"):
+        return ArtifactSource.VERIFIED_RELEASE_PULL
+    if legacy and node.payload.fingerprint:
+        return ArtifactSource.LOCAL_BUILD
+    return None
+
+
+def _node_current_from(
+    node: ImageNode,
+    docker: DockerPort,
+    sources: tuple[ArtifactSource, ...],
+    reference: str | None = None,
+) -> bool:
+    inspected = reference or node.reference
+    return _node_current(node, docker, inspected) and (
+        _node_artifact_source(node, inspected, docker) in sources
+    )
+
+
+def _sources_for_node(
+    node: ImageNode,
+    shipped_sources: tuple[ArtifactSource, ...],
+) -> tuple[ArtifactSource, ...]:
+    if node.reference == BASE_IMAGE or node.reference in FLAVOR_RECIPES:
+        return shipped_sources
+    return (ArtifactSource.LOCAL_BUILD,)
+
+
+def _schema_two_parent_current(
+    node: ImageNode,
+    inspected: str,
+    docker: DockerPort,
+) -> bool:
     """Validate typed schema-two parent provenance."""
-    origin = docker.label(node.reference, LABEL_BUILD_ORIGIN)
-    kind = docker.label(node.reference, LABEL_PARENT_ARTIFACT_KIND)
-    recorded_parent = docker.label(node.reference, LABEL_PARENT_ARTIFACT)
+    origin = docker.label(inspected, LABEL_BUILD_ORIGIN)
+    kind = docker.label(inspected, LABEL_PARENT_ARTIFACT_KIND)
+    recorded_parent = docker.label(inspected, LABEL_PARENT_ARTIFACT)
     expected_kind = {
         "local": PARENT_ARTIFACT_LOCAL_IMAGE_ID,
         "registry": PARENT_ARTIFACT_REGISTRY_DIGEST,
@@ -479,19 +561,22 @@ def _base_parent_current(origin: str, recorded_parent: str, docker: DockerPort) 
     )
 
 
-def _schema_one_node_current(node: ImageNode, docker: DockerPort) -> bool:
+def _schema_one_node_current(
+    node: ImageNode,
+    inspected: str,
+    docker: DockerPort,
+) -> bool:
     """Migrate schema one without weakening its exact local ancestry checks."""
-    origin = docker.label(node.reference, LABEL_BUILD_ORIGIN)
+    origin = docker.label(inspected, LABEL_BUILD_ORIGIN)
     if origin not in {"local", "registry"}:
         return False
     labels_current = all(
-        name in {LABEL_SCHEMA, LABEL_PARENT_ARTIFACT}
-        or docker.label(node.reference, name) == expected
+        name in {LABEL_SCHEMA, LABEL_PARENT_ARTIFACT} or docker.label(inspected, name) == expected
         for name, expected in node.expected_labels
     )
     if not labels_current:
         return False
-    recorded_parent = docker.label(node.reference, LABEL_PARENT_ARTIFACT)
+    recorded_parent = docker.label(inspected, LABEL_PARENT_ARTIFACT)
     if node.reference == BASE_IMAGE:
         return bool(recorded_parent) and (
             origin == "registry" or _base_parent_current(origin, recorded_parent or "", docker)
@@ -504,11 +589,11 @@ def _schema_one_node_current(node: ImageNode, docker: DockerPort) -> bool:
     )
 
 
-def _legacy_node_current(node: ImageNode, docker: DockerPort) -> bool:
-    legacy = docker.label(node.reference, LEGACY_FINGERPRINT_LABEL)
+def _legacy_node_current(node: ImageNode, inspected: str, docker: DockerPort) -> bool:
+    legacy = docker.label(inspected, LEGACY_FINGERPRINT_LABEL)
     if node.payload.fingerprint:
         return legacy == node.payload.fingerprint and node.parent is None
-    version = docker.label(node.reference, LABEL_VERSION)
+    version = docker.label(inspected, LABEL_VERSION)
     if legacy and legacy.startswith("pulled:"):
         version = legacy.removeprefix("pulled:")
     return version == node.payload.version and node.parent is None
@@ -518,7 +603,7 @@ def _uses_accepted_legacy_provenance(node: ImageNode, docker: DockerPort) -> boo
     return (
         docker.image_id(node.reference) is not None
         and docker.label(node.reference, LABEL_SCHEMA) is None
-        and _legacy_node_current(node, docker)
+        and _legacy_node_current(node, node.reference, docker)
     )
 
 
@@ -570,6 +655,7 @@ def _mutate(
     builder: BuildPort,
     *,
     refreshable: frozenset[str] | None = None,
+    shipped_sources: tuple[ArtifactSource, ...] = (ArtifactSource.LOCAL_BUILD,),
 ) -> tuple[str, ...]:
     changed = []
     backups: list[tuple[str, str | None]] = []
@@ -577,21 +663,15 @@ def _mutate(
     try:
         backups = _retain_prior_tags(scope_identity, nodes, docker)
         for node in nodes:
-            current = _node_current(node, docker)
+            sources = _sources_for_node(node, shipped_sources)
+            current = _node_current_from(node, docker, sources)
             refresh = intent is Intent.REFRESH and (
                 refreshable is None or node.reference in refreshable
             )
             if current and not refresh:
                 continue
             existed = docker.image_id(node.reference) is not None
-            builder.build(node, force=refresh or existed)
-            if not _node_current(node, docker):
-                if node.payload.fingerprint and not existed and intent is Intent.ENSURE:
-                    builder.build(node, force=True)
-                if not _node_current(node, docker):
-                    raise ImageLifecycleError(
-                        f"{node.reference} build completed without the expected provenance"
-                    )
+            _build_node(node, intent, docker, builder, sources, refresh, existed)
             changed.append(node.reference)
         cleanup_backups = True
     except BaseException as exc:
@@ -611,10 +691,74 @@ def _mutate(
     return tuple(changed)
 
 
+def _build_node(
+    node: ImageNode,
+    intent: Intent,
+    docker: DockerPort,
+    builder: BuildPort,
+    sources: tuple[ArtifactSource, ...],
+    refresh: bool,
+    existed: bool,
+) -> None:
+    failures = []
+    for index, source in enumerate(sources):
+        force = refresh or existed or index > 0
+        try:
+            candidate = builder.build(node, force=force, source=source)
+        except ImageLifecycleError as exc:
+            failures.append(f"{source.value} failed for {node.reference}: {exc}")
+            continue
+        inspected = candidate or node.reference
+        if _adopt_current_candidate(node, inspected, source, docker):
+            return
+        if (
+            source is ArtifactSource.LOCAL_BUILD
+            and len(sources) == 1
+            and node.payload.fingerprint
+            and not existed
+            and intent is Intent.ENSURE
+        ):
+            retry = builder.build(node, force=True, source=source) or node.reference
+            if _adopt_current_candidate(node, retry, source, docker):
+                return
+        failures.append(
+            f"{source.value} for {node.reference} completed without the expected provenance"
+        )
+    raise ImageLifecycleError("; ".join(failures))
+
+
+def _adopt_current_candidate(
+    node: ImageNode,
+    candidate: str,
+    source: ArtifactSource,
+    docker: DockerPort,
+) -> bool:
+    sources = (source,)
+    if not _node_current_from(node, docker, sources, candidate):
+        return False
+    if candidate == node.reference:
+        return True
+    candidate_id = docker.image_id(candidate)
+    if candidate_id is None:
+        raise ImageLifecycleError(f"verified candidate {candidate} disappeared before adoption")
+    docker.tag(candidate_id, node.reference)
+    if not _node_current_from(node, docker, sources):
+        raise ImageLifecycleError(
+            f"verified candidate {candidate} changed during adoption as {node.reference}"
+        )
+    return True
+
+
 def _inspect_nodes(
-    nodes: tuple[ImageNode, ...], docker: DockerPort
+    nodes: tuple[ImageNode, ...],
+    docker: DockerPort,
+    shipped_sources: tuple[ArtifactSource, ...],
 ) -> tuple[tuple[str, ...], tuple[Diagnostic, ...]]:
-    stale = tuple(node.reference for node in nodes if not _node_current(node, docker))
+    stale = tuple(
+        node.reference
+        for node in nodes
+        if not _node_current_from(node, docker, _sources_for_node(node, shipped_sources))
+    )
     legacy = tuple(
         node.reference for node in nodes if _uses_accepted_legacy_provenance(node, docker)
     )
@@ -634,14 +778,29 @@ def _check_result(
     docker: DockerPort,
     stale: tuple[str, ...],
     legacy_diagnostics: tuple[Diagnostic, ...],
+    shipped_sources: tuple[ArtifactSource, ...],
 ) -> LifecycleResult:
+    def pending_action(reference: str) -> str:
+        source = (
+            shipped_sources[0]
+            if reference == BASE_IMAGE or reference in FLAVOR_RECIPES
+            else ArtifactSource.LOCAL_BUILD
+        )
+        return {
+            ArtifactSource.LOCAL_BUILD: "would build locally",
+            ArtifactSource.VERIFIED_RELEASE_PULL: "would pull verified release",
+        }[source]
+
     return LifecycleResult(
         selected,
         docker.image_id(selected),
         Status.STALE if stale else Status.CURRENT,
         diagnostics=(
             *(
-                Diagnostic("stale", f"{reference} is missing or has stale provenance")
+                Diagnostic(
+                    "stale",
+                    f"{reference} is missing or has stale provenance; {pending_action(reference)}",
+                )
                 for reference in stale
             ),
             *legacy_diagnostics,
@@ -718,8 +877,9 @@ def reconcile(
     verbose: bool = False,
     docker: DockerPort | None = None,
     builder: BuildPort | None = None,
+    artifact_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY,
 ) -> LifecycleResult:
-    """Reconcile the image graph owned by an explicit host-or-Project scope."""
+    """Reconcile one image graph under an explicit artifact-selection policy."""
     resolved_docker = docker or _docker_adapter()
     if intent is not Intent.CHECK and builder is None:
         if isinstance(scope, HostImageScope):
@@ -730,16 +890,23 @@ def reconcile(
             raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
         builder = _build_adapter(root, resolved_docker, verbose=verbose)
     if isinstance(scope, HostImageScope):
-        return _reconcile_host(intent, resolved_docker, builder)
+        return _reconcile_host(intent, resolved_docker, builder, artifact_policy.sources)
     if not isinstance(scope, ProjectImageScope):
         raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    return _reconcile_project(scope, intent, resolved_docker, builder)
+    return _reconcile_project(
+        scope,
+        intent,
+        resolved_docker,
+        builder,
+        artifact_policy.sources,
+    )
 
 
 def _reconcile_host(
     intent: Intent,
     docker: DockerPort,
     builder: BuildPort | None,
+    shipped_sources: tuple[ArtifactSource, ...],
 ) -> LifecycleResult:
     payload = PayloadProvenance(
         PROVENANCE_SCHEMA,
@@ -747,15 +914,36 @@ def _reconcile_host(
         _expected_payload_fingerprint(),
     )
     nodes = _with_parent_artifacts((_base_node(payload),), docker)
-    stale, legacy_diagnostics = _inspect_nodes(nodes, docker)
+    stale, legacy_diagnostics = _inspect_nodes(nodes, docker, shipped_sources)
     if intent is Intent.CHECK:
-        result = _check_result(BASE_IMAGE, nodes, docker, stale, legacy_diagnostics)
+        result = _check_result(
+            BASE_IMAGE,
+            nodes,
+            docker,
+            stale,
+            legacy_diagnostics,
+            shipped_sources,
+        )
         cleanup = _reconcile_release_tag_cleanup(BASE_IMAGE, intent, docker)
         return _with_cleanup(result, cleanup)
     if builder is None:
         raise TypeError("mutating image reconciliation requires a build adapter")
-    changed = _mutate("host", nodes, intent, docker, builder)
-    result = _verified_result(BASE_IMAGE, nodes[-1], changed, legacy_diagnostics, docker)
+    changed = _mutate(
+        "host",
+        nodes,
+        intent,
+        docker,
+        builder,
+        shipped_sources=shipped_sources,
+    )
+    result = _verified_result(
+        BASE_IMAGE,
+        nodes[-1],
+        changed,
+        legacy_diagnostics,
+        docker,
+        shipped_sources,
+    )
     cleanup = _reconcile_release_tag_cleanup(BASE_IMAGE, intent, docker)
     return _with_cleanup(result, cleanup)
 
@@ -765,17 +953,13 @@ def _reconcile_project(
     intent: Intent,
     docker: DockerPort,
     builder: BuildPort | None,
+    shipped_sources: tuple[ArtifactSource, ...],
 ) -> LifecycleResult:
     root = scope.project_root.resolve()
     selected = _selected_reference(root)
     generated = project_image.project_image_name(root)
     if selected not in {BASE_IMAGE, generated, *FLAVOR_RECIPES}:
-        return LifecycleResult(
-            selected,
-            docker.image_id(selected),
-            Status.EXTERNAL,
-            diagnostics=(Diagnostic("external", "image lifecycle is externally managed"),),
-        )
+        return _external_result(selected, docker)
     if intent is not Intent.CHECK and selected == generated:
         _prepare_project_recipe(root, _project_requirements_body(root))
         selected = _selected_reference(root)
@@ -790,9 +974,45 @@ def _reconcile_project(
     nodes = _nodes(root, selected, docker)
     if scope.base is not None:
         _verify_host_base(scope.base, docker)
-    stale, legacy_diagnostics = _inspect_nodes(nodes, docker)
+    return _reconcile_project_nodes(
+        root,
+        selected,
+        nodes,
+        intent,
+        docker,
+        builder,
+        shipped_sources,
+    )
+
+
+def _external_result(selected: str, docker: DockerPort) -> LifecycleResult:
+    return LifecycleResult(
+        selected,
+        docker.image_id(selected),
+        Status.EXTERNAL,
+        diagnostics=(Diagnostic("external", "image lifecycle is externally managed"),),
+    )
+
+
+def _reconcile_project_nodes(
+    root: Path,
+    selected: str,
+    nodes: tuple[ImageNode, ...],
+    intent: Intent,
+    docker: DockerPort,
+    builder: BuildPort | None,
+    shipped_sources: tuple[ArtifactSource, ...],
+) -> LifecycleResult:
+    stale, legacy_diagnostics = _inspect_nodes(nodes, docker, shipped_sources)
     if intent is Intent.CHECK:
-        result = _check_result(selected, nodes, docker, stale, legacy_diagnostics)
+        result = _check_result(
+            selected,
+            nodes,
+            docker,
+            stale,
+            legacy_diagnostics,
+            shipped_sources,
+        )
         if selected in FLAVOR_RECIPES:
             cleanup = _reconcile_release_tag_cleanup(selected, intent, docker)
             return _with_cleanup(result, cleanup)
@@ -807,8 +1027,16 @@ def _reconcile_project(
         docker,
         builder,
         refreshable=refreshable if intent is Intent.REFRESH else None,
+        shipped_sources=shipped_sources,
     )
-    result = _verified_result(selected, nodes[-1], changed, legacy_diagnostics, docker)
+    result = _verified_result(
+        selected,
+        nodes[-1],
+        changed,
+        legacy_diagnostics,
+        docker,
+        shipped_sources,
+    )
     if selected in FLAVOR_RECIPES:
         cleanup = _reconcile_release_tag_cleanup(selected, intent, docker)
         return _with_cleanup(result, cleanup)
@@ -833,9 +1061,11 @@ def _verified_result(
     changed: tuple[str, ...],
     legacy_diagnostics: tuple[Diagnostic, ...],
     docker: DockerPort,
+    shipped_sources: tuple[ArtifactSource, ...],
 ) -> LifecycleResult:
     selected_id = docker.image_id(selected)
-    if selected_id is None or not _node_current(selected_node, docker):
+    sources = _sources_for_node(selected_node, shipped_sources)
+    if selected_id is None or not _node_current_from(selected_node, docker, sources):
         raise ImageLifecycleError(f"selected Runtime Image {selected!r} did not verify")
     return LifecycleResult(
         selected,

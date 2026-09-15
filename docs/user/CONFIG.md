@@ -1800,6 +1800,12 @@ Project Initialization owns this flavor image, building it if missing and
 rebuilding it when the Host Bootstrap-owned base moves (see the table above for
 what it does with a name it doesn't recognise).
 
+When Booley is running from a source checkout, both the base and this flavor are
+built locally from the same checkout identity; Project Initialization does not
+try a same-version release image first. An installed Booley distribution may
+acquire its published flavor, but adopts it only after exact payload, recipe,
+and base-digest provenance validation.
+
 To build or refresh it by hand (this also rebuilds the base first):
 
 ```bash
