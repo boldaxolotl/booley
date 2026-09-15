@@ -10,28 +10,24 @@ scope:
   - Makefile
   - tests/zbb.S [new]
 spec: /opt/riscv-docs/riscv-isa-manual.html
-on_success:
-  destination: review
-  merge: true
-  cleanup: true
-  triage_report: true
+on_success: [triage_report, review, merge, cleanup]
 priority: medium
+CRITERIA_MANDATORY:
+  LINT: {lint_core: clean}
+  SIM:
+    sim_core: {main: pass, axi: pass}
+    sim_wb: {wb: pass}
+  REVIEW:
+    rtl: {bugs: clean}
+    tb: {quality: clean}
+  SYNTH:
+    synth_core:
+      cell_count_increase_at_most: 11%
+      critical_path_ps_increase_at_most: 3%
+CRITERIA_OPTIONAL:
+  REVIEW: {rtl: {spec: clean}}
+  MUTATION: {sim_core: {min_detected: 14, total: 15}}
 ---
-
-## Criteria
-
-### Mandatory
-
-- **lint_clean**: `lint_core`
-- **sim_pass**: `testbench.v @ sim_core @ main @ pass -> pass`, `testbench.v @ sim_core @ axi @ pass -> pass`, `testbench_wb.v @ sim_wb @ wb @ pass -> pass`
-- **review_rtl_bugs**
-- **review_tb_quality**
-- **synthesis_ok**: `json:{"targets":[{"baseline":"synth_core","candidate":"synth_core"}],"cell_count_increase_at_most":"11%","critical_path_ps_increase_at_most":"3%"}`
-
-### Optional
-
-- **review_rtl_spec**
-- **mutation_score**: `json:[{"target":"sim_core","scope":["picorv32.v"],"min_detected":14,"total":15}]`
 
 ## Description
 

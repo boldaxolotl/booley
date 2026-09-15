@@ -91,15 +91,15 @@ Creation Guidance (§E). Present the resolved selection as a structured menu:
 > **Criteria** (defaults ✓, edit as needed):
 >
 > **Mandatory:**
-> 1. ✓ `lint_clean`: [configs] *(feature/refactor)*
-> 2. ✓ `sim_pass`: [tb @ config @ test @ cur -> exp, ...]
-> 3. ✓ `review_rtl_bugs` *(feature/refactor; corrective review)*
-> 4. ✓ `review_tb_quality` *(feature/verification; corrective review)*
+> 1. ✓ `LINT`: Target → `clean` *(feature/refactor)*
+> 2. ✓ `SIM`: Target → `{all: pass}` *(all registered tests)*
+> 3. ✓ `REVIEW`: `rtl: {bugs: clean}` *(feature/refactor)*
+> 4. ✓ `REVIEW`: `tb: {quality: clean}` *(feature/verification)*
 >
 > **Optional:**
-> 5. ☐ `review_rtl_spec` *(feature tickets carrying a detailed spec)*
-> 6. ☐ `synthesis_ok` *(datapath/timing-critical)*
-> 7. ☐ `mutation_score`
+> 5. ☐ `REVIEW`: `rtl: {spec: clean}` *(feature with a detailed spec)*
+> 6. ☐ `SYNTH`: Target → threshold mapping *(datapath/timing-critical)*
+> 7. ☐ `MUTATION`: Target → policy mapping
 >
 > Toggle by number, edit thresholds, or add custom. Enter to accept.
 
@@ -107,13 +107,13 @@ If the user deselects every mandatory criterion, confirm explicitly before accep
 
 ### 2f: Approve the ticket
 
-After Criteria and the Target Plan are fully resolved, rerun §A and reconcile the
+After Criteria and the derived Target Plan are fully resolved, rerun §A and reconcile the
 final `dependencies` before showing the approval artifact. This final pass is
 mandatory in both lightweight and detailed modes.
 
 **MANDATORY TICKET APPROVAL.** Show the complete proposed ticket (frontmatter +
 body, excluding generated basis fields), followed by a **Target Plan** section. If the
-plan is omitted, show `Target Plan: none`. For persistent and ephemeral entries, show the
+plan is omitted, show `Target Plan: none`. For New and Temporal Target entries, show the
 role, canonical name, destination file, acceptance result, complete Target definition,
 referenced filesets and local parameter declarations, and complete owned `tests.toml` table.
 For a replacement, show its baseline and candidate, destination file, acceptance result, a
@@ -134,15 +134,17 @@ mechanics require no further user confirmation.
 1. All fields required — return an error listing the missing fields (no interactive questions)
 2. Same dependency scan (§A) and validation (§C) as human mode
 3. Inference (§B) only for fields marked `"infer"`; missing without `"infer"` → error
-4. Explicit `criteria`, `target_plan`, or `on_success` values win for that field. For each field marked
-   `"infer"`, build the §B/§D fallback and apply the relevant §E guidance
+4. Explicit `CRITERIA_MANDATORY`, `CRITERIA_OPTIONAL`, Target annotations, and
+   `on_success` values win. For each field marked `"infer"`, build the §B/§D
+   fallback and apply the relevant §E guidance
 5. Ambiguous, conflicting, or unresolvable applicable guidance is a non-interactive error;
    identify the prose that could not be translated
-6. Always pass the resolved `--criteria` and `--on-success` values to `create-file`, plus
-   `--target-plan` when the resolved plan is present
+6. Write the complete proposed human-readable Ticket; use the same document
+   converter for preview, validation, and enqueue. Never pass a separate
+   Criteria, Target Plan, or completion-policy override
 7. **No grilling** — the calling agent must provide all details upfront
 8. Approval gate (2f) applies unless the caller passed `--no-confirm`; validation never does
-9. After all inferred Criteria and Target Plan values are resolved, rerun §A and reject
+9. After all inferred Criteria and Target annotations are resolved, rerun §A and reject
    any missing provider dependency before the approval gate or `--no-confirm` creation
 
 ## Step 4: Author and Enqueue
@@ -175,191 +177,132 @@ CLASSIFIED=$(python -m booley.ticket_board classify)
 
 Inspect every non-done Ticket's published Ticket baseline and Target Plan as well as
 its Scope. Preserve ordinary scope-overlap and interface-dependency inference for all
-non-done Tickets. If an active provider exports a persistent or replacement Target selected
+non-done Tickets. If an active provider exports a New or Replacement Target selected
 by the new Ticket's Criteria, add that provider to `dependencies` in human mode. In
 agent mode, reject the request and name every missing provider dependency. Reject
 ambiguous active exports (multiple providers offering the same selector) and any
 selector that one active provider offers while another removes it. Do not infer a
-dependency for ephemeral Targets or replacement baselines, because providers do not
+dependency for Temporal Targets or replacement baselines, because providers do not
 export them.
 
 ## §B. Field Inference
 
-Field definitions, defaults, and types live in `TICKET_TEMPLATE.md`. This table covers
-only how to *infer* a value from the conversation and the repo.
+Field definitions and body forms live in `TICKET_TEMPLATE.md`. Infer values from
+conversation and the Project, then show the complete document at the approval gate.
 
-| Field | Strategy |
-|-------|----------|
-| `summary` | Concise one-liner from grilling + initial input; becomes the slug |
-| `type` | "fix/bug" → `bugfix`, "refactor/clean" → `refactor`, "testbench/coverage/verification/TB" → `verification`, else → `feature` |
-| `branch` | `git branch --show-current` |
-| `scope` | From grilling results. `[new]` for new files. Unknown bugfix → `["*"]` (prefer narrow) |
-| `spec` | Include when an arch spec exists near scope |
-| `target_plan` | Prefer omission. Classify every Target this Ticket must author as `persistent`, `replacement` with one `replaces` baseline, or `ephemeral`, according to the intended post-acceptance Target surface. Planned entries and replacement baselines must be Criteria-bound. An active provider may supply only persistent or replacement candidates through a declared dependency. |
-| `on_success` | Start with `{destination: review, merge: true, cleanup: true, triage_report: true}`, then apply relevant §E guidance. Set `triage_report: false` to skip the rich HTML explanation. A Target Plan requires `merge: true`. Destructive cleanup also requires `merge: true`, because journaled publication pins the accepted source before branch removal. Benchmark: `{destination: done, merge: false, cleanup: false, triage_report: true}` |
-| `dependencies` | From scan (§A) + grilling; user confirms |
-| `priority` | Default `medium` |
-| `criteria` | Start with §D defaults, then apply relevant §E guidance; user confirms/edits. **feature** → from grilling. **refactor** → all `pass -> pass`. **bugfix** → the failing entry `fail -> pass`, rest `pass -> pass`. **verification** → TB-only work |
+| Field | Inference |
+|---|---|
+| `summary` | Concise one-line intent; used to generate the slug |
+| `type` | `bugfix` for a reproduced bug, `refactor` for restructuring, `verification` for TB/coverage work, otherwise `feature` |
+| `branch` | The requested destination, or `git branch --show-current` |
+| `scope` | Files the developer may change; mark a new file `[new]` |
+| `spec` | Include an existing architecture spec when relevant |
+| `dependencies` | Resolve from §A and the requested work |
+| `priority` | `medium` unless urgency is known |
+| `CRITERIA_MANDATORY` / `CRITERIA_OPTIONAL` | Start with §D and Project guidance (§E), then edit against the user's desired acceptance conditions |
+| Target annotations | Mark every mention of a Ticket-authored Target `(new)`, `(temp)`, or `(replaces <existing Target>)`; the converter derives the Target Plan |
+| `on_success` | Start with `[triage_report, review, merge, cleanup]`, then omit any action the user does not want |
 
-**Bugfix, not yet reproducible?** Recommend a split: feature ticket (create the failing test) + bugfix ticket (fix the RTL, depends on the feature).
+A reproduced bug may use `fail -> pass` on its exact registered SIM test; an
+ordinary passing test uses `pass`. If the bug has no failing test, recommend a
+verification ticket that creates one and a dependent fix ticket.
 
-Runtime fields are *not* inferred: `machine` and `created` are published
-atomically by `enqueue`, and `feature_branch` is written by `init`. Never author
-those fields or a SHA. `integration_base`, `target_contract`, and `base_sha` are
-unsupported after the hard cutoff.
+Only the Ticket Board publishes `machine`, `created`, and `feature_branch`.
+Do not author generated metadata, SHAs, `target_plan`, `ticket_format`, or a
+`criteria` wrapper. An annotated Target requires `merge` in `on_success`;
+`cleanup` is otherwise independent of merge.
 
-## §C. CLI Workflow
+## §C. Authoring Workflow
 
-`create-file` generates the frontmatter (including `criteria` and `on_success`) from its
-flags and creates the ordinary Ticket Workspace. Do **not** hand-write runtime YAML or
-any SHA. `enqueue` validates and commits authoring state, records the baseline
-commits in the Ticket's `machine` section,
-stamps `created`, and moves the Ticket to queue or waiting as one operation.
+1. Generate a slug with `python -m booley.ticket_board slug "$SUMMARY"`.
+2. Compose the **entire** Markdown ticket from `TICKET_TEMPLATE.md`, with YAML
+   frontmatter and the type-specific `## Description`. Add `## Implementation
+   Plan` only for detailed-plan tickets. Author Target lifecycle suffixes on
+   every structured mention, including both Criteria sections and the
+   `ELAB_STANDALONE` list.
+3. Show the complete proposed document and derived Target Plan at the approval
+   gate (Step 2f). After approval, save the approved document at `$TICKET_PATH`
+   and run `python -m booley.ticket_board create-file "$SLUG" --document-file "$TICKET_PATH"`.
+   The command creates the draft in its Ticket Workspace.
+4. Author only approved new Target definitions, referenced filesets and local
+   parameter declarations, and owned `tests.toml` tables.
+   A Scope `[new]` file may be absent or a zero-byte placeholder. Leave
+   implementation and other support code unchanged.
+5. Run `python -m booley.ticket_board validate-ticket <draft-path>` and fix
+   any diagnostic. Enqueue with `python -m booley.ticket_board enqueue <slug>`.
+   Enqueue converts the durable authored file and publishes the Acceptance
+   Basis; CLI flags must not override Criteria, Target roles, or completion
+   policy.
 
-```bash
-# E1. Generate slug
-SLUG=$(python -m booley.ticket_board slug "$SUMMARY")
-
-# E2. Write the body to a temp file — per-type `## Description` from TICKET_TEMPLATE.md,
-#     plus `## Implementation Plan` for detailed-plan tickets
-BODY=$(mktemp)
-
-# E3. Create the draft in board/drafts/$SLUG.md (frontmatter built from these flags)
-python -m booley.ticket_board create-file "$SLUG" \
-  --summary "$SUMMARY" --type "$TYPE" --branch "$BRANCH" \
-  --scope rtl/foo.sv tb/foo_tb.sv \      # nargs="*" — space-separated; omit for []
-  [--spec "$SPEC"] [--dependencies dep-slug-a dep-slug-b] [--priority "$PRIORITY"] \
-  --criteria "$CRITERIA_JSON" \          # JSON: {"mandatory":{...},"optional":{...}}
-  [--target-plan "$TARGET_PLAN_JSON"] \  # optional nonempty JSON list
-  --on-success "$ON_SUCCESS_JSON" \      # JSON: all four on_success fields
-  --body-file "$BODY"
-
-# E4. Add only approved new Target definitions and their referenced filesets and local
-#     parameter declarations in the workspace printed by create-file.
-#     A Scope [new] path may be absent or a zero-byte placeholder. Leave all other
-#     implementation/support-code files unchanged. Existing sources may make a new
-#     relative-QoR Target fully executable; otherwise report the blocker instead of
-#     creating code to make the Target runnable.
-
-# E5. Validate — a path, not a slug. Fix and re-run until clean.
-python -m booley.ticket_board validate-ticket \
-  .booley_project/tickets/board/drafts/$SLUG.md [--check-git]
-
-# E6. Enqueue. This records the baseline commits in the Ticket's machine section.
-python -m booley.ticket_board enqueue "$SLUG"
-```
+If the current `create-file` CLI cannot accept the complete v2 document, stop
+and report that CLI mismatch; do not translate the Ticket to the retired
+`--criteria`, `--target-plan`, or mapping `--on-success` forms. Never hand-write
+generated Ticket Board metadata.
 
 ## §D. Criteria Catalog
 
-Machine-readable acceptance conditions. Immutable after creation. Configs derived from `sim_pass` entries' `@config` segments.
+`CRITERIA_MANDATORY` is required and must expand to at least one atomic
+Criterion. `CRITERIA_OPTIONAL` may be absent. Each uppercase capability maps
+Targets to their checks; `REVIEW` maps a category/focus to an outcome. The
+complete frontmatter example is in `TICKET_TEMPLATE.md`.
 
-> **Single source of truth — `booley cheat --criteria`.** The authoritative list of criterion
-> names, phases, "set by" Flow or Specialist, the `targets:` scoping key, and the valid params for
-> the parameterized criteria (`synthesis_ok`/`fpga_impl_ok`) is rendered live by
-> `booley cheat --criteria` from `criteria.toml` + the MCP tool registry (that flag prints the
-> criteria section alone — the rest of the sheet is not needed here). **Consult it** before
-> authoring criteria — the shapes below are structural illustration, not the catalog.
-> (This is the same block embedded in USAGE.md; it is why the scoping key is
-> `targets`, never `configs`.)
+| Capability | Human form |
+|---|---|
+| `LINT` | `lint_core: clean` |
+| `ELAB` | `sim_core: pass` |
+| `ELAB_STANDALONE` | `[sim_core, sim_probe (temp)]` (one sweep over exactly this Target set) |
+| `SIM` | `sim_core: {all: pass}` or `sim_core: {smoke: fail -> pass}` |
+| `CYCLE_COUNT` | `sim_core: {smoke: {cycle_count_max: 100000}}` |
+| `SYNTH` | `synth_core: pass` or `synth_core: {area_um2_max: 10000, fmax_mhz_min: 400}` |
+| `FPGA` | `fpga_core: pass` or `fpga_core: {lut_count_max: 100000}` |
+| `REVIEW` | `rtl: {bugs: clean}` or `rtl: {bugs: done}` |
+| `MUTATION` | `sim_core: {scope: [rtl/core.sv], min_detected: 8, total: 10}` |
+| `COVERAGE` | `sim_core: {tests: all, metrics: {line: {min_pct: 90}}}` |
+| Project scalar Criterion | `IMPLEMENTATION_DONE: true` when `implementation_done` is registered in Project `criteria.toml` |
 
-```yaml
-criteria:
-  mandatory:
-    <type>: <value>
-  optional:
-    <type>: <value>
-```
+Use exact registered Target and test selectors. `SIM.all` requires a nonempty
+registered suite; `fail -> pass` requires a named test and matching red/green
+evidence. The Target already identifies its top-level TB. `REVIEW.done` and
+`REVIEW.clean` are separate outcomes, so one may be mandatory and the other
+optional. `SYNTH`, `FPGA`, `CYCLE_COUNT`, and `COVERAGE` produce a separate
+atomic Criterion for each metric. Put multiple metrics for one Target in one
+mapping, or split them between sections when mandatory/optional status differs.
+Project scalar Criteria use their registered name in uppercase and the value
+`true`; they produce the lowercase registered Criterion without a Target binding.
 
-### Value Forms
+For relative thresholds, use the current Target at its Ticket baseline by
+default. A replacement defaults to its `(replaces <existing Target>)`
+predecessor. A `(new)` or `(temp)` Target needs an explicit existing `baseline`
+Target. Percentage thresholds require a `%` suffix. Consult the live
+threshold vocabulary through `booley cheat --criteria`; apply its parameter
+names under the v2 capability shape, not the retired lowercase Ticket syntax.
 
-| Form | Example |
-|------|---------|
-| Config list | `lint_clean: [<target_a>, <target_b>]` → per-Target expansion |
-| Sim-style | `sim_pass: [tb@config@test@cur->exp]` |
-| Per-test Cycle Count | `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000}]` |
-| Parameterized | `synthesis_ok: {targets: [<target>], cell_count_max: 500}` |
-| Parameterized | `fpga_impl_ok: {targets: [<target>], lut_count_max: 100000}` |
-| Scalar | Use the bare review key for the corrective default; it expands to `<key>_clean`. Spell `<key>_done` only when the user explicitly wants an advisory review whose findings are reported but do not belong to this ticket's correction loop |
+Default mandatory choices: feature → LINT, SIM, RTL bugs REVIEW, TB quality
+REVIEW; bugfix → SIM; refactor → LINT, SIM, RTL bugs REVIEW; verification →
+SIM and TB quality REVIEW. Add `REVIEW.rtl.spec` for a detailed feature spec;
+suggest `COVERAGE` and `MUTATION` for verification, `SYNTH` for timing or area,
+and `FPGA` for implementation constraints. Include a Project-authored Verible
+style-lint Target when selecting lint Targets.
 
-### Defaults by Ticket Type
-
-| Criterion | Feature | Bugfix | Refactor | Verification |
-|-----------|:-------:|:------:|:--------:|:------------:|
-| `lint_clean` | **M** | — | **M** | — |
-| `sim_pass` | **M** | **M** | **M** | **M** |
-| `review_rtl_bugs` | **M** | — | **M** | — |
-| `review_tb_quality` | **M** | — | — | **M** |
-
-**M** = mandatory, — = not included.
-
-Opt-in suggestions: `review_rtl_spec` for feature tickets carrying a detailed spec (it
-checks the RTL against the ticket body, or the external spec the `spec:` field points at);
-`coverage_*` and `mutation_score` for verification; `synthesis_ok` for
-datapath/timing-critical feature/refactor work; `fpga_impl_ok` for FPGA QoR/timing checks.
-
-When enumerating the project's lint Targets for the `lint_clean` config list, include a
-project-authored Verible style-lint Target (a `.core` lint Target with
-`flow_options: {tool: verible}`, typically `lint_style`) alongside the Verilator one — a
-project that authored it presumably wants it enforced. `lint_clean_<target>`
-means "clean under whatever linter that Target names"; there is no separate style criterion.
-
-`cycle_count` is a list of mappings, never a `sim_pass` numeric parameter. Every item must
-name one `target` and registered `test`, plus at least one threshold. Absolute
-`cycle_count_max` / `cycle_count_min` use the current run. Relative percentage and `_cycles`
-forms automatically compare the same Target/test at the Ticket baseline; consult
-`booley cheat --criteria` for the complete signed-bound vocabulary.
-Write every percentage value with an explicit `%` suffix (for example,
-`cycle_count_reduce_at_least: 8%`); bare numbers are invalid for percentage thresholds.
-
-`synthesis_ok` / `fpga_impl_ok` take threshold **params** in four flavours per metric:
-absolute `_max` / `_min`, plus baseline-relative `_increase_at_most` / `_reduce_at_least`
-(compared against the Ticket baseline). Common ones: `cell_count_max`, `fmax_mhz_min`,
-`cell_count_reduce_at_least` (ASIC); `lut_count_max`, `ff_count_max`, `fmax_mhz_min`
-(FPGA). Don't hardcode a subset here — for the full per-metric matrix and which pairs are
-mutually exclusive, run `booley cheat --criteria` (the "threshold flavours" table, also in
-`docs/user/USAGE.md`); it is generated from the validator, so it never drifts.
-The baseline-relative values are percentages and therefore require the `%` suffix.
-
-For a relative threshold, use a plain Target name when baseline and candidate are the same.
-When the ticket intentionally needs different frozen Targets, put
-`{baseline: <before>, candidate: <after>}` in `targets:`. Author both Targets before enqueue;
-the candidate determines the expanded Criterion name.
-
-### Rules
-
-- ≥1 mandatory criterion required
-- Every default review criterion uses its bare key, which expands to corrective
-  `_clean`, and runs after code-changing work. Use explicit `_done` only for
-  user-requested advisory review. Every `_clean` waiver includes a justification
-  and is shown to the user regardless of severity.
-- Project-defined criterion types are allowed when the live Project catalog registers them
-- A criterion may name a new Target only when ticket creation authors it in the
-  Ticket Workspace before enqueue. Do not put acceptance controls in Developer
-  Scope merely to permit later edits: every `.core`, tests/Target-selection
-  configuration, selected constraint, generator, and build hook is immutable
-  after enqueue.
-- A future non-relative Target may reference missing RTL/TB paths only when every
-  path is declared Scope `[new]`. For relative QoR, the baseline Target must resolve and
-  dry-run completely at the basis baseline; a distinct frozen candidate may defer only
-  its Scope `[new]` RTL/TB paths.
-- If a blocked ticket needs different authored inputs, use `return-to-draft`; it
-  preserves the old basis and evidence and starts fresh Ticket authoring.
-- Decide the Target Plan during Ticket creation. `persistent` retains the new Target;
-  `replacement` retains its candidate and removes its runnable baseline; `ephemeral`
-  removes its candidate. Every selector resolves uniquely and is bound by Criteria.
-  A planned Target may add a dedicated fileset or local parameter declaration, but it
-  cannot edit an existing definition or attach a new input to an unchanged Target.
-  New conditional parameter declaration keys are unsupported; use a stable declaration
-  name and conditional entries in the Target's parameter list. Acceptance removes
-  only the derived Target definitions, unambiguously owned `tests.toml` tables,
-  and newly authored filesets or parameter declarations orphaned by ephemeral Target
-  removal. Existing and still-shared inputs, constraints, generators, and hooks remain.
+Every new Target must be authored in the Ticket Workspace before enqueue and
+must have a mandatory compatible Flow Criterion. Every mention repeats its
+lifecycle suffix, even across mandatory and optional sections. The Target
+Plan is derived; do not add a `target_plan` field or section. A planned Target
+may add a dedicated fileset or local parameter declaration, but cannot edit an
+existing definition or attach a new input to an unchanged Target. New
+conditional parameter declaration keys are unsupported; use a stable
+declaration name and conditional entries in the Target's parameter list.
+Acceptance removes only derived Target definitions, unambiguously owned
+`tests.toml` tables, and newly authored filesets or parameter declarations
+orphaned by Temporal Target removal. Existing and still-shared inputs,
+constraints, generators, and hooks remain. If authored inputs change after
+enqueue, return the Ticket to draft and re-enqueue.
 
 ## §E. Ticket Creation Guidance
 
 Ticket Creation Guidance is Project-owned, free-form Markdown consumed **only here, during
-creation**. Its authority is limited to the proposed Ticket's `criteria`, optional
-`target_plan`, and `on_success`.
+creation**. Its authority is limited to the proposed Ticket's Criteria,
+Target annotations, and `on_success`.
 It cannot change scope, priority, dependencies, ticket depth or body, approval gates,
 Ticket baseline publication, or an existing Ticket.
 
@@ -385,7 +328,7 @@ untouched, comment-only legacy scaffold adds no guidance.
 
 Resolve the guidance against the live Project rather than requiring it to spell serialized
 Ticket values. Consult `booley cheat --criteria`, `booley targets`, and registered tests to
-translate its intent into concrete Criterion names, value forms, Targets, and tests. Never
+translate its intent into concrete v2 capability forms, Targets, and tests. Never
 invent an unavailable Criterion, Target, test, or threshold. Project guidance overrides
 shipped inference; a more specific statement overrides a general one; and explicit
 instructions for the current Ticket override the Project file.
@@ -397,7 +340,5 @@ applicable prose. Guidance about another Ticket type or situation is simply inap
 not an error.
 
 Validate the resolved Ticket through §C. The Markdown guidance itself has no schema,
-required headings, completeness check, or static validation pass. Simulation entries in
-the resolved Ticket retain exact Ticket syntax: Project regressions normally say
-`pass -> pass`, while a reproduced bug changes its selected entry to `fail -> pass` for
-that Ticket only.
+required headings, completeness check, or static validation pass. Project regressions
+normally use `pass`; a reproduced bug may use `fail -> pass` for its named SIM test.

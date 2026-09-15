@@ -232,7 +232,7 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
         project_root=Path(),
         acceptance_basis=_acceptance_basis(),
     )
-    _apply_basis_selectors(context, template, expanded, params)
+    _apply_basis_selectors(context, expanded, params)
     state = DevelopmentState()
     state.init_criteria(expanded, criterion_params=params)
     flow = SimulateFlow()
@@ -273,6 +273,29 @@ def test_relative_cycle_criteria_share_one_resolved_baseline(monkeypatch) -> Non
         ["sim_core"],
         None,
     )
+
+
+def test_relative_cycle_criterion_uses_declared_baseline_target(monkeypatch) -> None:
+    flow, key = _criterion_flow(relative=True)
+    flow.state.criteria[key].params["_baseline_target"] = "sim_old"
+    flow._target_handles["sim_old"] = MagicMock(
+        identity="sim_old", selector="sim_old", project_root=Path().resolve()
+    )
+    _pin_baseline(flow)
+    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
+
+    assert flow._cycle_baseline_selection(["sim_core"]) == ("b" * 40, ["sim_old"], None)
+    assert flow._cycle_baseline_test_names({"sim_core": ["coremark"]}) == {
+        "sim_core": ["coremark"],
+        "sim_old": ["coremark"],
+    }
+    observed = SimTestResult(name="coremark", passed=True, cycles=100, cycle_status="observed")
+    baseline = TargetResult(target="sim_old", passed=True, tests=[observed])
+    flow._baseline_results = {"sim_old": baseline}
+    assert flow._baseline_cycle_tests(
+        TargetResult(target="sim_core", passed=True, tests=[]),
+        flow.state.criteria[key].params,
+    ) == {"coremark": observed}
 
 
 def test_schema_four_relative_cycle_criterion_selects_callable_target(monkeypatch) -> None:

@@ -30,8 +30,10 @@ from .acceptance_targets import (
     acceptance_control_paths,
     canonical_acceptance_bindings,
     criterion_targets,
+    criterion_targets_from_spec,
     resolve_commit,
     scope_allows_new_path,
+    validate_acceptance_spec_targets,
     validate_acceptance_targets,
     validate_criterion_targets,
 )
@@ -57,6 +59,7 @@ from .target_plan import (
     TargetPlanValidationError,
     TargetSurfaceFile,
     analyze_target_plan,
+    analyze_ticket_spec_target_plan,
 )
 from .ticket_baseline import (
     BLOCK_REASON,
@@ -67,7 +70,15 @@ from .ticket_baseline import (
     canonical_json,
     materialize_basis_checkout,
 )
-from .validation import validate_ticket_fields
+from .ticket_document import (
+    TicketConversionContext,
+    TicketDocument,
+    TicketSpec,
+    convert_ticket_document,
+    ticket_authoring_view,
+    ticket_conversion_context,
+)
+from .validation import validate_ticket_fields, validate_ticket_spec
 
 _GENERATION_PREFIX = "booley-generation"
 
@@ -541,7 +552,12 @@ def ensure_ticket_workspace(
     except TicketSlugError as exc:
         raise TicketBaselineOperationError(str(exc)) from exc
     root = Path(project_root).resolve()
-    fields, _body = parse_frontmatter(Path(ticket_path).read_text(encoding="utf-8"))
+    with ticket_conversion_context(root, slug, "draft") as context:
+        converted = convert_ticket_document(Path(ticket_path).read_text(encoding="utf-8"), context)
+    if converted.preview is None:
+        details = "; ".join(item.message for item in converted.diagnostics)
+        raise TicketBaselineOperationError(f"Ticket document is invalid: {details}")
+    fields = dict(converted.preview.fields)
     branch = fields.get("branch")
     if not isinstance(branch, str) or not branch:
         raise TicketBaselineOperationError("ticket has no destination branch")
@@ -1049,6 +1065,117 @@ def _prepare_basis(
     )
 
 
+def _prepare_converted_basis(
+    project_root: Path,
+    ticket: Path,
+    slug: str,
+    *,
+    workspace: Path | None = None,
+    generation: str | None = None,
+    provider_materialization: ProviderMaterialization | None = None,
+    stage: str = "draft",
+) -> tuple[_BasisPreparation, TicketSpec]:
+    """Prepare baseline inputs from the one human Ticket conversion boundary."""
+    root = project_root.resolve()
+    outer = workspace or (resolve_project_dir(root) / "worktrees" / slug)
+    if not outer.is_dir():
+        raise TicketBaselineOperationError(f"Ticket Workspace is not open: {outer}")
+    _prepare_workspace_project(root, outer, ticket, slug)
+    spec = _converted_ticket_spec(ticket, outer, stage)
+    fields = dict(spec.fields)
+    project, outer_changes, project_changes, outer_base, project_base = _authoring_changes(
+        root, ticket, slug, outer, fields
+    )
+    repositories = [(outer, tuple(outer_changes), outer_base)]
+    if project is not None:
+        repositories.append((project, tuple(project_changes), project_base))
+    providers, target_plan = _analyze_converted_basis_targets(
+        root, outer, ticket, slug, generation, provider_materialization, spec, repositories
+    )
+    _validate_converted_basis_spec(spec, outer, providers, target_plan)
+    return (
+        _BasisPreparation(
+            ticket,
+            fields,
+            outer,
+            outer_changes,
+            project,
+            project_changes,
+            outer_base,
+            project_base,
+            target_plan,
+            providers,
+        ),
+        spec,
+    )
+
+
+def _converted_ticket_spec(ticket: Path, outer: Path, stage: str) -> TicketSpec:
+    context = TicketConversionContext(stage, lambda _generated: ticket_authoring_view(outer))
+    converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        details = "; ".join(item.message for item in converted.diagnostics)
+        raise TicketBaselineOperationError(f"Ticket document is invalid: {details}")
+    return converted.document.spec
+
+
+def _analyze_converted_basis_targets(
+    root: Path,
+    outer: Path,
+    ticket: Path,
+    slug: str,
+    generation: str | None,
+    provider_materialization: ProviderMaterialization | None,
+    spec: TicketSpec,
+    repositories: list[tuple[Path, tuple[str, ...], str]],
+) -> tuple[ProviderMaterialization, TargetPlanAnalysis]:
+    try:
+        providers = provider_materialization or validate_planned_dependencies(
+            root, slug, generation or _draft_generation(root, slug), ticket
+        )
+        validate_materialized_surfaces(outer, providers)
+        plan = analyze_ticket_spec_target_plan(
+            spec,
+            outer,
+            target_surface_files(tuple(repositories)),
+            provider_targets=providers.materialized_targets,
+            exported_provider_targets=providers.exported_targets,
+            provider_test_tables=providers.test_tables,
+        )
+        return providers, plan
+    except (PlannedDependencyError, TargetPlanValidationError) as exc:
+        raise TicketBaselineOperationError(f"Ticket baseline validation failed: {exc}") from exc
+
+
+def _validate_converted_basis_spec(
+    spec: TicketSpec,
+    outer: Path,
+    providers: ProviderMaterialization,
+    target_plan: TargetPlanAnalysis,
+) -> None:
+    errors = validate_ticket_spec(
+        spec,
+        project_root=outer,
+        check_files=False,
+        provider_placeholders=providers.placeholder_paths,
+    )
+    if not errors:
+        with tempfile.TemporaryDirectory(prefix="booley-basis-dry-run-") as build_root:
+            errors.extend(
+                validate_acceptance_spec_targets(
+                    spec,
+                    outer,
+                    build_root,
+                    changed_targets=target_plan.authored_targets,
+                    provider_placeholders=providers.placeholder_paths,
+                )
+            )
+    if errors:
+        raise TicketBaselineOperationError(
+            "Ticket baseline validation failed: " + "; ".join(errors)
+        )
+
+
 def validate_ticket_baseline_inputs(
     project_root: Path | str,
     ticket_path: Path | str,
@@ -1312,6 +1439,72 @@ def prepare_ticket_baseline(
     )
 
 
+def prepare_converted_ticket_baseline(
+    project_root: Path | str,
+    ticket_path: Path | str,
+    slug: str,
+) -> tuple[TicketBaseline, str]:
+    """Publish Ticket-owned commits from a converted v2 draft."""
+    root = Path(project_root).resolve()
+    ticket = Path(ticket_path)
+    source_sha256 = hashlib.sha256(ticket.read_bytes()).hexdigest()
+    with ticket_conversion_context(root, slug, "draft") as context:
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        details = "; ".join(item.message for item in converted.diagnostics)
+        raise TicketBaselineOperationError(f"Ticket document is invalid: {details}")
+    spec = converted.document.spec
+    digest = spec.semantic_digest()
+    request = TicketPublicationRequest(
+        slug,
+        source_sha256,
+        digest,
+        digest,
+        _authoring_repositories(root, slug),
+    )
+    existing = load_basis_publication(root, slug)
+    if existing is not None:
+        return publish_ticket_commits(root, request)
+    prepared, prepared_spec = _prepare_converted_basis(root, ticket, slug)
+    bindings = canonical_acceptance_bindings(
+        prepared.outer, criterion_targets_from_spec(prepared_spec)
+    )
+    participants = _participant_preparations(slug, prepared.fields, prepared)
+    return publish_ticket_commits(
+        root,
+        replace(
+            request,
+            operation_id=secrets.token_hex(16),
+            participants=participants,
+            bindings=bindings,
+            removal_targets=prepared.target_plan.removal_targets,
+            providers=prepared.providers.bindings,
+        ),
+    )
+
+
+def validate_ticket_spec_authoring_inputs(
+    project_root: Path, workspace: Path, spec: TicketSpec
+) -> TargetPlanAnalysis:
+    """Check authored Target changes against destination trees without publication."""
+    if not workspace.is_dir():
+        raise TicketBaselineOperationError(f"Ticket Workspace is missing: {workspace}")
+    paired = paired_project_repository(workspace)
+    project = paired.worktree if paired is not None else None
+    outer_base, project_base = _pin_authoring_bases(
+        project_root, workspace, project, dict(spec.fields)
+    )
+    outer_changes = _status_paths(workspace)
+    project_changes = _status_paths(project) if project is not None else []
+    repositories = ((workspace, tuple(outer_changes), outer_base),)
+    if project is not None:
+        repositories += ((project, tuple(project_changes), project_base),)
+    try:
+        return analyze_ticket_spec_target_plan(spec, workspace, target_surface_files(repositories))
+    except TargetPlanValidationError as exc:
+        raise TicketBaselineOperationError(f"Ticket Target validation failed: {exc}") from exc
+
+
 def prepare_replacement_ticket_baseline(
     project_root: Path | str,
     ticket_path: Path | str,
@@ -1324,8 +1517,9 @@ def prepare_replacement_ticket_baseline(
     """Publish a refreshed basis from a prepared, destination-current workspace."""
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
-    fields, body, source_sha256, effective_sha256 = _replacement_inputs(ticket)
-    authored_sha256 = authored_ticket_digest(fields, body)
+    document, source_sha256 = _replacement_inputs(root, ticket, slug)
+    effective_sha256 = document.spec.semantic_digest()
+    authored_sha256 = effective_sha256
     repositories = _workspace_repositories(workspace)
     request = TicketPublicationRequest(
         slug,
@@ -1343,7 +1537,7 @@ def prepare_replacement_ticket_baseline(
             )
         return publish_ticket_commits(root, request)
     return _publish_replacement_ticket_baseline(
-        root, ticket, workspace, provider_bindings, fields, request
+        root, ticket, workspace, provider_bindings, document, request
     )
 
 
@@ -1352,22 +1546,29 @@ def _publish_replacement_ticket_baseline(
     ticket: Path,
     workspace: AuthoringWorkspace,
     provider_bindings: tuple,
-    fields: dict,
+    document: TicketDocument,
     request: TicketPublicationRequest,
 ) -> tuple[TicketBaseline, str]:
     """Validate fresh replacement inputs and publish their commits."""
     providers = ProviderMaterialization(bindings=provider_bindings)
-    prepared = _prepare_basis(
+    prepared, prepared_spec = _prepare_converted_basis(
         root,
         ticket,
         request.slug,
-        effective_fields=fields,
         workspace=workspace.outer,
         generation=workspace.generation,
         provider_materialization=providers,
+        stage="executable",
     )
-    bindings, removals = _prepare_basis_inputs(prepared, fields)
-    participants = _participant_preparations(request.slug, fields, prepared)
+    if prepared_spec.semantic_digest() != document.spec.semantic_digest():
+        raise TicketBaselineOperationError(
+            "Ticket meaning changed during Basis Refresh; return to draft"
+        )
+    bindings = canonical_acceptance_bindings(
+        prepared.outer, criterion_targets_from_spec(prepared_spec)
+    )
+    removals = prepared.target_plan.removal_targets
+    participants = _participant_preparations(request.slug, prepared.fields, prepared)
     return publish_ticket_commits(
         root,
         replace(
@@ -1380,13 +1581,14 @@ def _publish_replacement_ticket_baseline(
     )
 
 
-def _replacement_inputs(ticket: Path) -> tuple[dict, str, str, str]:
+def _replacement_inputs(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument, str]:
     source_sha256 = hashlib.sha256(ticket.read_bytes()).hexdigest()
-    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    fields = dict(fields)
-    fields.pop("machine", None)
-    effective = canonical_json({"fields": fields, "body": body})
-    return fields, body, source_sha256, hashlib.sha256(effective).hexdigest()
+    with ticket_conversion_context(root, slug, "executable") as context:
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        detail = "; ".join(item.message for item in converted.diagnostics)
+        raise TicketBaselineOperationError(f"Ticket document is invalid: {detail}")
+    return converted.document, source_sha256
 
 
 def _workspace_repositories(workspace: AuthoringWorkspace) -> dict[str, Path]:

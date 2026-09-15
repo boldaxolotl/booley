@@ -80,12 +80,13 @@ def test_readiness_prepares_materialized_submodule_checkout(
         "resolve_checkout_project_dir",
         lambda checkout: checkout,
     )
-    monkeypatch.setattr(readiness, "validate_ticket_fields", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(readiness, "validate_ticket_spec", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(readiness, "validate_ticket_view", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(readiness, "assert_live_inputs_unchanged", lambda *_args: None)
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
 
-    assert readiness._validate_current_ticket_view(root, ticket, "ticket", basis, {}, "") == []
+    document = SimpleNamespace(spec=SimpleNamespace())
+    assert readiness._validate_current_ticket_view(root, ticket, "ticket", basis, document) == []
 
 
 def test_readiness_checkout_boundary_and_preparation_failures(
@@ -101,13 +102,23 @@ def test_readiness_checkout_boundary_and_preparation_failures(
     )
     monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
     ticket.write_text("---\ntarget_contract: {}\n---\nbody\n", encoding="utf-8")
-    assert "legacy Target Contract" in readiness.check_ticket_ready(root, "ticket").errors[0]
-    ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
-    assert readiness.check_ticket_ready(root, "ticket").errors == (
-        "unsupported Ticket format: executable Ticket needs machine metadata",
+    assert "missing required fields" in readiness.check_ticket_ready(root, "ticket").errors[0]
+    ticket.write_text(
+        "---\nsummary: Ticket\ntype: feature\nbranch: main\nscope: []\n"
+        "on_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
+        "---\n\n## Description\n\nTest.\n",
+        encoding="utf-8",
     )
+    assert "machine baseline metadata" in readiness.check_ticket_ready(root, "ticket").errors[0]
     basis = TicketBaseline((_participant(),))
-    ticket.write_text("---\nmachine: {}\n---\nbody\n", encoding="utf-8")
+    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
+    document = SimpleNamespace(spec=SimpleNamespace())
+    monkeypatch.setattr(
+        readiness,
+        "convert_ticket_document",
+        lambda *_args: SimpleNamespace(document=document, diagnostics=()),
+    )
     monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: basis)
     monkeypatch.setattr(readiness, "resolve_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(
@@ -164,7 +175,14 @@ def test_checkout_readiness_reports_missing_project_repository_and_ticket(
     monkeypatch.setattr(readiness, "resolve_inner_project_repo", lambda _root: None)
     ticket = tickets / "board/queue/ticket.md"
     ticket.parent.mkdir(parents=True)
-    ticket.write_text("---\nmachine: {}\n---\nbody\n", encoding="utf-8")
+    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(
+        readiness,
+        "convert_ticket_document",
+        lambda *_args: SimpleNamespace(
+            document=SimpleNamespace(spec=SimpleNamespace()), diagnostics=()
+        ),
+    )
     monkeypatch.setattr(
         readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )

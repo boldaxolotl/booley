@@ -11,7 +11,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from booley.ticket_board.ticket_document import TicketSpec
 
 # Re-exported from the core layer for backward compatibility. New cross-layer
 # callers (Flows, MCP tools, ticket_board) should import these from booley.core.models
@@ -46,6 +49,7 @@ class TicketContext:
     priority: str = "medium"
     # Criteria: single source of truth for what the harness must achieve
     criteria: dict[str, Any] = field(default_factory=dict)
+    ticket_spec: TicketSpec | None = None
     # Runtime state (populated by stage 0/1)
     feature_branch: str = ""
     worktree_path: Path | None = None
@@ -98,17 +102,24 @@ class TicketContext:
 
     @property
     def sim_targets(self) -> list[str]:
-        """Derive unique targets from structured sim criteria entries."""
-        from booley.criteria.templates import extract_sim_targets
-
-        return extract_sim_targets(self.criteria)
+        """Return resolved Simulation Targets from the converted Ticket."""
+        if self.ticket_spec is not None:
+            return sorted(
+                {
+                    row.target
+                    for row in self.ticket_spec.criteria
+                    if row.target and row.capability in {"SIM", "CYCLE_COUNT", "COVERAGE"}
+                }
+            )
+        return []
 
     @property
     def has_synth(self) -> bool:
-        """Whether criteria include any synthesis-related entries."""
-        from booley.criteria.templates import has_synth_criteria
-
-        return has_synth_criteria(self.criteria)
+        """Whether the converted Ticket requires Synthesis."""
+        return bool(
+            self.ticket_spec
+            and any(row.capability == "SYNTH" for row in self.ticket_spec.criteria)
+        )
 
     @property
     def _tickets_dir(self) -> Path:

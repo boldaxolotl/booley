@@ -49,11 +49,11 @@ Scale depth to complexity; skip what the user already covered.
 |------|-----------------|
 | Interface contracts (ports, widths, handshake) | Signal-level scope |
 | `ifdef` / config interaction; which configs matter | Config lists for lint/sim criteria |
-| Existing tests — which pass, which should change | `sim_pass` criteria (`pass->pass` vs `fail->pass`) |
+| Existing tests — which pass, which should change | `SIM` requirements (`pass` or named-test `fail -> pass`) |
 | Scope completeness, edge cases, hidden breakage risks | Prevents scope creep; surfaces dependencies |
 | Verification strategy & coverage gaps | TB criteria and review focuses |
 | Dependencies & ordering risks | `dependencies` field |
-| New Target lifecycle: coexist, replace a runnable baseline, or remain evidence-only | `target_plan` persistent / replacement / ephemeral role and required baseline binding |
+| New Target lifecycle: coexist, replace a runnable predecessor, or remain evidence-only | Repeat `(new)`, `(replaces old)`, or `(temp)` on each structured Criteria mention |
 
 ### Feature-Specific
 
@@ -61,7 +61,7 @@ Scale depth to complexity; skip what the user already covered.
 |------|-----|
 | FSM / control path completeness | Complete state coverage |
 | Timing assumptions & pipeline staging | RTL structure decisions |
-| Area vs timing tradeoffs | May trigger `synthesis_ok` |
+| Area vs timing tradeoffs | May trigger `SYNTH` thresholds |
 
 ### Bugfix-Specific
 

@@ -13,7 +13,7 @@ import tomllib
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import yaml
 
@@ -31,6 +31,9 @@ from .target_surface_edit import (
     toml_table_spans,
     validate_new_core_surface,
 )
+
+if TYPE_CHECKING:
+    from .ticket_document import TicketSpec
 
 
 class TargetPlanValidationError(ValueError):
@@ -707,3 +710,73 @@ def analyze_target_plan(
         authored_filesets,
         authored_parameters,
     )
+
+
+def analyze_ticket_spec_target_plan(
+    spec: TicketSpec,
+    project_root: Path,
+    surface_files: tuple[TargetSurfaceFile, ...],
+    *,
+    provider_targets: frozenset[str] = frozenset(),
+    exported_provider_targets: frozenset[str] = frozenset(),
+    provider_test_tables: frozenset[str] = frozenset(),
+) -> TargetPlanAnalysis:
+    """Prove a converted Ticket's derived plan covers its authored Target delta."""
+    delta = _surface_delta(surface_files)
+    if delta.targets.modified or delta.targets.deleted:
+        changed = [item.canonical for item in (*delta.targets.modified, *delta.targets.deleted)]
+        raise TargetPlanValidationError(
+            "Ticket creation cannot modify or delete existing Targets: " + ", ".join(changed)
+        )
+    catalog = TargetCatalog.build(project_root)
+    canonical = spec.target_plan
+    _validate_derived_plan_identities(canonical, catalog)
+    added, planned = _validate_surface_coverage(delta, canonical, provider_targets)
+    authored_filesets = _validate_fileset_coverage(delta, planned, provider_targets)
+    authored_parameters = _validate_parameter_coverage(delta, planned, provider_targets)
+    _validate_replacement_baselines(canonical, added)
+    _validate_test_tables(delta, canonical, provider_test_tables, catalog)
+
+    _validate_spec_plan_bindings(
+        spec, project_root, planned, provider_targets, exported_provider_targets
+    )
+    return TargetPlanAnalysis(
+        canonical,
+        _derived_removals(canonical),
+        tuple(sorted(added)),
+        authored_filesets,
+        authored_parameters,
+    )
+
+
+def _validate_derived_plan_identities(plan: TargetPlan | None, catalog: TargetCatalog) -> None:
+    if plan is None:
+        return
+    for entry in plan.entries:
+        if catalog.select(entry.target).identity != entry.target:
+            raise TargetPlanValidationError(
+                f"derived Target Plan identity {entry.target!r} changed in the Project view"
+            )
+
+
+def _validate_spec_plan_bindings(
+    spec: TicketSpec,
+    project_root: Path,
+    planned: set[str],
+    provider_targets: frozenset[str],
+    exported_provider_targets: frozenset[str],
+) -> None:
+    from .acceptance_targets import criterion_targets_from_spec
+
+    bindings = canonical_acceptance_bindings(project_root, criterion_targets_from_spec(spec))
+    bound = {identity for row in bindings for identity in (row.baseline, row.candidate)}
+    unbound = sorted(planned - bound)
+    if unbound:
+        raise TargetPlanValidationError(
+            "Target Plan entries must be bound by Ticket Criteria: " + ", ".join(unbound)
+        )
+    non_exported = sorted((bound & provider_targets) - exported_provider_targets)
+    if non_exported:
+        raise TargetPlanValidationError(
+            "Ticket Criteria bind non-exported provider Targets: " + ", ".join(non_exported)
+        )

@@ -466,8 +466,8 @@ unstructured, and let the skill turn it into a precise contract:
    the agent out of unrelated files.
 5. **Creation completes automatically.** After ticket approval, the skill authors any
    approved Target Plan in the Ticket Workspace, then enqueues the ticket. Enqueue
-   records the baseline commits in the Ticket's machine-only section. Its
-   worktrees and commits are internal mechanics rather than additional approval gates.
+   publishes the immutable Ticket baseline; its worktrees, commits, and receipt are
+   internal mechanics rather than additional user approval gates.
 
 #### Project Ticket Creation Guidance
 
@@ -489,7 +489,8 @@ for one Ticket win over Project guidance; ambiguous or unavailable requirements 
 surfaced rather than ignored or invented.
 
 Only `/booley-ticket-create` reads this file, and only while creating a Ticket. Its
-authority is limited to `criteria`, optional `target_plan`, and `on_success`; the resulting Ticket remains the
+authority is limited to the `CRITERIA_MANDATORY` and `CRITERIA_OPTIONAL` blocks,
+Target annotations, and `on_success`; the resulting Ticket remains the
 structured artifact validated by Booley. Editing the guidance never changes an
 existing Ticket. Projects initialized with the former `ticket_defaults.md` filename keep
 working: the skill reads it as free-form guidance when `ticket_creation.md` is absent and
@@ -501,8 +502,7 @@ Queuing a ticket doesn't start it. Tickets sit in `board/queue/` until you start
 existing acceptance Criterion or expanding file Scope when the recorded blocker
 supports that change. It shows the exact before-and-after proposal for Human
 approval. An approved amendment keeps the Ticket's implementation, publishes a
-new Ticket generation with its baseline and Human approval recorded in machine
-metadata, and queues the Ticket to resume. Retry with feedback,
+new Ticket baseline, and queues the Ticket to resume. Retry with feedback,
 requested review, reset, and fresh authoring remain separate choices; the
 triage agent handles the amendment commands.
 
@@ -545,9 +545,8 @@ draft ──► queued ──► running ──► review ──► done
   invocation later resumes its existing workspace and evidence.
 - `running → queued` is an exceptional interruption-recovery move, not another
   development attempt. Do not requeue while the Ticket still has an active job.
-- `running → review` is the default successful outcome. A Ticket configured with
-  `on_success.destination: done` deliberately takes the `running → done`
-  shortcut instead.
+- `running → review` happens when `on_success` includes `review`. Omitting it
+  takes the `running → done` shortcut.
 
 `review` is a human decision point, not a partial-rework loop. The reviewer has
 three substantive choices:
@@ -647,7 +646,7 @@ review criterion so its suggested invocation is immediately callable.
 #### Threshold parameters
 
 <!-- BEGIN GENERATED: criteria-params -->
-Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the Ticket's Ticket baseline:
+`SYNTH` and `FPGA` Criteria name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Ticket baseline:
 
 | Flavour param suffix | Baseline? | Meaning |
 |----------------------|:---------:|---------|
@@ -658,11 +657,11 @@ Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **
 
 Percentage threshold values must include the `%` suffix (for example, `cell_count_reduce_at_least: 8%`).
 
-Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.
+Ticket syntax: `SYNTH: {synth_core: {cell_count_max: 500, fmax_mhz_min: 400}}`.
 
-For a relative threshold, a Target entry may instead be a directed frozen pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain Target name is backward-compatible shorthand for using that Target on both sides.
+For a relative threshold on a new Target, add `baseline: <existing-target>` inside that Target's threshold mapping. Existing Targets use their own Ticket-baseline version by default.
 
-In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
+In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relative `SYNTH` or `FPGA` Criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -695,9 +694,9 @@ In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relat
 
 > Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
 
-**Per-test `cycle_count`**
+**Per-test `CYCLE_COUNT`**
 
-Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the Ticket's Ticket baseline.
+Nest each registered test under its Target and give it one or more thresholds; all thresholds for that test must pass. Relative forms compare the same Target/test at the Ticket baseline by default.
 
 | Parameter | Baseline? | Unit | Passing relation |
 |-----------|:---------:|------|------------------|
@@ -712,7 +711,7 @@ Use a list of mappings. Every item names one `target` and registered `test`, plu
 | `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
 | `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
 
-Syntax (ticket criteria): `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}]`.
+Ticket syntax: `CYCLE_COUNT: {sim_coremark: {coremark: {cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}}}`.
 
 A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
 
@@ -722,10 +721,9 @@ Relative comparisons report an **observed Cycle Count change**. When declared wo
 `create-file` materializes an isolated Ticket Workspace. This is where the
 Ticket-creation agent adds any Target the Ticket will require; the Project's
 destination branch stays fully functional and Doctor-clean until acceptance.
-`enqueue` validates and commits that authoring state, records the baseline
-commits in the Ticket's reserved `machine` section, and moves the Ticket to
-queue or waiting. Final acceptance rechecks protected inputs against those
-commits before publishing the result.
+`enqueue` validates and commits that authoring state, records its pinned commits in
+the Ticket’s reserved `machine` section, and moves it to queue or waiting. Final
+acceptance rechecks protected inputs against those commits before publishing.
 
 **Per-clock timing thresholds.** Timing is reported per clock, so the timing
 metrics (`critical_path_ps`, `fmax_mhz`, `wns_ns`, `whs_ns`, `period_ns`) accept
@@ -739,68 +737,65 @@ utilization thresholds are **not** clock-scopable):
 
 The `critical_path_ps_max` ⊕ `fmax_mhz_min` mutual exclusion is enforced
 **per-scope** (per clock), so `clk_i.fmax_mhz_min` and `clk_2x.critical_path_ps_max`
-can coexist. Example: `synthesis_ok: {targets: [<target>], clk_i.fmax_mhz_min: 400,
-clk_2x.critical_path_ps_max: 5000}`.
+can coexist. Example: `SYNTH: {synth_core: {clk_i.fmax_mhz_min: 400,
+clk_2x.critical_path_ps_max: 5000}}`.
 
 ### Where the work lands (`on_success`)
 
-Every ticket carries an `on_success` block that says what happens once the criteria are met:
+Every Ticket carries a list of completion actions. Omitted actions are false:
 
 ```yaml
-on_success:
-  destination: review     # review (default) | done
-  merge: true             # merge the ticket branch into its base
-  cleanup: true           # remove the worktree and branch afterwards
-  triage_report: true     # add an LLM-generated HTML explanation to the review package
+on_success: [triage_report, review, merge, cleanup]
 ```
 
-`destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
+`review` parks the finished Ticket in `board/review/` for a human decision and
+keeps its worktree and branch until that decision. The reviewer may make a small
+in-place correction and run the relevant Flows again. `cleanup` waits until
+review ends. Omitting `review` finishes directly in `board/done/`.
 
-Destructive completion cleanup requires `merge: true`, so the Acceptance Journal can
-pin the accepted source before removing its branch and worktree. To finish without
-merging, set both `merge: false` and `cleanup: false`; with CLI overrides, pair
-`--no-merge` with `--no-cleanup`. That override is unavailable for a Ticket with a
-Target Plan, because acceptance must publish its derived additions and removals.
+`cleanup` works without `merge` for disposable test Tickets. Booley first pins
+the accepted commits under internal refs so evidence remains reachable, then
+removes the Ticket branches and worktrees. To keep those workspaces, omit
+`cleanup`. To leave the destination branch untouched, omit `merge`.
 
-Most Tickets omit `target_plan` and use existing Targets. A Ticket that authors a new
-Target supplies a nonempty top-level plan and requires `merge: true`:
+Most Tickets use existing Targets. To author one, annotate every structured
+mention with `(new)`, `(temp)`, or `(replaces old_target)` and include `merge`:
 
 ```yaml
-target_plan:
-  - {target: lint_style, role: persistent}
-  - {target: sim_core_v2, role: replacement, replaces: sim_core}
-  - {target: ticket_probe, role: ephemeral}
+CRITERIA_MANDATORY:
+  LINT: {lint_style (new): clean}
+  SIM:
+    sim_core_v2 (replaces sim_core): {all: pass}
+    ticket_probe (temp): {smoke: pass}
 ```
 
-Persistent Targets remain alongside the existing surface. Replacement candidates remain
-while their runnable baselines are removed. Ephemeral Targets exist only for Ticket
-evidence and are removed. Every planned selector and replacement baseline is Criteria-bound;
+New Targets remain alongside the existing surface. Replacement candidates remain
+while their runnable predecessors are removed. Temporal Targets exist only for Ticket
+evidence and are removed. Every annotated selector and replacement predecessor is Criteria-bound;
 enqueue compares definitions semantically against the exact destination, rejects edits or
 deletions of existing Targets, filesets, or parameter declarations, and derives canonical
 Target identities and removals from the Ticket and its pinned commits. A planned Target may
 add a dedicated fileset or local parameter declaration, provided no unchanged Target
 references it. Acceptance removes those derived Target definitions, unambiguously owned
 `tests.toml` tables, and newly authored filesets or parameter declarations left unreferenced
-by an ephemeral Target's removal. Existing or still-shared inputs, constraints, generators,
+by a Temporal Target's removal. Existing or still-shared inputs, constraints, generators,
 and hooks remain.
 
-A waiting Ticket may consume a persistent or replacement Target from a dependency
-whose Ticket records baseline commits. Booley pins that future surface internally.
-After the dependency is accepted, Booley verifies the surface, rebases the
-still-untouched consumer onto current destinations, records a new Ticket
-generation and baseline commits, and promotes it atomically. Drift blocks and requires
+A waiting Ticket may consume a New or Replacement Target from a baseline-published
+dependency. Booley pins that future surface internally. After the dependency is accepted,
+a Basis Refresh verifies the surface, rebases the still-untouched consumer onto current
+destinations, records a new Ticket generation, and promotes it atomically. Drift blocks and requires
 `return-to-draft`.
 
 Every review-bound run persists a versioned, machine-readable JSON package at
 `logs/<slug>/.runtime/triage-prep/briefing.json`. Human Markdown and HTML views
 are rendered from that same package, so a command-line client can inspect the
 complete review input without scraping a presentation format. With
-`triage_report: true`
-(the default), Booley uses the configured model backend after criteria
+`triage_report` in `on_success`, Booley uses the configured model backend after criteria
 acceptance to add a self-contained HTML explanation under the ticket log
 directory. The triage skill presents its deterministic briefing directly in
-chat instead of writing another summary report. Set `triage_report` to `false`
-to skip the extra model call; Booley still writes the deterministic JSON
+chat instead of writing another summary report. Omit `triage_report` to skip
+the extra model call; Booley still writes the deterministic JSON
 package, with a conservative deterministic assessment and no HTML explanation.
 A generation failure is recorded but does not block an otherwise successful ticket;
 `booley board prepare-review <slug> --force` retries it.

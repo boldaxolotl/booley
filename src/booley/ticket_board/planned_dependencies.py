@@ -19,12 +19,7 @@ from booley.runtime.project_dir import resolve_checkout_project_dir, runtime_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
-from .acceptance_targets import (
-    criterion_targets,
-    deferable_rtl_or_tb_input,
-    scope_allows_new_path,
-)
-from .frontmatter import parse_frontmatter
+from .acceptance_targets import deferable_rtl_or_tb_input, scope_allows_new_path
 from .persistence import atomic_replace_bytes
 from .scanner import find_ticket_file, scan_all_tickets
 from .target_surface_edit import (
@@ -36,11 +31,12 @@ from .ticket_baseline import (
     ProviderTargetBinding,
     TicketBaselineError,
     canonical_json,
-    load_ticket_baseline,
+    load_ticket_baseline_from_document,
     materialize_basis_checkout,
     provider_binding_from_mapping,
     selector_matches_canonical,
 )
+from .ticket_document import TicketPreview, convert_ticket_document, ticket_conversion_context
 
 _PROVIDER_STATES = frozenset({"waiting", "queued", "running", "blocked", "review"})
 
@@ -164,20 +160,30 @@ def _provider(root: Path, tickets_dir: Path, slug: str) -> _Provider | None:
         return None
     if status not in _PROVIDER_STATES:
         return None
-    fields, body = parse_frontmatter(path.read_text(encoding="utf-8"))
-    if fields.get("machine") is None:
-        raise PlannedDependencyError(
-            f"provider {slug!r} has an unsupported Ticket format; recreate the Ticket"
-        )
+    with ticket_conversion_context(root, slug, "executable") as context:
+        converted = convert_ticket_document(path.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        detail = "; ".join(item.message for item in converted.diagnostics)
+        raise PlannedDependencyError(f"provider {slug!r} has an invalid Ticket: {detail}")
     try:
-        basis = load_ticket_baseline(root, slug, fields, body)
+        basis = load_ticket_baseline_from_document(root, slug, converted.document)
     except TicketBaselineError as exc:
         raise PlannedDependencyError(
             f"provider {slug!r} has invalid Ticket baseline metadata: {exc}"
         ) from exc
     if basis.target_plan is None:
         return None
-    return _Provider(slug, fields, basis)
+    return _Provider(slug, dict(converted.document.spec.fields), basis)
+
+
+def _ticket_preview(root: Path, ticket_path: Path, slug: str) -> TicketPreview:
+    stage = "draft" if ticket_path.parent.name == "drafts" else "executable"
+    with ticket_conversion_context(root, slug, stage) as context:
+        converted = convert_ticket_document(ticket_path.read_text(encoding="utf-8"), context)
+    if converted.preview is None:
+        detail = "; ".join(item.message for item in converted.diagnostics)
+        raise PlannedDependencyError(f"Ticket document is invalid: {detail}")
+    return converted.preview
 
 
 def _ordered_providers(providers: list[_Provider]) -> list[_Provider]:
@@ -523,7 +529,7 @@ def _require_marker_dependencies(
 
 def _active_providers(root: Path, tickets_dir: Path) -> list[_Provider]:
     providers = []
-    for ticket in scan_all_tickets(tickets_dir):
+    for ticket in scan_all_tickets(tickets_dir, project_root=root):
         if ticket.get("status") not in _PROVIDER_STATES:
             continue
         slug = Path(str(ticket.get("file", ""))).stem
@@ -577,29 +583,28 @@ def _provider_depends_on(
     return False
 
 
-def _required_provider_slugs(fields: dict[str, Any], providers: list[_Provider]) -> set[str]:
+def _required_provider_slugs(references: tuple[str, ...], providers: list[_Provider]) -> set[str]:
     owners = _export_owners(providers)
     required = set()
-    for binding in criterion_targets(fields.get("criteria")):
-        for selector in (binding.target, binding.baseline):
-            matches = {
-                provider
-                for target, provider in owners.items()
-                if selector_matches_canonical(selector, target)
-            }
-            if len(matches) > 1:
-                raise PlannedDependencyError(
-                    f"criterion Target {selector!r} is offered by ambiguous providers"
-                )
-            required.update(matches)
+    for selector in references:
+        matches = {
+            provider
+            for target, provider in owners.items()
+            if selector_matches_canonical(selector, target)
+        }
+        if len(matches) > 1:
+            raise PlannedDependencyError(
+                f"criterion Target {selector!r} is offered by ambiguous providers"
+            )
+        required.update(matches)
     return required
 
 
 def _validate_provider_dependencies(
-    fields: dict[str, Any], dependencies: tuple[str, ...], providers: list[_Provider]
+    references: tuple[str, ...], dependencies: tuple[str, ...], providers: list[_Provider]
 ) -> None:
-    _validate_retiring_provider_targets(fields, providers)
-    missing = sorted(_required_provider_slugs(fields, providers) - set(dependencies))
+    _validate_retiring_provider_targets(references, providers)
+    missing = sorted(_required_provider_slugs(references, providers) - set(dependencies))
     if missing:
         raise PlannedDependencyError(
             "Ticket is missing provider dependencies: " + ", ".join(missing)
@@ -607,26 +612,25 @@ def _validate_provider_dependencies(
 
 
 def _validate_retiring_provider_targets(
-    fields: dict[str, Any], providers: list[_Provider]
+    references: tuple[str, ...], providers: list[_Provider]
 ) -> None:
     retiring = {
         target: provider.slug
         for provider in providers
         for target in provider.basis.removal_targets
     }
-    for binding in criterion_targets(fields.get("criteria")):
-        for selector in (binding.target, binding.baseline):
-            matches = [
-                (target, provider)
-                for target, provider in retiring.items()
-                if selector_matches_canonical(selector, target)
-            ]
-            if matches:
-                target, provider = matches[0]
-                raise PlannedDependencyError(
-                    f"criterion Target {selector!r} names {provider!r}'s retiring "
-                    f"provider Target {target!r}"
-                )
+    for selector in references:
+        matches = [
+            (target, provider)
+            for target, provider in retiring.items()
+            if selector_matches_canonical(selector, target)
+        ]
+        if matches:
+            target, provider = matches[0]
+            raise PlannedDependencyError(
+                f"criterion Target {selector!r} names {provider!r}'s retiring "
+                f"provider Target {target!r}"
+            )
 
 
 def materialize_planned_dependencies(
@@ -637,12 +641,13 @@ def materialize_planned_dependencies(
     workspace: Path,
 ) -> ProviderMaterialization:
     """Materialize active dependency exports once for one draft generation."""
-    fields, _body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+    preview = _ticket_preview(root, ticket_path, slug)
+    fields = dict(preview.fields)
     dependencies = _ticket_dependencies(fields)
     tickets_dir = resolve_checkout_project_dir(root) / "tickets"
     active = _active_providers(root, tickets_dir)
     _validate_replacement_owners(active)
-    _validate_provider_dependencies(fields, dependencies, active)
+    _validate_provider_dependencies(preview.references, dependencies, active)
     providers = _dependency_providers(root, tickets_dir, dependencies, active)
     marker = _marker_path(root, slug, generation)
     if marker.is_file():
@@ -786,13 +791,14 @@ def validate_planned_dependencies(
 ) -> ProviderMaterialization:
     """Require every generation pin to still name the provider's current basis."""
     materialization = load_planned_dependencies(root, slug, generation)
-    fields, _body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+    preview = _ticket_preview(root, ticket_path, slug)
+    fields = dict(preview.fields)
     dependencies = _ticket_dependencies(fields)
     _require_marker_dependencies(materialization, dependencies)
     tickets_dir = resolve_checkout_project_dir(root) / "tickets"
     active = _active_providers(root, tickets_dir)
     _validate_replacement_owners(active)
-    _validate_provider_dependencies(fields, dependencies, active)
+    _validate_provider_dependencies(preview.references, dependencies, active)
     providers = _dependency_providers(root, tickets_dir, dependencies, active)
     _validate_marker_exports(materialization, providers)
     if not materialization.bindings:

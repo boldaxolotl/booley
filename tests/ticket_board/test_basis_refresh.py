@@ -30,6 +30,13 @@ from booley.ticket_board.ticket_baseline import (
 from booley.ticket_board.workspace_ops import AuthoringWorkspace
 
 
+def _fake_document():
+    return SimpleNamespace(
+        spec=SimpleNamespace(fields={}, semantic_digest=lambda: "0" * 64),
+        generated={"machine": {"generation": "e" * 32}},
+    )
+
+
 def _write_core(path: Path, targets: dict) -> None:
     path.mkdir(parents=True, exist_ok=True)
     filesets = {
@@ -202,7 +209,10 @@ def test_provider_refresh_requires_pinned_generation_even_with_same_surface(
     ticket = tmp_path / "provider.md"
     ticket.write_text("---\n---\n", encoding="utf-8")
     monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
-    monkeypatch.setattr(basis_refresh, "load_ticket_baseline", lambda *_args: refreshed_provider)
+    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
+    monkeypatch.setattr(
+        basis_refresh, "load_ticket_baseline_from_document", lambda *_args: refreshed_provider
+    )
     monkeypatch.setattr(basis_refresh, "target_surface_sha256", lambda *_args: "b" * 64)
 
     if accepted_generation != binding.ticket_generation:
@@ -270,11 +280,14 @@ def _stub_refresh_recovery(tmp_path: Path, monkeypatch):
         basis_refresh, "_operation_path", lambda _root, operation: operations / operation
     )
     monkeypatch.setattr(basis_refresh, "resolve_project_dir", lambda root: root)
+    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
     monkeypatch.setattr(
         basis_refresh,
-        "load_ticket_baseline",
-        lambda _root, _slug, fields, _body: (
-            old_basis if fields.get("machine", {}).get("generation") == "e" * 32 else new_basis
+        "load_ticket_baseline_from_document",
+        lambda _root, _slug, document: (
+            old_basis
+            if document.generated.get("machine", {}).get("generation") == "e" * 32
+            else new_basis
         ),
     )
 
@@ -381,16 +394,19 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
     ticket = tmp_path / "provider.md"
     ticket.write_text("---\n---\n", encoding="utf-8")
     monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
+    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
     monkeypatch.setattr(
         basis_refresh,
-        "load_ticket_baseline",
+        "load_ticket_baseline_from_document",
         lambda *_args: (_ for _ in ()).throw(basis_refresh.TicketBaselineError("bad basis")),
     )
     with pytest.raises(BasisRefreshError, match="no valid accepted basis"):
         _verify_providers(tmp_path, tmp_path, consumer)
 
     provider_basis = TicketBaseline((_participant(),))
-    monkeypatch.setattr(basis_refresh, "load_ticket_baseline", lambda *_args: provider_basis)
+    monkeypatch.setattr(
+        basis_refresh, "load_ticket_baseline_from_document", lambda *_args: provider_basis
+    )
     with pytest.raises(BasisRefreshError, match="no longer exports"):
         _verify_providers(tmp_path, tmp_path, consumer)
 
@@ -398,7 +414,9 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
         (_participant(),),
         target_plan=TargetPlan.from_value([{"target": binding.target, "role": "persistent"}]),
     )
-    monkeypatch.setattr(basis_refresh, "load_ticket_baseline", lambda *_args: provider_basis)
+    monkeypatch.setattr(
+        basis_refresh, "load_ticket_baseline_from_document", lambda *_args: provider_basis
+    )
     monkeypatch.setattr(basis_refresh, "target_surface_sha256", lambda *_args: "c" * 64)
     with pytest.raises(BasisRefreshError, match="changed after it was pinned"):
         _verify_providers(tmp_path, tmp_path, consumer)
@@ -458,6 +476,7 @@ def test_publish_refresh_records_machine_identity_and_resumes_prepared_journal(
         "prepare_replacement_ticket_baseline",
         lambda *_args, **_kwargs: (basis, journal.operation_id),
     )
+    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
     monkeypatch.setattr(basis_refresh, "_write_journal", lambda _root, item: journals.append(item))
 
     published, prepared = basis_refresh._publish_refresh_basis(
@@ -517,11 +536,12 @@ def test_refresh_rejects_invalid_prepared_machine_and_ticket(
         )
     monkeypatch.setattr(
         basis_refresh,
-        "load_ticket_baseline",
+        "load_ticket_baseline_from_document",
         lambda *_args: (_ for _ in ()).throw(TicketBaselineError("Ticket changed")),
     )
+    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
     with pytest.raises(BasisRefreshError, match="Ticket changed"):
-        basis_refresh._resume_prepared_refresh(tmp_path, "ticket", {}, "body", journal)
+        basis_refresh._resume_prepared_refresh(tmp_path, "ticket", _fake_document(), journal)
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: None)

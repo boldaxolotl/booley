@@ -110,6 +110,53 @@ def test_basis_executes_selector_verified_against_recorded_pair(tmp_path: Path) 
     assert pairs[0].basis_bound
 
 
+def test_basis_accepts_multiple_parameters_for_one_candidate(tmp_path: Path) -> None:
+    original = _basis_project(tmp_path)
+    bindings = tuple(
+        AcceptanceTargetBinding(
+            flow="synth",
+            criterion=f"criteria.mandatory.synthesis_ok_{parameter}",
+            baseline="acme:lib:toy:1.0#synth_before",
+            candidate="acme:lib:toy:1.0#synth_after",
+            baseline_selector="synth_before",
+            candidate_selector="synth_after",
+        )
+        for parameter in ("area", "frequency")
+    )
+    basis = TicketBaseline(bindings=bindings, participants=original.participants)
+    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
+    criteria = {
+        f"synthesis_ok_{parameter}": SimpleNamespace(
+            params={
+                "target": "acme:lib:toy:1.0#synth_after",
+                BASELINE_TARGET_PARAM: "synth_before",
+            }
+        )
+        for parameter in ("area", "frequency")
+    }
+
+    (plan,) = target_pair_plans_for_handles(
+        criteria,
+        "synthesis_ok_",
+        (candidate,),
+        basis=basis,
+        flow="synth",
+    )
+
+    assert (plan.baseline.selector, plan.candidate.selector) == ("synth_before", "synth_after")
+    assert plan.basis_bound
+
+    criteria["synthesis_ok_frequency"].params[BASELINE_TARGET_PARAM] = "synth_other"
+    with pytest.raises(ImplementationComparisonError, match=r"conflicting .* Target pairs"):
+        target_pair_plans_for_handles(
+            criteria,
+            "synthesis_ok_",
+            (candidate,),
+            basis=basis,
+            flow="synth",
+        )
+
+
 def test_current_schema_executes_exact_sealed_selectors(tmp_path: Path) -> None:
     basis = _basis_project(tmp_path, schema=4)
     criteria = {
@@ -260,6 +307,33 @@ def test_authored_criterion_metadata_supplies_ticket_baseline_ref(
     )
 
     assert (baseline, full_sha, error) == ("sealed-base", "a" * 40, None)
+
+
+def test_multiple_synth_parameters_can_share_one_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _basis_project(tmp_path, schema=4)
+    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
+    criteria = {
+        f"synthesis_ok_{parameter}": SimpleNamespace(
+            params={"target": candidate.identity, "_baseline_ref": baseline}
+        )
+        for parameter, baseline in (("area", "sealed-base"), ("frequency", "sealed-base"))
+    }
+    monkeypatch.setattr(
+        "booley.flows.baseline_worktree.git_full_sha",
+        lambda _ref, _root: "a" * 40,
+    )
+
+    assert resolve_ticket_baseline(
+        criteria, "synthesis_ok_", (candidate,), None, tmp_path, "synth"
+    ) == ("sealed-base", "a" * 40, None)
+
+    criteria["synthesis_ok_frequency"].params["_baseline_ref"] = "other-base"
+    assert resolve_ticket_baseline(
+        criteria, "synthesis_ok_", (candidate,), None, tmp_path, "synth"
+    ) == (None, None, "synth: selected criteria carry conflicting baseline refs")
 
 
 def _basis_with_binding(

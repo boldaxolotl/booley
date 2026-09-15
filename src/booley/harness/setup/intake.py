@@ -14,11 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import (
-    BASELINE_TARGET_PARAM,
-    CriteriaTemplate,
-    find_retired_criteria,
-)
+from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.criteria.ticket_projection import project_ticket_criteria
 from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.helpers import tickets_dir_from_project_root
@@ -35,10 +32,11 @@ from booley.ticket_board.ticket_baseline import (
     TicketBaselineError,
     requires_return_to_draft,
 )
+from booley.ticket_board.ticket_document import TicketDocument
 
 from .. import ticket_cli
 from ..blocking import FatalError
-from ..models import OnSuccess, TicketContext
+from ..models import TicketContext
 
 logger = logging.getLogger(__name__)
 
@@ -100,11 +98,13 @@ def _build_context(
     project_root: Path,
     ticket_path: Path,
     slug: str,
-    fields: dict,
+    document: TicketDocument,
+    progress: dict[str, Any],
 ) -> TicketContext:
-    """Construct a TicketContext from parsed frontmatter fields."""
-    _reject_retired_ticket_fields(fields, slug)
-    acceptance_basis = _load_context_basis(project_root, ticket_path, slug, fields)
+    """Construct execution context from the converted authored Ticket."""
+    spec = document.spec
+    fields = spec.fields
+    acceptance_basis = _load_context_basis(project_root, ticket_path, slug)
     return TicketContext(
         slug=slug,
         ticket_path=ticket_path,
@@ -113,58 +113,33 @@ def _build_context(
         summary=fields.get("summary", ""),
         scope_raw=fields.get("scope", []),
         spec=fields.get("spec", ""),
-        on_success=OnSuccess.from_dict(fields.get("on_success")),
+        on_success=spec.completion_policy,
         dependencies=fields.get("dependencies", []),
         priority=fields.get("priority", "medium"),
         base_sha=acceptance_basis.outer_sha if acceptance_basis is not None else "",
         acceptance_basis=acceptance_basis,
-        feature_branch=fields.get("feature_branch", ""),
-        completed_steps=fields.get("steps_completed", []),
-        current_step=fields.get("stage", ""),
+        feature_branch=document.generated.get("feature_branch", ""),
+        completed_steps=progress.get("steps_completed", []),
+        current_step=progress.get("stage", ""),
         project_root=project_root,
-        criteria=fields.get("criteria", {}),
+        criteria={
+            "mandatory": {row.identity: row.value for row in spec.criteria if row.mandatory},
+            "optional": {row.identity: row.value for row in spec.criteria if not row.mandatory},
+        },
+        ticket_spec=spec,
     )
-
-
-def _reject_retired_ticket_fields(fields: dict[str, Any], slug: str) -> None:
-    retired_plan_fields = [
-        k for k in ("plan_file", "rtl_plan_file", "verification_plan_file") if fields.get(k)
-    ]
-    if retired_plan_fields:
-        raise FatalError(
-            f"Retired field(s) in ticket YAML: {', '.join(retired_plan_fields)}. Remove them — "
-            "the planner specialists were pruned; put the plan in the ticket body instead.",
-            slug=slug,
-        )
-    if fields.get("target_contract") is not None:
-        raise FatalError(
-            "Legacy Target Contract tickets are unsupported after the hard cutoff; "
-            "recreate the Ticket.",
-            slug=slug,
-        )
-    if "acceptance_basis" in fields:
-        raise FatalError(
-            "unsupported Ticket format: recreate this Ticket without acceptance_basis",
-            slug=slug,
-        )
 
 
 def _load_context_basis(
     project_root: Path,
     ticket_path: Path,
     slug: str,
-    fields: dict[str, Any],
-) -> TicketBaseline | None:
-    raw_basis = fields.get("machine")
+) -> TicketBaseline:
     try:
-        return (
-            TicketIO(
-                tickets_dir_from_project_root(project_root),
-                project_root=project_root,
-            ).load_basis(slug, runtime_ticket_path=ticket_path)
-            if raw_basis is not None
-            else None
-        )
+        return TicketIO(
+            tickets_dir_from_project_root(project_root),
+            project_root=project_root,
+        ).load_basis(slug, runtime_ticket_path=ticket_path)
     except TicketBaselineError as exc:
         raise FatalError(f"Invalid Ticket baseline: {exc}", slug=slug) from exc
 
@@ -370,20 +345,24 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
     ticket_path, slug = _resolve_and_validate(project_root, ticket_path_or_slug)
     ticket_path = _promote_waiting_for_intake(project_root, ticket_path, slug)
 
-    parsed = ticket_cli.parse_ticket(project_root, str(ticket_path))
-    fields = parsed.get("fields", {})
-    if requires_return_to_draft(fields):
+    progress = _load_progress(project_root, slug)
+    if requires_return_to_draft(progress):
         raise FatalError(
             f"Ticket '{slug}' has changed Ticket baseline inputs; use return-to-draft"
         )
 
-    ctx = _build_context(project_root, ticket_path, slug, fields)
+    try:
+        document = TicketIO(
+            tickets_dir_from_project_root(project_root), project_root=project_root
+        ).load_document(slug, runtime_ticket_path=ticket_path)
+    except (TicketBaselineError, OSError, ValueError) as exc:
+        raise FatalError(f"Ticket conversion or baseline failed: {exc}", slug=slug) from exc
+    ctx = _build_context(project_root, ticket_path, slug, document, progress)
     _check_dependencies(ctx)
 
-    action = _detect_and_apply_resume(ctx, fields)
+    action = _detect_and_apply_resume(ctx, progress)
 
     _verify_acceptance_basis(ctx, action)
-    _validate_retired_criteria(ctx)
 
     criteria_state_needs_init = action == "fresh" or _criteria_state_needs_reinit(ctx)
     if ctx.acceptance_basis is None:
@@ -490,34 +469,20 @@ def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
 
 
 def _init_criteria_state(ctx: TicketContext) -> None:
-    """Initialize booley_state.json from ticket criteria section.
-
-    Parses criteria via CriteriaTemplate, expands per-target, seeds project
-    criteria, and writes the initial DevelopmentState.
-    """
-    if ctx.criteria:
-        template = CriteriaTemplate.from_yaml(ctx.criteria)
-    else:
-        template = CriteriaTemplate.for_ticket_type(ctx.ticket_type)
-
+    """Initialize strict state from the converter's atomic Criteria."""
+    if ctx.ticket_spec is None:
+        raise FatalError("Ticket has no converted specification", slug=ctx.slug)
+    projection = project_ticket_criteria(ctx.ticket_spec)
     targets = ctx.sim_targets
-    expanded = template.expand(targets)
-    category_overrides = template.category_overrides(targets)
-    aliases = template.flow_key_aliases()
-    criterion_params = template.expand_params(targets)
-    _apply_basis_selectors(ctx, template, expanded, criterion_params)
+    expanded = dict(projection.required)
+    category_overrides = dict(projection.categories)
+    aliases = dict(projection.aliases)
+    criterion_params = {key: dict(value) for key, value in projection.params.items()}
+    _apply_basis_selectors(ctx, expanded, criterion_params)
     _seed_reviewer_scopes(ctx, expanded, criterion_params)
     _pin_cycle_count_baselines(ctx, criterion_params)
     _freeze_synthesis_recipe_fingerprints(ctx, expanded, criterion_params)
     _freeze_fpga_recipe_fingerprints(ctx, expanded, criterion_params)
-
-    # Migration: reject retired criterion keys by name. This has to hard-error --
-    # an unrecognized key is otherwise created as *optional* (development_state),
-    # which would silently downgrade a mandatory gate to a no-op. slug=ctx.slug is
-    # essential: without it the developer's FatalError handler skips ticket_cli.fail(),
-    # so this specific, actionable error never reaches any ticket-scoped log and the
-    # ticket is left orphaned in active/ (later swept as a bogus "SIGINT" crash).
-    _reject_retired_criteria(ctx, expanded)
 
     _seed_project_criteria(ctx.work_dir, expanded, category_overrides, targets)
     _seed_run_report_criterion(expanded)
@@ -580,34 +545,12 @@ def _zero_mandatory_amendment_basis(ctx: TicketContext, expanded: dict[str, bool
     return basis.basis_id if amendment.get("optional_conversions") else ""
 
 
-def _validate_retired_criteria(ctx: TicketContext) -> None:
-    template = (
-        CriteriaTemplate.from_yaml(ctx.criteria)
-        if ctx.criteria
-        else CriteriaTemplate.for_ticket_type(ctx.ticket_type)
-    )
-    _reject_retired_criteria(ctx, template.expand(ctx.sim_targets))
-
-
-def _reject_retired_criteria(ctx: TicketContext, expanded: dict[str, bool]) -> None:
-    stale = find_retired_criteria(expanded)
-    if stale:
-        keys = ", ".join(k for k, _ in stale)
-        details = "; ".join(f"{k} -> {hint}" for k, hint in stale)
-        raise FatalError(
-            f"Retired criterion key(s) in ticket YAML: {keys}. {details}.",
-            slug=ctx.slug,
-        )
-
-
 def _apply_basis_selectors(
     ctx: TicketContext,
-    template: CriteriaTemplate,
     expanded: dict[str, bool],
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Seed basis identities and callable selectors into runtime Criteria."""
-    del template  # retained in the helper interface for focused intake tests
     basis = ctx.acceptance_basis
     if basis is None:
         return
@@ -757,25 +700,12 @@ def _freeze_recipe_family(
     )
     from booley.evidence.recipe import recipe_snapshot_fingerprint
 
-    keys = [key for key in expanded if key.startswith(prefix)]
     recipe_root = ticket_runtime_dir(ctx.logs_dir) / "recipe-freeze" / prefix.rstrip("_")
-    prepared: list[tuple[str, str, dict[str, Any], bool]] = []
-    for key in keys:
-        candidate = key.removeprefix(prefix)
-        params = criterion_params.setdefault(key, {})
-        needs_baseline = _pin_recipe_baseline(ctx, key, params, flow_label)
-        baseline = params.get(BASELINE_TARGET_PARAM, candidate)
-        if not isinstance(baseline, str) or not baseline:
-            raise FatalError(
-                f"{flow_label} criterion {key!r} has invalid baseline Target metadata",
-                slug=ctx.slug,
-            )
-        prepared.append((key, baseline if needs_baseline else candidate, params, needs_baseline))
+    prepared = _prepare_recipe_targets(ctx, expanded, criterion_params, prefix, flow_label)
 
     with _baseline_recipe_root(ctx, any(item[3] for item in prepared), flow_label) as base_root:
         for key, recipe_target, params, needs_baseline in prepared:
-            candidate = key.removeprefix(prefix)
-            build_root = recipe_root / candidate
+            build_root = recipe_root / key
             shutil.rmtree(build_root, ignore_errors=True)
             snapshot = _snapshot_intake_recipe(
                 ctx,
@@ -791,6 +721,30 @@ def _freeze_recipe_family(
                 continue
             params[RECIPE_FINGERPRINT_PARAM] = recipe_snapshot_fingerprint(snapshot)
             params[RECIPE_SNAPSHOT_PARAM] = snapshot
+
+
+def _prepare_recipe_targets(
+    ctx: TicketContext,
+    expanded: dict[str, bool],
+    criterion_params: dict[str, dict[str, Any]],
+    prefix: str,
+    flow_label: str,
+) -> list[tuple[str, str, dict[str, Any], bool]]:
+    prepared = []
+    for key in (item for item in expanded if item.startswith(prefix)):
+        params = criterion_params.setdefault(key, {})
+        candidate = params.get(TARGET_IDENTITY_PARAM)
+        if not isinstance(candidate, str) or not candidate:
+            raise FatalError(f"{flow_label} criterion {key!r} has no Target", slug=ctx.slug)
+        needs_baseline = _pin_recipe_baseline(ctx, key, params, flow_label)
+        baseline = params.get(BASELINE_TARGET_PARAM, candidate)
+        if not isinstance(baseline, str) or not baseline:
+            raise FatalError(
+                f"{flow_label} criterion {key!r} has invalid baseline Target metadata",
+                slug=ctx.slug,
+            )
+        prepared.append((key, baseline if needs_baseline else candidate, params, needs_baseline))
+    return prepared
 
 
 @contextlib.contextmanager
@@ -877,7 +831,7 @@ def _snapshot_intake_recipe(
             handle,
             build_root=build_root,
         )
-        return snapshot_builder(resolved, target)
+        return snapshot_builder(resolved, handle.selector)
     except (TargetResolutionError, BoundaryError, OSError) as exc:
         raise FatalError(
             f"Cannot freeze {flow_label.lower()} recipe for Target {target!r}: {exc}",
@@ -900,12 +854,9 @@ def _criteria_state_needs_reinit(ctx: TicketContext) -> bool:
     state = DevelopmentState.load(state_path)
     if state.slug != ctx.slug:
         return True
-    template = (
-        CriteriaTemplate.from_yaml(ctx.criteria)
-        if ctx.criteria
-        else (CriteriaTemplate.for_ticket_type(ctx.ticket_type))
-    )
-    expected = template.expand(ctx.sim_targets)
+    if ctx.ticket_spec is None:
+        return True
+    expected = project_ticket_criteria(ctx.ticket_spec).required
     expected_mandatory = {k for k, mandatory in expected.items() if mandatory}
     if not expected_mandatory:
         return state.authorized_zero_mandatory_basis_id != _zero_mandatory_amendment_basis(

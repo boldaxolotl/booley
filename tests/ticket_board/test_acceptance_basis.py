@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from booley.harness.models import TicketContext
 from booley.harness.setup.workspace import run as prepare_ticket_workspace
@@ -44,7 +45,7 @@ from booley.ticket_board.ticket_baseline import (
     assert_inputs_unchanged,
     assert_live_inputs_unchanged,
     authored_ticket_digest,
-    load_ticket_baseline,
+    load_ticket_baseline_from_document,
     materialize_current_ticket_checkout,
     ticket_baseline_from_machine,
     ticket_machine_fields,
@@ -60,6 +61,23 @@ def _clear_project_dir_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_cache()
     yield
     reset_cache()
+
+
+def _create_v2_ticket(tio: TicketIO, slug: str, spec: TicketFileSpec) -> Path | None:
+    """Author the current human format for baseline transaction tests."""
+    fields = {
+        "summary": spec.summary,
+        "type": spec.ticket_type,
+        "branch": spec.branch,
+        "scope": spec.scope or [],
+        "on_success": ["triage_report", "review", "merge", "cleanup"],
+        "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "clean"}}},
+    }
+    if spec.project_destination_ref:
+        fields["project_destination_ref"] = spec.project_destination_ref
+    body = spec.body or "## Description\n\nExercise the Ticket baseline.\n"
+    content = "---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n" + body
+    return tio.create_ticket_document(slug, content)
 
 
 def _participant(role: str = "outer") -> BasisParticipant:
@@ -384,7 +402,8 @@ def _remap_generated_test_view(workspace: Path, host_root: Path) -> None:
 def test_create_persists_inferred_paired_destination_ref(tmp_path: Path) -> None:
     _root, _project_dir, tio = _paired_basis_project(tmp_path)
 
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "paired-destination",
         TicketFileSpec(
             summary="Persist paired destination",
@@ -404,7 +423,8 @@ def test_paired_ticket_load_ignores_authored_project_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, _project_dir, tio = _paired_basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "control-record",
         TicketFileSpec(
             summary="Read the control-plane record",
@@ -424,16 +444,17 @@ def test_paired_ticket_load_ignores_authored_project_override(
     reset_cache()
 
     queued = tio.tickets_dir / "board" / "queue" / "control-record.md"
-    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    assert load_ticket_baseline(root, "control-record", fields, body).ticket_identity() == (
-        basis.ticket_identity()
-    )
+    _fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    assert load_ticket_baseline_from_document(
+        root, "control-record", tio._convert_ticket(queued, "control-record", "executable")
+    ).ticket_identity() == (basis.ticket_identity())
 
 
 def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Path) -> None:
     _root, project_dir, tio = _paired_basis_project(tmp_path)
 
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "missing-paired-destination",
         TicketFileSpec(
             summary="Missing paired destination",
@@ -453,7 +474,8 @@ def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(
 ) -> None:
     root, project_dir, tio = _basis_project(tmp_path)
 
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "automatic-basis",
         TicketFileSpec(
             summary="Publish automatically",
@@ -470,7 +492,7 @@ def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(
     assert tio.enqueue_ticket("automatic-basis") is True
 
     queued = project_dir / "tickets" / "board" / "queue" / "automatic-basis.md"
-    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
     basis = ticket_baseline_from_machine(fields["machine"])
     assert "acceptance_basis" not in fields
     assert "target_contract" not in fields
@@ -483,7 +505,9 @@ def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(
     assert not receipt.exists()
     keepalive = f"refs/booley/tickets/{fields['machine']['generation']}/outer"
     assert _git(root, "rev-parse", keepalive) == basis.outer_sha
-    loaded = load_ticket_baseline(root, "automatic-basis", fields, body)
+    loaded = load_ticket_baseline_from_document(
+        root, "automatic-basis", tio._convert_ticket(queued, "automatic-basis", "executable")
+    )
     assert loaded.basis_id == basis.basis_id
 
     assert loaded.ticket_identity() == fields["machine"]
@@ -494,7 +518,8 @@ async def test_enqueued_paired_basis_materializes_for_ticket_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, project_dir, tio = _paired_basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "clean-project-source",
         TicketFileSpec(
             summary="Keep the paired project source clean",
@@ -510,6 +535,8 @@ async def test_enqueued_paired_basis_materializes_for_ticket_setup(
     queued = project_dir / "tickets/board/queue/clean-project-source.md"
     fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
     basis = tio.load_basis("clean-project-source")
+    projected = tio.find_ticket("clean-project-source")
+    assert projected is not None
     context = TicketContext(
         slug="clean-project-source",
         ticket_path=queued,
@@ -517,7 +544,8 @@ async def test_enqueued_paired_basis_materializes_for_ticket_setup(
         branch="main",
         summary="Keep the paired project source clean",
         scope_raw=fields["scope"],
-        criteria=fields["criteria"],
+        criteria=projected["criteria"],
+        ticket_spec=tio.load_document("clean-project-source").spec,
         project_root=root,
         acceptance_basis=basis,
         base_sha=basis.outer_sha,
@@ -542,7 +570,8 @@ def test_generated_runtime_constraints_do_not_count_as_acceptance_input_drift(
     tmp_path: Path,
 ) -> None:
     _root, project_dir, tio = _basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "generated-runtime",
         TicketFileSpec(
             summary="Ignore generated runtime constraints",
@@ -565,7 +594,8 @@ def test_generated_runtime_constraints_do_not_count_as_acceptance_input_drift(
 
 def test_current_basis_validation_rejects_rewritten_destination_ref(tmp_path: Path) -> None:
     root, _project_dir, tio = _basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "rewritten-destination",
         TicketFileSpec(
             summary="Reject rewritten destination",
@@ -596,7 +626,8 @@ def test_current_basis_validation_rejects_rewritten_destination_ref(tmp_path: Pa
 
 def test_live_ticket_worktree_rejects_uncommitted_protected_input(tmp_path: Path) -> None:
     root, project_dir, tio = _basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "live-input-drift",
         TicketFileSpec(
             summary="Reject live drift",
@@ -632,7 +663,8 @@ def test_live_generated_inputs_must_match_prepared_reference(
     live_state: str,
 ) -> None:
     root, project_dir, tio = _basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "generated-input",
         TicketFileSpec(
             summary="Compare generated input",
@@ -704,7 +736,8 @@ def test_live_isolated_cores_accept_recorded_host_root(
     _enable_isolated_test_core(project_dir)
     _git(project_dir, "add", "-A")
     _git(project_dir, "commit", "-m", "enable isolated core")
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "mounted-generated",
         TicketFileSpec(
             summary="Compare mounted generated input",
@@ -745,7 +778,8 @@ def test_outer_only_isolated_cores_accept_recorded_host_root(
     _enable_isolated_test_core(project_dir)
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "enable isolated core")
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "mounted-outer-generated",
         TicketFileSpec(
             summary="Compare mounted outer generated input",
@@ -783,7 +817,8 @@ def test_live_project_worktree_uses_canonical_admin_mount(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, project_dir, tio = _paired_basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "mounted-project-input-drift",
         TicketFileSpec(
             summary="Reject mounted project drift",
@@ -897,7 +932,8 @@ def test_validate_ticket_recreates_missing_authoring_workspace(
     from booley.ticket_board.cli import main
 
     root, project_dir, tio = _basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "validate-workspace",
         TicketFileSpec(
             summary="Validate from workspace",
@@ -922,7 +958,8 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     tmp_path: Path,
 ) -> None:
     root, project_dir, tio = _basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "new-generation",
         TicketFileSpec(
             summary="Start again",
@@ -984,7 +1021,8 @@ def _prepared_ticket(
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "initial")
     tio = TicketIO(project_dir / "tickets", project_root=root)
-    created = tio.create_ticket_file(
+    created = _create_v2_ticket(
+        tio,
         slug,
         TicketFileSpec(
             summary="Recover publication",
@@ -1158,7 +1196,8 @@ def test_paired_publication_rejects_changed_workspace_upstream(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _root, project_dir, tio = _paired_basis_project(tmp_path)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "paired-routing",
         TicketFileSpec(
             summary="Pin paired routing",
@@ -1209,11 +1248,15 @@ def test_board_basis_rejects_stale_runtime_ticket_snapshot(tmp_path: Path) -> No
     _root, project_dir, tio = _prepared_ticket(tmp_path)
     assert tio.enqueue_ticket("transaction")
     queued = project_dir / "tickets/board/queue/transaction.md"
-    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    source, body = queued.read_text(encoding="utf-8")[4:].split("\n---\n", 1)
+    fields = yaml.safe_load(source)
     fields.pop("machine")
     runtime_ticket = project_dir / "tickets/logs/transaction/ticket.md"
     runtime_ticket.parent.mkdir(parents=True, exist_ok=True)
-    runtime_ticket.write_text(format_frontmatter(fields, body), encoding="utf-8")
+    runtime_ticket.write_text(
+        "---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n" + body,
+        encoding="utf-8",
+    )
 
     with pytest.raises(TicketBaselineError, match="machine"):
         tio.load_basis("transaction", runtime_ticket_path=runtime_ticket)
@@ -1234,7 +1277,7 @@ def test_legacy_executable_ticket_is_rejected_in_every_state(
     )
     tio = TicketIO(tickets, project_root=tmp_path)
 
-    with pytest.raises(TicketBaselineError, match="unsupported Ticket format"):
+    with pytest.raises(TicketBaselineError, match="Old Ticket format"):
         tio.load_basis("old")
 
 
@@ -1716,7 +1759,8 @@ def _block_ticket_for_return_to_draft(project_dir: Path, ticket_io: TicketIO, sl
 
 
 def _create_submodule_transition_ticket(ticket_io: TicketIO, slug: str, summary: str) -> None:
-    ticket = ticket_io.create_ticket_file(
+    ticket = _create_v2_ticket(
+        ticket_io,
         slug,
         TicketFileSpec(
             summary=summary,

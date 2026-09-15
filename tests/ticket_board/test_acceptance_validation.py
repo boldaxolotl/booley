@@ -37,6 +37,8 @@ from booley.ticket_board.ticket_baseline import (
     TicketBaselineError,
 )
 
+from .test_acceptance_basis import _create_v2_ticket
+
 
 class _AcceptanceFlow(BooleyFlow):
     name = "sim"
@@ -147,7 +149,8 @@ def _enqueued_projection_ticket(
         post_setup_marker=post_setup_marker,
         marker_uses_worktree_path=marker_uses_worktree_path,
     )
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "generated-input",
         TicketFileSpec(
             summary="Accept generated input",
@@ -213,7 +216,8 @@ def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, TicketBaselin
     _git(project_dir, "add", "-A")
     _git(project_dir, "commit", "-m", "initial project")
     tio = TicketIO(project_dir / "tickets", project_root=root)
-    ticket = tio.create_ticket_file(
+    ticket = _create_v2_ticket(
+        tio,
         "generated-input",
         TicketFileSpec(
             summary="Accept paired generated input",

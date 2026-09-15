@@ -9,8 +9,8 @@ from pathlib import Path
 from booley.config.project_config import load_test_configuration_field
 from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
+from booley.criteria.coverage import validate_coverage_metrics
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import CriteriaTemplate
 from booley.flows.execution_persistence import AcceptanceRecorder
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
@@ -72,12 +72,9 @@ def coverage_acceptance(
 
 def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, CoverageCriterion]:
     catalog = TargetCatalog.build(root)
-    policies = {}
+    grouped: dict[str, tuple[str, dict[str, dict[str, int | float]], str | list[str]]] = {}
     for key, entry in state.criteria.items():
-        if any(key == legacy or key.startswith(legacy + "_") for legacy in _LEGACY):
-            raise ValueError(
-                f"Legacy {key}: replace with coverage: [{{targets: [...], metrics: {{...}}, tests: all}}]"
-            )
+        _reject_legacy_coverage(key)
         if not key.startswith("coverage_"):
             continue
         params = entry.params
@@ -86,30 +83,45 @@ def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, Coverag
         )
         if "_target_selector" in params and params.get("target") != target.identity:
             raise ValueError(f"{key}: Coverage Criterion Target identity is stale")
-        CriteriaTemplate.from_yaml(
-            {
-                "mandatory": {
-                    "coverage": [
-                        {
-                            "targets": [target.selector],
-                            "metrics": params.get("metrics"),
-                            "tests": params.get("tests"),
-                        }
-                    ]
-                }
-            }
+        metrics = validate_coverage_metrics(params.get("metrics"), field=key)
+        tests = params.get("tests")
+        if tests != "all" and (not isinstance(tests, list) or not tests):
+            raise ValueError(f"{key}: tests must be all or an exact non-empty suite")
+        flow_key = (
+            f"coverage_{target.name}"
+            if key in state.flow_key_aliases.get(f"coverage_{target.name}", [])
+            else key
         )
-        metrics = params.get("metrics", {})
+        previous = grouped.get(target.identity)
+        if previous is None:
+            grouped[target.identity] = (flow_key, dict(metrics), tests)
+        else:
+            previous_key, previous_metrics, previous_tests = previous
+            if (
+                previous_key != flow_key
+                or previous_tests != tests
+                or set(previous_metrics) & set(metrics)
+            ):
+                raise ValueError(
+                    f"{key}: conflicting Coverage Criteria for Target {target.identity}"
+                )
+            previous_metrics.update(metrics)
+    policies = {}
+    for identity, (key, metrics, tests) in grouped.items():
         thresholds = tuple(
             CoverageThreshold(metric, Fraction(str(policy["min_pct"])))
             for metric, policy in metrics.items()
         )
-        tests = params.get("tests")
-        if tests != "all" and (not isinstance(tests, list) or not tests):
-            raise ValueError(f"{key}: tests must be all or an exact non-empty suite")
         policies[key] = CoverageCriterion(
-            DurableTargetIdentity(target.identity),
+            DurableTargetIdentity(identity),
             thresholds,
             None if tests == "all" else tuple(tests),
         )
     return policies
+
+
+def _reject_legacy_coverage(key: str) -> None:
+    if any(key == legacy or key.startswith(legacy + "_") for legacy in _LEGACY):
+        raise ValueError(
+            f"Legacy {key}: replace with coverage: [{{targets: [...], metrics: {{...}}, tests: all}}]"
+        )

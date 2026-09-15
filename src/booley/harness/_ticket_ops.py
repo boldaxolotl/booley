@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from booley.config.settings import _load_booley_toml
 from booley.runtime.timefmt import parse_timestamp
 from booley.ticket_board.analytics import (
     attribute_tokens_to_steps,
@@ -25,9 +24,7 @@ from booley.ticket_board.analytics import (
     usage_entries_to_steps,
 )
 from booley.ticket_board.cli_handlers import (
-    TicketValidationError,
     _cmd_update_board,
-    _validate_ticket_input,
 )
 from booley.ticket_board.constants import STEP_ORDER, VALID_TYPES
 from booley.ticket_board.evidence import op_collect_evidence
@@ -36,9 +33,8 @@ from booley.ticket_board.execution import (
     next_from_planned,
     resume_detect,
 )
-from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.helpers import tickets_dir_from_project_root
-from booley.ticket_board.io import TicketFileSpec, TicketIO, scan_all_tickets
+from booley.ticket_board.io import TicketIO, scan_all_tickets
 from booley.ticket_board.lifecycle import SETTLED_STATUSES
 from booley.ticket_board.logs import load_progress
 from booley.ticket_board.operations import (
@@ -53,8 +49,15 @@ from booley.ticket_board.operations import (
 )
 from booley.ticket_board.paths import existing_human_log_file
 from booley.ticket_board.reporting import format_timing_report
+from booley.ticket_board.ticket_document import (
+    convert_ticket_document,
+    ticket_conversion_context,
+)
 from booley.ticket_board.validation import (
     format_validate_logs_report,
+    owned_draft_dirty_paths,
+    validate_git_state,
+    validate_ticket_spec,
 )
 from booley.ticket_board.validation import validate_logs as tb_validate_logs
 
@@ -78,18 +81,9 @@ class TicketCLIError(Exception):
 
 @dataclass
 class CreateTicketParams:
-    """Parameters for creating a ticket via the harness layer."""
+    """Path to the complete human-readable Ticket document."""
 
-    summary: str
-    ticket_type: str
-    branch: str
-    scope: list[str] | None = None
-    test: dict[str, str] | None = None
-    priority: str = "medium"
-    body_file: str = ""
-    synthesis: str = ""
-    dependencies: list[str] | None = None
-    on_success: dict | None = None
+    document_file: str
 
 
 def _check(ok: bool, cmd: str, slug: str) -> None:
@@ -197,17 +191,7 @@ class TicketOps(Protocol):
     def create_ticket_file(
         self, project_root: Path, slug: str, params: CreateTicketParams
     ) -> Path: ...
-    def enqueue(
-        self,
-        project_root: Path,
-        slug: str,
-        *,
-        summary: str | None = None,
-        ticket_type: str | None = None,
-        branch: str | None = None,
-        on_success: dict | None = None,
-        integration_base: str = "",
-    ) -> None: ...
+    def enqueue(self, project_root: Path, slug: str) -> None: ...
     def complete(self, project_root: Path, slug: str) -> None: ...
 
 
@@ -235,7 +219,10 @@ class DirectTicketOps:
 
     def classify(self, project_root: Path) -> dict[str, Any]:
         tio = self._tio(project_root)
-        return classify_tickets(scan_all_tickets(tio.tickets_dir), logs_dir=tio.logs_dir)
+        return classify_tickets(
+            scan_all_tickets(tio.tickets_dir, project_root=tio._project_root),
+            logs_dir=tio.logs_dir,
+        )
 
     def parse_ticket(self, project_root: Path, path: str) -> dict[str, Any]:
         tio = self._tio(project_root)
@@ -244,7 +231,20 @@ class DirectTicketOps:
             raise TicketCLIError("parse-ticket", 2, f"File not found: {path}")
         with p.open(encoding="utf-8") as f:
             text = f.read()
-        fields, body = parse_frontmatter(text)
+        stage = (
+            "executable"
+            if p.parent.name
+            in {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
+            else "draft"
+        )
+        with ticket_conversion_context(project_root, p.stem, stage) as context:
+            converted = convert_ticket_document(text, context)
+        if converted.document is None:
+            detail = "; ".join(item.message for item in converted.diagnostics)
+            raise TicketCLIError("parse-ticket", 1, detail)
+        document = converted.document
+        fields = {**document.spec.fields, **document.generated}
+        body = document.spec.body
         progress = load_progress(tio.logs_dir, p.stem)
         if progress is not None:
             fields.update(progress)
@@ -253,40 +253,63 @@ class DirectTicketOps:
     def validate_ticket(
         self, project_root: Path, path: str, *, check_git: bool = False
     ) -> dict[str, Any]:
-        tio = self._tio(project_root)
         p = Path(path)
         if not p.exists():
             return {"errors": [f"File not found: {path}"]}
-        with p.open(encoding="utf-8") as f:
-            text = f.read()
-        fields, body = parse_frontmatter(text)
-        toml_data = _load_booley_toml(project_root)
-        # Project-level switch disables all file-existence checks (scope + TB);
-        # per-section switch disables only TB checks.
-        project_preflight = toml_data.get("project", {}).get("preflight_checks", True)
-        check_tb = (
-            toml_data.get("sources", {})
-            .get("testbench", {})
-            .get("preflight_checks", project_preflight)
+        stage = (
+            "executable"
+            if p.parent.name
+            in {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
+            else "draft"
         )
-        try:
-            errors, warnings = _validate_ticket_input(
-                tio,
-                p,
-                fields,
-                body,
-                project_root,
-                check_git=check_git,
-                check_files=project_preflight,
-                check_tb_files=check_tb,
+        tio = self._tio(project_root)
+        workspace, workspace_error = self._validation_workspace(project_root, p)
+        if workspace_error is not None:
+            return workspace_error
+        with ticket_conversion_context(project_root, p.stem, stage) as context:
+            converted = convert_ticket_document(p.read_text(encoding="utf-8"), context)
+        if converted.document is None:
+            return {
+                "errors": [
+                    f"{item.line}:{item.column}: {item.message}" for item in converted.diagnostics
+                ]
+            }
+        spec = converted.document.spec
+        validation_root = workspace if workspace is not None else project_root
+        allowed = owned_draft_dirty_paths(p, tio.tickets_dir)
+        errors = validate_ticket_spec(
+            spec,
+            project_root=validation_root,
+            check_git=check_git and validation_root == project_root,
+            allowed_dirty_paths=allowed,
+        )
+        if check_git and validation_root != project_root:
+            errors.extend(validate_git_state(dict(spec.fields), project_root, allowed))
+        if workspace is not None:
+            from booley.ticket_board.workspace_ops import (
+                validate_ticket_spec_authoring_inputs,
             )
-        except TicketValidationError as exc:
-            return {"errors": [str(exc)]}
-        for warning in warnings:
-            logger.warning(warning)
+
+            try:
+                validate_ticket_spec_authoring_inputs(project_root, workspace, spec)
+            except (RuntimeError, ValueError, OSError) as exc:
+                errors.append(str(exc))
         if errors:
             return {"errors": errors}
         return {"errors": [], "valid": True}
+
+    @staticmethod
+    def _validation_workspace(
+        project_root: Path, path: Path
+    ) -> tuple[Path | None, dict[str, Any] | None]:
+        if path.parent.name != "drafts" or not (project_root / ".git").exists():
+            return None, None
+        from booley.ticket_board.workspace_ops import ensure_ticket_workspace
+
+        try:
+            return ensure_ticket_workspace(project_root, path, path.stem).outer, None
+        except (RuntimeError, ValueError, OSError) as exc:
+            return None, {"errors": [f"Ticket workspace preparation failed: {exc}"]}
 
     def resume(self, project_root: Path, slug: str) -> dict[str, Any]:
         tio = self._tio(project_root)
@@ -492,8 +515,13 @@ class DirectTicketOps:
         ticket_fields = {}
         ticket_path = tio.logs_dir / slug / "ticket.md"
         if ticket_path.exists():
+            tio.load_basis(slug, runtime_ticket_path=ticket_path)
             with ticket_path.open(encoding="utf-8") as f:
-                ticket_fields, _ = parse_frontmatter(f.read())
+                with ticket_conversion_context(project_root, slug, "executable") as context:
+                    converted = convert_ticket_document(f.read(), context)
+                if converted.document is None:
+                    raise TicketCLIError("validate-logs", 1, "Ticket snapshot is invalid")
+                ticket_fields = {**converted.document.spec.fields, **converted.document.generated}
         result = tb_validate_logs(tio.logs_dir, slug, ticket_type, steps_completed, ticket_fields)
         report, error_count = format_validate_logs_report(result, slug)
         return error_count == 0, report
@@ -526,45 +554,15 @@ class DirectTicketOps:
         self, project_root: Path, slug: str, params: CreateTicketParams
     ) -> Path:
         tio = self._tio(project_root)
-        body = ""
-        if params.body_file:
-            body = Path(params.body_file).read_text(encoding="utf-8")
-        result = tio.create_ticket_file(
-            slug,
-            TicketFileSpec(
-                summary=params.summary,
-                ticket_type=params.ticket_type,
-                branch=params.branch,
-                scope=params.scope,
-                priority=params.priority,
-                dependencies=params.dependencies,
-                body=body,
-            ),
-        )
+        content = Path(params.document_file).read_text(encoding="utf-8")
+        result = tio.create_ticket_document(slug, content)
         if result is None:
             raise TicketCLIError("create-file", 2, f"create-file failed for '{slug}'")
         return result
 
-    def enqueue(
-        self,
-        project_root: Path,
-        slug: str,
-        *,
-        summary: str | None = None,
-        ticket_type: str | None = None,
-        branch: str | None = None,
-        on_success: dict | None = None,
-        integration_base: str = "",
-    ) -> None:
+    def enqueue(self, project_root: Path, slug: str) -> None:
         tio = self._tio(project_root)
-        ok = tio.enqueue_ticket(
-            slug,
-            summary=summary,
-            ticket_type=ticket_type,
-            branch=branch,
-            on_success=on_success,
-            integration_base=integration_base,
-        )
+        ok = tio.enqueue_ticket(slug)
         if not ok:
             raise TicketCLIError("enqueue", 2, f"enqueue failed for '{slug}'")
 

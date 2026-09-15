@@ -24,11 +24,15 @@ from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_prepare import prepare_project
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
-from booley.ticket_board.acceptance_targets import criterion_targets
-from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.io import TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.scanner import find_ticket_file
-from booley.ticket_board.ticket_baseline import TicketBaselineError, authored_ticket_digest
+from booley.ticket_board.ticket_document import (
+    TicketConversionContext,
+    TicketSpec,
+    convert_ticket_document,
+    ticket_authoring_view,
+)
 
 __all__ = [
     "DemoContract",
@@ -83,25 +87,37 @@ def _status(repository: Path) -> str:
     ).stdout.strip()
 
 
-def _ticket_fields(project_dir: Path, slug: str) -> tuple[dict[str, Any], Path]:
-    ticket, _status_name = find_ticket_file(project_dir / "tickets", slug)
+def _ticket_fields(root: Path, project_dir: Path, slug: str) -> tuple[TicketSpec, Path]:
+    ticket, _status_name = find_ticket_file(project_dir / "tickets", slug, project_root=root)
     if ticket is None:
         raise DemoContractError(f"ticket {slug!r} is missing")
-    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    return fields, ticket
+    document = TicketIO(project_dir / "tickets", project_root=root).load_document(slug)
+    return document.spec, ticket
 
 
-def _validate_ticket_fixture(contract_path: Path, fixture: str, ticket: Path) -> list[str]:
+def _validate_ticket_fixture(
+    contract_path: Path, fixture: str, ticket: Path, root: Path
+) -> list[str]:
     repository_root = contract_path.resolve().parents[2]
     fixture_path = repository_root / fixture
     if not fixture_path.is_file():
         return [f"CI-owned ticket fixture is missing: {fixture}"]
     try:
-        fixture_fields, fixture_body = parse_frontmatter(fixture_path.read_text(encoding="utf-8"))
-        ticket_fields, ticket_body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-        fixture_digest = authored_ticket_digest(fixture_fields, fixture_body)
-        ticket_digest = authored_ticket_digest(ticket_fields, ticket_body)
-    except (TicketBaselineError, OSError, ValueError) as exc:
+        view = ticket_authoring_view(root)
+        fixture_conversion = convert_ticket_document(
+            fixture_path.read_text(encoding="utf-8"),
+            TicketConversionContext("draft", lambda _generated: view),
+        )
+        ticket_conversion = convert_ticket_document(
+            ticket.read_text(encoding="utf-8"),
+            TicketConversionContext("executable", lambda _generated: view),
+        )
+        if fixture_conversion.document is None or ticket_conversion.document is None:
+            diagnostics = (*fixture_conversion.diagnostics, *ticket_conversion.diagnostics)
+            raise ValueError("; ".join(item.message for item in diagnostics))
+        fixture_digest = fixture_conversion.document.spec.semantic_digest()
+        ticket_digest = ticket_conversion.document.spec.semantic_digest()
+    except (OSError, ValueError) as exc:
         return [f"cannot compare CI-owned ticket fixture {fixture}: {exc}"]
     if fixture_digest != ticket_digest:
         return [f"injected ticket does not match CI-owned fixture: {fixture}"]
@@ -152,11 +168,15 @@ def _validate_targets(
     return errors
 
 
-def _validate_bindings(
-    fields: Mapping[str, Any], bindings: tuple[RequiredBinding, ...]
-) -> list[str]:
+def _validate_bindings(spec: TicketSpec, bindings: tuple[RequiredBinding, ...]) -> list[str]:
     actual = {
-        (binding.label, binding.target) for binding in criterion_targets(fields.get("criteria"))
+        (
+            f"CRITERIA_{'MANDATORY' if criterion.mandatory else 'OPTIONAL'}."
+            f"{criterion.capability}",
+            criterion.target.rsplit("#", 1)[-1],
+        )
+        for criterion in spec.criteria
+        if criterion.target is not None
     }
     errors: list[str] = []
     for expected in bindings:
@@ -233,7 +253,7 @@ def validate_demo(
     try:
         _require_checkout_ref(root, contract.upstream_ref, "upstream")
         _require_checkout_ref(project, contract.project_ref, "project")
-        fields, ticket = _ticket_fields(project, contract.ticket_slug)
+        spec, ticket = _ticket_fields(root, project, contract.ticket_slug)
     except DemoContractError as exc:
         return [str(exc)]
     except subprocess.CalledProcessError as exc:
@@ -241,19 +261,39 @@ def validate_demo(
         return [f"Git inspection failed (rc={exc.returncode}): {detail}"]
 
     before = (_status(root), _status(project))
-    errors.extend(_validate_ticket_fixture(Path(contract_path), contract.ticket_fixture, ticket))
+    fields = spec.fields
+    errors.extend(
+        _validate_ticket_fixture(Path(contract_path), contract.ticket_fixture, ticket, root)
+    )
     first = check_ticket_ready(root, contract.ticket_slug)
     errors.extend(first.errors)
     errors.extend(_prepare_demo_project(root, ticket, contract.ticket_slug))
     errors.extend(_validate_targets(root, fields, contract.required_targets))
-    errors.extend(_validate_bindings(fields, contract.required_bindings))
+    errors.extend(_validate_bindings(spec, contract.required_bindings))
     generated_errors, first_digests = _validate_generated_inputs(
         root, fields, contract.generated_inputs
     )
     errors.extend(generated_errors)
+    errors.extend(_validate_second_preparation(root, ticket, contract, fields, first_digests))
+    after = (_status(root), _status(project))
+    if before != after:
+        errors.append("project preparation changed Git-visible checkout state")
+    if any(after):
+        errors.append("demo checkouts are not pristine after preparation")
+    return errors
 
-    second = check_ticket_ready(root, contract.ticket_slug)
-    errors.extend(f"second preparation: {error}" for error in second.errors)
+
+def _validate_second_preparation(
+    root: Path,
+    ticket: Path,
+    contract: DemoContract,
+    fields: Mapping[str, Any],
+    first_digests: Mapping[str, str],
+) -> list[str]:
+    errors = [
+        f"second preparation: {error}"
+        for error in check_ticket_ready(root, contract.ticket_slug).errors
+    ]
     errors.extend(
         f"second preparation: {error}"
         for error in _prepare_demo_project(root, ticket, contract.ticket_slug)
@@ -264,11 +304,6 @@ def validate_demo(
     errors.extend(f"second preparation: {error}" for error in generated_errors)
     if first_digests != second_digests:
         errors.append("project preparation is not idempotent: generated input digests changed")
-    after = (_status(root), _status(project))
-    if before != after:
-        errors.append("project preparation changed Git-visible checkout state")
-    if any(after):
-        errors.append("demo checkouts are not pristine after preparation")
     return errors
 
 

@@ -13,14 +13,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from booley.criteria.templates import CriteriaTemplate
+import yaml
+
+from booley.criteria.ticket_projection import project_ticket_criteria
 from booley.runtime.project_dir import runtime_dir
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
 from .acceptance_path_policy import is_static_acceptance_path
-from .amendment_proposal import AmendmentProposal, build_amendment_proposal
+from .amendment_proposal import AmendmentProposal
+from .amendment_v2 import build_v2_amendment_proposal
 from .basis_publication import load_basis_publication
-from .frontmatter import format_frontmatter, parse_frontmatter
 from .git_status import GitStatusEntry, parse_porcelain_v1_z
 from .logs import PROGRESS_DEFAULTS, load_progress, save_progress
 from .paths import existing_runtime_file, human_log_file, ticket_log_dir
@@ -32,15 +34,20 @@ from .ticket_baseline import (
     TicketBaseline,
     assert_live_inputs_unchanged,
     canonical_json,
-    load_ticket_baseline,
+    load_ticket_baseline_from_document,
     materialize_basis_checkout,
     ticket_baseline_from_machine,
     ticket_machine_digest,
-    ticket_machine_fields,
+    ticket_machine_from_spec,
     validate_current_basis_refs,
     worktree_for_ref,
 )
-from .validation import _scope_contains_path, _validate_amendment_candidate
+from .ticket_document import (
+    TicketDocument,
+    convert_ticket_document,
+    ticket_conversion_context,
+)
+from .validation import _scope_contains_path, validate_ticket_spec
 
 
 class AmendmentError(RuntimeError):
@@ -170,17 +177,31 @@ def _check_checkpoint_path(
             raise AmendmentError(f"dirty source {composite!r} is a symlink")
 
 
+def _render_ticket(fields: dict[str, Any], body: str) -> str:
+    return "---\n" + yaml.safe_dump(fields, sort_keys=False, allow_unicode=True) + "---\n" + body
+
+
+def _convert_ticket(root: Path, slug: str, source: str) -> TicketDocument:
+    with ticket_conversion_context(root, slug, "executable") as context:
+        converted = convert_ticket_document(source, context)
+    if converted.document is None:
+        detail = "; ".join(item.message for item in converted.diagnostics)
+        raise AmendmentError(f"invalid amended Ticket: {detail}")
+    return converted.document
+
+
 def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], AmendmentProposal]:
     root = Path(tio._project_root).resolve()
     ticket, status = find_ticket_file(tio.tickets_dir, slug)
     if ticket is None or status != "blocked":
         raise AmendmentError(f"Ticket {slug!r} must be blocked to amend")
     source = ticket.read_bytes()
-    fields, body = parse_frontmatter(source.decode("utf-8"))
-    basis = load_ticket_baseline(root, slug, fields, body)
+    document = _convert_ticket(root, slug, source.decode("utf-8"))
+    fields, body = dict(document.spec.fields), document.spec.body
+    basis = load_ticket_baseline_from_document(root, slug, document)
     heads = validate_current_basis_refs(root, basis)
-    proposal = _validated_proposal(root, basis, fields, body, request)
-    rendered_fields, rendered_body = parse_frontmatter(format_frontmatter(proposal.fields, body))
+    proposal = _validated_proposal(root, slug, basis, document, request)
+    revised_document = _converted_proposal(root, slug, document, proposal)
     repositories = _repositories(root, basis)
     prior_scope = fields.get("scope", [])
     source_state = _status_snapshot(root, basis, prior_scope, repositories)
@@ -191,7 +212,13 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
     state_digest = (
         hashlib.sha256(state_path.read_bytes()).hexdigest() if state_path.exists() else ""
     )
-    current_results = _preview_evidence(state_path, proposal, basis, repositories["outer"][1])
+    current_results = _preview_evidence(
+        state_path,
+        proposal,
+        basis,
+        repositories["outer"][1],
+        project_ticket_criteria(revised_document.spec).params,
+    )
     preview = {
         "schema": 1,
         "slug": slug,
@@ -201,37 +228,40 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
         "source_state": source_state,
         "prior_scope": prior_scope,
         "state_sha256": state_digest,
-        "revised_fields": rendered_fields,
-        "body": rendered_body,
+        "revised_fields": dict(revised_document.spec.fields),
+        "body": body,
         "reason": proposal.reason,
         "actor": proposal.actor,
         "feedback": proposal.feedback,
         "changes": [asdict(item) for item in proposal.changes],
         "scope_added": list(proposal.scope_added),
         "current_results": current_results,
-        "mandatory_after": sum(
-            CriteriaTemplate.from_yaml(proposal.fields["criteria"]).expand(["default"]).values()
-        ),
+        "mandatory_after": sum(row.mandatory for row in revised_document.spec.criteria),
     }
     preview["digest"] = hashlib.sha256(canonical_json(preview)).hexdigest()
     return preview, proposal
 
 
+def _converted_proposal(
+    root: Path, slug: str, document: TicketDocument, proposal: AmendmentProposal
+) -> TicketDocument:
+    candidate = {**proposal.fields, **document.generated}
+    return _convert_ticket(root, slug, _render_ticket(candidate, document.spec.body))
+
+
 def _validated_proposal(
-    root: Path, basis: TicketBaseline, fields: dict[str, Any], body: str, request: Any
+    root: Path, slug: str, basis: TicketBaseline, document: TicketDocument, request: Any
 ) -> AmendmentProposal:
+    spec = document.spec
     with tempfile.TemporaryDirectory(prefix="booley-amend-preview-") as directory:
         reference = materialize_basis_checkout(root, basis, Path(directory) / "basis")
         assert_live_inputs_unchanged(basis, root, reference)
-        proposal = build_amendment_proposal(fields, request, root)
-        newly_optional = {
-            change.criterion
-            for change in proposal.changes
-            if change.before_mandatory and not change.after_mandatory
-        }
-        errors = _validate_amendment_candidate(
-            fields, proposal.fields, body, reference, root, newly_optional
-        )
+        with ticket_conversion_context(root, slug, "executable") as context:
+            view = context.resolve_view({"machine": basis.ticket_identity()})
+            proposal = build_v2_amendment_proposal(spec, request, root, view)
+        candidate = {**proposal.fields, **document.generated}
+        revised = _convert_ticket(root, slug, _render_ticket(candidate, spec.body))
+        errors = validate_ticket_spec(revised.spec, project_root=reference)
         if errors:
             raise AmendmentError("invalid amended Ticket: " + "; ".join(errors))
         return proposal
@@ -256,7 +286,11 @@ def _preflight_state(path: Path, proposal: AmendmentProposal) -> None:
 
 
 def _preview_evidence(
-    path: Path, proposal: AmendmentProposal, basis: TicketBaseline, checkout: Path
+    path: Path,
+    proposal: AmendmentProposal,
+    basis: TicketBaseline,
+    checkout: Path,
+    params: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     from booley.criteria.state import DevelopmentState
 
@@ -266,8 +300,6 @@ def _preview_evidence(
             for change in proposal.changes
         }
     state = DevelopmentState.load(path)
-    template = CriteriaTemplate.from_yaml(proposal.fields["criteria"])
-    params = template.expand_params(["default"])
     result: dict[str, Any] = {}
     for change in proposal.changes:
         prior = state.criteria.get(change.criterion)
@@ -375,7 +407,7 @@ def _prepare_amendment_participants(
             checkout,
             participant,
             journal,
-            _amendment_machine(old, journal) if role == "outer" else None,
+            _amendment_machine(root, old, journal) if role == "outer" else None,
         )
         journal["prepared"][role] = commits
         _write_journal(root, journal)
@@ -391,12 +423,13 @@ def _prepare_amendment_participants(
             for row in old.participants
         )
         journal["new_basis"] = TicketBaseline(participants).as_dict()
-        journal["machine"] = _amendment_machine(old, journal, participants=participants)
+        journal["machine"] = _amendment_machine(root, old, journal, participants=participants)
         journal["phase"] = "prepared"
         _write_journal(root, journal)
 
 
 def _amendment_machine(
+    root: Path,
     old: TicketBaseline,
     journal: dict[str, Any],
     *,
@@ -415,12 +448,15 @@ def _amendment_machine(
             for row in old.participants
         )
     basis = TicketBaseline(participants, providers=old.providers)
-    machine = ticket_machine_fields(
-        basis,
-        fields=journal["revised_fields"],
-        body=journal["body"],
-        generation=journal["operation_id"],
+    revised = _convert_ticket(
+        root,
+        journal["slug"],
+        _render_ticket(
+            {**journal["revised_fields"], "machine": old.machine or old.ticket_identity()},
+            journal["body"],
+        ),
     )
+    machine = ticket_machine_from_spec(basis, revised.spec, journal["operation_id"])
     prior_conversions = (old.machine or {}).get("amendment", {}).get("optional_conversions", [])
     conversions = [
         change["criterion"]
@@ -573,13 +609,15 @@ def _publish_board_and_state(
         raise AmendmentError("blocked Ticket disappeared during publication")
     fields = dict(journal["revised_fields"])
     fields["machine"] = journal["machine"]
-    candidate = format_frontmatter(fields, journal["body"]).encode()
+    candidate = _render_ticket(fields, journal["body"]).encode()
     if ticket.read_bytes() != candidate:
         original = hashlib.sha256(ticket.read_bytes()).hexdigest()
         if original != journal["ticket_sha256"]:
             raise AmendmentError("Board Ticket changed during amendment publication")
         atomic_replace_bytes(ticket, candidate, mode=0o644)
-    loaded = load_ticket_baseline(root, journal["slug"], fields, journal["body"])
+    loaded = load_ticket_baseline_from_document(
+        root, journal["slug"], _convert_ticket(root, journal["slug"], candidate.decode())
+    )
     _rebuild_state(tio, journal, loaded, repositories["outer"][1])
     journal["phase"] = "board"
     _write_journal(root, journal)
@@ -599,8 +637,14 @@ def _rebuild_state(
     if path.exists():
         atomic_write_once(prior, path.read_bytes())
     state = DevelopmentState.load(path)
-    template = CriteriaTemplate.from_yaml(journal["revised_fields"]["criteria"])
-    params = template.expand_params(["default"])
+    revised_fields = dict(journal["revised_fields"])
+    revised_fields["machine"] = basis.ticket_identity()
+    revised = _convert_ticket(
+        Path(tio._project_root),
+        journal["slug"],
+        _render_ticket(revised_fields, journal["body"]),
+    )
+    params = project_ticket_criteria(revised.spec).params
     for change in journal["changes"]:
         name = change["criterion"]
         if name not in state.criteria:

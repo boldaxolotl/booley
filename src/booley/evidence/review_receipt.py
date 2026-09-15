@@ -10,9 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import as_str
-from booley.evidence.markdown import MarkdownDocumentError, parse_yaml_frontmatter
-
 _TICKET_FILE = "ticket.md"
 _DECISIONS_FILE = "answered_questions.md"
 REVIEW_DETAIL_VERSION = 4
@@ -37,6 +34,7 @@ class ReviewInvocation:
     scope: tuple[str, ...]
     mode: str
     spec_path: Path | None = None
+    ticket_spec_path: Path | None = None
     steering: str = ""
     tb_policy_digest: str = ""
 
@@ -68,23 +66,6 @@ def _decisions_path(work_dir: Path, ticket: Path | None) -> Path | None:
     return _resolved(candidate, work_dir)
 
 
-def _linked_spec_path(ticket: Path, work_dir: Path) -> Path | None:
-    try:
-        text = ticket.read_text(encoding="utf-8", errors="replace")
-        fields: Mapping[str, Any] = parse_yaml_frontmatter(text)
-    except (OSError, MarkdownDocumentError) as exc:
-        raise ReviewContextError(f"Could not parse persisted Ticket frontmatter: {exc}") from exc
-    raw_value = fields.get("spec")
-    value = as_str(raw_value)
-    if raw_value is not None and value is None:
-        raise ReviewContextError("Persisted Ticket spec must be a string")
-    if value is None:
-        return None
-    if not value.strip():
-        return None
-    return _resolved(Path(value.strip()), work_dir)
-
-
 def _document_digest(path: Path | None) -> str:
     if path is None or not path.exists():
         return _digest("")
@@ -106,9 +87,10 @@ def _scope_hashes(work_dir: Path, scope: tuple[str, ...]) -> dict[str, str]:
 def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]:
     """Build the canonical persisted identity for a Reviewer invocation."""
     ticket = _ticket_path(invocation.work_dir)
-    spec = _linked_spec_path(ticket, invocation.work_dir) if ticket else None
-    if spec is None and ticket is None:
-        spec = _resolved(invocation.spec_path, invocation.work_dir)
+    spec = _resolved(
+        invocation.ticket_spec_path if ticket else invocation.spec_path,
+        invocation.work_dir,
+    )
     decisions = _decisions_path(invocation.work_dir, ticket)
     scope = tuple(sorted(path.replace("\\", "/").removeprefix("./") for path in invocation.scope))
     return {

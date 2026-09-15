@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 # Field ordering for format_frontmatter
 _FM_FIELD_ORDER = [
     # Core fields
@@ -412,6 +414,15 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if fm_lines is None:
         return {}, body
 
+    if any(
+        line.startswith(("CRITERIA_MANDATORY:", "CRITERIA_OPTIONAL:", "machine:"))
+        for line in fm_lines
+    ):
+        fields = yaml.safe_load("\n".join(fm_lines))
+        if not isinstance(fields, dict):
+            raise ValueError("Ticket frontmatter must be a mapping")
+        return fields, body
+
     fields = {}
     current_key = None
     current_list = None
@@ -513,6 +524,10 @@ def format_frontmatter(fields: dict[str, Any], body: str) -> str:
     from .constants import RUNTIME_FIELDS
 
     fields = {k: v for k, v in fields.items() if k not in RUNTIME_FIELDS}
+
+    if "CRITERIA_MANDATORY" in fields or "CRITERIA_OPTIONAL" in fields:
+        rendered = "---\n" + yaml.safe_dump(fields, sort_keys=False, allow_unicode=True) + "---\n"
+        return rendered + body.rstrip("\n") + "\n" if body else rendered
 
     # Move criteria from YAML to a ## Criteria body section
     criteria = fields.pop("criteria", None)

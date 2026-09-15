@@ -68,7 +68,7 @@ from booley.runtime.paths import cheatsheet_path
 from booley.runtime.project_dir import PROJECT_DIR_NAME
 from booley.runtime.timefmt import format_human_datetime
 from booley.ticket_board.helpers import tickets_dir_from_project_root
-from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.io import TicketIO
 
 if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
@@ -496,14 +496,6 @@ def _add_board_subparsers(sub) -> None:
     move_p.add_argument("slug", help="Ticket slug")
     move_p.add_argument("target", choices=["queue", "done"], help="Target state")
     move_p.add_argument("--feedback", default="", help="Feedback when moving blocked->queue")
-    move_p.add_argument(
-        "--no-merge", action="store_true", help="Skip merge even if on_success.merge is set"
-    )
-    move_p.add_argument(
-        "--no-cleanup",
-        action="store_true",
-        help="Skip worktree cleanup even if on_success.cleanup is set",
-    )
 
     reset_p = board_sub.add_parser(
         "reset", help="Full reset (wipe logs, worktree, branch)", parents=[root_opt]
@@ -1103,7 +1095,10 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
         from booley.ticket_board.reporting import display_board
 
         tickets_dir = tickets_dir_from_project_root(project_root)
-        display_board(scan_all_tickets(tickets_dir), tickets_dir=tickets_dir)
+        display_board(
+            scan_all_tickets(tickets_dir, project_root=project_root),
+            tickets_dir=tickets_dir,
+        )
         return 0
 
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
@@ -1112,29 +1107,20 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
         # The stub must spell out what queueing requires (A-4): a draft with
         # no scope/criteria and no '## Description' fails validation on the
         # first `board move <slug> queue`, and the schema was otherwise only
-        # discoverable by reading booley.criteria.templates.
-        stub_body = (
-            "\n## Description\n"
-            "\nTODO: describe the change.\n"
-            "\n<!-- Before queueing (`booley board move <slug> queue`), fill in\n"
-            "the frontmatter above:\n"
-            "  scope:                    # paths the ticket may touch\n"
-            "    - rtl/verilog/\n"
-            "  criteria:\n"
-            "    mandatory:\n"
-            "      sim_pass: {targets: [sim]}\n"
-            "      lint_clean: {targets: [lint]}\n"
-            "-->\n"
+        stub = (
+            "---\n"
+            "summary: TODO: one-line description\n"
+            "type: feature\n"
+            "branch: main\n"
+            "scope: []\n"
+            "on_success: [triage_report, review, merge, cleanup]\n"
+            "CRITERIA_MANDATORY:\n"
+            "  REVIEW:\n"
+            "    rtl: {bugs: done}\n"
+            "---\n"
+            "\n## Description\n\nTODO: describe the change and update the Criteria.\n"
         )
-        result = tio.create_ticket_file(
-            args.slug,
-            TicketFileSpec(
-                summary="TODO: one-line description",
-                ticket_type="feature",
-                branch="main",
-                body=stub_body,
-            ),
-        )
+        result = tio.create_ticket_document(args.slug, stub)
         return 0 if result else 1
 
     if board_cmd == "move":
@@ -1145,8 +1131,6 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
             args.slug,
             args.target,
             feedback=args.feedback,
-            no_merge=args.no_merge,
-            no_cleanup=args.no_cleanup,
         )
         return 0 if ok else 1
 

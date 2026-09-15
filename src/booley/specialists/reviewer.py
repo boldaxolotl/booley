@@ -28,6 +28,7 @@ from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
 from booley.evidence.review_receipt import (
     REVIEW_DETAIL_VERSION,
+    ReviewContextError,
     ReviewInvocation,
     build_review_contract_detail,
     review_invocation_changed,
@@ -306,6 +307,27 @@ def _load_ticket_text() -> tuple[str, str]:
     return "", ""
 
 
+def _load_ticket_document():
+    """Resolve the sealed runtime copy through Ticket Board authority."""
+    from booley.ticket_board.helpers import (
+        detect_project_root,
+        resolve_runtime_ticket_slug,
+        tickets_dir_from_project_root,
+    )
+    from booley.ticket_board.io import TicketIO
+
+    text, source = _load_ticket_text()
+    if not text:
+        return None, ""
+    ticket = Path(source)
+    root = detect_project_root()
+    slug = resolve_runtime_ticket_slug(ticket)
+    document = TicketIO(tickets_dir_from_project_root(root), project_root=root).load_document(
+        slug, runtime_ticket_path=ticket
+    )
+    return document, source
+
+
 def _truncate_spec(content: str, *, label: str = "") -> str:
     """Truncate content to _SPEC_MAX_SIZE with a warning if needed."""
     if len(content) <= _SPEC_MAX_SIZE:
@@ -330,10 +352,8 @@ def resolve_spec_content(
     Returns (spec_text, source_description), or (None, "") when no ticket
     is available or it carries neither a spec file nor a body.
     """
-    from booley.ticket_board.frontmatter import parse_frontmatter
-
-    ticket_text, ticket_source = _load_ticket_text()
-    if not ticket_text:
+    document, ticket_source = _load_ticket_document()
+    if document is None:
         if not spec_arg:
             return None, ""
         spec_path = Path(spec_arg)
@@ -344,7 +364,7 @@ def resolve_spec_content(
         content = spec_path.read_text(encoding="utf-8", errors="replace")
         return _truncate_spec(content, label=str(spec_path)), f"spec file: {spec_path}"
 
-    fields, body = parse_frontmatter(ticket_text)
+    fields, body = document.spec.fields, document.spec.body
 
     spec_field = fields.get("spec")
     if isinstance(spec_field, str) and spec_field.strip():
@@ -369,14 +389,11 @@ def resolve_ticket_type() -> str:
     Returns "" when no ticket is reachable or it declares no type — callers
     treat that as "no type-specific policy", i.e. the full checklist applies.
     """
-    from booley.ticket_board.frontmatter import parse_frontmatter
-
-    ticket_text, _ = _load_ticket_text()
-    if not ticket_text:
+    document, _ = _load_ticket_document()
+    if document is None:
         return ""
 
-    fields, _ = parse_frontmatter(ticket_text)
-    ticket_type = fields.get("type")
+    ticket_type = document.spec.fields.get("type")
     return ticket_type.strip().lower() if isinstance(ticket_type, str) else ""
 
 
@@ -1197,6 +1214,11 @@ class ReviewerSpecialist(Specialist):
 
     def _review_contract_detail(self) -> dict[str, Any]:
         spec_arg = getattr(self.args, "spec", None)
+        try:
+            document, _source = _load_ticket_document()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ReviewContextError(f"Could not convert persisted Ticket: {exc}") from exc
+        ticket_spec = document.spec.fields.get("spec") if document is not None else None
         return build_review_contract_detail(
             ReviewInvocation(
                 work_dir=Path(self.args.work_dir),
@@ -1205,6 +1227,7 @@ class ReviewerSpecialist(Specialist):
                 scope=tuple(self._parse_scope()),
                 mode="clean" if self._is_clean_mode() else "done",
                 spec_path=Path(spec_arg) if spec_arg else None,
+                ticket_spec_path=Path(ticket_spec) if ticket_spec else None,
                 steering=self.steering_text(),
                 tb_policy_digest=review_policy_digest(
                     Path(self.args.work_dir), self.args.category

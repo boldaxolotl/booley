@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from booley.criteria.templates import CriteriaTemplate
 from booley.harness.blocking import FatalError
@@ -73,8 +74,49 @@ def test_zero_mandatory_state_requires_committed_human_conversion(
     assert _zero_mandatory_amendment_basis(ctx, {"review_rtl_bugs_clean": False}) == ""
 
 
+def test_recipe_freeze_uses_callable_target_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup.intake import _snapshot_intake_recipe
+    from booley.targets.catalog import TargetCatalog
+
+    identity = "acme:ip:core:1.0#synth_core"
+    handle = SimpleNamespace(selector="synth_core")
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        lambda _root: SimpleNamespace(select=lambda _target: handle),
+    )
+    monkeypatch.setattr(
+        "booley.fusesoc.fusesoc_registry.resolve_target_handle",
+        lambda _handle, *, build_root: SimpleNamespace(build_root=build_root),
+    )
+
+    snapshot = _snapshot_intake_recipe(
+        SimpleNamespace(slug="ticket"),
+        tmp_path,
+        "synthesis_ok_area",
+        identity,
+        tmp_path / "build",
+        False,
+        "Synthesis",
+        lambda _resolved, target: {"target": target},
+    )
+
+    assert snapshot == {"target": "synth_core"}
+
+
 @pytest.fixture(autouse=True)
 def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
+    from booley.harness.setup import intake
+    from booley.ticket_board.io import TicketIO
+    from booley.ticket_board.ticket_document import (
+        TicketAuthoringView,
+        TicketConversionContext,
+        TicketDocument,
+        convert_ticket_document,
+    )
+
     monkeypatch.setattr(
         "booley.ticket_board.io.TicketIO.load_basis",
         lambda *_args, **_kwargs: _TEST_BASIS,
@@ -83,6 +125,39 @@ def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
         "booley.ticket_board.workspace_ops.validate_basis_refs",
         lambda *_args, **_kwargs: [],
     )
+
+    original_load = TicketIO.load_document
+
+    def load_document(self, slug, *, runtime_ticket_path=None):
+        marker = self._project_root / ".git"
+        if not marker.is_file() or marker.read_text(encoding="utf-8") != "gitdir: fake":
+            return original_load(self, slug, runtime_ticket_path=runtime_ticket_path)
+        parsed = intake.ticket_cli.parse_ticket(str(runtime_ticket_path))
+        fields = parsed.get("fields", {}) if isinstance(parsed, dict) else {}
+        fields = fields if isinstance(fields, dict) else {}
+        scope = fields.get("scope", fields.get("scope_current", []))
+        authored = {
+            "summary": fields.get("summary", "test"),
+            "type": fields.get("type", "feature"),
+            "branch": fields.get("branch", "master"),
+            "scope": scope,
+            "on_success": ["review", "merge", "cleanup"],
+            "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "done"}}},
+        }
+        for key in ("dependencies", "priority", "spec"):
+            if key in fields:
+                authored[key] = fields[key]
+        text = (
+            "---\n" + yaml.safe_dump(authored, sort_keys=False) + "---\n\n## Description\nTest.\n"
+        )
+        view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ("smoke",))
+        converted = convert_ticket_document(
+            text, TicketConversionContext("draft", lambda _generated: view)
+        )
+        assert converted.document is not None, converted.diagnostics
+        return TicketDocument(converted.document.spec, {"acceptance_basis": _TEST_BASIS.as_dict()})
+
+    monkeypatch.setattr(TicketIO, "load_document", load_document)
 
 
 def _qualified_target_basis() -> TicketBaseline:
@@ -133,11 +208,10 @@ def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
         project_root=tmp_path,
         acceptance_basis=_qualified_target_basis(),
     )
-    template = CriteriaTemplate.from_yaml({"mandatory": {"lint_clean": ["lint_uart"]}})
     expanded = {"lint_clean_acme:ip:uart:1.0#lint_uart": True}
     criterion_params: dict[str, dict[str, object]] = {}
 
-    _apply_basis_selectors(ctx, template, expanded, criterion_params)
+    _apply_basis_selectors(ctx, expanded, criterion_params)
 
     assert criterion_params == {
         "lint_clean_acme:ip:uart:1.0#lint_uart": {
@@ -205,7 +279,7 @@ def test_scalar_tb_review_does_not_derive_target_binding(tmp_path: Path) -> None
     expanded = template.expand(["sim_uart"])
     params = template.expand_params(["sim_uart"])
 
-    _apply_basis_selectors(ctx, template, expanded, params)
+    _apply_basis_selectors(ctx, expanded, params)
 
     assert "review_tb_quality_clean" not in params
 
@@ -329,13 +403,13 @@ async def test_automatic_intake_promotes_waiting_before_selection(
     monkeypatch.setattr(intake, "_auto_select_ticket", select)
     monkeypatch.setattr(intake, "_resolve_and_validate", lambda *_: (queued, "ticket"))
     monkeypatch.setattr(intake, "_promote_waiting_for_intake", lambda _r, path, _s: path)
+    monkeypatch.setattr(intake.TicketIO, "load_document", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(intake.ticket_cli, "parse_ticket", lambda *_: {"fields": {}, "body": ""})
     expected = TicketContext("ticket", queued, "bugfix", "main", "Ticket", tmp_path)
     monkeypatch.setattr(intake, "_build_context", lambda *_: expected)
     monkeypatch.setattr(intake, "_check_dependencies", lambda *_: None)
     monkeypatch.setattr(intake, "_detect_and_apply_resume", lambda *_: "fresh")
     monkeypatch.setattr(intake, "_verify_acceptance_basis", lambda *_: None)
-    monkeypatch.setattr(intake, "_validate_retired_criteria", lambda *_: None)
     monkeypatch.setattr(intake, "_init_criteria_state", lambda *_: None)
 
     assert await intake.run("", tmp_path) is expected
@@ -520,6 +594,7 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
     )
     params = {
         "fpga_impl_ok_fpga_after": {
+            "target": "fpga_after",
             "lut_count_increase_at_most": 10,
             BASELINE_TARGET_PARAM: "fpga_before",
         }
@@ -710,8 +785,12 @@ class TestResumeBlocked:
     async def test_acceptance_input_change_requires_return_to_draft(
         self, mock_cli, project_root, sample_ticket
     ):
-        fields = {**_MINIMAL_FIELDS, "blocked_reason": "acceptance-input-change-required"}
-        _mock_cli_defaults(mock_cli, action="resume_blocked", fields=fields)
+        _mock_cli_defaults(mock_cli, action="resume_blocked")
+        _write_progress(
+            project_root,
+            sample_ticket.stem,
+            {"blocked_reason": "acceptance-input-change-required"},
+        )
         from booley.harness.setup.intake import run
 
         with pytest.raises(FatalError, match="use return-to-draft"):
@@ -894,16 +973,16 @@ class TestProgressLoading:
 
     @pytest.mark.asyncio
     @patch("booley.harness.setup.intake.ticket_cli")
-    async def test_missing_progress_json_uses_ticket_fields(
+    async def test_missing_progress_json_ignores_retired_runtime_fields(
         self, mock_cli, project_root, sample_ticket
     ):
-        """No progress.json — falls back to fields from parse_ticket."""
+        """No progress.json means old runtime fields in Ticket input are ignored."""
         fields = dict(_MINIMAL_FIELDS, steps_completed=["planning"])
         _mock_cli_defaults(mock_cli, action="continue", fields=fields)
         from booley.harness.setup.intake import run
 
         ctx = await run(str(sample_ticket), project_root)
-        assert ctx.completed_steps == ["planning"]
+        assert ctx.completed_steps == []
 
 
 # ---------------------------------------------------------------------------
@@ -1103,142 +1182,3 @@ class TestValidation:
 # ---------------------------------------------------------------------------
 # Migration guards
 # ---------------------------------------------------------------------------
-
-
-class TestMigrationGuards:
-    """Verify old-style plan fields / criteria fail loudly."""
-
-    @pytest.mark.asyncio
-    @patch("booley.harness.setup.intake.ticket_cli")
-    async def test_old_plan_file_rejected(self, mock_cli, project_root, sample_ticket):
-        fields = dict(_MINIMAL_FIELDS, plan_file="plans/plan.md")
-        _mock_cli_defaults(mock_cli, fields=fields)
-        from booley.harness.setup.intake import run
-
-        with pytest.raises(FatalError, match="plan_file"):
-            await run(str(sample_ticket), project_root)
-
-    @pytest.mark.asyncio
-    @patch("booley.harness.setup.intake.ticket_cli")
-    async def test_old_plan_done_criterion_rejected(self, mock_cli, project_root, sample_ticket):
-        fields = dict(_MINIMAL_FIELDS)
-        fields["criteria"] = {"mandatory": {"plan_done": True, "sim_pass": True}}
-        _mock_cli_defaults(mock_cli, fields=fields)
-        from booley.harness.setup.intake import run
-
-        with pytest.raises(FatalError, match="plan_done"):
-            await run(str(sample_ticket), project_root)
-
-    @pytest.mark.asyncio
-    @patch("booley.harness.setup.intake.ticket_cli")
-    async def test_old_plan_created_criterion_rejected(
-        self, mock_cli, project_root, sample_ticket
-    ):
-        fields = dict(_MINIMAL_FIELDS)
-        fields["criteria"] = {"mandatory": {"plan_created": True}}
-        _mock_cli_defaults(mock_cli, fields=fields)
-        from booley.harness.setup.intake import run
-
-        with pytest.raises(FatalError, match="plan_created"):
-            await run(str(sample_ticket), project_root)
-
-    @pytest.mark.asyncio
-    @patch("booley.harness.setup.intake.ticket_cli")
-    async def test_new_plan_fields_accepted(self, mock_cli, project_root, sample_ticket):
-        fields = dict(
-            _MINIMAL_FIELDS,
-            rtl_plan_file="",
-            verification_plan_file="",
-        )
-        _mock_cli_defaults(mock_cli, fields=fields)
-        from booley.harness.setup.intake import run
-
-        # Should not raise
-        result = await run(str(sample_ticket), project_root)
-        assert result is not None
-
-    @pytest.mark.asyncio
-    @patch("booley.harness.setup.intake.ticket_cli")
-    async def test_scoped_ticket_does_not_inject_plan_criteria(
-        self,
-        mock_cli,
-        project_root,
-        sample_ticket,
-    ):
-        fields = dict(
-            _MINIMAL_FIELDS,
-            scope=["rtl/foo.sv", "tb/foo_tb.sv"],
-            criteria={
-                "mandatory": {
-                    "sim_pass": ["tb/foo_tb.sv @ default @ all @ pass -> pass"],
-                }
-            },
-        )
-        _mock_cli_defaults(mock_cli, fields=fields)
-        from booley.criteria.state import DevelopmentState
-        from booley.harness.setup.intake import run
-        from booley.ticket_board.helpers import tickets_dir_from_project_root
-
-        await run(str(sample_ticket), project_root)
-
-        state_path = (
-            tickets_dir_from_project_root(project_root)
-            / "logs"
-            / sample_ticket.stem
-            / ".runtime"
-            / "booley_state.json"
-        )
-        state = DevelopmentState.load(state_path)
-        assert "rtl_plan_done" not in state.criteria
-        assert "verification_plan_done" not in state.criteria
-
-    @pytest.mark.asyncio
-    @patch("booley.harness.setup.intake.ticket_cli")
-    @pytest.mark.parametrize(
-        ("retired", "hint"),
-        [
-            ("rtl_plan_done", "remove it"),
-            ("verification_plan_done", "remove it"),
-            ("review_rtl_functional", "review_rtl_bugs"),
-            ("review_rtl_quality", "review_rtl_code_style"),
-            ("review_rtl_ifdef", "review_rtl_bugs"),
-            ("coverage_toggle", "coverage: [{targets:"),
-            ("coverage_fsm", "coverage: [{targets:"),
-            ("coverage_value", "coverage: [{targets:"),
-            ("coverage_branch", "coverage: [{targets:"),
-            ("coverage_expression", "coverage: [{targets:"),
-            ("coverage_mean", "coverage: [{targets:"),
-        ],
-    )
-    async def test_retired_criteria_are_rejected(
-        self,
-        mock_cli,
-        project_root,
-        sample_ticket,
-        retired,
-        hint,
-    ):
-        """Retired keys must hard-error, not be created as silent optional no-ops."""
-        fields = dict(
-            _MINIMAL_FIELDS,
-            scope=["rtl/foo.sv"],
-            criteria={
-                "mandatory": {
-                    retired: True,
-                    "sim_pass": ["tb/foo_tb.sv @ default @ all @ pass -> pass"],
-                }
-            },
-        )
-        _mock_cli_defaults(mock_cli, fields=fields)
-        from booley.harness.blocking import FatalError
-        from booley.harness.setup.intake import run
-
-        with pytest.raises(FatalError) as excinfo:
-            await run(str(sample_ticket), project_root)
-        assert retired in str(excinfo.value)
-        assert hint in str(excinfo.value)
-        # slug MUST be set: the developer's FatalError handler only persists the
-        # error (via ticket_cli.fail) and moves the ticket out of active/ when
-        # e.slug is truthy. Without it the real error is lost to the console and
-        # the ticket is orphaned, later mislabeled as a "SIGINT" crash.
-        assert excinfo.value.slug == sample_ticket.stem

@@ -14,7 +14,6 @@ from typing import Any
 
 from booley.ticket_board.ticket_repositories import TicketWorkspace, WorkspaceDisposition
 
-from .frontmatter import parse_frontmatter
 from .git_ops import cleanup_worktree_and_branch
 from .io import scan_all_tickets
 from .paths import existing_ticket_runtime_file, ticket_log_dir
@@ -33,7 +32,7 @@ def _cleanup_session_files(log_dir: Path) -> None:
 
 def _warn_dependents(tio, slug):
     """Warn about waiting tickets that depend on the slug being archived."""
-    all_tickets = scan_all_tickets(tio.tickets_dir)
+    all_tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
     dependents = [
         t.get("feature_branch") or Path(t.get("file", "")).stem
         for t in all_tickets
@@ -104,8 +103,13 @@ def _archive_single(tio: Any, slug: str, keep_logs: bool, force: bool) -> list[s
         )
         return []
 
-    with file_path.open(encoding="utf-8") as f:
-        fields, _ = parse_frontmatter(f.read())
+    try:
+        fields = tio.find_ticket(slug)
+        if fields is None:
+            raise ValueError("Ticket disappeared during archive")
+    except (OSError, ValueError) as exc:
+        print(f"Error: cannot archive invalid Ticket '{slug}': {exc}", file=sys.stderr)
+        return []
     summary = fields.get("summary", slug)
     _warn_dependents(tio, slug)
 
@@ -167,12 +171,13 @@ def op_archive(
         log_dir = ticket_log_dir(tio.logs_dir, ticket_slug)
         with tio._ticket_lock(ticket_slug):
             try:
-                with md_file.open(encoding="utf-8") as f:
-                    fields, _ = parse_frontmatter(f.read())
+                fields = tio.find_ticket(ticket_slug)
+                if fields is None:
+                    continue
                 summary = fields.get("summary", md_file.stem)
-            except OSError:
-                summary = md_file.stem
-                fields = {}
+            except (OSError, ValueError) as exc:
+                logger.warning("Skipping invalid Ticket %s during archive: %s", ticket_slug, exc)
+                continue
             ok, _detail = TicketWorkspace.retire(
                 tio._project_root,
                 ticket_slug,

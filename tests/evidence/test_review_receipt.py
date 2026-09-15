@@ -172,7 +172,7 @@ def test_unreadable_persisted_decisions_raises_context_error(tmp_path: Path, mon
         review_receipt_drift(detail, tmp_path)
 
 
-def test_ticket_linked_spec_is_resolved_without_ticket_board_dependency(
+def test_converted_ticket_spec_is_tracked_without_ticket_board_dependency(
     tmp_path: Path, monkeypatch
 ) -> None:
     logs = tmp_path / "logs"
@@ -192,87 +192,12 @@ def test_ticket_linked_spec_is_resolved_without_ticket_board_dependency(
             focus="spec",
             scope=(),
             mode="done",
+            ticket_spec_path=spec,
         )
     )
 
     assert contract["spec_source"] == str(spec.resolve())
     assert contract["spec_digest"]
-
-
-def test_malformed_ticket_frontmatter_raises_review_context_error(
-    tmp_path: Path, monkeypatch
-) -> None:
-    logs = tmp_path / "logs"
-    logs.mkdir()
-    (logs / "ticket.md").write_text("---\nspec: [unterminated\n---\n", encoding="utf-8")
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-
-    with pytest.raises(ReviewContextError, match="frontmatter"):
-        build_review_contract_detail(
-            ReviewInvocation(
-                work_dir=tmp_path,
-                category="rtl",
-                focus="spec",
-                scope=(),
-                mode="done",
-            )
-        )
-
-
-@pytest.mark.parametrize(
-    ("contents", "message"),
-    [
-        ("---\nspec: spec.md\n", "frontmatter"),
-        ("---\nspec: [spec.md]\n---\n", "spec must be a string"),
-    ],
-)
-def test_ticket_frontmatter_boundary_errors_are_designed(
-    tmp_path: Path, monkeypatch, contents: str, message: str
-) -> None:
-    logs = tmp_path / "logs"
-    logs.mkdir()
-    (logs / "ticket.md").write_text(contents, encoding="utf-8")
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-
-    with pytest.raises(ReviewContextError, match=message):
-        build_review_contract_detail(
-            ReviewInvocation(
-                work_dir=tmp_path,
-                category="rtl",
-                focus="spec",
-                scope=(),
-                mode="done",
-            )
-        )
-
-
-def test_unreadable_ticket_frontmatter_raises_review_context_error(
-    tmp_path: Path, monkeypatch
-) -> None:
-    logs = tmp_path / "logs"
-    logs.mkdir()
-    ticket = logs / "ticket.md"
-    ticket.write_text("---\nspec: spec.md\n---\n", encoding="utf-8")
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-    original_read_text = Path.read_text
-
-    def fail_ticket_read(path: Path, *args, **kwargs) -> str:
-        if path == ticket:
-            raise OSError("synthetic read failure")
-        return original_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", fail_ticket_read)
-
-    with pytest.raises(ReviewContextError, match="frontmatter"):
-        build_review_contract_detail(
-            ReviewInvocation(
-                work_dir=tmp_path,
-                category="rtl",
-                focus="spec",
-                scope=(),
-                mode="done",
-            )
-        )
 
 
 def test_ticket_board_policy_digest_controls_receipt_freshness(
