@@ -103,6 +103,9 @@ class TestLoadScope:
 
 
 class TestMatchesScope:
+    def test_standalone_matcher_does_not_normalize_raw_new_tags(self):
+        assert not _matches_scope("rtl/new.sv", ["rtl/*.sv [new]"])
+
     def test_exact_match(self):
         assert _matches_scope("rtl/foo.sv", ["rtl/foo.sv"])
 

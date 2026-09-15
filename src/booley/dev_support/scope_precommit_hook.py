@@ -119,7 +119,7 @@ def _is_forbidden(filepath: str, acceptance_controls: set[str] | None = None) ->
 def _matches_scope(filepath: str, scope: list[str]) -> bool:
     """Check if filepath matches any scope entry (literal or glob).
 
-    Intentional duplication of harness.git_utils.scope_matches_file — this
+    Intentional duplication of core.scope_matching.scope_matches_file — this
     hook must run standalone without harness imports.
     """
     for entry in scope:

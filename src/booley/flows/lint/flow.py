@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.core.build_paths import work_root_for
 from booley.flows import eda_parsers
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
@@ -471,7 +472,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         of the Runtime's absolute workspace path. Raises on any setup failure
         so the caller records it as a Flow error.
         """
-        build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target.selector)
+        build_root = work_root_for(self.args.work_dir, "lint", target.selector)
         resolved = fusesoc_registry.resolve_target_handle(
             target,
             build_root=build_root,
@@ -493,7 +494,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         preview shows *what would run*, not a byte-exact runnable command. An
         unauthored Target yields a clean ``ERROR`` entry rather than raising.
         """
-        build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target.selector)
+        build_root = work_root_for(self.args.work_dir, "lint", target.selector)
         try:
             setup_cmd = fusesoc_registry.setup_command_for_handle(
                 target,
@@ -532,7 +533,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         command = self._lint_plan_command(target)
         inputs = inspection.inputs if inspection is not None else ()
         sources, constraints = normalize_plan_inputs(inputs, self.args.work_dir)
-        build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target.selector)
+        build_root = work_root_for(self.args.work_dir, "lint", target.selector)
         return WorkUnitPlan(
             unit_id=stable_unit_id("lint", target.selector, (target.selector,)),
             role="ordinary",
@@ -597,7 +598,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # can never mistake a previous invocation's findings for current work.
         self._open_run_log(
             selector,
-            edam_layer.work_root_for(self.args.work_dir, "lint", selector),
+            work_root_for(self.args.work_dir, "lint", selector),
         )
         if prepared is None:
             prepared_units, errors = self._prepare_lint_targets((target,))
@@ -625,7 +626,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # lint regression had nothing on disk to act on.
         log_path: Path | None = None
         try:
-            build_root = edam_layer.work_root_for(self.args.work_dir, "lint", selector)
+            build_root = work_root_for(self.args.work_dir, "lint", selector)
             build_root.mkdir(parents=True, exist_ok=True)
             # write_run_log, not a bare write_text: it is atomic (no torn read
             # for a concurrent tail) and preserves the run header above.
@@ -890,7 +891,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         for target in targets:
             self._open_run_log(
                 target.selector,
-                edam_layer.work_root_for(self.args.work_dir, "lint", target.selector),
+                work_root_for(self.args.work_dir, "lint", target.selector),
             )
         prepared, preparation_errors = self._prepare_lint_targets(targets)
         if preparation_errors:

@@ -35,6 +35,7 @@ class EndpointOutcome:
     lines_added: int = 0
     lines_removed: int = 0
     display_lines: list[str] = field(default_factory=list)
+    display_label: str | None = None
     summary: str = ""
 
 
