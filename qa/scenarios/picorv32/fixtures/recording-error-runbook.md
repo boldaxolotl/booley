@@ -66,7 +66,8 @@ For retained structured reports, pass `oracle INPUT.json`. The input has a
 lint reports; `lint-waiver` takes `before`, `after`, `intended_rule` and optional
 `control_rule`; `synth-baseline` takes the retained `summary`, full `report`,
 and `expected` candidate/baseline Target names, Target identities, and full
-`candidate_revision` and `baseline_revision` commit IDs;
+`candidate_revision` and `baseline_revision` commit IDs plus the declared
+`delta_pct` and `timing_delta_pct`;
 `vivado-implementation` takes `report`, `artifacts`, `before`, and
 `retained_dir`; `stealth-native` takes `paths`; `bwave-mode` takes `child` and
 `replay`; `verdict` takes `declared_expected` and `observed`. The verdict
@@ -117,6 +118,11 @@ to remain identical. `denial_evidence` holds `declared_expected: denied`,
 `flow_executed: false`, `log_path`, and `log_sha256` from the negative Check
 alone. The retained log must identify the FPGA command, record exit 2, and
 contain the authority denial.
+
+The replacement probe requires the old and intended registrations in the
+run-owned ledger, increasing Grant epochs for revoke then regrant, an unchanged
+old Session epoch with invalid/stopped/unmounted state until issuance, and an
+issued Session epoch equal to the new Grant epoch before start and mount.
 
 1. Inspect the existing Grant and Session. If a different Grant is attached,
    revoke it only when the ledger proves it belongs to this run. Never modify

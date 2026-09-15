@@ -26,6 +26,11 @@ def _require(condition: bool, message: str) -> None:
         raise FixtureError(message)
 
 
+def _mapping(value: object, name: str) -> dict:
+    _require(isinstance(value, dict), f"{name} must be a JSON object")
+    return value
+
+
 def _git_root(path: Path) -> Path:
     result = subprocess.run(
         ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
@@ -92,8 +97,16 @@ def spike_elf(path: Path, ram_start: int, ram_end: int) -> dict:
 
 
 def _warning_keys(report: dict) -> list[tuple]:
-    return [(item["rule"], item["file"], item["line"], item["message"])
-            for item in report.get("warnings", [])]
+    report = _mapping(report, "lint report")
+    warnings = report.get("warnings", [])
+    _require(isinstance(warnings, list), "lint warnings must be a list")
+    keys = []
+    for value in warnings:
+        item = _mapping(value, "lint warning")
+        _require(all(field in item for field in ("rule", "file", "line", "message")),
+                 "lint warning lacks identity fields")
+        keys.append((item["rule"], item["file"], item["line"], item["message"]))
+    return keys
 
 
 def lint_dedupe(first: dict, second: dict, combined: dict) -> dict:
@@ -104,7 +117,13 @@ def lint_dedupe(first: dict, second: dict, combined: dict) -> dict:
     _require(common <= combined_keys, "aggregate report omitted the common warning")
     _require(len(combined.get("warnings", [])) == len(combined_keys),
              "aggregate report contains duplicate warning rows")
-    targets = {row["target"] for row in combined.get("target_results", [])}
+    combined = _mapping(combined, "combined lint report")
+    target_results = combined.get("target_results", [])
+    _require(isinstance(target_results, list)
+             and all(isinstance(row, dict) and isinstance(row.get("target"), str)
+                     for row in target_results),
+             "aggregate report has invalid Target results")
+    targets = {row["target"] for row in target_results}
     _require(len(targets) >= 2, "aggregate report lacks two distinct Target results")
     return {"common_warnings": len(common), "targets": sorted(targets)}
 
@@ -130,52 +149,84 @@ def lint_waiver(before: dict, after: dict, intended_rule: str,
     return {"suppressed": intended_rule, "preserved": control_rule}
 
 
-def synth_baseline(summary: dict, report: dict, expected: dict) -> dict:
-    """Validate the successful paired synthesis comparison and its identities."""
-    _require(type(summary.get("flow_exit")) is int and summary["flow_exit"] == 0,
-             "synthesis comparison did not exit successfully")
-    _require(summary.get("infra_error") in (None, ""),
-             "synthesis comparison has an infrastructure error")
+def _synth_result(report: dict, target: str) -> tuple[dict, dict]:
+    detail = _mapping(report.get("detail"), "synthesis report detail")
+    implementation = _mapping(detail.get("implementation"), "synthesis implementation")
+    results = _mapping(implementation.get("results"), "synthesis Target results")
+    result = _mapping(results.get(target), "synthesis candidate Target result")
+    comparison = _mapping(result.get("comparison"), "synthesis comparison")
+    _require(comparison.get("basis_valid") is True and comparison.get("basis_errors") == [],
+             "synthesis report has an invalid comparison basis")
+    return result, comparison
+
+
+def _synth_revisions(result: dict, comparison: dict) -> tuple[str | None, str | None]:
+    provenance = _mapping(result.get("provenance"), "synthesis candidate provenance")
+    producer = _mapping(provenance.get("producer"), "synthesis candidate producer")
+    baseline = _mapping(comparison.get("baseline"), "synthesis comparison baseline")
+    baseline_provenance = _mapping(baseline.get("provenance"), "synthesis baseline provenance")
+    baseline_producer = _mapping(baseline_provenance.get("producer"),
+                                 "synthesis baseline producer")
+    return producer.get("source_revision"), baseline_producer.get("source_revision")
+
+
+def _synth_expectations(summary: dict, expected: dict) -> tuple[dict, str, str]:
     for field in ("candidate_target", "baseline_target", "candidate_identity",
                   "baseline_identity"):
         value = summary.get(field)
         _require(isinstance(value, str) and bool(value.strip()),
                  f"synthesis comparison lacks {field}")
         _require(value == expected.get(field), f"synthesis {field} differs from declared identity")
-    baseline = summary.get("baseline")
-    _require(isinstance(baseline, dict), "synthesis comparison lacks baseline report")
+    baseline = _mapping(summary.get("baseline"), "synthesis baseline report")
     ref = baseline.get("ref")
-    expected_candidate_ref = expected.get("candidate_revision")
-    expected_ref = expected.get("baseline_revision")
-    _require(isinstance(expected_candidate_ref, str)
-             and re.fullmatch(r"[0-9a-f]{40}", expected_candidate_ref) is not None,
+    candidate_ref = expected.get("candidate_revision")
+    baseline_ref = expected.get("baseline_revision")
+    _require(isinstance(candidate_ref, str)
+             and re.fullmatch(r"[0-9a-f]{40}", candidate_ref) is not None,
              "declared candidate revision is not a full commit ID")
-    _require(isinstance(ref, str) and isinstance(expected_ref, str)
-             and bool(ref.strip()) and re.fullmatch(r"[0-9a-f]{40}", expected_ref) is not None
-             and expected_ref.startswith(ref),
+    _require(isinstance(ref, str) and isinstance(baseline_ref, str)
+             and bool(ref.strip()) and re.fullmatch(r"[0-9a-f]{40}", baseline_ref) is not None
+             and baseline_ref.startswith(ref),
              "synthesis baseline ref differs from declared revision")
     for field in ("delta_pct", "timing_delta_pct"):
         value = summary.get(field)
+        expected_value = expected.get(field)
         _require(type(value) in (int, float) and math.isfinite(value),
                  f"synthesis comparison lacks numeric {field}")
-    results = report.get("detail", {}).get("implementation", {}).get("results", {})
-    result = results.get(summary["candidate_target"])
-    _require(isinstance(result, dict), "synthesis report lacks candidate Target result")
-    comparison = result.get("comparison")
-    _require(isinstance(comparison, dict) and comparison.get("basis_valid") is True
-             and comparison.get("basis_errors") == [],
-             "synthesis report has an invalid comparison basis")
-    candidate_revision = result.get("provenance", {}).get("producer", {}).get("source_revision")
-    baseline_revision = comparison.get("baseline", {}).get("provenance", {}).get(
-        "producer", {}).get("source_revision")
+        _require(type(expected_value) in (int, float) and math.isfinite(expected_value)
+                 and value == expected_value,
+                 f"synthesis {field} differs from declared numeric result")
+    return baseline, candidate_ref, baseline_ref
+
+
+def synth_baseline(summary: dict, report: dict, expected: dict) -> dict:
+    """Validate the successful paired synthesis comparison and its identities."""
+    summary = _mapping(summary, "synthesis summary")
+    report = _mapping(report, "synthesis report")
+    expected = _mapping(expected, "declared synthesis result")
+    _require(type(summary.get("flow_exit")) is int and summary["flow_exit"] == 0,
+             "synthesis comparison did not exit successfully")
+    _require(summary.get("infra_error") in (None, ""),
+             "synthesis comparison has an infrastructure error")
+    baseline, expected_candidate_ref, expected_ref = _synth_expectations(summary, expected)
+    result, comparison = _synth_result(report, summary["candidate_target"])
+    candidate_revision, baseline_revision = _synth_revisions(result, comparison)
     _require(candidate_revision == expected_candidate_ref,
              "synthesis candidate revision differs from declared commit")
     _require(baseline_revision == expected_ref,
              "synthesis baseline revision differs from declared commit")
-    _require(result.get("identity", {}).get("target_identity") == summary["candidate_identity"]
+    identity = _mapping(result.get("identity"), "synthesis candidate identity")
+    _require(identity.get("target_identity") == summary["candidate_identity"]
              and comparison.get("candidate_target_identity") == summary["candidate_identity"]
              and comparison.get("baseline_target_identity") == summary["baseline_identity"],
              "synthesis report Target identities contradict the summary")
+    deltas = _mapping(comparison.get("deltas"), "synthesis report deltas")
+    area_key = "area_kge" if "area_kge" in baseline else "area_um2"
+    area = _mapping(deltas.get(area_key), f"synthesis {area_key} delta")
+    timing = _mapping(deltas.get("wns_ns"), "synthesis timing delta")
+    _require(area.get("delta_pct") == summary["delta_pct"]
+             and timing.get("delta_pct") == summary["timing_delta_pct"],
+             "synthesis report deltas contradict the summary")
     return {"candidate_identity": summary["candidate_identity"],
             "baseline_identity": summary["baseline_identity"],
             "candidate_revision": candidate_revision,
@@ -218,7 +269,12 @@ def distance_rows(text: str, expected_distances: list[int]) -> dict:
 
 def required_subjects(pdf_text: dict[str, str], subjects: list[str]) -> dict:
     """Check required PDF subjects by extracted text, regardless of file count."""
+    pdf_text = _mapping(pdf_text, "PDF text")
     _require(bool(pdf_text) and bool(subjects), "PDF text or subjects missing")
+    _require(all(isinstance(value, str) for value in pdf_text.values())
+             and isinstance(subjects, list)
+             and all(isinstance(subject, str) and bool(subject) for subject in subjects),
+             "PDF text or subjects have invalid types")
     contents = "\n".join(pdf_text.values()).casefold()
     missing = [subject for subject in subjects if subject.casefold() not in contents]
     _require(not missing, f"offline PDF subjects missing: {missing}")
@@ -248,15 +304,19 @@ def canonical_registration(requested: Path, registered: Path) -> dict:
 def vivado_implementation(report: dict, artifacts: dict, before: dict,
                            retained_dir: Path) -> dict:
     """Grade the declared fresh routed output without inventing a bitstream rule."""
+    report = _mapping(report, "Vivado report")
+    artifacts = _mapping(artifacts, "Vivado artifacts")
+    before = _mapping(before, "prior Vivado artifacts")
     _require(type(report.get("exit_code")) is int and report["exit_code"] == 0,
              "Vivado Flow did not exit successfully")
-    detail = report.get("detail", {})
-    implementation = detail.get("implementation", {})
+    detail = _mapping(report.get("detail"), "Vivado report detail")
+    implementation = _mapping(detail.get("implementation"), "Vivado implementation")
     _require(implementation.get("grade") == "pass" and implementation.get("passed") is True,
              "Vivado implementation did not report PASS")
     _require(bool(implementation.get("results")), "Vivado report lacks Target results")
-    cache = detail.get("cache", {})
-    _require(bool(cache) and all(item.get("cached") is False for item in cache.values()),
+    cache = _mapping(detail.get("cache"), "Vivado cache report")
+    _require(bool(cache) and all(isinstance(item, dict)
+                                 and item.get("cached") is False for item in cache.values()),
              "Vivado implementation was cached")
     required = ("routed-checkpoint.dcp", "routed-timing.rpt", "routed-utilization.rpt")
     for name in required:
@@ -265,6 +325,8 @@ def vivado_implementation(report: dict, artifacts: dict, before: dict,
                  and current.get("sha256") and current.get("mtime_ns"),
                  f"missing declared routed artifact: {name}")
         prior = before.get(name)
+        _require(prior is None or isinstance(prior, dict),
+                 f"invalid prior routed artifact: {name}")
         _require(prior is None or current["mtime_ns"] > prior.get("mtime_ns", 0),
                  f"routed artifact is not fresh: {name}")
         retained = retained_dir / name
@@ -284,6 +346,8 @@ def stealth_native(paths: list[str]) -> dict:
 
 def same_bwave_mode(child: dict, replay: dict) -> dict:
     """Require an exact replay before declaring a child's B-Wave divergence."""
+    child = _mapping(child, "B-Wave child query")
+    replay = _mapping(replay, "B-Wave replay query")
     fields = ("trace", "argv", "signals", "clock", "reset", "sampling")
     for record, name in ((child, "child"), (replay, "replay")):
         _require(all(field in record for field in fields),
@@ -316,6 +380,7 @@ def verdict(expected: str, observed: str) -> dict:
 
 def oracle(record: dict) -> dict:
     """Evaluate a retained JSON oracle input without modifying run evidence."""
+    record = _mapping(record, "oracle input")
     kind = record["kind"]
     if kind == "lint-dedupe":
         result = lint_dedupe(record["first"], record["second"], record["combined"])

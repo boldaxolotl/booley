@@ -22,12 +22,14 @@ def _need(condition: bool, message: str) -> None:
 
 
 def _state(states: dict, name: str) -> dict:
+    _need(isinstance(states, dict), "states must be a JSON object")
     value = states.get(name)
     _need(isinstance(value, dict), f"missing {name} state snapshot")
     return value
 
 
 def _owner(record: dict) -> dict:
+    _need(isinstance(record, dict), "state snapshot must be a JSON object")
     owner = record.get("owner")
     _need(isinstance(owner, dict), "run-owned identity is missing")
     for field in ("project_root", "registration"):
@@ -37,6 +39,8 @@ def _owner(record: dict) -> dict:
     _need(isinstance(registrations, list)
           and all(isinstance(item, str) and bool(item) for item in registrations),
           "run-owned registration ledger is invalid")
+    _need(owner["registration"] in registrations,
+          "intended registration is not in the run-owned ledger")
     return owner
 
 
@@ -77,7 +81,7 @@ def _protected_unchanged(record: dict) -> None:
 def grant_replacement(record: dict) -> dict:
     """Validate revoke, regrant, issuance, start, and mount in that order."""
     owner = _owner(record)
-    states = record["states"]
+    states = record.get("states")
     before = _state(states, "before")
     revoked = _state(states, "revoked")
     regranted = _state(states, "regranted")
@@ -89,7 +93,7 @@ def grant_replacement(record: dict) -> dict:
         _identity(snapshot, owner, name)
         _epoch(snapshot, "grant_epoch", name)
     old = before.get("grant_registration")
-    _need(old is None or old in owner["run_owned_registrations"],
+    _need(isinstance(old, str) and old in owner["run_owned_registrations"],
           "existing Grant is borrowed; do not revoke it")
     _need(revoked.get("grant_registration") is None,
           "old run-owned Grant was not revoked")
@@ -99,12 +103,30 @@ def grant_replacement(record: dict) -> dict:
           "Grant changed during host Session issuance")
     _need(started.get("grant_registration") == owner["registration"],
           "Grant changed before Session start")
+    before_grant_epoch = _epoch(before, "grant_epoch", "before")
+    revoked_grant_epoch = _epoch(revoked, "grant_epoch", "revoked")
+    regranted_grant_epoch = _epoch(regranted, "grant_epoch", "regranted")
+    before_session_epoch = _epoch(before, "session_grant_epoch", "before")
+    _need(before_grant_epoch < revoked_grant_epoch < regranted_grant_epoch,
+          "Grant epochs do not prove revoke then regrant")
+    _need(_epoch(revoked, "session_grant_epoch", "revoked") == before_session_epoch
+          and _epoch(regranted, "session_grant_epoch", "regranted") == before_session_epoch,
+          "Session epoch changed before host reissue")
+    for name, snapshot in (("revoked", revoked), ("regranted", regranted)):
+        _need(snapshot.get("session_valid") is False
+              and snapshot.get("session_running") is False
+              and snapshot.get("mount_probe") is False,
+              f"{name}: stale Session was not invalidated")
+    _need(_epoch(issued, "grant_epoch", "issued") == regranted_grant_epoch
+          and issued.get("session_running") is False and issued.get("mount_probe") is False,
+          "issued Session does not belong to the regranted epoch")
     _need(_epoch(issued, "session_grant_epoch", "issued")
           == _epoch(issued, "grant_epoch", "issued")
           and issued.get("session_valid") is True,
           "stale Session spec; run booley init --seed after regrant")
     _need(_epoch(started, "session_grant_epoch", "started")
           == _epoch(started, "grant_epoch", "started")
+          == _epoch(issued, "grant_epoch", "issued")
           and started.get("session_valid") is True and started.get("session_running") is True,
           "Session not validated and running after issuance")
     _need(started.get("mount_probe") is True,
@@ -117,7 +139,7 @@ def grant_replacement(record: dict) -> dict:
 def ready(record: dict, name: str = "current") -> dict:
     """Gate Doctor or FPGA execution on the current run-owned state."""
     owner = _owner(record)
-    current = _state(record["states"], name)
+    current = _state(record.get("states"), name)
     _identity(current, owner, name)
     _need(current.get("grant_registration") == owner["registration"],
           "run-owned Vivado Grant is missing")
@@ -134,10 +156,11 @@ def ready(record: dict, name: str = "current") -> dict:
 def denied(record: dict) -> dict:
     """Grade the negative Check from its own denial, independent of recovery."""
     owner = _owner(record)
-    snapshot = _state(record["states"], "revoked")
+    snapshot = _state(record.get("states"), "revoked")
     _identity(snapshot, owner, "revoked")
     _need(snapshot.get("grant_registration") is None, "Grant remains attached")
-    result = record.get("denial_evidence", {})
+    result = record.get("denial_evidence")
+    _need(isinstance(result, dict), "denial evidence must be a JSON object")
     _need(result.get("declared_expected") == "denied", "denial expectation missing")
     _need(result.get("flow_executed") is False,
           "revoked-Grant denial did not prevent FPGA execution")

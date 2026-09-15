@@ -185,9 +185,10 @@ def test_synth_baseline_requires_successful_numeric_comparison_and_identities():
     expected = {"candidate_target": "synth_core", "baseline_target": "synth_core",
                 "candidate_identity": "booley::candidate:0#synth_core",
                 "baseline_identity": "booley::baseline:0#synth_core",
-                "candidate_revision": "b" * 40, "baseline_revision": "a" * 40}
+                "candidate_revision": "b" * 40, "baseline_revision": "a" * 40,
+                "delta_pct": 0.0, "timing_delta_pct": -1.5}
     summary = {**expected, "flow_exit": 0, "infra_error": None,
-               "baseline": {"ref": "a" * 7, "area": 42},
+               "baseline": {"ref": "a" * 7, "area_kge": 42},
                "delta_pct": 0.0, "timing_delta_pct": -1.5}
     summary.pop("candidate_revision")
     summary.pop("baseline_revision")
@@ -197,12 +198,17 @@ def test_synth_baseline_requires_successful_numeric_comparison_and_identities():
         "comparison": {"basis_valid": True, "basis_errors": [],
                        "candidate_target_identity": expected["candidate_identity"],
                        "baseline_target_identity": expected["baseline_identity"],
+                       "deltas": {"area_kge": {"delta_pct": 0.0},
+                                  "wns_ns": {"delta_pct": -1.5}},
                        "baseline": {"provenance": {"producer": {
                            "source_revision": expected["baseline_revision"]}}}},
     }}}}}
     assert synth_baseline(summary, report, expected)["baseline_revision"] == "a" * 40
     wrong = dict(summary, delta_pct="0.0")
     with pytest.raises(FixtureError, match="numeric delta_pct"):
+        synth_baseline(wrong, report, expected)
+    wrong = dict(summary, delta_pct=3.0)
+    with pytest.raises(FixtureError, match="declared numeric result"):
         synth_baseline(wrong, report, expected)
     wrong = dict(summary, candidate_identity="booley::wrong:0#synth_core")
     with pytest.raises(FixtureError, match="candidate_identity differs"):
@@ -240,3 +246,17 @@ def test_wrong_verdict_cli_exits_nonzero_and_retains_both_values(tmp_path):
     assert result.returncode == 1
     assert json.loads(result.stdout) == {"declared_expected": "denied",
                                          "observed": "pass", "matches": False}
+
+
+def test_oracle_cli_rejects_malformed_nested_json_without_traceback(tmp_path):
+    input_file = tmp_path / "malformed.json"
+    input_file.write_text(json.dumps({"kind": "vivado-implementation",
+                                      "report": {"exit_code": 0, "detail": []},
+                                      "artifacts": {}, "before": {},
+                                      "retained_dir": str(tmp_path)}))
+    script = FIXTURES.parent / "fixture_validation.py"
+    result = subprocess.run(["python3", str(script), "oracle", str(input_file)],
+                            capture_output=True, text=True, timeout=10, check=False)
+    assert result.returncode == 2
+    assert "must be a JSON object" in result.stderr
+    assert "Traceback" not in result.stderr

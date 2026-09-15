@@ -2,6 +2,8 @@
 
 import copy
 import hashlib
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -58,10 +60,29 @@ def test_regrant_without_seed_is_detected_before_doctor_or_fpga(tmp_path):
         grant_replacement(record)
 
 
+def test_replacement_requires_distinct_grant_epochs_and_invalidated_session(tmp_path):
+    record = _transition(tmp_path)
+    for snapshot in record["states"].values():
+        snapshot["grant_epoch"] = 1
+    with pytest.raises(TransitionError, match="revoke then regrant"):
+        grant_replacement(record)
+    record = _transition(tmp_path / "validity")
+    record["states"]["revoked"]["session_valid"] = True
+    with pytest.raises(TransitionError, match="not invalidated"):
+        grant_replacement(record)
+
+
 def test_borrowed_grant_cannot_be_replaced(tmp_path):
     record = _transition(tmp_path)
     record["states"]["before"]["grant_registration"] = "borrowed"
     with pytest.raises(TransitionError, match="borrowed"):
+        grant_replacement(record)
+
+
+def test_replacement_registration_must_be_run_owned(tmp_path):
+    record = _transition(tmp_path)
+    record["owner"]["run_owned_registrations"].remove("new-owned")
+    with pytest.raises(TransitionError, match="not in the run-owned ledger"):
         grant_replacement(record)
 
 
@@ -113,3 +134,14 @@ def test_borrowed_grant_and_installation_must_remain_unchanged(tmp_path):
     record["protected"]["after"]["installations"].clear()
     with pytest.raises(TransitionError, match="borrowed installations changed"):
         ready(record)
+
+
+def test_state_probe_cli_rejects_non_mapping_json_without_traceback(tmp_path):
+    snapshot = tmp_path / "state.json"
+    snapshot.write_text(json.dumps([]))
+    script = Path(__file__).resolve().parents[2] / "qa/scenarios/picorv32/state_probe.py"
+    result = subprocess.run(["python3", str(script), str(snapshot), "ready"],
+                            capture_output=True, text=True, timeout=10, check=False)
+    assert result.returncode == 2
+    assert "must be a JSON object" in result.stderr
+    assert "Traceback" not in result.stderr
