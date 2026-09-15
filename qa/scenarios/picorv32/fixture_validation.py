@@ -69,10 +69,12 @@ def git_topology(root: Path, mode: str, outer_ref: str = "HEAD", inner_ref: str 
 def spike_elf(path: Path, ram_start: int, ram_end: int) -> dict:
     """Require every ELF PT_LOAD segment, including header padding, inside RAM."""
     data = path.read_bytes()
+    _require(len(data) >= 6, "truncated ELF identification header")
     _require(data[:4] == b"\x7fELF" and data[4] in (1, 2), "not an ELF32/ELF64 file")
     _require(data[5] in (1, 2), "unsupported ELF byte order")
     endian = "<" if data[5] == 1 else ">"
     elf64 = data[4] == 2
+    _require(len(data) >= (64 if elf64 else 52), "truncated ELF header")
     phoff = struct.unpack_from(endian + ("Q" if elf64 else "I"), data,
                                32 if elf64 else 28)[0]
     phentsize = struct.unpack_from(endian + "H", data, 54 if elf64 else 42)[0]
@@ -339,6 +341,9 @@ def vivado_implementation(report: dict, artifacts: dict, before: dict,
 
 def stealth_native(paths: list[str]) -> dict:
     """Exclude all dot-prefixed projected paths from native-file counts."""
+    _require(isinstance(paths, list) and all(isinstance(path, str) and bool(path)
+                                             for path in paths),
+             "projected paths must be a list of nonempty strings")
     native = [path for path in paths if all(not part.startswith(".")
                                              for part in Path(path).parts)]
     return {"raw_count": len(paths), "native_count": len(native), "native": native}

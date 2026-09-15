@@ -83,6 +83,13 @@ def test_spike_rejects_old_below_ram_segment_and_accepts_corrected(tmp_path):
     assert "0x80010000" in (FIXTURES / "riscv/spike-probe.ld").read_text()
 
 
+def test_spike_rejects_truncated_identification_header(tmp_path):
+    elf = tmp_path / "truncated.elf"
+    elf.write_bytes(b"\x7fELF\x01")
+    with pytest.raises(FixtureError, match="truncated ELF identification"):
+        spike_elf(elf, 0x80000000, 0x80020000)
+
+
 def _lint_report(rule: str, target: str) -> dict:
     return {"warnings": [{"rule": rule, "file": "/work/qa_lint_fixture.sv",
                           "line": 2, "message": "width mismatch"}],
@@ -165,6 +172,8 @@ def test_exact_result_oracles_reject_wrong_output(tmp_path):
         distance_rows("@ 8297 -> @ 8303 d=6", [7])
     assert distance_rows("@ 8297 -> @ 8303 d=6\n@ 8303 -> @ 8310 d=7", [6, 7])["rows"] == 2
     assert stealth_native(["rtl/top.v", ".booley/x", "rtl/.hidden.v"])["native_count"] == 1
+    with pytest.raises(FixtureError, match="list of nonempty strings"):
+        oracle({"kind": "stealth-native", "paths": "rtl/top.v"})
     child = {"trace": "t", "argv": ["wave"], "signals": ["x"], "clock": None,
              "reset": None, "sampling": "default"}
     replay = dict(child, sampling="explicit")
