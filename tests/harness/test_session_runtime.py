@@ -211,6 +211,7 @@ def _test_issuance(workspace: Path) -> SimpleNamespace:
         policy_revision=1,
         installation=None,
         license_profile=None,
+        relay_image_id="sha256:" + "a" * 64,
         project_data_source=str(workspace / ".booley_project"),
     )
 
@@ -1192,10 +1193,25 @@ class TestInitReconciliation:
                 "booley.session-id": relay.session_id,
             }
         )
-        state = {"Config": {"Labels": labels}}
+        state = {"Image": issuance.relay_image_id, "Config": {"Labels": labels}}
         with patch.object(sr, "_strict_refresh_container", return_value=state):
             assert sr._relay_matches_issuance(relay, issuance)
             labels["booley.spec-digest"] = "older-spec"
+            assert not sr._relay_matches_issuance(relay, issuance)
+
+    def test_relay_image_identity_determines_currency(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        issuance = _test_issuance(workspace)
+        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+        labels.update(
+            {
+                "booley.role": "license-relay",
+                "booley.session-id": relay.session_id,
+            }
+        )
+        state = {"Image": "sha256:" + "b" * 64, "Config": {"Labels": labels}}
+
+        with patch.object(sr, "_strict_refresh_container", return_value=state):
             assert not sr._relay_matches_issuance(relay, issuance)
 
     def test_preserves_foreign_container(self, workspace: Path) -> None:

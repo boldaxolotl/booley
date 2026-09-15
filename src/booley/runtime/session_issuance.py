@@ -431,16 +431,16 @@ def preview(
     """Build, pin, and seal a Runtime spec without persistent side effects."""
     project = project_root.resolve(strict=True)
     try:
-        with eda_requirements.lease_build_requirements(
+        requirements = eda_requirements.inspect_build_requirements(
             project,
             vivado_enabled=flow_enabled("fpga", project),
-        ) as leased:
-            return _prepare_spec(
-                project,
-                build_spec,
-                leased,
-                expected_image_id=expected_image_id,
-            )
+        )
+        return _prepare_spec(
+            project,
+            build_spec,
+            requirements,
+            expected_image_id=expected_image_id,
+        )
     except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
         raise RuntimeSpecError(str(exc)) from exc
 
@@ -465,11 +465,11 @@ def inspect_prepared(project_root: Path, prepared: PreparedSessionSpec) -> Issua
 def _prepare_spec(
     project: Path,
     build_spec: SpecBuilder,
-    leased: eda_requirements.LeasedSessionRequirements,
+    requirements: eda_requirements.SessionRequirementsSnapshot,
     *,
     expected_image_id: str | None,
 ) -> PreparedSessionSpec:
-    inputs = _session_spec_inputs(project, leased.build)
+    inputs = _session_spec_inputs(project, requirements.build)
     project_data_path = inputs.project_data_source
     spec = build_spec(inputs)
     if not isinstance(spec, dict):
@@ -483,12 +483,12 @@ def _prepare_spec(
         project_data_path,
     )
     _pin_devcontainer_mount(spec, project)
-    digest = _seal_with_requirements(project, spec, project_data_path, leased.runtime)
+    digest = _seal_with_requirements(project, spec, project_data_path, requirements.runtime)
     prospective = _prospective_issuance(
         project,
         spec,
         digest,
-        leased.runtime,
+        requirements.runtime,
         project_data_path,
     )
     return PreparedSessionSpec(spec, digest, inputs, prospective)

@@ -354,6 +354,15 @@ def resolve_license(project_root: Path, kind: str = VIVADO_KIND) -> LicenseProfi
     return load_state(allow_missing=False).licenses[grant.license_profile]
 
 
+def resolve_for_inspection(
+    project_root: Path,
+    host_provisioning: bool,
+) -> tuple[Installation | None, LicenseProfile | None]:
+    """Resolve one atomic authority snapshot without creating host state."""
+    project = _canonical_project(project_root)
+    return _resolve_issuance_records(project, host_provisioning, load_state())
+
+
 @contextlib.contextmanager
 def resolve_for_issuance(
     project_root: Path,
@@ -372,37 +381,39 @@ def resolve_for_issuance(
         _LOCK_FILENAME,
         busy_message="EDA authority is busy with another operation; retry after it completes",
     ):
-        state = load_state()
-        matches = [
-            grant for grant in state.grants if _grant_key(grant) == (str(project), VIVADO_KIND)
-        ]
-        if len(matches) > 1:
-            raise AuthorityError(f"duplicate {VIVADO_KIND} grants exist for {project}")
-        grant = matches[0] if matches else None
-        if not host_provisioning and grant is None:
-            yield None, None
-            return
-        if grant is None:
-            raise AuthorityError(f"Project {project} has no exact {VIVADO_KIND} grant")
-        _validate_grant_refs(grant, state)
-        if host_provisioning and grant.installation is None:
-            raise AuthorityError(
-                "Project requests host-provisioned Vivado, but its grant has no installation"
-            )
-        if not host_provisioning and grant.installation is not None:
-            raise AuthorityError(
-                "Project grant authorizes a host Vivado installation, but Project configuration "
-                "does not request host provisioning"
-            )
-        installation = (
-            state.installations[grant.installation] if grant.installation is not None else None
+        yield _resolve_issuance_records(project, host_provisioning, load_state())
+
+
+def _resolve_issuance_records(
+    project: Path,
+    host_provisioning: bool,
+    state: AuthorityState,
+) -> tuple[Installation | None, LicenseProfile | None]:
+    matches = [grant for grant in state.grants if _grant_key(grant) == (str(project), VIVADO_KIND)]
+    if len(matches) > 1:
+        raise AuthorityError(f"duplicate {VIVADO_KIND} grants exist for {project}")
+    grant = matches[0] if matches else None
+    if not host_provisioning and grant is None:
+        return None, None
+    if grant is None:
+        raise AuthorityError(f"Project {project} has no exact {VIVADO_KIND} grant")
+    _validate_grant_refs(grant, state)
+    if host_provisioning and grant.installation is None:
+        raise AuthorityError(
+            "Project requests host-provisioned Vivado, but its grant has no installation"
         )
-        if installation is not None:
-            _revalidate_installation(installation, project)
-        profile = (
-            state.licenses[grant.license_profile] if grant.license_profile is not None else None
+    if not host_provisioning and grant.installation is not None:
+        raise AuthorityError(
+            "Project grant authorizes a host Vivado installation, but Project configuration "
+            "does not request host provisioning"
         )
-        yield installation, profile
+    installation = (
+        state.installations[grant.installation] if grant.installation is not None else None
+    )
+    if installation is not None:
+        _revalidate_installation(installation, project)
+    profile = state.licenses[grant.license_profile] if grant.license_profile is not None else None
+    return installation, profile
 
 
 def _revalidate_installation(record: Installation, project_root: Path) -> None:

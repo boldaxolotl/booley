@@ -1554,7 +1554,7 @@ def _relay_matches_issuance(
 
     expected = set(runtime_spec.labels(issuance))
     actual = {f"{key}={value}" for key, value in labels.items()}
-    return expected.issubset(actual)
+    return state.get("Image") == issuance.relay_image_id and expected.issubset(actual)
 
 
 def _assert_no_other_project_sessions(project_id: str, *, excluding: str = "") -> None:

@@ -85,8 +85,8 @@ def _stub_preview_dependencies(
     monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
     monkeypatch.setattr(
         runtime_spec.eda_requirements,
-        "lease_build_requirements",
-        lambda *_args, **_kwargs: nullcontext(leased),
+        "inspect_build_requirements",
+        lambda *_args, **_kwargs: leased,
     )
     monkeypatch.setattr(runtime_spec, "authorized_project_data_source", lambda _root: project)
     monkeypatch.setattr(
@@ -123,6 +123,22 @@ def test_preview_exposes_only_detached_inputs_and_does_not_persist(
     assert prepared.inputs.trusted_eda_mounts == (("/host/tool", "/opt/tool"),)
     assert prepared.prospective_issuance is not None
     assert not (project / ".devcontainer" / "devcontainer.json").exists()
+
+
+def test_licensed_preview_does_not_create_authority_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _concurrent_licensed_project(tmp_path, monkeypatch)
+    lock = authority.state_dir() / "authority.lock"
+    lock.unlink()
+    before = authority.state_path().read_bytes()
+
+    prepared = runtime_spec.preview(project, lambda _inputs: {"image": "booley-sandbox"})
+
+    assert prepared.inputs.license_profile_name == "site"
+    assert authority.state_path().read_bytes() == before
+    assert not lock.exists()
 
 
 def test_issue_prepared_revalidates_authority_and_persists_exact_preview(
