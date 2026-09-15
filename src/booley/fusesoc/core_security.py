@@ -32,13 +32,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.scope_matching import scope_matches_file
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     core_target_eda_tool,
     discover_cores,
     read_core,
 )
-from booley.runtime.git import scope_matches_file
 from booley.targets import target_naming
 
 logger = logging.getLogger(__name__)

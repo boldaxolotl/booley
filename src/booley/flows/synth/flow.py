@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.core.boundary import BoundaryError, require_bool
+from booley.core.build_paths import work_root_for
 from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.evidence.timing import (
     ClockTiming,
@@ -551,18 +552,60 @@ def _parse_process_count(output: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-# A Yosys ``stat`` cell tally line: leading whitespace, the cell type, then
-# the instance count. Counting these is exact; counting bare ``$dlatch``
-# occurrences over the whole log also catches mentions in banners and
-# techmap/ABC traces, inflating the number that decides a FAIL.
-_DLATCH_STAT_RE = re.compile(r"^\s+\$_?DLATCH\S*\s+(\d+)\s*$", re.IGNORECASE | re.MULTILINE)
+# A Yosys ``stat`` cell tally line: leading whitespace plus a cell type and
+# instance count in either ordering used by supported Yosys versions. Counting
+# these is exact; counting bare ``$dlatch`` occurrences over the whole log also
+# catches mentions in banners and techmap/ABC traces, inflating the number that
+# decides a FAIL.
+_DLATCH_STAT_RE = re.compile(
+    r"^\s+(?:\$_?DLATCH\S*\s+(\d+)|(\d+)\s+\$_?DLATCH\S*)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_STAT_MARKER_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)*\.\s+)?Printing statistics\.\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_STAT_END_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)*\.\s+Executing\b|Warnings:|End of script\.|--- .+ ---|ERROR:)",
+    re.MULTILINE,
+)
+_STAT_CELL_TOTAL_RE = re.compile(
+    r"^\s*(?:Number of cells:\s*\d+|\d+(?:\s+[\d.]+)?\s+cells)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_STAT_INTERNAL_CELL_RE = re.compile(
+    r"^\s+(?:\$\S+\s+\d+|\d+\s+\$\S+)\s*$",
+    re.MULTILINE,
+)
+
+
+def _authoritative_stat_section(output: str) -> str | None:
+    """Return the final usable, bounded Yosys statistics section."""
+    markers = list(_STAT_MARKER_RE.finditer(output))
+    for index in range(len(markers) - 1, -1, -1):
+        start = markers[index].end()
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(output)
+        section = output[start:end]
+        boundary = _STAT_END_RE.search(section)
+        if boundary is not None:
+            section = section[: boundary.start()]
+        if _STAT_CELL_TOTAL_RE.search(section) or _STAT_INTERNAL_CELL_RE.search(section):
+            return section
+    if markers:
+        return None
+    totals = list(_STAT_CELL_TOTAL_RE.finditer(output))
+    if totals:
+        section = output[totals[-1].start() :]
+        boundary = _STAT_END_RE.search(section)
+        return section[: boundary.start()] if boundary is not None else section
+    return None
 
 
 def _count_latches(output: str) -> int:
     """Number of latch cells Yosys inferred.
 
-    Prefers the ``stat`` cell tally, which is an exact instance count. A stat
-    section that ran but prints **no** ``$_DLATCH*`` row means zero latches —
+    Prefers the final usable ``stat`` cell tally, which is an exact instance
+    count. A completed section that prints **no** ``$_DLATCH*`` row means zero latches —
     ``stat`` omits cell types with no instances, so "no tally" must not be
     conflated with "run died before ``stat``" (ravenoc F-29: yosys-slang emits
     transient ``$driver$…($dlatch)`` helper cells that opt folds away; the
@@ -571,11 +614,10 @@ def _count_latches(output: str) -> int:
     for runs with no stat section at all, where over-counting is the safe
     direction.
     """
-    tallies = _DLATCH_STAT_RE.findall(output)
-    if tallies:
-        return sum(int(n) for n in tallies)
-    if "Printing statistics." in output:
-        return 0
+    final_stat = _authoritative_stat_section(output)
+    if final_stat is not None:
+        tallies = _DLATCH_STAT_RE.findall(final_stat)
+        return sum(int(cell_first or count_first) for cell_first, count_first in tallies)
     return len(re.findall(r"\$dlatch", output))
 
 
@@ -1189,7 +1231,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     def _synth_work_root(self, target: str) -> Path:
         """Return the shared mutable work root for one synthesis Target."""
-        return edam.work_root_for(self.args.work_dir, self.name, target)
+        return work_root_for(self.args.work_dir, self.name, target)
 
     def _synth_build_dir(self, target: str) -> Path:
         """The make-driven synth build dir for *target* (under its work root).
@@ -1511,7 +1553,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """
         from booley.flows.run_log import write_run_log
 
-        log_dir = edam.work_root_for(project_root, self.name, target, variant="baseline")
+        log_dir = work_root_for(project_root, self.name, target, variant="baseline")
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = write_run_log(log_dir, output)

@@ -404,35 +404,6 @@ def configure(flow: str, edam: dict[str, Any], work_root: Path | str) -> Path:
     return root
 
 
-# Edalize work dirs live here, under the worktree so they cross into the
-# sandbox at /work and stay out of git (the .runtime/ tree is transient).
-# Nested under .booley_project/ so it never pollutes the repo top-level; that
-# dir is already git-excluded and present in both the real project root and the
-# per-ticket worktree. The isolation scanner skips it via _ARTIFACT_ROOT_NAMES.
-_EDALIZE_SUBDIR = Path(".booley_project") / ".runtime" / "edalize"
-
-
-def work_root_for(
-    work_dir: Path | str,
-    flow: str,
-    config: str,
-    *,
-    variant: str = "",
-) -> Path:
-    """Return the per-(Flow, config[, variant]) Edalize work dir.
-
-    Distinct per variant so the trace overlay (``variant="trace"``) gets its
-    own cached work dir keyed by ``(target, trace)`` (ADR 0022 dec. 20),
-    composing as a separate directory from the untraced build.
-    """
-    from booley.runtime.checkout_role import require_project_checkout
-
-    root = require_project_checkout(Path(work_dir))
-    safe = _NAME_SANITIZE_RE.sub("_", config).strip("_") or "config"
-    leaf = f"{safe}-{variant}" if variant else safe
-    return root / _EDALIZE_SUBDIR / flow / leaf
-
-
 def _work_root_lock_path(work_root: Path) -> Path:
     root = work_root.resolve()
     return root.parent / ".locks" / f"{root.name}.lock"

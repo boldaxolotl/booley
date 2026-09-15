@@ -24,6 +24,11 @@ from booley.ticket_board.helpers import fmt_duration
 
 from .colors import (
     _ANSI_RE,
+    PALETTE_DODGER_BLUE,
+    PALETTE_LAVENDER,
+    PALETTE_MAUVE,
+    PALETTE_MINT,
+    PALETTE_ORANGE,
     accent,
     bold_accent,
     bold_fg256,
@@ -34,6 +39,7 @@ from .colors import (
     green,
     yellow,
 )
+from .endpoint_presentation import endpoint_display_name
 
 _output_lock = threading.Lock()
 _console_active: bool = False
@@ -57,17 +63,18 @@ def get_console_app() -> object | None:
 # Palette B: Jewel Tones (256-color)
 # All verification specialists (reviewer / coverage / mutation / debugger)
 # share Lavender — they're all "judging existing work" roles.
-_orange = (bold_fg256(208), fg256(208))
-_mint = (bold_fg256(49), fg256(49))
-_lavender = (bold_fg256(141), fg256(141))
-_dodgerblue = (bold_fg256(39), fg256(39))
-_mauve = (bold_fg256(145), fg256(145))
+_orange = (bold_fg256(PALETTE_ORANGE), fg256(PALETTE_ORANGE))
+_mint = (bold_fg256(PALETTE_MINT), fg256(PALETTE_MINT))
+_lavender = (bold_fg256(PALETTE_LAVENDER), fg256(PALETTE_LAVENDER))
+_dodgerblue = (bold_fg256(PALETTE_DODGER_BLUE), fg256(PALETTE_DODGER_BLUE))
+_mauve = (bold_fg256(PALETTE_MAUVE), fg256(PALETTE_MAUVE))
 
 _ENDPOINT_COLORS: dict[str, tuple[Callable[[str], str], Callable[[str], str]]] = {
     "tb_coder": _mint,
     "reviewer": _lavender,
     "coverage_analyst": _lavender,
     "mutation_tester": _lavender,
+    "bwave": _orange,
     "sim": _dodgerblue,
     "lint": _dodgerblue,
     "synth": _dodgerblue,
@@ -219,7 +226,8 @@ _STATUS_ICONS = {
 def endpoint_box_open(endpoint_name: str, target: str | None = None) -> None:
     """Print endpoint start bar: ``    ┌─ endpoint_name [target] ───┐``."""
     global _current_pipe_color
-    label = f"{endpoint_name} [{target}]" if target else endpoint_name
+    display_name = endpoint_display_name(endpoint_name)
+    label = f"{display_name} [{target}]" if target else display_name
     bar = "─" * max(1, 44 - len(label))
     banner, pipe = _ENDPOINT_COLORS.get(endpoint_name, _DEFAULT_COLORS)
     with _output_lock:
@@ -239,7 +247,8 @@ def endpoint_box_close(
 ) -> None:
     """Print display_lines, status icon with duration/cost, and closing bar."""
     global _current_pipe_color
-    label = f"{endpoint_name} [{target}]" if target else endpoint_name
+    display_name = endpoint_display_name(endpoint_name)
+    label = f"{display_name} [{target}]" if target else display_name
     bar = "─" * max(1, 44 - len(label))
     banner, pipe = _ENDPOINT_COLORS.get(endpoint_name, _DEFAULT_COLORS)
     # A successful dry-run verified nothing — label it so it can't be misread
@@ -326,5 +335,6 @@ def endpoint_heartbeat(endpoint_name: str, elapsed_s: float) -> None:
     """Print dimmed endpoint heartbeat: ``    * endpoint: Xm00s elapsed``."""
     mins = int(elapsed_s // 60)
     secs = int(elapsed_s % 60)
+    display_name = endpoint_display_name(endpoint_name)
     with _output_lock:
-        _emit(dim(f"    * {endpoint_name}: {mins}m{secs:02d}s elapsed"), flush=True)
+        _emit(dim(f"    * {display_name}: {mins}m{secs:02d}s elapsed"), flush=True)

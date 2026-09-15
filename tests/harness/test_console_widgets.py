@@ -137,6 +137,29 @@ class TestMainPane:
             assert pane._endpoint_style == simulation_style
 
     @pytest.mark.asyncio
+    async def test_bwave_query_uses_distinct_style_and_command_label(self):
+        async with MainPaneTestApp().run_test() as pilot:
+            pane = pilot.app.query_one(MainPane)
+            pane.open_endpoint_box("bwave", "@dut wave -t start:done")
+            bwave_style = pane._endpoint_style
+            pane.close_endpoint_box(
+                "bwave",
+                "@dut wave -t start:done",
+                0,
+                0.4,
+                0.0,
+                None,
+            )
+            await pilot.pause()
+
+            content = str(pane.query_one("#main-content").render())
+            assert "B-Wave [@dut wave -t start:done]" in content
+            assert _render_entry_line(pane.get_completion_marks()[0]).plain.startswith(
+                "✓ B-Wave [@dut wave -t start:done]"
+            )
+            assert bwave_style == "color(208)"
+
+    @pytest.mark.asyncio
     async def test_close_endpoint_box(self):
         async with MainPaneTestApp().run_test() as pilot:
             pane = pilot.app.query_one(MainPane)

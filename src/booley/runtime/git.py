@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import logging
 import os
 import subprocess
@@ -10,6 +9,7 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from booley.core import scope_matching
 from booley.dev_support.validate_commit_msg import validate_message
 
 from .agent_errors import BlockingError
@@ -318,23 +318,6 @@ def _normalize_process_text(text: str) -> str:
     return text.replace("\\", "/").lower()
 
 
-SCOPE_UNKNOWN = "*"
-"""Sentinel value: scope = ["*"] means 'any file is valid' (unknown-scope bugfix)."""
-
-NEW_SCOPE_SUFFIX = " [new]"
-"""Suffix used in ticket scope entries for files expected to be created."""
-
-
-def strip_scope_new_tag(entry: str) -> str:
-    """Return a scope entry without the optional `` [new]`` marker."""
-    return entry.removesuffix(NEW_SCOPE_SUFFIX)
-
-
-def is_new_scope_entry(entry: str) -> bool:
-    """True when a raw ticket scope entry is marked as expected-new."""
-    return entry.endswith(NEW_SCOPE_SUFFIX)
-
-
 def _get_submodule_paths(wt: Path) -> list[str]:
     """Discover submodule paths from .gitmodules in the worktree."""
     result = git_run(
@@ -349,29 +332,6 @@ def _get_submodule_paths(wt: Path) -> list[str]:
     ]
 
 
-def is_scope_unknown(scope: list[str]) -> bool:
-    """True when scope is the wildcard sentinel (unknown/any file allowed)."""
-    return scope == [SCOPE_UNKNOWN]
-
-
-def _has_glob_chars(pattern: str) -> bool:
-    """Check if a scope entry contains glob metacharacters."""
-    return any(c in pattern for c in ("*", "?", "["))
-
-
-def _matches_scope_pattern(filepath: str, pattern: str) -> bool:
-    """Match one scope entry against a path: glob, exact file, or dir prefix.
-
-    A non-glob entry is an exact path *or* a directory prefix: ``rtl/verilog``
-    and ``rtl/verilog/`` both own every file beneath ``rtl/verilog/``. Without
-    the prefix rule a bare directory entry — the most natural thing to write
-    in ``scope:`` — silently matches nothing (F-14).
-    """
-    if _has_glob_chars(pattern):
-        return fnmatch.fnmatch(filepath, pattern)
-    return filepath == pattern or filepath.startswith(pattern.rstrip("/") + "/")
-
-
 def expand_scope_globs(wt: Path, scope: list[str]) -> list[str]:
     """Expand glob patterns in scope entries against the worktree.
 
@@ -383,14 +343,14 @@ def expand_scope_globs(wt: Path, scope: list[str]) -> list[str]:
 
     Returns deduplicated list with forward-slash paths (git-compatible).
     """
-    if is_scope_unknown(scope):
+    if scope_matching.is_scope_unknown(scope):
         return list(scope)
 
     expanded: list[str] = []
     seen: set[str] = set()
     for raw_entry in scope:
-        entry = strip_scope_new_tag(raw_entry)
-        if _has_glob_chars(entry):
+        entry = scope_matching.strip_scope_new_tag(raw_entry)
+        if scope_matching.has_glob_chars(entry):
             matches = sorted(p.relative_to(wt).as_posix() for p in wt.glob(entry) if p.is_file())
             items = matches
         else:
@@ -402,18 +362,6 @@ def expand_scope_globs(wt: Path, scope: list[str]) -> list[str]:
     return expanded
 
 
-def scope_matches_file(scope: list[str], filepath: str) -> bool:
-    """Check if a filepath matches any scope entry (literal or glob).
-
-    Unknown scope (["*"]) matches everything.
-    Intentional duplication of dev_support.scope_precommit_hook._matches_scope —
-    the hook must run standalone without harness imports.
-    """
-    if is_scope_unknown(scope):
-        return True
-    return any(_matches_scope_pattern(filepath, strip_scope_new_tag(e)) for e in scope)
-
-
 def scope_matches_dirty_file(scope: list[str], filepath: str, status: str) -> bool:
     """Check whether a dirty path belongs to scope, considering its status.
 
@@ -422,13 +370,13 @@ def scope_matches_dirty_file(scope: list[str], filepath: str, status: str) -> bo
     to match a broad "new file" glob is almost always sparse-worktree or
     restore fallout rather than ticket-owned work.
     """
-    if is_scope_unknown([strip_scope_new_tag(e) for e in scope]):
+    if scope_matching.is_scope_unknown([scope_matching.strip_scope_new_tag(e) for e in scope]):
         return True
     deleted = "D" in status[:2]
     for entry in scope:
-        pattern = strip_scope_new_tag(entry)
-        if _matches_scope_pattern(filepath, pattern) and not (
-            deleted and is_new_scope_entry(entry)
+        pattern = scope_matching.strip_scope_new_tag(entry)
+        if scope_matching.matches_scope_pattern(filepath, pattern) and not (
+            deleted and scope_matching.is_new_scope_entry(entry)
         ):
             return True
     return False
@@ -494,7 +442,7 @@ def _stage_scope_files(wt: Path, scope: list[str], *, literal: bool = False) -> 
     """Stage files for the given scope. Raises BlockingError on failure."""
     if literal:
         add_result = git_run(wt, ["--literal-pathspecs", "add", "--", *scope])
-    elif is_scope_unknown(scope):
+    elif scope_matching.is_scope_unknown(scope):
         sub_excludes = [f":(exclude){p}" for p in _get_submodule_paths(wt)]
         add_result = git_run(wt, ["add", "--all", "--", ".", *sub_excludes])
     else:
@@ -508,7 +456,7 @@ def _stage_scope_files(wt: Path, scope: list[str], *, literal: bool = False) -> 
 
 def _isolate_scope_staging(wt: Path, scope: list[str], *, literal: bool = False) -> None:
     """Unstage unrelated paths while preserving their working-tree changes."""
-    if not literal and is_scope_unknown(scope):
+    if not literal and scope_matching.is_scope_unknown(scope):
         return
     # ``-z`` so a path with a space or a non-ASCII byte arrives unquoted and
     # compares equal to the same path as git reported it to the caller.
@@ -521,7 +469,9 @@ def _isolate_scope_staging(wt: Path, scope: list[str], *, literal: bool = False)
             allowed = set(scope)
             out_of_scope = [f for f in staged_files if f not in allowed]
         else:
-            out_of_scope = [f for f in staged_files if not scope_matches_file(scope, f)]
+            out_of_scope = [
+                f for f in staged_files if not scope_matching.scope_matches_file(scope, f)
+            ]
         if not out_of_scope:
             return
         reset_result = git_run(

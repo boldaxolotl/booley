@@ -544,7 +544,7 @@ def test_fresh_build_reset_failure_is_typed_infrastructure(tmp_path: Path) -> No
             return_value=_inspection(cocotb=False),
         ),
         patch(
-            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            "booley.flows.sim.execution.engine.work_root_for",
             return_value=tmp_path / "build",
         ),
         patch("booley.flows.sim.execution.engine.shutil.rmtree", side_effect=OSError("busy")),
@@ -575,7 +575,7 @@ def _assert_live_and_preview_build_variant(
     )
     with (
         patch(
-            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            "booley.flows.sim.execution.engine.work_root_for",
             return_value=work_root,
         ) as work_root_for,
         patch.object(execution, "_reset_build_root") as reset,
@@ -663,7 +663,7 @@ def test_fresh_build_root_resets_once_per_run(
             return_value=_inspection(cocotb=cocotb),
         ),
         patch(
-            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            "booley.flows.sim.execution.engine.work_root_for",
             return_value=prepared.build_root,
         ),
         patch(
@@ -707,7 +707,7 @@ def test_ordinary_build_root_is_never_reset(
             return_value=_inspection(cocotb=False),
         ),
         patch(
-            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            "booley.flows.sim.execution.engine.work_root_for",
             return_value=prepared.build_root,
         ),
         patch(
