@@ -55,7 +55,7 @@ jobs:
       - name: Build wheel
         run: |
           pip install build==1.6.0
-          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import write_build_stamp; write_build_stamp(Path.cwd(), include_development_context=False)'
+          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.RUNTIME_IMAGE)'
           trap 'rm -f src/booley/_build_commit.py' EXIT
           rm -rf build/
           python -m build --wheel --outdir dist/

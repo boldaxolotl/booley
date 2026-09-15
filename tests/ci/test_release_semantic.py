@@ -71,7 +71,25 @@ def test_publication_topology_requires_official_release_attestation() -> None:
         for step in publication["jobs"]["build-package"]["steps"]
         if step.get("name") == "Build sdist and wheel"
     )
-    build["run"] = build["run"].replace(", official_release=True", "")
+    build["run"] = build["run"].replace(", profile=BuildProfile.OFFICIAL_RELEASE", "")
+
+    errors = semantic.validate_publication_topology(publication, _test_workflow())
+
+    assert "build-package must attest the official release wheel" in errors
+
+
+def test_publication_attestation_must_be_in_post_tag_build_step() -> None:
+    publication = yaml.safe_load(
+        (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    )
+    steps = publication["jobs"]["build-package"]["steps"]
+    tag_check = next(
+        step for step in steps if step.get("name") == "Verify tag matches package version"
+    )
+    build = next(step for step in steps if step.get("name") == "Build sdist and wheel")
+    attestation = "write_build_stamp(Path.cwd(), profile=BuildProfile.OFFICIAL_RELEASE)"
+    build["run"] = build["run"].replace(attestation, "write_build_stamp(Path.cwd())")
+    tag_check["run"] += f"\n# {attestation}"
 
     errors = semantic.validate_publication_topology(publication, _test_workflow())
 
@@ -116,11 +134,29 @@ def test_publication_topology_verifies_attestation_in_both_artifact_paths() -> N
     assert "test-sdist must verify the official release attestation" in errors
 
 
+def test_publication_topology_verifies_development_context_is_absent() -> None:
+    publication = yaml.safe_load(
+        (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    )
+    for job_name in ("test-wheel", "test-sdist"):
+        for step in publication["jobs"][job_name]["steps"]:
+            if "embedded_development_context_path().exists()" in str(step.get("run", "")):
+                step["run"] = step["run"].replace(
+                    "embedded_development_context_path().exists()",
+                    "False",
+                )
+
+    errors = semantic.validate_publication_topology(publication, _test_workflow())
+
+    assert "test-wheel must verify the official release attestation" in errors
+    assert "test-sdist must verify the official release attestation" in errors
+
+
 def test_runtime_image_workflow_does_not_attest_a_pypi_release_wheel() -> None:
     workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
-    assert "official_release=True" not in workflow
-    assert "include_development_context=False" in workflow
+    assert "BuildProfile.OFFICIAL_RELEASE" not in workflow
+    assert "profile=BuildProfile.RUNTIME_IMAGE" in workflow
 
 
 def test_release_topology_splits_validation_by_image_dependency() -> None:

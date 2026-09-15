@@ -120,20 +120,22 @@ def validate_publication_topology(
         tag_validation is None
         or package_build is None
         or build_steps.index(tag_validation) >= build_steps.index(package_build)
-        or not any(
-            "write_build_stamp(Path.cwd(), official_release=True)" in command
-            for command in _commands(build_package)
-        )
+        or "write_build_stamp(Path.cwd(), profile=BuildProfile.OFFICIAL_RELEASE)"
+        not in str(package_build.get("run", ""))
     ):
         errors.append("build-package must attest the official release wheel")
     if not any("rm -rf build/" in command for command in _commands(build_package)):
         errors.append("build-package must clean stale wheel staging")
     if not any(
-        "embedded_official_release() is True" in command for command in _commands(test_wheel)
+        "embedded_official_release() is True" in command
+        and "not embedded_development_context_path().exists()" in command
+        for command in _commands(test_wheel)
     ):
         errors.append("test-wheel must verify the official release attestation")
     if not any(
-        "embedded_official_release() is True" in command for command in _commands(test_sdist)
+        "embedded_official_release() is True" in command
+        and "not embedded_development_context_path().exists()" in command
+        for command in _commands(test_sdist)
     ):
         errors.append("test-sdist must verify the official release attestation")
     return tuple(errors)

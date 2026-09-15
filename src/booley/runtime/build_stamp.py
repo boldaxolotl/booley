@@ -27,6 +27,7 @@ import subprocess
 import tarfile
 import tempfile
 from collections.abc import Iterator
+from enum import Enum
 from pathlib import Path, PurePosixPath
 
 #: Generated stamp module, relative to the Booley repo root. Gitignored.
@@ -68,6 +69,14 @@ _MAX_CONTEXT_BYTES = 64 * 1024 * 1024
 _GIT_TIMEOUT_S = 15
 
 
+class BuildProfile(Enum):
+    """Artifact purpose controlling release attestation and embedded inputs."""
+
+    DEVELOPMENT_WHEEL = "development-wheel"
+    OFFICIAL_RELEASE = "official-release"
+    RUNTIME_IMAGE = "runtime-image"
+
+
 def stamp_path(booley_root: Path) -> Path:
     """Where :func:`write_build_stamp` writes the generated stamp module."""
     return booley_root / STAMP_RELPATH
@@ -76,6 +85,12 @@ def stamp_path(booley_root: Path) -> Path:
 def development_context_path(booley_root: Path) -> Path:
     """Return the generated local-build context path for *booley_root*."""
     return booley_root / DEVELOPMENT_CONTEXT_RELPATH
+
+
+def embedded_development_context_path() -> Path:
+    """Return the development context shipped beside this installed module."""
+    package_root = Path(__file__).resolve().parents[1]
+    return package_root / "data" / Path(DEVELOPMENT_CONTEXT_RELPATH).name
 
 
 def _git_output(booley_root: Path, *args: str) -> str:
@@ -204,6 +219,7 @@ def _write_development_context(booley_root: Path, target: Path) -> str:
         delete=False,
     ) as handle:
         temporary = Path(handle.name)
+    completed = False
     try:
         with (
             temporary.open("wb") as raw,
@@ -223,38 +239,34 @@ def _write_development_context(booley_root: Path, target: Path) -> str:
                 with path.open("rb") as source:
                     archive.addfile(info, source)
         temporary.replace(target)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+        completed = True
+    finally:
+        if not completed:
+            temporary.unlink(missing_ok=True)
     return hashlib.sha256(target.read_bytes()).hexdigest()
 
 
 def write_build_stamp(
     booley_root: Path,
     *,
-    official_release: bool = False,
-    include_development_context: bool | None = None,
+    profile: BuildProfile = BuildProfile.DEVELOPMENT_WHEEL,
 ) -> str:
     """Generate the stamp module for *booley_root*; return the stamped commit.
 
     An unknown commit is still stamped (as ``COMMIT = ""``) so the runtime
     reader has a module to import either way.
     """
-    if type(official_release) is not bool or (
-        include_development_context is not None and type(include_development_context) is not bool
-    ):
-        raise TypeError("build-stamp flags must be literal booleans")
+    if not isinstance(profile, BuildProfile):
+        raise TypeError("build profile must be a BuildProfile")
     target = stamp_path(booley_root)
     context = development_context_path(booley_root)
     target.unlink(missing_ok=True)
     context.unlink(missing_ok=True)
     commit = resolve_build_commit(booley_root)
     payload_fingerprint = resolve_payload_fingerprint(booley_root) or ""
-    include_context = (
-        not official_release
-        if include_development_context is None
-        else include_development_context
-    )
+    official_release = profile is BuildProfile.OFFICIAL_RELEASE
+    include_context = profile is BuildProfile.DEVELOPMENT_WHEEL
+    completed = False
     try:
         context_sha256 = (
             _write_development_context(booley_root, context) if include_context else ""
@@ -269,10 +281,11 @@ def write_build_stamp(
             f'DEVELOPMENT_CONTEXT_SHA256 = "{context_sha256}"\n',
             encoding="utf-8",
         )
-    except BaseException:
-        target.unlink(missing_ok=True)
-        context.unlink(missing_ok=True)
-        raise
+        completed = True
+    finally:
+        if not completed:
+            target.unlink(missing_ok=True)
+            context.unlink(missing_ok=True)
     return commit
 
 
@@ -341,6 +354,14 @@ def _extract_development_context(
     shutil.copyfile(archive_path, development_context_path(destination))
 
 
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 @contextlib.contextmanager
 def extracted_development_context() -> Iterator[Path]:
     """Yield a verified repository-shaped build context from an installed wheel."""
@@ -348,17 +369,10 @@ def extracted_development_context() -> Iterator[Path]:
         from booley._build_commit import DEVELOPMENT_CONTEXT_SHA256, PAYLOAD_FINGERPRINT
     except (ImportError, AttributeError) as exc:
         raise ValueError("development wheel has no embedded Runtime Image build context") from exc
-    if (
-        not isinstance(DEVELOPMENT_CONTEXT_SHA256, str)
-        or len(DEVELOPMENT_CONTEXT_SHA256) != 64
-        or any(character not in "0123456789abcdef" for character in DEVELOPMENT_CONTEXT_SHA256)
-        or not isinstance(PAYLOAD_FINGERPRINT, str)
-        or len(PAYLOAD_FINGERPRINT) != 64
-        or any(character not in "0123456789abcdef" for character in PAYLOAD_FINGERPRINT)
-    ):
+    if not _is_sha256(DEVELOPMENT_CONTEXT_SHA256) or not _is_sha256(PAYLOAD_FINGERPRINT):
         raise ValueError("development wheel has invalid build-context provenance")
     package_root = Path(__file__).resolve().parents[1]
-    archive_path = package_root / "data" / Path(DEVELOPMENT_CONTEXT_RELPATH).name
+    archive_path = embedded_development_context_path()
     stamp_source = package_root / "_build_commit.py"
     with tempfile.TemporaryDirectory(prefix="booley-image-source-") as temporary:
         root = Path(temporary)
@@ -373,17 +387,14 @@ def extracted_development_context() -> Iterator[Path]:
 
 
 @contextlib.contextmanager
-def build_stamp(booley_root: Path, *, include_development_context: bool = False) -> Iterator[str]:
+def build_stamp(booley_root: Path) -> Iterator[str]:
     """Stamp for the duration of a wheel build, then remove the stamp.
 
     The stamp only has to survive until the wheel is built. Leaving it behind
     makes the checkout report a baked commit it does not have (and fails
     ``test_absent_stamp_module_yields_none``), so removal is unconditional.
     """
-    commit = write_build_stamp(
-        booley_root,
-        include_development_context=include_development_context,
-    )
+    commit = write_build_stamp(booley_root, profile=BuildProfile.RUNTIME_IMAGE)
     try:
         yield commit
     finally:

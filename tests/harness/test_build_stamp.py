@@ -9,6 +9,8 @@ matters. These pin the one shared helper and the two callers that use it.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import subprocess
 import sys
 import tarfile
@@ -21,14 +23,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
+from booley.runtime import build_stamp as build_stamp_module
 from booley.runtime.build_stamp import (
+    _MAX_CONTEXT_BYTES,
+    _MAX_CONTEXT_MEMBERS,
     STAMP_RELPATH,
+    BuildProfile,
     _extract_development_context,
     _validate_context_members,
     _write_development_context,
     build_stamp,
     development_context_path,
+    embedded_development_context_path,
     embedded_official_release,
+    extracted_development_context,
     iter_payload_files,
     resolve_build_commit,
     resolve_payload_fingerprint,
@@ -102,7 +110,7 @@ class TestResolveBuildCommit:
 
 class TestWriteBuildStamp:
     def test_writes_an_importable_module(self, repo: Path):
-        commit = write_build_stamp(repo, include_development_context=False)
+        commit = write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
         text = stamp_path(repo).read_text(encoding="utf-8")
 
         assert stamp_path(repo) == repo / STAMP_RELPATH
@@ -117,7 +125,7 @@ class TestWriteBuildStamp:
         context = development_context_path(repo)
         context.parent.mkdir(parents=True, exist_ok=True)
         context.write_bytes(b"stale")
-        write_build_stamp(repo, official_release=True)
+        write_build_stamp(repo, profile=BuildProfile.OFFICIAL_RELEASE)
         text = stamp_path(repo).read_text(encoding="utf-8")
 
         namespace: dict = {}
@@ -127,10 +135,10 @@ class TestWriteBuildStamp:
         assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
         assert not context.exists()
 
-    @pytest.mark.parametrize("value", [1, "false", None])
-    def test_rejects_non_boolean_release_flags(self, repo: Path, value: object):
-        with pytest.raises(TypeError, match="literal booleans"):
-            write_build_stamp(repo, official_release=value)  # type: ignore[arg-type]
+    @pytest.mark.parametrize("value", [1, "official-release", None])
+    def test_rejects_invalid_build_profiles(self, repo: Path, value: object):
+        with pytest.raises(TypeError, match="BuildProfile"):
+            write_build_stamp(repo, profile=value)  # type: ignore[arg-type]
 
     def test_payload_fingerprint_changes_for_dirty_source_at_same_head(self, repo: Path):
         before = resolve_payload_fingerprint(repo)
@@ -173,6 +181,39 @@ class TestEmbeddedOfficialRelease:
 
 
 class TestDevelopmentBuildContext:
+    def test_public_stamp_and_extraction_round_trip(self, tmp_path: Path, monkeypatch):
+        package_root = tmp_path / "site-packages" / "booley"
+        package_root.joinpath("runtime").mkdir(parents=True)
+        stamp_file = package_root / "_build_commit.py"
+        context_file = package_root / "data" / "development-build-context.tar.gz"
+
+        with monkeypatch.context() as build_patch:
+            build_patch.setattr(build_stamp_module, "stamp_path", lambda _root: stamp_file)
+            build_patch.setattr(
+                build_stamp_module,
+                "development_context_path",
+                lambda _root: context_file,
+            )
+            write_build_stamp(SOURCE_ROOT)
+
+        namespace: dict[str, object] = {}
+        exec(stamp_file.read_text(encoding="utf-8"), namespace)
+        embedded = types.ModuleType("booley._build_commit")
+        embedded.DEVELOPMENT_CONTEXT_SHA256 = namespace["DEVELOPMENT_CONTEXT_SHA256"]
+        embedded.PAYLOAD_FINGERPRINT = namespace["PAYLOAD_FINGERPRINT"]
+        monkeypatch.setitem(sys.modules, "booley._build_commit", embedded)
+        monkeypatch.setattr(
+            build_stamp_module,
+            "__file__",
+            str(package_root / "runtime" / "build_stamp.py"),
+        )
+
+        assert embedded_development_context_path() == context_file
+        with extracted_development_context() as extracted:
+            assert resolve_payload_fingerprint(extracted) == namespace["PAYLOAD_FINGERPRINT"]
+            assert stamp_path(extracted).is_file()
+            assert development_context_path(extracted).is_file()
+
     def test_archive_is_deterministic_and_reconstructs_the_payload(self, tmp_path: Path):
         first = tmp_path / "first.tar.gz"
         second = tmp_path / "second.tar.gz"
@@ -233,6 +274,39 @@ class TestDevelopmentBuildContext:
     def test_rejects_duplicate_archive_members(self):
         with pytest.raises(ValueError, match="unsafe"):
             _validate_context_members([tarfile.TarInfo("same"), tarfile.TarInfo("same")])
+
+    def test_rejects_unsafe_member_before_writing_any_file(self, tmp_path: Path):
+        archive_path = tmp_path / "unsafe.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as archive:
+            for name in ("safe", "../escape"):
+                info = tarfile.TarInfo(name)
+                info.size = 1
+                archive.addfile(info, io.BytesIO(b"x"))
+        stamp = tmp_path / "stamp.py"
+        stamp.write_text("COMMIT = 'test'\n", encoding="utf-8")
+        destination = tmp_path / "destination"
+
+        with pytest.raises(ValueError, match="unsafe"):
+            _extract_development_context(
+                archive_path,
+                destination,
+                expected_sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                expected_payload_fingerprint="0" * 64,
+                stamp_source=stamp,
+            )
+
+        assert not destination.exists()
+        assert not (tmp_path / "escape").exists()
+
+    def test_rejects_member_count_and_total_size_bounds(self):
+        members = [tarfile.TarInfo(f"file-{index}") for index in range(_MAX_CONTEXT_MEMBERS + 1)]
+        with pytest.raises(ValueError, match="too many members"):
+            _validate_context_members(members)
+
+        oversized = tarfile.TarInfo("oversized")
+        oversized.size = _MAX_CONTEXT_BYTES + 1
+        with pytest.raises(ValueError, match="too large"):
+            _validate_context_members([oversized])
 
 
 class TestInitStampsItsWheel:
@@ -363,7 +437,7 @@ class TestStampIsNotFingerprinted:
         (root / "src" / "booley" / "real.py").write_text("x = 1\n", encoding="utf-8")
 
         before = init_docker_image._image_build_fingerprint(root)
-        write_build_stamp(root, include_development_context=False)
+        write_build_stamp(root, profile=BuildProfile.RUNTIME_IMAGE)
 
         assert init_docker_image._image_build_fingerprint(root) == before
         assert STAMP_RELPATH not in [

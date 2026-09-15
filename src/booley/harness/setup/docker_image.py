@@ -721,28 +721,24 @@ def _report_build_cache(prune_hint_gb: float = 10.0) -> None:
             return
 
 
+def _wheel_build_stamp(booley_root: Path, *, preserve_stamp: bool):
+    if not preserve_stamp:
+        return build_stamp(booley_root)
+    stamp_file = booley_root / "src" / "booley" / "_build_commit.py"
+    if not stamp_file.is_file():
+        raise OSError("verified development build stamp is missing")
+    return contextlib.nullcontext("<embedded>")
+
+
 def _docker_build_wheel(
     ctx: InitContext, booley_root: Path, *, preserve_stamp: bool = False
 ) -> bool:
-    """Build the commit-stamped booley wheel into dist/. True on success.
-
-    The stamp is what lets ``booley --version`` in the built container name the
-    commit it came from; without it every init-driven image reported a bare
-    ``booley <version>`` and the dev-install freshness check was unanswerable
-    (F-3). ``build.sh`` stamps through the same helper.
-    """
+    """Build the provenance-stamped Booley wheel into ``dist/``."""
     dist_dir = booley_root / "dist"
     build_dir = booley_root / "build"
     info("building booley wheel...")
     try:
-        stamp = contextlib.nullcontext("<embedded>")
-        if preserve_stamp:
-            stamp_file = booley_root / "src" / "booley" / "_build_commit.py"
-            if not stamp_file.is_file():
-                raise OSError("verified development build stamp is missing")
-        else:
-            stamp = build_stamp(booley_root)
-        with stamp as commit:
+        with _wheel_build_stamp(booley_root, preserve_stamp=preserve_stamp) as commit:
             info(f"  build commit: {commit or '<unknown — not a git checkout>'}")
             # setuptools incrementally reuses build/lib. Package moves otherwise
             # leave deleted modules in the next wheel after a package move.
