@@ -465,9 +465,7 @@ class TestImagePull:
         monkeypatch.setattr(init_docker_image.subprocess, "run", _run)
 
         assert init_docker_image._try_pull_image("0.2.0", adopt=False) is True
-        assert calls == [
-            ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.0"]
-        ]
+        assert calls == [["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.0"]]
 
     def test_pull_timeout_can_be_overridden(self, monkeypatch):
         seen: list[int] = []

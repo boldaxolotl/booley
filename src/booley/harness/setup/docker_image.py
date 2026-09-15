@@ -497,11 +497,7 @@ def _prepare_existing_base_image(
     """Skip or refresh a present base image; False when normal provisioning remains."""
     if not exists or ctx.force:
         return False
-    if (
-        fingerprint is None
-        and allow_pull
-        and _refresh_installed_base_image(ctx, expected_version)
-    ):
+    if fingerprint is None and allow_pull and _refresh_installed_base_image(ctx, expected_version):
         return True
     if fingerprint is None or not _image_is_stale(fingerprint, expected_version=expected_version):
         skip(f"{DOCKER_IMAGE} image already present")
@@ -529,14 +525,7 @@ def _step_docker_image(
     only to explain this step's relationship to it; the base is built either way.
     """
     ctx.step_banner("Docker image")
-
-    if not shutil.which("docker"):
-        err("docker not found on PATH — cannot build image")
-        info(
-            "  Docker Desktop users: the CLI joins PATH only after the app has "
-            "started — launch Docker Desktop, then reopen this terminal"
-        )
-        ctx.record("docker_image", "err", "docker not on PATH")
+    if not _docker_cli_ready(ctx):
         return
 
     _base_image_note(selected_image)
@@ -570,6 +559,18 @@ def _step_docker_image(
         info("pre-built image unavailable, building locally (~20 min)")
 
     _docker_local_build(ctx, docker_dir, exists, fingerprint)
+
+
+def _docker_cli_ready(ctx: InitContext) -> bool:
+    if shutil.which("docker"):
+        return True
+    err("docker not found on PATH — cannot build image")
+    info(
+        "  Docker Desktop users: the CLI joins PATH only after the app has "
+        "started — launch Docker Desktop, then reopen this terminal"
+    )
+    ctx.record("docker_image", "err", "docker not on PATH")
+    return False
 
 
 def _docker_check_only(ctx: InitContext, exists: bool) -> None:
@@ -1022,12 +1023,7 @@ def ensure_flavor_image(
     """Pull, build, or refresh the selected Booley-shipped sandbox flavor.
     Return whether this run changed the image.
     """
-    dockerfile_name = FLAVOR_IMAGES[image]
-    docker_dir = docker_data_dir()
-    dockerfile = docker_dir / dockerfile_name
-    exists = _docker_image_exists(image)
-    fingerprint = _image_build_fingerprint(docker_dir.parent.parent.parent.parent)
-    expected_version = _expected_version(docker_dir.parent.parent.parent.parent)
+    dockerfile, exists, fingerprint, expected_version = _flavor_inputs(image)
     prepared = _prepare_flavor_without_build(
         ctx,
         image,
@@ -1042,7 +1038,7 @@ def ensure_flavor_image(
         return _handle_flavor_without_dockerfile(
             ctx,
             image,
-            dockerfile_name,
+            dockerfile.name,
             exists=exists,
             fingerprint=fingerprint,
             expected_version=expected_version,
@@ -1064,3 +1060,15 @@ def ensure_flavor_image(
         warn(f"{image} is stale (its {DOCKER_IMAGE} base or Booley's sources changed)")
         warn("  rebuilding — a session left on the old image keeps serving pre-rebuild code")
     return _flavor_build(ctx, image, dockerfile, exists, fingerprint)
+
+
+def _flavor_inputs(image: str) -> tuple[Path, bool, str | None, str]:
+    docker_dir = docker_data_dir()
+    dockerfile = docker_dir / FLAVOR_IMAGES[image]
+    booley_root = docker_dir.parent.parent.parent.parent
+    return (
+        dockerfile,
+        _docker_image_exists(image),
+        _image_build_fingerprint(booley_root),
+        _expected_version(booley_root),
+    )
