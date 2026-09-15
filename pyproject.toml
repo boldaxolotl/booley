@@ -66,7 +66,7 @@ test = [
     "diff-cover==10.5.1",
 ]
 quality = [
-    "pyright==1.1.411",
+    "pyright==1.1.414",
     "ruff==0.16.6",
 ]
 mutation = [
@@ -97,7 +97,7 @@ dev = [
     # CI quality gates. Exact pins keep local and hosted results reproducible;
     # the quality extra repeats these pins for a smaller hosted install.
     "diff-cover==10.5.1",
-    "pyright==1.1.411",
+    "pyright==1.1.414",
     "mutmut==3.7.0",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in
     # .github/workflows/test.yml — a floor here let three different ruff versions
