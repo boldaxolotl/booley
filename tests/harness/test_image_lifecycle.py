@@ -59,8 +59,8 @@ class FakeBuilder:
         self.docker = docker
         self.built: list[str] = []
 
-    def build(self, node, *, force: bool) -> None:
-        del force
+    def build(self, node, *, force: bool, source: lifecycle.ArtifactSource) -> None:
+        del force, source
         self.built.append(node.reference)
         labels = dict(node.expected_labels)
         labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
@@ -78,14 +78,14 @@ class FakeBuilder:
 
 
 class FailingBuilder(FakeBuilder):
-    def build(self, node, *, force: bool) -> None:
-        super().build(node, force=force)
+    def build(self, node, *, force: bool, source: lifecycle.ArtifactSource) -> None:
+        super().build(node, force=force, source=source)
         raise lifecycle.ImageLifecycleError("build failed")
 
 
 class FailOnSecondBuilder(FakeBuilder):
-    def build(self, node, *, force: bool) -> None:
-        super().build(node, force=force)
+    def build(self, node, *, force: bool, source: lifecycle.ArtifactSource) -> None:
+        super().build(node, force=force, source=source)
         if len(self.built) == 2:
             raise lifecycle.ImageLifecycleError("derived build failed")
 
@@ -99,6 +99,18 @@ def _project(tmp_path: Path, image: str | None = None) -> Path:
         body += f'image = "{image}"\n'
     (project_dir / "booley.toml").write_text(body, encoding="utf-8")
     return root
+
+
+def _source_recipe_tree(tmp_path: Path) -> tuple[Path, Path]:
+    source_root = tmp_path / "source"
+    docker_dir = source_root / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    (source_root / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
+    (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (docker_dir / "Dockerfile.riscv").write_text(
+        "FROM booley-sandbox\n", encoding="utf-8"
+    )
+    return source_root, docker_dir
 
 
 def _wire(monkeypatch: pytest.MonkeyPatch, docker: FakeDocker) -> FakeBuilder:
@@ -433,6 +445,491 @@ def test_ensure_rebuilds_base_then_flavor_and_returns_exact_id(tmp_path: Path, m
     assert result.requires_runtime_recreation is True
 
 
+def test_source_checkout_missing_flavor_builds_without_registry_pull(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image as init_docker_image
+
+    _source_root, docker_dir = _source_recipe_tree(tmp_path)
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
+
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    stable_id = "sha256:" + "9" * 64
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    payload = lifecycle.PayloadProvenance(
+        lifecycle.PROVENANCE_SCHEMA,
+        "0.2.6",
+        "payload-new",
+    )
+    base = lifecycle._base_node(payload)
+    docker.images[lifecycle.BASE_IMAGE] = (
+        "sha256:" + "b" * 64,
+        _labels(
+            payload="payload-new",
+            recipe=base.build.recipe_fingerprint,
+            parent=stable_id,
+        ),
+    )
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_image_exists",
+        lambda image: docker.image_id(image) is not None,
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_image_build_fingerprint",
+        lambda _root: "payload-new",
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_expected_version",
+        lambda _root: "0.2.6",
+    )
+    pulls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        init_docker_image,
+        "_try_pull_image",
+        lambda version, image=lifecycle.BASE_IMAGE: pulls.append((version, image)) or False,
+    )
+    builds: list[str] = []
+
+    def build_flavor(
+        context, image: str, _recipe: Path, _exists: bool, _fingerprint: str | None
+    ) -> bool:
+        node = lifecycle._nodes(root, image, docker)[-1]
+        labels = dict(node.expected_labels)
+        labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
+        labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = (
+            lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
+        )
+        docker.images[image] = ("sha256:" + "c" * 64, labels)
+        context.record("project_image", "ok", f"flavor {image} built")
+        builds.append(image)
+        return True
+
+    monkeypatch.setattr(init_docker_image, "_flavor_build", build_flavor)
+
+    result = harness_lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE
+    )
+
+    assert pulls == []
+    assert builds == ["booley-sandbox-riscv"]
+    assert result.status is lifecycle.Status.CHANGED
+
+
+def test_packaged_distribution_missing_base_pulls_verified_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import booley
+    from booley.harness.setup import docker_image as init_docker_image
+    from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+    docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        VersionAttribution(
+            version="0.2.6",
+            origin=VersionOrigin.DISTRIBUTION,
+            distribution_name="booley-rtl",
+        ),
+    )
+
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_step_docker_image",
+        lambda *_args, **_kwargs: pytest.fail("packaged distribution attempted a local build"),
+    )
+    pulls: list[tuple[str, str]] = []
+
+    def pull(
+        version: str,
+        image: str = lifecycle.BASE_IMAGE,
+        *,
+        adopt: bool = True,
+    ) -> bool:
+        assert adopt is False
+        pulls.append((version, image))
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            version,
+            "payload-new",
+        )
+        node = lifecycle._base_node(payload)
+        labels = dict(node.expected_labels)
+        labels.update(
+            {
+                lifecycle.LABEL_BUILD_ORIGIN: "registry",
+                lifecycle.LABEL_PARENT_ARTIFACT: (
+                    "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
+                ),
+                lifecycle.LABEL_PARENT_ARTIFACT_KIND: (
+                    lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST
+                ),
+            }
+        )
+        docker.images[init_docker_image.remote_tag(image, version)] = (
+            "sha256:" + "a" * 64,
+            labels,
+        )
+        return True
+
+    monkeypatch.setattr(init_docker_image, "_try_pull_image", pull)
+
+    result = harness_lifecycle.reconcile(
+        lifecycle.HostImageScope(), lifecycle.Intent.ENSURE
+    )
+
+    assert pulls == [("0.2.6", lifecycle.BASE_IMAGE)]
+    assert result.status is lifecycle.Status.CHANGED
+
+
+@pytest.mark.parametrize(
+    ("origin", "attribution_kwargs", "expected_action"),
+    [
+        (
+            "source",
+            {"source_root": Path("/tmp/booley-source")},
+            "would build locally",
+        ),
+        (
+            "distribution",
+            {"distribution_name": "booley-rtl"},
+            "would pull verified release",
+        ),
+    ],
+)
+def test_check_reports_selected_artifact_source_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    origin: str,
+    attribution_kwargs: dict[str, Path | str],
+    expected_action: str,
+) -> None:
+    import booley
+    from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+    docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        VersionAttribution(
+            version="0.2.6",
+            origin=VersionOrigin(origin),
+            **attribution_kwargs,
+        ),
+    )
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
+
+    result = harness_lifecycle.reconcile(
+        lifecycle.HostImageScope(), lifecycle.Intent.CHECK
+    )
+
+    assert result.status is lifecycle.Status.STALE
+    assert expected_action in result.diagnostics[0].message
+    assert not docker.mutations
+
+
+def test_wrong_verified_pull_falls_back_to_exact_local_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"
+
+    class PullThenLocalBuilder(FakeBuilder):
+        def __init__(self, docker: FakeDocker) -> None:
+            super().__init__(docker)
+            self.sources: list[lifecycle.ArtifactSource] = []
+
+        def build(
+            self,
+            node,
+            *,
+            force: bool,
+            source: lifecycle.ArtifactSource,
+        ) -> str | None:
+            self.sources.append(source)
+            if source is lifecycle.ArtifactSource.LOCAL_BUILD:
+                super().build(node, force=force, source=source)
+                return None
+            labels = dict(node.expected_labels)
+            labels.update(
+                {
+                    lifecycle.LABEL_PAYLOAD_FINGERPRINT: "wrong-payload",
+                    lifecycle.LABEL_BUILD_ORIGIN: "registry",
+                    lifecycle.LABEL_PARENT_ARTIFACT: (
+                        "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
+                    ),
+                    lifecycle.LABEL_PARENT_ARTIFACT_KIND: (
+                        lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST
+                    ),
+                }
+            )
+            self.docker.images[release] = ("sha256:" + "a" * 64, labels)
+            return release
+
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    builder = PullThenLocalBuilder(docker)
+
+    result = lifecycle.reconcile(
+        lifecycle.HostImageScope(),
+        lifecycle.Intent.ENSURE,
+        docker=docker,
+        builder=builder,
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL,
+    )
+
+    assert builder.sources == [
+        lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL,
+        lifecycle.ArtifactSource.LOCAL_BUILD,
+    ]
+    assert result.status is lifecycle.Status.CHANGED
+    assert docker.label(lifecycle.BASE_IMAGE, lifecycle.LABEL_BUILD_ORIGIN) == "local"
+    assert docker.image_id(release) is None
+    assert ("tag", "sha256:" + "a" * 64, lifecycle.BASE_IMAGE) not in docker.mutations
+
+
+def test_verified_pull_is_validated_before_canonical_adoption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"
+
+    class StagedPullBuilder:
+        def __init__(self, docker: FakeDocker) -> None:
+            self.docker = docker
+
+        def build(
+            self,
+            node,
+            *,
+            force: bool,
+            source: lifecycle.ArtifactSource,
+        ) -> str:
+            del force
+            assert source is lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL
+            labels = dict(node.expected_labels)
+            labels.update(
+                {
+                    lifecycle.LABEL_BUILD_ORIGIN: "registry",
+                    lifecycle.LABEL_PARENT_ARTIFACT: (
+                        "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
+                    ),
+                    lifecycle.LABEL_PARENT_ARTIFACT_KIND: (
+                        lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST
+                    ),
+                }
+            )
+            self.docker.images[release] = ("sha256:" + "a" * 64, labels)
+            assert self.docker.image_id(node.reference) is None
+            return release
+
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+
+    result = lifecycle.reconcile(
+        lifecycle.HostImageScope(),
+        lifecycle.Intent.ENSURE,
+        docker=docker,
+        builder=StagedPullBuilder(docker),
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert result.selected_id == "sha256:" + "a" * 64
+    assert ("tag", "sha256:" + "a" * 64, lifecycle.BASE_IMAGE) in docker.mutations
+
+
+def test_pull_and_local_fallback_failure_restore_prior_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"
+
+    class FailedRecoveryBuilder:
+        def __init__(self, docker: FakeDocker) -> None:
+            self.docker = docker
+
+        def build(
+            self,
+            node,
+            *,
+            force: bool,
+            source: lifecycle.ArtifactSource,
+        ) -> str | None:
+            del force
+            if source is lifecycle.ArtifactSource.LOCAL_BUILD:
+                raise lifecycle.ImageLifecycleError("local compiler failed")
+            labels = dict(node.expected_labels)
+            labels.update(
+                {
+                    lifecycle.LABEL_PAYLOAD_FINGERPRINT: "wrong-payload",
+                    lifecycle.LABEL_BUILD_ORIGIN: "registry",
+                    lifecycle.LABEL_PARENT_ARTIFACT: (
+                        "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
+                    ),
+                    lifecycle.LABEL_PARENT_ARTIFACT_KIND: (
+                        lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST
+                    ),
+                }
+            )
+            self.docker.images[release] = ("sha256:" + "a" * 64, labels)
+            return release
+
+    prior_id = "sha256:" + "d" * 64
+    docker = FakeDocker(
+        {lifecycle.BASE_IMAGE: (prior_id, {lifecycle.LABEL_SCHEMA: "stale"})}
+    )
+    _wire(monkeypatch, docker)
+
+    with pytest.raises(lifecycle.ImageLifecycleError) as error:
+        lifecycle.reconcile(
+            lifecycle.HostImageScope(),
+            lifecycle.Intent.ENSURE,
+            docker=docker,
+            builder=FailedRecoveryBuilder(docker),
+            artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL,
+        )
+
+    assert "verified-release-pull" in str(error.value)
+    assert "local-build" in str(error.value)
+    assert docker.image_id(lifecycle.BASE_IMAGE) == prior_id
+    assert ("tag", "sha256:" + "a" * 64, lifecycle.BASE_IMAGE) not in docker.mutations
+    assert not any(reference.startswith("booley-lifecycle-backup-") for reference in docker.images)
+
+
+def _wire_source_chain(
+    root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[FakeDocker, list[tuple[str, str]], list[str]]:
+    import booley
+    from booley.harness.setup import docker_image as init_docker_image
+    from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+    source_root, docker_dir = _source_recipe_tree(tmp_path)
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        VersionAttribution(
+            version="0.2.6",
+            origin=VersionOrigin.SOURCE,
+            source_root=source_root,
+        ),
+    )
+
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(init_docker_image.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_image_exists",
+        lambda image=lifecycle.BASE_IMAGE: docker.image_id(image) is not None,
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_image_build_fingerprint",
+        lambda _root: "payload-new",
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_expected_version",
+        lambda _root: "0.2.6",
+    )
+    pulls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        init_docker_image,
+        "_try_pull_image",
+        lambda version, image=lifecycle.BASE_IMAGE: pulls.append((version, image)) or False,
+    )
+    builds: list[str] = []
+
+    def stamp_local(node: lifecycle.ImageNode, image_id: str) -> None:
+        labels = dict(node.expected_labels)
+        labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
+        labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = (
+            lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
+        )
+        if node.reference == lifecycle.BASE_IMAGE:
+            labels[lifecycle.LABEL_PARENT_ARTIFACT] = (
+                docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or ""
+            )
+        docker.images[node.reference] = (image_id, labels)
+
+    def build_base(context, _docker_dir, _exists, _fingerprint) -> None:
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            "0.2.6",
+            "payload-new",
+        )
+        stamp_local(lifecycle._base_node(payload), "sha256:" + "b" * 64)
+        context.record("docker_image", "ok", "built")
+        builds.append(lifecycle.BASE_IMAGE)
+
+    def build_flavor(
+        context, image: str, _recipe: Path, _exists: bool, _fingerprint: str | None
+    ) -> bool:
+        stamp_local(lifecycle._nodes(root, image, docker)[-1], "sha256:" + "c" * 64)
+        context.record("project_image", "ok", f"flavor {image} built")
+        builds.append(image)
+        return True
+
+    monkeypatch.setattr(init_docker_image, "_docker_local_build", build_base)
+    monkeypatch.setattr(init_docker_image, "_flavor_build", build_flavor)
+    return docker, pulls, builds
+
+
+def test_source_host_then_project_builds_one_exact_local_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    docker, pulls, builds = _wire_source_chain(root, tmp_path, monkeypatch)
+
+    base = harness_lifecycle.reconcile(
+        lifecycle.HostImageScope(), lifecycle.Intent.ENSURE
+    )
+    result = harness_lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root, base), lifecycle.Intent.ENSURE
+    )
+
+    assert pulls == []
+    assert builds == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
+    assert result.selected_id == docker.image_id("booley-sandbox-riscv")
+    assert docker.label(
+        "booley-sandbox-riscv", lifecycle.LABEL_PARENT_ARTIFACT
+    ) == docker.image_id(lifecycle.BASE_IMAGE)
+
+    builds.clear()
+    refreshed_base = harness_lifecycle.reconcile(
+        lifecycle.HostImageScope(), lifecycle.Intent.REFRESH
+    )
+    harness_lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root, refreshed_base), lifecycle.Intent.REFRESH
+    )
+
+    assert pulls == []
+    assert builds == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
+
+
 def test_published_flavor_uses_registry_parent_when_local_ids_differ(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -505,8 +1002,10 @@ def test_missing_published_pair_is_acquired_and_keeps_flavor_short_tag(
             self.docker = docker
             self.built: list[str] = []
 
-        def build(self, node, *, force: bool) -> None:
-            del force
+        def build(
+            self, node, *, force: bool, source: lifecycle.ArtifactSource
+        ) -> None:
+            del force, source
             self.built.append(node.reference)
             labels = dict(node.expected_labels)
             labels[lifecycle.LABEL_BUILD_ORIGIN] = "registry"
@@ -888,7 +1387,11 @@ def test_legacy_adapter_builds_user_owned_project_recipe_without_rewriting(
         ),
     )
 
-    harness_lifecycle._LegacyBuildAdapter(root, verbose=True).build(node, force=True)
+    harness_lifecycle._LegacyBuildAdapter(root, verbose=True).build(
+        node,
+        force=True,
+        source=lifecycle.ArtifactSource.LOCAL_BUILD,
+    )
 
     assert calls == [(node.reference, docker_dir, True)]
     assert dockerfile.read_text(encoding="utf-8") == original
@@ -914,7 +1417,9 @@ def test_packaged_refresh_uses_pull_capable_builder(
     monkeypatch.setattr(
         init_docker_image,
         "_try_pull_image",
-        lambda version, image=lifecycle.BASE_IMAGE: pulls.append((version, image)) or True,
+        lambda version, image=lifecycle.BASE_IMAGE, **_kwargs: (
+            pulls.append((version, image)) or True
+        ),
     )
     monkeypatch.setattr(
         init_docker_image,
@@ -933,7 +1438,11 @@ def test_packaged_refresh_uses_pull_capable_builder(
         lifecycle.BuildProvenance("recipe", None),
     )
 
-    harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=True)
+    harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
+        node,
+        force=True,
+        source=lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL,
+    )
 
     assert pulls == [("0.2.6", reference)]
 
@@ -1351,7 +1860,11 @@ def test_packaged_builder_reports_pull_failure(
     recipe = docker_dir / "Dockerfile"
     recipe.write_text("FROM scratch\n", encoding="utf-8")
     monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
-    monkeypatch.setattr(init_docker_image, "_try_pull_image", lambda *_args: False)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_try_pull_image",
+        lambda *_args, **_kwargs: False,
+    )
     node = lifecycle.ImageNode(
         lifecycle.BASE_IMAGE,
         recipe,
@@ -1360,7 +1873,11 @@ def test_packaged_builder_reports_pull_failure(
     )
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="could not pull"):
-        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=True)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
+            node,
+            force=True,
+            source=lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL,
+        )
 
 
 def test_local_builder_dispatches_each_managed_recipe(
@@ -1374,12 +1891,12 @@ def test_local_builder_dispatches_each_managed_recipe(
     monkeypatch.setattr(
         init_docker_image,
         "_step_docker_image",
-        lambda *_args: calls.append(lifecycle.BASE_IMAGE),
+        lambda *_args, **_kwargs: calls.append(lifecycle.BASE_IMAGE),
     )
     monkeypatch.setattr(
         init_docker_image,
         "ensure_flavor_image",
-        lambda *_args: calls.append("booley-sandbox-riscv"),
+        lambda *_args, **_kwargs: calls.append("booley-sandbox-riscv"),
     )
     monkeypatch.setattr(
         init_cmd,
@@ -1398,7 +1915,11 @@ def test_local_builder_dispatches_each_managed_recipe(
             payload,
             lifecycle.BuildProvenance("recipe", None),
         )
-        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=False)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
+            node,
+            force=False,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
 
     assert calls == [
         lifecycle.BASE_IMAGE,
@@ -1421,12 +1942,16 @@ def test_local_builder_reports_step_and_user_recipe_failures(
         lifecycle.BuildProvenance("recipe", None),
     )
 
-    def fail_step(context, _reference) -> None:
+    def fail_step(context, _reference, **_kwargs) -> None:
         context.results.append(SimpleNamespace(status="err", detail="base build failed"))
 
     monkeypatch.setattr(init_docker_image, "_step_docker_image", fail_step)
     with pytest.raises(lifecycle.ImageLifecycleError, match="base build failed"):
-        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(base, force=True)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
+            base,
+            force=True,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
 
     docker_dir = root / ".booley_project" / "docker"
     docker_dir.mkdir()
@@ -1440,14 +1965,22 @@ def test_local_builder_reports_step_and_user_recipe_failures(
         lifecycle.BASE_IMAGE,
     )
     with pytest.raises(lifecycle.ImageLifecycleError, match=r"Dockerfile.*missing"):
-        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(project_node, force=True)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
+            project_node,
+            force=True,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
 
     project_node.recipe.write_text("FROM scratch\n", encoding="utf-8")
     monkeypatch.setattr(
         lifecycle.project_image, "build_project_image", lambda *_args, **_kwargs: False
     )
     with pytest.raises(lifecycle.ImageLifecycleError, match="failed to rebuild"):
-        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(project_node, force=True)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
+            project_node,
+            force=True,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
 
 
 def test_failed_backup_creation_cleans_earlier_backup(tmp_path: Path) -> None:
@@ -1485,8 +2018,10 @@ def test_mutation_retries_unstamped_build_then_fails(tmp_path: Path) -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        def build(self, _node, *, force: bool) -> None:
-            del force
+        def build(
+            self, _node, *, force: bool, source: lifecycle.ArtifactSource
+        ) -> None:
+            del force, source
             self.calls += 1
 
     node = lifecycle._base_node(lifecycle.PayloadProvenance("1", "0.2.6", "payload"))

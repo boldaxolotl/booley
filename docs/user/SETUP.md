@@ -66,6 +66,14 @@ release—without forced deletion or parent pruning. The verified image remains
 available through its canonical local name. Retag an official image under your
 own repository name if you need to keep a separately named pinned copy.
 
+Artifact selection follows the running Booley installation. A source checkout
+builds every missing or stale Booley-managed Runtime Image from that checkout's
+recipes and never substitutes a registry image merely because the semantic
+version matches a release. An installed distribution may pull its matching
+published image; Booley validates the exact payload, recipe, and parent
+provenance before adopting the canonical local name. `--check-only` reports
+which action would occur without pulling or building.
+
 Skipping the explicit command is supported: ordinary `booley init` performs
 the same reconciliation before it changes a Project.
 

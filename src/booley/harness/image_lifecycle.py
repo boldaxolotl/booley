@@ -8,10 +8,13 @@ from booley.runtime import image_lifecycle as runtime_lifecycle
 from booley.runtime import project_image
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.version_attribution import VersionOrigin
 
 BASE_IMAGE = runtime_lifecycle.BASE_IMAGE
 FLAVOR_RECIPES = runtime_lifecycle.FLAVOR_RECIPES
 BuildPort = runtime_lifecycle.BuildPort
+ArtifactSource = runtime_lifecycle.ArtifactSource
+ArtifactPolicy = runtime_lifecycle.ArtifactPolicy
 DockerPort = runtime_lifecycle.DockerPort
 HostImageScope = runtime_lifecycle.HostImageScope
 ImageCleanup = runtime_lifecycle.ImageCleanup
@@ -29,23 +32,37 @@ class _LegacyBuildAdapter:
         self.project_root = project_root
         self.verbose = verbose
 
-    def build(self, node: ImageNode, *, force: bool) -> None:
+    def build(
+        self,
+        node: ImageNode,
+        *,
+        force: bool,
+        source: ArtifactSource,
+    ) -> str | None:
         from booley.harness import init_cmd
         from booley.harness.setup.common import InitContext
         from booley.harness.setup.docker_image import (
             _step_docker_image,
             _try_pull_image,
             ensure_flavor_image,
+            remote_tag,
         )
 
         shipped = node.reference == BASE_IMAGE or node.reference in FLAVOR_RECIPES
-        source_root = docker_data_dir().parents[3]
-        if shipped and not (source_root / "pyproject.toml").is_file():
-            if not _try_pull_image(node.payload.version, node.reference):
+        if source is ArtifactSource.VERIFIED_RELEASE_PULL:
+            if not shipped:
+                raise ImageLifecycleError(
+                    f"no published Runtime Image source exists for {node.reference}"
+                )
+            if not _try_pull_image(
+                node.payload.version,
+                node.reference,
+                adopt=False,
+            ):
                 raise ImageLifecycleError(
                     f"could not pull current packaged Runtime Image {node.reference}"
                 )
-            return
+            return remote_tag(node.reference, node.payload.version)
 
         context = InitContext(
             project_root=self.project_root,
@@ -54,9 +71,9 @@ class _LegacyBuildAdapter:
             show_step_banners=False,
         )
         if node.reference == BASE_IMAGE:
-            _step_docker_image(context, node.reference)
+            _step_docker_image(context, node.reference, allow_pull=False)
         elif node.reference in FLAVOR_RECIPES:
-            ensure_flavor_image(context, node.reference)
+            ensure_flavor_image(context, node.reference, allow_pull=False)
         else:
             docker_dir = resolve_checkout_project_dir(self.project_root) / "docker"
             user_owned = any(
@@ -79,6 +96,7 @@ class _LegacyBuildAdapter:
         failures = [result.detail for result in context.results if result.status == "err"]
         if failures:
             raise ImageLifecycleError("; ".join(failures))
+        return None
 
 
 def _docker_adapter() -> DockerPort:
@@ -87,6 +105,20 @@ def _docker_adapter() -> DockerPort:
 
 def _build_adapter(project_root: Path, _docker: DockerPort, *, verbose: bool) -> BuildPort:
     return _LegacyBuildAdapter(project_root, verbose=verbose)
+
+
+def _artifact_policy() -> ArtifactPolicy:
+    """Select artifact acquisition from the authoritative installation identity."""
+    import booley
+
+    if booley.version_attribution.origin is VersionOrigin.SOURCE:
+        return ArtifactPolicy.LOCAL_ONLY
+    if booley.version_attribution.origin is VersionOrigin.DISTRIBUTION:
+        return ArtifactPolicy.VERIFIED_RELEASE_ONLY
+    raise ImageLifecycleError(
+        "cannot select managed Runtime Images because the running Booley code is "
+        "neither an attributed source checkout nor an installed distribution"
+    )
 
 
 def reconcile(
@@ -110,4 +142,5 @@ def reconcile(
         verbose=verbose,
         docker=docker,
         builder=builder,
+        artifact_policy=_artifact_policy(),
     )

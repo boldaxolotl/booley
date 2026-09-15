@@ -452,6 +452,23 @@ class TestImagePull:
             )
         ]
 
+    def test_staged_pull_leaves_canonical_adoption_to_lifecycle(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        class _Result:
+            returncode = 0
+
+        def _run(cmd, **_kwargs):
+            calls.append(cmd)
+            return _Result()
+
+        monkeypatch.setattr(init_docker_image.subprocess, "run", _run)
+
+        assert init_docker_image._try_pull_image("0.2.0", adopt=False) is True
+        assert calls == [
+            ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.0"]
+        ]
+
     def test_pull_timeout_can_be_overridden(self, monkeypatch):
         seen: list[int] = []
 

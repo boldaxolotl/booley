@@ -356,7 +356,12 @@ def _image_pull_timeout_seconds() -> int:
     return timeout
 
 
-def _try_pull_image(version: str, image: str = DOCKER_IMAGE) -> bool:
+def _try_pull_image(
+    version: str,
+    image: str = DOCKER_IMAGE,
+    *,
+    adopt: bool = True,
+) -> bool:
     tag = remote_tag(image, version)
     info(f"trying to pull pre-built image: {tag}")
     timeout = _image_pull_timeout_seconds()
@@ -379,6 +384,15 @@ def _try_pull_image(version: str, image: str = DOCKER_IMAGE) -> bool:
     if result.returncode != 0:
         warn(f"pre-built image pull failed for {tag} (docker exited {result.returncode})")
         return False
+
+    if not adopt:
+        return True
+
+    return _tag_pulled_image(tag, image)
+
+
+def _tag_pulled_image(tag: str, image: str) -> bool:
+    """Adopt one already-pulled acquisition tag under its managed name."""
 
     try:
         subprocess.run(
@@ -478,11 +492,16 @@ def _prepare_existing_base_image(
     exists: bool,
     fingerprint: str | None,
     expected_version: str,
+    allow_pull: bool = True,
 ) -> bool:
     """Skip or refresh a present base image; False when normal provisioning remains."""
     if not exists or ctx.force:
         return False
-    if fingerprint is None and _refresh_installed_base_image(ctx, expected_version):
+    if (
+        fingerprint is None
+        and allow_pull
+        and _refresh_installed_base_image(ctx, expected_version)
+    ):
         return True
     if fingerprint is None or not _image_is_stale(fingerprint, expected_version=expected_version):
         skip(f"{DOCKER_IMAGE} image already present")
@@ -498,7 +517,12 @@ def _prepare_existing_base_image(
     return True
 
 
-def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
+def _step_docker_image(
+    ctx: InitContext,
+    selected_image: str = "",
+    *,
+    allow_pull: bool = True,
+) -> None:
     """Build/refresh the project-agnostic ``booley-sandbox`` base image.
 
     *selected_image* is the project's resolved ``[sandbox].image`` and is used
@@ -528,6 +552,7 @@ def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
         exists=exists,
         fingerprint=fingerprint,
         expected_version=expected_version,
+        allow_pull=allow_pull,
     ):
         return
 
@@ -536,7 +561,7 @@ def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
         return
 
     # Pull-first strategy (skip if --force requests fresh local build)
-    if not ctx.force:
+    if allow_pull and not ctx.force:
         version = expected_version
         if _try_pull_image(version):
             ok(f"{DOCKER_IMAGE} pulled from registry (v{version})")
@@ -907,6 +932,7 @@ def _prepare_flavor_without_build(
     exists: bool,
     fingerprint: str | None,
     expected_version: str,
+    allow_pull: bool,
 ) -> bool | None:
     """Return changed/current when handled, or ``None`` when a local build is needed."""
     inspect_existing = exists and not ctx.force
@@ -925,15 +951,17 @@ def _prepare_flavor_without_build(
         ctx.record("project_image", "skip", f"flavor {image} current")
         return False
     if ctx.check_only:
-        if installed_release_mismatch:
+        if installed_release_mismatch and allow_pull:
             warn(f"would pull compatible image for the {image} sandbox flavor")
             ctx.record("project_image", "warn", "would pull compatible image")
             return False
-        verb = "rebuild (stale)" if exists else "pull or build"
+        verb = "rebuild (stale)" if exists else "build"
+        if allow_pull and not exists:
+            verb = "pull or build"
         warn(f"would {verb} the {image} sandbox flavor")
         ctx.record("project_image", "warn", f"would {verb}")
         return False
-    should_pull = not exists or installed_release_mismatch
+    should_pull = allow_pull and (not exists or installed_release_mismatch)
     if should_pull and not ctx.force and _try_pull_image(expected_version, image):
         ok(f"{image} pulled from registry")
         ctx.record("project_image", "ok", f"flavor {image} pulled")
@@ -989,6 +1017,7 @@ def ensure_flavor_image(
     image: str,
     *,
     ensure_base: Callable[[], None] | None = None,
+    allow_pull: bool = True,
 ) -> bool:
     """Pull, build, or refresh the selected Booley-shipped sandbox flavor.
     Return whether this run changed the image.
@@ -1005,6 +1034,7 @@ def ensure_flavor_image(
         exists=exists,
         fingerprint=fingerprint,
         expected_version=expected_version,
+        allow_pull=allow_pull,
     )
     if prepared is not None:
         return prepared
