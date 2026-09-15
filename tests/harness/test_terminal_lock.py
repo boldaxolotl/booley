@@ -111,7 +111,14 @@ class TestEndpointBoxOpen:
         assert "\033[38;5;208m" in out
         assert "B-Wave [@dut wave]" in _strip_ansi(out)
 
-    def test_bwave_close_uses_canonical_name(self, capsys):
+
+# ---------------------------------------------------------------------------
+# endpoint_box_close formatting
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointBoxClose:
+    def test_bwave_uses_canonical_name(self, capsys):
         terminal.endpoint_box_close(
             "bwave",
             "@dut wave",
@@ -120,13 +127,6 @@ class TestEndpointBoxOpen:
         )
         assert "B-Wave [@dut wave]" in _strip_ansi(capsys.readouterr().out)
 
-
-# ---------------------------------------------------------------------------
-# endpoint_box_close formatting
-# ---------------------------------------------------------------------------
-
-
-class TestEndpointBoxClose:
     def test_pass_with_display_lines(self, capsys):
         terminal.endpoint_box_close(
             "lint",
@@ -226,6 +226,10 @@ class TestAgentText:
 
 
 class TestEndpointHeartbeat:
+    def test_bwave_uses_canonical_name(self, capsys):
+        terminal.endpoint_heartbeat("bwave", 301.0)
+        assert "B-Wave: 5m01s elapsed" in _strip_ansi(capsys.readouterr().out)
+
     def test_under_one_minute(self, capsys):
         terminal.endpoint_heartbeat("lint", 45.0)
         out = _strip_ansi(capsys.readouterr().out)

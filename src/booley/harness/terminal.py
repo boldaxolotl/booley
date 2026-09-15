@@ -335,5 +335,6 @@ def endpoint_heartbeat(endpoint_name: str, elapsed_s: float) -> None:
     """Print dimmed endpoint heartbeat: ``    * endpoint: Xm00s elapsed``."""
     mins = int(elapsed_s // 60)
     secs = int(elapsed_s % 60)
+    display_name = endpoint_display_name(endpoint_name)
     with _output_lock:
-        _emit(dim(f"    * {endpoint_name}: {mins}m{secs:02d}s elapsed"), flush=True)
+        _emit(dim(f"    * {display_name}: {mins}m{secs:02d}s elapsed"), flush=True)
