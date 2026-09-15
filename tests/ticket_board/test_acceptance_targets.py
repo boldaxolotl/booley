@@ -143,6 +143,25 @@ def test_target_binding_accepts_optional_criterion_path() -> None:
     assert binding.as_dict()["criterion"] == "criteria.optional.lint_clean"
 
 
+def test_parameter_inspection_failure_is_reported_as_validation_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def reject_parameter(_root: Path, _target: str) -> SimpleNamespace:
+        raise FuseSocError("invalid integer parameter override")
+
+    monkeypatch.setattr(acceptance_targets, "inspect_target_selector", reject_parameter)
+
+    errors = acceptance_targets.validate_criterion_targets(
+        {"criteria": {"mandatory": {"sim_pass": ["tb@future@smoke@pass->pass"]}}},
+        tmp_path,
+    )
+
+    assert errors == [
+        "criteria.mandatory.sim_pass: candidate target 'future' inspection failed: "
+        "invalid integer parameter override"
+    ]
+
+
 def test_target_control_helpers_handle_external_and_missing_project_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

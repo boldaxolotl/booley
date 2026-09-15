@@ -61,8 +61,8 @@ class SessionBuildRequirements:
 
 
 @dataclass(frozen=True, slots=True)
-class LeasedSessionRequirements:
-    """EDA facts held under one authority lease for Runtime preparation."""
+class SessionRequirementsSnapshot:
+    """Detached EDA facts used for Runtime preparation and revalidation."""
 
     build: SessionBuildRequirements
     runtime: SessionEdaRequirements
@@ -78,23 +78,37 @@ def build_requirements(
         return leased.build
 
 
+def inspect_build_requirements(
+    project_root: Path,
+    *,
+    vivado_enabled: bool,
+) -> SessionRequirementsSnapshot:
+    """Resolve prospective Runtime inputs without creating authority state."""
+    project = project_root.resolve(strict=True)
+    config = _load_vivado_config(project)
+    if config is None or not vivado_enabled:
+        return _requirements_snapshot(project, None, None)
+    try:
+        installation, profile = authority.resolve_for_inspection(
+            project,
+            config.provisioning == PROVISIONING_HOST,
+        )
+    except authority.AuthorityError as exc:
+        raise SessionRequirementsError(str(exc)) from exc
+    return _requirements_snapshot(project, installation, profile)
+
+
 @contextmanager
 def lease_build_requirements(
     project_root: Path,
     *,
     vivado_enabled: bool,
-    prepare_relay: bool = False,
-    force_relay: bool = False,
-) -> Iterator[LeasedSessionRequirements]:
+) -> Iterator[SessionRequirementsSnapshot]:
     """Hold one coherent EDA snapshot through Runtime spec persistence."""
     project = project_root.resolve(strict=True)
-    try:
-        config = load_eda_config(project).get("vivado")
-    except EdaConfigError as exc:
-        raise SessionRequirementsError(str(exc)) from exc
+    config = _load_vivado_config(project)
     if config is None or not vivado_enabled:
-        runtime = _requirements(project, None, None, include_relay_identity=False)
-        yield LeasedSessionRequirements(_build_values(None, None), runtime)
+        yield _requirements_snapshot(project, None, None)
         return
     host_provisioning = config.provisioning == PROVISIONING_HOST
     try:
@@ -102,20 +116,47 @@ def lease_build_requirements(
             installation,
             profile,
         ):
-            if profile is not None and prepare_relay:
-                ensure_relay_image(force=force_relay)
-            runtime = _requirements(
-                project,
-                installation,
-                profile,
-                include_relay_identity=prepare_relay,
-            )
-            yield LeasedSessionRequirements(
-                _build_values(installation, profile),
-                runtime,
-            )
-    except (authority.AuthorityError, RelayDockerError) as exc:
+            yield _requirements_snapshot(project, installation, profile)
+    except authority.AuthorityError as exc:
         raise SessionRequirementsError(str(exc)) from exc
+
+
+def _load_vivado_config(project: Path) -> EdaConfig | None:
+    try:
+        return load_eda_config(project).get("vivado")
+    except EdaConfigError as exc:
+        raise SessionRequirementsError(str(exc)) from exc
+
+
+def _requirements_snapshot(
+    project: Path,
+    installation: authority.Installation | None,
+    profile: authority.LicenseProfile | None,
+) -> SessionRequirementsSnapshot:
+    runtime = _requirements(project, installation, profile, include_relay_identity=False)
+    return SessionRequirementsSnapshot(_build_values(installation, profile), runtime)
+
+
+def prepare_runtime_dependencies(
+    project_root: Path,
+    leased: SessionRequirementsSnapshot,
+    *,
+    force_relay: bool = False,
+) -> SessionEdaRequirements:
+    """Prepare mutable dependencies after a caller validates one leased snapshot."""
+    installation = leased.runtime.installation
+    profile = leased.runtime.license_profile
+    try:
+        if profile is not None:
+            ensure_relay_image(force=force_relay)
+    except RelayDockerError as exc:
+        raise SessionRequirementsError(str(exc)) from exc
+    return _requirements(
+        project_root,
+        installation,
+        profile,
+        include_relay_identity=profile is not None,
+    )
 
 
 def _build_values(

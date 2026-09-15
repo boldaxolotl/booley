@@ -109,7 +109,7 @@ def finish_execution(
     return endpoint._finish_main(
         endpoint._adapt_outcome(outcome),
         prepared.display_target,
-        prepared.display_label,
+        outcome.display_label or prepared.display_label,
         started=started,
         acceptance_recorded=acceptance_recorded,
         dry_run=prepared.dry_run,

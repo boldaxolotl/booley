@@ -29,13 +29,15 @@ import json
 import logging
 from pathlib import Path
 
-from booley.runtime.git import (
-    git_run,
+from booley.core.scope_matching import (
     is_new_scope_entry,
     is_scope_unknown,
-    scope_matches_dirty_file,
     scope_matches_file,
     strip_scope_new_tag,
+)
+from booley.runtime.git import (
+    git_run,
+    scope_matches_dirty_file,
 )
 from booley.ticket_board.acceptance_path_policy import (
     is_static_acceptance_path,

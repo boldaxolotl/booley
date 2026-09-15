@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
+import time
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import replace
@@ -33,8 +37,9 @@ from booley.flows.sim.execution import (
     SimulationTestOutcome,
 )
 from booley.flows.sim.trace_recipe import TraceMode
-from booley.fusesoc import selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
 
@@ -86,6 +91,137 @@ def _inspection(*, cocotb: bool) -> SimpleNamespace:
     )
     inspection.inspect = lambda _handle: inspection
     return inspection
+
+
+def _runtime_input_vvp(root: Path, build_root: Path) -> Path:
+    (build_root / "demo.scr").write_text("", encoding="utf-8")
+    (build_root / "demo").write_text("", encoding="utf-8")
+    (build_root / "dhry.hex").write_text("00000013\n", encoding="utf-8")
+    fake_bin = root / "bin"
+    fake_bin.mkdir()
+    vvp = fake_bin / ("vvp.bat" if os.name == "nt" else "vvp")
+    if os.name == "nt":
+        script = (
+            "@echo off\n"
+            "if not exist dhry.hex (\n"
+            "  echo $readmemh: Unable to open dhry.hex for reading.\n"
+            "  exit /b 1\n"
+            ")\n"
+            "echo [SIM_RESULT] PASSED\n"
+        )
+    else:
+        script = (
+            "#!/bin/sh\n"
+            "if [ ! -f dhry.hex ]; then\n"
+            "  echo '$readmemh: Unable to open dhry.hex for reading.'\n"
+            "  exit 1\n"
+            "fi\n"
+            "echo '[SIM_RESULT] PASSED'\n"
+        )
+    vvp.write_text(script, encoding="utf-8")
+    vvp.chmod(0o755)
+    return fake_bin
+
+
+def _write_runtime_input_project(root: Path) -> Path:
+    state = root / ".booley_project"
+    state.mkdir(parents=True)
+    (state / "booley.toml").write_text("", encoding="utf-8")
+    (root / "tb.sv").write_text("module tb; endmodule\n", encoding="utf-8")
+    firmware = root / "data" / "firmware.hex"
+    firmware.parent.mkdir()
+    firmware.write_text("00000013\n", encoding="utf-8")
+    (root / "runtime_input.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:runtime_input:1\n"
+        "filesets:\n"
+        "  tb:\n"
+        "    files:\n"
+        "      - tb.sv: {file_type: systemVerilogSource, tags: [tb]}\n"
+        "      - data/firmware.hex: {file_type: user, copyto: firmware.hex}\n"
+        "targets:\n"
+        "  sim:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: icarus}\n"
+        "    filesets: [tb]\n"
+        "    toplevel: tb\n",
+        encoding="utf-8",
+    )
+    return state
+
+
+def _write_fake_icarus_tools(root: Path) -> Path:
+    fake_bin = root / "bin"
+    fake_bin.mkdir()
+    suffix = ".bat" if os.name == "nt" else ""
+    iverilog = fake_bin / f"iverilog{suffix}"
+    if os.name == "nt":
+        iverilog_script = (
+            "@echo off\n"
+            ":loop\n"
+            'if "%~1"=="" exit /b 2\n'
+            'if "%~1"=="-o" goto output\n'
+            "shift\n"
+            "goto loop\n"
+            ":output\n"
+            "shift\n"
+            'type nul > "%~1"\n'
+        )
+    else:
+        iverilog_script = (
+            "#!/bin/sh\n"
+            "output=''\n"
+            'while [ "$#" -gt 0 ]; do\n'
+            "  if [ \"$1\" = '-o' ]; then output=$2; shift 2; else shift; fi\n"
+            "done\n"
+            '[ -n "$output" ] || exit 2\n'
+            'touch "$output"\n'
+        )
+    iverilog.write_text(iverilog_script, encoding="utf-8")
+    iverilog.chmod(0o755)
+    vvp = fake_bin / f"vvp{suffix}"
+    if os.name == "nt":
+        vvp_script = (
+            "@echo off\n"
+            "if not exist firmware.hex (\n"
+            "  echo $readmemh: Unable to open firmware.hex for reading.\n"
+            "  exit /b 1\n"
+            ")\n"
+            "echo [SIM_RESULT] PASSED\n"
+        )
+    else:
+        vvp_script = (
+            "#!/bin/sh\n"
+            "if [ ! -f firmware.hex ]; then\n"
+            "  echo '$readmemh: Unable to open firmware.hex for reading.'\n"
+            "  exit 1\n"
+            "fi\n"
+            "echo '[SIM_RESULT] PASSED'\n"
+        )
+    vvp.write_text(vvp_script, encoding="utf-8")
+    vvp.chmod(0o755)
+    return fake_bin
+
+
+def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        started = time.monotonic()
+        result = subprocess.run(
+            command,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return SubprocessResult(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            duration_s=time.monotonic() - started,
+        )
+
+    return invoke
 
 
 def _run_execution(
@@ -534,6 +670,148 @@ def test_adapter_programmer_value_error_propagates(tmp_path: Path) -> None:
         _run_execution(handle, prepared, MagicMock(), ("smoke",), cocotb=False)
 
 
+def test_declared_staged_runtime_input_is_available_at_run_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    prepared = replace(
+        prepared,
+        make_argv=("true",),
+        resolved=replace(
+            prepared.resolved,
+            files=(ResolvedFile("dhry.hex", "user"),),
+        ),
+    )
+    fake_bin = _runtime_input_vvp(tmp_path, prepared.build_root)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        _subprocess_invoker(handle.project_root),
+        ("dhry",),
+        cocotb=False,
+        options=SimulationOptions(timeout_ms=5_000),
+    )
+
+    assert outcome.passed is True
+    assert not (handle.project_root / "dhry.hex").exists()
+
+
+def test_declared_runtime_input_is_cleaned_after_adapter_timeout(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    prepared = replace(
+        prepared,
+        make_argv=("true",),
+        resolved=replace(
+            prepared.resolved,
+            files=(ResolvedFile("dhry.hex", "user"),),
+        ),
+    )
+    _runtime_input_vvp(tmp_path, prepared.build_root)
+
+    def timeout_invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        staged = handle.project_root / "dhry.hex"
+        assert staged.is_symlink()
+        assert staged.read_text(encoding="utf-8") == "00000013\n"
+        return SubprocessResult(
+            returncode=-9,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+            timed_out=True,
+            duration_s=0.01,
+        )
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        timeout_invoke,
+        ("dhry",),
+        cocotb=False,
+    )
+
+    assert outcome.tests[0].timed_out is True
+    assert not (handle.project_root / "dhry.hex").exists()
+
+
+def test_conflicting_runtime_input_is_typed_infrastructure_failure(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    prepared = replace(
+        prepared,
+        make_argv=("true",),
+        resolved=replace(
+            prepared.resolved,
+            files=(ResolvedFile("dhry.hex", "user"),),
+        ),
+    )
+    _runtime_input_vvp(tmp_path, prepared.build_root)
+    existing = handle.project_root / "dhry.hex"
+    existing.write_text("project-owned\n", encoding="utf-8")
+    invoke = MagicMock()
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        invoke,
+        ("dhry",),
+        cocotb=False,
+    )
+
+    assert outcome.verdict == "error"
+    assert outcome.infrastructure_failure is not None
+    assert outcome.infrastructure_failure.kind == "runtime_input"
+    assert "conflicts with an existing path" in outcome.infrastructure_failure.detail
+    assert existing.read_text(encoding="utf-8") == "project-owned\n"
+    invoke.assert_not_called()
+
+
+def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project)
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    real_resolve = fusesoc_registry.resolve_target_handle
+    fusesoc_cmd = (
+        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+        if shutil.which("fusesoc")
+        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+    )
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project),
+        options=SimulationOptions(timeout_ms=5_000),
+    )
+    with patch.object(
+        fusesoc_registry,
+        "resolve_target_handle",
+        side_effect=lambda *args, **kwargs: real_resolve(
+            *args,
+            **{**kwargs, "fusesoc_cmd": fusesoc_cmd},
+        ),
+    ):
+        outcome = execution.run(handle, NamedTests(("dhry",)))
+
+    edam = next((state / ".runtime").rglob("*.eda.yml"))
+    resolved = fusesoc_registry.parse_edam(
+        edam,
+        target="sim",
+        vlnv=handle.vlnv,
+    )
+    assert [
+        (item.name, item.file_type) for item in resolved.files if item.file_type == "user"
+    ] == [("firmware.hex", "user")]
+    assert outcome.passed is True
+    assert not (project / "firmware.hex").is_symlink()
+
+
 def test_fresh_build_reset_failure_is_typed_infrastructure(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(trace=True))
@@ -544,7 +822,7 @@ def test_fresh_build_reset_failure_is_typed_infrastructure(tmp_path: Path) -> No
             return_value=_inspection(cocotb=False),
         ),
         patch(
-            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            "booley.flows.sim.execution.engine.work_root_for",
             return_value=tmp_path / "build",
         ),
         patch("booley.flows.sim.execution.engine.shutil.rmtree", side_effect=OSError("busy")),
@@ -575,7 +853,7 @@ def _assert_live_and_preview_build_variant(
     )
     with (
         patch(
-            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            "booley.flows.sim.execution.engine.work_root_for",
             return_value=work_root,
         ) as work_root_for,
         patch.object(execution, "_reset_build_root") as reset,
@@ -663,7 +941,7 @@ def test_fresh_build_root_resets_once_per_run(
             return_value=_inspection(cocotb=cocotb),
         ),
         patch(
-            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            "booley.flows.sim.execution.engine.work_root_for",
             return_value=prepared.build_root,
         ),
         patch(
@@ -707,7 +985,7 @@ def test_ordinary_build_root_is_never_reset(
             return_value=_inspection(cocotb=False),
         ),
         patch(
-            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            "booley.flows.sim.execution.engine.work_root_for",
             return_value=prepared.build_root,
         ),
         patch(

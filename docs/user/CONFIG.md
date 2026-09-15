@@ -241,9 +241,8 @@ those relative paths are authored against — usually the testbench dir:
 run_cwd = "tests/work"   # relative to the repo root; unset = run from project root
 ```
 
-Only the direct-binary (Verilator) run honors this as a literal cwd; the Icarus
-`make run` target stays anchored to its build directory. Its resolved value is
-exported to pre-sim commands as `BOOLEY_RUN_CWD`.
+Every Simulation adapter honors this as its literal cwd. Its resolved value is
+exported to Pre-Sim Commands as `BOOLEY_RUN_CWD`.
 
 **The directory must already exist.** Booley does not create it — the sim run
 spawns with this as its cwd, and a missing one fails the spawn. If your run dir
@@ -1277,6 +1276,10 @@ A few conventions worth calling out in that example:
   simulation harness and does not need the SystemVerilog dump module.
 - **A `file_type: user` file with `copyto:`** stages a non-RTL data file (a
   `$readmemh` image, a vectors file) into the build tree at the name the TB opens.
+  Before the simulator starts, Booley exposes that declared relative path in the
+  configured `run_cwd`; the temporary entry is removed after the run. An identical
+  file already present there is preserved, while a different file at the same path
+  is an input-setup error rather than being overwritten.
 - **`flow_options.arch`** (and any other Edalize-only knob) is plumbing Booley
   passes through to the toolchain. The built-in synth path drives its own
   PDK/target via the OpenROAD engine and ignores `arch`.

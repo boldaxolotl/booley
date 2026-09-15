@@ -274,12 +274,12 @@ check_sets:
 - id: picorv32-ubuntu-codex
   checks:
   - inventory.FPGA-FLOW.fpga-authority-fail
+  - inventory.FPGA-FLOW.fpga-recovery
   - inventory.FPGA-FLOW.fpga-baseline
   - inventory.FPGA-FLOW.fpga-cache
   - inventory.FPGA-FLOW.fpga-design-fail
   - inventory.FPGA-FLOW.fpga-dry
   - inventory.FPGA-FLOW.fpga-no-cache
-  - inventory.FPGA-FLOW.fpga-recovery
   - inventory.HOST-EDA-PROVISIONING.grant
   - inventory.HOST-EDA-PROVISIONING.grant-denied
   - inventory.HOST-EDA-PROVISIONING.grant-recovery
@@ -779,18 +779,30 @@ steps:
   - inputs.project-pin
 - id: stealth.hidden-projection
   phase: prepare
-  action: Exercise hidden authored cores; only these may be projected.
+  action: |-
+    Exercise the declared hidden authored cores and verify only those are projected. Inventory the pinned read-only Stealth projection, recording raw paths and counting as native only files with no dot-prefixed path component.
   checks:
   - id: stealth.hidden-projection
     capabilities:
     - STEALTH-MODE
-    stimulus: Exercise hidden authored cores; only these may be projected.
-    expected: Exercise hidden authored cores; only these may be projected.
+    stimulus: |-
+      Exercise the declared hidden authored cores and verify only those are projected. Inventory the pinned read-only Stealth projection, recording raw paths and counting as native only files with no dot-prefixed path component.
+    expected: |-
+      Only the declared hidden authored cores are projected. Dot-prefixed projected files are excluded from native-file counts while the raw inventory remains retained.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Before/after projection inventory and resolved sources.
+    evidence: |-
+      Before/after projection inventory and resolved sources. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.stealth.hidden-projection
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: stealth.native-no-copy
   phase: prepare
   action: 'Inspect ignored native projections: no copied RTL may exist.'
@@ -1025,21 +1037,29 @@ steps:
 - id: inventory.PROJECT-INVENTORY.inventory-import
   phase: prepare
   action: |-
-    Exercise `inventory-import`: import bounded disposable root containing directory symlink.
+    Create a disposable initialized outer checkout with a separate nested Project Git marker and a directory symlink. Run the inventory git-topology preflight before bounded booley projects discover on the declared root; retain before/after structured inventory.
   checks:
   - id: inventory.PROJECT-INVENTORY.inventory-import
     capabilities:
     - PROJECT-INVENTORY
     stimulus: |-
-      Exercise `inventory-import`: import bounded disposable root containing directory symlink.
+      Create a disposable initialized outer checkout with a separate nested Project Git marker and a directory symlink. Run the inventory git-topology preflight before bounded booley projects discover on the declared root; retain before/after structured inventory.
     expected: |-
-      Only explicitly bounded real roots remembered.
+      Only explicitly bounded real initialized roots are imported; the symlink target is not imported.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#cli-reference
     evidence: |-
-      Inventory snapshots and import tree; restore moved root before ledger cleanup, foreign roots unchanged. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Inventory snapshots and import tree; restore moved root before ledger cleanup, foreign roots unchanged. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.PROJECT-INVENTORY.inventory-import
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: inventory.PROJECT-INVENTORY.inventory-missing
   phase: prepare
   action: |-
@@ -1079,57 +1099,87 @@ steps:
 - id: inventory.DOCTOR-DIAGNOSTICS.doctor-recovery
   phase: prepare
   action: |-
-    Exercise `doctor-recovery`: restore config/run Doctor.
+    After any run-owned Grant change, capture current Grant and Session state and pass state_probe.py ready. If stale, run host booley init --seed, booley session validate, booley session up, then prove the exact mount command inside the Session before repairing config and running Doctor.
   checks:
   - id: inventory.DOCTOR-DIAGNOSTICS.doctor-recovery
     capabilities:
     - DOCTOR-DIAGNOSTICS
     stimulus: |-
-      Exercise `doctor-recovery`: restore config/run Doctor.
+      After any run-owned Grant change, capture current Grant and Session state and pass state_probe.py ready. If stale, run host booley init --seed, booley session validate, booley session up, then prove the exact mount command inside the Session before repairing config and running Doctor.
     expected: |-
-      Fresh clean health.
+      Doctor produces a fresh clean health report only after the restored Grant, issued spec, running Session, and mount are independently proven.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#first-verify-your-setup
     evidence: |-
-      Separate report/log copies before overwrite, waiver text with expiry, config diffs. Deep Doctor retains manually suggested FPGA command rather than silently claiming FPGA execution. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Separate report/log copies before overwrite, waiver text with expiry, config diffs. Deep Doctor retains manually suggested FPGA command rather than silently claiming FPGA execution. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.DOCTOR-DIAGNOSTICS.doctor-recovery
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: state_probe.py
+    audience: scenario-operator
+    sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
+
 - id: inventory.RISC-V-TOOLCHAIN.riscv-firmware
   phase: prepare
   action: |-
-    Exercise `riscv-firmware`: pre-run real firmware build and Spike use.
+    Build real firmware and the versioned Spike probe inside the selected RISC-V runtime. Validate every probe ELF PT_LOAD against the runtime RAM bounds before executing Spike; retain compile, ELF, and Spike output.
   checks:
   - id: inventory.RISC-V-TOOLCHAIN.riscv-firmware
     capabilities:
     - RISC-V-TOOLCHAIN
     stimulus: |-
-      Exercise `riscv-firmware`: pre-run real firmware build and Spike use.
+      Build real firmware and the versioned Spike probe inside the selected RISC-V runtime. Validate every probe ELF PT_LOAD against the runtime RAM bounds before executing Spike; retain compile, ELF, and Spike output.
     expected: |-
-      Fresh named firmware and expected execution evidence.
+      Fresh named firmware is reproducible, the validated probe executes under Spike, and the expected execution result is observed.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
     evidence: |-
-      Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.RISC-V-TOOLCHAIN.riscv-firmware
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixtures/riscv/spike-probe.S
+    audience: scenario-operator
+    sha256: a9664bae1216cba860889de4a5798db4bc228c29f1f286cd684cde8496214b03
+  - path: fixtures/riscv/spike-probe.ld
+    audience: scenario-operator
+    sha256: fcd15b2cc2d205f2f17d09b3f79a94ef6723474e77e52b4c6a1115e8dee76573
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: inventory.RISC-V-TOOLCHAIN.riscv-tools
   phase: prepare
   action: |-
-    Exercise `riscv-tools`: inspect runtime GCC/srec_cat/dtc/Spike and offline specs.
+    Inspect runtime GCC, srec_cat, dtc, Spike and offline PDF contents using the selected runtime; identify every required document subject by extracted content, not filename count.
   checks:
   - id: inventory.RISC-V-TOOLCHAIN.riscv-tools
     capabilities:
     - RISC-V-TOOLCHAIN
     stimulus: |-
-      Exercise `riscv-tools`: inspect runtime GCC/srec_cat/dtc/Spike and offline specs.
+      Inspect runtime GCC, srec_cat, dtc, Spike and offline PDF contents using the selected runtime; identify every required document subject by extracted content, not filename count.
     expected: |-
-      Declared supported image tools ready.
+      All declared tools run, and the required ISA, privileged, debug, and other declared subjects occur in the offline PDFs even when subjects share a file.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
     evidence: |-
-      Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.RISC-V-TOOLCHAIN.riscv-tools
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: inventory.STEALTH-MODE.stealth-history
   phase: prepare
   action: |-
@@ -1404,49 +1454,87 @@ steps:
   - doctor.plain-recheck
 - id: vivado.registration
   phase: baseline
-  action: Create Installation Registration for borrowed installation.
+  action: |-
+    Register the borrowed Vivado installation under a run-owned name, retain requested and returned source identities, and compare their resolved canonical paths.
   checks:
   - id: vivado.registration
     capabilities:
     - FPGA-FLOW
-    stimulus: Create Installation Registration for borrowed installation.
-    expected: Create Installation Registration for borrowed installation.
+    stimulus: |-
+      Register the borrowed Vivado installation under a run-owned name, retain requested and returned source identities, and compare their resolved canonical paths.
+    expected: |-
+      Registration succeeds and the returned canonical source equals the requested source after path resolution; borrowed installation bytes remain unchanged.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Registration state and ledger ownership.
+    evidence: |-
+      Registration state and ledger ownership. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.vivado.registration
   requires:
   - inputs.project-pin
   - doctor.plain-recheck
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: vivado.project-grant
   phase: baseline
-  action: Create Grant for the exact Project root.
+  action: |-
+    Inspect the existing Grant for the exact canonical run-owned Project root and current Session before adding one. If replacement is required, revoke only the run-owned old Grant, attach the run-owned registration, issue a new spec with booley init --seed, validate and start the Session, and run the state transition probe.
   checks:
   - id: vivado.project-grant
     capabilities:
     - FPGA-FLOW
-    stimulus: Create Grant for the exact Project root.
-    expected: Create Grant for the exact Project root.
+    stimulus: |-
+      Inspect the existing Grant for the exact canonical run-owned Project root and current Session before adding one. If replacement is required, revoke only the run-owned old Grant, attach the run-owned registration, issue a new spec with booley init --seed, validate and start the Session, and run the state transition probe.
+    expected: |-
+      Exactly the intended run-owned Grant is associated with the Project; any previous run-owned association is replaced in order, the Session spec is current, and a borrowed Grant is untouched.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Exact canonical root and resulting Grant.
+    evidence: |-
+      Exact canonical root and resulting Grant. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.vivado.project-grant
   requires:
   - inputs.project-pin
   - doctor.plain-recheck
+  - vivado.registration
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: state_probe.py
+    audience: scenario-operator
+    sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
+
 - id: vivado.readonly-mount
   phase: baseline
-  action: Expose borrowed installation as a read-only mount inside the Session Runtime.
+  action: |-
+    After the Grant/Session ready probe, inspect the runtime mount metadata and execute the Vivado binary discovered from the registered source layout inside the Session.
   checks:
   - id: vivado.readonly-mount
     capabilities:
     - FPGA-FLOW
-    stimulus: Expose borrowed installation as a read-only mount inside the Session Runtime.
-    expected: Expose borrowed installation as a read-only mount inside the Session Runtime.
+    stimulus: |-
+      After the Grant/Session ready probe, inspect the runtime mount metadata and execute the Vivado binary discovered from the registered source layout inside the Session.
+    expected: |-
+      The intended canonical release is mounted read-only and its discovered executable reports the expected version.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Runtime mount metadata and read-only evidence.
+    evidence: |-
+      Runtime mount metadata and read-only evidence. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.vivado.readonly-mount
   requires:
   - inputs.project-pin
   - doctor.plain-recheck
+  - vivado.project-grant
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: vivado.license-create
   phase: baseline
   action: Create License Profile.
@@ -1541,21 +1629,34 @@ steps:
   - doctor.plain-recheck
 - id: vivado.implementation
   phase: baseline
-  action: Run implementation and require a fresh successful artifact.
+  action: |-
+    Run uncached Vivado implementation on the declared Target after the Grant/Session ready probe; compare before/after artifact identities and structured flow report.
   checks:
   - id: vivado.implementation
     capabilities:
     - FPGA-FLOW
     - EDA-VIVADO
     - EDA-FPGA-RESOLUTION
-    stimulus: Run implementation and require a fresh successful artifact.
-    expected: Run implementation and require a fresh successful artifact.
+    stimulus: |-
+      Run uncached Vivado implementation on the declared Target after the Grant/Session ready probe; compare before/after artifact identities and structured flow report.
+    expected: |-
+      Fresh normalized PASS, routed DCP checkpoint, timing report, and utilization report from this invocation. A bitstream is required only if separately declared by the product contract.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Vivado grade and artifact identity/freshness.
+    evidence: |-
+      Vivado grade and artifact identity/freshness. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.vivado.implementation
   requires:
   - inputs.project-pin
   - doctor.plain-recheck
+  - vivado.readonly-mount
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: vivado.license-delete
   phase: baseline
   action: Delete run-owned License Profile after dependents are released.
@@ -1592,39 +1693,58 @@ steps:
 - id: inventory.LINT-FLOW.lint-dedupe
   phase: baseline
   action: |-
-    Exercise `lint-dedupe`: duplicate cross-Target finding.
+    Place versioned qa_lint_fixture.sv in two distinct Verilator lint Targets. Preflight both per-Target structured reports for the same real WIDTHTRUNC warning, then inspect the aggregate report.
   checks:
   - id: inventory.LINT-FLOW.lint-dedupe
     capabilities:
     - LINT-FLOW
     stimulus: |-
-      Exercise `lint-dedupe`: duplicate cross-Target finding.
+      Place versioned qa_lint_fixture.sv in two distinct Verilator lint Targets. Preflight both per-Target structured reports for the same real WIDTHTRUNC warning, then inspect the aggregate report.
     expected: |-
-      One finding with proper provenance.
+      One aggregate finding for the common rule/file/line/message with provenance from both Targets; no duplicate aggregate warning rows.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#lint
     evidence: |-
-      Both linter versions, native waiver files, complete findings/report and filtered file lists. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Both linter versions, native waiver files, complete findings/report and filtered file lists. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.LINT-FLOW.lint-dedupe
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixtures/lint/qa_lint_fixture.sv
+    audience: scenario-operator
+    sha256: 6a37dff1d8a64930821e835c76fb7f06587e00b23a5ce6c38ecd3b146260319c
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: inventory.LINT-FLOW.lint-hard
   phase: baseline
   action: |-
-    Exercise `lint-clean`, `lint-warning`, `lint-hard`, `lint-infra`: separate clean/warning/syntax/tool-availability inputs.
+    Before attempting syntax-error lint, preflight the exact argv with lint-command: booley session enter -- booley ... lint ... . Then run the malformed RTL stimulus and retain the structured lint report.
   checks:
   - id: inventory.LINT-FLOW.lint-hard
     capabilities:
     - LINT-FLOW
     stimulus: |-
-      Exercise `lint-clean`, `lint-warning`, `lint-hard`, `lint-infra`: separate clean/warning/syntax/tool-availability inputs.
+      Before attempting syntax-error lint, preflight the exact argv with lint-command: booley session enter -- booley ... lint ... . Then run the malformed RTL stimulus and retain the structured lint report.
     expected: |-
-      Distinct report outcomes.
+      A valid lint invocation reports the declared syntax hard error; a session-enter supervisor failure is an invalid Scenario Operator command, not a lint verdict.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#lint
     evidence: |-
-      Both linter versions, native waiver files, complete findings/report and filtered file lists. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Both linter versions, native waiver files, complete findings/report and filtered file lists. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.LINT-FLOW.lint-hard
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: inventory.LINT-FLOW.lint-infra
   phase: baseline
   action: |-
@@ -1646,21 +1766,41 @@ steps:
 - id: inventory.LINT-FLOW.lint-native-waiver
   phase: baseline
   action: |-
-    Exercise `lint-native-waiver`: each linter's native waiver.
+    Run before/after lint on the versioned Verilator RTL and a rendered Verible qa_lint_fixture.sv with each native waiver file. Use structured reports; retain any unrelated control warning unchanged.
   checks:
   - id: inventory.LINT-FLOW.lint-native-waiver
     capabilities:
     - LINT-FLOW
     stimulus: |-
-      Exercise `lint-native-waiver`: each linter's native waiver.
+      Run before/after lint on the versioned Verilator RTL and a rendered Verible qa_lint_fixture.sv with each native waiver file. Use structured reports; retain any unrelated control warning unchanged.
     expected: |-
-      Intended finding waived only.
+      For each linter, the intended before warning disappears only after its native waiver; every unrelated warning, if present, remains unchanged and no new warning appears.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#lint
     evidence: |-
-      Both linter versions, native waiver files, complete findings/report and filtered file lists. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Both linter versions, native waiver files, complete findings/report and filtered file lists. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.LINT-FLOW.lint-native-waiver
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixtures/lint/qa_lint_fixture.sv
+    audience: scenario-operator
+    sha256: 6a37dff1d8a64930821e835c76fb7f06587e00b23a5ce6c38ecd3b146260319c
+  - path: fixtures/lint/verilator-waiver.vlt
+    audience: scenario-operator
+    sha256: 9cef7e8c281391b8be188eb17f1593a263fb009c6c8e78329f81f8534b258144
+  - path: fixtures/lint/verible-waiver.txt
+    audience: scenario-operator
+    sha256: fdc6658d665b356f44d4e10e8cc854897e665a4a1b51a85c02b0c181af2cfcc9
+  - path: fixtures/lint/render_verible.py
+    audience: scenario-operator
+    sha256: c20181db627a85cfc4da3a700c30c92338468cbf9c0c4a4306add24b4f017240
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: inventory.LINT-FLOW.lint-nonfatal-warning
   phase: baseline
   action: |-
@@ -1754,21 +1894,29 @@ steps:
 - id: inventory.SYNTHESIS-FLOW.synth-baseline
   phase: baseline
   action: |-
-    Exercise `synth-baseline`: compare declared baseline/candidate.
+    Use a disposable paired outer/nested linked-worktree topology, validate both destination refs and Git markers with git-topology synth, then compare declared baseline and candidate.
   checks:
   - id: inventory.SYNTHESIS-FLOW.synth-baseline
     capabilities:
     - SYNTHESIS-FLOW
     stimulus: |-
-      Exercise `synth-baseline`: compare declared baseline/candidate.
+      Use a disposable paired outer/nested linked-worktree topology, validate both destination refs and Git markers with git-topology synth, then compare declared baseline and candidate.
     expected: |-
-      Numeric delta with both identities.
+      Both structured synthesis reports identify their actual commits and produce the declared numeric delta; a missing nested checkout is invalid setup.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#synth
     evidence: |-
-      Yosys/OpenROAD/frontend logs and versions, SDC/default clock, selected profile/expert override, metrics/baseline recipe. No signoff claim. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Yosys/OpenROAD/frontend logs and versions, SDC/default clock, selected profile/expert override, metrics/baseline recipe. No signoff claim. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.SYNTHESIS-FLOW.synth-baseline
   requires:
   - inputs.project-pin
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: inventory.SYNTHESIS-FLOW.synth-frontend-incompatible
   phase: baseline
   action: |-
@@ -1934,21 +2082,62 @@ steps:
 - id: inventory.FPGA-FLOW.fpga-authority-fail
   phase: baseline
   action: |-
-    Exercise `fpga-authority-fail`: remove run-owned Grant.
+    Snapshot the run-owned Vivado Grant and Session, revoke only that Grant, attempt the FPGA Flow while revoked, and grade the denial before any recovery. Retain the exact flow and Session-validation outputs.
   checks:
   - id: inventory.FPGA-FLOW.fpga-authority-fail
     capabilities:
     - FPGA-FLOW
     stimulus: |-
-      Exercise `fpga-authority-fail`: remove run-owned Grant.
+      Snapshot the run-owned Vivado Grant and Session, revoke only that Grant, attempt the FPGA Flow while revoked, and grade the denial before any recovery. Retain the exact flow and Session-validation outputs.
     expected: |-
-      Rc2 without unauthorized execution.
+      PASS when the independently observed authority denial is exit 2 with no unauthorized FPGA execution; a successful FPGA run or unrelated failure does not pass.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#fpga
     evidence: |-
-      Vivado 2025.2 log, source/cache keys, routed reports and baseline identities; Windows expected not runnable. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Vivado 2025.2 log, source/cache keys, routed reports and baseline identities; Windows expected not runnable. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.FPGA-FLOW.fpga-authority-fail
   requires:
   - inputs.project-pin
+  - vivado.project-grant
+  - vivado.implementation
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: state_probe.py
+    audience: scenario-operator
+    sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
+
+- id: inventory.FPGA-FLOW.fpga-recovery
+  phase: baseline
+  action: |-
+    Restore the run-owned Grant after the negative Check, run host booley init --seed, validate and start the Session, and pass the ready probe before repeating the FPGA Flow.
+  checks:
+  - id: inventory.FPGA-FLOW.fpga-recovery
+    capabilities:
+    - FPGA-FLOW
+    stimulus: |-
+      Restore the run-owned Grant after the negative Check, run host booley init --seed, validate and start the Session, and pass the ready probe before repeating the FPGA Flow.
+    expected: |-
+      The reissued Session and mount are current and a valid implementation succeeds with fresh routed evidence.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#fpga
+    evidence: |-
+      Vivado 2025.2 log, source/cache keys, routed reports and baseline identities; Windows expected not runnable. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
+    capture: evidence/picorv32-published-demo-continuity.inventory.FPGA-FLOW.fpga-recovery
+  requires:
+  - vivado.implementation
+  recovery:
+    baseline: vivado.implementation
+    detection:
+    - inventory.FPGA-FLOW.fpga-authority-fail
+    instruction: |-
+      Re-add only the run-owned Grant, reissue and validate the host Session spec, start the Session, prove the intended mount, and repeat the FPGA Flow.
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: state_probe.py
+    audience: scenario-operator
+    sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
 - id: inventory.FPGA-FLOW.fpga-baseline
   phase: baseline
   action: |-
@@ -1967,6 +2156,7 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.FPGA-FLOW.fpga-baseline
   requires:
   - inputs.project-pin
+  - inventory.FPGA-FLOW.fpga-recovery
 - id: inventory.FPGA-FLOW.fpga-cache
   phase: baseline
   action: |-
@@ -1985,6 +2175,7 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.FPGA-FLOW.fpga-cache
   requires:
   - inputs.project-pin
+  - inventory.FPGA-FLOW.fpga-recovery
 - id: inventory.FPGA-FLOW.fpga-design-fail
   phase: baseline
   action: |-
@@ -2003,6 +2194,7 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.FPGA-FLOW.fpga-design-fail
   requires:
   - inputs.project-pin
+  - inventory.FPGA-FLOW.fpga-recovery
 - id: inventory.FPGA-FLOW.fpga-dry
   phase: baseline
   action: |-
@@ -2021,6 +2213,7 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.FPGA-FLOW.fpga-dry
   requires:
   - inputs.project-pin
+  - inventory.FPGA-FLOW.fpga-recovery
 - id: inventory.FPGA-FLOW.fpga-no-cache
   phase: baseline
   action: |-
@@ -2039,24 +2232,7 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.FPGA-FLOW.fpga-no-cache
   requires:
   - inputs.project-pin
-- id: inventory.FPGA-FLOW.fpga-recovery
-  phase: baseline
-  action: |-
-    Exercise `fpga-recovery`: restore authority/design.
-  checks:
-  - id: inventory.FPGA-FLOW.fpga-recovery
-    capabilities:
-    - FPGA-FLOW
-    stimulus: |-
-      Exercise `fpga-recovery`: restore authority/design.
-    expected: |-
-      Valid implementation.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#fpga
-    evidence: |-
-      Vivado 2025.2 log, source/cache keys, routed reports and baseline identities; Windows expected not runnable. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/picorv32-published-demo-continuity.inventory.FPGA-FLOW.fpga-recovery
-  requires:
-  - inputs.project-pin
+  - inventory.FPGA-FLOW.fpga-recovery
 - id: inventory.HOST-EDA-PROVISIONING.grant
   phase: baseline
   action: |-
@@ -2092,25 +2268,42 @@ steps:
       Host registry snapshots, runtime mount metadata, write-rejection check, actual FPGA report. Windows expected not runnable only for platform-scoped portions. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.HOST-EDA-PROVISIONING.grant-denied
   requires:
-  - inputs.project-pin
+  - inventory.HOST-EDA-PROVISIONING.grant
 - id: inventory.HOST-EDA-PROVISIONING.grant-recovery
   phase: baseline
   action: |-
-    Exercise `grant-recovery`: restore Grant.
+    After the run-owned grant-denied Check, add the intended Grant, run host booley init --seed, validate/start the Session, and probe the executable under the registered release layout. Retain pre/post state snapshots.
   checks:
   - id: inventory.HOST-EDA-PROVISIONING.grant-recovery
     capabilities:
     - HOST-EDA-PROVISIONING
     stimulus: |-
-      Exercise `grant-recovery`: restore Grant.
+      After the run-owned grant-denied Check, add the intended Grant, run host booley init --seed, validate/start the Session, and probe the executable under the registered release layout. Retain pre/post state snapshots.
     expected: |-
-      Same mount usable.
+      The exact regranted Project has a current issued Session and the intended read-only mount executes the discovered Vivado command; recovery does not alter borrowed registrations.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#commercial-eda-provisioning
     evidence: |-
-      Host registry snapshots, runtime mount metadata, write-rejection check, actual FPGA report. Windows expected not runnable only for platform-scoped portions. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Host registry snapshots, runtime mount metadata, write-rejection check, actual FPGA report. Windows expected not runnable only for platform-scoped portions. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.HOST-EDA-PROVISIONING.grant-recovery
   requires:
-  - inputs.project-pin
+  - inventory.HOST-EDA-PROVISIONING.grant
+  recovery:
+    baseline: inventory.HOST-EDA-PROVISIONING.grant
+    detection:
+    - inventory.HOST-EDA-PROVISIONING.grant-denied
+    instruction: |-
+      Re-add only the run-owned Grant, reissue and validate the host Session spec, start the Session, and prove the discovered Vivado command through the intended mount.
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+  - path: state_probe.py
+    audience: scenario-operator
+    sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
+
 - id: inventory.HOST-EDA-PROVISIONING.installation-cleanup
   phase: baseline
   action: |-
@@ -2165,6 +2358,7 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.HOST-EDA-PROVISIONING.mount
   requires:
   - inputs.project-pin
+  - inventory.HOST-EDA-PROVISIONING.grant-recovery
 - id: inventory.EDA-LICENSE-POLICY.relay-isolation
   phase: baseline
   action: |-
@@ -2303,26 +2497,35 @@ steps:
     sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.semantic-distance
   phase: interactive
-  action: Invoke `distance` on PicoRV32 Icarus trace and verify signal/time semantics; CLI success alone is insufficient.
+  action: |-
+    Invoke the declared B-Wave distance query on the pinned trace with exact signal paths, sampling/defaults and expected relation. Parse documented @ start -> @ end d=... rows and compare all deltas.
   checks:
   - id: bwave.semantic-distance
     capabilities:
     - WAVEFORM-QUERY
-    stimulus: Invoke `distance` on PicoRV32 Icarus trace and verify signal/time semantics; CLI success alone is
-      insufficient.
-    expected: Invoke `distance` on PicoRV32 Icarus trace and verify signal/time semantics; CLI success alone is
-      insufficient.
+    stimulus: |-
+      Invoke the declared B-Wave distance query on the pinned trace with exact signal paths, sampling/defaults and expected relation. Parse documented @ start -> @ end d=... rows and compare all deltas.
+    expected: |-
+      Every parsed row has end-start equal to d and the independently computed expected distance; a zero exit without matching rows is insufficient.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Exact query, trace identity, expected relationship and observed data.
+    evidence: |-
+      Exact query, trace identity, expected relationship and observed data. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.bwave.semantic-distance
   requires:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
   assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixtures/virtual-signals.md
     audience: scenario-operator
     sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: bwave.semantic-value
   phase: interactive
   action: Invoke `value` on PicoRV32 Icarus trace and verify signal/time semantics; CLI success alone is insufficient.
@@ -2555,21 +2758,33 @@ steps:
   - baseline.icarus-wishbone
 - id: interactive.bwave-diagnosis
   phase: interactive
-  action: Child diagnoses violated relationship using B-Wave, not hard-coded timestamps.
+  action: |-
+    Retain the child's exact trace, B-Wave argv, signal paths, clock/reset flags and default sampling. Replay those same settings to cross-check the child's causal diagnosis.
   checks:
   - id: interactive.bwave-diagnosis
     capabilities:
     - WAVEFORM-QUERY
     - EDA-BWAVE-ICARUS
-    stimulus: Child diagnoses violated relationship using B-Wave, not hard-coded timestamps.
-    expected: Child diagnoses violated relationship using B-Wave, not hard-coded timestamps.
+    stimulus: |-
+      Retain the child's exact trace, B-Wave argv, signal paths, clock/reset flags and default sampling. Replay those same settings to cross-check the child's causal diagnosis.
+    expected: |-
+      Diagnosis is grounded in matched trace values and relationships; divergence is declared only after an exact-mode replay, not a different sampling mode.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Queries, values and causal explanation grounded in relationships.
+    evidence: |-
+      Queries, values and causal explanation grounded in relationships. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.interactive.bwave-diagnosis
   requires:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: interactive.repair
   phase: interactive
   action: Child repairs root cause without weakening tests, removing stimulus, waivers or unrelated edits.
@@ -2983,26 +3198,34 @@ steps:
 - id: create.dhrystone-self-checking-cycle-contract.payload
   phase: create
   action: |-
-    Invoke Ticket Create skill for `dhrystone-self-checking-cycle-contract` with complete literal annex field set and `--agent --no-confirm`, using provider spelling and the paired clean destination refs prepared by `project.separate-repository`.
+    Before Ticket Create, preflight a clean paired outer/nested destination with standalone nested .git directory and both exact destination refs. Then invoke the Ticket Create skill with the complete literal annex and --agent --no-confirm.
   checks:
   - id: create.dhrystone-self-checking-cycle-contract.payload
     capabilities:
     - DOCUMENTATION-USABILITY
     stimulus: |-
-      Invoke Ticket Create skill for `dhrystone-self-checking-cycle-contract` with complete literal annex field set and `--agent --no-confirm`, using provider spelling and the paired clean destination refs prepared by `project.separate-repository`.
+      Before Ticket Create, preflight a clean paired outer/nested destination with standalone nested .git directory and both exact destination refs. Then invoke the Ticket Create skill with the complete literal annex and --agent --no-confirm.
     expected: |-
-      Invoke Ticket Create skill for `dhrystone-self-checking-cycle-contract` with complete literal annex field set and `--agent --no-confirm`, using provider spelling and the paired clean destination refs prepared by `project.separate-repository`.
+      The skill accepts the declared complete payload and materializes the draft against the exact paired refs; unsupported linked nested topology or missing destination ref blocks the attempted Check.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Exact invocation, full prompt hash and payload; this is a skill invocation, not ordinary CLI.
+    evidence: |-
+      Exact invocation, full prompt hash and payload; this is a skill invocation, not ordinary CLI. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.create.dhrystone-self-checking-cycle-contract.payload
   requires:
   - inputs.project-pin
   - project.separate-repository
   - interactive.restore
   assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: tickets/continuity.md
     audience: Developer Agent
     sha256: 3d98db91369906cd94e5854c8facbdcecb0fa7ecf07e6aff4dc56b4c16cbf205
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+
 - id: create.dhrystone-self-checking-cycle-contract.board
   phase: create
   action: Creation returns board path and `queued` state for `dhrystone-self-checking-cycle-contract`.
@@ -5563,16 +5786,24 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.cleanup.hooks
 - id: cleanup.runtimes
   phase: cleanup
-  action: Release every run-owned Session Runtime and prove its absence.
+  action: |-
+    Release every run-owned Session Runtime after retaining issuance and mount evidence; prove absence and preserve borrowed Sessions.
   checks:
   - id: cleanup.runtimes
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Release every run-owned Session Runtime and prove its absence.
-    expected: Release every run-owned Session Runtime and prove its absence.
+    stimulus: |-
+      Release every run-owned Session Runtime after retaining issuance and mount evidence; prove absence and preserve borrowed Sessions.
+    expected: |-
+      Run-owned Sessions are absent and borrowed Sessions remain untouched.
     authority_ref: ../../doc/FINISH.md
-    evidence: Owned identity, ledger disposition, and independent release or retention proof.
+    evidence: |-
+      Owned identity, ledger disposition, and independent release or retention proof. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.cleanup.runtimes
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
 - id: cleanup.processes
   phase: cleanup
   action: Release every run-owned process and prove no descendants remain.
@@ -5587,16 +5818,24 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.cleanup.processes
 - id: cleanup.project-grants
   phase: cleanup
-  action: Revoke every run-owned Grant and prove its absence.
+  action: |-
+    Revoke only ledger-owned Grants and prove their absence; retain before/after Project and Session identities and proof that every borrowed Grant remains unchanged.
   checks:
   - id: cleanup.project-grants
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Revoke every run-owned Grant and prove its absence.
-    expected: Revoke every run-owned Grant and prove its absence.
+    stimulus: |-
+      Revoke only ledger-owned Grants and prove their absence; retain before/after Project and Session identities and proof that every borrowed Grant remains unchanged.
+    expected: |-
+      Every run-owned Grant is absent, and unrelated borrowed Grants remain associated exactly as before.
     authority_ref: ../../doc/FINISH.md
-    evidence: Owned identity, ledger disposition, and independent release or retention proof.
+    evidence: |-
+      Owned identity, ledger disposition, and independent release or retention proof. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.cleanup.project-grants
+  assets:
+  - path: fixtures/recording-error-runbook.md
+    audience: scenario-operator
+    sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
 - id: cleanup.license-profiles
   phase: cleanup
   action: Release every run-owned License Profile and prove its absence.

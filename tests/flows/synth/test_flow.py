@@ -20,11 +20,12 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.boundary import BoundaryError
+from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows.base import SubprocessResult
-from booley.flows.edam import work_root_for, work_root_lease
+from booley.flows.edam import work_root_lease
 from booley.flows.implementation_comparison import TargetExecutionRef
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
@@ -2836,7 +2837,7 @@ class TestBuildSynthCmd:
     def test_stale_stage_cleared_before_resolve(self, flow_and_state, tmp_path: Path):
         """The synth build_root is wiped before resolution so `fusesoc --setup`
         re-stages current RTL (guards against synthesizing stale staged sources)."""
-        from booley.flows.edam import work_root_for
+        from booley.core.build_paths import work_root_for
 
         flow, _ = flow_and_state
         build_root = work_root_for(tmp_path, "synth", "lite")

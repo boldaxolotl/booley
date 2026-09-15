@@ -22,7 +22,7 @@ from pathlib import Path
 from booley.flows.fpga.backends.vivado.edam import build_fpga_edam
 from tests.golden.conftest import assert_matches_golden
 
-# Canned workspace layout. work_root mirrors edam.work_root_for()'s real
+# Canned workspace layout. work_root mirrors work_root_for()'s real
 # shape so the relative file names in the golden look like production ones.
 _WS = Path("/ws")
 _WORK_ROOT = _WS / ".booley_project" / ".runtime" / "edalize" / "fpga" / "lite"

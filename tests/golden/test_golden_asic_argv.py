@@ -237,7 +237,7 @@ def _configure_golden_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Run the real configure half over the fake resolved target."""
     import dataclasses
 
-    from booley.flows.edam import work_root_for
+    from booley.core.build_paths import work_root_for
     from booley.flows.synth.backends import configure as run_yosys_syn
     from booley.flows.synth.backends import pipeline as syn_make
 
