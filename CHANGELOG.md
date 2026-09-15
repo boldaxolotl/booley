@@ -50,6 +50,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Simulation makes Target-declared `file_type: user` / `copyto` inputs available
+  in the configured run directory for Icarus, Verilator, and Cocotb runs. A
+  testbench can now open its declared firmware or vectors by the authored
+  relative path without a Project-root copy or symlink.
 - Doctor keeps its known-good and known-bad Simulation overlays in separate,
   freshly reset build variants. Stale timestamps or a cached good executable
   can no longer make the deliberate failure probe pass.

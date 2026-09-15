@@ -776,12 +776,13 @@ Persistent Targets remain alongside the existing surface. Replacement candidates
 while their runnable baselines are removed. Ephemeral Targets exist only for Ticket
 evidence and are removed. Every planned selector and replacement baseline is Criteria-bound;
 enqueue compares definitions semantically against the exact destination, rejects edits or
-deletions of existing Targets or filesets, and derives canonical Target identities
-and removals from the Ticket and its pinned commits. A planned Target may add a dedicated
-fileset, provided no unchanged Target references it. Acceptance removes those derived Target
-definitions, unambiguously owned `tests.toml` tables, and newly authored filesets left
-unreferenced by an ephemeral Target's removal. Existing or still-shared filesets, sources,
-parameters, constraints, generators, and hooks remain.
+deletions of existing Targets, filesets, or parameter declarations, and derives canonical
+Target identities and removals from the Ticket and its pinned commits. A planned Target may
+add a dedicated fileset or local parameter declaration, provided no unchanged Target
+references it. Acceptance removes those derived Target definitions, unambiguously owned
+`tests.toml` tables, and newly authored filesets or parameter declarations left unreferenced
+by an ephemeral Target's removal. Existing or still-shared inputs, constraints, generators,
+and hooks remain.
 
 A waiting Ticket may consume a persistent or replacement Target from a dependency
 whose Ticket records baseline commits. Booley pins that future surface internally.

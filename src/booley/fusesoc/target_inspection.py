@@ -11,6 +11,7 @@ from typing import Any
 
 from fusesoc.coremanager import CoreManager, DependencyError
 from fusesoc.librarymanager import Library, LibraryManager
+from fusesoc.utils import merge_dict
 from fusesoc.vlnv import Vlnv
 
 from booley.fusesoc import fusesoc_registry
@@ -67,6 +68,17 @@ def _inspect_inputs(
                 )
             )
     return tuple(inputs)
+
+
+def _inspect_parameters(cores: list[Any], flags: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve parameters in dependency order like FuseSoC's Edalizer."""
+    parameters: dict[str, Any] = {}
+    top = cores[-1]
+    for core in cores:
+        core_flags = dict(flags)
+        core_flags["is_toplevel"] = core.name == top.name
+        merge_dict(parameters, core.get_parameters(core_flags, parameters))
+    return parameters
 
 
 _TARGET_CONDITION_RE = re.compile(r"\btarget_(?P<name>[A-Za-z0-9_.-]+)\b")
@@ -214,7 +226,7 @@ class _TargetSourceInspector:
                 flow=core.get_flow(flags),
                 eda_tool=handle.eda_tool,
                 flow_options=dict(core.get_flow_options(flags)),
-                parameters=dict(core.get_parameters(flags)),
+                parameters=_inspect_parameters(cores, flags),
                 inputs=_inspect_inputs(self.root, cores, flags),
             )
         except (OSError, SyntaxError, RuntimeError, ValueError) as exc:

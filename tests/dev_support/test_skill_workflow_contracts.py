@@ -230,13 +230,14 @@ def test_ticket_create_stops_at_ticket_target_and_placeholder_authoring():
     contract = " ".join(skill.split())
 
     for required in (
-        "Ticket creation authors only the Ticket, Target definitions and unambiguously owned",
+        "Ticket creation authors only the Ticket, Target definitions, their referenced filesets",
+        "local parameter declarations, unambiguously owned",
         "empty placeholder files for Scope paths marked `[new]`",
-        "existing Targets remain unchanged",
+        "existing definitions remain unchanged",
         "The developer who runs the Ticket authors its implementation",
         "A placeholder is a zero-byte file",
         "do not put declarations, modules, packages, assertions, stimulus",
-        "approved planned Target definitions and owned test tables",
+        "approved planned Target definitions, referenced inputs, and owned test tables",
         "create only empty placeholders for `[new]` Scope paths",
         "do not implement any part of the Ticket",
         "report the blocker instead of",
