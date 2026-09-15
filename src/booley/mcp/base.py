@@ -75,6 +75,7 @@ def _as_mcp_tool_result(outcome: EndpointOutcome) -> McpToolResult:
         lines_added=outcome.lines_added,
         lines_removed=outcome.lines_removed,
         display_lines=outcome.display_lines,
+        display_label=outcome.display_label,
         summary=outcome.summary,
     )
 

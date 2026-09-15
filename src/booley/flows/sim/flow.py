@@ -833,6 +833,15 @@ def _build_display_lines(
     return lines
 
 
+def _completed_display_label(
+    targets: list[str],
+    results: list[TargetResult],
+) -> str | None:
+    """Describe the test scope observed by a completed Simulation Flow."""
+    tests = [test.name for result in results for test in result.tests]
+    return format_flow_display_label(targets, tests=tests if tests else None)
+
+
 def _target_display_lines(result: TargetResult) -> list[str]:
     """Build the final display block for one completed Target."""
     icon = "?" if result.inconclusive else ("✓" if result.passed else "✗")
@@ -1818,6 +1827,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
             criterion_met=overall_pass,
             display_lines=_build_display_lines(all_results, total_elapsed),
+            display_label=_completed_display_label(targets, all_results),
             detail=detail,
             report_text=report_text,
         )
