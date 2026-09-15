@@ -64,10 +64,9 @@ The process prints one startup line and one final JSON summary. Resume the
 existing process session while it waits. Keep each surrounding agent-tool wait
 at 60 seconds or less, report elapsed waiting time from the last known summary,
 and do not issue parallel GitHub status queries. The process itself observes CI
-every 60 seconds; queue observations wait for a usable future Mergify estimate
-or ten minutes when no estimate is available. It recomputes that wait after
-each snapshot. An expired deadline is unresolved observation, not proof of
-failure; choose a new deadline explicitly rather than restarting automatically.
+every 60 seconds and queue state every ten minutes. An expired deadline is
+unresolved observation, not proof of failure; choose a new deadline explicitly
+rather than restarting automatically.
 
 CI outcomes are `ci_passed` (exit 0), `check_failed`, `closed`, or
 `head_changed` (exit 1), `timeout` (exit 124), and `observation_error` (exit 2).
@@ -97,11 +96,10 @@ signal exit code.
 
 A non-null `mergedAt` finishes the wait; a `dequeued` label starts recovery.
 Waiting ownership is otherwise passive. Trust Mergify to enforce the configured
-serial priority queue and leave predecessor PRs to their owners. Sleep until
-Mergify's reported merge estimate; when no future estimate is available, wait
-ten minutes. Then check only the owned PR once. An unchanged status starts
-another quiet wait at the same cadence. Each waiting interval contains no
-GitHub status queries.
+serial priority queue and leave predecessor PRs to their owners. Wait ten
+minutes, then check only the owned PR once. An unchanged status starts another
+quiet wait at the same cadence. Each waiting interval contains no GitHub status
+queries.
 
 Mergify gives PRs with either of these labels the same high-priority tier:
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import datetime as dt
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -27,21 +27,16 @@ URL = "https://github.com/example/repo/pull/7"
 
 
 class FakeClock:
-    def __init__(self, *, monotonic: float = 0, wall: float = 1_700_000_000) -> None:
+    def __init__(self, *, monotonic: float = 0) -> None:
         self.current = monotonic
-        self.wall = wall
         self.sleeps: list[float] = []
 
     def monotonic(self) -> float:
         return self.current
 
-    def time(self) -> float:
-        return self.wall
-
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
         self.current += seconds
-        self.wall += seconds
 
 
 class FakeTransport:
@@ -74,8 +69,9 @@ def check(
     attempt: int | None = None,
     started_at: str | None = None,
     link: str | None = None,
+    workflow: str | None = "CI",
 ) -> watch_pr.Check:
-    return watch_pr.Check(name, bucket, bucket, link, head_sha, attempt, started_at)
+    return watch_pr.Check(name, bucket, bucket, link, head_sha, attempt, started_at, workflow)
 
 
 def snapshot(
@@ -86,7 +82,6 @@ def snapshot(
     labels: set[str] | None = None,
     checks: tuple[watch_pr.Check, ...] = (),
     mergify_state: str | None = None,
-    estimate: str | None = None,
     comments: tuple[watch_pr.Comment, ...] = (),
 ) -> watch_pr.Snapshot:
     return watch_pr.Snapshot(
@@ -97,7 +92,6 @@ def snapshot(
         frozenset(labels or set()),
         checks,
         mergify_state,
-        estimate,
         comments,
     )
 
@@ -168,6 +162,28 @@ def test_ci_ignores_old_failure_when_newer_same_head_attempt_is_pending() -> Non
     assert watch_pr.classify_ci(snapshot(checks=checks), HEAD).outcome == "pending"
 
 
+def test_ci_keeps_same_named_checks_from_distinct_workflows() -> None:
+    checks = (
+        check(name="test", bucket="fail", workflow="Linux", link="https://ci.example/linux"),
+        check(name="test", bucket="pass", workflow="Windows"),
+    )
+
+    decision = watch_pr.classify_ci(snapshot(checks=checks), HEAD)
+
+    assert decision.outcome == "check_failed"
+    assert decision.links == ("https://ci.example/linux",)
+
+
+def test_ci_rejects_duplicate_checks_without_a_workflow_identity() -> None:
+    checks = (
+        check(name="status", bucket="fail", workflow=None, started_at="2026-09-15T10:00:00Z"),
+        check(name="status", bucket="pass", workflow=None, started_at="2026-09-15T10:01:00Z"),
+    )
+
+    with pytest.raises(watch_pr.WatchError, match="ambiguous required check identity"):
+        watch_pr.classify_ci(snapshot(checks=checks), HEAD)
+
+
 def test_ci_ignores_failure_from_an_old_head() -> None:
     decision = watch_pr.classify_ci(
         snapshot(checks=(check(bucket="fail", head_sha=NEXT_HEAD),)), HEAD
@@ -197,26 +213,20 @@ def test_queue_baselines_existing_control_comment_and_waits_ten_minutes() -> Non
     assert clock.sleeps == [600]
 
 
-def test_queue_uses_a_future_estimate_and_recomputes_after_head_update() -> None:
-    first_estimate = (
-        dt.datetime.fromtimestamp(1_700_000_120, dt.UTC).isoformat().replace("+00:00", "Z")
-    )
-    second_estimate = (
-        dt.datetime.fromtimestamp(1_700_000_240, dt.UTC).isoformat().replace("+00:00", "Z")
-    )
+def test_queue_keeps_fixed_cadence_after_head_update() -> None:
     transport = FakeTransport(
         queue=[
-            snapshot(head=HEAD, labels={"merge-queue-checking"}, estimate=first_estimate),
-            snapshot(head=NEXT_HEAD, labels={"merge-queue-checking"}, estimate=second_estimate),
+            snapshot(head=HEAD, labels={"merge-queue-checking"}),
+            snapshot(head=NEXT_HEAD, labels={"merge-queue-checking"}),
             snapshot(head=NEXT_HEAD, merged_at="2026-09-15T10:00:00Z"),
         ]
     )
     clock = FakeClock()
 
-    result = run_watch(transport, clock, mode="queue", timeout=500)
+    result = run_watch(transport, clock, mode="queue", timeout=1300)
 
     assert result.outcome == "merged"
-    assert clock.sleeps == [120, 120]
+    assert clock.sleeps == [600, 600]
 
 
 def test_queue_does_not_treat_old_failure_as_current_attempt() -> None:
@@ -247,10 +257,7 @@ def test_queue_does_not_treat_old_failure_as_current_attempt() -> None:
 def test_queue_terminal_states(state: watch_pr.Snapshot, expected: str) -> None:
     memory = watch_pr.QueueMemory(initialized=True)
 
-    assert (
-        watch_pr.classify_queue(state, memory, now=1_700_000_000, remaining_seconds=600).outcome
-        == expected
-    )
+    assert watch_pr.classify_queue(state, memory, remaining_seconds=600).outcome == expected
 
 
 def test_queue_transient_label_inconsistency_stays_pending() -> None:
@@ -317,15 +324,22 @@ def test_transient_reads_are_retried_at_most_three_times() -> None:
     assert clock.sleeps == [1, 2]
 
 
+def test_every_outcome_has_an_explicit_exit_mapping() -> None:
+    mapped = set(watch_pr.EXIT_CODES) | {watch_pr.Outcome.CANCELLED}
+
+    assert mapped == set(watch_pr.Outcome)
+
+
 def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path) -> None:
     fake_gh = tmp_path / "gh"
     log = tmp_path / "commands.log"
+    long_url = "https://github.com/example/repo/pull/" + "x" * 10_000
     fake_gh.write_text(
         "#!/usr/bin/python3\n"
         "import json, os, sys\n"
         f"open({str(log)!r}, 'a', encoding='utf-8').write(' '.join(sys.argv[1:]) + '\\n')\n"
         "if sys.argv[1:3] == ['pr', 'view']:\n"
-        f"    print(json.dumps({{'url': {URL!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'labels': [], 'statusCheckRollup': []}}))\n"
+        f"    print(json.dumps({{'url': {long_url!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'labels': [], 'statusCheckRollup': []}}))\n"
         "elif sys.argv[1:3] == ['pr', 'checks']:\n"
         "    print(json.dumps([{'name': 'ci-required', 'state': 'SUCCESS', 'bucket': 'pass', 'link': 'https://ci.example/run/1', 'startedAt': None, 'completedAt': None, 'workflow': 'CI'}]))\n"
         "else:\n"
@@ -360,9 +374,37 @@ def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path
     summary = json.loads(lines[1])
     assert summary["outcome"] == "ci_passed"
     assert summary["query_count"] == 3
+    assert len(summary["pr_url"]) == watch_pr.MAX_LINK_LENGTH
+    assert all(len(line) <= watch_pr.MAX_OUTPUT_LINE_LENGTH for line in lines)
     commands = log.read_text(encoding="utf-8").splitlines()
     assert "--required" in "\n".join(commands)
     assert all(line.split()[:2] in (["pr", "view"], ["pr", "checks"]) for line in commands)
+
+
+def test_cli_rejects_overlong_repo_without_echoing_it() -> None:
+    repo = f"owner/{'x' * watch_pr.MAX_REPO_LENGTH}"
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(SCRIPT),
+            "--repo",
+            repo,
+            "--pr",
+            "7",
+            "--mode",
+            "queue",
+            "--timeout-seconds",
+            "5",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert repo not in result.stderr
+    assert all(len(line) <= watch_pr.MAX_OUTPUT_LINE_LENGTH for line in result.stderr.splitlines())
 
 
 def test_cancel_terminates_active_child_process(tmp_path: Path) -> None:
@@ -389,3 +431,50 @@ def test_cancel_terminates_active_child_process(tmp_path: Path) -> None:
 
     assert not worker.is_alive()
     assert errors and isinstance(errors[0], watch_pr.CancelledWatchError)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal behavior")
+def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/python3\n"
+        "import json, sys\n"
+        "if sys.argv[1:3] == ['pr', 'view']:\n"
+        f"    print(json.dumps({{'url': {URL!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'labels': [], 'statusCheckRollup': []}}))\n"
+        "elif sys.argv[1:3] == ['pr', 'checks']:\n"
+        "    print('[]')\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(fake_gh.stat().st_mode | 0o111)
+    process = subprocess.Popen(
+        [
+            "python3",
+            str(SCRIPT),
+            "--repo",
+            "example/repo",
+            "--pr",
+            "7",
+            "--mode",
+            "ci",
+            "--expected-head",
+            HEAD,
+            "--timeout-seconds",
+            "120",
+        ],
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().startswith("watch_pr: started")
+    time.sleep(0.2)
+
+    process.send_signal(signal.SIGTERM)
+    stdout, stderr = process.communicate(timeout=2)
+
+    assert stderr == ""
+    assert process.returncode == 143
+    summary = json.loads(stdout)
+    assert summary["outcome"] == "cancelled"
+    assert summary["elapsed_seconds"] >= 0

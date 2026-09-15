@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import json
 import os
 import re
@@ -13,11 +12,27 @@ import subprocess
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Protocol
+
+from booley.core.boundary import (
+    BoundaryError,
+    as_str,
+    require_dict,
+    require_int,
+    require_list,
+    require_opt_str,
+    require_str,
+)
 
 MAX_LINKS = 8
 MAX_LINK_LENGTH = 256
-QUEUE_FALLBACK_SECONDS = 10 * 60
+MAX_REPO_LENGTH = 256
+MAX_HEAD_LENGTH = 64
+MAX_OUTPUT_LINE_LENGTH = 16_384
+MAX_PR_NUMBER = 2_147_483_647
+MAX_TIMEOUT_SECONDS = 31 * 24 * 60 * 60
+QUEUE_POLL_SECONDS = 10 * 60
 CI_POLL_SECONDS = 60
 RETRY_DELAYS = (1, 2)
 CONTROL_COMMAND = re.compile(r"(?im)^\s*@mergifyio\s+(queue\b|dequeue\b)")
@@ -39,8 +54,6 @@ class CancelledWatchError(WatchError):
 
 class Clock(Protocol):
     def monotonic(self) -> float: ...
-
-    def time(self) -> float: ...
 
     def sleep(self, seconds: float) -> None: ...
 
@@ -64,6 +77,7 @@ class Check:
     head_sha: str | None = None
     attempt: int | None = None
     started_at: str | None = None
+    workflow: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,13 +96,27 @@ class Snapshot:
     labels: frozenset[str] = frozenset()
     checks: tuple[Check, ...] = ()
     mergify_state: str | None = None
-    merge_estimate: str | None = None
     comments: tuple[Comment, ...] = ()
+
+
+class Outcome(StrEnum):
+    PENDING = "pending"
+    CI_PASSED = "ci_passed"
+    MERGED = "merged"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+    HEAD_CHANGED = "head_changed"
+    CLOSED = "closed"
+    CHECK_FAILED = "check_failed"
+    QUEUE_FAILED = "queue_failed"
+    DEQUEUED = "dequeued"
+    COMPETING_CONTROL = "competing_control"
+    OBSERVATION_ERROR = "observation_error"
 
 
 @dataclass(frozen=True)
 class Decision:
-    outcome: str
+    outcome: Outcome
     terminal: bool
     links: tuple[str, ...] = ()
     next_wait_seconds: int | None = None
@@ -97,13 +125,12 @@ class Decision:
 @dataclass
 class QueueMemory:
     baseline_comment_ids: set[str] = field(default_factory=set)
-    observed_head: str | None = None
     initialized: bool = False
 
 
 @dataclass(frozen=True)
 class WatchResult:
-    outcome: str
+    outcome: Outcome
     url: str
     observed_head: str | None
     elapsed_seconds: int
@@ -116,9 +143,6 @@ class SystemClock:
 
     def monotonic(self) -> float:
         return time.monotonic()
-
-    def time(self) -> float:
-        return time.time()
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
@@ -135,31 +159,37 @@ def _is_transient(text: str) -> bool:
 
 
 def _json_object(value: Any, field_name: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise WatchError(f"invalid {field_name} response")
-    return value
+    try:
+        return require_dict(value, field=field_name)
+    except BoundaryError as error:
+        raise WatchError(f"invalid {field_name} response") from error
 
 
 def _json_list(value: Any, field_name: str) -> list[Any]:
-    if not isinstance(value, list):
-        raise WatchError(f"invalid {field_name} response")
-    return value
+    try:
+        return require_list(value, field=field_name)
+    except BoundaryError as error:
+        raise WatchError(f"invalid {field_name} response") from error
 
 
 def _text(value: Any, field_name: str, *, optional: bool = False) -> str | None:
-    if value is None and optional:
-        return None
-    if not isinstance(value, str):
-        raise WatchError(f"invalid {field_name} value")
-    return value
+    try:
+        if optional:
+            if as_str(value) == "":
+                return None
+            return require_opt_str({"value": value}, "value", field=field_name)
+        return require_str({field_name: value}, field_name)
+    except BoundaryError as error:
+        raise WatchError(f"invalid {field_name} value") from error
 
 
 def _optional_int(value: Any, field_name: str) -> int | None:
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise WatchError(f"invalid {field_name} value")
-    return value
+    try:
+        return require_int(value, field=field_name)
+    except BoundaryError as error:
+        raise WatchError(f"invalid {field_name} value") from error
 
 
 def _parse_check(raw: Any, field_name: str) -> Check:
@@ -173,26 +203,36 @@ def _parse_check(raw: Any, field_name: str) -> Check:
     )
     started_at = _text(entry.get("startedAt"), f"{field_name}.startedAt", optional=True)
     attempt = _optional_int(entry.get("attempt"), f"{field_name}.attempt")
-    return Check(name, bucket.lower(), state.lower(), link, head_sha, attempt, started_at)
+    workflow = _text(entry.get("workflow"), f"{field_name}.workflow", optional=True)
+    return Check(
+        name=name,
+        bucket=bucket.lower(),
+        state=state.lower(),
+        link=link,
+        head_sha=head_sha,
+        attempt=attempt,
+        started_at=started_at,
+        workflow=workflow,
+    )
 
 
 def _parse_comments(value: Any) -> tuple[Comment, ...]:
     """Flatten either a normal or gh --paginate --slurp response."""
     pages = _json_list(value, "comments")
-    if pages and all(isinstance(item, list) for item in pages):
-        entries = [entry for page in pages for entry in _json_list(page, "comment page")]
-    else:
+    try:
+        entries = [entry for page in pages for entry in require_list(page, field="comment page")]
+    except BoundaryError:
         entries = pages
     comments: list[Comment] = []
     for index, raw in enumerate(entries):
         entry = _json_object(raw, f"comments[{index}]")
         identifier = entry.get("id")
-        if isinstance(identifier, int):
-            comment_id = str(identifier)
-        elif isinstance(identifier, str) and identifier:
-            comment_id = identifier
-        else:
-            raise WatchError(f"invalid comments[{index}].id value")
+        comment_id = as_str(identifier)
+        if not comment_id:
+            try:
+                comment_id = str(require_int(identifier, field=f"comments[{index}].id"))
+            except BoundaryError as error:
+                raise WatchError(f"invalid comments[{index}].id value") from error
         body = _text(entry.get("body"), f"comments[{index}].body")
         author_value = entry.get("user", entry.get("author"))
         author = None
@@ -203,25 +243,19 @@ def _parse_comments(value: Any) -> tuple[Comment, ...]:
     return tuple(comments)
 
 
-def _parse_rollup(value: Any) -> tuple[str | None, str | None]:
+def _parse_rollup(value: Any) -> str | None:
     """Read only explicitly structured Mergify fields from check data."""
     rollup = _json_list(value, "statusCheckRollup")
     mergify_state: str | None = None
-    estimate: str | None = None
     for index, raw in enumerate(rollup):
         entry = _json_object(raw, f"statusCheckRollup[{index}]")
-        name = entry.get("name", entry.get("context"))
-        if not isinstance(name, str) or "mergify" not in name.lower():
+        name = as_str(entry.get("name", entry.get("context")))
+        if name is None or "mergify" not in name.lower():
             continue
-        state = entry.get("state", entry.get("conclusion"))
-        if isinstance(state, str):
+        state = as_str(entry.get("state", entry.get("conclusion")))
+        if state is not None:
             mergify_state = state.lower()
-        for key in ("estimatedAt", "estimateAt", "mergeEstimate"):
-            candidate = entry.get(key)
-            if isinstance(candidate, str) and candidate:
-                estimate = candidate
-                break
-    return mergify_state, estimate
+    return mergify_state
 
 
 def _snapshot_from_json(
@@ -238,22 +272,21 @@ def _snapshot_from_json(
         label = _json_object(raw, f"labels[{index}]")
         name = _text(label.get("name"), f"labels[{index}].name")
         labels.add(name.lower())
-    mergify_state, estimate = _parse_rollup(pr.get("statusCheckRollup", []))
+    mergify_state = _parse_rollup(pr.get("statusCheckRollup", []))
     check_entries = _json_list(checks, "required checks")
     parsed_checks = tuple(
         _parse_check(item, f"checks[{index}]") for index, item in enumerate(check_entries)
     )
     parsed_comments = _parse_comments(comments) if require_comments else ()
     return Snapshot(
-        url,
-        state.lower(),
-        merged_at,
-        head_sha,
-        frozenset(labels),
-        parsed_checks,
-        mergify_state,
-        estimate,
-        parsed_comments,
+        url=url,
+        state=state.lower(),
+        merged_at=merged_at,
+        head_sha=head_sha,
+        labels=frozenset(labels),
+        checks=parsed_checks,
+        mergify_state=mergify_state,
+        comments=parsed_comments,
     )
 
 
@@ -389,16 +422,18 @@ class HeadChangedError(WatchError):
 
 
 def _latest_checks(checks: Iterable[Check], current_head: str | None) -> tuple[Check, ...]:
-    grouped: dict[str, list[Check]] = {}
+    grouped: dict[tuple[str | None, str], list[Check]] = {}
     for check in checks:
         if check.head_sha is not None and check.head_sha != current_head:
             continue
-        grouped.setdefault(check.name, []).append(check)
+        grouped.setdefault((check.workflow, check.name), []).append(check)
     latest: list[Check] = []
-    for name, entries in grouped.items():
+    for identity, entries in grouped.items():
         if len(entries) == 1:
             latest.append(entries[0])
             continue
+        if identity[0] is None:
+            raise WatchError(f"ambiguous required check identity for {identity[1]}")
         with_start = [entry for entry in entries if entry.started_at is not None]
         if len(with_start) == len(entries):
             latest.append(
@@ -412,7 +447,8 @@ def _latest_checks(checks: Iterable[Check], current_head: str | None) -> tuple[C
         if len(with_attempt) == len(entries):
             latest.append(max(with_attempt, key=lambda entry: entry.attempt or 0))
             continue
-        raise WatchError(f"ambiguous attempts for required check {name}")
+        workflow, name = identity
+        raise WatchError(f"ambiguous attempts for required check {workflow or '<status>'}/{name}")
     return tuple(latest)
 
 
@@ -439,20 +475,20 @@ def _bounded_links(links: Iterable[str]) -> tuple[str, ...]:
 def classify_ci(snapshot: Snapshot, expected_head: str) -> Decision:
     """Classify one fixed-head CI snapshot without I/O or wall-clock reads."""
     if snapshot.head_sha != expected_head:
-        return Decision("head_changed", True)
+        return Decision(Outcome.HEAD_CHANGED, True)
     if snapshot.state == "closed":
-        return Decision("closed", True)
+        return Decision(Outcome.CLOSED, True)
     current = _latest_checks(snapshot.checks, expected_head)
     if not current:
-        return Decision("pending", False)
+        return Decision(Outcome.PENDING, False)
     failures = tuple(check for check in current if check.bucket in {"fail", "cancel"})
     if failures:
-        return Decision("check_failed", True, _failure_links(failures))
+        return Decision(Outcome.CHECK_FAILED, True, _failure_links(failures))
     if all(check.bucket == "pass" for check in current):
         return Decision(
-            "ci_passed", True, _bounded_links(check.link for check in current if check.link)
+            Outcome.CI_PASSED, True, _bounded_links(check.link for check in current if check.link)
         )
-    return Decision("pending", False)
+    return Decision(Outcome.PENDING, False)
 
 
 def _control_comments(comments: Iterable[Comment]) -> tuple[Comment, ...]:
@@ -461,71 +497,61 @@ def _control_comments(comments: Iterable[Comment]) -> tuple[Comment, ...]:
     )
 
 
-def _future_estimate(value: str | None, now: float) -> int | None:
-    if value is None:
-        return None
-    try:
-        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if stamp.tzinfo is None:
-        return None
-    delay = stamp.timestamp() - now
-    return max(1, int(delay)) if delay > 0 else None
-
-
 def _queue_terminal(snapshot: Snapshot, memory: QueueMemory) -> Decision | None:
     controls = _control_comments(snapshot.comments)
     new_controls = [
         item for item in controls if item.identifier not in memory.baseline_comment_ids
     ]
     if new_controls:
-        return Decision("competing_control", True)
+        return Decision(Outcome.COMPETING_CONTROL, True)
     if snapshot.merged_at or snapshot.state == "closed":
-        return Decision("merged" if snapshot.merged_at else "closed", True)
+        return Decision(Outcome.MERGED if snapshot.merged_at else Outcome.CLOSED, True)
     if "dequeued" in snapshot.labels:
-        return Decision("dequeued", True)
+        return Decision(Outcome.DEQUEUED, True)
     current = _latest_checks(snapshot.checks, snapshot.head_sha)
     failures = tuple(check for check in current if check.bucket in {"fail", "cancel"})
     if failures:
-        return Decision("check_failed", True, _failure_links(failures))
+        return Decision(Outcome.CHECK_FAILED, True, _failure_links(failures))
     if snapshot.mergify_state in {"failure", "error", "cancelled", "cancel"}:
-        return Decision("queue_failed", True)
+        return Decision(Outcome.QUEUE_FAILED, True)
     return None
 
 
-def classify_queue(
-    snapshot: Snapshot, memory: QueueMemory, *, now: float, remaining_seconds: int
-) -> Decision:
+def classify_queue(snapshot: Snapshot, memory: QueueMemory, *, remaining_seconds: int) -> Decision:
     """Classify queue state, preserving uncertainty until the next observation."""
     terminal = _queue_terminal(snapshot, memory)
     if terminal is not None:
         return terminal
-    estimate = _future_estimate(snapshot.merge_estimate, now)
-    wait = min(estimate or QUEUE_FALLBACK_SECONDS, max(0, remaining_seconds))
-    return Decision("pending", False, next_wait_seconds=wait)
+    wait = min(QUEUE_POLL_SECONDS, max(0, remaining_seconds))
+    return Decision(Outcome.PENDING, False, next_wait_seconds=wait)
 
 
 def _startup(mode: str, repo: str, pr: int, timeout: int) -> None:
-    print(
-        f"watch_pr: started mode={mode} repo={repo} pr={pr} timeout_seconds={timeout}", flush=True
-    )
+    line = f"watch_pr: started mode={mode} repo={repo} pr={pr} timeout_seconds={timeout}"
+    assert len(line) <= MAX_OUTPUT_LINE_LENGTH
+    print(line, flush=True)
+
+
+def _bounded_text(value: str | None, limit: int) -> str | None:
+    return value[:limit] if value is not None else None
 
 
 def _summary(result: WatchResult) -> str:
     payload = {
         "outcome": result.outcome,
-        "pr_url": result.url,
-        "observed_head": result.observed_head,
+        "pr_url": _bounded_text(result.url, MAX_LINK_LENGTH),
+        "observed_head": _bounded_text(result.observed_head, MAX_HEAD_LENGTH),
         "elapsed_seconds": result.elapsed_seconds,
         "query_count": result.query_count,
-        "links": list(result.links),
+        "links": list(_bounded_links(result.links)),
     }
-    return json.dumps(payload, separators=(",", ":"))
+    summary = json.dumps(payload, separators=(",", ":"))
+    assert len(summary) <= MAX_OUTPUT_LINE_LENGTH
+    return summary
 
 
 def _result(
-    outcome: str,
+    outcome: Outcome,
     snapshot: Snapshot | None,
     started: float,
     clock: Clock,
@@ -573,7 +599,7 @@ def _watch_ci(
             snapshot = transport.ci_snapshot(repo, pr, deadline)
         except HeadChangedError as error:
             return _result(
-                "head_changed",
+                Outcome.HEAD_CHANGED,
                 Snapshot(error.url, "open", None, error.new),
                 started,
                 clock,
@@ -584,7 +610,7 @@ def _watch_ci(
             return _result_with_links(decision, snapshot, started, clock, transport)
         remaining = deadline - clock.monotonic()
         clock.sleep(min(CI_POLL_SECONDS, max(0, remaining)))
-    return _result("timeout", snapshot, started, clock, transport)
+    return _result(Outcome.TIMEOUT, snapshot, started, clock, transport)
 
 
 def _watch_queue(
@@ -607,15 +633,13 @@ def _watch_queue(
         decision = classify_queue(
             snapshot,
             memory,
-            now=clock.time(),
             remaining_seconds=max(0, int(deadline - clock.monotonic())),
         )
         if decision.terminal:
             return _result_with_links(decision, snapshot, started, clock, transport)
-        memory.observed_head = snapshot.head_sha
-        wait = decision.next_wait_seconds or QUEUE_FALLBACK_SECONDS
+        wait = decision.next_wait_seconds or QUEUE_POLL_SECONDS
         clock.sleep(min(wait, max(0, deadline - clock.monotonic())))
-    return _result("timeout", snapshot, started, clock, transport)
+    return _result(Outcome.TIMEOUT, snapshot, started, clock, transport)
 
 
 def watch(
@@ -643,23 +667,25 @@ def watch(
     raise ValueError(f"unsupported mode: {mode}")
 
 
-def _exit_code(outcome: str, *, signal_number: int | None = None) -> int:
-    if outcome in {"ci_passed", "merged"}:
-        return 0
-    if outcome == "timeout":
-        return 124
-    if outcome == "cancelled":
+EXIT_CODES = {
+    Outcome.PENDING: 2,
+    Outcome.CI_PASSED: 0,
+    Outcome.MERGED: 0,
+    Outcome.TIMEOUT: 124,
+    Outcome.HEAD_CHANGED: 1,
+    Outcome.CLOSED: 1,
+    Outcome.CHECK_FAILED: 1,
+    Outcome.QUEUE_FAILED: 1,
+    Outcome.DEQUEUED: 1,
+    Outcome.COMPETING_CONTROL: 1,
+    Outcome.OBSERVATION_ERROR: 2,
+}
+
+
+def _exit_code(outcome: Outcome, *, signal_number: int | None = None) -> int:
+    if outcome is Outcome.CANCELLED:
         return 128 + signal_number if signal_number is not None else 130
-    if outcome in {
-        "head_changed",
-        "closed",
-        "check_failed",
-        "queue_failed",
-        "dequeued",
-        "competing_control",
-    }:
-        return 1
-    return 2
+    return EXIT_CODES[outcome]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -673,12 +699,16 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    if "/" not in args.repo or any(not part for part in args.repo.split("/", 1)):
+    if (
+        len(args.repo) > MAX_REPO_LENGTH
+        or "/" not in args.repo
+        or any(not part for part in args.repo.split("/", 1))
+    ):
         raise ValueError("--repo must be OWNER/REPO")
-    if args.pr <= 0:
-        raise ValueError("--pr must be positive")
-    if args.timeout_seconds <= 0:
-        raise ValueError("--timeout-seconds must be positive")
+    if not 0 < args.pr <= MAX_PR_NUMBER:
+        raise ValueError(f"--pr must be between 1 and {MAX_PR_NUMBER}")
+    if not 0 < args.timeout_seconds <= MAX_TIMEOUT_SECONDS:
+        raise ValueError(f"--timeout-seconds must be between 1 and {MAX_TIMEOUT_SECONDS}")
     if args.mode == "ci" and (
         not args.expected_head or not re.fullmatch(r"[0-9a-fA-F]{7,64}", args.expected_head)
     ):
@@ -695,16 +725,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     clock = SystemClock()
     transport = GhTransport(clock=clock)
     cancelled_by: int | None = None
+    started = clock.monotonic()
 
     def cancel(_signum: int, _frame: Any) -> None:
         nonlocal cancelled_by
         cancelled_by = _signum
         transport.cancel()
+        raise CancelledWatchError("cancelled")
 
     signal.signal(signal.SIGINT, cancel)
     signal.signal(signal.SIGTERM, cancel)
-    _startup(args.mode, args.repo, args.pr, args.timeout_seconds)
     try:
+        _startup(args.mode, args.repo, args.pr, args.timeout_seconds)
         result = watch(
             transport,
             mode=args.mode,
@@ -715,11 +747,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             clock=clock,
         )
     except CancelledWatchError:
-        result = _result("cancelled", None, clock.monotonic(), clock, transport)
+        result = _result(Outcome.CANCELLED, None, started, clock, transport)
     except TimeoutError:
-        result = _result("timeout", None, clock.monotonic(), clock, transport)
+        result = _result(Outcome.TIMEOUT, None, started, clock, transport)
     except WatchError:
-        result = _result("observation_error", None, clock.monotonic(), clock, transport)
+        result = _result(Outcome.OBSERVATION_ERROR, None, started, clock, transport)
     print(_summary(result), flush=True)
     return _exit_code(result.outcome, signal_number=cancelled_by)
 
