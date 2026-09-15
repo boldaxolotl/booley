@@ -24,7 +24,7 @@ from ..git_ops import worktree_is_clean
 from ..target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
-    plan_orphaned_fileset_removals,
+    plan_orphaned_target_input_removals,
     plan_target_removals,
 )
 from ..ticket_baseline import (
@@ -924,7 +924,7 @@ def _planned_finalization_paths(
             basis.bindings,
         )
         core_paths = tuple(sorted({item.core_path for item in plan.targets}))
-        plan = plan_orphaned_fileset_removals(
+        plan = plan_orphaned_target_input_removals(
             temporary,
             plan,
             _baseline_core_snapshots(temporary, project_checkout, basis, core_paths),
