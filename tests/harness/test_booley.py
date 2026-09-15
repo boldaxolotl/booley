@@ -1731,7 +1731,7 @@ class TestActiveEndpointFromJobs:
 
     def test_returns_open_endpoint(self, tmp_path: Path):
         self._write_job(tmp_path, "sim-1", "sim")
-        assert tlr._active_endpoint_from_display(tmp_path) == ("sim", None)
+        assert tlr._active_endpoint_from_jobs(tmp_path) == ("sim", None)
 
     def test_returns_none_when_endpoint_closed(self, tmp_path: Path):
         from booley.runtime import job_records as jobrec
@@ -1743,21 +1743,21 @@ class TestActiveEndpointFromJobs:
             status=jobrec.STATUS_DONE,
             exit_code=0,
         )
-        assert tlr._active_endpoint_from_display(tmp_path) is None
+        assert tlr._active_endpoint_from_jobs(tmp_path) is None
 
     def test_returns_latest_open_endpoint(self, tmp_path: Path):
         older = (datetime.now(UTC) - timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         newer = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         self._write_job(tmp_path, "lint-1", "lint", started_at=older)
         self._write_job(tmp_path, "tb-1", "tb_coder", started_at=newer)
-        assert tlr._active_endpoint_from_display(tmp_path) == ("tb_coder", None)
+        assert tlr._active_endpoint_from_jobs(tmp_path) == ("tb_coder", None)
 
     def test_returns_none_when_no_records(self, tmp_path: Path):
-        assert tlr._active_endpoint_from_display(tmp_path) is None
+        assert tlr._active_endpoint_from_jobs(tmp_path) is None
 
     def test_ignores_nested_specialist_jobs(self, tmp_path: Path):
         self._write_job(tmp_path, "review-1", "reviewer", display_scope="nested")
-        assert tlr._active_endpoint_from_display(tmp_path) is None
+        assert tlr._active_endpoint_from_jobs(tmp_path) is None
 
 
 # ===========================================================================

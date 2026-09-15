@@ -20,6 +20,7 @@ from booley.harness.terminal import (
     set_console_active,
 )
 from booley.mcp.base import McpToolResult, _endpoint_end_event, _endpoint_start_event
+from booley.runtime.display_identity import DisplayIdentity, DisplayScope
 
 # ===========================================================================
 # Phase 0a: summary field in endpoint_end
@@ -52,7 +53,7 @@ class TestToolEndSummary:
             "sim",
             "::lib:core:0#sim_core",
             display_label="target sim_core · test smoke",
-            invocation_id="sim-run-1",
+            identity=DisplayIdentity("sim-run-1", DisplayScope.DEVELOPER),
         )
         end = _endpoint_end_event(
             "sim",
@@ -60,7 +61,7 @@ class TestToolEndSummary:
             result,
             2.0,
             display_label="target sim_core · test smoke",
-            invocation_id="sim-run-1",
+            identity=DisplayIdentity("sim-run-1", DisplayScope.DEVELOPER),
         )
 
         assert start["target"] == "::lib:core:0#sim_core"

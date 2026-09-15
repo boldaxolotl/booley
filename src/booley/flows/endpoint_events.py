@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.criteria.presentation import criteria_display_snapshot
 from booley.criteria.state import DevelopmentState
+from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.timefmt import utc_now_rfc3339
 
 if TYPE_CHECKING:
@@ -161,20 +162,13 @@ def _write_display_event(event: dict) -> None:
 
 def _event_identity(
     event: dict[str, Any],
-    invocation_id: str | None,
-    display_scope: str | None,
+    identity: DisplayIdentity | None,
 ) -> dict[str, Any]:
-    identity = (
-        invocation_id
-        or os.environ.get("BOOLEY_RUN_ID")
-        or os.environ.get("BOOLEY_DISPLAY_INVOCATION_ID")
+    invocation_id = os.environ.get("BOOLEY_RUN_ID") or os.environ.get(
+        "BOOLEY_DISPLAY_INVOCATION_ID"
     )
-    if identity:
-        event["invocation_id"] = identity
-    event["display_scope"] = display_scope or (
-        "nested" if os.environ.get("BOOLEY_NESTED_AGENT") == "1" else "developer"
-    )
-    return event
+    resolved = identity or (DisplayIdentity.current(invocation_id) if invocation_id else None)
+    return resolved.apply(event) if resolved else event
 
 
 def _endpoint_start_event(
@@ -183,8 +177,7 @@ def _endpoint_start_event(
     *,
     display_label: str | None = None,
     dry_run: bool = False,
-    invocation_id: str | None = None,
-    display_scope: str | None = None,
+    identity: DisplayIdentity | None = None,
 ) -> dict:
     """Build an endpoint_start display event dict."""
     event = {
@@ -198,7 +191,7 @@ def _endpoint_start_event(
         event["display_label"] = display_label
     if dry_run:
         event["dry_run"] = True
-    return _event_identity(event, invocation_id, display_scope)
+    return _event_identity(event, identity)
 
 
 def _endpoint_progress_event(
@@ -207,8 +200,7 @@ def _endpoint_progress_event(
     *,
     completion: bool = False,
     repeats_at_end: bool = False,
-    invocation_id: str | None = None,
-    display_scope: str | None = None,
+    identity: DisplayIdentity | None = None,
 ) -> dict:
     """Build an endpoint_progress display event dict."""
     event = {
@@ -223,7 +215,7 @@ def _endpoint_progress_event(
         # A live watcher suppresses this one duplicate at close; a watcher that
         # missed the progress event still gets the self-contained final display.
         event["repeats_at_end"] = True
-    return _event_identity(event, invocation_id, display_scope)
+    return _event_identity(event, identity)
 
 
 def _specialist_thinking_event(text: str) -> dict:
@@ -234,7 +226,6 @@ def _specialist_thinking_event(text: str) -> dict:
             "text": text,
             "timestamp": utc_now_rfc3339(),
         },
-        None,
         None,
     )
 
@@ -247,8 +238,7 @@ def _endpoint_end_event(
     *,
     display_label: str | None = None,
     dry_run: bool = False,
-    invocation_id: str | None = None,
-    display_scope: str | None = None,
+    identity: DisplayIdentity | None = None,
 ) -> dict:
     """Build an endpoint_end display event dict."""
     event = {
@@ -275,4 +265,4 @@ def _endpoint_end_event(
     }
     if display_label:
         event["display_label"] = display_label
-    return _event_identity(event, invocation_id, display_scope)
+    return _event_identity(event, identity)

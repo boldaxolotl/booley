@@ -140,7 +140,7 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
             _endpoint_progress_event(
                 endpoint.name,
                 line,
-                invocation_id=endpoint._invocation_id,
+                identity=endpoint._display_identity,
             )
         )
 

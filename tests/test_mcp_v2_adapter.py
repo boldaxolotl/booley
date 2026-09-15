@@ -23,7 +23,6 @@ def _test_server(monkeypatch: pytest.MonkeyPatch):
             "additionalProperties": False,
         },
     }
-    monkeypatch.setattr(mcp_server, "_reconcile_orphaned_locks", lambda: None)
     monkeypatch.setattr(mcp_server, "_reconcile_orphaned_jobs", lambda: None)
     monkeypatch.setattr(mcp_server, "_discover_booley_mcp_tools", lambda: ([], []))
     monkeypatch.setattr(mcp_server, "_build_mcp_tool_index", lambda _tools: {})

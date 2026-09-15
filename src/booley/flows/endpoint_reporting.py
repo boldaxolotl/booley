@@ -171,7 +171,7 @@ def emit_progress(endpoint: EndpointState, line: str) -> None:
         _endpoint_progress_event(
             endpoint.name,
             line,
-            invocation_id=endpoint._invocation_id,
+            identity=endpoint._display_identity,
         )
     )
 
@@ -184,7 +184,7 @@ def emit_completion(endpoint: EndpointState, line: str, *, repeats_at_end: bool 
             line,
             completion=True,
             repeats_at_end=repeats_at_end,
-            invocation_id=endpoint._invocation_id,
+            identity=endpoint._display_identity,
         )
     )
 
@@ -472,7 +472,7 @@ def _finish_main(
                 duration,
                 display_label=display_label,
                 dry_run=dry_run,
-                invocation_id=endpoint._invocation_id,
+                identity=endpoint._display_identity,
             ),
         )
     return result.exit_code

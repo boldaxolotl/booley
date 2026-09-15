@@ -21,8 +21,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.core.boundary import BoundaryError
 from booley.criteria.presentation import criteria_display_snapshot
 from booley.criteria.state import DevelopmentState
+from booley.runtime.display_identity import DisplayIdentity, DisplayScope
 
 from . import terminal
 from .colors import bold_amber, chrome, dim, len_visible
@@ -42,6 +44,13 @@ class _ActiveDisplayEndpoint:
     name: str
     target: str | None
     started_at: float
+
+
+@dataclass(frozen=True)
+class _EndpointEndContext:
+    name: str
+    target: str | None
+    stream_key: str
 
 
 def _event_display_label(event: dict) -> str | None:
@@ -159,14 +168,19 @@ class DisplayWatcher:
         except OSError:
             logger.debug("display.jsonl read error", exc_info=True)
 
-    def _handle_endpoint_start(self, event: dict) -> None:
+    def _handle_endpoint_start(
+        self,
+        event: dict,
+        identity: DisplayIdentity | None,
+    ) -> None:
         """Handle ``endpoint_start`` by opening the outermost endpoint box."""
         name = event.get("endpoint", "?")
         target = _event_display_label(event)
-        invocation_id = event.get("invocation_id")
-        scope = event.get("display_scope")
-        if isinstance(invocation_id, str) and invocation_id and scope:
-            if scope != "developer" or invocation_id in self._identified_endpoints:
+        if identity is not None:
+            invocation_id = identity.invocation_id
+            if identity.scope is not DisplayScope.DEVELOPER:
+                return
+            if invocation_id in self._identified_endpoints:
                 return
             self._identified_endpoints[invocation_id] = _ActiveDisplayEndpoint(
                 name=name,
@@ -188,20 +202,25 @@ class DisplayWatcher:
             if self.on_endpoint_start:
                 self.on_endpoint_start(name, target)
 
-    def _handle_endpoint_progress(self, event: dict) -> None:
+    def _handle_endpoint_progress(
+        self,
+        event: dict,
+        identity: DisplayIdentity | None,
+    ) -> None:
         """Handle ``endpoint_progress`` by emitting the outermost endpoint's progress."""
         line = event.get("line", "")
-        invocation_id = event.get("invocation_id")
-        scope = event.get("display_scope")
-        identified = isinstance(invocation_id, str) and bool(invocation_id) and bool(scope)
-        if identified and (
-            scope != "developer" or invocation_id not in self._identified_endpoints
-        ):
-            return
+        identified = identity is not None
+        if identity is not None:
+            if identity.scope is not DisplayScope.DEVELOPER:
+                return
+            if identity.invocation_id not in self._identified_endpoints:
+                return
         if line and (identified or self._nesting_depth <= 1):
             completion = bool(event.get("completion"))
             if event.get("repeats_at_end"):
-                stream_key = invocation_id if identified else event.get("endpoint", "?")
+                stream_key = (
+                    identity.invocation_id if identity is not None else event.get("endpoint", "?")
+                )
                 self._streamed_final_lines.setdefault(stream_key, []).append(line)
             if completion:
                 terminal.endpoint_progress_line(line, dimmed=False)
@@ -228,38 +247,48 @@ class DisplayWatcher:
                 remaining.append(line)
         return remaining
 
-    def _handle_endpoint_end(self, event: dict) -> None:
-        """display.jsonl ``endpoint_end``: close the box and route the summary."""
-        invocation_id = event.get("invocation_id")
-        scope = event.get("display_scope")
-        identified = isinstance(invocation_id, str) and bool(invocation_id) and bool(scope)
-        if identified:
-            if scope != "developer":
-                return
-            active = self._identified_endpoints.pop(invocation_id, None)
-            if active is None:
-                return
-            name = active.name
-            stream_key = invocation_id
-            if not self._identified_endpoints and self._nesting_depth == 0:
-                self._endpoint_active.clear()
-        else:
-            name = event.get("endpoint", "?")
-            stream_key = name
+    def _identified_end_context(
+        self,
+        event: dict,
+        identity: DisplayIdentity,
+    ) -> _EndpointEndContext | None:
+        if identity.scope is not DisplayScope.DEVELOPER:
+            return None
+        active = self._identified_endpoints.pop(identity.invocation_id, None)
+        if active is None:
+            return None
+        if not self._identified_endpoints and self._nesting_depth == 0:
+            self._endpoint_active.clear()
+        target = _event_display_label(event) or active.target
+        return _EndpointEndContext(active.name, target, identity.invocation_id)
+
+    def _legacy_end_context(self, event: dict) -> _EndpointEndContext | None:
         # depth==0 means an orphan endpoint_end (e.g. a reconciled lock from
         # a prior session, or an out-of-band emitter) with no matching
         # endpoint_start; we still treat it as outermost so the summary
         # routes to the callback rather than being silently dropped.
-        if not identified:
-            is_outermost = self._nesting_depth <= 1
-            self._nesting_depth = max(0, self._nesting_depth - 1)
-            if self._nesting_depth == 0 and not self._identified_endpoints:
-                self._endpoint_active.clear()
-            if not is_outermost:
-                return
-        target = _event_display_label(event)
-        if identified and target is None:
-            target = active.target
+        is_outermost = self._nesting_depth <= 1
+        self._nesting_depth = max(0, self._nesting_depth - 1)
+        if self._nesting_depth == 0 and not self._identified_endpoints:
+            self._endpoint_active.clear()
+        if not is_outermost:
+            return None
+        name = event.get("endpoint", "?")
+        return _EndpointEndContext(name, _event_display_label(event), name)
+
+    def _handle_endpoint_end(
+        self,
+        event: dict,
+        identity: DisplayIdentity | None,
+    ) -> None:
+        """display.jsonl ``endpoint_end``: close the box and route the summary."""
+        context = (
+            self._identified_end_context(event, identity)
+            if identity is not None
+            else self._legacy_end_context(event)
+        )
+        if context is None:
+            return
         exit_code = event.get("exit_code", 2)
         duration_s = event.get("duration_s", 0.0)
         cost_usd = event.get("cost_usd", 0.0)
@@ -269,11 +298,13 @@ class DisplayWatcher:
         output_tokens = event.get("output_tokens", 0)
         lines_added = event.get("lines_added", 0)
         lines_removed = event.get("lines_removed", 0)
-        self._open_endpoints.pop(name, None)
-        display_lines = self._unstreamed_display_lines(stream_key, event.get("display_lines"))
+        self._open_endpoints.pop(context.name, None)
+        display_lines = self._unstreamed_display_lines(
+            context.stream_key, event.get("display_lines")
+        )
         terminal.endpoint_box_close(
-            name,
-            target,
+            context.name,
+            context.target,
             exit_code=exit_code,
             duration_s=duration_s,
             cost_usd=cost_usd,
@@ -282,8 +313,8 @@ class DisplayWatcher:
         )
         if self.on_endpoint_summary:
             self.on_endpoint_summary(
-                name,
-                target,
+                context.name,
+                context.target,
                 exit_code,
                 duration_s,
                 cost_usd,
@@ -311,12 +342,19 @@ class DisplayWatcher:
 
         etype = event.get("type", "")
         self._last_output = time.monotonic()
+        identity = None
+        if etype in {"endpoint_start", "endpoint_progress", "endpoint_end"}:
+            try:
+                identity = DisplayIdentity.from_event(event)
+            except BoundaryError:
+                logger.debug("Ignoring malformed display event identity", exc_info=True)
+                return
         if etype == "endpoint_start":
-            self._handle_endpoint_start(event)
+            self._handle_endpoint_start(event, identity)
         elif etype == "endpoint_progress":
-            self._handle_endpoint_progress(event)
+            self._handle_endpoint_progress(event, identity)
         elif etype == "endpoint_end":
-            self._handle_endpoint_end(event)
+            self._handle_endpoint_end(event, identity)
         elif etype == "specialist_thinking":
             text = event.get("text", "")
             # Endpoint progress/heartbeats already show liveness. Specialist

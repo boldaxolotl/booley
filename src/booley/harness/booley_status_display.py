@@ -79,11 +79,6 @@ def _active_endpoint_from_jobs(ticket_logs_dir: Path) -> tuple[str, str | None] 
     return newest.endpoint, None
 
 
-def _active_endpoint_from_display(ticket_logs_dir: Path) -> tuple[str, str | None] | None:
-    """Compatibility name for the JobRecord-backed activity lookup."""
-    return _active_endpoint_from_jobs(ticket_logs_dir)
-
-
 def _read_checkpoint_status(project_root: Path) -> str | None:
     """Read the most recent status.json to get a short status like 'Still debugging (2m ago)'."""
     logs_dir = tickets_dir_from_project_root(project_root) / "logs"

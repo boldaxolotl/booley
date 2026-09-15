@@ -274,6 +274,39 @@ class TestReportFetch:
         _seed_report(_report_env, "sim", {"flow": "sim"})
         assert _latest_report("lint") is None
 
+    def test_inline_endpoint_publishes_running_job_record(self, _report_env, monkeypatch):
+        import asyncio
+        import os
+
+        async def scenario():
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def run(_cmd, *, timeout, on_spawn=None, on_first_active=None, **_kwargs):
+                if on_spawn:
+                    on_spawn(os.getpid())
+                if on_first_active:
+                    on_first_active()
+                started.set()
+                await release.wait()
+                return 0, "ok", "", False
+
+            monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+            jobs = _JobManager(_FakeLifetime())
+            task = asyncio.create_task(jobs.run_synchronous("lint", ["lint"], 60))
+            await started.wait()
+            active = jobrec.list_records(session_jobs_dir())
+            release.set()
+            await task
+            remaining = jobrec.list_records(session_jobs_dir())
+            return active, remaining
+
+        active, remaining = asyncio.run(scenario())
+        assert len(active) == 1
+        assert active[0].endpoint == "lint"
+        assert active[0].status == jobrec.STATUS_RUNNING
+        assert remaining == []
+
     def test_latest_report_no_reports_dir(self, tmp_path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
@@ -1720,20 +1753,6 @@ class TestCancel:
         assert terminal["invocation_id"] == run_id
         assert terminal["outcome"] == "cancelled"
 
-    def test_orphan_display_reconciliation_never_reads_the_journal(self, _report_env, monkeypatch):
-        display = _report_env / "display.jsonl"
-        display.write_text("{}\n", encoding="utf-8")
-        original = Path.read_text
-
-        def guarded_read(path: Path, *args, **kwargs):
-            if path == display:
-                raise AssertionError("display journal must not be scanned at bootstrap")
-            return original(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "read_text", guarded_read)
-
-        mcp_server._reconcile_orphaned_locks()
-
     def test_server_shutdown_cancellation_is_not_mislabeled_as_user_cancel(
         self,
         _report_env,
@@ -1765,6 +1784,77 @@ class TestCancel:
         run_id = asyncio.run(scenario())
         record = jobrec.read_record(run_id, root=session_jobs_dir())
         assert record is not None and record.status == jobrec.STATUS_RUNNING
+        terminal = json.loads(
+            (_report_env / "display.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+        )
+        assert terminal["invocation_id"] == run_id
+        assert terminal["outcome"] == "aborted"
+
+    def test_adopted_cancel_persists_only_after_process_stops(self, _report_env, monkeypatch):
+        import asyncio
+        import os
+
+        rec = jobrec.JobRecord(
+            run_id="sim-adopted-atomic",
+            endpoint="sim",
+            started_at=_utc_stamp(-10),
+            timeout_s=600,
+            pid=os.getpid(),
+        )
+        jobrec.write_record(rec, root=session_jobs_dir())
+        jobs = _JobManager(_FakeLifetime())
+
+        async def stop(_pid):
+            current = jobrec.read_record(rec.run_id, root=session_jobs_dir())
+            assert current is not None and current.status == jobrec.STATUS_RUNNING
+
+        monkeypatch.setattr(mcp_server, "_cancel_adopted_process_group", stop)
+        monkeypatch.setattr(jobs, "_adopt_report_outcome", lambda _rec: False)
+
+        phase = asyncio.run(jobs.cancel(rec.run_id))
+
+        assert phase == "running"
+        final = jobrec.read_record(rec.run_id, root=session_jobs_dir())
+        assert final is not None and final.status == jobrec.STATUS_CANCELLED
+
+    def test_adopted_cancel_preserves_completion_that_wins_race(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
+        import asyncio
+        import os
+
+        rec = jobrec.JobRecord(
+            run_id="sim-adopted-finished",
+            endpoint="sim",
+            started_at=_utc_stamp(-10),
+            timeout_s=600,
+            pid=os.getpid(),
+        )
+        jobrec.write_record(rec, root=session_jobs_dir())
+        jobs = _JobManager(_FakeLifetime())
+        checks = 0
+
+        def adopt(current):
+            nonlocal checks
+            checks += 1
+            if checks == 1:
+                return False
+            jobs._record_terminal(current, 0, timed_out=False)
+            return True
+
+        async def stop(_pid):
+            return None
+
+        monkeypatch.setattr(jobs, "_adopt_report_outcome", adopt)
+        monkeypatch.setattr(mcp_server, "_cancel_adopted_process_group", stop)
+
+        phase = asyncio.run(jobs.cancel(rec.run_id))
+
+        assert phase == "finished"
+        final = jobrec.read_record(rec.run_id, root=session_jobs_dir())
+        assert final is not None and final.status == jobrec.STATUS_DONE
         assert not (_report_env / "display.jsonl").exists()
 
     def test_cancel_endpoint_visible_wherever_poll_is(self, monkeypatch):

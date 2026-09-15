@@ -62,7 +62,7 @@ def prepare_execution(
             display_target,
             display_label=display_label,
             dry_run=dry_run,
-            invocation_id=endpoint._invocation_id,
+            identity=endpoint._display_identity,
         )
     )
     return PreparedExecution(
