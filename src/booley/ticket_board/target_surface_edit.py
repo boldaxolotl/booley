@@ -237,9 +237,7 @@ def only_authorized_core_additions(
     replacements = [
         replacement
         for section, names in additions.items()
-        for replacement in _mapping_addition_replacements(
-            baseline, current, path, section, names
-        )
+        for replacement in _mapping_addition_replacements(baseline, current, path, section, names)
     ]
     without_authorized = current
     for start, end, replacement in sorted(replacements, reverse=True):

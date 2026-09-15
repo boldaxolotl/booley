@@ -158,8 +158,7 @@ def test_provider_merge_adds_parameter_section_or_fills_empty_mapping(
         encoding="utf-8",
     )
     (destination / "toy.core").write_text(
-        "CAPI=2:\nname: acme:lib:toy:1.0\n"
-        f"{destination_parameters}targets:\n  current: {{}}\n",
+        f"CAPI=2:\nname: acme:lib:toy:1.0\n{destination_parameters}targets:\n  current: {{}}\n",
         encoding="utf-8",
     )
 

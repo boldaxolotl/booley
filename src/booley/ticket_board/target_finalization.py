@@ -11,10 +11,10 @@ from __future__ import annotations
 import re
 import tomllib
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import yaml
 from yaml.nodes import MappingNode, ScalarNode
@@ -218,31 +218,34 @@ def _target_parameter_references(targets: Mapping[str, Any]) -> set[str]:
     }
 
 
-def _plan_orphaned_filesets(
+_InputRemoval = TypeVar("_InputRemoval", PlannedFilesetRemoval, PlannedParameterRemoval)
+
+
+def _mapping_names(document: Mapping[str, Any], section: str) -> set[str]:
+    value = document.get(section)
+    return set(value) if isinstance(value, Mapping) else set()
+
+
+def _plan_orphaned_inputs(
     root: Path,
     removals: Iterable[PlannedTargetRemoval],
     baseline_cores: Mapping[str, bytes | None],
-) -> list[PlannedFilesetRemoval]:
-    if not baseline_cores:
-        return []
+    section: str,
+    target_references: Callable[[Mapping[str, Any]], set[str]],
+    removal_type: Callable[[str, str], _InputRemoval],
+) -> list[_InputRemoval]:
     by_core: dict[str, set[str]] = defaultdict(set)
     for removal in removals:
         by_core[removal.core_path].add(removal.name)
-    planned: list[PlannedFilesetRemoval] = []
+    planned: list[_InputRemoval] = []
     for relative, removed_names in by_core.items():
-        core_path = root / relative
-        current = _read_core_mapping(core_path.read_text(encoding="utf-8"), core_path)
         if relative not in baseline_cores:
             continue
+        core_path = root / relative
+        current = _read_core_mapping(core_path.read_text(encoding="utf-8"), core_path)
         baseline_content = baseline_cores[relative]
         baseline = (
             _read_core_mapping(baseline_content, core_path) if baseline_content is not None else {}
-        )
-        current_filesets = current.get("filesets")
-        baseline_filesets = baseline.get("filesets")
-        current_names = set(current_filesets) if isinstance(current_filesets, Mapping) else set()
-        baseline_names = (
-            set(baseline_filesets) if isinstance(baseline_filesets, Mapping) else set()
         )
         targets = current.get("targets")
         if not isinstance(targets, Mapping):
@@ -251,50 +254,14 @@ def _plan_orphaned_filesets(
         retained_targets = {
             name: body for name, body in targets.items() if name not in removed_names
         }
-        removed_references = _target_fileset_references(removed_targets)
-        retained_references = _target_fileset_references(retained_targets)
+        removed_references = target_references(removed_targets)
+        retained_references = target_references(retained_targets)
+        current_names = _mapping_names(current, section)
+        baseline_names = _mapping_names(baseline, section)
         for name in sorted(
             (current_names - baseline_names) & removed_references - retained_references
         ):
-            planned.append(PlannedFilesetRemoval(relative, name))
-    return planned
-
-
-def _plan_orphaned_parameters(
-    root: Path,
-    removals: Iterable[PlannedTargetRemoval],
-    baseline_cores: Mapping[str, bytes | None],
-) -> list[PlannedParameterRemoval]:
-    by_core: dict[str, set[str]] = defaultdict(set)
-    for removal in removals:
-        by_core[removal.core_path].add(removal.name)
-    planned: list[PlannedParameterRemoval] = []
-    for relative, removed_names in by_core.items():
-        if relative not in baseline_cores:
-            continue
-        core_path = root / relative
-        current = _read_core_mapping(core_path.read_text(encoding="utf-8"), core_path)
-        baseline_content = baseline_cores[relative]
-        baseline = (
-            _read_core_mapping(baseline_content, core_path) if baseline_content is not None else {}
-        )
-        current_parameters = current.get("parameters")
-        baseline_parameters = baseline.get("parameters")
-        current_names = set(current_parameters) if isinstance(current_parameters, Mapping) else set()
-        baseline_names = (
-            set(baseline_parameters) if isinstance(baseline_parameters, Mapping) else set()
-        )
-        targets = current.get("targets")
-        if not isinstance(targets, Mapping):
-            continue
-        removed_targets = {name: body for name, body in targets.items() if name in removed_names}
-        retained_targets = {name: body for name, body in targets.items() if name not in removed_names}
-        removed_references = _target_parameter_references(removed_targets)
-        retained_references = _target_parameter_references(retained_targets)
-        for name in sorted(
-            (current_names - baseline_names) & removed_references - retained_references
-        ):
-            planned.append(PlannedParameterRemoval(relative, name))
+            planned.append(removal_type(relative, name))
     return planned
 
 
@@ -305,8 +272,22 @@ def plan_orphaned_target_input_removals(
 ) -> TargetRemovalPlan:
     """Add removals for newly-authored inputs orphaned by Target removal."""
     root = Path(project_root).resolve()
-    filesets = _plan_orphaned_filesets(root, plan.targets, baseline_cores)
-    parameters = _plan_orphaned_parameters(root, plan.targets, baseline_cores)
+    filesets = _plan_orphaned_inputs(
+        root,
+        plan.targets,
+        baseline_cores,
+        "filesets",
+        _target_fileset_references,
+        PlannedFilesetRemoval,
+    )
+    parameters = _plan_orphaned_inputs(
+        root,
+        plan.targets,
+        baseline_cores,
+        "parameters",
+        _target_parameter_references,
+        PlannedParameterRemoval,
+    )
     result = TargetRemovalPlan(
         plan.targets,
         tuple(sorted(filesets)),

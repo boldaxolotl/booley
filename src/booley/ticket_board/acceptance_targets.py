@@ -613,9 +613,7 @@ def _validate_binding(
         try:
             missing_inputs = _missing_target_inputs(catalog, handle.selector)
         except FuseSocError as exc:
-            errors.append(
-                f"{binding.label}: {role} target {target!r} inspection failed: {exc}"
-            )
+            errors.append(f"{binding.label}: {role} target {target!r} inspection failed: {exc}")
             continue
         missing = sorted({item.path for item in missing_inputs})
         if not missing:

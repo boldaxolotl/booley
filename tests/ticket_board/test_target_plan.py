@@ -324,10 +324,7 @@ def test_existing_core_can_add_parameter_section_or_fill_empty_mapping(
         path.write_text(baseline, encoding="utf-8")
         _git(repository, "add", "toy.core")
         _git(repository, "commit", "-qm", "add empty parameters")
-    declaration = (
-        "parameters:\n"
-        "  ENABLE_ZBB: {datatype: int, paramtype: vlogparam, default: 0}\n"
-    )
+    declaration = "parameters:\n  ENABLE_ZBB: {datatype: int, paramtype: vlogparam, default: 0}\n"
     if baseline_parameters:
         current = baseline.replace(baseline_parameters, declaration)
     else:
@@ -369,9 +366,7 @@ def test_unreferenced_added_parameter_is_rejected(repository: Path) -> None:
     path.write_text(
         path.read_text(encoding="utf-8").replace(
             "targets:\n",
-            "parameters:\n"
-            "  UNUSED: {datatype: int, paramtype: vlogparam, default: 0}\n"
-            "targets:\n",
+            "parameters:\n  UNUSED: {datatype: int, paramtype: vlogparam, default: 0}\ntargets:\n",
         ),
         encoding="utf-8",
     )
@@ -445,15 +440,11 @@ def test_existing_fileset_cannot_be_modified(repository: Path) -> None:
 
 
 @pytest.mark.parametrize("change", ["modify", "delete"])
-def test_existing_parameter_cannot_be_modified_or_deleted(
-    repository: Path, change: str
-) -> None:
+def test_existing_parameter_cannot_be_modified_or_deleted(repository: Path, change: str) -> None:
     path = repository / "toy.core"
     baseline = path.read_text(encoding="utf-8").replace(
         "targets:\n",
-        "parameters:\n"
-        "  WIDTH: {datatype: int, paramtype: vlogparam, default: 8}\n"
-        "targets:\n",
+        "parameters:\n  WIDTH: {datatype: int, paramtype: vlogparam, default: 8}\ntargets:\n",
     )
     path.write_text(baseline, encoding="utf-8")
     _git(repository, "add", "toy.core")
@@ -462,8 +453,7 @@ def test_existing_parameter_cannot_be_modified_or_deleted(
         baseline.replace("default: 8", "default: 16")
         if change == "modify"
         else baseline.replace(
-            "parameters:\n"
-            "  WIDTH: {datatype: int, paramtype: vlogparam, default: 8}\n",
+            "parameters:\n  WIDTH: {datatype: int, paramtype: vlogparam, default: 8}\n",
             "",
         )
     )
@@ -731,24 +721,25 @@ def test_source_boundaries_handle_absence_and_decode_failures() -> None:
 
 
 def test_test_table_policy_rejects_shared_changed_and_unplanned_tables() -> None:
-    empty = ((), (), ())
-    shared = target_plan._SurfaceDelta(*empty, ("test_lists",), (), ())
+    shared = target_plan._SurfaceDelta(test_tables=target_plan._ChangeSet(added=("test_lists",)))
     catalog = object()
     with pytest.raises(TargetPlanValidationError, match="shared"):
         target_plan._validate_test_tables(shared, None, frozenset(), catalog)
 
-    modified = target_plan._SurfaceDelta(*empty, (), ("existing",), ())
+    modified = target_plan._SurfaceDelta(
+        test_tables=target_plan._ChangeSet(modified=("existing",))
+    )
     with pytest.raises(TargetPlanValidationError, match="modify or delete"):
         target_plan._validate_test_tables(modified, None, frozenset(), catalog)
 
-    authored = target_plan._SurfaceDelta(*empty, ("future",), (), ())
+    authored = target_plan._SurfaceDelta(test_tables=target_plan._ChangeSet(added=("future",)))
     with pytest.raises(TargetPlanValidationError, match="target_plan omission"):
         target_plan._validate_test_tables(authored, None, frozenset(), catalog)
 
 
 def test_surface_coverage_reports_provider_and_plan_mismatches() -> None:
     definition = target_plan._TargetDefinition("acme:lib:toy:1.0#future", "future", {})
-    delta = target_plan._SurfaceDelta((definition,), (), (), (), (), ())
+    delta = target_plan._SurfaceDelta(targets=target_plan._ChangeSet(added=(definition,)))
     with pytest.raises(TargetPlanValidationError, match="provider Targets changed"):
         target_plan._validate_surface_coverage(
             delta, None, frozenset({"acme:lib:toy:1.0#missing"})

@@ -10,11 +10,10 @@ coverage, and derived removals.
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Mapping
-from dataclasses import dataclass
-from operator import attrgetter
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import yaml
 
@@ -78,20 +77,22 @@ class _ParameterDefinition:
     referenced_by: tuple[str, ...]
 
 
+_Change = TypeVar("_Change")
+
+
+@dataclass(frozen=True)
+class _ChangeSet(Generic[_Change]):
+    added: tuple[_Change, ...] = ()
+    modified: tuple[_Change, ...] = ()
+    deleted: tuple[_Change, ...] = ()
+
+
 @dataclass(frozen=True)
 class _SurfaceDelta:
-    added: tuple[_TargetDefinition, ...]
-    modified: tuple[_TargetDefinition, ...]
-    deleted: tuple[_TargetDefinition, ...]
-    added_test_tables: tuple[str, ...]
-    modified_test_tables: tuple[str, ...]
-    deleted_test_tables: tuple[str, ...]
-    added_filesets: tuple[_FilesetDefinition, ...] = ()
-    modified_filesets: tuple[_FilesetDefinition, ...] = ()
-    deleted_filesets: tuple[_FilesetDefinition, ...] = ()
-    added_parameters: tuple[_ParameterDefinition, ...] = ()
-    modified_parameters: tuple[_ParameterDefinition, ...] = ()
-    deleted_parameters: tuple[_ParameterDefinition, ...] = ()
+    targets: _ChangeSet[_TargetDefinition] = field(default_factory=_ChangeSet)
+    test_tables: _ChangeSet[str] = field(default_factory=_ChangeSet)
+    filesets: _ChangeSet[_FilesetDefinition] = field(default_factory=_ChangeSet)
+    parameters: _ChangeSet[_ParameterDefinition] = field(default_factory=_ChangeSet)
 
 
 @dataclass(frozen=True)
@@ -203,9 +204,7 @@ def _parameter_references(content: bytes | None, *, path: str) -> dict[str, tupl
     return {name: tuple(sorted(targets)) for name, targets in references.items()}
 
 
-def _parameter_definitions(
-    content: bytes | None, *, path: str
-) -> dict[str, _ParameterDefinition]:
+def _parameter_definitions(content: bytes | None, *, path: str) -> dict[str, _ParameterDefinition]:
     parameters = _core_parameters(content, path=path)
     references = _parameter_references(content, path=path)
     return {
@@ -233,12 +232,14 @@ def _changed_rows(
     return added, modified, deleted
 
 
-def _sorted_delta_items(deltas: list[_SurfaceDelta], attribute: str, key) -> tuple[Any, ...]:
-    return tuple(
-        sorted(
-            (item for delta in deltas for item in getattr(delta, attribute)),
-            key=key,
-        )
+def _merge_changes(
+    changes: Iterable[_ChangeSet[_Change]], key: Callable[[_Change], Any]
+) -> _ChangeSet[_Change]:
+    rows = tuple(changes)
+    return _ChangeSet(
+        added=tuple(sorted((item for row in rows for item in row.added), key=key)),
+        modified=tuple(sorted((item for row in rows for item in row.modified), key=key)),
+        deleted=tuple(sorted((item for row in rows for item in row.deleted), key=key)),
     )
 
 
@@ -249,21 +250,11 @@ def _surface_delta(files: tuple[TargetSurfaceFile, ...]) -> _SurfaceDelta:
             deltas.append(_core_surface_delta(surface))
         elif Path(surface.path).name == "tests.toml":
             deltas.append(_tests_surface_delta(surface))
-    canonical = attrgetter("canonical")
-    definition = attrgetter("key")
     return _SurfaceDelta(
-        added=_sorted_delta_items(deltas, "added", canonical),
-        modified=_sorted_delta_items(deltas, "modified", canonical),
-        deleted=_sorted_delta_items(deltas, "deleted", canonical),
-        added_test_tables=_sorted_delta_items(deltas, "added_test_tables", str),
-        modified_test_tables=_sorted_delta_items(deltas, "modified_test_tables", str),
-        deleted_test_tables=_sorted_delta_items(deltas, "deleted_test_tables", str),
-        added_filesets=_sorted_delta_items(deltas, "added_filesets", definition),
-        modified_filesets=_sorted_delta_items(deltas, "modified_filesets", definition),
-        deleted_filesets=_sorted_delta_items(deltas, "deleted_filesets", definition),
-        added_parameters=_sorted_delta_items(deltas, "added_parameters", definition),
-        modified_parameters=_sorted_delta_items(deltas, "modified_parameters", definition),
-        deleted_parameters=_sorted_delta_items(deltas, "deleted_parameters", definition),
+        targets=_merge_changes((delta.targets for delta in deltas), lambda item: item.canonical),
+        test_tables=_merge_changes((delta.test_tables for delta in deltas), str),
+        filesets=_merge_changes((delta.filesets for delta in deltas), lambda item: item.key),
+        parameters=_merge_changes((delta.parameters for delta in deltas), lambda item: item.key),
     )
 
 
@@ -326,18 +317,21 @@ def _core_surface_delta(surface: TargetSurfaceFile) -> _SurfaceDelta:
             tuple(after_parameters[key].name for key in parameter_added),
         )
     return _SurfaceDelta(
-        tuple(after[key] for key in added),
-        tuple(after[key] for key in modified),
-        tuple(before[key] for key in deleted),
-        (),
-        (),
-        (),
-        tuple(after_filesets[key] for key in fileset_added),
-        tuple(after_filesets[key] for key in fileset_modified),
-        tuple(before_filesets[key] for key in fileset_deleted),
-        tuple(after_parameters[key] for key in parameter_added),
-        tuple(after_parameters[key] for key in parameter_modified),
-        tuple(before_parameters[key] for key in parameter_deleted),
+        targets=_ChangeSet(
+            tuple(after[key] for key in added),
+            tuple(after[key] for key in modified),
+            tuple(before[key] for key in deleted),
+        ),
+        filesets=_ChangeSet(
+            tuple(after_filesets[key] for key in fileset_added),
+            tuple(after_filesets[key] for key in fileset_modified),
+            tuple(before_filesets[key] for key in fileset_deleted),
+        ),
+        parameters=_ChangeSet(
+            tuple(after_parameters[key] for key in parameter_added),
+            tuple(after_parameters[key] for key in parameter_modified),
+            tuple(before_parameters[key] for key in parameter_deleted),
+        ),
     )
 
 
@@ -356,7 +350,7 @@ def _tests_surface_delta(surface: TargetSurfaceFile) -> _SurfaceDelta:
         )
     if not modified and not deleted:
         _validate_tests_source_boundary(surface, added)
-    return _SurfaceDelta((), (), (), added, modified, deleted)
+    return _SurfaceDelta(test_tables=_ChangeSet(added, modified, deleted))
 
 
 def _validate_core_source_boundary(
@@ -449,16 +443,16 @@ def _validate_test_tables(
     catalog: TargetCatalog,
 ) -> None:
     changed_shared = TEST_LISTS_TABLE in {
-        *delta.added_test_tables,
-        *delta.modified_test_tables,
-        *delta.deleted_test_tables,
+        *delta.test_tables.added,
+        *delta.test_tables.modified,
+        *delta.test_tables.deleted,
     }
     if changed_shared:
         raise TargetPlanValidationError(
             f"Ticket creation cannot author the shared [{TEST_LISTS_TABLE}] tests.toml table"
         )
-    modified = set(delta.modified_test_tables) - provider_test_tables
-    deleted = set(delta.deleted_test_tables) - provider_test_tables
+    modified = set(delta.test_tables.modified) - provider_test_tables
+    deleted = set(delta.test_tables.deleted) - provider_test_tables
     if modified or deleted:
         changed = sorted(modified | deleted)
         raise TargetPlanValidationError(
@@ -466,7 +460,7 @@ def _validate_test_tables(
             + ", ".join(changed)
         )
     authored_tables = tuple(
-        table for table in delta.added_test_tables if table not in provider_test_tables
+        table for table in delta.test_tables.added if table not in provider_test_tables
     )
     if not authored_tables:
         return
@@ -554,7 +548,7 @@ def _validate_surface_coverage(
     canonical: TargetPlan | None,
     provider_targets: frozenset[str],
 ) -> tuple[set[str], set[str]]:
-    added_surface = {item.canonical for item in delta.added}
+    added_surface = {item.canonical for item in delta.targets.added}
     disappeared = provider_targets - added_surface
     if disappeared:
         raise TargetPlanValidationError(
@@ -608,7 +602,7 @@ def _validate_fileset_coverage(
 ) -> tuple[str, ...]:
     authorized_targets = planned_targets | set(provider_targets)
     authored: list[str] = []
-    for fileset in delta.added_filesets:
+    for fileset in delta.filesets.added:
         references = set(fileset.referenced_by)
         if not references:
             raise TargetPlanValidationError(
@@ -633,7 +627,7 @@ def _validate_parameter_coverage(
 ) -> tuple[str, ...]:
     authorized_targets = planned_targets | set(provider_targets)
     authored: list[str] = []
-    for parameter in delta.added_parameters:
+    for parameter in delta.parameters.added:
         if "?" in parameter.name:
             raise TargetPlanValidationError(
                 f"new parameter declaration {parameter.name!r} in {parameter.path} "
@@ -683,8 +677,8 @@ def analyze_target_plan(
 ) -> TargetPlanAnalysis:
     """Return the canonical plan after proving exact Target-surface coverage."""
     delta = _surface_delta(surface_files)
-    if delta.modified or delta.deleted:
-        changed = [item.canonical for item in (*delta.modified, *delta.deleted)]
+    if delta.targets.modified or delta.targets.deleted:
+        changed = [item.canonical for item in (*delta.targets.modified, *delta.targets.deleted)]
         raise TargetPlanValidationError(
             "Ticket creation cannot modify or delete existing Targets: " + ", ".join(changed)
         )
