@@ -109,9 +109,10 @@ def test_picorv32_public_qa_corrections_are_explicitly_contractual():
     scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
     baseline = scenario_step(scenario, "baseline.source-unchanged")
     assert "post-setup destination ref" in baseline["checks"][0]["expected"]
-    assert "does not compare Project data with the pre-setup Project pin" in baseline["checks"][0][
-        "expected"
-    ]
+    assert (
+        "does not compare Project data with the pre-setup Project pin"
+        in baseline["checks"][0]["expected"]
+    )
     assert "project.separate-repository" in baseline["requires"]
 
     doctor = scenario_step(scenario, "doctor.deep")["checks"][0]

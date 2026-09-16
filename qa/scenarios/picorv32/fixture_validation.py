@@ -19,9 +19,7 @@ from pathlib import Path
 _GENERATED_INSTANCE_RE = re.compile(r"(?<![A-Za-z0-9])_[0-9a-f]+_p_Instance\b")
 _GENERATED_INSTANCE_RUN_RE = re.compile(r"(?:<generated-instance>\s*)+")
 _TRUNCATED_GENERATED_TAIL_RE = re.compile(r"(<generated-instance-list>).*…$")
-_PARTIAL_GENERATED_INSTANCE_TAIL_RE = re.compile(
-    r"(?<![A-Za-z0-9])_[0-9a-f]+(?:_[A-Za-z_]*)?…$"
-)
+_PARTIAL_GENERATED_INSTANCE_TAIL_RE = re.compile(r"(?<![A-Za-z0-9])_[0-9a-f]+(?:_[A-Za-z_]*)?…$")
 
 
 class FixtureError(ValueError):
@@ -360,9 +358,7 @@ def _stable_warning_signatures(report: dict) -> tuple[int, Counter[tuple]]:
             message = _PARTIAL_GENERATED_INSTANCE_TAIL_RE.sub(
                 "<generated-instance-list>…", message
             )
-        signatures[
-            (item["tool"], item["code"], item["category"], item["count"], message)
-        ] += 1
+        signatures[(item["tool"], item["code"], item["category"], item["count"], message)] += 1
     return total, signatures
 
 
