@@ -22,6 +22,7 @@ def run(_args: argparse.Namespace, project_root: Path) -> int:
         return 2
 
     try:
+        print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
         os.execvp(provider, [provider])
     except FileNotFoundError:
         print(

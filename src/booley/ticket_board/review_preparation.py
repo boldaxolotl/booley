@@ -1528,10 +1528,21 @@ def review_briefing_command(
             )
         package = load_triage_package(Path(str(manifest["briefing_path"])))
         failures = open_package_diffs(package) if open_diffs else []
+        presentation: Mapping[str, Any] = package
+        accepted = read_acceptance(ctx.log_dir)
+        inspection = package.get("inspection")
+        if accepted.kind == "accepted" and inspection is not None:
+            presentation = {
+                **package,
+                "inspection": {**inspection, "disposition": "accepted"},
+            }
+        briefing = render_review_briefing(presentation, failures)
+        if presentation is not package:
+            briefing += "\n\nAcceptance was published after this report was prepared."
         return ReviewBriefingOutcome(
             "ready",
             "prepared review briefing loaded",
-            render_review_briefing(package, failures),
+            briefing,
             tuple(failures),
         )
     except Exception as exc:  # noqa: BLE001 — CLI boundary returns a stable outcome

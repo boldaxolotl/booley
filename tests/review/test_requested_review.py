@@ -206,6 +206,74 @@ def test_unaccepted_completion_and_finalization_reject_unmet_gates(blocked):
     assert read_entry(tio.logs_dir / "demo")["disposition"] == "unaccepted"
 
 
+def test_approve_rejects_unmet_selection_without_agent(blocked, monkeypatch):
+    from booley.ticket_board.review_lifecycle import approve_review_command
+
+    root, tio, _ = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+
+    async def unexpected_agent(*_args, **_kwargs):
+        pytest.fail("approval launched an agent")
+
+    monkeypatch.setattr(prep, "_invoke_agent", unexpected_agent)
+    with pytest.raises(ValueError, match="mandatory criterion"):
+        approve_review_command(root, "demo")
+    assert tio.find_ticket("demo")["status"] == "review"
+    assert not (tio.logs_dir / "demo" / "acceptance" / "accepted.json").exists()
+
+
+def test_review_reuses_current_requested_package(blocked):
+    from booley.ticket_board.review_lifecycle import review_command
+
+    root, _tio, _ = blocked
+    first = asyncio.run(request_review_command(root, "demo", reason="inspect"))
+    second = asyncio.run(review_command(root, "demo"))
+    assert first.ready and second.ready
+    assert second.status == "fresh"
+    assert second.package_path == first.package_path
+
+
+def test_board_review_prepares_blocked_without_transition(blocked, monkeypatch):
+    from booley.harness.blocked_prep import BlockedPrepOutcome
+    from booley.ticket_board.review_lifecycle import review_command
+
+    root, tio, _ = blocked
+
+    async def dossier(_root, _slug, *, force=False):
+        assert not force
+        return BlockedPrepOutcome("ready", "dossier prepared")
+
+    monkeypatch.setattr("booley.harness.blocked_prep.prepare_blocked_dossier", dossier)
+    outcome = asyncio.run(review_command(root, "demo"))
+    assert outcome.ready, outcome.message
+    assert tio.find_ticket("demo")["status"] == "blocked"
+    assert read_entry(tio.logs_dir / "demo") is None
+
+
+def test_board_approve_rejects_changed_selected_head(blocked):
+    from booley.ticket_board.review_lifecycle import approve_review_command
+    from tests.ticket_board.test_ticket_baseline import _git
+
+    root, tio, worktree = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    (worktree / "README.md").write_text("changed after review\n")
+    _git(worktree, "add", "README.md")
+    _git(
+        worktree,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "change reviewed head",
+    )
+    with pytest.raises(ValueError, match="selected review inputs changed"):
+        approve_review_command(root, "demo")
+    assert tio.find_ticket("demo")["status"] == "review"
+    assert not (tio.logs_dir / "demo" / "acceptance" / "accepted.json").exists()
+
+
 def test_concurrent_mutator_is_fenced_during_generation(blocked, monkeypatch):
     from booley.ticket_board import review_lifecycle as requests
     from booley.ticket_board.review_records import ReviewEntryError
@@ -392,7 +460,7 @@ def test_refresh_selects_new_heads_while_regenerate_does_not(blocked):
     )
     refused = asyncio.run(request_review_command(root, "demo", action="regenerate"))
     assert not refused.ready
-    assert "refresh-review" in refused.message
+    assert "board review" in refused.message
     refreshed = asyncio.run(request_review_command(root, "demo", action="refresh"))
     assert refreshed.ready, refreshed.message
     assert refreshed.package_path != first.package_path
@@ -720,6 +788,62 @@ def _finish_interactive_fixture(root, tio, interrupt, monkeypatch):
 
     assert op_complete(tio, "demo")
     assert tio.find_ticket("demo")["status"] == "done"
+
+
+@pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
+@pytest.mark.parametrize("interrupt", [False, True])
+@pytest.mark.timeout(180)
+def test_board_approve_freezes_selected_package_without_agent(blocked, monkeypatch, interrupt):
+    import sys
+
+    from booley.ticket_board import review_lifecycle as lifecycle
+    from booley.ticket_board.review_execution import run_review_command
+    from booley.ticket_board.review_lifecycle import approve_review_command, review_command
+
+    root, tio, worktree = blocked
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2] / "src"))
+    assert asyncio.run(request_review_command(root, "demo", reason="finish verification")).ready
+    endpoint = worktree / ".booley_project" / "mcp_tools" / "verify_fixture.py"
+    assert run_review_command(root, "demo", [sys.executable, str(endpoint)]) == 0
+    report = [
+        sys.executable,
+        "-m",
+        "booley.mcp.submit_run_report",
+        "--summary",
+        "Verified the implementation.",
+        "--uncertainties",
+        "Synthetic fixture only.",
+        "--design-decisions",
+        "No source changes were required.",
+        "--file-justifications",
+        "{}",
+    ]
+    assert run_review_command(root, "demo", report) == 0
+    selected = asyncio.run(review_command(root, "demo"))
+    assert selected.ready, selected.message
+
+    async def unexpected_agent(*_args, **_kwargs):
+        pytest.fail("approval launched an agent")
+
+    monkeypatch.setattr(prep, "_invoke_agent", unexpected_agent)
+    if interrupt:
+        freeze = lifecycle.freeze_acceptance
+
+        def interrupted(*args, **kwargs):
+            snapshot = freeze(*args, **kwargs)
+            raise OSError(f"interrupted after acceptance {snapshot.digest}")
+
+        monkeypatch.setattr(lifecycle, "freeze_acceptance", interrupted)
+        with pytest.raises(OSError, match="interrupted after acceptance"):
+            approve_review_command(root, "demo")
+        frozen = (tio.logs_dir / "demo" / "acceptance" / "accepted.json").read_bytes()
+        monkeypatch.setattr(lifecycle, "freeze_acceptance", freeze)
+    assert approve_review_command(root, "demo")
+    if interrupt:
+        assert (tio.logs_dir / "demo" / "acceptance" / "accepted.json").read_bytes() == frozen
+    assert tio.find_ticket("demo")["status"] == "done"
+    assert (tio.logs_dir / "demo" / "acceptance" / "accepted.json").exists()
+    assert approve_review_command(root, "demo")
 
 
 @pytest.mark.parametrize("damage", ["missing", "downgraded"])

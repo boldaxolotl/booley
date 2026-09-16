@@ -48,6 +48,30 @@ def test_doctor_parser_accepts_deep_flag():
     assert args.deep is True
 
 
+def test_board_review_surface_parses_public_actions():
+    parser = tlr._build_parser()
+    requested = parser.parse_args(["board", "review", "demo", "--request", "--reason", "inspect"])
+    validation = parser.parse_args(["board", "validate", "demo", "--", "python", "-m", "example"])
+    approval = parser.parse_args(["board", "approve", "demo", "--no-cleanup"])
+    shown = parser.parse_args(["board", "show", "demo", "--no-open-diffs"])
+
+    assert requested.request and requested.reason == "inspect"
+    assert validation.endpoint_command == ["python", "-m", "example"]
+    assert approval.no_cleanup
+    assert shown.slug == "demo" and shown.no_open_diffs
+
+
+def test_board_help_hides_deprecated_review_commands(capsys):
+    parser = tlr._build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["board", "--help"])
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert "{show,review,approve,validate,create,move,reset,archive}" in output
+    assert "request-review" not in output
+    assert "[may invoke agent]" in output
+
+
 def test_doctor_parser_accepts_concise_flag():
     parser = tlr._build_parser()
 

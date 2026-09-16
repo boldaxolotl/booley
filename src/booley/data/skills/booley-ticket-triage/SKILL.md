@@ -66,8 +66,8 @@ For each step, read ONLY that step's file before executing it. Do NOT preload al
   instead. If provenance is unclear, leave the diff unopened while checking
   the relevant build evidence. Apply this rule before automatic viewers,
   inline diffs, and follow-up inspection; the review step defines the opening gate.
-- Review tickets use the fixed briefing emitted by `booley board review-briefing`.
-  Blocked tickets first use `booley board blocked-briefing`. Both commands are
-  freshness-checking, read-only fast paths and never invoke an agent.
+- Review tickets use the fixed briefing emitted by `booley board show`.
+  Blocked tickets also use `booley board show`. This command checks freshness,
+  reads prepared material, and never invokes an agent.
 - The only review reports are the developer's `REPORT.md` and the rich HTML
   explanation. Do not generate `TRIAGE.md`, `run-summary.md`, or `usage.md`.

@@ -841,7 +841,7 @@ def write_triage_package(
             **assessment,
             "recommendation": "hold",
             "decision_blockers": [
-                "Not accepted: finish ticket verification and finalize-review before approval.",
+                "Not accepted: finish ticket verification, then use board approve.",
                 *assessment.get("decision_blockers", []),
             ],
         }
@@ -1298,6 +1298,6 @@ def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str])
     _render_economics(lines, package)
     actions = "**approve** / **fix here** / **reset** / **archive** / **skip**"
     if inspection and inspection["disposition"] == "unaccepted":
-        actions = "**fix here** / **refresh-review** / **finalize-review** / **hold** / **reset** / **archive**"
+        actions = "**fix here** / **review** / **hold** / **reset** / **archive**"
     lines.extend(["", f"Choose: {actions}."])
     return "\n".join(lines)

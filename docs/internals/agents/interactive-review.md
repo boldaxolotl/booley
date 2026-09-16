@@ -9,8 +9,8 @@ separate: a requested review retains outstanding gates and cannot be approved.
 Commit source changes in every Ticket repository, then run:
 
 ```bash
-booley board request-review SLUG --reason "Finish verification interactively"
-booley board review-briefing SLUG
+booley board review SLUG --request --reason "Finish verification interactively"
+booley board show SLUG
 ```
 
 The request prepares a complete package before publishing the board transition.
@@ -28,7 +28,7 @@ persisted package when briefing; neither substitutes live criterion state.
 A legacy Ticket mechanically moved into review without acceptance can use:
 
 ```bash
-booley board request-review SLUG --repair --reason "Recover unaccepted review"
+booley board review SLUG --request --repair --reason "Recover unaccepted review"
 ```
 
 Repair still requires a valid retained Ticket baseline and worktree. Corrupt
@@ -42,43 +42,43 @@ context for every Flow, Specialist and final run report that should count as
 Criterion evidence:
 
 ```bash
-booley board review-exec SLUG -- python -m booley.mcp.submit_run_report --help
+booley board validate SLUG -- python -m booley.mcp.submit_run_report --help
 ```
 
 Replace the command after `--` with the endpoint's normal CLI invocation and
-arguments. `review-exec` starts the command in the retained worktree, with
+arguments. `validate` starts the command in the retained worktree, with
 isolated Ticket state/log/Basis bindings and interactive scheduling priority.
 An isolated MCP server can be started the same way. It never retargets a shared
 server. Ordinary unbound endpoint calls do not record this Ticket's evidence.
 A scoped process has a two-hour execution limit; detached Jobs must finish or
-be canceled before refreshing or finalizing.
+be canceled before refreshing or approving.
 
 Commit corrections before generating another package. To capture new committed
 heads and new verification evidence, run:
 
 ```bash
-booley board refresh-review SLUG
-booley board review-briefing SLUG
+booley board review SLUG
+booley board show SLUG
 ```
 
-`prepare-review --force` regenerates the current unaccepted inspection; it
-rejects changed heads/evidence and directs you to `refresh-review`. A failed
+`board review --force` regenerates the current unaccepted inspection; it
+rejects changed heads/evidence and directs you to `board review`. A failed
 refresh preserves the previous package generation as historical evidence. A
 stale package is never reported as current.
 
-After verification, submit the normal final run report through `review-exec`,
+After verification, submit the normal final run report through `validate`,
 including changed-file justifications and optional-criterion explanations.
 Then run:
 
 ```bash
-booley board finalize-review SLUG
-booley board review-briefing SLUG
+booley board approve SLUG
+booley board show SLUG
 ```
 
-Finalization runs the normal Criteria checks. Unmet gates retain unaccepted
-review; passing checks freeze the first Criteria Satisfaction Record and bind a
-fresh accepted package. Approval/complete still applies normal merge and
-cleanup policy. This workflow does not replace an existing Criteria
+Approval runs the normal Criteria checks. Unmet gates retain unaccepted
+review; passing checks freeze the first Criteria Satisfaction Record and bind
+the selected package without another agent call. Completion applies normal
+merge and cleanup policy. This workflow does not replace an existing Criteria
 Satisfaction Record after further source edits; such edits remain subject to
 the existing acceptance protections.
 
@@ -91,7 +91,7 @@ Each preparation writes a separate package generation. A per-Ticket operation
 record fences concurrent mutation, while report agents run outside the board
 lock. Publication rechecks the Basis, execution identity, source cleanliness,
 heads and evidence digest under the lock. An interruption during publication
-retains a pending record; rerun the recorded request/refresh/finalize command to
+retains a pending record; rerun the recorded review or approve command to
 finish publication. Completion remains fenced until publication is coherent.
 Retries reuse the exact timestamp and selected Criteria Satisfaction Record,
 rather than replacing write-once acceptance. Changed or corrupt pending inputs

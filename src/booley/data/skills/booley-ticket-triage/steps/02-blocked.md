@@ -4,20 +4,22 @@ For each `status: "blocked"` ticket:
 
 ## Explicit interactive review request
 
-When the user asks to review blocked work or finish its verification
-interactively, commit the intended Ticket source changes and run
-`booley board request-review $SLUG --reason "<user intent>"`, then follow the
+When the user asks to finish blocked verification interactively, commit the
+intended Ticket source changes and run
+`booley board review $SLUG --request --reason "<user intent>"`, then follow the
 review step. That request authorizes package generation. Preserve outstanding
 gates; the resulting review is explicitly unaccepted. If generation fails,
 report the error and leave the Ticket blocked. Use the normal diagnosis path
-below when the user has not requested this transition.
+below when the user has not requested this transition. To refresh blocked
+material for inspection while keeping the Ticket blocked, use
+`booley board review $SLUG`.
 
 ## Fast path
 
 Run exactly once:
 
 ```bash
-booley board blocked-briefing $SLUG
+booley board show $SLUG
 ```
 
 When it succeeds, present the prepared dossier and proceed to **Log The
@@ -130,7 +132,7 @@ approval of those exact edits authorizes applying them; do not ask again.
   resume. Only offer edits supported by the validator and evidence. Give the
   Human the exact preview and apply its digest after approval. Never suggest
   deleting a Criterion or using amendment to legitimize protected-input drift.
-- **Requested review**: `request-review` gives the Human an unaccepted view of
+- **Requested review**: `board review --request` gives the Human an unaccepted view of
   the current blocked work and unmet gates when interactive verification is wanted.
 - **Reset (clean execution retry)**: `reset` archives the current run artifacts,
   recreates the worktree and branch from the same immutable Ticket baseline,
@@ -189,7 +191,7 @@ For an unblock retry:
   substituting a newly computed one silently. Report
   `Amended -> queued. Run ticket execution to resume.`
 - **Requested review**: Commit intended Ticket source changes, then run
-  `booley board request-review "$SLUG" --reason "<Human intent>"` and present
+  `booley board review "$SLUG" --request --reason "<Human intent>"` and present
   its unaccepted review package.
 - **Reset (clean execution retry)**: confirm the correction reason, then run
   `python -m booley.ticket_board reset $SLUG --reason "<correction reason>"`

@@ -141,7 +141,7 @@ def apply_environment(args, endpoint_kind: str) -> None:
     from booley.runtime.execution_lease import validate_recording
 
     validate_recording(getattr(args, "work_dir", None))
-    # Ticket context from env vars (set by developer or explicit review-exec)
+    # Ticket context from env vars (set by developer or explicit board validate)
     args.slug = os.environ.get("BOOLEY_SLUG", "")
     state_env = os.environ.get("BOOLEY_STATE_FILE", "")
     args.state_file = Path(state_env) if state_env else None

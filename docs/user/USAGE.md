@@ -798,11 +798,20 @@ chat instead of writing another summary report. Omit `triage_report` to skip
 the extra model call; Booley still writes the deterministic JSON
 package, with a conservative deterministic assessment and no HTML explanation.
 A generation failure is recorded but does not block an otherwise successful ticket;
-`booley board prepare-review <slug> --force` retries it.
+`booley board review <slug> --force` retries it.
 The same command supports tickets in `blocked/`: generating the full review
 package for partial or blocked work is a normal way to inspect its diff,
 criteria, scope deviations, and blockers before deciding whether to reset or
-archive it. Use `booley board review-briefing <slug>` to render that package.
+archive it. The ticket remains blocked. Use `booley board show <slug>` to render
+its prepared dossier and review package. Add `--request --reason <intent>` to
+`board review` when entering interactive human review is intended.
+
+The older `request-review`, `refresh-review`, `prepare-review`,
+`review-briefing`, `blocked-briefing`, `review-exec`, and `finalize-review`
+spellings remain as deprecated compatibility commands. Their existing effects
+are preserved; in particular, `finalize-review` publishes acceptance without
+completing the Ticket. New workflows use `board review`, `board show`,
+`board validate`, and `board approve`.
 The triage briefing links directly to the HTML explanation using its
 Sandbox path. Open that link, then select **Show Preview** in the HTML
 editor (or run **Live Preview: Show Preview** from the Command Palette). The

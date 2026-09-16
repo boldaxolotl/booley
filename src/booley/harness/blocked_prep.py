@@ -320,13 +320,15 @@ def _fresh(ctx: BlockedContext, source_sha: str) -> Path | None:
     return None
 
 
-async def prepare_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepOutcome:
+async def prepare_blocked_dossier(
+    project_root: Path, slug: str, *, force: bool = False
+) -> BlockedPrepOutcome:
     """Prepare a best-effort dossier after a ticket remains blocked."""
     started = time.monotonic()
     try:
         ctx = _resolve_context(project_root.resolve(), slug)
         source_sha = _source_sha(ctx)
-        if path := _fresh(ctx, source_sha):
+        if not force and (path := _fresh(ctx, source_sha)):
             return BlockedPrepOutcome("fresh", "blocked dossier is current", path)
         result = await _invoke(ctx)
         diagnosis = _validate(result.structured)
@@ -357,7 +359,7 @@ async def prepare_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepO
         }
         _write_json(_manifest_path(ctx), manifest)
         return BlockedPrepOutcome("ready", "blocked dossier prepared", path)
-    except Exception as exc:  # never alter the blocked disposition
+    except Exception as exc:  # noqa: BLE001 — preparation returns a stable outcome
         logger.warning("Blocked dossier preparation failed for %s: %s", slug, exc, exc_info=True)
         if "ctx" in locals():
             try:

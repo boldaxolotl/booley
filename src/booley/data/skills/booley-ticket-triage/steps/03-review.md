@@ -10,7 +10,7 @@ commits, changed files, health findings, economics, and durable diff pairs.
 Run exactly once:
 
 ```bash
-booley board review-briefing $SLUG --no-open-diffs
+booley board show $SLUG --no-open-diffs
 ```
 
 This command performs a fast freshness check and prints the fixed review
@@ -30,7 +30,7 @@ Present the briefing with each changed-file diff status corrected to the actual
 outcome: opened, omitted (compiled artifact), or not opened (provenance unclear
 or viewer unavailable). The command's printed "diff opened" text is not evidence
 of a launch when `--no-open-diffs` was used. Preserve all other briefing facts
-and tables. Do not run `prepare-review` during
+and tables. Do not run `board review` during
 interactive triage and do not poll the manifest.
 
 The briefing presents the reports first: the Developer Agent's `REPORT.md`, then
@@ -40,7 +40,7 @@ criteria, review findings and dispositions, Target recipe comparisons, commit
 history, run economics, and the decision choices.
 
 If the command reports a missing or stale package, show that as a Booley
-post-processing finding and offer **reset** / **skip**. `prepare-review --force`
+post-processing finding and offer **reset** / **skip**. `board review --force`
 is a maintenance/recovery operation and requires an explicit user request; it
 is not the interactive fallback.
 
@@ -70,26 +70,27 @@ appear with its justification.
 ## 3. Decision
 
 For a briefing marked **unaccepted**, offer **fix here** / **refresh** /
-**finalize** / **hold** / **reset** / **archive**. Keep the Ticket in review
+**approve when all mandatory Criteria are met** / **hold** / **reset** /
+**archive**. Keep the Ticket in review
 while making corrections. Run verification endpoints and `submit_run_report`
-through `booley board review-exec $SLUG -- <normal endpoint command>` so they
-record Ticket evidence. Commit changes, then use `booley board refresh-review
-$SLUG` to capture new inputs. `booley board finalize-review $SLUG` checks every
-normal acceptance gate and publishes first acceptance; only a successful
-finalization makes approval available. Hold leaves the Ticket unchanged.
+through `booley board validate $SLUG -- <normal endpoint command>` so they
+record Ticket evidence. Commit changes, then use `booley board review $SLUG`
+to capture new inputs. `booley board approve $SLUG` checks every normal
+acceptance gate, publishes first acceptance, and completes the Ticket.
+Hold leaves the Ticket unchanged.
 
 If a legacy review has no Criteria Satisfaction Record, the explicit recovery
 operation is
-`booley board request-review $SLUG --repair --reason "<recovery intent>"`.
+`booley board review $SLUG --request --repair --reason "<recovery intent>"`.
 It preserves work and creates an unaccepted package when its Basis/worktree are
 valid. Never substitute a mechanical move or fabricate accepted evidence.
 
 For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
 
-- **Approve**: `python -m booley.ticket_board complete $SLUG`
+- **Approve**: `booley board approve $SLUG`
 - **Fix here**: Criteria Satisfaction Records are immutable. Explain that
   changed source
-  heads cannot be silently reaccepted by `refresh-review`; retain work and
+  heads cannot be silently reaccepted by `board review`; retain work and
   resolve the required acceptance recovery before claiming another approval.
 - **Reset**: ask why a clean run is required, then run
   `python -m booley.ticket_board reset $SLUG --reason "<correction reason>"`.
