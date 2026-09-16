@@ -335,14 +335,18 @@ class TestCmdShow:
         for label in ("ticket:", "file:", "logs:", "worktree:", "branch:", "criteria:"):
             assert label in out
 
-    def test_show_uses_configured_project_dir_for_worktree(self, tio, capsys, monkeypatch, tmp_path):
+    def test_show_uses_configured_project_dir_for_worktree(
+        self, tio, capsys, monkeypatch, tmp_path
+    ):
         path = make_ticket_file(tio, "drafts", "custom-project")
         path.write_text(_VALID_REVIEW_TICKET, encoding="utf-8")
         project_dir = tmp_path / "configured-project-dir"
         monkeypatch.setattr(cli_handlers, "resolve_project_dir", lambda _root: project_dir)
 
         assert _cmd_show(tio, Namespace(slug="custom-project")) == 0
-        assert f"worktree:  {project_dir / 'worktrees' / 'custom-project'}" in capsys.readouterr().out
+        assert (
+            f"worktree:  {project_dir / 'worktrees' / 'custom-project'}" in capsys.readouterr().out
+        )
 
     def test_unknown_slug_returns_2(self, tio, capsys):
         rc = _cmd_show(tio, Namespace(slug="nope"))

@@ -256,12 +256,8 @@ def test_worktree_mapping_and_identity_failures_are_explicit(
         "run",
         lambda *_args, **_kwargs: next(responses),
     )
-    assert (
-        ticket_baseline._worktree_has_identity(tmp_path, "refs/heads/ticket", tmp_path) is False
-    )
-    assert (
-        ticket_baseline._worktree_has_identity(tmp_path, "refs/heads/ticket", tmp_path) is False
-    )
+    assert ticket_baseline._worktree_has_identity(tmp_path, "refs/heads/ticket", tmp_path) is False
+    assert ticket_baseline._worktree_has_identity(tmp_path, "refs/heads/ticket", tmp_path) is False
 
 
 def test_descendant_and_project_repository_failures_are_explicit(

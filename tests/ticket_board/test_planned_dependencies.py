@@ -874,9 +874,7 @@ def test_provider_materialization_uses_published_basis_surface(
         ),
     )
     monkeypatch.setattr(planned_dependencies, "materialize_basis_checkout", lambda *_: published)
-    monkeypatch.setattr(
-        ticket_baseline, "materialize_current_ticket_checkout", lambda *_: mutable
-    )
+    monkeypatch.setattr(ticket_baseline, "materialize_current_ticket_checkout", lambda *_: mutable)
 
     result = _materialize_provider(tmp_path, provider, workspace, set(), {}, {"future"})
 
