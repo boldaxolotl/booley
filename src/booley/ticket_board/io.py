@@ -953,15 +953,18 @@ class TicketIO:
             )
             return None
         try:
+            from .basis_publication import load_basis_publication
             from .ticket_baseline import ticket_machine_from_spec
-            from .validation import validate_ticket_spec
+            from .ticket_validation import validate_ticket_document
             from .workspace_ops import ensure_ticket_workspace, prepare_converted_ticket_baseline
 
             ensure_ticket_workspace(self._project_root, ticket_path, slug)
             document = self._convert_ticket(ticket_path, slug, "draft")
-            validation_root = self._enqueue_validation_root(slug, dict(document.spec.fields))
-            errors = validate_ticket_spec(
-                document.spec, project_root=validation_root, check_files=True
+            # A publication journal already owns retry validation against its prepared commits.
+            errors = (
+                validate_ticket_document(self._project_root, ticket_path, self.tickets_dir)
+                if load_basis_publication(self._project_root, slug) is None
+                else []
             )
             if errors:
                 self._print_enqueue_errors("ticket validation failed", errors)
@@ -1023,14 +1026,6 @@ class TicketIO:
         print(f"Error: {summary}:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
-
-    def _enqueue_validation_root(self, slug: str, fields: dict[str, Any]) -> Path:
-        """Validate basis-bound Tickets against their immutable authoring checkout."""
-        if not (self._project_root / ".git").exists():
-            return self._project_root
-        from booley.runtime.project_dir import resolve_project_dir
-
-        return resolve_project_dir(self._project_root) / "worktrees" / slug
 
     def _validate_enqueue_basis(self, slug: str, document) -> list[str]:
         """Require durable basis refs before a real Git project becomes executable."""
