@@ -532,7 +532,14 @@ def _add_board_subparsers(sub) -> None:
 
 
 def _add_board_review_subparsers(board_sub, root_opt) -> None:
-    """Register the public review surface and deprecated adapters."""
+    """Register public review commands and their compatibility adapters."""
+    _add_public_board_review_subparsers(board_sub, root_opt)
+    _add_legacy_board_review_subparsers(board_sub, root_opt)
+    _hide_legacy_board_commands(board_sub)
+
+
+def _add_public_board_review_subparsers(board_sub, root_opt) -> None:
+    """Register the supported board review commands."""
     show_p = board_sub.add_parser(
         "show", help="Display the board or a prepared ticket briefing", parents=[root_opt]
     )
@@ -574,6 +581,9 @@ def _add_board_review_subparsers(board_sub, root_opt) -> None:
     validate_p.add_argument("slug")
     validate_p.add_argument("endpoint_command", nargs=argparse.REMAINDER)
 
+
+def _add_legacy_board_review_subparsers(board_sub, root_opt) -> None:
+    """Register deprecated review command adapters without advertising them."""
     for command in ("request-review", "refresh-review", "finalize-review"):
         review_p = board_sub.add_parser(command, help=argparse.SUPPRESS, parents=[root_opt])
         review_p.add_argument("slug")
@@ -614,6 +624,10 @@ def _add_board_review_subparsers(board_sub, root_opt) -> None:
         parents=[root_opt],
     )
     blocked_p.add_argument("slug", help="Blocked ticket slug")
+
+
+def _hide_legacy_board_commands(board_sub) -> None:
+    """Keep deprecated adapters parseable while removing them from help."""
     legacy = {
         "request-review",
         "refresh-review",

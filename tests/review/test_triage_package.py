@@ -485,6 +485,69 @@ def test_render_uses_precomputed_package_without_raw_evidence(tmp_path: Path):
     assert "Choose: **approve** / **fix here** / **reset** / **archive** / **skip**." in rendered
 
 
+def test_accepted_presentation_removes_unaccepted_blocker(tmp_path: Path):
+    ctx = _context(tmp_path)
+    package = {
+        "slug": "demo",
+        "inspection": {
+            "disposition": "unaccepted",
+            "reason": "inspect",
+            "blocked_reason": "verification",
+        },
+        "assessment": {
+            **_assessment(),
+            "recommendation": "hold",
+            "decision_blockers": ["Not accepted: finish verification, then use board approve."],
+        },
+        "criteria": [],
+        "commits": [],
+        "changed_files": [],
+        "developer_report_path": str(ctx.log_dir / "REPORT.md"),
+        "html_path": None,
+        "run_economics": "unavailable",
+        "health": {},
+    }
+
+    presented = tp.accepted_review_presentation(package)
+    rendered = tp.render_review_briefing(presented, [])
+
+    assert "Acceptance: accepted" in rendered
+    assert "Not accepted:" not in rendered
+    assert "**Recommendation:** approve" in rendered
+
+
+def test_unaccepted_menu_offers_approval_when_mandatory_criteria_are_met(tmp_path: Path):
+    ctx = _context(tmp_path)
+    package = {
+        "slug": "demo",
+        "inspection": {
+            "disposition": "unaccepted",
+            "reason": "inspect",
+            "blocked_reason": "verification",
+        },
+        "assessment": _assessment(),
+        "criteria": [
+            {
+                "category": "Review",
+                "criterion": "implementation_done",
+                "required": "mandatory",
+                "status": "met",
+                "metric": "persisted criterion state",
+            }
+        ],
+        "commits": [],
+        "changed_files": [],
+        "developer_report_path": str(ctx.log_dir / "REPORT.md"),
+        "html_path": None,
+        "run_economics": "unavailable",
+        "health": {},
+    }
+
+    rendered = tp.render_review_briefing(package, [])
+
+    assert "Choose: **approve** / **fix here** / **review**" in rendered
+
+
 def test_render_presents_reports_first_in_review_order(tmp_path: Path):
     ctx = _context(tmp_path)
     package = {

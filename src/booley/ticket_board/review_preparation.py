@@ -27,9 +27,9 @@ from booley.review.generation import (
     ResolvedReviewEvidence,
     ReviewEvidenceError,
     ReviewEvidencePackage,
-    ReviewPackage,
     StructuredExplanation,
     TriagePackageError,
+    accepted_review_presentation,
     build_review_evidence,
     build_review_facts,
     load_triage_package,
@@ -1501,22 +1501,6 @@ def review_briefing_command(
             require_review=True,
             allow_report_disabled=True,
         )
-        if not ctx.triage_report_enabled and ctx.inspection is None:
-            facts = _build_review_facts(ctx)
-            package_value = {
-                **facts,
-                "assessment": _report_disabled_assessment(facts),
-                "html_path": None,
-                "explanation": None,
-            }
-            package = ReviewPackage.parse(package_value)
-            failures = open_package_diffs(package) if open_diffs else []
-            return ReviewBriefingOutcome(
-                "ready",
-                "deterministic report-disabled review briefing loaded",
-                render_review_briefing(package, failures),
-                tuple(failures),
-            )
         _prompt, prompt_sha = _review_prompt(ctx)
         source_sha = _source_fingerprint(ctx)
         manifest = _read_manifest(ctx)
@@ -1528,14 +1512,13 @@ def review_briefing_command(
             )
         package = load_triage_package(Path(str(manifest["briefing_path"])))
         failures = open_package_diffs(package) if open_diffs else []
-        presentation: Mapping[str, Any] = package
         accepted = read_acceptance(ctx.log_dir)
         inspection = package.get("inspection")
-        if accepted.kind == "accepted" and inspection is not None:
-            presentation = {
-                **package,
-                "inspection": {**inspection, "disposition": "accepted"},
-            }
+        presentation: Mapping[str, Any] = (
+            accepted_review_presentation(package)
+            if accepted.kind == "accepted" and inspection is not None
+            else package
+        )
         briefing = render_review_briefing(presentation, failures)
         if presentation is not package:
             briefing += "\n\nAcceptance was published after this report was prepared."

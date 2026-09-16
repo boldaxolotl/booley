@@ -1223,6 +1223,42 @@ def _render_decision(lines: list[str], package: Mapping[str, Any]) -> None:
     lines.extend(f"{index}. {_markdown_text(item)}" for index, item in enumerate(blockers, 1))
 
 
+def accepted_review_presentation(package: Mapping[str, Any]) -> dict[str, Any]:
+    """Project an accepted package without stale pre-acceptance blockers."""
+    inspection = package.get("inspection")
+    if not isinstance(inspection, Mapping):
+        return dict(package)
+    assessment = dict(require_dict(package["assessment"], field="assessment"))
+    blockers = list(assessment.get("decision_blockers", []))
+    retained = [
+        item
+        for item in blockers
+        if not str(item).startswith("Not accepted:")
+        and item != "Human review is required before approval."
+    ]
+    if (
+        assessment.get("recommendation") == "hold"
+        and not retained
+        and len(retained) != len(blockers)
+    ):
+        assessment["recommendation"] = "approve"
+    assessment["decision_blockers"] = retained
+    return {
+        **package,
+        "assessment": assessment,
+        "inspection": {**inspection, "disposition": "accepted"},
+    }
+
+
+def _mandatory_criteria_met(package: Mapping[str, Any]) -> bool:
+    """Return whether every mandatory criterion shown in the briefing is met."""
+    return all(
+        row.get("required") != "mandatory" or row.get("status") == "met"
+        for row in package.get("criteria", [])
+        if isinstance(row, Mapping)
+    )
+
+
 def _health_findings(package: Mapping[str, Any], diff_failures: list[str]) -> list[str]:
     health = package.get("health", {})
     findings = list(package["assessment"].get("findings", []))
@@ -1299,5 +1335,7 @@ def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str])
     actions = "**approve** / **fix here** / **reset** / **archive** / **skip**"
     if inspection and inspection["disposition"] == "unaccepted":
         actions = "**fix here** / **review** / **hold** / **reset** / **archive**"
+        if _mandatory_criteria_met(package):
+            actions = "**approve** / " + actions
     lines.extend(["", f"Choose: {actions}."])
     return "\n".join(lines)
