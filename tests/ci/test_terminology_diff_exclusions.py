@@ -4,7 +4,8 @@ import runpy
 from pathlib import Path
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/terminology_diff_exclusions.py"
-terminology_only = runpy.run_path(str(SCRIPT))["terminology_only"]
+MODULE = runpy.run_path(str(SCRIPT))
+terminology_only = MODULE["terminology_only"]
 
 
 def test_renamed_diagnostic_without_code_change_is_excluded() -> None:
@@ -34,3 +35,8 @@ def test_unrelated_text_change_is_covered() -> None:
     before = 'MESSAGE = "Session Runtime unavailable; retry"\n'
     after = 'MESSAGE = "Sandbox unavailable; ignore the failure"\n'
     assert not terminology_only(before, after)
+
+
+def test_exclusion_path_is_exact_and_absolute(tmp_path: Path) -> None:
+    path = tmp_path / "src" / "example.py"
+    assert MODULE["diff_cover_path"](path) == str(path.resolve())

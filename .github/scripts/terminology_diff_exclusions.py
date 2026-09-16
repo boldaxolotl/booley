@@ -57,6 +57,11 @@ def terminology_only(before: str, after: str) -> bool:
     )
 
 
+def diff_cover_path(path: Path) -> str:
+    """Use the exact absolute path matched by the pinned diff-cover version."""
+    return str(path.resolve())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
@@ -73,7 +78,7 @@ def main() -> None:
             ["git", "show", f"{args.base}:{name}"], capture_output=True, text=True, check=False
         )
         if before.returncode == 0 and terminology_only(before.stdout, path.read_text()):
-            print(name)
+            print(diff_cover_path(path))
 
 
 if __name__ == "__main__":
