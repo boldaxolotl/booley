@@ -12,7 +12,9 @@ from qa.scenarios.picorv32.fixture_validation import (
     FixtureError,
     canonical_registration,
     distance_rows,
+    doctor_warning_comparison,
     git_topology,
+    interactive_repair,
     lint_command,
     lint_dedupe,
     lint_waiver,
@@ -302,6 +304,81 @@ def test_synth_baseline_requires_successful_numeric_comparison_and_identities():
     ] = "c" * 40
     with pytest.raises(FixtureError, match="candidate revision differs"):
         synth_baseline(summary, wrong_report, expected)
+
+
+def test_doctor_warning_comparison_ignores_generated_instance_names():
+    def report(instance: str, *, truncated: bool = False) -> dict:
+        return {
+            "warning_summary": {
+                "total_warnings": 2,
+                "representatives": [
+                    {
+                        "tool": "openroad",
+                        "code": "STA-0349",
+                        "category": "constraint",
+                        "count": 1,
+                        "message": f"[WARNING STA-0349] instance {instance} missing clock.",
+                        "truncated": truncated,
+                    },
+                    {
+                        "tool": "yosys",
+                        "code": None,
+                        "category": "other",
+                        "count": 1,
+                        "message": "Warning: unused wire.",
+                    },
+                ],
+            }
+        }
+
+    result = doctor_warning_comparison(
+        report("_20155c71ac5a0000_p_Instance"),
+        report("_20159d53f5580000_p_Instance"),
+    )
+    assert result["stable_warning_count"] == 2
+
+    truncated_pre = report("_deadbeef_p_In", truncated=True)
+    truncated_final = report("_01234567_p_Inst", truncated=True)
+    for candidate, instance in (
+        (truncated_pre, "_deadbeef_p_In"),
+        (truncated_final, "_01234567_p_Inst"),
+    ):
+        candidate["warning_summary"]["representatives"][0]["message"] = (
+            f"[WARNING STA-0349] instance {instance}…"
+        )
+    assert doctor_warning_comparison(truncated_pre, truncated_final)["stable_warning_count"] == 2
+
+    changed = report("_20159d53f5580000_p_Instance")
+    changed["warning_summary"]["representatives"][0]["message"] = (
+        "[WARNING STA-0349] instance _20159d53f5580000_p_Instance has no clock."
+    )
+    with pytest.raises(FixtureError, match="warning signatures differ"):
+        doctor_warning_comparison(report("_20155c71ac5a0000_p_Instance"), changed)
+    for field, value in (("code", "STA-0350"), ("category", "other"), ("count", 2)):
+        changed = report("_20159d53f5580000_p_Instance")
+        changed["warning_summary"]["representatives"][0][field] = value
+        with pytest.raises(FixtureError, match="warning signatures differ"):
+            doctor_warning_comparison(report("_20155c71ac5a0000_p_Instance"), changed)
+
+
+def test_interactive_repair_rejects_exact_head_restoration():
+    baseline = "assign we = (mem_wstrb[0] | mem_wstrb[1]);\n"
+    injected = "assign we = (mem_wstrb[0] & mem_wstrb[1]);\n"
+    repaired = "assign we = |mem_wstrb;\n"
+
+    faulty = "assign we = (mem_wstrb[0] & mem_wstrb[1]);\n"
+    fixed = "assign we = |mem_wstrb;\n"
+    assert interactive_repair(baseline, injected, repaired, faulty, fixed)["meaningful_diff"]
+    with pytest.raises(FixtureError, match="byte-identical to baseline"):
+        interactive_repair(baseline, injected, baseline, faulty, fixed)
+    with pytest.raises(FixtureError, match="replace only the declared fault"):
+        interactive_repair(
+            baseline,
+            injected,
+            injected.replace(faulty, "") + "// assign we = |mem_wstrb;\n",
+            faulty,
+            fixed,
+        )
 
 
 def test_vivado_implementation_requires_fresh_declared_artifacts_only(tmp_path):

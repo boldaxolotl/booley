@@ -103,3 +103,24 @@ def test_picorv32_ticket_destinations_include_applicable_project_setup():
     zbb = scenario_step(scenario, "create.rv32-zbb-pcpi.payload")["checks"][0]
     assert "already-prepared immutable project-data destination" in zbb["expected"]
     assert "Configurations that exclude FPGA" in zbb["expected"]
+
+
+def test_picorv32_public_qa_corrections_are_explicitly_contractual():
+    scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
+    baseline = scenario_step(scenario, "baseline.source-unchanged")
+    assert "post-setup destination ref" in baseline["checks"][0]["expected"]
+    assert (
+        "does not compare Project data with the pre-setup Project pin"
+        in baseline["checks"][0]["expected"]
+    )
+    assert "project.separate-repository" in baseline["requires"]
+
+    doctor = scenario_step(scenario, "doctor.deep")["checks"][0]
+    assert "stable warning signatures" in doctor["evidence"]
+    assert "raw message SHA-256 alone are never pass conditions" in doctor["expected"]
+
+    repair = scenario_step(scenario, "interactive.repair")["checks"][0]
+    assert "assign we = |mem_wstrb;" in repair["expected"]
+    assert "separate negative fixture case" in repair["expected"]
+    commit = scenario_step(scenario, "interactive.local-commit")["checks"][0]
+    assert "meaningful `picorv32.v` repair diff" in commit["expected"]
