@@ -2232,7 +2232,7 @@ def _execute_one_ticket(
     attempt: int,
     counts: dict[str, int],
 ) -> str:
-    """Execute a single ticket iteration. Returns action: 'next', 'break', 'abort', 'continue'."""
+    """Execute one ticket, marking failed attempts for the parent exit status."""
     _log_attempt(args, attempt, counts)
 
     if args.dry_run:

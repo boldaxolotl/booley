@@ -188,3 +188,13 @@ async def test_worker_failure_is_persisted_before_file_logger_teardown(tmp_path,
     diagnostic = ticket_human_log_file(ctx.logs_dir, "harness.log").read_text()
     assert "OSError: [Errno 5] worker I/O failed" in diagnostic
     assert "fail_worker" in diagnostic
+
+
+def test_diagnostic_write_failure_does_not_replace_original_error(tmp_path, caplog):
+    from pathlib import Path
+    from unittest.mock import patch
+
+    with patch.object(Path, "open", side_effect=OSError(5, "diagnostic unavailable")):
+        developer._persist_console_failure(tmp_path, None, "running", OSError(5, "original"))
+
+    assert "Could not persist Console failure" in caplog.text

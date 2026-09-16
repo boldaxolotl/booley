@@ -2381,6 +2381,17 @@ class TestNamedTicketImplications:
         ):
             assert tlr._ticket_loop(args, tmp_path, "/venv/python") == 1
 
+    def test_child_failure_is_preserved_after_post_run_cleanup(self, tmp_path):
+        args = self._parse(["run", "--ticket", "fix-crc"])
+        with (
+            patch.object(tlr, "_log_attempt"),
+            patch.object(tlr, "_run_harness", return_value=(1, 10.0)),
+            patch.object(tlr, "_handle_post_run", return_value="next"),
+        ):
+            assert tlr._execute_one_ticket(args, tmp_path, "/venv/python", 1, {}) == (
+                "next_failed"
+            )
+
 
 class TestCheckReady:
     def _parse(self, argv: list[str]):
