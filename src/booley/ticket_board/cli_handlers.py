@@ -12,7 +12,6 @@ from pathlib import Path
 
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import parse_timestamp
-from booley.targets.domain import FuseSocError
 
 from .amendment import AmendmentError, apply_amendment, preview_amendment
 from .amendment_proposal import AmendmentProposalError
@@ -68,8 +67,6 @@ from .reporting import (
 from .scanner import _load_state_data
 from .validation import (
     format_validate_logs_report,
-    owned_draft_dirty_paths,
-    validate_git_state,
     validate_logs,
 )
 
@@ -215,56 +212,18 @@ def _convert_cli_ticket(path: Path, project_root: Path):
 
 
 def _cmd_validate_ticket(tio, args):
-    path = Path(args.path)
-    if not path.exists():
-        print(json.dumps({"errors": [f"File not found: {args.path}"]}))
-        return 1
-    project_root = detect_project_root()
-    if path.parent.name == "drafts" and (project_root / ".git").exists():
-        from .workspace_ops import ensure_ticket_workspace
+    from .ticket_validation import validate_ticket_document
 
-        try:
-            ensure_ticket_workspace(project_root, path, path.stem)
-        except (RuntimeError, ValueError, OSError) as exc:
-            print(json.dumps({"errors": [f"Ticket workspace preparation failed: {exc}"]}))
-            return 1
-    converted = _convert_cli_ticket(path, project_root)
-    if converted.document is None:
-        errors = [f"{item.line}:{item.column}: {item.message}" for item in converted.diagnostics]
-    else:
-        errors = _validate_cli_spec(tio, args, path, project_root, converted.document.spec)
+    path = Path(args.path)
+    project_root = detect_project_root()
+    errors = validate_ticket_document(
+        project_root, path, Path(tio.tickets_dir), check_git=args.check_git
+    )
     if errors:
         print(json.dumps({"errors": errors}, indent=2))
         return 1
     print(json.dumps({"errors": [], "warnings": [], "valid": True}))
     return 0
-
-
-def _validate_cli_spec(tio, args, path: Path, project_root: Path, spec) -> list[str]:
-    from .validation import validate_ticket_spec
-
-    workspace = resolve_project_dir(project_root) / "worktrees" / path.stem
-    validation_root = (
-        workspace if path.parent.name == "drafts" and workspace.is_dir() else project_root
-    )
-    allowed = owned_draft_dirty_paths(path, tio.tickets_dir)
-    errors = validate_ticket_spec(
-        spec,
-        project_root=validation_root,
-        check_git=args.check_git and validation_root == project_root,
-        allowed_dirty_paths=allowed,
-    )
-    if args.check_git and validation_root != project_root:
-        errors.extend(validate_git_state(dict(spec.fields), project_root, allowed))
-    if path.parent.name != "drafts" or not (workspace.is_dir() or spec.target_plan):
-        return errors
-    from .workspace_ops import TicketBaselineOperationError, validate_ticket_spec_authoring_inputs
-
-    try:
-        validate_ticket_spec_authoring_inputs(project_root, workspace, spec)
-    except (TicketBaselineOperationError, FuseSocError, OSError, ValueError) as exc:
-        errors.append(str(exc))
-    return errors
 
 
 def _cmd_next_step(tio, args):

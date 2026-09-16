@@ -515,15 +515,7 @@ def _draft_generation(root: Path, slug: str) -> str:
     """Return the private generation token allocated for a draft."""
     path = _generation_file(root, slug)
     if path.exists():
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))["generation"]
-        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-            raise TicketBaselineOperationError(
-                f"invalid draft generation descriptor: {path}"
-            ) from exc
-        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{16}", value):
-            return value
-        raise TicketBaselineOperationError(f"invalid draft generation descriptor: {path}")
+        return load_draft_generation(root, slug)
     value = secrets.token_hex(8)
     payload = (json.dumps({"generation": value}, sort_keys=True) + "\n").encode()
     try:
@@ -534,6 +526,18 @@ def _draft_generation(root: Path, slug: str) -> str:
         ) from exc
     if not created:
         return _draft_generation(root, slug)
+    return value
+
+
+def load_draft_generation(root: Path, slug: str) -> str:
+    """Read an existing draft identity without allocating or changing it."""
+    path = runtime_dir(root) / "acceptance" / "drafts" / f"{slug}.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))["generation"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise TicketBaselineOperationError(f"invalid draft generation descriptor: {path}") from exc
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{16}", value):
+        raise TicketBaselineOperationError(f"invalid draft generation descriptor: {path}")
     return value
 
 
@@ -1484,7 +1488,13 @@ def prepare_converted_ticket_baseline(
 
 
 def validate_ticket_spec_authoring_inputs(
-    project_root: Path, workspace: Path, spec: TicketSpec
+    project_root: Path,
+    workspace: Path,
+    spec: TicketSpec,
+    *,
+    ticket_path: Path | None = None,
+    generation: str | None = None,
+    providers: ProviderMaterialization | None = None,
 ) -> TargetPlanAnalysis:
     """Check authored Target changes against destination trees without publication."""
     if not workspace.is_dir():
@@ -1499,6 +1509,18 @@ def validate_ticket_spec_authoring_inputs(
     repositories = ((workspace, tuple(outer_changes), outer_base),)
     if project is not None:
         repositories += ((project, tuple(project_changes), project_base),)
+    if ticket_path is not None:
+        _providers, plan = _analyze_converted_basis_targets(
+            project_root,
+            workspace,
+            ticket_path,
+            ticket_path.stem,
+            generation,
+            providers,
+            spec,
+            list(repositories),
+        )
+        return plan
     try:
         return analyze_ticket_spec_target_plan(spec, workspace, target_surface_files(repositories))
     except TargetPlanValidationError as exc:

@@ -53,11 +53,9 @@ from booley.ticket_board.ticket_document import (
     convert_ticket_document,
     ticket_conversion_context,
 )
+from booley.ticket_board.ticket_validation import validate_ticket_document
 from booley.ticket_board.validation import (
     format_validate_logs_report,
-    owned_draft_dirty_paths,
-    validate_git_state,
-    validate_ticket_spec,
 )
 from booley.ticket_board.validation import validate_logs as tb_validate_logs
 
@@ -254,62 +252,13 @@ class DirectTicketOps:
         self, project_root: Path, path: str, *, check_git: bool = False
     ) -> dict[str, Any]:
         p = Path(path)
-        if not p.exists():
-            return {"errors": [f"File not found: {path}"]}
-        stage = (
-            "executable"
-            if p.parent.name
-            in {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
-            else "draft"
-        )
         tio = self._tio(project_root)
-        workspace, workspace_error = self._validation_workspace(project_root, p)
-        if workspace_error is not None:
-            return workspace_error
-        with ticket_conversion_context(project_root, p.stem, stage) as context:
-            converted = convert_ticket_document(p.read_text(encoding="utf-8"), context)
-        if converted.document is None:
-            return {
-                "errors": [
-                    f"{item.line}:{item.column}: {item.message}" for item in converted.diagnostics
-                ]
-            }
-        spec = converted.document.spec
-        validation_root = workspace if workspace is not None else project_root
-        allowed = owned_draft_dirty_paths(p, tio.tickets_dir)
-        errors = validate_ticket_spec(
-            spec,
-            project_root=validation_root,
-            check_git=check_git and validation_root == project_root,
-            allowed_dirty_paths=allowed,
+        errors = validate_ticket_document(
+            project_root, p, Path(tio.tickets_dir), check_git=check_git
         )
-        if check_git and validation_root != project_root:
-            errors.extend(validate_git_state(dict(spec.fields), project_root, allowed))
-        if workspace is not None:
-            from booley.ticket_board.workspace_ops import (
-                validate_ticket_spec_authoring_inputs,
-            )
-
-            try:
-                validate_ticket_spec_authoring_inputs(project_root, workspace, spec)
-            except (RuntimeError, ValueError, OSError) as exc:
-                errors.append(str(exc))
         if errors:
             return {"errors": errors}
         return {"errors": [], "valid": True}
-
-    @staticmethod
-    def _validation_workspace(
-        project_root: Path, path: Path
-    ) -> tuple[Path | None, dict[str, Any] | None]:
-        if path.parent.name != "drafts" or not (project_root / ".git").exists():
-            return None, None
-        from booley.ticket_board.workspace_ops import ensure_ticket_workspace
-
-        try:
-            return ensure_ticket_workspace(project_root, path, path.stem).outer, None
-        except (RuntimeError, ValueError, OSError) as exc:
-            return None, {"errors": [f"Ticket workspace preparation failed: {exc}"]}
 
     def resume(self, project_root: Path, slug: str) -> dict[str, Any]:
         tio = self._tio(project_root)
