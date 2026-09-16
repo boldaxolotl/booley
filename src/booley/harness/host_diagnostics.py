@@ -26,7 +26,7 @@ class HostDiagnosticResult:
 def inspect_host() -> HostDiagnosticResult:
     """Probe health without installing or repairing host capabilities.
 
-    Inside a Session Runtime, host preparation and clock probes are skipped.
+    Inside a Sandbox, host preparation and clock probes are skipped.
     Environment probes retain their bounded process/network timeouts.
     """
     report = Findings()
@@ -36,7 +36,7 @@ def inspect_host() -> HostDiagnosticResult:
     )
     _inspect_package(report)
     if runtime_context.inside_session_runtime():
-        report.skip("Host Bootstrap check skipped inside the Session Runtime")
+        report.skip("Host Bootstrap check skipped inside the Sandbox")
         runtime = host_environment.probe_container_runtime(
             "docker", inside_session_runtime=True, which=shutil.which
         )

@@ -10,7 +10,7 @@ Booley keeps everything around it:
   * EDAM generation — built here, from a resolved Booley config (0019 dec. 3).
     Phase 2 (ADR 0022) supersedes this with ``fusesoc run --setup``; the
     flow-invocation half (``configure`` + command builders) stays.
-  * command execution — via ``BooleyFlow._execute`` inside the Session Runtime
+  * command execution — via ``BooleyFlow._execute`` inside the Sandbox
     (0019 dec. 5).
   * result interpretation — sentinel scraping / metric extraction stays in each
     Flow (0019 dec. 4). This module is invocation only.
@@ -173,7 +173,7 @@ def _confined_path(
 
     When *relative_to* is given (the Edalize ``work_root``), the returned name
     is **relative** to it. That makes the generated work dir relocatable: the
-    generated ``.vc``/Makefile remains relocatable within the Session Runtime
+    generated ``.vc``/Makefile remains relocatable within the Sandbox
     workspace. Without it the absolute resolved path is returned.
     """
     resolved = Path(path).resolve()
@@ -182,7 +182,7 @@ def _confined_path(
         raise EdamSecurityError(f"file {resolved} is outside the workspace root {root}")
     if relative_to is not None:
         # This relative name lands in a .vc/Makefile consumed inside the Linux
-        # Session Runtime, so it must use POSIX separators.
+        # Sandbox, so it must use POSIX separators.
         return posix_relpath(resolved, Path(relative_to).resolve())
     return str(resolved)
 
@@ -297,7 +297,7 @@ def build_edam(
             validated against the whitelist.
         relative_to: When set (the Edalize ``work_root``), file ``name`` entries
             are emitted relative to it so the generated work dir is relocatable
-            inside the Session Runtime workspace. See :func:`_confined_path`.
+            inside the Sandbox workspace. See :func:`_confined_path`.
 
     Returns:
         An EDAM dict ready for :func:`configure`.
@@ -477,7 +477,7 @@ def relpath_for_make(work_root: Path | str, work_dir: Path | str) -> str:
 
     The relative form keeps the generated command independent of the Runtime's
     absolute workspace path. The result is POSIX-separated because it is
-    consumed inside the Linux Session Runtime.
+    consumed inside the Linux Sandbox.
     """
     return posix_relpath(Path(work_root).resolve(), Path(work_dir).resolve())
 
@@ -492,7 +492,7 @@ def make_command(
 
     Edalize's ``configure()`` emits a Makefile whose default target builds and
     whose ``run`` target runs. Booley executes this command locally inside the
-    Session Runtime.
+    Sandbox.
     """
     cmd = ["make", "-C", str(work_root)]
     if target:

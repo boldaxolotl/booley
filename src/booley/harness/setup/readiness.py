@@ -3,7 +3,7 @@
 These fixed operations run at separate composition points so Doctor can retain
 its config, upgrade, guidance, Git, line-ending, projection, orphan ordering.
 Inspection does not repair; reconciliation only uses the existing guidance and
-projection owners. No command rendering, Runtime issuance, or full Init here.
+projection owners. No command rendering, Sandbox issuance, or full Init here.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from booley.targets.catalog import TargetCatalog
 
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _GUIDANCE_BTOOL_MARKER = "booley_status"
-_GUIDANCE_RUNTIME_MARKER = "session runtime"
+_GUIDANCE_SANDBOX_MARKERS = ("inside the sandbox", "session runtime")
 _STATE_TRANSIENT_DIR_NAMES = frozenset({"worktrees", "build", "_build", ".runtime", ".git", "tmp"})
 
 
@@ -256,7 +256,7 @@ def _guidance_warning(report: Findings, message: str, fix: str = "") -> None:
 
 
 def _check_guidance_runtime_note(canon: Path, report: Findings) -> None:
-    """The guidance must scope its Booley Flow instructions to the Session Runtime."""
+    """The guidance must scope its Booley Flow instructions to the Sandbox."""
     try:
         text = canon.read_text(encoding="utf-8", errors="replace").lower()
     except OSError as exc:
@@ -264,16 +264,16 @@ def _check_guidance_runtime_note(canon: Path, report: Findings) -> None:
         return
     if _GUIDANCE_BTOOL_MARKER not in text:
         return  # no Booley Flow instructions to scope
-    if _GUIDANCE_RUNTIME_MARKER in text:
-        report.pass_("project guidance scopes Booley Flows to the Session Runtime")
+    if any(marker in text for marker in _GUIDANCE_SANDBOX_MARKERS):
+        report.pass_("project guidance scopes Booley Flows to the Sandbox")
         return
     _scope_warning(
         canon,
         report,
         "project guidance tells agents to call booley_status and the Booley Flows but never says "
-        "they exist only inside the Session Runtime — a host-side agent session sees no such "
+        "they exist only inside the Sandbox — a host-side agent session sees no such "
         "Booley Flows and falls back to raw EDA commands",
-        f"add the Session Runtime scoping bullet from AGENTS_TEMPLATE.md to {canon}",
+        f"add the Sandbox scoping bullet from AGENTS_TEMPLATE.md to {canon}",
     )
 
 

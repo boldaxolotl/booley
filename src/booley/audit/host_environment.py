@@ -189,7 +189,7 @@ def probe_container_runtime(
     if inside_session_runtime:
         finding = EnvironmentFinding(
             EnvironmentSeverity.SKIP,
-            "container runtime check skipped (inside Session Runtime; Booley Flows run here)",
+            "container runtime check skipped (inside Sandbox; Booley Flows run here)",
         )
         return ContainerRuntimeAudit(None, finding)
     executable = which(container_cli)

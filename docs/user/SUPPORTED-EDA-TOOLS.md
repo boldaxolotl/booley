@@ -29,17 +29,17 @@ Two axes govern every flow:
   exception: its Target-name axis declares intent, and Booley always executes
   Vivado after rebuilding the resolved inputs into a Vivado EDAM.
 - **Provisioning** decides where the installation files originate, never where
-  the command runs. `image` means the runtime image supplies the tool. `host`
+  the command runs. `image` means the Sandbox Image supplies the tool. `host`
   means a built-in policy mounts one administrator-registered installation
-  read-only into the Session Runtime under an exact Project Grant. Every EDA
-  process still executes inside that runtime; Project configuration cannot
+  read-only into the Sandbox under an exact Project Grant. Every EDA
+  process still executes inside that Sandbox; Project configuration cannot
   select a host command, path, arbitrary mount, license destination, or
   execution location.
 
 For every host-provisioned EDA tool, the built-in policy owns one canonical
 container path. The administrator may register different host installation
 paths, but every approved installation of a given tool is mounted at that same
-read-only destination inside the Session Runtime. Neither the Project nor the
+read-only destination inside the Sandbox. Neither the Project nor the
 Installation Registration can configure the destination. This gives wrappers,
 Flows, Doctor checks, and future image changes one stable tool layout instead
 of making container paths part of Project configuration.
@@ -59,11 +59,10 @@ of making container paths part of Project configuration.
 
 Vivado 2025.2 on Linux x86-64 is the first supported host-provisioned EDA
 policy. An administrator registers its release root, and Booley mounts that
-root read-only at the fixed target `/opt/booley-eda/vivado` inside the Session
-Runtime. The wrapper,
+root read-only at the fixed target `/opt/booley-eda/vivado` inside the Sandbox. The wrapper,
 compatibility libraries, locale, image identity, mount, and environment are
 host-issued policy rather than Project settings. Vivado itself executes inside
-the runtime.
+the Sandbox.
 
 The FPGA Flow's portable `compact`, `balanced`, and `max_frequency` profiles
 were characterized on this exact lane. They map to supported Vivado run
@@ -102,7 +101,7 @@ A test that needs a non-RTL build step before it can run (a per-case
 firmware compile, vector staging) declares it as
 `[flows.sim].pre_run_commands`
 ([CONFIG.md](CONFIG.md#pre-sim-commands-flowssimpre_run_commands)) —
-the project's own Makefile runs inside the Session Runtime, and Booley keeps the
+the project's own Makefile runs inside the Sandbox, and Booley keeps the
 same Flow contract above it. A simulator outside this matrix is out of scope
 for Ticket Mode; widening the matrix is the sanctioned extension axis.
 

@@ -107,7 +107,7 @@ class TicketIO:
                 root = parent.parent
             else:
                 root = parent.parent.parent
-            # The Session Runtime can mount the data dir as a top-level sibling
+            # The Sandbox can mount the data dir as a top-level sibling
             # (/booley-project, no dot), so the structural walk lands on the
             # filesystem root — never a real project root (QA_REPORT D1).
             # Recover from the cwd, mirroring detect_project_root().

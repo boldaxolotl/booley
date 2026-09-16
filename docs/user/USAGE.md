@@ -53,14 +53,14 @@ chat.
 
 For the fastest orientation, start with `booley cheat`. It gives a compact
 overview of every public CLI command, the editable `.booley_project` files,
-Flows, Specialists, Criteria, Targets, skills, artifacts, and runtime commands.
+Flows, Specialists, Criteria, Targets, skills, artifacts, and Sandbox commands.
 Print the whole sheet or use `booley cheat --list` and combine section flags,
 such as `booley cheat --board` or `booley cheat --commands --project`.
 
 Plain Doctor also setup-checks marked FPGA Targets and probes Vivado.
 `booley doctor --deep` goes further and runs real smoke sims/lints/synthesis,
 while reporting FPGA implementation as a target-specific manual check; it needs
-the Session Runtime. Both it and the full command set are in the
+the Sandbox. Both it and the full command set are in the
 [CLI reference](#cli-reference) below.
 
 On Projects with many Targets, `booley doctor --concise` hides successful check
@@ -70,7 +70,7 @@ counts. It changes presentation only; Doctor still records every finding.
 Credential-free release automation can use
 `booley doctor --deep --skip-agent-checks`. Doctor reports the agent credential
 inspection, Ticket Mode backend-health check, and live Developer authorization
-probe as skipped; every non-agent project, runtime, Ticket Mode, and EDA check
+probe as skipped; every non-agent project, Sandbox, Ticket Mode, and EDA check
 still runs. This flag is for smoke tests, not the normal setup gate before an
 agent session.
 
@@ -81,7 +81,7 @@ container until plain `booley doctor` has no unresolved failures or warnings.
 ## Choose a mode
 
 Booley has two ways to work. Both use the same project configuration, Booley Flows, Specialists, and
-Session Runtime. For newcomers, they are a progression rather than an either-or
+Sandbox. For newcomers, they are a progression rather than an either-or
 choice:
 
 1. **Start with Interactive Mode.** Work through the first session below even
@@ -240,7 +240,7 @@ the diff, but that is not a substitute for engineering review.
 > **Tip: let the agent commit, you push.** In Interactive Mode, let the agent
 > commit its own work. It saves you the time of writing proper commit messages,
 > and there's little to gain from doing it by hand. What the agent **can't** do
-> is push to a Git server outside the Session Runtime: default-deny egress blocks
+> is push to a Git server outside the Sandbox: default-deny egress blocks
 > that network access. Container-local repositories and local-path remotes,
 > including one named `origin`, remain writable sandbox state. So the loop is:
 > let the agent commit, review the commits, then push them yourself from a
@@ -257,7 +257,7 @@ You normally do not call either one manually. Say *"run the reset test on the
 `sim_lite` Target"* or *"how much area did that cost?"*, and the agent picks the
 capability, Target, and flags. The table is worth a skim because it shows the
 complete set of built-in capabilities. Every Booley Flow and Specialist runs
-inside the Session Runtime. **Sets** names the acceptance criteria that the
+inside the Sandbox. **Sets** names the acceptance criteria that the
 Booley Flow or Specialist can satisfy in a ticket.
 
 Which EDA program runs underneath is determined by the Target. The currently
@@ -367,7 +367,7 @@ advises and never changes Criteria or approves Waiver Candidates.
 ### Running a Booley Flow directly
 
 Direct invocation is the diagnostic escape hatch for setup and reproduction.
-Inside the Session Runtime:
+Inside the Sandbox:
 
 ```bash
 booley flow sim --target sim_soc --test reset
@@ -804,7 +804,7 @@ package for partial or blocked work is a normal way to inspect its diff,
 criteria, scope deviations, and blockers before deciding whether to reset or
 archive it. Use `booley board review-briefing <slug>` to render that package.
 The triage briefing links directly to the HTML explanation using its
-Session-Runtime path. Open that link, then select **Show Preview** in the HTML
+Sandbox path. Open that link, then select **Show Preview** in the HTML
 editor (or run **Live Preview: Show Preview** from the Command Palette). The
 workflow does not emit a `command:` link because VS Code intentionally
 disables command URIs in untrusted chat-authored Markdown.
@@ -826,7 +826,7 @@ ticket. `html_path` is `null` when no HTML explanation was produced.
 /work/.booley_project/worktrees/axi-fix  0000000 [detached HEAD] prunable
 ```
 
-That is cosmetic and expected — **do not "clean it up"**. A host-side `git worktree prune` deregisters a worktree an active ticket is still working in, and the run dies in confusing ways. Booley sets `gc.worktreePruneExpire=never` on the repo so background `git gc` can't do it by accident (`booley doctor` checks the setting), but an explicit `git worktree prune` you type yourself still wins. Let the ticket finish and let cleanup remove it, or run the prune from inside the Session Runtime where the paths resolve.
+That is cosmetic and expected — **do not "clean it up"**. A host-side `git worktree prune` deregisters a worktree an active ticket is still working in, and the run dies in confusing ways. Booley sets `gc.worktreePruneExpire=never` on the repo so background `git gc` can't do it by accident (`booley doctor` checks the setting), but an explicit `git worktree prune` you type yourself still wins. Let the ticket finish and let cleanup remove it, or run the prune from inside the Sandbox where the paths resolve.
 
 **`.booley_project/` is usually its own git repo, and the outer repo ignores it.** That is the intended layout — your RTL history stays clean of Booley bookkeeping — but it means outer-repo git commands cannot see anything inside it. Restoring an edited `booley.toml` from the project root fails with a pathspec error that never mentions why:
 
@@ -853,7 +853,7 @@ machine, so those files were never version-controlled: copy one aside before you
 
 Ticket Mode is built for unsupervised, multi-hour runs. The minimum interaction is: create a ticket, then review the results. Everything in between runs on its own. It debugs failures across repeated simulate-fix cycles, resumes where it left off after an interruption (reboot, crash, subscription limit), and blocks a ticket for human triage when it gets stuck rather than guessing. When you triage a blocked ticket, you can retry it with **tagged feedback** to steer the next attempt without starting over.
 
-### Entering the Session Runtime without VS Code
+### Entering the Sandbox without VS Code
 
 "Reopen in Container" needs the VS Code UI. When there isn't one (a CI job, an
 agent driving the CLI, or a host with no `devcontainer` CLI), `booley session`
@@ -868,7 +868,7 @@ booley session refresh                  # rebuild configured image, recreate ses
 booley session down                     # stop and remove
 ```
 
-`session refresh` is transactional for the headless runtime. It keeps the old
+`session refresh` is transactional for the headless Sandbox. It keeps the old
 container recoverable until the replacement is running on the reconciled
 immutable image ID and an isolated in-container probe confirms the expected
 Booley payload. Its host-side journal survives interruption: the next mutating
@@ -878,11 +878,11 @@ predecessor. The recovery command stops after doing so and asks you to rerun the
 requested operation; `session status` reports `recovery-pending` without
 changing state. A Docker build that outlives a killed CLI process is outside
 this transaction—it may leave an unused image, but recovery never adopts that
-image without completing the normal issuance and runtime verification steps.
+image without completing the normal issuance and Sandbox verification steps.
 
-Refresh refuses to replace a runtime currently owned by VS Code;
+Refresh refuses to replace a Sandbox currently owned by VS Code;
 use the editor's **Dev Containers: Rebuild Container** command in that case.
-For a licensed headless runtime, run `booley session down` first so refresh does
+For a licensed headless Sandbox, run `booley session down` first so refresh does
 not risk replacing the deterministic license-relay topology beneath a recoverable
 old container.
 
@@ -893,15 +893,14 @@ so the idle reaper owns its lifecycle either way. `booley session enter` is the
 headless equivalent of a container terminal, so every container-only command
 works through it.
 
-An explicit command after `--` runs as one supervised Runtime Attachment
+An explicit command after `--` runs as one supervised Sandbox Attachment
 execution. `Ctrl-C`, `SIGTERM`, a lost Docker attachment, or an expired host
-heartbeat requests scoped cancellation inside the runtime. Booley escalates
+heartbeat requests scoped cancellation inside the Sandbox. Booley escalates
 through a bounded grace period, reaps descendants even when they create a new
 session, and returns only after the complete owned process tree is terminal. A
 second interrupt requests immediate force cleanup. Normal exit codes and the
 usual `128 + signal` shell convention are preserved; if the command handles an
-interrupt and exits normally, its own exit code wins. If a pre-refresh Session
-Runtime does not support the execution protocol, the command fails with exit
+interrupt and exits normally, its own exit code wins. If a pre-refresh Sandbox does not support the execution protocol, the command fails with exit
 125 and tells you to run `booley session refresh`.
 
 Each execution identity is inherited by its descendants and any Job leases they
@@ -943,7 +942,7 @@ announces the accepted transition to `done`, even if cleanup still needs recover
 `doctor` announces changed automatic
 Doctor issues; `rate_limit` announces Claude rate-limit waits.
 
-The Session Runtime's default network policy blocks ntfy.sh. To permit delivery,
+The Sandbox's default network policy blocks ntfy.sh. To permit delivery,
 add `"ntfy.sh"` to `egress_allowlist` in the existing `[interactive]` table of
 [your host configuration](CONFIG.md#host-configuration-configtoml), preserving
 any other entries:
@@ -953,7 +952,7 @@ any other entries:
 egress_allowlist = ["ntfy.sh"]
 ```
 
-After changing the policy, shut down active Session Runtimes for every Project,
+After changing the policy, shut down active Sandboxes for every Project,
 run `booley bootstrap` on the host to update the shared proxy, then restart the
 Sessions. Recreating a Session alone does not update the proxy. This permission
 applies to all Projects on the host. Delivery uses HTTPS and is best-effort:
@@ -998,7 +997,7 @@ setup cost on our project" is as useful as praise, and a lot rarer.
 ## CLI reference
 
 `booley --help` labels every top-level command as `[host]`,
-`[Session Runtime]`, `[either]`, or `[mixed]`. Session Runtime commands run after
+`[Sandbox]`, `[either]`, or `[mixed]`. Sandbox commands run after
 VS Code accepts **Reopen in Container**, or through `booley session enter` in a
 headless environment. Mixed commands enforce location at their nested
 operation.
@@ -1042,7 +1041,7 @@ booley cheat
 
 # Show one section of it (`--list` names them all)
 booley cheat --criteria
-booley cheat --flows --runtime
+booley cheat --flows --sandbox
 booley cheat --board
 booley cheat --commands --project
 
@@ -1063,7 +1062,7 @@ booley doctor --deep --skip-agent-checks
 Every manual doctor run that ends with zero FAILs and zero active WARNs records
 a **freshness stamp** into project runtime state. Automatic results are stored
 separately so an in-container audit cannot overwrite evidence from host-only
-checks. When the Session Runtime starts, Booley launches a one-shot, non-deep
+checks. When the Sandbox starts, Booley launches a one-shot, non-deep
 Doctor audit if the previous automatic result is older than a week or its
 configuration inputs changed. The start of `booley run` performs the same check
 synchronously as a fallback before unattended work begins. Automatic runs never

@@ -91,14 +91,14 @@ _VERIBLE_MISSING_RE = re.compile(
     re.IGNORECASE,
 )
 _VERIBLE_STALE_IMAGE_MSG = (
-    "verible-verilog-lint is not installed in the Session Runtime — the "
+    "verible-verilog-lint is not installed in the Sandbox — the "
     "sandbox image predates Verible support (ADR 0033). Rebuild the image "
     "(booley init) and retry."
 )
 
 
 def _verible_missing_msg() -> str:
-    """Return the Session Runtime rebuild hint for missing Verible."""
+    """Return the Sandbox rebuild hint for missing Verible."""
     return _VERIBLE_STALE_IMAGE_MSG
 
 
@@ -416,7 +416,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
     code_modifying: bool = False
     satisfies: ClassVar[list[str]] = ["lint_clean"]
 
-    # The built-in path is make-driven end-to-end in the Session Runtime.
+    # The built-in path is make-driven end-to-end in the Sandbox.
 
     # --- Command building ---
 
@@ -587,7 +587,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
         ``configure()`` runs in-process (pure file generation) to materialize
         the Edalize work dir; the generated ``make`` command runs locally in
-        the Session Runtime. Warning parsing is keyed off the resolved Target's
+        the Sandbox. Warning parsing is keyed off the resolved Target's
         eda_tool (ADR 0033): Verilator
         ``%Warning`` lines or Verible ``file:line:col: msg [rule]`` findings —
         everything else (run.log, criteria, report, QA-7 error handling) is

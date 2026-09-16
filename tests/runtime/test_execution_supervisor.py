@@ -1,4 +1,4 @@
-"""Runtime Attachment execution owns cancellation through complete tree exit."""
+"""Sandbox Attachment execution owns cancellation through complete tree exit."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import pytest
 
 if sys.platform != "linux":
     pytest.skip(
-        "Runtime Attachment execution supervision requires Linux",
+        "Sandbox Attachment execution supervision requires Linux",
         allow_module_level=True,
     )
 

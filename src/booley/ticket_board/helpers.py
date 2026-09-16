@@ -172,7 +172,7 @@ def detect_project_root() -> Path:
         return Path(__file__).resolve().parents[3]
     root = project_dir.parent
     # Convention: the data dir lives inside the repo as <repo>/.booley_project,
-    # so its parent is the repo root. The Session Runtime breaks that — it can
+    # so its parent is the repo root. The Sandbox breaks that — it can
     # bind-mount the data dir as a top-level sibling named /booley-project (no
     # leading dot), whose parent is the filesystem root. `/` is never a project
     # root, and returning it makes every scope/TB/branch check resolve against

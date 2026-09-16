@@ -14,9 +14,9 @@ and nested actions.
 | `booley projects` | List remembered Project paths and their Grants |
 | `booley auth` | Configure or inspect agent credentials |
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
-| `booley session` | Start, enter, inspect, refresh, or stop the Session Runtime |
+| `booley session` | Start, enter, inspect, refresh, or stop the Sandbox |
 
-#### Session Runtime-only commands
+#### Sandbox-only commands
 
 For Interactive Mode, we recommend `booley` / `booley chat`, which launches
 `claude` or `codex` according to `[agent].provider`.
@@ -32,7 +32,7 @@ For Interactive Mode, we recommend `booley` / `booley chat`, which launches
 
 | Command | Location | Purpose |
 |---------|----------|---------|
-| `booley doctor` | either | Check project, runtime, and toolchain health |
+| `booley doctor` | either | Check project, Sandbox, and toolchain health |
 | `booley upgrade` | either | Inspect or acknowledge a pending Booley release review |
 | `booley targets` | either | List or filter Targets and show resolved details |
 | `booley flow` | mixed | List or directly run deterministic Booley Flows |
@@ -320,8 +320,8 @@ the design sources they describe.
 | `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |
 | `rtl_style_guide.md` | Project RTL style overrides | `reviewer` RTL code-style focus |
 | `tb_style_guide.md` | Project testbench style overrides | `reviewer` TB quality focus |
-| `docker/Dockerfile` | Project image build steps and dependencies | All runtime Flows/Specialists |
-| `<requirements>.txt` | Python dependency pins selected by `booley.toml` | All runtime Flows/Specialists |
+| `docker/Dockerfile` | Project image build steps and dependencies | Flows/Specialists in the Sandbox |
+| `<requirements>.txt` | Python dependency pins selected by `booley.toml` | Flows/Specialists in the Sandbox |
 | `hooks/post-setup.*` | Per-worktree setup commands | All Ticket Mode endpoints |
 
 #### Custom tool files
@@ -332,7 +332,7 @@ do not need these files.
 | File | Information | Affects |
 |------|-------------|---------|
 | `criteria.toml` | Criteria defined for custom tools | Their producer Flows/Specialists |
-| `mcp_tools/*.py` | Custom Flow, Specialist, or MCP definitions | The defined in-runtime endpoints |
+| `mcp_tools/*.py` | Custom Flow, Specialist, or MCP definitions | The defined in-Sandbox endpoints |
 
 ### Skills
 
@@ -358,19 +358,19 @@ logs root.
 | Per-invocation Specialist reports | `<LOGS>/<slug>/.runtime/mcp-tool-reports/<mcp-tool>/<N>/report.json` | Structured Specialist verdict and evidence |
 | Raw agent transcripts | `<LOGS>/<slug>/.runtime/transcripts/` | Provider-level debugging when the rendered transcript is insufficient |
 
-### Runtime & Docker
+### Sandbox & Docker
 
-The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and development dependencies. It backs the per-folder Session Runtime (devcontainer) where all Booley work, Interactive and Ticket Mode alike, executes; a project image selected by `[sandbox].image` can extend it.
+The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and development dependencies. It backs the per-folder Sandbox (devcontainer) where all Booley work, Interactive and Ticket Mode alike, executes; a project image selected by `[sandbox].image` can extend it.
 
 | Command | What it does |
 |---------|-------------|
 | `booley init` | Set up project + pull or build the image |
 | `booley init --force` | Rebuild from scratch (no cache) |
 | `booley doctor` | Verify image + container EDA tools |
-| `booley session up` | Start the Session Runtime headlessly (no VS Code) |
+| `booley session up` | Start the Sandbox headlessly (no VS Code) |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
 | `booley session down` | Stop and remove it |
-| `booley` / `booley chat` | Recommended: launch the configured `claude` or `codex` command inside the Session Runtime |
+| `booley` / `booley chat` | Recommended: launch the configured `claude` or `codex` command inside the Sandbox |
 | `docker pull ghcr.io/boldaxolotl/booley-sandbox:<ver>` | Manual pull of pre-built image |
 
 To extend the image, create `.booley_project/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley_project/booley.toml`.

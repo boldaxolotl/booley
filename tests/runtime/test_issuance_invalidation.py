@@ -1,4 +1,4 @@
-"""Crash-safe Session Runtime invalidation tests."""
+"""Crash-safe Sandbox invalidation tests."""
 
 from __future__ import annotations
 

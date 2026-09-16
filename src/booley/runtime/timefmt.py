@@ -90,7 +90,7 @@ def _offset_name(value: datetime) -> str:
 def detect_host_timezone() -> str:
     """Return an IANA timezone name, or a current fixed offset as fallback.
 
-    This runs while generating the Session Runtime spec. The result is passed
+    This runs while generating the Sandbox spec. The result is passed
     into the container as :data:`LOCAL_TIMEZONE_ENV`, so "local" continues to
     mean the user's timezone instead of the container image's UTC default.
     """

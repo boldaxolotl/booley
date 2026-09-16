@@ -120,7 +120,7 @@ class TestBooleyFlowExecution:
 
         assert exit_code == EXIT_ERROR
         run.assert_not_called()
-        assert "Session Runtime" in capsys.readouterr().err
+        assert "Sandbox" in capsys.readouterr().err
 
     def test_successful_execution(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
@@ -400,7 +400,7 @@ class TestResourceEvidence:
 
 
 class TestBoundaryExecutor:
-    """Boundary-named helper is now a local Session Runtime subprocess."""
+    """Boundary-named helper is now a local Sandbox subprocess."""
 
     def test_runs_locally_and_stamps_dispatch_time(self, tmp_path: Path):
         state_file = tmp_path / "state.json"

@@ -3,7 +3,7 @@
 Wraps subprocess execution with timeout, output capture, and sentinel-based
 pass/fail detection. Used for lint, simulate, synthesize.
 
-Commands run as local subprocesses inside the Session Runtime. There is no
+Commands run as local subprocesses inside the Sandbox. There is no
 per-Flow execution-location selection or host command boundary.
 """
 
@@ -316,7 +316,7 @@ class FlowMechanics:
             )
 
     def _execute(self, cmd: list[str], *, timeout: int | None = None) -> SubprocessResult:
-        """Run a subprocess locally (inside the Session Runtime, ADR 0028)."""
+        """Run a subprocess locally (inside the Sandbox, ADR 0028)."""
         logger.info(
             "Running: %s (timeout=%ds, cwd=%s)",
             " ".join(cmd),
@@ -350,7 +350,7 @@ class FlowMechanics:
             logger.debug("could not open a fresh run.log in %s", log_dir, exc_info=True)
 
     # ------------------------------------------------------------------
-    # Session Runtime boundary executor
+    # Sandbox boundary executor
     # ------------------------------------------------------------------
 
     def _execute_boundary(
@@ -359,7 +359,7 @@ class FlowMechanics:
         *,
         timeout: int | None = None,
     ) -> SubprocessResult:
-        """Run a boundary command locally inside the Session Runtime."""
+        """Run a boundary command locally inside the Sandbox."""
         dispatched = time.time()
         result = self._execute(cmd) if timeout is None else self._execute(cmd, timeout=timeout)
         result.dispatched_unix = dispatched

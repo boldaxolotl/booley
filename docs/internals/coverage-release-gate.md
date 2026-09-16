@@ -20,7 +20,7 @@ The release does not introduce a waveform scorer or approve Waiver Candidates.
 | Python | Full `tests/` suite with the hosted platform/marker matrix; inspect all skips. |
 | Quality | `ruff check src/ tests/`, `ruff format --check .`, and `pyright`, using the exact pinned quality tools. |
 | Packages | Build wheel and sdist; `twine check`, payload rejection, and installed-artifact validation for direct and sdist-built wheels. |
-| Runtime Image | `tests/docker/verilator_acceptance.py`, release matrix, production collector smoke, and native FST cross-validation. |
+| Sandbox Image | `tests/docker/verilator_acceptance.py`, release matrix, production collector smoke, and native FST cross-validation. |
 
 ## V2 storage characterization, 10 SEP 2026
 
@@ -92,7 +92,7 @@ fails on missing tools or wrong source identity.
 ## Local evidence, 09 SEP 2026
 
 Validation starts from main `5a45b4e8bdf2319335e956cd92660e8263cdee15`.
-The local Runtime Image is `booley-sandbox:issue-419` (image prefix
+The local Sandbox Image is `booley-sandbox:issue-419` (image prefix
 `25d35ba51cab`), with this worktree mounted read-only and `PYTHONPATH=/work/src`.
 Its exact Verilator `v5.052` source identity is
 `ea338be98e1e838d3518809ce8899f85a009963c`. Test plugins are installed only in
@@ -116,15 +116,15 @@ the hosted candidate-image gate must also validate the newly packaged image.
 
 Local evidence is retained in `/tmp/booley-phase7-validation`: `native.xml`,
 `compiler/`, `fst.log`, `final-unit.xml`, `pyright.log`, build logs, and installed
-file inventories. Native tests ran against current source in the Runtime Image;
+file inventories. Native tests ran against current source in the Sandbox Image;
 those tests intentionally skip on a host without the EDA binaries.
 
 The 64 host skips are accounted for: 18 native coverage tests passed separately
-in the Runtime Image; 19 require a host B-Wave binary; 8 require an embedding
+in the Sandbox Image; 19 require a host B-Wave binary; 8 require an embedding
 project; 5 require approved Vivado/license setup; 7 require opt-in sidecar images;
 3 require a production image with PDK; 2 require the configured Codex CLI probe;
 and 2 require Windows path or NTFS-junction semantics. No native release test skipped in its
-required Runtime Image run.
+required Sandbox Image run.
 
 Local source and package validation is green. Hosted Linux/Windows and rebuilt
 candidate-image jobs require a pushed revision and are not claimed by local

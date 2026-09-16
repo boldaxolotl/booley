@@ -64,7 +64,7 @@ Booley's biggest gap isn't code quality or features: it's **EDA tool coverage**.
 The open-source stack (Verilator, Icarus, Yosys, sv2v) runs first-class today.
 **AMD Vivado 2025.2** is the sole supported commercial policy: an administrator
 registers and grants a host installation, which is mounted read-only while the
-Vivado process still runs inside the Session Runtime. Everything else from the
+Vivado process still runs inside the Sandbox. Everything else from the
 "Big-3" is still on the [roadmap](ROADMAP.md#commercial-eda-tools): Synopsys,
 Siemens (Mentor), and the rest of the Cadence line.
 
@@ -102,7 +102,7 @@ could plausibly land under `lint`. Same for the CDC/RDC apps (SpyGlass CDC,
 Questa CDC): related EDA tools, separate roadmap line.
 
 Booley never distributes any proprietary code. An integration drives the EDA
-tool's own CLI inside the Session Runtime. Commercial integrations additionally
+tool's own CLI inside the Sandbox. Commercial integrations additionally
 need a reviewed, fixed provisioning and licensing policy; Project configuration
 cannot supply host paths, commands, mounts, or arbitrary environment values.
 Each host-provisioned tool policy must define one canonical, read-only container
@@ -125,13 +125,13 @@ question for any EDA tool is: does Edalize already have a backend for it?**
   FuseSoC resolution inputs, and Booley always rebuilds those inputs into a Vivado
   EDAM. Then wire the tool through the built-in Booley Flow path. There is one
   builder (Booley's FuseSoC/Edalize flow) and no `backend` or execution-location
-  knob: every Flow executes inside the Session Runtime. For commercial EDA, an
+  knob: every Flow executes inside the Sandbox. For commercial EDA, an
   Edalize backend is necessary but not sufficient—the contribution also needs a
   built-in installation, licensing, security, Doctor, and end-to-end validation
   policy comparable to Vivado's. See
   [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 - **No** → contribute the backend upstream to Edalize, then integrate that
-  flow node with the same Session Runtime and commercial-policy requirements.
+  flow node with the same Sandbox and commercial-policy requirements.
   Booley has no Project-defined host-command escape hatch.
 
 **2. Interpretation: Booley needs the result-parsing logic.**
@@ -180,7 +180,7 @@ Porting EDA tools is #1, but not the only way to help:
 
 - **Architecture review.** Booley is "hardware engineer writing software", and
   the parts most likely to be wrong are the load-bearing ones: the Booley Flow
-  boundary, the Session Runtime/host-authority split, the job model, where
+  boundary, the Sandbox/host-authority split, the job model, where
   state lives. If you've
   built and maintained software at this size, read
   [ARCHITECTURE.md](ARCHITECTURE.md) and tell the

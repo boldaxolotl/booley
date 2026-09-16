@@ -22,7 +22,7 @@ HeartbeatRenderer = Callable[[str, str, str], None]
 # ---------------------------------------------------------------------------
 
 # Epoch-seconds file the idle reaper (booley.docker.reaper) reads via
-# ``docker exec`` to decide whether the Session Runtime container is idle.
+# ``docker exec`` to decide whether the Sandbox container is idle.
 # Touched by every MCP server (HTTP and stdio) on endpoint activity and by the
 # ``booley run`` loop while a ticket is active, so active tickets never read
 # as idle even without MCP traffic.

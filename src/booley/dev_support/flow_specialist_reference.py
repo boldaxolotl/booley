@@ -152,7 +152,7 @@ def render_flow_reference(
         project_mcp_tools_dir: Optional ``.booley_project/mcp_tools/`` directory; when
             given, project-specific Flows are discovered and rendered too.
         execution_column: Retained for compatibility; ignored because all
-            Flows execute inside the Session Runtime.
+            Flows execute inside the Sandbox.
     """
     endpoints = discover_mcp_tools(project_mcp_tools_dir=project_mcp_tools_dir)
     flows = sorted(

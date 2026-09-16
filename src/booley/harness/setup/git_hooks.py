@@ -461,7 +461,7 @@ def _step_project_git_hooks(ctx: InitContext) -> None:
 
 _OBSERVATION_MESSAGES = {
     LineEndingObservationCode.CRLF_MISMATCH: (
-        "{count} tracked file(s) are checked out with CRLF — the Session Runtime container "
+        "{count} tracked file(s) are checked out with CRLF — the Sandbox container "
         "will see every one as modified (phantom diffs break the dirty-tree check, scope "
         "enforcement, and ticket worktrees)"
     ),

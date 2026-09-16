@@ -172,7 +172,7 @@ term that got missed — add it to `[feedback] redact_extra` (or set
 public), and preview the same IDs again. The token changes
 with the text, which is the point.
 
-**Submission is host-only.** Steps 2–5 run in the Session Runtime, whose egress
+**Submission is host-only.** Steps 2–5 run in the Sandbox, whose egress
 proxy allowlists model APIs and not github.com — and which has no mail client, so
 `mode = "email"` is host-only for the same reason. If you are in-container,
 `submit` will tell you so: finish the user report here, and either hand the user

@@ -29,7 +29,7 @@ def _transition(tmp_path):
     denial_log = evidence / "fpga-while-revoked.log"
     denial_log.write_text(
         'argv: ["booley", "flow", "fpga"]\nexit: 2\n'
-        "ERROR: refusing Session Runtime startup: host-issued spec stamp is missing or corrupt\n"
+        "ERROR: refusing Sandbox startup: host-issued spec stamp is missing or corrupt\n"
     )
     before = _snapshot("old-owned", 1, 1, True, True, True)
     revoked = _snapshot(None, 2, 1, False, False, False)

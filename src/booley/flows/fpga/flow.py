@@ -2,7 +2,7 @@
 
 Invocation is delegated to Edalize (ADR 0019): ``fusesoc run --setup`` resolves
 the design-description, ``build_fpga_edam`` + Edalize ``configure()`` materialize
-the Vivado project + Tcl in the Session Runtime, and the resolved ``make``
+the Vivado project + Tcl in the Sandbox, and the resolved ``make``
 command runs there via ``BooleyFlow._execute_boundary``. Interpretation
 stays in Booley: report collection, metric parsing
 (:func:`fpga_edam.parse_fpga_reports`), Criteria, and baseline comparison.
@@ -231,9 +231,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     announce_success_report: bool = True
     satisfies: ClassVar[list[str]] = ["fpga_impl_ok"]
 
-    # FPGA implementation is always admitted as a heavy Session Runtime job.
+    # FPGA implementation is always admitted as a heavy Sandbox job.
     def _resolve_job_class(self) -> str:
-        """FPGA implementation is a heavy Session Runtime workload."""
+        """FPGA implementation is a heavy Sandbox workload."""
         return job_slots.CLASS_HEAVY
 
     def _build_command(self) -> list[str]:
@@ -716,7 +716,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         )
 
     def _run_single_target(self, target: str) -> FpgaMetrics:
-        """Configure, run, and interpret Vivado inside the Session Runtime."""
+        """Configure, run, and interpret Vivado inside the Sandbox."""
         try:
             prepared = self._prepare_fpga_command(target)
             run_cmd = prepared.run_cmd
@@ -748,7 +748,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         # previous run's utilization/timing tail as this run's progress.
         self._open_run_log(target, work_root)
         # The command is not path-remapped: ``make -C <rel>`` resolves from the
-        # shared Session Runtime workspace.
+        # shared Sandbox workspace.
         result = self._execute_boundary(run_cmd, timeout=self._get_timeout())
         # The edalize project-mode vivado flow (launch_runs/wait_on_run) writes
         # its utilization/timing/DRC reports to *files*, not stdout — unlike the

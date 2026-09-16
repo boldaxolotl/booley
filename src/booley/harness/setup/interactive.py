@@ -43,13 +43,13 @@ class InteractiveInitPlan:
         """Human-readable actions ordinary initialization would apply."""
         details: list[str] = []
         if self.issuance is None:
-            details.append(f"Session Runtime specification/issuance ({self.issuance_problem})")
+            details.append(f"Sandbox specification/issuance ({self.issuance_problem})")
         if self.exclusions_pending:
             details.append("Git exclusions")
         if self.relay_cleanup_pending:
             details.append("orphaned license relay")
         if self.runtime_cleanup_pending:
-            details.append("stopped Session Runtime resources")
+            details.append("stopped Sandbox resources")
         return tuple(details)
 
 
@@ -90,7 +90,7 @@ def inspect(request: InteractiveInitRequest) -> InteractiveInitPlan:
     desired_issuance = issuance or prepared.prospective_issuance
     if desired_issuance is None:
         raise session_issuance.RuntimeSpecError(
-            "prepared Session Runtime specification lacks a prospective issuance"
+            "prepared Sandbox specification lacks a prospective issuance"
         )
     runtime_pending = session_runtime.plan_stopped_headless_runtime_reconciliation(
         request.project_root, desired_issuance

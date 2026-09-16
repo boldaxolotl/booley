@@ -183,7 +183,7 @@ class TestFullInitRerun:
 
         reconcile.assert_called_once()
         assert (
-            "reconciled stopped Session Runtime resources from their prior issuance"
+            "reconciled stopped Sandbox resources from their prior issuance"
             in capsys.readouterr().out
         )
 
@@ -214,7 +214,7 @@ class TestFullInitRerun:
 
         assert init_cmd._print_summary(ctx) == 2
         output = capsys.readouterr().out
-        assert "could not reconcile stopped Session Runtime" in output
+        assert "could not reconcile stopped Sandbox" in output
         assert "this project is ready" not in output
 
     def test_foreign_root_guidance_blocks_before_any_filesystem_mutation(self, repo: Path):

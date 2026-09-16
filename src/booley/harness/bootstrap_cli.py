@@ -21,7 +21,7 @@ def run_bootstrap(args: object) -> int:
         from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         if shared_recovery_blocks_command(read_only=True):
-            print(yellow("Interrupted Session Runtime host state requires recovery."))
+            print(yellow("Interrupted Sandbox host state requires recovery."))
             return 2
         result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
     else:
@@ -31,7 +31,7 @@ def run_bootstrap(args: object) -> int:
             if shared_recovery_blocks_command(read_only=False):
                 print(
                     yellow(
-                        "Recovered interrupted Session Runtime host state; "
+                        "Recovered interrupted Sandbox host state; "
                         "run `booley bootstrap` again."
                     )
                 )

@@ -1,4 +1,4 @@
-"""Validate provider-side web-MCP-tool policy in the Runtime Image."""
+"""Validate provider-side web-MCP-tool policy in the Sandbox Image."""
 
 from __future__ import annotations
 

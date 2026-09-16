@@ -183,7 +183,7 @@ Warn = Callable[..., None]
 
 @dataclass
 class _DoctorFlowRuntime:
-    """Lazy, reusable entry into this Project's issued Session Runtime."""
+    """Lazy, reusable entry into this Project's issued Sandbox."""
 
     project_root: Path
     docker_exe: str | None
@@ -631,7 +631,7 @@ def _run_runtime_phase(
     progress: Check,
 ) -> None:
     """Run runtime-location, container, MCP, and Ticket Preflight parity checks."""
-    progress("Session Runtime/auth checks")
+    progress("Sandbox/auth checks")
     sandbox_image = _sandbox_image(project)
     _check_runtime_location(
         docker_exe,
@@ -905,7 +905,7 @@ def _report_repository_line_endings(
     if crlf is not None:
         _fail(
             f"{identity}: {crlf.count} tracked file(s) are checked out with CRLF — the Session "
-            "Runtime container sees every one as modified, which breaks the dirty-tree check, "
+            "Sandbox container sees every one as modified, which breaks the dirty-tree check, "
             "scope enforcement, and ticket worktrees",
             "booley init   (automatically repairs a clean tree; commit or stash first)",
         )
@@ -1026,7 +1026,7 @@ def _check_board_orphans(
     run``, killed container process) is recovered — blocked with a note for
     triage — by the same startup sweep every ``booley run`` performs. PIDs
     are container-scoped under ADR 0028, so the sweep is only meaningful when
-    doctor itself runs inside the Session Runtime; host-side it is skipped
+    doctor itself runs inside the Sandbox; host-side it is skipped
     (a container PID checked from the host is a different namespace).
     """
     _warn = _warning_sink(_warn, "tickets.orphan-recovered")
@@ -1255,11 +1255,11 @@ def _check_host_agent_session(_pass: Check, _warn: Check) -> None:
 
     app = runtime_context.agent_session_app()
     if app is None:
-        _pass("host shell — Booley Flows live in the Session Runtime (ADR 0028)")
+        _pass("host shell — Booley Flows live in the Sandbox (ADR 0028)")
         return
     _warn(
         f"{app} is running on the HOST: the Booley MCP server is registered only inside "
-        "the Session Runtime, so booley_status and the Booley Flows (sim, lint, "
+        "the Sandbox, so booley_status and the Booley Flows (sim, lint, "
         "synth) do not exist in this agent session",
         'reopen the project in the devcontainer ("Reopen in Container", or '
         "`booley session up && booley session enter`); for a one-off toolchain command "
@@ -1337,7 +1337,7 @@ def _run_developer_probe(
     """ADR 0028 Decision 12: measure the invariant's developer term.
 
     ``--deep``-only and in-container-only: the number that matters is the
-    agent CLI's footprint *inside* the Session Runtime, where tickets actually
+    agent CLI's footprint *inside* the Sandbox, where tickets actually
     run. Fail-soft for probe LIMITATIONS (no process accounting, no RSS
     reading, hit usage cap) — those degrade to a SKIP and the invariant keeps
     its 1 GiB fallback. But a failure of the agent CALL itself (auth, dead
@@ -1365,7 +1365,7 @@ def _run_developer_probe(
             _fail(
                 f"developer probe agent could not complete a trivial call — every "
                 f"ticket agent will fail the same way at launch: {exc}",
-                "check agent auth at THIS runtime location (booley auth, or claude login + "
+                "check agent auth at THIS Sandbox location (booley auth, or claude login + "
                 "container recreate); see the harness log for the agent's error",
             )
             return
@@ -1563,7 +1563,7 @@ def _check_image_bakes_current_booley(
     _pass: Check,
     _warn: Check,
 ) -> None:
-    """Report managed Runtime Image freshness from authoritative provenance."""
+    """Report managed Sandbox Image freshness from authoritative provenance."""
     _warn = _warning_sink(
         _warn,
         "sandbox.image-stale",
@@ -1683,21 +1683,21 @@ def _no_docker_skip_reason() -> str:
     if runtime_context.inside_session_runtime():
         return (
             "container checks not applicable in here - you are already inside the "
-            "Session Runtime, which has no nested Docker. Run `booley doctor` on "
+            "Sandbox, which has no nested Docker. Run `booley doctor` on "
             "the host to audit the sandbox images"
         )
     return "container checks skipped - no Docker/Podman runtime found on this host"
 
 
 def _check_current_runtime_web_isolation(_pass: Check, _fail: Fail) -> None:
-    """Validate provider-side web policy from inside the Session Runtime."""
+    """Validate provider-side web policy from inside the Sandbox."""
     from booley.harness.web_isolation import policy_error
 
     error = policy_error()
     if error:
         _fail(
             f"agent provider-side web access is not disabled: {error}",
-            "rebuild the sandbox image, then rebuild/reopen the Session Runtime",
+            "rebuild the sandbox image, then rebuild/reopen the Sandbox",
         )
         return
     _pass("agent provider-side web access disabled")
@@ -1727,7 +1727,7 @@ def _check_container_runtime_payload(
     check(
         "agent provider-side web access disabled",
         ["python3", "-m", "booley.harness.web_isolation"],
-        "rebuild the sandbox image, then rebuild/reopen the Session Runtime",
+        "rebuild the sandbox image, then rebuild/reopen the Sandbox",
     )
 
 
@@ -2454,7 +2454,7 @@ def _check_wcp_server(
     `booley session up` container has no extension host by design. From inside a
     runtime, probe its own loopback because Docker metadata is unavailable there.
     """
-    # Deferred, as everywhere else in this module: runtime location for the in-container
+    # Deferred, as everywhere else in this module: Sandbox location for the in-container
     # branch, and bwave_wcp for the port — importing the MCP-tool stack eagerly
     # would tax every doctor run for one integer.
     from booley.bwave import wcp as bwave_wcp
@@ -2911,7 +2911,7 @@ def _run_flow_audit(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """Validate enabled Flows and run Session Runtime dry-run smoke checks."""
+    """Validate enabled Flows and run Sandbox dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
     for flow_name in _PLAIN_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
@@ -2920,9 +2920,9 @@ def _run_flow_audit(
         if flow_name == "fpga" and not _fpga_doctor_applicable(project):
             _skip("fpga not applicable - no [flows.fpga] table or marked Doctor Target")
             continue
-        _pass(f"{flow_name} executes in the Session Runtime")
+        _pass(f"{flow_name} executes in the Sandbox")
         # Pre-Sim Commands (ADR 0039): a true observation about healthy config —
-        # the lines run inside the Session Runtime before every sim run, so their
+        # the lines run inside the Sandbox before every sim run, so their
         # cost and side effects are worth a heads-up in the audit.
         if flow_name == "sim":
             flows_tbl = project.booley_toml.get("flows", {})
@@ -2933,7 +2933,7 @@ def _run_flow_audit(
             if pre_sim_commands:
                 _note(
                     f"sim pre_run_commands configured ({len(pre_sim_commands)} "
-                    f"line(s)); they run in the Session Runtime before "
+                    f"line(s)); they run in the Sandbox before "
                     "each sim run (BOOLEY_* env contract, ADR 0039)"
                 )
         targets = _check_doctor_targets(project, flow_name, _fail)
@@ -2975,7 +2975,7 @@ def _check_flow_runtime_reality(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """Probe every selected Target's EDA binary in the Session Runtime."""
+    """Probe every selected Target's EDA binary in the Sandbox."""
     for binary in _runtime_probe_binaries(project, targets, flow_name=flow_name):
         _check_session_binary(
             flow_name,
@@ -3030,15 +3030,15 @@ def _check_session_binary(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """PASS/FAIL on *binary* being on the Session Runtime PATH."""
-    label = f"{flow_name}: '{binary}' on the Session Runtime PATH"
+    """PASS/FAIL on *binary* being on the Sandbox PATH."""
+    label = f"{flow_name}: '{binary}' on the Sandbox PATH"
     if flow_runtime.inside:
         if shutil.which(binary):
             _pass(label)
         else:
             _fail(
                 f"{flow_name}: '{binary}' is not on this container's PATH",
-                f"bake {binary} into the Runtime Image and rebuild (booley init --force)",
+                f"bake {binary} into the Sandbox Image and rebuild (booley init --force)",
             )
         return
     if not flow_runtime.available:
@@ -3060,8 +3060,8 @@ def _check_session_binary(
         _pass(label)
     else:
         _fail(
-            f"{flow_name}: '{binary}' is not on the issued Session Runtime PATH",
-            f"bake {binary} into the Runtime Image and rebuild (booley init --force)",
+            f"{flow_name}: '{binary}' is not on the issued Sandbox PATH",
+            f"bake {binary} into the Sandbox Image and rebuild (booley init --force)",
         )
 
 
@@ -4566,7 +4566,7 @@ def _dockerfile_declares_native_package(dockerfile: Path, package: str) -> bool:
     """Return whether an apt install command in *dockerfile* names *package*.
 
     Project-owned images are the documented remedy for native headers. Doctor
-    runs inside the Session Runtime too, where Docker is deliberately absent,
+    runs inside the Sandbox too, where Docker is deliberately absent,
     so the hand-authored Dockerfile is the portable evidence available on both
     venues. Ignore comments and require the package to occur as an install
     argument, not merely elsewhere in the file.
@@ -4823,7 +4823,7 @@ _CORE_RESOLVE_SNIPPET = (
 def _core_resolve_payload(
     refs: Mapping[str, TargetHandle],
 ) -> list[dict[str, str]]:
-    """Serialize the immutable selected Target set for the Session Runtime."""
+    """Serialize the immutable selected Target set for the Sandbox."""
     return [
         {
             "selector": selector,
@@ -5086,7 +5086,7 @@ def _prepare_selftest_invocation(
 ) -> tuple[list[str], dict[str, str], int] | None:
     """Resolve the Flow configuration and build the argv for one self-test case.
 
-    Returns ``None`` after reporting why the Session Runtime cannot be entered.
+    Returns ``None`` after reporting why the Sandbox cannot be entered.
     """
     if not flow_runtime.available:
         _skip(f"{label} skipped - '{_CONTAINER_CLI}' runtime not available")
@@ -5103,7 +5103,7 @@ def _prepare_selftest_invocation(
         )
     except session_runtime.SessionError as exc:
         _fail(
-            f"{label} could not enter the Session Runtime: {exc}",
+            f"{label} could not enter the Sandbox: {exc}",
             "run 'booley init --seed' and retry",
         )
         return None
@@ -5278,7 +5278,7 @@ def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> 
 def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     """Render *report_dir* so the hint is valid where it is READ, not where run.
 
-    Doctor may run inside the Session Runtime, where the project dir is the
+    Doctor may run inside the Sandbox, where the project dir is the
     ``/booley-project`` bind mount — a path that exists in no other runtime, while
     the FAIL hint is often read from the host (where the same files sit under
     ``<repo>/.booley_project/``). For that well-known mount, print the
@@ -5491,7 +5491,7 @@ def _doctor_flow_command(
     _skip: Check,
     _fail: Fail,
 ) -> list[str] | None:
-    """Build a Flow command or report why the issued runtime cannot run it."""
+    """Build a Flow command or report why the issued Sandbox cannot run it."""
     if not flow_runtime.available:
         _skip(f"{label} skipped - '{_CONTAINER_CLI}' runtime not available")
         return None
@@ -5505,7 +5505,7 @@ def _doctor_flow_command(
         )
     except session_runtime.SessionError as exc:
         _fail(
-            f"{label} could not enter the Session Runtime: {exc}",
+            f"{label} could not enter the Sandbox: {exc}",
             "run 'booley init --seed' and retry",
         )
         return None

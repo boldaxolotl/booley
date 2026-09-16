@@ -6,7 +6,7 @@ This doc assumes Booley's vocabulary — Target, Booley Flow, Specialist, EDA Pr
 
 ## Why Docker
 
-Booley runs LLM agents that execute real EDA flows against your RTL, exactly what you don't want loose on your machine. Docker provides the Session Runtime boundary: the agent has no direct host command channel and no ambient network. A misbehaving or hijacked agent can still corrupt the working copy it was handed, so review remains essential. A built-in host-provisioning policy can expose an approved installation read-only and, when required, narrowly scoped license connectivity without changing where EDA processes execute; see [ARCHITECTURE.md](ARCHITECTURE.md).
+Booley runs LLM agents that execute real EDA flows against your RTL, exactly what you don't want loose on your machine. Docker provides the Sandbox boundary: the agent has no direct host command channel and no ambient network. A misbehaving or hijacked agent can still corrupt the working copy it was handed, so review remains essential. A built-in host-provisioning policy can expose an approved installation read-only and, when required, narrowly scoped license connectivity without changing where EDA processes execute; see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The container earns its keep a second time as a unified development environment: the entire open-source stack (Verilator, Icarus, Yosys, OpenROAD, sv2v, `bwave`, Python) ships pre-installed in the image. You provision nothing on your machine, and everyone runs the same pinned stack, so "works on my machine" stops being a category of bug.
 
@@ -26,7 +26,7 @@ The cost is real: a shared container makes admission control mandatory — a slo
 
 VS Code is the interactive front end because it collapses three needs into one program:
 
-- One editor for both agents. Run the recommended Claude Code or Codex CLI in the container terminal through `booley` / `booley chat`, or use the corresponding VS Code extension if you prefer a chat panel. Both share the editor and Session Runtime.
+- One editor for both agents. Run the recommended Claude Code or Codex CLI in the container terminal through `booley` / `booley chat`, or use the corresponding VS Code extension if you prefer a chat panel. Both share the editor and Sandbox.
 - Sandbox sessions for free. The Dev Containers extension makes "open my repo *inside the Booley container*" a trivial, first-class operation. Interactive Mode's whole premise (chat with an agent that lives in the same sandbox the Booley Flows run in) falls out of an extension that already exists, rather than something we had to build.
 - It's a genuinely good editor. Hardware design is not pure delegation: you will read and edit RTL yourself between agent turns, and the agent and the human share one workspace instead of context-switching between EDA tools.
 

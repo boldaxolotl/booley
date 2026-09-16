@@ -119,7 +119,7 @@ The buckets:
 warns the reader where this setup can still go wrong, so a step you have
 *measured* stays Green no matter how much config it needs — a
 `pre_run_commands` vector/firmware build with exact command lines and a timed
-Session Runtime run (e.g. "17 s, 3.3 GB, `tests/generate.sh`") is planned work,
+Sandbox run (e.g. "17 s, 3.3 GB, `tests/generate.sh`") is planned work,
 not risk.
 
 A flow that needs an artifact **nobody has written yet** is Yellow even when
@@ -420,7 +420,7 @@ script lines) as you go.
   flow (red for that flow).
 - **License reachability.** A licensed-EDA-tool Flow is only real if the
   administrator can register an approved License Profile and its fixed server
-  answers. The Session Runtime must receive licensing only through Booley's
+  answers. The Sandbox must receive licensing only through Booley's
   policy-owned relay; Project configuration cannot supply a license endpoint.
   If the approved server is unreachable indefinitely, that flow is red, not
   yellow: a working wrapper is worth nothing without a license the EDA tool can
@@ -464,7 +464,7 @@ separate columns (see "How a row resolves"). The standard checklist:
 
 1. **Flows to configure** — from Part A plus the user's intent; per flow:
    enabled or not (`enabled = false` is the explicit opt-out), plus the Target
-   it drives. Every enabled Flow executes inside the Session Runtime. Record
+   it drives. Every enabled Flow executes inside the Sandbox. Record
    any approved commercial provisioning separately in row 14.
 2. **`.core` ownership/placement strategy & Target set** — decide this together
    with row 16's git footprint. The placement is deterministic:

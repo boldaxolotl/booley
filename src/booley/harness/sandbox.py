@@ -1,7 +1,7 @@
 """Docker sandbox infrastructure for host-side debug shells.
 
 ADR 0028 made Booley container-only: EDA tools, Flows, Specialists, and agents run as plain
-subprocesses inside the one Session Runtime (devcontainer), so the old
+subprocesses inside the one Sandbox (devcontainer), so the old
 per-MCP-tool-call container spawning (``run``/``run_sync``) is gone. What
 remains backs ``booley shell`` — a throwaway sandbox container spawned
 from the host for debugging — plus the ``DockerSandboxConfig.verify``

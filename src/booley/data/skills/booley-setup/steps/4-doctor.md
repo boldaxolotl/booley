@@ -49,7 +49,7 @@ over that severity bug with a project waiver.
 6. Run plain Doctor once on the **host** (`booley doctor` from the repo
    root there). Each side checks what only it can see — host-side
    Docker/network/image checks never run in the container. Expect a few
-   runtime-specific SKIPs on each side; a *FAIL* that exists on one side only
+   Sandbox-specific SKIPs on each side; a *FAIL* that exists on one side only
    is real. Resolve or waive host-only warnings before continuing.
 7. Run plain `booley doctor` **once more** in the container after the footprint
    and host findings are settled. Host-side waiver changes must land before this
@@ -57,7 +57,7 @@ over that severity bug with a project waiver.
 8. Run `booley doctor --deep` once in the container. This is the final deep
    evidence over the exact configuration and waiver file being delivered.
    Confirm the deep smoke and self-test lines actually **executed** — a SKIP on
-   the line you were counting on (e.g. selftests skipped for a missing runtime)
+   the line you were counting on (e.g. selftests skipped for a missing Sandbox)
    is not a pass. `--deep` resolves every Target and runs the smokes, so
    **minutes to tens of minutes is normal and it signals nothing on
    completion**: start it detached and poll it per SKILL.md → "Waiting on long
@@ -100,10 +100,10 @@ records each synthesis boundary's process-tree peak RSS, retains the largest,
 and adds 15% rounded-up headroom to the HEAVY
 job reservation. Re-run plain Doctor and use its memory-invariant arithmetic to
 settle both `[jobs].heavy_memory` and `[sandbox].memory`, then recreate the
-Session Runtime if the container limit changed and repeat the heaviest synthesis.
+Sandbox if the container limit changed and repeat the heaviest synthesis.
 
 - `termination = "oom"`: increase the container limit and HEAVY reservation
-  when the host has capacity, recreate the Session Runtime, and rerun. If the
+  when the host has capacity, recreate the Sandbox, and rerun. If the
   host cannot provide the required memory, stop and report setup blocked; do
   not waive a target that the project claims to support.
 - `termination = "resource_killed"`: rc137/SIGKILL was observed without a

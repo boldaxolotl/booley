@@ -1,7 +1,7 @@
 """Generated-Makefile implementation of the Yosys synthesis flow.
 
 The flow uses a ``make`` argv runnable with only the EDA binaries on ``PATH``
-and leaves results as files under the Session Runtime workspace. This module
+and leaves results as files under the Sandbox workspace. This module
 implements the configure and interpret halves:
 
 * **configure** (:func:`configure_synthesis`) — renders everything up front:
@@ -19,10 +19,10 @@ implements the configure and interpret halves:
   from an earlier run is never parsed as a fresh result.
 
 Script-internal paths are rendered relative to the build directory (make runs
-with ``-C <build dir>``). Liberty/PDK data live at the Session Runtime's issued
+with ``-C <build dir>``). Liberty/PDK data live at the Sandbox's issued
 paths (``/opt/pdk`` / ``$PRJ_LIB_DIR``).
 
-This module never spawns a process itself; the Session Runtime boundary owns
+This module never spawns a process itself; the Sandbox boundary owns
 execution of the generated Makefile.
 """
 
@@ -140,7 +140,7 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
     if not spec.liberty_found:
         warnings.append(
             f"liberty file not found at configure time: {spec.liberty} — the "
-            "yosys stage will fail unless the Session Runtime provides it "
+            "yosys stage will fail unless the Sandbox provides it "
             "(set PRJ_LIB_DIR or --liberty; see booley doctor)."
         )
 
@@ -304,7 +304,7 @@ def _sta_recipe_lines(spec: SynthSpec) -> list[str]:
     tech_lef = shlex.quote(str(openroad_timing.openroad_pdk_paths().tech_lef))
     body = [
         "\t@if ! command -v openroad >/dev/null 2>&1; then "
-        "echo 'ERROR: physical synthesis requires OpenROAD in the Session Runtime'; "
+        "echo 'ERROR: physical synthesis requires OpenROAD in the Sandbox'; "
         "exit 127; fi",
         f"\t@test -f {tech_lef} || {{ echo 'ERROR: physical synthesis PDK is missing'; exit 1; }}",
         "\topenroad -no_init -exit run_openroad.tcl > openroad.log 2>&1 "

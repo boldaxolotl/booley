@@ -50,7 +50,7 @@ The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's
 Resolution happens in two phases (`src/booley/fusesoc/fusesoc_registry.py`): a cheap,
 side-effect-free parse of the `.core` YAML (to validate `--target` names and
 expand per-target Criteria), and a subprocess pass that runs FuseSoC beside the
-Flow's Python orchestration—inside the Session Runtime for agent-facing calls—to
+Flow's Python orchestration—inside the Sandbox for agent-facing calls—to
 resolve filesets, parameters, and the `depends` graph into an **EDAM** (EDA
 Metadata) that Booley reads rather than hand-assembles.
 
@@ -59,7 +59,7 @@ Metadata) that Booley reads rather than hand-assembles.
 `synth` is the one exception: Edalize ships no Yosys ASIC-synthesis flow, only
 the FPGA-oriented `icestorm`/`trellis`, so it resolves the Target through
 FuseSoC, configures Booley's generated Yosys Makefile in-process, and executes
-that Makefile at the same Session Runtime boundary.
+that Makefile at the same Sandbox boundary.
 
 ### Where configuration lives
 
@@ -75,7 +75,7 @@ Configuration is split across three files by **owner and concern**:
 examples for all three. The table is repeated here only because ownership of an
 input determines which layer may interpret it.
 
-Every Flow command executes inside the Session Runtime. Most EDA binaries ship
+Every Flow command executes inside the Sandbox. Most EDA binaries ship
 in the runtime image. A supported commercial tool may instead come from an
 administrator-registered host installation mounted read-only under a built-in
 policy. Project configuration requests host provisioning, while the exact host
@@ -85,7 +85,7 @@ The support matrix lives in
 [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows). The per-Flow sections
 below describe only how a built-in Flow uses its selected EDA tool.
 
-Normalized reports produced in the Session Runtime live under the project
+Normalized reports produced in the Sandbox live under the project
 runtime tree, referred to below as `<runtime>` = `.booley_project/.runtime`.
 The per-Flow report paths that follow (`<runtime>/flow-reports/...`) all resolve
 there.
@@ -276,7 +276,7 @@ against those config entries rather than acting as raw command fragments.
 
 **Pre-Sim Commands** (`[flows.sim].pre_run_commands`) are the one
 project-owned hook, and they do not loosen the contract. Shell lines run at the
-Session Runtime immediately before each run (per test for an HDL Target, once per
+Sandbox immediately before each run (per test for an HDL Target, once per
 Cocotb batch), under a `BOOLEY_*` env contract that names the run
 (`BOOLEY_TEST_NAME` / `BOOLEY_TEST_NAMES`, `BOOLEY_TARGET`) and its authoritative
 directories (`BOOLEY_RUN_CWD`, `BOOLEY_BUILD_ROOT`). This is how a per-test
@@ -747,7 +747,7 @@ run full implementation; it emits one target-specific SKIP with the manual
 command instead.
 
 The Booley Flow generates an Edalize `vivado` project whose `make` target invokes
-Vivado inside the Session Runtime. With `provisioning = "image"`, the runtime
+Vivado inside the Sandbox. With `provisioning = "image"`, the runtime
 image must satisfy the built-in Vivado wrapper contract. With
 `provisioning = "host"`, an administrator registers an exact supported Vivado
 release and grants the Project access; Booley mounts that release read-only at
@@ -799,7 +799,7 @@ come from the XDC and surface in the `per_clock` metric map below.
 ### Build execution
 
 Both provisioning sources run the **same** Edalize `vivado` project inside the
-Session Runtime. The Booley Flow materializes it (sources, XDC, part, defines,
+Sandbox. The Booley Flow materializes it (sources, XDC, part, defines,
 generated Tcl), applies the characterized non-default `synth_1` and `impl_1`
 strategy properties, then invokes its `make` target. `balanced` performs no Tcl
 write and preserves Edalize's existing defaults byte-for-byte. Strategy

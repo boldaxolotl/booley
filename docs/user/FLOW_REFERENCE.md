@@ -11,7 +11,7 @@ and versions, see [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
 In normal work, ask the Interactive or Developer Agent to run the appropriate
 Flow and always name the Target. For `sim`, also name the test or explicitly ask
 for the Target's full registered test suite. To reproduce or diagnose a run
-yourself inside the Session Runtime, use the direct CLI:
+yourself inside the Sandbox, use the direct CLI:
 
 ```bash
 booley flow lint --target lint_soc

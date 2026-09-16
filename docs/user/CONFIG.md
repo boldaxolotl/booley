@@ -13,7 +13,7 @@ fills each file.
 **Read this first.** This is a reference, not a tutorial. It assumes you have
 skimmed the [README](../../README.md) overview and know Booley's controlled
 vocabulary: terms used here without definition — **Target**, **Booley Flow**,
-**EDA Provisioning**, **Session Runtime**, **Specialist**, **Developer Agent**, **VLNV** —
+**EDA Provisioning**, **Sandbox**, **Specialist**, **Developer Agent**, **VLNV** —
 are indexed by the [context map](../../CONTEXT-MAP.md) if one is unfamiliar. Every
 project has exactly two mandatory pieces: `.booley_project/booley.toml` (first
 section below) and at least one FuseSoC `.core` file describing your design. If
@@ -57,7 +57,7 @@ entries are hostnames only; schemes, paths, ports, IP literals, and wildcards
 are rejected.
 
 This policy applies to the whole Docker daemon, not the current Project. The
-timeout and session cap cover all Booley Session Runtimes, and every extra
+timeout and session cap cover all Booley Sandboxes, and every extra
 egress hostname becomes reachable from every Project. The former Project
 `booley.toml [interactive]` policy fields are retired; init and Doctor print a
 concrete replacement for this host file and never adopt Project values.
@@ -77,11 +77,11 @@ detailed below, starting with the shared `enabled` flow setting.
 
 ### Booley Flow execution: `enabled`
 
-Every Booley Flow builds and executes its command inside the Session Runtime.
+Every Booley Flow builds and executes its command inside the Sandbox.
 `enabled = false` removes a Flow from agent and autonomous discovery.
 
 The former `backend`, `venue`, and `host_setup_commands` keys are retired and
-now produce hard migration errors. Delete them: execution location and runtime
+now produce hard migration errors. Delete them: execution location and Sandbox
 setup are no longer Project-configurable. Replace `backend = "none"` with
 `enabled = false`. Likewise, replace `[sandbox].passthrough_env` with a
 host-owned License Profile.
@@ -107,7 +107,7 @@ targets:
 Doctor dry-runs and deep-smokes every compatible Target whose `doctor` list
 contains `sim`, `lint`, or `synth`. For `fpga`, plain Doctor performs the same
 Target setup and source inspection as `fpga --dry-run` and probes `vivado` in
-the Session Runtime; deep Doctor reports the full implementation as skipped and
+the Sandbox; deep Doctor reports the full implementation as skipped and
 prints the target-specific manual command. Omit `booley.doctor` to keep a Target
 available only for explicit calls. The allowed Doctor names are `sim`, `lint`,
 `synth`, and `fpga`. A `[flows.fpga]` table makes that optional axis applicable,
@@ -127,7 +127,7 @@ provisioning = "host"
 
 `provisioning` is `image` (the default) or `host`. For `host`, the exact
 Project root must have a host-issued Grant selecting one Installation
-Registration before a runtime can be created. That Grant is the sole source of
+Registration before a Sandbox can be created. That Grant is the sole source of
 the installation name and host path; Project configuration cannot select
 either. The host administrator manages registrations and grants using
 `booley eda installation register` and `booley eda grant add`.
@@ -145,7 +145,7 @@ EDA administration prints human-readable confirmations by default. Add
 record.
 
 License Profiles are host-owned and never appear in Project configuration. A
-licensed runtime receives only a fixed FlexNet relay pointer; it cannot choose
+licensed Sandbox receives only a fixed FlexNet relay pointer; it cannot choose
 an upstream server or arbitrary license environment. Invalid, missing, drifted,
 or revoked authority fails closed before Flow execution.
 
@@ -264,7 +264,7 @@ case*. Declare that step as **Pre-Sim Commands**:
 pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
 ```
 
-The lines run **inside the Session Runtime** immediately before each simulation run:
+The lines run **inside the Sandbox** immediately before each simulation run:
 per test for an HDL-testbench Target, once before the batch for a Cocotb
 Target.
 
@@ -287,7 +287,7 @@ artifact staging never has to guess the sim's working directory:
 | `BOOLEY_PROJECT_ROOT` / `BOOLEY_PROJECT_DIR` | always | same meaning as in the [post-setup hook](#post-setup-hook) |
 | `BOOLEY_SIM_EDA_TOOL` | after Target resolution | concrete EDA tool driven by this Simulation Flow run |
 
-`BOOLEY_PROJECT_DIR` deserves a note: **inside the Session Runtime it is
+`BOOLEY_PROJECT_DIR` deserves a note: **inside the Sandbox it is
 `/booley-project`**, not `/work/.booley_project`. Both paths reach the same
 state directory — the project dir is bind-mounted at the short path as well —
 but only the short one is exported, so a script that hardcodes
@@ -384,9 +384,9 @@ one.
 
 ### FPGA implementation (`[flows.fpga]`)
 
-FPGA implementation runs through Vivado inside the Session Runtime. The
+FPGA implementation runs through Vivado inside the Sandbox. The
 Linux host-provisioned policy obtains a read-only registered Vivado 2025.2 release
-through `[eda.vivado]`; it does not require Vivado on the runtime `PATH` from
+through `[eda.vivado]`; it does not require Vivado on the Sandbox `PATH` from
 the host.
 
 `[flows.fpga]` contains execution policy. Build inputs and target selection
@@ -398,7 +398,7 @@ Name Booley-authored implementation Targets `fpga` or `fpga_<subject>`; that
 axis declares that the FPGA Flow can drive them. `flow_options.tool` still
 controls FuseSoC resolution, including `tool_<name>` conditional files, but it
 does not choose the implementation backend: the FPGA Flow always builds its
-own Vivado EDAM. Use `tool: vivado` normally; another runtime-available tool is
+own Vivado EDAM. Use `tool: vivado` normally; another Sandbox-available tool is
 valid when a project deliberately needs its resolution conditions. Unprefixed
 vendored Targets fall back to `tool: vivado` because their names are immutable.
 
@@ -593,7 +593,7 @@ listed as "ungraded").
 
 ### Jobs & concurrency (`[jobs]`)
 
-All Booley work executes inside the one per-folder Session Runtime, and the
+All Booley work executes inside the one per-folder Sandbox, and the
 number of running EDA tools must be limited or the container runs out of memory.
 Every Booley Flow or Specialist run is a **Job** with a **Job Class** determined by where
 it executes; each class has a cap, and work beyond the cap waits in a queue
@@ -621,7 +621,7 @@ The slot store is per-project. It does not arbitrate separate Projects' shared
 host resources such as commercial-license seats.
 
 Each admitted holder has a renewable recovery lease that is separate from its
-optional work timeout. A Job launched through an explicit Runtime Attachment
+optional work timeout. A Job launched through an explicit Sandbox Attachment
 command inherits that execution's opaque ID; zero or many Job leases may link
 to the same execution. When an owner disappears or a lease expires, recovery
 atomically changes the lease from `active` to `cancelling` and requests scoped
@@ -685,7 +685,7 @@ memory = "8g"   # single container memory limit, fed into the generated
 
 Generic license environment forwarding is retired. A supported License Profile
 is host-owned, separately granted to the exact Project root, and emits only the
-fixed runtime pointer required by the built-in commercial policy. Do not put
+fixed Sandbox pointer required by the built-in commercial policy. Do not put
 license-server addresses, license-file paths, or environment forwarding in
 `booley.toml`.
 
@@ -891,7 +891,7 @@ readable, and it also covers identities that arrive via rebase, cherry-pick, or
 The hook also inspects changed tracked paths and committed symlink targets. A
 push is rejected when either carries a banned term or resolves into the hidden
 project-state directory. The reserved repository spelling `.booley_project/`
-is blocked independently of the Session Runtime's absolute project-state path,
+is blocked independently of the Sandbox's absolute project-state path,
 and changing the worktree link after committing does not bypass the check.
 
 Both the **author and the committer** of every outgoing commit must match at
@@ -1086,7 +1086,7 @@ backend, Claude or Codex:
 provider = "claude"   # or "codex"
 ```
 
-`booley init` records this choice before it seeds the Session Runtime. A TTY
+`booley init` records this choice before it seeds the Sandbox. A TTY
 offers `claude` and `auto` as the defaults; unattended initialization applies
 the same defaults unless flags override them (for example,
 `--provider codex --auth subscription`). Existing explicit `[agent]` values are
@@ -1126,11 +1126,11 @@ email = "developer@example.com"
 
 Booley applies each configured value to the active checkout's worktree-specific
 Git configuration. This takes precedence over the host-global `.gitconfig` that
-VS Code copies into a Session Runtime without changing the user's global Git
+VS Code copies into a Sandbox without changing the user's global Git
 configuration. A missing or empty `name` falls back to `Dev`; a missing or empty
 `email` falls back to `dev@localhost`.
 
-Interactive Mode refreshes the values when the Session Runtime is created or
+Interactive Mode refreshes the values when the Sandbox is created or
 started. Ticket Mode applies them when it creates a Ticket worktree. Explicit
 Git overrides such as `git commit --author` or the `GIT_AUTHOR_*` and
 `GIT_COMMITTER_*` environment variables still take precedence.
@@ -1362,8 +1362,7 @@ env   = { FLAVOR = "small", NOC_DEBUG = "1" }
 
 Per Target because that is where the variance lives: the same testbench module
 run under two RTL flavours is two Targets, each with its own value. The exports
-happen in the shell that owns the build **and** the run, inside the Session
-Runtime — no testbench edit needed. [Pre-run
+happen in the shell that owns the build **and** the run, inside the Sandbox — no testbench edit needed. [Pre-run
 commands](#pre-sim-commands-flowssimpre_run_commands) see the same
 variables (so a flavour-aware firmware build works), but they can't *provide*
 them: their own exports die with their shell. The test filter selects tests
@@ -1527,7 +1526,7 @@ stalls at time zero, follow the diagnosis and recovery in
 
 Ticket Mode and baseline-relative Flows run in isolated git worktrees. Booley
 does not run `git submodule update` there: doing so may re-clone from a private
-SSH URL that the Session Runtime cannot reach.
+SSH URL that the Sandbox cannot reach.
 
 After the ticket's final branch or the Flow's baseline ref is selected, Booley
 reads that revision's exact gitlinks and reconstructs each submodule from the
@@ -1674,7 +1673,7 @@ USER agent
 
 The shipped base and flavor images finish as the unprivileged `agent` user.
 Switch to `root` only for OS-package installation, then restore `agent` before
-the image is used as a Session Runtime.
+the image is used as a Sandbox.
 
 ```console
 $ booley init
@@ -1717,7 +1716,7 @@ shipped RISC-V flavor after refreshing `booley-sandbox`, then rebuilds the
 project image from your unchanged Dockerfile. The same inherited-provenance
 check rebuilds a project image left behind by a base version/source update.
 Manual ownership prevents file rewriting; it does not freeze stale parent
-layers into the Session Runtime.
+layers into the Sandbox.
 
 Booley infers ancestry only from a Dockerfile with one unambiguous `FROM`. For
 a multi-stage or variable-based recipe, declare the managed direct parent
@@ -1744,14 +1743,14 @@ preparation. Use a custom image for EDA tools that must exist in every container
 before commands run.
 
 **Changing an already-built image is a lifecycle operation, not a config
-edit.** For a headless Booley-managed runtime, `booley session refresh`
+edit.** For a headless Booley-managed Sandbox, `booley session refresh`
 reconciles the full image chain, pins the new immutable image ID into the host
 spec, recreates the container, and probes its installed Booley payload before
 discarding the old container. A failed recreation or probe restores the old
-container. If VS Code owns the running runtime, refresh the image with
+container. If VS Code owns the running Sandbox, refresh the image with
 `booley init --force` and use **Dev Containers: Rebuild Container**. Explicit
 external images remain your responsibility: rebuild or pull them, run
-`booley init --seed`, then recreate and probe the runtime.
+`booley init --seed`, then recreate and probe the Sandbox.
 
 #### RISC-V toolchain image (`booley-sandbox-riscv`)
 
@@ -1845,7 +1844,7 @@ stderr are retained in debug logs. Write hooks to be idempotent: a recovered or
 recreated worktree can run setup again. Generated tracked files are committed
 on the ticket feature branch by the setup stage, so generate only deliberate,
 reproducible project inputs; keep caches and bulky build outputs in ignored
-runtime directories.
+build directories.
 
 Stealth project state is intentionally outside the host repository's git
 history. Back up or version `.booley_project/` separately, together with any

@@ -122,7 +122,7 @@ class TestPreflight:
         assert result.gh is None
 
     def test_email_in_container_refuses_too(self, project_dir, monkeypatch):
-        """No mail client in the Session Runtime either — same host-only rule."""
+        """No mail client in the Sandbox either — same host-only rule."""
         monkeypatch.setattr(submit_mod, "in_container", lambda: True)
         (project_dir / "booley.toml").write_text('[feedback]\nmode = "email"\n', encoding="utf-8")
         result = preflight(project_dir)

@@ -2226,7 +2226,7 @@ def _forward_subcommand_help(extra: list[str]) -> None:
 
 def main() -> None:
     # Runtime-location guard (ADR 0028): bwave works on trace artifacts inside the
-    # Session Runtime; host-side paths/caches would diverge.
+    # Sandbox; host-side paths/caches would diverge.
     location_error = runtime_context.container_only_error("bwave")
     if location_error is not None:
         print(location_error, file=sys.stderr)

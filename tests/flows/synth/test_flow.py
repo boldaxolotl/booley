@@ -1827,12 +1827,12 @@ class TestSingleConfigRun:
 
 
 # ===========================================================================
-# Session Runtime execution
+# Sandbox execution
 # ===========================================================================
 
 
 class TestFlowEnablement:
-    """The built-in Flow uses the heavy Session Runtime job class."""
+    """The built-in Flow uses the heavy Sandbox job class."""
 
     @staticmethod
     def _flow(tmp_path: Path) -> AsicSynthesizeFlow:
@@ -2758,7 +2758,7 @@ class TestBuildSynthCmd:
         assert cmd[cmd.index("-d") + 1] == "SYNTHESIS"
         assert "WIDTH=8" in cmd
         # Relative paths only — absolute worktree paths would not satisfy the
-        # relocatable Session Runtime contract.
+        # relocatable Sandbox contract.
         assert not any(Path(e).is_absolute() for e in extra)
 
     def test_sta_sdc_forwarded_from_fileset(self, flow_and_state, tmp_path: Path):

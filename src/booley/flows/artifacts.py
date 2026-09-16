@@ -37,7 +37,7 @@ Two rules keep a pointer trustworthy:
   pointer: a stale pointer is worse than none.)
 * **Work-dir-relative, always.** An absolute path is either a sandbox
   ``/work/...`` path a host-side reader cannot open, or a host path that means
-  nothing inside the Session Runtime. Relative to the work dir it resolves in
+  nothing inside the Sandbox. Relative to the work dir it resolves in
   both views, which is the same reason the Boundary Command Contract passes
   ``make -C`` a relative path. Note this is relative to the *work dir*, not to
   the project root: in Ticket Mode the work dir is a worktree while the report

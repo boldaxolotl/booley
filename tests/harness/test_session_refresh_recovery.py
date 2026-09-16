@@ -619,7 +619,7 @@ def test_issuance_boundary_rejects_non_object_extra_fields_and_old_version(tmp_p
         (("snapshot", "spec_mode"), 0o1000, "outside mode bits"),
         (("snapshot", "image_id"), 7, "snapshot is invalid"),
         (("prior_runtime", "was_running"), "yes", "prior runtime is invalid"),
-        (("prior_runtime", "name"), "wrong", "invalid Session Runtime names"),
+        (("prior_runtime", "name"), "wrong", "invalid Sandbox names"),
         (("prior_runtime", "egress_network_id"), None, "egress identity is incomplete"),
         (("phase",), "future", "replay metadata is invalid"),
         (("version",), 2, "identity or version is invalid"),

@@ -1,4 +1,4 @@
-"""Complete Session Runtime observations, independent of Doctor presentation.
+"""Complete Sandbox observations, independent of Doctor presentation.
 
 Inspection validates current issuance; it never issues or repairs a Runtime.
 Host validation may create/lock the private authority store when EDA is active.
@@ -113,7 +113,7 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
     """ADR 0018: untracked, valid devcontainer.json; never a tracked one.
 
     *request.image* is the project-resolved ``[sandbox].image``; the spec's own
-    ``image`` must match it, else the Session Runtime runs a stale image.
+    ``image`` must match it, else the Sandbox runs a stale image.
     *request.declared_provider* is the project's *explicit* ``[agent] provider``
     (``None`` = undeclared); the spec's ``BOOLEY_AGENT_APP`` must match it.
     """
@@ -195,7 +195,7 @@ def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findin
             request,
             report,
             f"devcontainer.json image '{spec_image}' != immutable ID for [sandbox].image "
-            f"'{request.image}': the Session Runtime runs a stale image "
+            f"'{request.image}': the Sandbox runs a stale image "
             "(missing toolchains it should have) - re-run `booley init --seed`, "
             "then rebuild the container in VS Code",
         )
@@ -304,14 +304,14 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
         issuance = runtime_spec.validate(request.project_root, spec, path)
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:
         report.fail(
-            f"Session Runtime host issuance is invalid: {exc}",
-            "run `booley init --seed` on the host and recreate the Session Runtime",
+            f"Sandbox host issuance is invalid: {exc}",
+            "run `booley init --seed` on the host and recreate the Sandbox",
         )
         return
-    report.pass_(f"Session Runtime spec has valid host issuance ({issuance.spec_sha256[:12]})")
+    report.pass_(f"Sandbox spec has valid host issuance ({issuance.spec_sha256[:12]})")
 
     if not request.docker_exe:
-        report.skip("live issued Session Runtime labels/topology - container runtime unavailable")
+        report.skip("live issued Sandbox labels/topology - container runtime unavailable")
         return
     _check_runtime_booley_version(
         request.docker_exe,
@@ -335,14 +335,14 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
         and not mounted
     ):
         report.fail(
-            "host-provisioned Vivado is absent from the Session Runtime",
-            "reissue the spec on the host and recreate the Session Runtime",
+            "host-provisioned Vivado is absent from the Sandbox",
+            "reissue the spec on the host and recreate the Sandbox",
         )
         return
     if mounted:
         _check_mounted_vivado_runtime(report)
     else:
-        report.pass_("Session Runtime has no active host-mounted commercial EDA request")
+        report.pass_("Sandbox has no active host-mounted commercial EDA request")
     return
 
 
@@ -355,7 +355,7 @@ def _inspect_live_runtime(
     try:
         result = _list_issued_containers(request, issuance)
     except (OSError, subprocess.SubprocessError) as exc:
-        report.fail(f"could not inspect issued Session Runtime resources: {exc}", "start Docker")
+        report.fail(f"could not inspect issued Sandbox resources: {exc}", "start Docker")
         return
     containers = [name for name in result.stdout.splitlines() if name]
     drifted = [
@@ -369,10 +369,10 @@ def _inspect_live_runtime(
         )
     ]
     if result.returncode != 0:
-        report.fail("could not list issued Session Runtime resources", "start Docker")
+        report.fail("could not list issued Sandbox resources", "start Docker")
     elif drifted:
         report.fail(
-            "live Session Runtime state differs from current host issuance",
+            "live Sandbox state differs from current host issuance",
             session_runtime.issued_runtime_drift_fix(
                 request.project_root,
                 issuance,
@@ -380,9 +380,9 @@ def _inspect_live_runtime(
             ),
         )
     elif containers:
-        report.pass_("live Session Runtime state matches the current host issuance")
+        report.pass_("live Sandbox state matches the current host issuance")
     else:
-        report.pass_("no stale live Session Runtime resources for this Project")
+        report.pass_("no stale live Sandbox resources for this Project")
     _check_issued_license_relay(
         request.project_root,
         containers,
@@ -444,13 +444,13 @@ def _probe_runtime_booley_version(
 
 
 def _check_runtime_booley_version(docker_exe: str, image: str, report: Findings) -> None:
-    """Require the host package and issued Runtime Image to agree."""
+    """Require the host package and issued Sandbox Image to agree."""
     try:
         result = _probe_runtime_booley_version(docker_exe, image)
     except (OSError, subprocess.SubprocessError) as exc:
         report.fail(
-            f"could not read the issued Session Runtime Booley version: {exc}",
-            "rebuild the sandbox image with `booley init --force`, then recreate the Session Runtime",
+            f"could not read the issued Sandbox Booley version: {exc}",
+            "rebuild the sandbox image with `booley init --force`, then recreate the Sandbox",
         )
         return
 
@@ -458,7 +458,7 @@ def _check_runtime_booley_version(docker_exe: str, image: str, report: Findings)
     if result.returncode != 0 or not runtime_version:
         detail = (result.stderr or result.stdout).strip()
         report.fail(
-            "issued Runtime Image cannot report its Booley version",
+            "issued Sandbox Image cannot report its Booley version",
             f"rebuild it with `booley init --force` ({detail or f'exit {result.returncode}'})",
         )
         return
@@ -466,20 +466,20 @@ def _check_runtime_booley_version(docker_exe: str, image: str, report: Findings)
     host_version = booley.__version__
     if runtime_version != host_version:
         report.fail(
-            f"host Booley {host_version} != Session Runtime Booley {runtime_version}",
+            f"host Booley {host_version} != Sandbox Booley {runtime_version}",
             "run `booley init --force`, then `booley session down` and "
-            "`booley session up` to recreate the Session Runtime",
+            "`booley session up` to recreate the Sandbox",
         )
         return
-    report.pass_(f"host and Session Runtime use Booley {host_version}")
+    report.pass_(f"host and Sandbox use Booley {host_version}")
 
 
 def _check_runtime_isolation(report: Findings) -> bool:
     """Enforce authority absence and fixed Project-data identity in every runtime."""
     if os.environ.get("BOOLEY_PROJECT_DIR") != "/booley-project":
         report.fail(
-            "Session Runtime Project-data identity differs from /booley-project",
-            "reissue the spec on the host and recreate the Session Runtime",
+            "Sandbox Project-data identity differs from /booley-project",
+            "reissue the spec on the host and recreate the Sandbox",
         )
         return False
     required = Path("/booley-project")
@@ -493,11 +493,11 @@ def _check_runtime_isolation(report: Findings) -> bool:
     )
     if not required.is_dir() or any(_runtime_path_exposed(path) for path in forbidden):
         report.fail(
-            "Session Runtime exposes a forbidden host-authority surface",
-            "reissue the spec on the host and recreate the Session Runtime",
+            "Sandbox exposes a forbidden host-authority surface",
+            "reissue the spec on the host and recreate the Sandbox",
         )
         return False
-    report.pass_("Session Runtime Project data and host-authority isolation verified")
+    report.pass_("Sandbox Project data and host-authority isolation verified")
     return True
 
 
@@ -532,7 +532,7 @@ def _check_issued_license_relay(
     if not session_runtime._relay_objects_exist(relay):
         if containers:
             report.fail(
-                "licensed Session Runtime has no relay topology",
+                "licensed Sandbox has no relay topology",
                 "run `booley session up --rebuild`",
             )
         return
@@ -573,12 +573,12 @@ def _mounted_vivado_files(report: Findings) -> bool:
     try:
         digest = hashlib.sha256(wrapper.read_bytes()).hexdigest()
     except OSError as exc:
-        report.fail(f"mounted Vivado wrapper is unreadable: {exc}", "rebuild the Runtime Image")
+        report.fail(f"mounted Vivado wrapper is unreadable: {exc}", "rebuild the Sandbox Image")
         return False
     if digest != wrapper_sha256() or not os.access(executable, os.X_OK):
         report.fail(
             "mounted Vivado wrapper/release layout differs from built-in policy",
-            "rebuild the image and reissue the Session Runtime spec on the host",
+            "rebuild the image and reissue the Sandbox spec on the host",
         )
         return False
     compatibility = (
@@ -588,8 +588,8 @@ def _mounted_vivado_files(report: Findings) -> bool:
     )
     if any(not path.is_file() for path in compatibility):
         report.fail(
-            "Runtime Image lacks the fixed Vivado compatibility libraries or locale",
-            "rebuild the Runtime Image and reissue the spec",
+            "Sandbox Image lacks the fixed Vivado compatibility libraries or locale",
+            "rebuild the Sandbox Image and reissue the spec",
         )
         return False
     return True
@@ -600,7 +600,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
         mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
     except OSError as exc:
         report.fail(
-            f"cannot inspect mounted Vivado release: {exc}", "recreate the Session Runtime"
+            f"cannot inspect mounted Vivado release: {exc}", "recreate the Sandbox"
         )
         return False
     fields = [line.split(" - ", 1)[0].split() for line in mountinfo.splitlines()]
@@ -608,7 +608,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     if len(matches) != 1 or "ro" not in matches[0][5].split(","):
         report.fail(
             "Vivado release root is not one exact read-only runtime mount",
-            "reissue the spec and recreate the Session Runtime",
+            "reissue the spec and recreate the Sandbox",
         )
         return False
     license_pointer = os.environ.get("XILINXD_LICENSE_FILE")
@@ -618,7 +618,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     ):
         report.fail(
             "XILINXD_LICENSE_FILE differs from the fixed private-relay contract",
-            "reissue the Session Runtime from the host License Profile",
+            "reissue the Sandbox from the host License Profile",
         )
         return False
     return True
@@ -697,7 +697,7 @@ def _check_issued_image_keepers(
         return
     tags = idk.issued_image_tags()
     if not tags:
-        report.pass_("no retained Runtime Image keepers")
+        report.pass_("no retained Sandbox Image keepers")
         return
 
     from booley.runtime import session_issuance as runtime_spec
@@ -705,7 +705,7 @@ def _check_issued_image_keepers(
     mine = runtime_spec.keeper_image(project_root)
     others = [tag for tag in tags if tag != mine]
     if mine in tags:
-        report.pass_("issued Runtime Image is retained for this Project")
+        report.pass_("issued Sandbox Image is retained for this Project")
     if others:
         report.note(
             f"{len(others)} issued image keeper(s) from other projects persist; "

@@ -9,7 +9,7 @@ and Interactive Mode.
 
 The configure half renders scripts and a Makefile into the per-target build dir
 in-process (:mod:`booley.flows.synth.backends.pipeline`), execution runs ``make -C <rel>`` in
-the Session Runtime, and the interpret half reconstructs the report from files
+the Sandbox, and the interpret half reconstructs the report from files
 the make run left in the build directory.
 """
 
@@ -1023,7 +1023,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     argument_adapter = SynthArguments
 
     def _resolve_job_class(self) -> str:
-        """Synthesis is a heavy Session Runtime workload."""
+        """Synthesis is a heavy Sandbox workload."""
         return job_slots.CLASS_HEAVY
 
     name: str = "synth"
@@ -1260,7 +1260,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         :class:`booley.flows.synth.backends.pipeline.SynthPlan` the interpret half consumes.
 
         The liberty existence check is hard because configuration and execution
-        share the Session Runtime filesystem.
+        share the Sandbox filesystem.
 
         Raises ``SystemExit`` (run_yosys_syn's validation guards) or ``OSError``
         (render failure); ``_run_single_config`` maps both to infra errors.
@@ -1277,7 +1277,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         return syn_make.configure_synthesis(spec, self._synth_build_dir(target))
 
     def _synth_boundary_cmd(self, plan: Any) -> list[str]:
-        """Return the Session Runtime command for a configured synthesis plan."""
+        """Return the Sandbox command for a configured synthesis plan."""
         return ["make", "-C", edam.relpath_for_make(plan.build_dir, self.args.work_dir)]
 
     # -- Single-target run ----------------------------------------------------
@@ -1344,7 +1344,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             return self._attach_recipe_evidence(target, _infra_metrics(msg)), msg
 
         # A bare `make -C <rel>` runs the generated plan with EDA binaries from
-        # the Session Runtime PATH.
+        # the Sandbox PATH.
         make_cmd = self._synth_boundary_cmd(plan)
         logger.info("Synth %s: running %s (timeout=%.0fs)", target, " ".join(make_cmd), timeout_s)
 

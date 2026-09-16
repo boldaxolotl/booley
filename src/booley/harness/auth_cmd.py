@@ -113,11 +113,11 @@ def _mint_claude_token(credential: AppCredential, project_root: Path) -> str | N
     if not in_project and shutil.which(command[0]) is None:
         err(
             f"{command[0]} CLI not found on PATH — run this from an initialized Booley "
-            "Project to use its Session Runtime, or install the CLI on the host"
+            "Project to use its Sandbox, or install the CLI on the host"
         )
         return None
 
-    location = " in the Project's Session Runtime" if in_project else ""
+    location = " in the Project's Sandbox" if in_project else ""
     info(f"Running `{' '.join(command)}`{location} — authorize in the browser when prompted.")
     print()
     # stdio is inherited on purpose: the flow prints a URL, waits, then prints the
@@ -133,7 +133,7 @@ def _mint_claude_token(credential: AppCredential, project_root: Path) -> str | N
                 tty=sys.stdin.isatty() and sys.stdout.isatty(),
             )
         except session_runtime.SessionError as exc:
-            err(f"could not run `{' '.join(command)}` in the Session Runtime: {exc}")
+            err(f"could not run `{' '.join(command)}` in the Sandbox: {exc}")
             return None
     else:
         returncode = subprocess.run(credential.mint_cmd, check=False).returncode
@@ -193,7 +193,7 @@ def _clear(app: str, project_root: Path) -> int:
         # bind (docker mounts the inode), so existing containers must rebuild.
         if not _reseed_spec(project_root):
             err(
-                "credential was removed, but the Project Session Runtime spec could not be "
+                "credential was removed, but the Project Sandbox spec could not be "
                 "re-seeded; run `booley init --seed` and retry"
             )
             return 1
@@ -227,7 +227,7 @@ def _resolve_app(args: argparse.Namespace) -> str | None:
 
 
 def _store_and_reseed(token: str, credential: AppCredential, project_root: Path) -> Path | None:
-    """Store one credential and refresh the Project's runtime specification."""
+    """Store one credential and refresh the Project's Sandbox specification."""
     try:
         path = auth_token.store_token(token, credential.app)
     except ValueError as exc:
@@ -235,11 +235,11 @@ def _store_and_reseed(token: str, credential: AppCredential, project_root: Path)
         return None
 
     ok(f"stored {credential.label} at {path} (mode 0600)")
-    info("kept outside every repo; Session Runtimes receive it only through a read-only mount")
+    info("kept outside every repo; Sandboxes receive it only through a read-only mount")
     if _reseed_spec(project_root):
         return path
     err(
-        "credential was stored, but the Project Session Runtime spec could not be re-seeded; "
+        "credential was stored, but the Project Sandbox spec could not be re-seeded; "
         "run `booley init --seed` and retry"
     )
     return None

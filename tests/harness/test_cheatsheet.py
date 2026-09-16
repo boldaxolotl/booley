@@ -23,9 +23,9 @@ flows body
 
 crit body
 
-### Runtime & Docker
+### Sandbox & Docker
 
-runtime body
+sandbox body
 """
 
 
@@ -39,7 +39,7 @@ class TestSplitSections:
         preamble, bodies = cheatsheet.split_sections(SAMPLE)
         assert "## Booley: Quick Reference" in preamble
         assert "preamble line" in preamble
-        assert set(bodies) == {"Booley Flows", "Criteria", "Runtime & Docker"}
+        assert set(bodies) == {"Booley Flows", "Criteria", "Sandbox & Docker"}
 
     def test_body_keeps_its_own_heading(self):
         _, bodies = cheatsheet.split_sections(SAMPLE)
@@ -48,7 +48,7 @@ class TestSplitSections:
 
     def test_bodies_do_not_bleed_into_each_other(self):
         _, bodies = cheatsheet.split_sections(SAMPLE)
-        assert "runtime body" not in bodies["Criteria"]
+        assert "sandbox body" not in bodies["Criteria"]
 
     def test_no_headings_is_all_preamble(self):
         preamble, bodies = cheatsheet.split_sections("just text\n")
@@ -68,12 +68,12 @@ class TestSelect:
     def test_single_section_drops_everything_else(self):
         out = cheatsheet.select(SAMPLE, ["criteria"])
         assert "crit body" in out
-        assert "runtime body" not in out
+        assert "sandbox body" not in out
         assert "## Booley: Quick Reference" not in out  # filtered view drops the title
 
     def test_order_follows_the_cheatsheet_not_the_flags(self):
-        out = cheatsheet.select(SAMPLE, ["runtime", "flows"])
-        assert out.index("flows body") < out.index("runtime body")
+        out = cheatsheet.select(SAMPLE, ["sandbox", "flows"])
+        assert out.index("flows body") < out.index("sandbox body")
 
     def test_missing_section_is_skipped_not_fatal(self):
         """A section the file doesn't carry must not blank out the ones it does."""
@@ -128,13 +128,17 @@ class TestCheatCommand:
             assert getattr(args, slug) is False
 
     def test_flags_are_combinable(self):
-        args = self._parse(["cheat", "--criteria", "--runtime"])
-        assert args.criteria and args.runtime
+        args = self._parse(["cheat", "--criteria", "--sandbox"])
+        assert args.criteria and args.sandbox
         assert not args.flows
 
-    def test_docker_flag_remains_a_runtime_alias(self):
+    def test_docker_flag_remains_a_sandbox_alias(self):
         args = self._parse(["cheat", "--docker"])
-        assert args.runtime
+        assert args.sandbox
+
+    def test_runtime_flag_remains_a_sandbox_alias(self):
+        args = self._parse(["cheat", "--runtime"])
+        assert args.sandbox
 
     def test_tips_flag_is_removed(self):
         with pytest.raises(SystemExit):
@@ -144,7 +148,7 @@ class TestCheatCommand:
         assert tlr._cmd_cheat(self._parse(["cheat"]), Path.cwd()) == 0
         out = capsys.readouterr().out
         assert "Criteria" in out
-        assert "Runtime & Docker" in out
+        assert "Sandbox & Docker" in out
         assert "Tips" not in out
         assert "Architecture" not in out
         assert (
@@ -159,15 +163,15 @@ class TestCheatCommand:
     def test_commands_include_configured_agent_chat(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
         out = " ".join(capsys.readouterr().out.split())
-        assert "Session Runtime-only commands" in out
+        assert "Sandbox-only commands" in out
         assert "booley Open the Project's configured Claude Code or Codex CLI" in out
         assert "booley chat Explicit spelling of the default booley command" in out
 
     def test_commands_are_grouped_by_execution_location(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
         out = capsys.readouterr().out
-        assert out.index("Host-only commands") < out.index("Session Runtime-only commands")
-        assert out.index("Session Runtime-only commands") < out.index(
+        assert out.index("Host-only commands") < out.index("Sandbox-only commands")
+        assert out.index("Sandbox-only commands") < out.index(
             "Either-location and mixed commands"
         )
 
@@ -256,7 +260,7 @@ class TestCheatCommand:
         out = capsys.readouterr().out
         for slug in cheatsheet.section_slugs():
             assert f"--{slug}" in out
-        assert "alias: --docker" in out
+        assert "alias: --runtime, --docker" in out
 
     def test_usage_advertises_cheatsheet(self):
         usage = (Path(__file__).resolve().parents[2] / "docs" / "user" / "USAGE.md").read_text(

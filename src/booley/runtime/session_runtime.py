@@ -1,4 +1,4 @@
-"""Headless lifecycle for the Session Runtime container (``booley session``).
+"""Headless lifecycle for the Sandbox container (``booley session``).
 
 ADR 0018 enters Interactive Mode through VS Code's "Reopen in Container", which
 reads the generated ``.devcontainer/devcontainer.json``. That is the only
@@ -57,11 +57,11 @@ _SESSION_COMMAND_LOCK_TIMEOUT_SECONDS = 120.0
 
 
 class SessionError(RuntimeError):
-    """A precondition for running the Session Runtime is missing."""
+    """A precondition for running the Sandbox is missing."""
 
 
 def _requested_issued_license(workspace: Path, issuance: Issuance) -> LicenseProfile | None:
-    """Resolve exactly the licence named by a validated runtime issuance."""
+    """Resolve exactly the licence named by a validated Sandbox issuance."""
     from booley.runtime import session_issuance as runtime_spec
 
     return runtime_spec.requested_license(
@@ -302,7 +302,7 @@ def exec_argv(
     tty: bool = True,
     env: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """Build a ``docker exec`` argv for an already-issued Session Runtime."""
+    """Build a ``docker exec`` argv for an already-issued Sandbox."""
     argv = ["docker", "exec"]
     if tty:
         argv.append("-t")
@@ -337,7 +337,7 @@ def _preflight(spec: dict, *, license_required: bool = False) -> None:
         if not idk.image_exists(RELAY_IMAGE):
             raise SessionError(
                 f"the license relay image '{RELAY_IMAGE}' is not built — run `booley init` "
-                "before starting this licensed Session Runtime"
+                "before starting this licensed Sandbox"
             )
 
 
@@ -389,7 +389,7 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
 
 
 def _warn_on_stale_booley_bake(workspace: Path) -> None:
-    """Warn when the managed Runtime Image is stale by authoritative provenance."""
+    """Warn when the managed Sandbox Image is stale by authoritative provenance."""
     from booley.runtime.image_lifecycle import Intent, ProjectImageScope, Status, reconcile
 
     result = reconcile(ProjectImageScope(workspace), Intent.CHECK)
@@ -455,20 +455,20 @@ def _strict_refresh_container(name: str) -> dict[str, Any] | None:
         detail = (result.stderr or result.stdout).strip()
         if "no such" in detail.casefold():
             return None
-        raise SessionError(f"cannot inspect Session Runtime {name!r}: {detail or 'docker failed'}")
+        raise SessionError(f"cannot inspect Sandbox {name!r}: {detail or 'docker failed'}")
     try:
         state = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise SessionError(
-            f"Docker returned invalid inspection for Session Runtime {name!r}"
+            f"Docker returned invalid inspection for Sandbox {name!r}"
         ) from exc
     if not isinstance(state, dict):
-        raise SessionError(f"Docker returned invalid inspection for Session Runtime {name!r}")
+        raise SessionError(f"Docker returned invalid inspection for Sandbox {name!r}")
     config = state.get("Config")
     runtime_state = state.get("State")
     network_settings = state.get("NetworkSettings")
     if not all(isinstance(item, dict) for item in (config, runtime_state, network_settings)):
-        raise SessionError(f"Docker returned incomplete inspection for Session Runtime {name!r}")
+        raise SessionError(f"Docker returned incomplete inspection for Sandbox {name!r}")
     labels = config.get("Labels")
     networks = network_settings.get("Networks")
     if (
@@ -476,14 +476,14 @@ def _strict_refresh_container(name: str) -> dict[str, Any] | None:
         or not isinstance(networks, dict)
         or not isinstance(runtime_state.get("Running"), bool)
     ):
-        raise SessionError(f"Docker returned incomplete inspection for Session Runtime {name!r}")
+        raise SessionError(f"Docker returned incomplete inspection for Sandbox {name!r}")
     return state
 
 
 def _refresh_container_labels(state: dict[str, Any]) -> dict[str, str]:
     raw = state["Config"]["Labels"]
     if not all(isinstance(key, str) and isinstance(value, str) for key, value in raw.items()):
-        raise SessionError("Session Runtime inspection contains invalid labels")
+        raise SessionError("Sandbox inspection contains invalid labels")
     return raw
 
 
@@ -491,7 +491,7 @@ def _assert_refresh_container_owned(name: str, state: dict[str, Any], project_id
     labels = _refresh_container_labels(state)
     if labels.get("booley.role") != "interactive" or labels.get("booley.project-id") != project_id:
         raise SessionError(
-            f"container {name!r} is not the issued Session Runtime for this Project; "
+            f"container {name!r} is not the issued Sandbox for this Project; "
             "it was not modified"
         )
 
@@ -510,10 +510,10 @@ def _validate_refresh_egress(parked: ParkedSession, state: dict[str, Any]) -> bo
     if network is None:
         return False
     if not isinstance(network, dict):
-        raise SessionError("Session Runtime inspection contains invalid egress network state")
+        raise SessionError("Sandbox inspection contains invalid egress network state")
     actual_id = network.get("NetworkID")
     if parked.egress_network_id is not None and actual_id != parked.egress_network_id:
-        raise SessionError("Session Runtime egress network identity changed during refresh")
+        raise SessionError("Sandbox egress network identity changed during refresh")
     return True
 
 
@@ -555,7 +555,7 @@ def _park_session_container(parked: ParkedSession) -> None:
         stopped = _run(["docker", "stop", parked.name])
         if stopped.returncode:
             raise SessionError(
-                f"could not stop existing Session Runtime: {stopped.stderr.strip()}"
+                f"could not stop existing Sandbox: {stopped.stderr.strip()}"
             )
     renamed = _run(["docker", "rename", parked.name, parked.backup])
     if renamed.returncode:
@@ -565,7 +565,7 @@ def _park_session_container(parked: ParkedSession) -> None:
             if restarted.returncode:
                 restart_detail = f"; recovery restart also failed: {restarted.stderr.strip()}"
         raise SessionError(
-            f"could not park existing Session Runtime: {renamed.stderr.strip()}{restart_detail}"
+            f"could not park existing Sandbox: {renamed.stderr.strip()}{restart_detail}"
         )
 
 
@@ -611,12 +611,12 @@ def _verify_refresh_park(parked: ParkedSession) -> None:
     assert parked.project_id is not None
     state = _strict_refresh_container(parked.backup)
     if state is None:
-        raise SessionError(f"parked Session Runtime {parked.backup!r} disappeared")
+        raise SessionError(f"parked Sandbox {parked.backup!r} disappeared")
     _assert_refresh_container_owned(parked.backup, state, parked.project_id)
     if state["State"]["Running"]:
-        raise SessionError(f"parked Session Runtime {parked.backup!r} is still running")
+        raise SessionError(f"parked Sandbox {parked.backup!r} is still running")
     if dc.EGRESS_NETWORK in state["NetworkSettings"]["Networks"]:
-        raise SessionError(f"parked Session Runtime {parked.backup!r} is still attached to egress")
+        raise SessionError(f"parked Sandbox {parked.backup!r} is still attached to egress")
 
 
 def _restore_incomplete_park(parked: ParkedSession) -> None:
@@ -627,13 +627,13 @@ def _restore_incomplete_park(parked: ParkedSession) -> None:
         original = _strict_refresh_container(parked.name)
         if original is None:
             raise SessionError(
-                f"neither Session Runtime {parked.name!r} nor recovery container "
+                f"neither Sandbox {parked.name!r} nor recovery container "
                 f"{parked.backup!r} exists"
             )
         _assert_refresh_predecessor(parked.name, original, parked)
         connected = _validate_refresh_egress(parked, original)
         if connected != parked.reconnect_egress:
-            raise SessionError("canonical Session Runtime egress state changed during refresh")
+            raise SessionError("canonical Sandbox egress state changed during refresh")
         if parked.was_running and not original["State"]["Running"]:
             _start_session_container(parked.name)
         return
@@ -668,7 +668,7 @@ def plan_session_refresh(workspace: Path, issuance: Issuance) -> ParkedSession |
     expected_labels = set(runtime_spec.labels(issuance))
     actual_labels = {f"{key}={value}" for key, value in labels.items()}
     if not expected_labels.issubset(actual_labels):
-        raise SessionError("Session Runtime labels differ from the prior host issuance")
+        raise SessionError("Sandbox labels differ from the prior host issuance")
     _ensure_unlicensed_refresh(workspace, issuance, labels)
     backup = f"{name}-pre-refresh"
     if _strict_refresh_container(backup) is not None:
@@ -735,7 +735,7 @@ def restore_refresh_session(
         _assert_refresh_predecessor(parked.name, candidate, parked)
         connected = _validate_refresh_egress(parked, candidate)
         if connected != parked.reconnect_egress:
-            raise SessionError("canonical Session Runtime egress state changed during refresh")
+            raise SessionError("canonical Sandbox egress state changed during refresh")
         if parked.was_running and not candidate["State"]["Running"]:
             _start_session_container(parked.name)
         return
@@ -756,12 +756,12 @@ def verify_restored_refresh_session(parked: ParkedSession) -> None:
     """Verify the exact predecessor's restored name, state, image, and egress."""
     state = _strict_refresh_container(parked.name)
     if state is None:
-        raise SessionError(f"restored Session Runtime {parked.name!r} is missing")
+        raise SessionError(f"restored Sandbox {parked.name!r} is missing")
     _assert_refresh_predecessor(parked.name, state, parked)
     if state["State"]["Running"] != parked.was_running:
-        raise SessionError("restored Session Runtime running state is incorrect")
+        raise SessionError("restored Sandbox running state is incorrect")
     if _validate_refresh_egress(parked, state) != parked.reconnect_egress:
-        raise SessionError("restored Session Runtime egress state is incorrect")
+        raise SessionError("restored Sandbox egress state is incorrect")
 
 
 def discard_refresh_session(parked: ParkedSession) -> None:
@@ -852,7 +852,7 @@ def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequ
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
         raise SessionError(
-            f"refusing Session Runtime startup: {exc}; run `booley init --seed` on the host"
+            f"refusing Sandbox startup: {exc}; run `booley init --seed` on the host"
         ) from exc
     _warn_on_image_drift(spec, workspace)
     if image_override is not None and image_override != spec.get("image"):
@@ -928,7 +928,7 @@ def _run_up_transaction(
         request.name, request.issuance, spec=request.spec, workspace=workspace
     ):
         raise SessionError(
-            f"existing Session Runtime {request.name!r} does not match the current host "
+            f"existing Sandbox {request.name!r} does not match the current host "
             "issuance; run `booley session up --rebuild`"
         )
     candidate_ready = False
@@ -948,7 +948,7 @@ def _run_up_transaction(
                 workspace=workspace,
             ):
                 raise SessionError(
-                    "refreshed Session Runtime labels or network topology do not match "
+                    "refreshed Sandbox labels or network topology do not match "
                     "the replacement issuance"
                 )
             verify_refreshed_session(
@@ -974,7 +974,7 @@ def _up_unlocked(
     expected_image_id: str | None = None,
     expected_payload_fingerprint: str | None = None,
 ) -> str:
-    """Create-or-start the Session Runtime for *workspace*; return its name.
+    """Create-or-start the Sandbox for *workspace*; return its name.
 
     Idempotent, and split along the same seam the Dev Containers CLI uses:
     ``postCreateCommand`` runs only when the container is created (it seeds the
@@ -1016,7 +1016,7 @@ def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> Non
     recovered = recover_project_locked(workspace)
     if invalidated or recovered.outcome is not RecoveryOutcome.NONE:
         retry = f"run `{retry_command}` again" if retry_command else "retry the command"
-        raise SessionError(f"recovered interrupted Session Runtime host state; {retry}")
+        raise SessionError(f"recovered interrupted Sandbox host state; {retry}")
 
 
 def up(
@@ -1048,7 +1048,7 @@ def validate(workspace: Path) -> str:
     from booley.runtime.session_refresh import has_pending_refresh
 
     if has_pending_refresh(workspace) or issuance_invalidation.has_pending(workspace):
-        raise SessionError("Session Runtime recovery is pending; run a lifecycle command")
+        raise SessionError("Sandbox recovery is pending; run a lifecycle command")
 
     spec = _load_spec(workspace)
     issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
@@ -1086,7 +1086,7 @@ def _prepare_unlocked(workspace: Path) -> str:
                 image=issuance.relay_image_id or "",
             )
         except RelayDockerError as exc:
-            raise SessionError(f"licensed Session Runtime topology is invalid: {exc}") from exc
+            raise SessionError(f"licensed Sandbox topology is invalid: {exc}") from exc
     else:
         _provision_license_relay(
             workspace,
@@ -1131,7 +1131,7 @@ def _authenticate_quiesce_validate(
     except runtime_spec.RuntimeSpecError as exc:
         recovery = _quiesced_validation_recovery(quiesced)
         raise SessionError(
-            f"refusing Session Runtime preparation: {exc}; run `booley init --seed` on the host"
+            f"refusing Sandbox preparation: {exc}; run `booley init --seed` on the host"
             f"{recovery}"
         ) from exc
     return issuance, quiesced
@@ -1160,7 +1160,7 @@ def _vscode_runtime_labels_for_workspace(
     workspace: Path,
     expected: dict[str, str],
 ) -> dict[str, Any] | None:
-    """Return labels only for a positively identified VS Code runtime."""
+    """Return labels only for a positively identified VS Code Sandbox."""
     config = state.get("Config")
     labels = config.get("Labels") if isinstance(config, dict) else None
     if not isinstance(labels, dict):
@@ -1216,7 +1216,7 @@ def _quiesce_legacy_vscode_container(
     if ambiguous or len(candidates) > 1:
         names = ", ".join(repr(name) for name in ambiguous + [row.name for row in candidates])
         raise SessionError(
-            f"cannot safely migrate multiple or ambiguous legacy Session Runtimes: {names}; "
+            f"cannot safely migrate multiple or ambiguous legacy Sandboxes: {names}; "
             "close VS Code and stop/remove those containers before retrying"
         )
     if not candidates:
@@ -1233,10 +1233,10 @@ def _stop_legacy_vscode_container(container: _LegacyVscodeContainer) -> None:
     state = _decode_container_inspect(raw)
     if result.returncode != 0 or state is None or state.get("Id") != container.container_id:
         detail = result.stderr.strip() or result.stdout.strip() or "container identity changed"
-        raise SessionError(f"cannot stop legacy Session Runtime {container.name!r}: {detail}")
+        raise SessionError(f"cannot stop legacy Sandbox {container.name!r}: {detail}")
     if _inspected_running(state) is not False:
         raise SessionError(
-            f"legacy Session Runtime {container.name!r} is still running after stop"
+            f"legacy Sandbox {container.name!r} is still running after stop"
         )
 
 
@@ -1259,9 +1259,9 @@ def _remove_quiesced_legacy_container(container: _LegacyVscodeContainer) -> None
         return
     state = _decode_container_inspect(raw)
     if state is None or state.get("Id") != container.container_id:
-        raise SessionError(f"cannot re-inspect legacy Session Runtime {container.name!r}")
+        raise SessionError(f"cannot re-inspect legacy Sandbox {container.name!r}")
     if _inspected_running(state) is not False:
-        raise SessionError(f"legacy Session Runtime {container.name!r} restarted during migration")
+        raise SessionError(f"legacy Sandbox {container.name!r} restarted during migration")
     result = _run(["docker", "rm", container.container_id])
     if (
         result.returncode == 0
@@ -1270,7 +1270,7 @@ def _remove_quiesced_legacy_container(container: _LegacyVscodeContainer) -> None
         return
     detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
     raise SessionError(
-        f"cannot remove legacy Session Runtime {container.name!r}: {detail}; its container-local "
+        f"cannot remove legacy Sandbox {container.name!r}: {detail}; its container-local "
         "data remains available while the container exists"
     )
 
@@ -1285,7 +1285,7 @@ def _strict_running_interactive_states() -> list[tuple[str, str]]:
             "--format",
             "{{.Names}}",
         ],
-        inventory_error="cannot inventory running Session Runtime containers",
+        inventory_error="cannot inventory running Sandbox containers",
     )
 
 
@@ -1303,7 +1303,7 @@ def _strict_all_interactive_states(project_id: str) -> list[tuple[str, str]]:
             "--format",
             "{{.Names}}",
         ],
-        inventory_error="cannot inventory Session Runtime containers",
+        inventory_error="cannot inventory Sandbox containers",
     )
 
 
@@ -1320,7 +1320,7 @@ def _strict_interactive_states(
             continue
         raw = _docker_stdout(["docker", "inspect", name])
         if raw is None or _decode_container_inspect(raw) is None:
-            raise SessionError(f"cannot inspect Session Runtime {name!r}")
+            raise SessionError(f"cannot inspect Sandbox {name!r}")
         states.append((name, raw))
     return states
 
@@ -1349,7 +1349,7 @@ def issued_runtime_drift_fix(
     issuance: Issuance,
     drifted: list[str],
 ) -> str:
-    """Return safe, state-specific remediation for drifted runtime resources."""
+    """Return safe, state-specific remediation for drifted Sandbox resources."""
     from booley.runtime import session_issuance as runtime_spec
 
     rebuild = "run `booley session down`, then `booley session up --rebuild`"
@@ -1376,12 +1376,12 @@ def issued_runtime_drift_fix(
     if ambiguous:
         names = ", ".join(repr(name) for name in ambiguous)
         actions.append(
-            f"inspect ambiguous Session Runtime resource(s) {names}; "
+            f"inspect ambiguous Sandbox resource(s) {names}; "
             "Booley will not remove them automatically"
         )
     if running_vscode:
         names = ", ".join(repr(name) for name in running_vscode)
-        actions.append(f"stop VS Code Session Runtime(s) {names}, then {rebuild}")
+        actions.append(f"stop VS Code Sandbox(s) {names}, then {rebuild}")
     return "; ".join(actions) if actions else rebuild
 
 
@@ -1406,7 +1406,7 @@ def _stopped_vscode_reconcile_candidates(
     *,
     remove_unavailable_current: bool,
 ) -> list[str]:
-    """Validate VS Code runtime state and return safe stopped cleanup targets."""
+    """Validate VS Code Sandbox state and return safe stopped cleanup targets."""
     from booley.runtime import session_issuance as runtime_spec
 
     expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
@@ -1423,11 +1423,11 @@ def _stopped_vscode_reconcile_candidates(
         )
         running = _inspected_running(state)
         if running is None:
-            raise SessionError(f"cannot inspect state for Session Runtime {name!r}")
+            raise SessionError(f"cannot inspect state for Sandbox {name!r}")
         if running:
             if not issuance_matches:
                 raise SessionError(
-                    f"running Session Runtime {name!r} uses an older host issuance; "
+                    f"running Sandbox {name!r} uses an older host issuance; "
                     "stop it before recreating the VS Code container"
                 )
             continue
@@ -1445,11 +1445,11 @@ def _remove_stopped_session_container(name: str) -> None:
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
         raise SessionError(
-            f"cannot remove stale Session Runtime {name!r}: {detail}. Booley will "
+            f"cannot remove stale Sandbox {name!r}: {detail}. Booley will "
             "not force-remove it because it may have become active; stop the "
             "container and retry"
         )
-    logger.info("removed stopped stale Session Runtime %r", name)
+    logger.info("removed stopped stale Sandbox %r", name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1496,7 +1496,7 @@ def plan_stopped_headless_runtime_reconciliation(
     if state["State"]["Running"]:
         if not current:
             raise SessionError(
-                f"running Session Runtime {name!r} uses an older host issuance; "
+                f"running Sandbox {name!r} uses an older host issuance; "
                 "stop it and retry `booley init`"
             )
         return StoppedHeadlessRuntimePlan()
@@ -1519,7 +1519,7 @@ def reconcile_stopped_headless_runtime(
 ) -> bool:
     """Remove a stopped headless Runtime that predates *issuance*.
 
-    ``booley init`` regenerates and reissues the Session Runtime spec. A stopped
+    ``booley init`` regenerates and reissues the Sandbox spec. A stopped
     canonical container cannot adopt that new issuance, so preserving it would
     make the next ``session up`` fail. Active containers are left alone, and the
     canonical name is never modified until its Project ownership is proven.
@@ -1527,7 +1527,7 @@ def reconcile_stopped_headless_runtime(
     plan = plan_stopped_headless_runtime_reconciliation(workspace, issuance)
     if plan.container_name is not None:
         _remove_stopped_session_container(plan.container_name)
-        logger.info("reconciled stopped headless Session Runtime %r", plan.container_name)
+        logger.info("reconciled stopped headless Sandbox %r", plan.container_name)
     if plan.relay is not None:
         _remove_license_relay(plan.relay)
     return plan.pending
@@ -1564,7 +1564,7 @@ def _assert_no_other_project_sessions(project_id: str, *, excluding: str = "") -
     if names:
         joined = ", ".join(repr(name) for name in names)
         raise SessionError(
-            f"cannot reconcile stale Session Runtime resources while other Project "
+            f"cannot reconcile stale Sandbox resources while other Project "
             f"Sessions exist: {joined}; stop them and retry `booley init`"
         )
 
@@ -1573,15 +1573,15 @@ def _container_has_unavailable_bind(name: str, state: dict) -> bool:
     """Whether Docker would find an inspected container's bind source unavailable."""
     mounts = state.get("Mounts")
     if not isinstance(mounts, list):
-        raise SessionError(f"cannot inspect bind mounts for Session Runtime {name!r}")
+        raise SessionError(f"cannot inspect bind mounts for Sandbox {name!r}")
     for mount in mounts:
         if not isinstance(mount, dict):
-            raise SessionError(f"cannot inspect bind mounts for Session Runtime {name!r}")
+            raise SessionError(f"cannot inspect bind mounts for Sandbox {name!r}")
         if mount.get("Type") != "bind":
             continue
         source = mount.get("Source")
         if not isinstance(source, str) or not source:
-            raise SessionError(f"cannot inspect bind mounts for Session Runtime {name!r}")
+            raise SessionError(f"cannot inspect bind mounts for Sandbox {name!r}")
         host_path = host_path_from_docker_mount(source)
         if host_path is None:
             continue
@@ -1876,7 +1876,7 @@ def _prepare_license_relay(
     if profile is None:
         return relay, False
     if relay_image_id is None:
-        raise SessionError("licensed Session Runtime issuance lacks an immutable relay image")
+        raise SessionError("licensed Sandbox issuance lacks an immutable relay image")
     if session_exists:
         _validate_license_relay(relay, name, profile, labels, relay_image_id)
         return relay, False
@@ -1902,7 +1902,7 @@ def _create_session_container(
     if profile is None:
         return
     if relay_image_id is None:
-        raise SessionError("licensed Session Runtime issuance lacks an immutable relay image")
+        raise SessionError("licensed Sandbox issuance lacks an immutable relay image")
     try:
         _connect_and_validate_license_relay(
             relay,
@@ -1952,7 +1952,7 @@ def _provision_license_relay(
 
     try:
         if relay_image_id is None:
-            raise SessionError("licensed Session Runtime issuance lacks an immutable relay image")
+            raise SessionError("licensed Sandbox issuance lacks an immutable relay image")
         return recreate_relay(
             _relay_profile(profile),
             str(workspace.resolve()),
@@ -1960,7 +1960,7 @@ def _provision_license_relay(
             issuance_labels=labels,
         )
     except RelayDockerError as exc:
-        raise SessionError(f"could not start licensed Session Runtime: {exc}") from exc
+        raise SessionError(f"could not start licensed Sandbox: {exc}") from exc
 
 
 def _connect_and_validate_license_relay(
@@ -1982,7 +1982,7 @@ def _connect_and_validate_license_relay(
             image=relay_image_id,
         )
     except RelayDockerError as exc:
-        raise SessionError(f"licensed Session Runtime topology failed: {exc}") from exc
+        raise SessionError(f"licensed Sandbox topology failed: {exc}") from exc
 
 
 def _validate_license_relay(
@@ -2004,7 +2004,7 @@ def _validate_license_relay(
             image=relay_image_id,
         )
     except RelayDockerError as exc:
-        raise SessionError(f"licensed Session Runtime topology is invalid: {exc}") from exc
+        raise SessionError(f"licensed Sandbox topology is invalid: {exc}") from exc
 
 
 def _remove_license_relay(relay) -> None:
@@ -2084,19 +2084,19 @@ def _matching_running_project_runtime(workspace: Path, request: _UpRequest) -> s
     if len(candidates) > 1:
         names = ", ".join(repr(name) for name, _current in candidates)
         raise SessionError(
-            f"multiple running Session Runtimes serve this Project: {names}; "
-            "stop all but the current issued runtime"
+            f"multiple running Sandboxes serve this Project: {names}; "
+            "stop all but the current issued Sandbox"
         )
     if candidates and not candidates[0][1]:
         raise SessionError(
-            f"running Session Runtime {candidates[0][0]!r} does not match the current host "
+            f"running Sandbox {candidates[0][0]!r} does not match the current host "
             "issuance; rebuild or stop it before retrying"
         )
     return candidates[0][0] if candidates else None
 
 
 def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, str]]:
-    """Select the one current runtime, or create/resume the headless runtime."""
+    """Select the one current runtime, or create/resume the headless Sandbox."""
     request = _validate_up_request(workspace, None)
     remote_env = request.spec["remoteEnv"]
     command_env = {
@@ -2119,7 +2119,7 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
 
 
 def run_project_command(workspace: Path, command: list[str], *, tty: bool = True) -> int:
-    """Run one command in this Project's validated Session Runtime."""
+    """Run one command in this Project's validated Sandbox."""
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock(
@@ -2140,7 +2140,7 @@ def run_project_command(workspace: Path, command: list[str], *, tty: bool = True
             env=command_env,
         ).exit_code
     except (OSError, subprocess.SubprocessError) as exc:
-        raise SessionError(f"could not attach to Session Runtime {name!r}: {exc}") from exc
+        raise SessionError(f"could not attach to Sandbox {name!r}: {exc}") from exc
 
 
 def enter(workspace: Path, command: list[str] | None = None, *, tty: bool = True) -> int:
@@ -2167,7 +2167,7 @@ def verify_refreshed_session(
     actual_image_id = _docker_stdout(["docker", "inspect", name, "--format", "{{.Image}}"])
     if actual_image_id != expected_image_id:
         raise SessionError(
-            f"refreshed Session Runtime uses {actual_image_id or '<unknown>'}, "
+            f"refreshed Sandbox uses {actual_image_id or '<unknown>'}, "
             f"expected {expected_image_id}"
         )
     if expected_payload_fingerprint is None:
@@ -2184,7 +2184,7 @@ def verify_refreshed_session(
     if result.returncode != 0 or actual_fingerprint != expected_payload_fingerprint:
         detail = result.stderr.strip() or actual_fingerprint or "probe produced no output"
         raise SessionError(
-            "refreshed Session Runtime payload does not match the reconciled image: " + detail
+            "refreshed Sandbox payload does not match the reconciled image: " + detail
         )
 
 
@@ -2213,7 +2213,7 @@ def down(workspace: Path, *, remove: bool = True) -> bool:
 
 
 def status(workspace: Path) -> str:
-    """Return the Session Runtime state, including pending host recovery."""
+    """Return the Sandbox state, including pending host recovery."""
     from booley.runtime import issuance_invalidation
     from booley.runtime.session_refresh import has_pending_refresh
 

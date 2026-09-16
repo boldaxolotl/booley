@@ -471,7 +471,7 @@ def test_doctor_fails_when_issued_runtime_has_different_booley_version(
 
     output = capsys.readouterr().out
     assert rc == 1
-    assert f"host Booley {__version__} != Session Runtime Booley 9.9.9" in output
+    assert f"host Booley {__version__} != Sandbox Booley 9.9.9" in output
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
@@ -507,7 +507,7 @@ def test_doctor_warns_when_devcontainer_missing(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     # Configuration currency warns; the independent host issuance check fails.
     assert rc == 1
-    assert "Session Runtime host issuance is invalid" in output
+    assert "Sandbox host issuance is invalid" in output
     assert "no .devcontainer/devcontainer.json" in output
 
 
@@ -661,7 +661,7 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=True), tmp_path)
 
     assert rc == 0
-    # Both the shallow dry-run and the deep check run in the Session Runtime.
+    # Both the shallow dry-run and the deep check run in the Sandbox.
     sim_calls = [call for call in calls if "booley.flows.sim" in call]
     assert len(sim_calls) == 2
     dry_call, deep_call = sim_calls
@@ -736,7 +736,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
 
 
 # ---------------------------------------------------------------------------
-# Session Runtime routing for Doctor Flow checks.
+# Sandbox routing for Doctor Flow checks.
 # ---------------------------------------------------------------------------
 
 
@@ -806,7 +806,7 @@ def test_deep_check_routing_truth_table(
     monkeypatch,
     dry_run,
 ):
-    """Dry and deep Flow checks both run in the Session Runtime."""
+    """Dry and deep Flow checks both run in the Sandbox."""
     project, calls = _tool_check_harness(
         tmp_path,
         monkeypatch,
@@ -882,7 +882,7 @@ def test_session_runtime_startup_failure_fails_loudly(tmp_path, monkeypatch):
     _run_flow_check(project, rec, dry_run=False)
 
     assert rec.kinds() == {"fail"}
-    assert "could not enter the Session Runtime" in rec.fails()[0]
+    assert "could not enter the Sandbox" in rec.fails()[0]
     assert "bad issuance" in rec.fails()[0]
 
 
@@ -1114,7 +1114,7 @@ def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
 
     output = capsys.readouterr().out
     assert rc == 1
-    assert "could not enter the Session Runtime" in output
+    assert "could not enter the Sandbox" in output
     assert "sandbox image is not built" in output
 
 
@@ -4594,7 +4594,7 @@ class TestHostAgentSession:
         rec = _Rec()
         doctor._check_host_agent_session(rec.p, rec.w)
         assert rec.kinds() == {"pass"}
-        assert "Session Runtime" in rec.events[0][1]
+        assert "Sandbox" in rec.events[0][1]
 
     @pytest.mark.parametrize("app", ["claude", "codex"])
     def test_agent_on_host_warns_and_names_the_way_in(self, monkeypatch, app):
@@ -4608,7 +4608,7 @@ class TestHostAgentSession:
         assert "booley_status" in warn  # the specific MCP tool the guidance mandates
 
     def test_agent_inside_container_does_not_warn(self, tmp_path, monkeypatch):
-        """In the Session Runtime the MCP tools do exist — no note either way."""
+        """In the Sandbox the MCP tools do exist — no note either way."""
         _set_venue(monkeypatch, True)
         _set_agent_session(monkeypatch, "claude")
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -4817,10 +4817,10 @@ class TestFailPathSelfTest:
         assert any("fail-path unvalidated" in m for _, m in rec.events if _ == "warn")
 
     def test_flow_runs_in_place_inside_session_runtime(self, tmp_path, monkeypatch):
-        # F-17 / ADR 0028: inside the Session Runtime there is no docker — the
+        # F-17 / ADR 0028: inside the Sandbox there is no docker — the
         # container IS the sandbox — so the self-test must exec the Flow
         # in-place (this interpreter, no docker wrap, no SKIP), mirroring
-        # _flow_check_routing and how Session Runtime Flows themselves execute
+        # _flow_check_routing and how Sandbox Flows themselves execute
         # in-container. Pre-fix this skipped with "'docker'
         # runtime not available", forcing the final --deep gate onto the host.
         _set_venue(monkeypatch, True)
@@ -4844,7 +4844,7 @@ class TestFailPathSelfTest:
         assert seen_cmds and all(cmd[0] == sys.executable for cmd in seen_cmds)
 
     def test_host_deep_check_still_skips_without_docker(self, tmp_path, monkeypatch):
-        # On the HOST a Session Runtime self-test genuinely needs Docker
+        # On the HOST a Sandbox self-test genuinely needs Docker
         # runtime; a host without Docker stays a SKIP (unchanged by F-17).
         _set_venue(monkeypatch, False)
         project = self._audit(tmp_path)
@@ -5712,7 +5712,7 @@ def test_concise_reporter_suppresses_only_pass_rendering(capsys) -> None:
 class TestDisplayReportDir:
     """Deep-check FAIL hints must be readable where the user reads them.
 
-    Doctor may run inside the Session Runtime, where the project dir is the
+    Doctor may run inside the Sandbox, where the project dir is the
     /booley-project bind mount; printing that verbatim sent a host-side user
     ls-ing a path that only exists in the container (the real files sit at
     <repo>/.booley_project/tmp/...).
@@ -6264,7 +6264,7 @@ class TestNoDockerSkipReason:
 
         msg = doctor._no_docker_skip_reason()
 
-        assert "already inside the Session Runtime" in msg
+        assert "already inside the Sandbox" in msg
         assert "nested Docker" in msg
         assert "not available" not in msg  # the old "something's broken" phrasing
 
@@ -6274,7 +6274,7 @@ class TestNoDockerSkipReason:
         msg = doctor._no_docker_skip_reason()
 
         assert "no Docker/Podman runtime found" in msg
-        assert "Session Runtime" not in msg
+        assert "Sandbox" not in msg
 
     def test_container_checks_use_the_reason(self, monkeypatch, capsys):
         from booley.harness import web_isolation
@@ -6288,7 +6288,7 @@ class TestNoDockerSkipReason:
         )
 
         assert any(
-            "already inside the Session Runtime" in m for lvl, m in rec.events if lvl == "skip"
+            "already inside the Sandbox" in m for lvl, m in rec.events if lvl == "skip"
         )
         assert any(
             "provider-side web access disabled" in m for lvl, m in rec.events if lvl == "pass"

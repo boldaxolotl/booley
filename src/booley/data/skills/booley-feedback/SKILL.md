@@ -6,7 +6,7 @@ description: Prepare sanitized Booley feedback for manual submission from an off
 # Prepare Booley feedback
 
 Deliver an inspected sanitized report for manual submission and the blocked
-task's next step (see §5). This skill runs offline in the Session Runtime: use
+task's next step (see §5). This skill runs offline in the Sandbox: use
 local commands, not `submit`, authentication probes, confirmation tokens,
 browser launches, or mail sending. Generate the report by default without a
 separate approval question or publication decision.

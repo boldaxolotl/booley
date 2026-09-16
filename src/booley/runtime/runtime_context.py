@@ -1,6 +1,6 @@
-"""Session Runtime detection and entry-point guards.
+"""Sandbox detection and entry-point guards.
 
-Booley workflows execute inside the per-project Session Runtime.  This
+Booley workflows execute inside the per-project Sandbox.  This
 stdlib-only module sits at the bottom of the import graph so every entry point
 can detect that runtime and restore its fixed egress proxy environment.
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def inside_session_runtime() -> bool:
-    """Return whether this process runs inside a Booley Session Runtime."""
+    """Return whether this process runs inside a Booley Sandbox."""
     if os.environ.get("BOOLEY_CONTAINER") == "1":
         return True
     return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
@@ -53,14 +53,14 @@ def container_only_error(what: str) -> str | None:
     if inside_session_runtime():
         return None
     return (
-        f"ERROR: `{what}` runs inside the Booley Session Runtime "
+        f"ERROR: `{what}` runs inside the Booley Sandbox "
         f"(the project's devcontainer), not on the host.\n\n"
         f'  Open the project in VS Code and accept "Reopen in Container", '
         f"then run this\n"
-        f"  command in the integrated terminal. Or enter the Session Runtime "
+        f"  command in the integrated terminal. Or enter the Sandbox "
         f"from the host:\n"
         f"      booley session enter -- {what}\n\n"
-        f"  Only `booley init` and Session Runtime administration run on the "
+        f"  Only `booley init` and Sandbox administration run on the "
         f"host (ADR 0049)."
     )
 

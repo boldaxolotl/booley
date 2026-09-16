@@ -18,7 +18,7 @@ verification workflow should build on a Project's existing SystemVerilog or
 cocotb environment and carry work from test execution through reproducible,
 machine-checkable evidence rather than treating the testbench only as support
 for an RTL ticket. This fits Booley's existing role as the common orchestrator
-for configured Targets, Booley Flows, the Session Runtime, verification intent,
+for configured Targets, Booley Flows, the Sandbox, verification intent,
 and their evidence: the same control plane can resolve, build, and run a full
 regression matrix and report it consistently in local and CI environments
 without a second collection of project-specific scripts.
@@ -128,7 +128,7 @@ but each run snapshots the issue into a durable local record before execution.
 Edits to an issue after it is claimed must not silently change its published authored
 inputs, Criteria, or base revision; retries and recovery use the same snapshot and
 evidence history. Credentials and network operations belong in a trusted
-host-side integration rather than the Session Runtime or Developer Agent, and
+host-side integration rather than the Sandbox or Developer Agent, and
 remote updates must be idempotent and conflict-aware so a GitHub outage cannot
 corrupt local work or Criterion evidence.
 

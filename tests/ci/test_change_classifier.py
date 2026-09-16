@@ -362,7 +362,7 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
         (".github/scripts/image_size_report.py", True),
         # PR #308: Simulation runtime overlays leaked into the issued image.
         ("src/booley/flows/sim/flow.py", False),
-        # PR #315: host Doctor and Session Runtime identity diverged.
+        # PR #315: host Doctor and Sandbox identity diverged.
         ("src/booley/harness/doctor.py", False),
         ("src/booley/harness/session_runtime.py", False),
         ("src/booley/mcp/server.py", False),

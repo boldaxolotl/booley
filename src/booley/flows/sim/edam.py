@@ -1,4 +1,4 @@
-"""Small Edalize simulation helpers used inside the Session Runtime.
+"""Small Edalize simulation helpers used inside the Sandbox.
 
 The public simulation Flow executes only Verilator and Icarus.  Commercial
 tool spellings remain recognizable here so configuration diagnostics can name

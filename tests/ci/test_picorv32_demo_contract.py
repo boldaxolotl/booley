@@ -146,10 +146,10 @@ def test_demo_uses_and_retains_the_pulled_immutable_image_identity() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = workflow["jobs"]["demo-contract"]["steps"]
     resolver = next(
-        step for step in steps if step.get("name") == "Pull and resolve RISC-V Session Runtime"
+        step for step in steps if step.get("name") == "Pull and resolve RISC-V Sandbox"
     )
     upload = next(
-        step for step in steps if step.get("name") == "Retain RISC-V Session Runtime identity"
+        step for step in steps if step.get("name") == "Retain RISC-V Sandbox identity"
     )
     verify = next(
         step

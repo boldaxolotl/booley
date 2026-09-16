@@ -190,7 +190,7 @@ def _retired_flow_key_findings(
         findings.append(
             fail_finding(
                 f"booley.toml [flows.{flow_name}].sandbox is retired",
-                "delete sandbox; all Flows run in the Session Runtime",
+                "delete sandbox; all Flows run in the Sandbox",
             )
         )
     if "keep_build_dir" in section:

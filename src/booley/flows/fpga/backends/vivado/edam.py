@@ -6,7 +6,7 @@ resulting reports in Booley:
   * **Edalize generates the project + tcl** from a flow-API EDAM, in-sandbox
     (``edalize.flows.vivado.Vivado.configure()``); the generated tcl replaces
     the hand-written ``vivado_impl.tcl`` (:func:`build_fpga_edam`).
-  * **The resolved command runs inside the Session Runtime**
+  * **The resolved command runs inside the Sandbox**
     (:func:`fpga_run_command` — ``make -C <work_root>``).
   * **Booley parses the reports** through the thin post-processor
     :func:`parse_fpga_reports`, following the same
@@ -58,7 +58,7 @@ def build_fpga_edam(
 
     Mirrors ``sim_edam.build_sim_edam``: resolved Booley inputs in, a flow-API
     EDAM out, with file names relative to *work_root* so the materialized
-    project directory is relocatable within the Session Runtime workspace.
+    project directory is relocatable within the Sandbox workspace.
 
     ``part`` is the only edalize ``vivado`` flow option Booley forwards by
     default (it is in the :mod:`edam` whitelist and unambiguously safe). The XDC
@@ -245,7 +245,7 @@ def fpga_run_command(work_root: Path, work_dir: Path) -> list[str]:
 
     The edalize ``vivado`` flow emits a ``Makefile`` whose default target runs
     ``vivado -mode batch`` over the generated tcl. The relative ``make -C``
-    command runs inside the Session Runtime against its mounted Project tree.
+    command runs inside the Sandbox against its mounted Project tree.
     """
     from booley.flows import edam as edam_layer
 

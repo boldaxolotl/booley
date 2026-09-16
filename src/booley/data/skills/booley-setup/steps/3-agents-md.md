@@ -29,7 +29,7 @@ file is high leverage: do not auto-write, pad, or invent facts.
 - Follow the template's two required project/Booley sections exactly. The
   template's standardized third worktree section is also permitted; keep it
   verbatim when included and omit it only when worktree guidance is irrelevant.
-- Keep the template's Interactive Mode / VS Code and Session Runtime scoping
+- Keep the template's Interactive Mode / VS Code and Sandbox scoping
   bullets verbatim. The first establishes the editor as a user-visible surface
   for files and diffs. The repo root's guidance links resolve on the host too,
   where none of the Booley Flows are registered; the second explains why. Doctor

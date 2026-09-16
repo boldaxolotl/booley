@@ -31,7 +31,7 @@ def run_ticket_preflight(project_root: Path) -> None:
     """Run all Ticket Preflight checks. Raises TicketPreflightError on failure.
 
     Checks (in order):
-      0. Running inside the Session Runtime (Ticket Mode is container-only)
+      0. Running inside the Sandbox (Ticket Mode is container-only)
       1. .tickets/ directory exists
       2. Git is available and we're in a repo
       3. Dirty working tree warning (non-blocking)
@@ -44,7 +44,7 @@ def run_ticket_preflight(project_root: Path) -> None:
     failures: list[str] = []
 
     # 0. Ticket Mode is container-only (ADR 0028): every ticket runs inside
-    # the Session Runtime alongside the interactive session. Fail loud here
+    # the Sandbox alongside the interactive session. Fail loud here
     # with the fix rather than later with a confusing path/Flow error.
     _check_inside_container()
 
@@ -77,7 +77,7 @@ def run_ticket_preflight(project_root: Path) -> None:
 
 
 def _check_inside_container() -> None:
-    """Refuse to start a ticket run anywhere but the Session Runtime.
+    """Refuse to start a ticket run anywhere but the Sandbox.
 
     Booley is container-only (ADR 0028): tickets execute inside the same
     devcontainer as the interactive session — one runtime, one filesystem, one
@@ -353,7 +353,7 @@ def _warn_retired_sandbox_attr(
         return
     logger.warning(
         "CUSTOM MCP ENDPOINT WARNING: %s — class attribute sandbox=%r is retired and ignored; "
-        "delete the retired sandbox metadata; endpoints run in the Session Runtime",
+        "delete the retired sandbox metadata; endpoints run in the Sandbox",
         py_file.name,
         sandbox_val,
     )

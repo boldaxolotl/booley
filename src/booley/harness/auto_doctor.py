@@ -1,6 +1,6 @@
 """Stale-triggered, one-shot automatic Doctor runs.
 
-Automatic health checks are lifecycle work, not a scheduler: Session Runtime
+Automatic health checks are lifecycle work, not a scheduler: Sandbox
 startup launches one detached attempt, and ``booley run`` performs the same
 check synchronously as a fallback. A file lock makes those entry points
 single-flight. Every attempt writes a structured report and transcript; the
@@ -308,7 +308,7 @@ def _persist_report(
 
 
 def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[str, Any] | None:
-    """Make a manual in-runtime Doctor result current for interactive reporting."""
+    """Make a manual in-Sandbox Doctor result current for interactive reporting."""
     if not result.health_evidence:
         return None
     try:

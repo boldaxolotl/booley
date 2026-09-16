@@ -43,7 +43,7 @@ def test_feedback_exports_offline_for_manual_github_or_email_submission():
     skill = " ".join(_skill_text("booley-feedback").split())
 
     for required in (
-        "runs offline in the Session Runtime",
+        "runs offline in the Sandbox",
         "local commands, not `submit`",
         "booley feedback export F-8 F-9",
         "Read the entire exported file",
@@ -426,7 +426,7 @@ def test_heal_preserves_scope_and_routes_exceptional_findings():
         "submodules discovered from `.gitmodules` as read-only",
         "Do not change RTL or testbench",
         "Do not create a Doctor waiver merely to make the output green",
-        "Do not execute an action outside the current Session Runtime",
+        "Do not execute an action outside the current Sandbox",
         "invoke\n`/booley-feedback` yourself",
         "public issue or email submission still requires",
         "Never describe one of those partial outcomes as healed",

@@ -803,7 +803,7 @@ class TestInitInteractive:
         init_cmd._step_interactive(ctx, agent_app="none")
 
         assert ctx.results[-1].status == "warn"
-        assert "stopped Session Runtime resources" in ctx.results[-1].detail
+        assert "stopped Sandbox resources" in ctx.results[-1].detail
         assert not reconciled
 
     def test_check_only_reports_orphaned_relay_without_removing_it(self, tmp_path, monkeypatch):
