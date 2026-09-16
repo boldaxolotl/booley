@@ -801,7 +801,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: stealth.native-no-copy
   phase: prepare
@@ -901,18 +901,18 @@ steps:
 - id: doctor.deep
   phase: prepare
   action: |-
-    Qualify the pinned PicoRV32 deep Doctor baseline after plain Doctor. First run `booley doctor --deep` without the Scenario waiver and retain its report plus the `synth_core` diagnostics. Continue only when the sole active warning is the reviewed identity `flow.synth-deep-warning:synth_core`, its underlying diagnostics are attributable to the pinned upstream RTL/toolchain, and there are no failures. Merge the exact unexpired, identity-bound Scenario waiver into `.booley_project/doctor-waivers.toml` without replacing other reviewed entries, then rerun `booley doctor --deep`.
+    Qualify the pinned PicoRV32 deep Doctor baseline after plain Doctor. First run `booley doctor --deep` without the Scenario waiver and retain its report plus the `synth_core` diagnostics. Continue only when the sole active warning is the reviewed identity `flow.synth-deep-warning:synth_core`, its underlying diagnostics are attributable to the pinned upstream RTL/toolchain, and there are no failures. Compare pre-waiver and final warning representatives with the fixture's stable signature (tool, code, category, count and meaningful message content, excluding generated instance names), not the raw OpenROAD message SHA-256. Prove that a genuinely changed message fails this comparison before installing the waiver. Merge the exact unexpired, identity-bound Scenario waiver into `.booley_project/doctor-waivers.toml` without replacing other reviewed entries, then rerun `booley doctor --deep` and prove the intended waiver still matches.
   checks:
   - id: doctor.deep
     capabilities:
     - DOCTOR-DIAGNOSTICS
     stimulus: |-
-      Run the pre-waiver deep Doctor and inspect the selected `synth_core` Flow diagnostics. Only after proving that `flow.synth-deep-warning:synth_core` is the sole active warning for the pinned PicoRV32 source and recorded sv2v/Yosys/OpenROAD identities, install the Scenario-owned waiver with exact check, subject, reason, and expiry while preserving every existing entry; rerun deep Doctor against otherwise unchanged inputs.
+      Run the pre-waiver deep Doctor and inspect the selected `synth_core` Flow diagnostics. Only after proving that `flow.synth-deep-warning:synth_core` is the sole active warning for the pinned PicoRV32 source and recorded sv2v/Yosys/OpenROAD identities, compare pre-waiver and final warning representatives with the stable signature of `fixture_validation.py`; a changed code, category, count or meaningful message must fail, while generated instance-name bytes may differ. Exercise a changed-warning negative case and the exact intended waiver match, then install the Scenario-owned waiver with exact check, subject, reason, and expiry while preserving every existing entry; rerun deep Doctor against otherwise unchanged inputs.
     expected: |-
-      The pre-waiver report has no failures and no active warning outside the reviewed `flow.synth-deep-warning:synth_core` identity. The final report exits zero, shows that exact finding as `WAIVED`, and has zero unwaived active warnings and zero failures. An expired, stale, missing, or broadened waiver, a changed or additional warning, a failure, or drift in the pinned source/tool identities fails the Check; raw warning count alone is never a pass condition.
+      The pre-waiver report has no failures and no active warning outside the reviewed `flow.synth-deep-warning:synth_core` identity. The final report exits zero, shows that exact finding as `WAIVED`, and has zero unwaived active warnings and zero failures. Stable warning signatures match across the pre-waiver and final reports even when generated instance-name bytes differ; a changed code, category, count, meaningful message, additional warning, failure, stale/missing/broadened waiver, or drift in the pinned source/tool identities fails the Check. Raw warning count and raw message SHA-256 alone are never pass conditions.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#doctor-waivers-doctor-waiverstoml
     evidence: |-
-      Separate unmodified pre-waiver and final `last.json`/`last.log` copies with command exits and all selected deep checks; the installed waiver text/hash, exact `check` and `subject`, reason, expiry and proof it is unexpired; complete `synth_core` diagnostics and comparison proving no changed or additional warning; pinned Project/upstream commits plus Booley, sv2v, Yosys and OpenROAD identities; before/after Project configuration and clean final report.
+      Separate unmodified pre-waiver and final `last.json`/`last.log` copies with command exits and all selected deep checks; the installed waiver text/hash, exact `check` and `subject`, reason, expiry and proof it is unexpired; complete `synth_core` diagnostics and `doctor-warning-comparison` fixture output proving stable warning signatures, no changed or additional warning, and a tested rejection of a genuinely changed warning; pinned Project/upstream commits plus Booley, sv2v, Yosys and OpenROAD identities; before/after Project configuration and clean final report.
     capture: evidence/picorv32-published-demo-continuity.doctor.deep
   requires:
   - inputs.project-pin
@@ -920,6 +920,9 @@ steps:
   - path: fixtures/doctor-synth-warning-waiver.toml
     audience: scenario-operator
     sha256: c5d014145e5ec88ec343f90e8f07270ec927b6505a56a8580687db9a8d624ca9
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 - id: doctor.plain-recheck
   phase: prepare
   action: Run final plain Doctor; require warning-free result before baseline.
@@ -1066,7 +1069,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: inventory.PROJECT-INVENTORY.inventory-missing
   phase: prepare
@@ -1160,7 +1163,7 @@ steps:
     sha256: fcd15b2cc2d205f2f17d09b3f79a94ef6723474e77e52b4c6a1115e8dee76573
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: inventory.RISC-V-TOOLCHAIN.riscv-tools
   phase: prepare
@@ -1186,7 +1189,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: inventory.STEALTH-MODE.stealth-history
   phase: prepare
@@ -1303,21 +1306,22 @@ steps:
 - id: baseline.source-unchanged
   phase: baseline
   action: |-
-    Build firmware and run continuity with both pinned source trees byte-identical; source changes begin only in later authorized disposable exercises.
+    Build firmware and run continuity from the committed post-setup project-data ref and the pinned upstream source ref. Define byte identity against those post-setup inputs: compare Project data with the post-setup project-data ref, and compare upstream RTL with the upstream pin; source changes begin only in later authorized disposable exercises.
   checks:
   - id: baseline.source-unchanged
     capabilities:
     - SIMULATION-FLOW
     stimulus: |-
-      Build firmware and run continuity with both pinned source trees byte-identical; source changes begin only in later authorized disposable exercises.
+      Build firmware and run continuity from the committed post-setup project-data ref and the pinned upstream source ref. Define byte identity against those post-setup inputs: compare Project data with the post-setup project-data ref, and compare upstream RTL with the upstream pin; source changes begin only in later authorized disposable exercises.
     expected: |-
-      Build firmware and run continuity with both pinned source trees byte-identical; source changes begin only in later authorized disposable exercises.
+      The Project-data tree is byte-identical to its committed post-setup destination ref, including authorized setup changes such as the FPGA Doctor Target, and the upstream RTL tree is byte-identical to its pinned upstream ref. The Check does not compare Project data with the pre-setup Project pin, and no source changes occur before later authorized disposable exercises.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Pre/post tree identities and diff around the complete baseline.
+    evidence: Pre/post tree identities and diff around the complete baseline, including the committed post-setup project-data ref and the separate upstream RTL comparison; retain the setup-correction evidence that identifies authorized non-RTL Project-data changes.
     capture: evidence/picorv32-published-demo-continuity.baseline.source-unchanged
   requires:
   - inputs.project-pin
   - doctor.plain-recheck
+  - project.separate-repository
 - id: baseline.firmware
   phase: baseline
   action: Prepare demo firmware with recorded RISC-V compiler/image identity.
@@ -1485,7 +1489,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: vivado.project-grant
   phase: baseline
@@ -1541,7 +1545,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: vivado.license-create
   phase: baseline
@@ -1663,7 +1667,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: vivado.license-delete
   phase: baseline
@@ -1725,7 +1729,7 @@ steps:
     sha256: 6a37dff1d8a64930821e835c76fb7f06587e00b23a5ce6c38ecd3b146260319c
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: inventory.LINT-FLOW.lint-hard
   phase: baseline
@@ -1751,7 +1755,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: inventory.LINT-FLOW.lint-infra
   phase: baseline
@@ -1807,7 +1811,7 @@ steps:
     sha256: c20181db627a85cfc4da3a700c30c92338468cbf9c0c4a4306add24b4f017240
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: inventory.LINT-FLOW.lint-nonfatal-warning
   phase: baseline
@@ -1923,7 +1927,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: inventory.SYNTHESIS-FLOW.synth-frontend-incompatible
   phase: baseline
@@ -2307,7 +2311,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
   - path: state_probe.py
     audience: scenario-operator
     sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
@@ -2532,7 +2536,7 @@ steps:
     sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: bwave.semantic-value
   phase: interactive
@@ -2720,7 +2724,7 @@ steps:
   assets:
   - path: fixtures/wishbone-fault.md
     audience: scenario-operator
-    sha256: f6af33e5888197f3c9ab97181876322da71f01119aa92fea7dd412e72bc7bc8f
+    sha256: e53038d0b4cf5bcb1b620ed586560319cbc41346a009e43d728c32f24c96a828
 - id: interactive.reproduce
   phase: interactive
   action: |-
@@ -2744,7 +2748,7 @@ steps:
   assets:
   - path: prompts/repair-interactive.md
     audience: Interactive Mode delegate
-    sha256: 92d6c1d18b25954ba6059a6c6b038e5de83aca1e40510ef37a209ffdb81d2531
+    sha256: 9eb971d6d7a84170c38c49f5edf846b4eb0b7d60e37a01d557cebb28b14b0561
 - id: interactive.trace-observability
   phase: interactive
   action: |-
@@ -2791,25 +2795,29 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: interactive.repair
   phase: interactive
-  action: Child repairs root cause without weakening tests, removing stimulus, waivers or unrelated edits.
+  action: Child repairs root cause without weakening tests, removing stimulus, waivers or unrelated edits; the repair uses the canonical reduction-OR expression so the committed repair remains a real source diff from clean baseline.
   checks:
   - id: interactive.repair
     capabilities:
     - TICKET-DELIVERABLES
-    stimulus: Child repairs root cause without weakening tests, removing stimulus, waivers or unrelated edits.
-    expected: Child repairs root cause without weakening tests, removing stimulus, waivers or unrelated edits.
+    stimulus: Child repairs root cause without weakening tests, removing stimulus, waivers or unrelated edits; the repair uses the canonical reduction-OR expression so the committed repair remains a real source diff from clean baseline.
+    expected: The injected AND expression is removed, `assign we = |mem_wstrb;` is present, and the repaired source is meaningfully different from clean baseline. Exact clean-HEAD restoration is retained as a separate negative fixture case and does not satisfy this Check.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Patch and scope/test comparison.
+    evidence: Patch and scope/test comparison plus `interactive-repair` fixture output over clean baseline, injected source and repaired source; retain the separate exact-HEAD-restoration rejection.
     capture: evidence/picorv32-published-demo-continuity.interactive.repair
   requires:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
   - interactive.wishbone-baseline
+  assets:
+  - path: fixture_validation.py
+    audience: scenario-operator
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 - id: interactive.rerun-simulation
   phase: interactive
   action: Child reruns relevant simulation after repair; require fresh passing result.
@@ -2844,13 +2852,13 @@ steps:
   - baseline.icarus-wishbone
 - id: interactive.local-commit
   phase: interactive
-  action: Child commits repair locally; remote push remains blocked.
+  action: Child commits the non-empty repair locally; remote push remains blocked.
   checks:
   - id: interactive.local-commit
     capabilities:
     - INTERACTIVE-MODE
-    stimulus: Child commits repair locally; remote push remains blocked.
-    expected: Child commits repair locally; remote push remains blocked.
+    stimulus: Child commits the non-empty repair locally; remote push remains blocked.
+    expected: A local commit records the meaningful `picorv32.v` repair diff and advances the child branch without any remote push. An empty commit or exact clean-HEAD restoration fails this Check.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Commit identity, branch state and push-authority enforcement evidence.
     capture: evidence/picorv32-published-demo-continuity.interactive.local-commit
@@ -3232,7 +3240,7 @@ steps:
     sha256: fea05b3c86b92475a0cd94e642c134f1aecbe47aa2c0f3bc751d8e6e0047a589
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
+    sha256: 3e3a87d93367bb429366e234ddb914acd318d37b59b8404b2ec24e27160d6c64
 
 - id: create.dhrystone-self-checking-cycle-contract.board
   phase: create
