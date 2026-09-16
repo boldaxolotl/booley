@@ -3409,6 +3409,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.firmware-validation
   phase: ticket1
   action: Validate deterministic final Dhrystone results before success/cycle output; mismatch prints error and
@@ -3427,6 +3428,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.success-magic
   phase: ticket1
   action: Preserve `123456789` write to MMIO `0x20000000`; testbench passes only validated success.
@@ -3442,6 +3444,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.cycle-record
   phase: ticket1
   action: Emit exactly `[SIM_CYCLES] dhry <User_Time>` after validation with deterministic timeout.
@@ -3457,6 +3460,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.elaboration
   phase: ticket1
   action: 'Require `elab_pass: [sim_dhry_checked]`.'
@@ -3472,6 +3476,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.simulation
   phase: ticket1
   action: Require `dhrystone/testbench.v @ sim_dhry_checked @ dhry @ pass -> pass`.
@@ -3487,6 +3492,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.cycle-cap
   phase: ticket1
   action: |-
@@ -3505,6 +3511,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.tb-review
   phase: ticket1
   action: Require `review_tb_quality_done` bound to `sim_dhry_checked`.
@@ -3520,6 +3527,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.persistent-target
   phase: ticket1
   action: Target Plan uses persistent `sim_dhry_checked`; register `[sim_dhry_checked] dhry`; remains selectable
@@ -3538,6 +3546,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.done
   phase: ticket1
   action: 'Reach `destination: done`.'
@@ -3553,6 +3562,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.scope
 - id: ticket1.merge
   phase: ticket1
   action: Merge accepted local changes.
@@ -3568,6 +3578,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.done
 - id: ticket1.workspace-cleanup
   phase: ticket1
   action: Clean Ticket worktree after acceptance.
@@ -3583,6 +3594,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.done
 - id: ticket1.triage-report
   phase: ticket1
   action: Generate triage report.
@@ -3598,6 +3610,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - ticket1.done
 - id: guard.negative-result
   phase: ticket1
   action: From disposable post-Ticket-1 recovery point corrupt one expected result; require deterministic failure.
@@ -3633,6 +3646,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - guard.negative-result
 - id: guard.no-cycles
   phase: ticket1
   action: Corrupted run emits no `[SIM_CYCLES]` record.
@@ -3648,6 +3662,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - guard.negative-result
 - id: guard.restore-rerun
   phase: ticket1
   action: Restore original expected result and rerun successfully.
@@ -3682,6 +3697,7 @@ steps:
   requires:
   - inputs.project-pin
   - create.barrier
+  - guard.negative-result
 - id: inventory.SIMULATION-FLOW.sim-design-fail
   phase: ticket1
   action: |-
