@@ -62,12 +62,11 @@ def _provider(root: Path, board: TicketIO) -> Path:
     path = board.create_ticket_document("provider", _ticket("lint_future (new)"))
     assert path is not None
     core = next((root / ".booley_project/worktrees/provider").glob("*.core"))
-    with core.open("a", encoding="utf-8") as stream:
-        stream.write(
-            "  lint_future:\n    flow: lint\n"
-            "    flow_options: {tool: verilator}\n"
-            "    filesets: [rtl]\n    toplevel: dut\n"
-        )
+    core.write_bytes(
+        core.read_bytes() + b"  lint_future:\n    flow: lint\n"
+        b"    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n    toplevel: dut\n"
+    )
     assert board.enqueue_ticket("provider")
     return board.tickets_dir / "board/queue/provider.md"
 
@@ -114,15 +113,15 @@ def test_published_simulation_target_binds_all_required_criteria(project, capsys
     path.write_text(ticket, encoding="utf-8")
     workspace = root / ".booley_project/worktrees/simulation"
     core = next(workspace.glob("*.core"))
-    with core.open("a", encoding="utf-8") as stream:
-        stream.write(
-            "  sim_future:\n    flow: sim\n"
-            "    flow_options: {tool: icarus, iverilog_options: [-g2012]}\n"
-            "    filesets: [rtl, tb_pass]\n    toplevel: tb_dut\n"
-        )
+    core.write_bytes(
+        core.read_bytes() + b"  sim_future:\n    flow: sim\n"
+        b"    flow_options: {tool: icarus, iverilog_options: [-g2012]}\n"
+        b"    filesets: [rtl, tb_pass]\n    toplevel: tb_dut\n"
+    )
     tests = workspace / ".booley_project/tests.toml"
-    with tests.open("a", encoding="utf-8") as stream:
-        stream.write("\n[sim_future]\ntests = ['smoke']\n")
+    tests.write_bytes(
+        (tests.read_bytes() if tests.exists() else b"") + b"\n[sim_future]\ntests = ['smoke']\n"
+    )
     assert board.enqueue_ticket("simulation")
     queued = board.tickets_dir / "board/queue/simulation.md"
     shutil.rmtree(workspace)
@@ -182,15 +181,18 @@ def _deferred_provider(root: Path, board: TicketIO) -> None:
         "  constraints:\n",
         1,
     )
-    core.write_text(
-        content + "  sim_future:\n    flow: sim\n"
-        "    flow_options: {tool: icarus, iverilog_options: [-g2012]}\n"
-        "    filesets: [future, tb_pass]\n    toplevel: tb_dut\n",
-        encoding="utf-8",
+    core.write_bytes(
+        (
+            content + "  sim_future:\n    flow: sim\n"
+            "    flow_options: {tool: icarus, iverilog_options: [-g2012]}\n"
+            "    filesets: [future, tb_pass]\n    toplevel: tb_dut\n"
+        ).encode("utf-8")
     )
     (workspace / "rtl/future.sv").touch()
-    with (workspace / ".booley_project/tests.toml").open("a", encoding="utf-8") as stream:
-        stream.write("\n[sim_future]\ntests = ['smoke']\n")
+    tests = workspace / ".booley_project/tests.toml"
+    tests.write_bytes(
+        (tests.read_bytes() if tests.exists() else b"") + b"\n[sim_future]\ntests = ['smoke']\n"
+    )
     assert board.enqueue_ticket("provider")
 
 
@@ -229,7 +231,7 @@ def test_draft_validation_rejects_modified_provider_surface(project, capsys) -> 
     path.write_text(draft, encoding="utf-8")
     core = next((root / ".booley_project/worktrees/consumer").glob("*.core"))
     content = core.read_text(encoding="utf-8")
-    core.write_text(content.replace("toplevel: dut", "toplevel: changed"), encoding="utf-8")
+    core.write_bytes(content.replace("toplevel: dut", "toplevel: changed").encode("utf-8"))
 
     _assert_both_reject(root, path, capsys, "materialized provider Target")
     assert core.read_text(encoding="utf-8").endswith("toplevel: changed\n")
@@ -278,8 +280,10 @@ def test_draft_validation_rejects_unplanned_consumer_target(project, capsys) -> 
     assert path is not None
     path.write_text(draft, encoding="utf-8")
     core = next((root / ".booley_project/worktrees/consumer").glob("*.core"))
-    with core.open("a", encoding="utf-8") as stream:
-        stream.write("  consumer_extra:\n    flow: lint\n    filesets: [rtl]\n    toplevel: dut\n")
+    core.write_bytes(
+        core.read_bytes()
+        + b"  consumer_extra:\n    flow: lint\n    filesets: [rtl]\n    toplevel: dut\n"
+    )
 
     _assert_both_reject(root, path, capsys, "unplanned")
 
@@ -326,8 +330,7 @@ def test_active_validation_preserves_generation_and_workspace(project, capsys) -
     before = active.read_bytes()
     workspace = root / ".booley_project/worktrees/provider"
     core = next(workspace.glob("*.core"))
-    with core.open("a", encoding="utf-8") as stream:
-        stream.write("\n# Implementation in progress\n")
+    core.write_bytes(core.read_bytes() + b"\n# Implementation in progress\n")
     working = core.read_bytes()
 
     _assert_both_valid(root, active, capsys)
