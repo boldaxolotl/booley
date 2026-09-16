@@ -196,7 +196,7 @@ def test_ticket_validation_normalizes_a_draft_path_from_a_project_subdirectory(
     assert not any("Dirty working tree" in error for error in errors)
 
 
-def test_enqueue_records_tests_toml_update_in_acceptance_basis(
+def test_enqueue_records_tests_toml_update_in_ticket_baseline(
     tmp_path: Path, monkeypatch
 ) -> None:
     root, tio = _project(tmp_path, monkeypatch)

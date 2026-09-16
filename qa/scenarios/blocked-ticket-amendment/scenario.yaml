@@ -264,7 +264,7 @@ steps:
   action: Submit a request attempting to remove an existing Criterion; keep the blocked Ticket unchanged.
   checks:
   - id: reject.criterion-removal
-    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    capabilities: [TICKET-AMENDMENT, TICKET-BASELINE]
     stimulus: Preview a Criterion removal request on a blocked Ticket.
     expected: The request is rejected; all existing Criteria and Ticket machine baselines remain unchanged.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
@@ -277,7 +277,7 @@ steps:
   action: Submit a request attempting to replace the Ticket's Target binding; keep the blocked Ticket unchanged.
   checks:
   - id: reject.target-change
-    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    capabilities: [TICKET-AMENDMENT, TICKET-BASELINE]
     stimulus: Preview a Target change request on a blocked Ticket.
     expected: The request is rejected; Target identity, Criteria and Ticket machine baselines remain unchanged.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
@@ -290,7 +290,7 @@ steps:
   action: Submit a request attempting to replace a prepared build-control input; keep the blocked Ticket unchanged.
   checks:
   - id: reject.build-control-change
-    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    capabilities: [TICKET-AMENDMENT, TICKET-BASELINE]
     stimulus: Preview a build-control change request on a blocked Ticket.
     expected: The request is rejected; build-control identity, Criteria and Ticket machine baselines remain unchanged.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
@@ -316,7 +316,7 @@ steps:
   action: Show the fresh exact 400-to-450 preview to the live Human Maintainer; only after approval have the triage agent apply that exact digest and record the decision.
   checks:
   - id: apply.threshold
-    capabilities: [TICKET-AMENDMENT, TICKET-TRIAGE, TICKET-ACCEPTANCE-BASIS]
+    capabilities: [TICKET-AMENDMENT, TICKET-TRIAGE, TICKET-BASELINE]
     stimulus: Apply the Human-approved threshold request with its current preview digest.
     expected: The same Ticket gains a new machine generation with a 450-cycle threshold, its prior 400-cycle commit remains intact, and it is queued once for resume with reason and feedback durable.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
@@ -329,7 +329,7 @@ steps:
   action: Inspect both outer and project repository participants after amendment publication without changing them.
   checks:
   - id: apply.participants
-    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    capabilities: [TICKET-AMENDMENT, TICKET-BASELINE]
     stimulus: Compare old/new participant heads, authoring ancestry, source trees and saved implementation checkpoint.
     expected: Both participants represent the same published amendment; implementation files and original destination refs are preserved, and neither participant is executable under an unmatched Ticket baseline.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets

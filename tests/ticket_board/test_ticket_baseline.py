@@ -26,7 +26,7 @@ from booley.ticket_board import (
     workspace_ops,
 )
 from booley.ticket_board import (
-    ticket_baseline as acceptance_basis_module,
+    ticket_baseline as ticket_baseline_module,
 )
 from booley.ticket_board.acceptance_journal import JournalState
 from booley.ticket_board.acceptance_targets import (
@@ -107,7 +107,7 @@ def _stub_worktree_git(
             return subprocess.CompletedProcess(command, 0, f"{ref}\n", "")
         raise AssertionError(command)
 
-    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
+    monkeypatch.setattr(ticket_baseline_module.subprocess, "run", run)
 
 
 def _simulate_host_mounted_project_worktree(
@@ -144,7 +144,7 @@ def _simulate_host_mounted_project_worktree(
             return subprocess.CompletedProcess(command, 0, listing, "")
         return real_run(command, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
+    monkeypatch.setattr(ticket_baseline_module.subprocess, "run", run)
 
 
 def _replace_gitdir_marker(dot_git: Path, content: str) -> None:
@@ -365,7 +365,7 @@ def test_basis_control_discovery_materializes_historical_submodule_pin(
     def discover(checkout: Path) -> tuple[str, ...]:
         return tuple(f"ip/{path.name}" for path in sorted((checkout / "ip").glob("*.core")))
 
-    controls = acceptance_basis_module._basis_control_paths(root, basis, discover)
+    controls = ticket_baseline_module._basis_control_paths(root, basis, discover)
 
     assert controls == {"ip/new.core", "ip/old.core"}
 
@@ -547,7 +547,7 @@ async def test_enqueued_paired_basis_materializes_for_ticket_setup(
         criteria=projected["criteria"],
         ticket_spec=tio.load_document("clean-project-source").spec,
         project_root=root,
-        acceptance_basis=basis,
+        ticket_baseline=basis,
         base_sha=basis.outer_sha,
     )
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
@@ -762,7 +762,7 @@ def test_live_isolated_cores_accept_recorded_host_root(
     host_root = Path("/host/worktrees/mounted-generated")
     _remap_generated_test_view(workspace, host_root)
     monkeypatch.setattr(
-        acceptance_basis_module,
+        ticket_baseline_module,
         "_recorded_worktree_path",
         lambda *_args: host_root / ".booley_project",
     )
@@ -804,7 +804,7 @@ def test_outer_only_isolated_cores_accept_recorded_host_root(
     host_root = Path("/host/worktrees/mounted-outer-generated")
     _remap_generated_test_view(workspace, host_root)
     monkeypatch.setattr(
-        acceptance_basis_module,
+        ticket_baseline_module,
         "_recorded_worktree_path",
         lambda *_args: host_root,
     )
@@ -1501,7 +1501,7 @@ def test_input_validation_supports_project_directory_outside_checkout(
             ),
         )
     )
-    monkeypatch.setattr(acceptance_basis_module, "_basis_control_paths", lambda *_args: set())
+    monkeypatch.setattr(ticket_baseline_module, "_basis_control_paths", lambda *_args: set())
 
     assert_inputs_unchanged(basis, root)
 

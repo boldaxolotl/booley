@@ -61,14 +61,14 @@ def test_zero_mandatory_state_requires_committed_human_conversion(
         _TEST_BASIS.participants,
         machine={"amendment": {"optional_conversions": ["review_rtl_bugs_clean"]}},
     )
-    ctx = SimpleNamespace(project_root=tmp_path, slug="blocked", acceptance_basis=basis)
+    ctx = SimpleNamespace(project_root=tmp_path, slug="blocked", ticket_baseline=basis)
     assert _zero_mandatory_amendment_basis(ctx, {"review_rtl_bugs_clean": True}) == ""
     assert _zero_mandatory_amendment_basis(ctx, {"review_rtl_bugs_clean": False}) == (
         basis.basis_id
     )
-    ctx.acceptance_basis = None
+    ctx.ticket_baseline = None
     assert _zero_mandatory_amendment_basis(ctx, {}) == ""
-    ctx.acceptance_basis = TicketBaseline(
+    ctx.ticket_baseline = TicketBaseline(
         _TEST_BASIS.participants, machine={"amendment": {"optional_conversions": []}}
     )
     assert _zero_mandatory_amendment_basis(ctx, {"review_rtl_bugs_clean": False}) == ""
@@ -192,7 +192,7 @@ def _qualified_target_basis() -> TicketBaseline:
     )
 
 
-def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
+def test_ticket_baseline_seeds_callable_selector_for_prompt_rendering(
     tmp_path: Path,
 ) -> None:
     from booley.criteria.actions import planned_invocation
@@ -206,7 +206,7 @@ def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
         branch="main",
         summary="Qualified target",
         project_root=tmp_path,
-        acceptance_basis=_qualified_target_basis(),
+        ticket_baseline=_qualified_target_basis(),
     )
     expanded = {"lint_clean_acme:ip:uart:1.0#lint_uart": True}
     criterion_params: dict[str, dict[str, object]] = {}
@@ -266,7 +266,7 @@ def test_scalar_tb_review_does_not_derive_target_binding(tmp_path: Path) -> None
         branch="main",
         summary="Derived review target",
         project_root=tmp_path,
-        acceptance_basis=basis,
+        ticket_baseline=basis,
     )
     template = CriteriaTemplate.from_yaml(
         {
@@ -409,15 +409,15 @@ async def test_automatic_intake_promotes_waiting_before_selection(
     monkeypatch.setattr(intake, "_build_context", lambda *_: expected)
     monkeypatch.setattr(intake, "_check_dependencies", lambda *_: None)
     monkeypatch.setattr(intake, "_detect_and_apply_resume", lambda *_: "fresh")
-    monkeypatch.setattr(intake, "_verify_acceptance_basis", lambda *_: None)
+    monkeypatch.setattr(intake, "_verify_ticket_baseline", lambda *_: None)
     monkeypatch.setattr(intake, "_init_criteria_state", lambda *_: None)
 
     assert await intake.run("", tmp_path) is expected
     assert calls == ["promote", "select"]
 
 
-def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
-    from booley.harness.setup.intake import _verify_acceptance_basis
+def test_ticket_baseline_verifies_published_refs(tmp_path: Path) -> None:
+    from booley.harness.setup.intake import _verify_ticket_baseline
 
     basis = TicketBaseline(
         participants=(
@@ -439,7 +439,7 @@ def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
         criteria={"mandatory": {}},
         project_root=tmp_path,
         base_sha="a" * 40,
-        acceptance_basis=basis,
+        ticket_baseline=basis,
     )
 
     with (
@@ -448,7 +448,7 @@ def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
             return_value=[],
         ) as validate_refs,
     ):
-        _verify_acceptance_basis(ctx, "fresh")
+        _verify_ticket_baseline(ctx, "fresh")
 
     validate_refs.assert_called_once_with(
         tmp_path,
@@ -459,7 +459,7 @@ def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
 
 
 def test_filesystem_ticket_without_basis_is_not_executable(tmp_path: Path) -> None:
-    from booley.harness.setup.intake import _verify_acceptance_basis
+    from booley.harness.setup.intake import _verify_ticket_baseline
 
     ctx = TicketContext(
         slug="basisless",
@@ -471,7 +471,7 @@ def test_filesystem_ticket_without_basis_is_not_executable(tmp_path: Path) -> No
     )
 
     with pytest.raises(FatalError, match="machine metadata is required"):
-        _verify_acceptance_basis(ctx, "fresh")
+        _verify_ticket_baseline(ctx, "fresh")
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +520,7 @@ async def test_basis_intake_defers_criteria_until_workspace_materialization(
 
     with (
         patch("booley.ticket_board.io.TicketIO.load_basis", return_value=basis),
-        patch("booley.harness.setup.intake._verify_acceptance_basis"),
+        patch("booley.harness.setup.intake._verify_ticket_baseline"),
         patch("booley.harness.setup.intake._init_criteria_state") as init_state,
     ):
         ctx = await run(str(sample_ticket), project_root)

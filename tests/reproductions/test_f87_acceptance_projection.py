@@ -11,7 +11,7 @@ import pytest
 from booley.fusesoc.core_projection import reconcile_projected_cores
 from booley.harness import developer
 from booley.harness.models import TicketContext
-from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
+from booley.harness.setup.workspace import _validate_materialized_ticket_baseline
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board.io import TicketIO
 
@@ -71,7 +71,7 @@ def _ticket_context(root: Path) -> TicketContext:
         branch="main",
         summary="Accept generated input",
         project_root=root,
-        acceptance_basis=tickets.load_basis("generated-input"),
+        ticket_baseline=tickets.load_basis("generated-input"),
         worktree_path=workspace,
     )
 
@@ -95,18 +95,18 @@ def test_generated_projection_is_stable_and_drift_is_blocked_twice(
         ctx = _ticket_context(root)
         reconcile_projected_cores(ctx.work_dir)
 
-        assert _validate_materialized_acceptance_basis(ctx, ctx.work_dir) is None
-        assert developer._block_changed_acceptance_basis(ctx, run_index) is False
+        assert _validate_materialized_ticket_baseline(ctx, ctx.work_dir) is None
+        assert developer._block_changed_ticket_baseline(ctx, run_index) is False
 
         projection = ctx.work_dir / ".booley-projected-demo.core"
         projection.write_text(
             projection.read_text(encoding="utf-8") + "# drift\n",
             encoding="utf-8",
         )
-        setup_result = _validate_materialized_acceptance_basis(ctx, ctx.work_dir)
+        setup_result = _validate_materialized_ticket_baseline(ctx, ctx.work_dir)
         assert setup_result is not None
         assert setup_result.block_reason.count("acceptance-input-change-required") == 1
-        assert developer._block_changed_acceptance_basis(ctx, run_index) is True
+        assert developer._block_changed_ticket_baseline(ctx, run_index) is True
 
     assert block.call_count == 2
     assert all(

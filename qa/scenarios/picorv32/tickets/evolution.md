@@ -5,7 +5,7 @@ The scenario itself is the source of both Tickets. Do not ask Ticket Create to i
 - Codex form: `$booley-ticket-create --agent --no-confirm <complete structured scenario payload>`
 - Claude form: `/booley-ticket-create --agent --no-confirm <complete structured scenario payload>`
 
-These are skill invocations, not ordinary CLI commands. Enqueue automatically publishes the immutable Acceptance Basis; there is no manual seal, Target Contract, `base_sha`, or second confirmation. Ticket creation may author only the approved Target definitions, owned `tests.toml` tables, and empty `[new]` placeholders. The Developer Agent authors the implementation.
+These are skill invocations, not ordinary CLI commands. Enqueue automatically publishes the immutable Ticket Baseline; there is no manual seal, Target Contract, `base_sha`, or second confirmation. Ticket creation may author only the approved Target definitions, owned `tests.toml` tables, and empty `[new]` placeholders. The Developer Agent authors the implementation.
 
 Both Tickets use:
 

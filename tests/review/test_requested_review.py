@@ -30,7 +30,7 @@ from booley.ticket_board import review_preparation as prep
 from booley.ticket_board.logs import save_progress
 from booley.ticket_board.review_lifecycle import request_review_command
 from booley.ticket_board.review_records import read_entry
-from tests.ticket_board.test_acceptance_basis import _basis_project
+from tests.ticket_board.test_ticket_baseline import _basis_project
 
 
 @pytest.fixture
@@ -40,13 +40,13 @@ def blocked(tmp_path, monkeypatch, request):
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     reset_cache()
     options = getattr(request, "param", {})
-    from tests.ticket_board.test_acceptance_basis import _paired_basis_project
+    from tests.ticket_board.test_ticket_baseline import _paired_basis_project
 
     factory = _paired_basis_project if options.get("paired") else _basis_project
     root, project, tio = factory(tmp_path)
     declared = options.get("criterion", "review_rtl_bugs_done")
     if declared == "implementation_done":
-        from tests.ticket_board.test_acceptance_basis import _git
+        from tests.ticket_board.test_ticket_baseline import _git
 
         (project / "criteria.toml").write_text(
             '[implementation_done]\ndescription = "Fixture verification"\ncategory = "none"\n'
@@ -373,7 +373,7 @@ def test_review_exec_parser_keeps_board_dispatch():
 
 
 def test_refresh_selects_new_heads_while_regenerate_does_not(blocked):
-    from tests.ticket_board.test_acceptance_basis import _git
+    from tests.ticket_board.test_ticket_baseline import _git
 
     root, _tio, worktree = blocked
     first = asyncio.run(request_review_command(root, "demo", reason="inspect"))
@@ -427,7 +427,7 @@ def test_second_request_is_idempotent(blocked):
 
 def test_stale_interrupted_request_can_be_retried_without_reset(blocked, monkeypatch):
     from booley.ticket_board import review_lifecycle as requests
-    from tests.ticket_board.test_acceptance_basis import _git
+    from tests.ticket_board.test_ticket_baseline import _git
 
     root, _tio, worktree = blocked
     original = requests._commit
@@ -647,7 +647,7 @@ def test_review_exec_cleanup_preserves_lease_for_any_active_ticket_job(blocked, 
 
 
 def test_missing_diff_artifact_invalidates_inspection(blocked):
-    from tests.ticket_board.test_acceptance_basis import _git
+    from tests.ticket_board.test_ticket_baseline import _git
 
     root, _, worktree = blocked
     (worktree / "README.md").write_text("changed source\n")

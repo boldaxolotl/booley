@@ -70,7 +70,7 @@ def _patch_disposition_collaborators(verdict: CriteriaVerdict):
             "booley.ticket_board.review_lifecycle.verify_review_handoff",
         ),
         "basis": patch(
-            "booley.harness.developer._block_changed_acceptance_basis",
+            "booley.harness.developer._block_changed_ticket_baseline",
             return_value=False,
         ),
         # Silence terminal output so tests don't spam stdout.

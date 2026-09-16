@@ -12,10 +12,8 @@ from booley.ticket_board import (
     acceptance_targets,
     planned_dependencies,
     target_surface_edit,
+    ticket_baseline,
     workspace_ops,
-)
-from booley.ticket_board import (
-    ticket_baseline as acceptance_basis,
 )
 from booley.ticket_board.planned_dependencies import (
     PlannedDependencyError,
@@ -877,7 +875,7 @@ def test_provider_materialization_uses_published_basis_surface(
     )
     monkeypatch.setattr(planned_dependencies, "materialize_basis_checkout", lambda *_: published)
     monkeypatch.setattr(
-        acceptance_basis, "materialize_current_ticket_checkout", lambda *_: mutable
+        ticket_baseline, "materialize_current_ticket_checkout", lambda *_: mutable
     )
 
     result = _materialize_provider(tmp_path, provider, workspace, set(), {}, {"future"})
@@ -1275,7 +1273,7 @@ def test_provider_discovery_filters_states_and_wraps_invalid_basis(
     monkeypatch.setattr(
         planned_dependencies,
         "load_ticket_baseline_from_document",
-        lambda *_args: (_ for _ in ()).throw(acceptance_basis.TicketBaselineError("bad basis")),
+        lambda *_args: (_ for _ in ()).throw(ticket_baseline.TicketBaselineError("bad basis")),
     )
     monkeypatch.setattr(
         planned_dependencies,

@@ -267,7 +267,7 @@ elif [[ "$NAME" == *--* ]]; then
     echo "Branch detected in name: $TARGET_BRANCH" >&2
 fi
 
-# Acceptance Basis callers attach their exact existing branch. Other callers
+# Ticket Baseline callers attach their exact existing branch. Other callers
 # retain the generic detached-HEAD behavior and optional name convention.
 WORKTREE_ADD_TARGET=(--detach)
 if [ -n "$EXPLICIT_BRANCH" ]; then

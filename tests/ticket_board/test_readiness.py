@@ -9,7 +9,7 @@ import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import readiness as readiness_module
-from booley.ticket_board import ticket_baseline as acceptance_basis_module
+from booley.ticket_board import ticket_baseline as ticket_baseline_module
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.ticket_baseline import TicketBaselineError
@@ -203,10 +203,10 @@ def test_worktree_discovery_failure_is_loud(
             stderr="fatal: worktree metadata is unreadable",
         )
 
-    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", failed_worktree)
+    monkeypatch.setattr(ticket_baseline_module.subprocess, "run", failed_worktree)
 
     with pytest.raises(TicketBaselineError, match="worktree metadata is unreadable"):
-        acceptance_basis_module.worktree_for_ref(root, "refs/heads/main")
+        ticket_baseline_module.worktree_for_ref(root, "refs/heads/main")
 
 
 def test_executable_readiness_uses_authoritative_basis_reader(
@@ -219,7 +219,7 @@ def test_executable_readiness_uses_authoritative_basis_reader(
     def reject_missing_receipt(*_args: object, **_kwargs: object) -> None:
         from booley.ticket_board.ticket_baseline import TicketBaselineError
 
-        raise TicketBaselineError("Acceptance Basis receipt mismatch")
+        raise TicketBaselineError("Ticket Baseline receipt mismatch")
 
     monkeypatch.setattr(TicketIO, "load_basis", reject_missing_receipt)
     errors = readiness_module._validate_checkout_basis(
@@ -229,4 +229,4 @@ def test_executable_readiness_uses_authoritative_basis_reader(
         None,
     )
 
-    assert errors == ["Acceptance Basis receipt mismatch"]
+    assert errors == ["Ticket Baseline receipt mismatch"]

@@ -30,7 +30,7 @@ from booley.ticket_board.cli_handlers import (
 from booley.ticket_board.paths import existing_runtime_file
 
 from .conftest import make_ticket_file
-from .test_acceptance_basis import _blocked_ticket
+from .test_ticket_baseline import _blocked_ticket
 
 # ---------------------------------------------------------------------------
 # _cmd_amend
@@ -334,6 +334,15 @@ class TestCmdShow:
         out = capsys.readouterr().out
         for label in ("ticket:", "file:", "logs:", "worktree:", "branch:", "criteria:"):
             assert label in out
+
+    def test_show_uses_configured_project_dir_for_worktree(self, tio, capsys, monkeypatch, tmp_path):
+        path = make_ticket_file(tio, "drafts", "custom-project")
+        path.write_text(_VALID_REVIEW_TICKET, encoding="utf-8")
+        project_dir = tmp_path / "configured-project-dir"
+        monkeypatch.setattr(cli_handlers, "resolve_project_dir", lambda _root: project_dir)
+
+        assert _cmd_show(tio, Namespace(slug="custom-project")) == 0
+        assert f"worktree:  {project_dir / 'worktrees' / 'custom-project'}" in capsys.readouterr().out
 
     def test_unknown_slug_returns_2(self, tio, capsys):
         rc = _cmd_show(tio, Namespace(slug="nope"))
