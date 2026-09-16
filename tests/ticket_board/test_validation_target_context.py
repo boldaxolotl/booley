@@ -28,6 +28,10 @@ def project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
     root = tmp_path / "project"
     fixture = Path(__file__).parents[1] / "fixtures" / "ticket_mode_smoke"
     shutil.copytree(fixture, root)
+    # Provider materialization compares authored bytes; keep the fixture's
+    # baseline surfaces identical across Git for Windows and Linux checkouts.
+    for surface in (root / "ticket_mode_smoke.core", root / ".booley_project/tests.toml"):
+        surface.write_bytes(surface.read_bytes().replace(b"\r\n", b"\n"))
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root / ".booley_project"))
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     reset_cache()
@@ -152,9 +156,8 @@ def test_draft_provider_target_is_not_consumer_authored(project, capsys) -> None
 
 def _deferred_provider(root: Path, board: TicketIO) -> None:
     baseline_core = root / "ticket_mode_smoke.core"
-    baseline_core.write_text(
-        baseline_core.read_text(encoding="utf-8").replace("\ntargets:\n", "targets:\n", 1),
-        encoding="utf-8",
+    baseline_core.write_bytes(
+        baseline_core.read_bytes().replace(b"\ntargets:\n", b"targets:\n", 1)
     )
     _git(root, "add", "ticket_mode_smoke.core")
     _git(root, "commit", "-qm", "use compact core sections")
