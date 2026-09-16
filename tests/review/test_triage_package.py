@@ -485,6 +485,11 @@ def test_render_uses_precomputed_package_without_raw_evidence(tmp_path: Path):
     assert "Choose: **approve** / **fix here** / **reset** / **archive** / **skip**." in rendered
 
 
+def test_accepted_review_presentation_keeps_packages_without_inspection():
+    package = {"assessment": {"recommendation": "hold"}, "payload": "unchanged"}
+    assert tp.accepted_review_presentation(package) == package
+
+
 def test_accepted_presentation_removes_unaccepted_blocker(tmp_path: Path):
     ctx = _context(tmp_path)
     package = {

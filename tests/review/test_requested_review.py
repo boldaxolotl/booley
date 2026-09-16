@@ -22,6 +22,7 @@ def test_mechanical_move_cannot_create_unaccepted_review(tmp_path: Path):
 
 import asyncio
 import json
+from typing import ClassVar
 
 import pytest
 
@@ -1058,3 +1059,279 @@ async def test_review_lifecycle_facade_delegates_public_operations(
         False,
     )
     assert review_lifecycle.run_review_command(tmp_path, "demo", ["echo", "ok"]) == 2
+
+
+def test_accepted_regeneration_rejects_changed_inputs(tmp_path, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    tio = SimpleNamespace(logs_dir=tmp_path)
+    ctx = SimpleNamespace(inspection={"heads": {"project": "new"}, "state": {"generation": 2}})
+    prior = {"heads": {"project": "old"}, "state": {"generation": 1}}
+    monkeypatch.setattr(
+        review_lifecycle,
+        "read_acceptance",
+        lambda _path: SimpleNamespace(kind="accepted"),
+    )
+
+    with pytest.raises(ReviewEntryError, match="acceptance recovery"):
+        review_lifecycle._validate_regeneration(tio, "demo", "regenerate", prior, ctx)
+
+
+def test_review_lifecycle_reports_missing_and_stale_selection(tmp_path, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    tio = TicketIO(tmp_path / "tickets", project_root=tmp_path)
+    with pytest.raises(ReviewEntryError, match="no selected review"):
+        review_lifecycle._selected_context(tio, "demo")
+
+    ctx = SimpleNamespace(log_dir=tmp_path, inspection={"capture_sha": "capture"})
+    monkeypatch.setattr(review_lifecycle.prep, "_read_manifest", lambda _ctx: {})
+    monkeypatch.setattr(review_lifecycle.prep, "_review_prompt", lambda _ctx: ("", "prompt"))
+    monkeypatch.setattr(review_lifecycle.prep, "_fresh_outcome", lambda *_args: None)
+    monkeypatch.setattr(review_lifecycle, "_check_capture", lambda *_args: None)
+    with pytest.raises(ReviewEntryError, match="missing or stale"):
+        review_lifecycle._require_selected_package(tio, ctx)
+
+
+def test_approve_done_ticket_handles_invalid_and_merge_paths(monkeypatch):
+    from booley.ticket_board import operations, review_lifecycle
+
+    tio = SimpleNamespace(find_ticket=lambda _slug: {"on_success": {"merge": True}})
+    monkeypatch.setattr(operations, "_completion_acceptance_valid", lambda *_args: None)
+    assert not review_lifecycle._approve_done_ticket(tio, "demo", no_merge=False, no_cleanup=False)
+
+    monkeypatch.setattr(operations, "_completion_acceptance_valid", lambda *_args: object())
+    monkeypatch.setattr(operations, "op_complete", lambda *_args, **_kwargs: True)
+    assert review_lifecycle._approve_done_ticket(tio, "demo", no_merge=False, no_cleanup=False)
+
+
+def test_approve_review_ticket_rejects_missing_completion_and_target_plan(monkeypatch):
+    from booley.ticket_board import operations, review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    tio = SimpleNamespace(load_basis=lambda _slug: SimpleNamespace(target_plan=object()))
+    monkeypatch.setattr(operations, "_completion_context", lambda *_args: None)
+    assert not review_lifecycle._approve_review_ticket(
+        tio, "demo", no_merge=False, no_cleanup=False
+    )
+
+    monkeypatch.setattr(
+        operations,
+        "_completion_context",
+        lambda *_args: (None, SimpleNamespace(merge=False)),
+    )
+    with pytest.raises(ReviewEntryError, match="Target Plan acceptance requires merge"):
+        review_lifecycle._approve_review_ticket(tio, "demo", no_merge=False, no_cleanup=False)
+
+
+def test_approve_review_ticket_rejects_corrupt_acceptance(monkeypatch, tmp_path):
+    from booley.ticket_board import operations, review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    class Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    tio = SimpleNamespace(
+        logs_dir=tmp_path,
+        _ticket_lock=lambda *_args, **_kwargs: Lock(),
+        load_basis=lambda _slug: SimpleNamespace(target_plan=None),
+    )
+    ctx = SimpleNamespace(log_dir=tmp_path, inspection={"reason": "inspect", "capture_sha": "sha"})
+    monkeypatch.setattr(
+        operations,
+        "_completion_context",
+        lambda *_args: (None, SimpleNamespace(merge=True)),
+    )
+    monkeypatch.setattr(review_lifecycle, "_recover", lambda *_args: None)
+    monkeypatch.setattr(review_lifecycle, "assert_idle", lambda *_args: None)
+    monkeypatch.setattr(review_lifecycle, "_quiescent", lambda *_args: None)
+    monkeypatch.setattr(review_lifecycle, "_selected_context", lambda *_args: ctx)
+    monkeypatch.setattr(review_lifecycle, "_require_selected_package", lambda *_args: None)
+    monkeypatch.setattr(
+        review_lifecycle,
+        "read_acceptance",
+        lambda _path: SimpleNamespace(kind="corrupt", reason="bad"),
+    )
+
+    with pytest.raises(ReviewEntryError, match="Criteria Satisfaction Record is corrupt"):
+        review_lifecycle._approve_review_ticket(tio, "demo", no_merge=False, no_cleanup=False)
+
+
+def test_approve_review_command_rejects_missing_and_non_review_ticket(blocked):
+    from booley.ticket_board.review_lifecycle import ReviewEntryError, approve_review_command
+
+    root, _tio, _ = blocked
+    with pytest.raises(ReviewEntryError, match="approve requires a review ticket"):
+        approve_review_command(root, "demo")
+
+    with pytest.raises(ReviewEntryError, match="not found"):
+        approve_review_command(root, "missing")
+
+
+@pytest.mark.asyncio
+async def test_review_command_reports_blocked_dossier_and_state_errors(blocked, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    root, tio, _ = blocked
+    original_assert_idle = review_lifecycle.assert_idle
+    monkeypatch.setattr(
+        review_lifecycle,
+        "assert_idle",
+        lambda *_args: (_ for _ in ()).throw(ReviewEntryError("busy")),
+    )
+    busy = await review_lifecycle._review_blocked_ticket(root, "demo", tio, force=False)
+    assert not busy.ready and busy.message == "busy"
+    monkeypatch.setattr(review_lifecycle, "assert_idle", original_assert_idle)
+
+    async def not_ready_dossier(*_args, **_kwargs):
+        return _not_ready_dossier()
+
+    monkeypatch.setattr("booley.harness.blocked_prep.prepare_blocked_dossier", not_ready_dossier)
+    not_ready = await review_lifecycle._review_blocked_ticket(root, "demo", tio, force=False)
+    assert not not_ready.ready and "dossier" in not_ready.message
+
+    requested = await review_lifecycle.review_command(root, "demo", request=True, reason="inspect")
+    assert requested.ready
+    invalid_request = await review_lifecycle.review_command(root, "demo", request=True)
+    assert not invalid_request.ready and "--request requires" in invalid_request.message
+    invalid_repair = await review_lifecycle.review_command(root, "demo", repair=True)
+    assert not invalid_repair.ready and "--repair requires" in invalid_repair.message
+
+
+def _not_ready_dossier():
+    from booley.harness.blocked_prep import BlockedPrepOutcome
+
+    return BlockedPrepOutcome("failed", "dossier unavailable")
+
+
+@pytest.mark.asyncio
+async def test_review_command_reports_missing_corrupt_and_wrong_state(tmp_path, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+
+    class FakeTio:
+        board = None
+
+        def __init__(self, *_args, **_kwargs):
+            self.logs_dir = tmp_path / "logs"
+
+        def find_ticket(self, _slug):
+            return self.board
+
+    monkeypatch.setattr(review_lifecycle, "TicketIO", FakeTio)
+    missing = await review_lifecycle.review_command(tmp_path, "demo")
+    assert not missing.ready and "not found" in missing.message
+
+    FakeTio.board = {"file": "board/queue/demo.md", "status": "queue"}
+    wrong_state = await review_lifecycle.review_command(tmp_path, "demo")
+    assert not wrong_state.ready and "blocked or review" in wrong_state.message
+
+    FakeTio.board = {"file": "board/review/demo.md", "status": "review"}
+    monkeypatch.setattr(
+        review_lifecycle,
+        "_current_review_package",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        review_lifecycle,
+        "read_acceptance",
+        lambda _path: SimpleNamespace(kind="corrupt", reason="bad"),
+    )
+    corrupt = await review_lifecycle.review_command(tmp_path, "demo")
+    assert not corrupt.ready and "Criteria Satisfaction Record is corrupt" in corrupt.message
+
+
+def test_run_review_command_rejects_invalid_entry_states(tmp_path, monkeypatch):
+    from booley.ticket_board import review_execution
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    class FakeTio:
+        board: ClassVar[dict[str, str] | None] = {
+            "file": "board/review/demo.md",
+            "status": "review",
+        }
+
+        def __init__(self, *_args, **_kwargs):
+            self.logs_dir = tmp_path / "logs"
+            self.tickets_dir = tmp_path / "tickets"
+
+        def find_ticket(self, _slug):
+            return self.board
+
+        def _ticket_lock(self, *_args, **_kwargs):
+            class Lock:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+            return Lock()
+
+    monkeypatch.setattr(review_execution, "TicketIO", FakeTio)
+    FakeTio.board = None
+    with pytest.raises(ReviewEntryError, match="requires a review ticket"):
+        review_execution.run_review_command(tmp_path, "demo", ["echo", "ok"])
+
+    FakeTio.board = {"file": "board/review/demo.md", "status": "review"}
+    with pytest.raises(ReviewEntryError, match="after --"):
+        review_execution.run_review_command(tmp_path, "demo", [])
+
+    monkeypatch.setattr(review_execution, "read_entry", lambda _path: {"disposition": "accepted"})
+    monkeypatch.setattr(review_execution, "assert_idle", lambda *_args: None)
+    monkeypatch.setattr(review_execution, "_quiescent", lambda *_args: None)
+    with pytest.raises(ReviewEntryError, match="explicitly unaccepted"):
+        review_execution.run_review_command(tmp_path, "demo", ["echo", "ok"])
+
+    calls = iter([FakeTio.board, None])
+    monkeypatch.setattr(FakeTio, "find_ticket", lambda _self, _slug: next(calls))
+    monkeypatch.setattr(
+        review_execution, "read_entry", lambda _path: {"disposition": "unaccepted"}
+    )
+    with pytest.raises(ReviewEntryError, match="requires a review ticket"):
+        review_execution.run_review_command(tmp_path, "demo", ["echo", "ok"])
+
+
+def test_prepare_blocked_dossier_returns_stable_failure(tmp_path, monkeypatch):
+    from booley.harness import blocked_prep
+
+    monkeypatch.setattr(
+        blocked_prep,
+        "_resolve_context",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("synthetic failure")),
+    )
+    outcome = asyncio.run(blocked_prep.prepare_blocked_dossier(tmp_path, "demo"))
+    assert not outcome.ready
+    assert "synthetic failure" in outcome.message
+
+
+def test_prepare_blocked_dossier_reuses_fresh_dossier(tmp_path, monkeypatch):
+    from booley.harness import blocked_prep
+
+    fresh = tmp_path / "dossier.json"
+    ctx = SimpleNamespace()
+    monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: ctx)
+    monkeypatch.setattr(blocked_prep, "_source_sha", lambda _ctx: "source")
+    monkeypatch.setattr(blocked_prep, "_fresh", lambda _ctx, _sha: fresh)
+    outcome = asyncio.run(blocked_prep.prepare_blocked_dossier(tmp_path, "demo"))
+    assert outcome.status == "fresh"
+    assert outcome.package_path == fresh
+
+
+def test_mechanical_move_to_review_is_rejected(tmp_path, capsys):
+    tickets = tmp_path / ".booley_project" / "tickets"
+    active = tickets / "board" / "active"
+    active.mkdir(parents=True)
+    (active / "demo.md").write_text(
+        "---\nsummary: Synthetic review transition\ntype: feature\nbranch: demo\n---\n",
+        encoding="utf-8",
+    )
+    tio = TicketIO(tickets, project_root=tmp_path)
+    assert not tio._move_prerequisite("demo", tickets / "board" / "review" / "demo.md", None)
+    assert "requires board review --request" in capsys.readouterr().err

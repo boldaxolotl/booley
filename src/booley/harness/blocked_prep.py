@@ -359,7 +359,7 @@ async def prepare_blocked_dossier(
         }
         _write_json(_manifest_path(ctx), manifest)
         return BlockedPrepOutcome("ready", "blocked dossier prepared", path)
-    except Exception as exc:  # noqa: BLE001 — preparation returns a stable outcome
+    except Exception as exc:
         logger.warning("Blocked dossier preparation failed for %s: %s", slug, exc, exc_info=True)
         if "ctx" in locals():
             try:
