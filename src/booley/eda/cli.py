@@ -182,7 +182,7 @@ def _grant_action(
         raise authority.AuthorityError("EDA grant access requires host lifecycle coordination")
     if action == "list" and grant_mutator.recovery_pending():
         raise authority.AuthorityError(
-            "Session Runtime recovery is pending; run a host lifecycle command first"
+            "Sandbox recovery is pending; run a host lifecycle command first"
         )
     if action == "add":
         grant = grant_mutator.add(

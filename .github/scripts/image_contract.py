@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a built Runtime Image against its declared contract."""
+"""Validate a built Sandbox Image against its declared contract."""
 
 from __future__ import annotations
 
@@ -362,7 +362,7 @@ def main() -> int:
         for error in evidence["errors"]:
             print(f"ERROR: {error}")
         return 1
-    print(f"Session Runtime contract passed for {args.image} ({args.flavor})")
+    print(f"Sandbox contract passed for {args.image} ({args.flavor})")
     return 0
 
 

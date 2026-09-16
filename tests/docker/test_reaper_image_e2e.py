@@ -175,9 +175,9 @@ def test_candidate_entrypoint_reaps_owned_topology(tmp_path: Path) -> None:
             logs = _wait_for_log(
                 daemon.client,
                 topology.reaper,
-                "reaped 1 session container(s)",
+                "reaped Sandbox instances (1)",
             )
-            assert logs.count("reaped 1 session container(s)") == 1
+            assert logs.count("reaped Sandbox instances (1)") == 1
         finally:
             _cleanup(daemon.client, topology)
 

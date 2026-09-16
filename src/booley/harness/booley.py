@@ -96,7 +96,7 @@ class CommandLocation(Enum):
     """Where one advertised top-level command is valid."""
 
     HOST = "host"
-    SESSION_RUNTIME = "Session Runtime"
+    SESSION_RUNTIME = "Sandbox"
     EITHER = "either"
     MIXED = "mixed"
 
@@ -374,7 +374,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Booley — RTL development harness.",
         epilog=(
             "Run bare `booley` to open this Project's configured agent CLI. "
-            "Locations: [host] host terminal only; [Session Runtime] container only; "
+            "Locations: [host] host terminal only; [Sandbox] container only; "
             "[either] either location; [mixed] depends on the nested operation."
         ),
     )
@@ -682,7 +682,7 @@ def _add_init_scaffold_arguments(init_p) -> None:
 
 
 def _add_init_subparser(sub) -> None:
-    """Add project initialization and Session Runtime seeding."""
+    """Add project initialization and Sandbox seeding."""
     init_p = sub.add_parser("init", help="Set up a new Booley project")
     init_p.add_argument(
         "--check-only", action="store_true", help="Run health checks without modifying anything"
@@ -763,11 +763,11 @@ def _add_flow_subparser(sub) -> None:
 
 
 def _add_session_subparser(sub) -> None:
-    """Add lifecycle controls for the Session Runtime."""
+    """Add lifecycle controls for the Sandbox."""
     root_opt = _project_root_parent()
     session_p = sub.add_parser(
         "session",
-        help="Start/enter/stop the Session Runtime container without VS Code",
+        help="Start/enter/stop the Sandbox container without VS Code",
     )
     session_sub = session_p.add_subparsers(
         dest="session_command",
@@ -775,7 +775,7 @@ def _add_session_subparser(sub) -> None:
     )
     up_p = session_sub.add_parser(
         "up",
-        help="Create or start the Session Runtime (default subcommand)",
+        help="Create or start the Sandbox (default subcommand)",
     )
     up_p.add_argument(
         "--rebuild",
@@ -784,18 +784,18 @@ def _add_session_subparser(sub) -> None:
     )
     enter_p = session_sub.add_parser(
         "enter",
-        help="Open a shell in the Session Runtime, or run `-- <cmd>` in it",
+        help="Open a shell in the Sandbox, or run `-- <cmd>` in it",
     )
     enter_p.add_argument(
         "exec_cmd",
         nargs=argparse.REMAINDER,
         help="Optional command, e.g. `booley session enter -- booley doctor`",
     )
-    session_sub.add_parser("down", help="Stop and remove the Session Runtime", parents=[root_opt])
+    session_sub.add_parser("down", help="Stop and remove the Sandbox", parents=[root_opt])
     session_sub.add_parser("status", help="Print running/stopped/absent")
     session_sub.add_parser(
         "validate",
-        help="Validate the host-issued runtime specification",
+        help="Validate the host-issued Sandbox specification",
     )
     prepare_p = session_sub.add_parser("prepare")
     prepare_p.add_argument("--project-root", help=argparse.SUPPRESS)
@@ -809,7 +809,7 @@ def _add_shell_subparser(sub) -> None:
     """Add the deliberately undocumented host debugging shell."""
     # `booley shell` is deliberately undocumented (no `help=`, hidden via the
     # subparsers metavar): a host-side debugging hatch, kept working but out
-    # of the advertised Session Runtime workflow (ADR 0028).
+    # of the advertised Sandbox workflow (ADR 0028).
     shell_p = sub.add_parser(
         "shell",
         description="Open an interactive shell in a fresh sandbox container "
@@ -819,7 +819,7 @@ def _add_shell_subparser(sub) -> None:
         "--net",
         action="store_true",
         help="Enable network egress (via the Booley proxy). Off by default: "
-        "the shell runs offline, like the Session Runtime.",
+        "the shell runs offline, like the Sandbox.",
     )
     shell_p.add_argument(
         "shell_cmd",
@@ -1262,13 +1262,13 @@ def _cmd_board_blocked_briefing(args: argparse.Namespace, project_root: Path) ->
 
 
 def _report_session_health(project_root: Path, *, startup_due_reason: str | None = None) -> None:
-    """Surface the result, or the scheduled check, after Session Runtime start."""
+    """Surface the result, or the scheduled check, after Sandbox start."""
     from booley.harness import auto_doctor
 
     due_reason = startup_due_reason or auto_doctor.due_reason(project_root)
     if due_reason is not None:
         print(
-            f"Automatic Doctor is running in the Session Runtime ({due_reason}); "
+            f"Automatic Doctor is running in the Sandbox ({due_reason}); "
             "persisted findings from before startup will not be reported as current.",
             file=sys.stderr,
         )
@@ -1282,7 +1282,7 @@ def _report_session_health(project_root: Path, *, startup_due_reason: str | None
 
 
 def _session_up(args: argparse.Namespace, project_root: Path) -> int:
-    """Create or resume the headless Session Runtime."""
+    """Create or resume the headless Sandbox."""
     from booley.harness import auto_doctor
     from booley.runtime import session_runtime as sr
 
@@ -1292,7 +1292,7 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     name = sr.up(project_root, rebuild=getattr(args, "rebuild", False))
     if vscode:
         print(
-            f"warning: VS Code is already running a Session Runtime for this "
+            f"warning: VS Code is already running a Sandbox for this "
             f"folder ({vscode}).\n"
             f"  Both mount the agent's home-state volume read-write, so two "
             f"agents now share one\n"
@@ -1301,13 +1301,13 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
             file=sys.stderr,
         )
     _report_session_health(project_root, startup_due_reason=startup_due_reason)
-    print(f"Session Runtime ready: {name}")
+    print(f"Sandbox ready: {name}")
     print("  enter it with: booley session enter")
     return 0
 
 
 def _report_upgrade_before_session(project_root: Path) -> None:
-    """Observe host version state and advise before starting a Session Runtime."""
+    """Observe host version state and advise before starting a Sandbox."""
     try:
         from booley.runtime.project_dir import resolve_checkout_project_dir
 
@@ -1320,7 +1320,7 @@ def _report_upgrade_before_session(project_root: Path) -> None:
 
 
 def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
-    """Reconcile the Runtime Image and replace its Session Runtime."""
+    """Reconcile the Sandbox Image and replace its Sandbox."""
     configure_progress_output()
     from booley.harness import auto_doctor
     from booley.harness.session_refresh import refresh
@@ -1331,7 +1331,7 @@ def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
         project_root,
         startup_due_reason=auto_doctor.due_reason(project_root),
     )
-    print(f"Refreshed Session Runtime: {result.selected_reference} ({result.selected_id})")
+    print(f"Refreshed Sandbox: {result.selected_reference} ({result.selected_id})")
     return 0
 
 
@@ -1350,7 +1350,7 @@ def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
     if sr.down(project_root):
         print(f"removed {sr.session_container_name(project_root)}")
     else:
-        print("no Session Runtime container for this folder")
+        print("no Sandbox container for this folder")
     return 0
 
 
@@ -1376,7 +1376,7 @@ def _session_prepare(_args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
-    """Drive the Session Runtime container headlessly (no VS Code, no UI)."""
+    """Drive the Sandbox container headlessly (no VS Code, no UI)."""
     from booley.runtime import session_runtime as sr
 
     handlers: dict[str, Callable[[argparse.Namespace, Path], int]] = {
@@ -1452,7 +1452,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
         # not a metered MCP tool call. A project that declared its own
         # [sandbox].memory (e.g. a 415K-LOC core whose sv2v pass brushes 4g)
         # gets that limit here too — the shell must not be tighter than the
-        # Session Runtime the same Flows and Specialists normally run in.
+        # Sandbox the same Flows and Specialists normally run in.
         memory_limit=cfg.sandbox.memory or "4g",
     )
     error = docker_cfg.verify()
@@ -1611,7 +1611,7 @@ def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
 def _target_detail_payload(
     project_root: Path, selector: str, *, as_json: bool
 ) -> dict[str, object]:
-    """Resolve Target detail in-runtime, or return actionable host metadata."""
+    """Resolve Target detail in-Sandbox, or return actionable host metadata."""
     from booley.targets import target_surface
 
     inside_runtime = runtime_context.inside_session_runtime()
@@ -1621,7 +1621,7 @@ def _target_detail_payload(
     command = ["booley", "session", "enter", "--", "booley", "targets", selector]
     if as_json:
         command.append("--json")
-    payload["resolved_error"] = "detailed Target resolution requires the Session Runtime"
+    payload["resolved_error"] = "detailed Target resolution requires the Sandbox"
     payload["resolution_command"] = shlex.join(command)
     return payload
 
@@ -1629,8 +1629,8 @@ def _target_detail_payload(
 def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     """List the project's ``.core`` Targets, or detail one: `booley targets`.
 
-    Pure ``.core``-YAML enumeration works on either side of the Session Runtime
-    boundary. Single-Target resolution runs only inside the Session Runtime;
+    Pure ``.core``-YAML enumeration works on either side of the Sandbox
+    boundary. Single-Target resolution runs only inside the Sandbox;
     host detail degrades to the cheap half with an entry command.
     """
     import json as _json
@@ -2262,7 +2262,7 @@ _CONTAINER_ONLY_COMMANDS = frozenset(
     for command, location in COMMAND_LOCATIONS.items()
     if location is CommandLocation.SESSION_RUNTIME
 )
-# `session` drives the Session Runtime from outside it: like `init` it needs host
+# `session` drives the Sandbox from outside it: like `init` it needs host
 # Docker, and the sandbox has none (ADR 0016).
 _HOST_ONLY_COMMANDS = frozenset(
     command for command, location in COMMAND_LOCATIONS.items() if location is CommandLocation.HOST

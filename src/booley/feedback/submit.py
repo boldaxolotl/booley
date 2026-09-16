@@ -10,7 +10,7 @@ Every guard here exists because the destination is outside the user's machine
 and the disclosure is irreversible:
 
 - **Host only.** Setup's Steps 2-5 and most day-to-day work run inside the
-  Session Runtime, whose egress proxy allowlists model APIs and nothing else.
+  Sandbox, whose egress proxy allowlists model APIs and nothing else.
   Rather than punch github.com through it — widening the sandbox's egress for
   every project, forever — this refuses in-container and tells the user to run
   it on the host, where the findings log is available. The email route
@@ -138,7 +138,7 @@ def confirmation_token(body: str) -> str:
 
 
 def in_container() -> bool:
-    """Are we inside the Session Runtime? (Same probe the CLIs use.)"""
+    """Are we inside the Sandbox? (Same probe the CLIs use.)"""
     return Path("/.dockerenv").exists()
 
 
@@ -237,7 +237,7 @@ class PreflightResult:
 
 
 def preflight(project_dir: Path) -> PreflightResult:
-    """Check mode and runtime location before showing a submittable report."""
+    """Check mode and Sandbox location before showing a submittable report."""
     mode = read_mode(project_dir)
     if mode == "off":
         return PreflightResult(
@@ -255,7 +255,7 @@ def preflight(project_dir: Path) -> PreflightResult:
     if in_container():
         return PreflightResult(
             False,
-            "Submission is host-only. The Session Runtime's egress proxy allowlists model "
+            "Submission is host-only. The Sandbox's egress proxy allowlists model "
             "APIs only, github.com is deliberately not on it, and there is no mail client "
             "in here either. Re-run `booley feedback submit` from the host; it will render "
             "the same redacted view from the shared findings log.",

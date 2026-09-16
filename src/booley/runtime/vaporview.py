@@ -40,7 +40,7 @@ class ExtensionState(Enum):
 
 
 def session_home() -> Path:
-    """Resolve the Session Runtime user's home consistently on every host OS."""
+    """Resolve the Sandbox user's home consistently on every host OS."""
     return Path(os.environ.get("HOME", "/home/agent"))
 
 

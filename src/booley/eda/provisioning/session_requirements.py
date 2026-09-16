@@ -1,4 +1,4 @@
-"""Resolve EDA facts required by one host-issued Session Runtime."""
+"""Resolve EDA facts required by one host-issued Sandbox."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def build_requirements(
     *,
     vivado_enabled: bool,
 ) -> SessionBuildRequirements:
-    """Resolve value-only EDA inputs for a prospective Runtime specification."""
+    """Resolve value-only EDA inputs for a prospective Sandbox specification."""
     with lease_build_requirements(project_root, vivado_enabled=vivado_enabled) as leased:
         return leased.build
 
@@ -208,7 +208,7 @@ def requested_license(
     if expected_name:
         profile = _optional_license(project)
         if profile is None or profile.name != expected_name:
-            raise SessionRequirementsError("Project licence grant differs from the issued runtime")
+            raise SessionRequirementsError("Project licence grant differs from the issued Sandbox")
         return profile
     try:
         config = load_eda_config(project).get("vivado")
@@ -227,7 +227,7 @@ def resolve_for_session(
     expected: ExpectedEdaIdentity | None = None,
     include_relay_identity: bool,
 ) -> AbstractContextManager[SessionEdaRequirements]:
-    """Lease one coherent EDA authority snapshot for Runtime issuance."""
+    """Lease one coherent EDA authority snapshot for Sandbox issuance."""
     try:
         config = load_eda_config(project_root).get("vivado")
     except EdaConfigError as exc:
@@ -301,20 +301,20 @@ def _requirements(
 def validate_image_observations(root: Path) -> None:
     """Validate Runtime-extracted files against the built-in Vivado contract."""
     if _file_sha256(root / "vivado-wrapper") != wrapper_sha256():
-        raise SessionRequirementsError("Runtime Image contains the wrong Vivado wrapper digest")
+        raise SessionRequirementsError("Sandbox Image contains the wrong Vivado wrapper digest")
     for name in ("libudev.so.1", "libpixman-1.so.0"):
         try:
             prefix = (root / name).read_bytes()[:4]
         except OSError as exc:
-            raise SessionRequirementsError(f"cannot inspect Runtime Image library {name}") from exc
+            raise SessionRequirementsError(f"cannot inspect Sandbox Image library {name}") from exc
         if prefix != b"\x7fELF":
-            raise SessionRequirementsError(f"Runtime Image contains an invalid {name}")
+            raise SessionRequirementsError(f"Sandbox Image contains an invalid {name}")
     try:
         locale_archive = (root / "locale-archive").read_bytes()
     except OSError as exc:
-        raise SessionRequirementsError("cannot inspect Session Runtime locale archive") from exc
+        raise SessionRequirementsError("cannot inspect Sandbox locale archive") from exc
     if b"en_US" not in locale_archive:
-        raise SessionRequirementsError("Runtime Image lacks the required en_US.UTF-8 locale")
+        raise SessionRequirementsError("Sandbox Image lacks the required en_US.UTF-8 locale")
 
 
 def _host_vivado_requested(config: EdaConfig | None, vivado_enabled: bool) -> bool:
@@ -347,4 +347,4 @@ def _file_sha256(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
-        raise SessionRequirementsError(f"cannot inspect Runtime Image file: {exc}") from exc
+        raise SessionRequirementsError(f"cannot inspect Sandbox Image file: {exc}") from exc

@@ -1,4 +1,4 @@
-"""Tests for booley.runtime.runtime_context -- the Session Runtime context guard (ADR 0028)."""
+"""Tests for booley.runtime.runtime_context -- the Sandbox context guard (ADR 0028)."""
 
 from __future__ import annotations
 
@@ -163,7 +163,7 @@ class TestContainerOnlyError:
     def test_message_on_host(self, host):
         msg = runtime_context.container_only_error("booley run")
         assert msg is not None
-        assert msg.startswith("ERROR: `booley run` runs inside the Booley Session Runtime")
+        assert msg.startswith("ERROR: `booley run` runs inside the Booley Sandbox")
 
     def test_message_names_command_and_fix(self, host):
         """Refusal must name the offending command AND how to fix it."""

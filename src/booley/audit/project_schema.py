@@ -197,7 +197,7 @@ def _has_valid_bool(section: Mapping[str, Any], key: str) -> bool:
 
 
 def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Audit the surviving Session Runtime sandbox table."""
+    """Audit the surviving Sandbox sandbox table."""
     raw_sandbox = data.get("sandbox")
     if raw_sandbox is None:
         return ConfigTableAudit()
@@ -209,7 +209,7 @@ def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         )
     if "mode" in sandbox:
         return failure(
-            "booley.toml [sandbox].mode is retired; the Session Runtime is always Docker",
+            "booley.toml [sandbox].mode is retired; the Sandbox is always Docker",
             "delete [sandbox].mode",
         )
     return ConfigTableAudit()

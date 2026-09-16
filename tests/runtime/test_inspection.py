@@ -580,7 +580,7 @@ class TestDevcontainerSpecStaleness:
     def test_immutable_image_pin_is_not_stale_when_resolution_unavailable(
         self, tmp_path, monkeypatch
     ):
-        # Inside an issued Session Runtime Docker is intentionally absent. The
+        # Inside an issued Sandbox Docker is intentionally absent. The
         # spec is already pinned to an immutable ID, but the configured tag
         # cannot be resolved there; string-comparing the ID to the tag would be
         # a false stale-image warning.

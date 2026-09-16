@@ -2,7 +2,7 @@
 
 Booley's core move is putting **one agent-native interface over the whole fragmented EDA toolchain**, every EDA tool and every coding agent behind the same typed surface, and wrapping the result in a single VS Code window. That makes agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
 
-New to Booley's vocabulary (Developer Agent, Specialist, Session Runtime, Booley Flow, Target, Ticket Board)? The [context map](../../CONTEXT-MAP.md) points to each canonical glossary and its rejected synonyms.
+New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, Target, Ticket Board)? The [context map](../../CONTEXT-MAP.md) points to each canonical glossary and its rejected synonyms.
 
 - [One Interface Over Every EDA Tool and Agent](#one-interface-over-every-eda-tool-and-agent)
 - [The Agentic RTL IDE](#the-agentic-rtl-ide)
@@ -33,7 +33,7 @@ New to Booley's vocabulary (Developer Agent, Specialist, Session Runtime, Booley
 
 An RTL flow is a pile of EDA tools that share nothing: Verilator, Icarus, Yosys, plus licensed heavyweight tools, each with its own CLI, flags, and output format. The agent driving them is a moving part too: today Claude Code, tomorrow Codex. Wire agents straight into that mess and you get N EDA tools × M agents of brittle glue. Booley collapses it to one interface:
 
-- **One typed surface over every Booley Flow.** Each Flow drives its selected EDA tool through the same structured call and returns the same normalized verdict inside the Session Runtime. A tool can be supplied by the standard image or by an authorized read-only host installation under a built-in policy; the agent learns one interface, not one per EDA tool ([details](#structured-booley-flow-contracts)).
+- **One typed surface over every Booley Flow.** Each Flow drives its selected EDA tool through the same structured call and returns the same normalized verdict inside the Sandbox. A tool can be supplied by the standard image or by an authorized read-only host installation under a built-in policy; the agent learns one interface, not one per EDA tool ([details](#structured-booley-flow-contracts)).
 - **Agent-agnostic.** The same Booley Flows are exposed as MCP tools, the protocol-level functions Claude Code and Codex both invoke natively. Swap the model; the EDA stack stays identical ([details](#llm-backend-selection)).
 - **Extension is linear, not multiplicative.** A new analysis is one custom MCP tool behind the same criteria contract ([details](#extensible-toolkit)); a new agent is one MCP client. Neither requires rewiring the other side.
 
@@ -67,7 +67,7 @@ Booley Flows are evidence contracts between real EDA behavior and Booley's decis
 
 This matters most for high-consequence steps: simulation, lint, synthesis, debug, review, mutation testing. A passing simulation satisfies criteria only when the Booley Flow returns a valid `pass` verdict. Lint and synthesis likewise report structured findings or metrics instead of EDA-tool-specific log fragments. Failures, timeouts, inconclusive runs, and contract errors stay distinct, so the agent can choose the right next action instead of guessing from noisy EDA output.
 
-The same contract layer is what keeps project-specific build steps contained: a per-test firmware build rides `[flows.sim].pre_run_commands` inside the Session Runtime, while a host-provisioned tool remains subject to host authority and keeps the same public Flow names, MCP schemas, criteria, artifact layout, and report format.
+The same contract layer is what keeps project-specific build steps contained: a per-test firmware build rides `[flows.sim].pre_run_commands` inside the Sandbox, while a host-provisioned tool remains subject to host authority and keeps the same public Flow names, MCP schemas, criteria, artifact layout, and report format.
 
 ## Named Targets and Tests
 
@@ -102,7 +102,7 @@ A ticket declares **acceptance criteria**, and the harness, not the agent, decid
 
 ## Docker Sandboxing
 
-Agents run with `--dangerously-skip-permissions` to operate autonomously. Docker sandboxing keeps this safe: every agent runs inside the per-folder Session Runtime container with only the project workspace mounted, full access inside, no access to the host outside. There is no general internet access either: egress is restricted to the LLM API endpoints through a Booley proxy, so a prompt-injection payload picked up from a web page has nowhere to reach. The agent runs as a non-root user, and an idle reaper stops orphaned sessions. The sandbox image ships every built-in EDA tool (see [One Interface Over Every EDA Tool and Agent](#one-interface-over-every-eda-tool-and-agent)) and both agent CLIs preinstalled.
+Agents run with `--dangerously-skip-permissions` to operate autonomously. Docker sandboxing keeps this safe: every agent runs inside the per-folder Sandbox container with only the project workspace mounted, full access inside, no access to the host outside. There is no general internet access either: egress is restricted to the LLM API endpoints through a Booley proxy, so a prompt-injection payload picked up from a web page has nowhere to reach. The agent runs as a non-root user, and an idle reaper stops orphaned sessions. The sandbox image ships every built-in EDA tool (see [One Interface Over Every EDA Tool and Agent](#one-interface-over-every-eda-tool-and-agent)) and both agent CLIs preinstalled.
 
 The sandbox is **customizable** in two ways. Use `[sandbox].image` for a project image that extends `booley-sandbox` with EDA tools that must exist in every container. Use a `post-setup` hook at `<project_dir>/hooks/post-setup.sh` for per-worktree setup after worktree creation.
 
@@ -159,9 +159,9 @@ Booley's MCP surface is designed for extension. The built-in Booley Flows and Sp
 
 ## Parallel Instances
 
-Multiple tickets can run concurrently inside one Session Runtime: start another `booley run` in another container terminal and it picks up the next ticket from the queue independently, alongside your interactive session.
+Multiple tickets can run concurrently inside one Sandbox: start another `booley run` in another container terminal and it picks up the next ticket from the queue independently, alongside your interactive session.
 
-Concurrency is safe by design, not by luck. Each running ticket operates in its own git worktree and its own artifact directory, so most isolation is **structural**: runs do not share the files they work on. Racing runs resolve ticket pickup through the Ticket Board (Booley's filesystem-backed ticket queue) and its atomic directory moves, and resource contention is governed by per-Job-Class admission caps (`[jobs]` in booley.toml, see [CONFIG.md](CONFIG.md#jobs--concurrency-jobs)) — a Job Class being the admission category a unit of work falls into (in-runtime EDA, model-API Specialist work, or a ticket's Developer Agent). Work beyond a cap waits in a priority queue (Interactive Mode ahead of Ticket Mode, running Jobs never preempted) instead of overcommitting the container.
+Concurrency is safe by design, not by luck. Each running ticket operates in its own git worktree and its own artifact directory, so most isolation is **structural**: runs do not share the files they work on. Racing runs resolve ticket pickup through the Ticket Board (Booley's filesystem-backed ticket queue) and its atomic directory moves, and resource contention is governed by per-Job-Class admission caps (`[jobs]` in booley.toml, see [CONFIG.md](CONFIG.md#jobs--concurrency-jobs)) — a Job Class being the admission category a unit of work falls into (in-Sandbox EDA, model-API Specialist work, or a ticket's Developer Agent). Work beyond a cap waits in a priority queue (Interactive Mode ahead of Ticket Mode, running Jobs never preempted) instead of overcommitting the container.
 
 ## Windows Support
 

@@ -21,7 +21,7 @@ BWAVE = FIXTURE_DIR / "test_distance.test.fst"
 
 @pytest.fixture(autouse=True)
 def _inside_session_runtime(monkeypatch):
-    """bwave is container-only (ADR 0028); simulate the Session Runtime.
+    """bwave is container-only (ADR 0028); simulate the Sandbox.
 
     Covers both in-process bwave.main() calls and the _query() subprocess
     (which inherits os.environ), so the venue guard passes on a host machine.

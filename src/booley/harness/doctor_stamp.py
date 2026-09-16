@@ -10,7 +10,7 @@ On every doctor run that ends with **zero FAILs and zero active WARNs**, doctor
 records a timestamp plus an environment fingerprint into project runtime state at
 ``<project_dir>/runtime/doctor_stamp.json`` (beside the developer probe and
 the slot store -- the same ADR 0028 bookkeeping home, bind-mounted into the
-Session Runtime, so a host-written stamp is readable in-container and vice
+Sandbox, so a host-written stamp is readable in-container and vice
 versa). Session start (``booley session up``) and the per-sweep ticket loop
 then check the stamp in microseconds -- no docker round-trips -- and emit a
 prominent advisory when doctor's blessing has gone stale or the fingerprint

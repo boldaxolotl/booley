@@ -151,7 +151,7 @@ def test_chat_parser_and_dispatch_are_registered():
     assert args.command == "chat"
     assert tlr._EARLY_COMMANDS["chat"] is tlr.run_chat
     help_text = parser.format_help()
-    assert "[Session Runtime] Open this Project's configured agent" in help_text
+    assert "[Sandbox] Open this Project's configured agent" in help_text
 
 
 def test_bare_booley_defaults_to_chat():
@@ -453,7 +453,7 @@ class TestEnforceVenue:
         assert exc.value.code == 2
         err = capsys.readouterr().err
         assert f"booley {command}" in err
-        assert "Session Runtime" in err
+        assert "Sandbox" in err
         assert "Reopen in Container" in err  # names the fix, not just the rule
 
     @pytest.mark.parametrize("command", ["run", "chat", "board"])
@@ -486,7 +486,7 @@ class TestEnforceVenue:
     def test_venue_table_contents(self):
         """Guard table matches ADR 0028 Decision 2.
 
-        `session` joins `init` on the host side: it drives the Session Runtime
+        `session` joins `init` on the host side: it drives the Sandbox
         from outside it, and the sandbox has no Docker to do that with (ADR 0016).
         `auth` is host-only too: it drives the host's browser OAuth flow and
         writes the host's ~/.config, neither of which exists in the sandbox.
@@ -504,7 +504,7 @@ class TestEnforceVenue:
     def test_top_level_help_labels_every_advertised_command_location(self):
         help_text = tlr._build_parser().format_help()
 
-        assert "run" in help_text and "[Session Runtime]" in help_text
+        assert "run" in help_text and "[Sandbox]" in help_text
         assert "projects" in help_text and "[host]" in help_text
         assert "doctor" in help_text and "[either]" in help_text
         assert "flow" in help_text and "[mixed]" in help_text
@@ -652,7 +652,7 @@ class TestCmdShell:
         The shell used to hardcode 4g, so a project whose EDA passes brush
         that ceiling (C910: sv2v over 485 files → flaky rc=137 OOM-kills)
         had no way to widen it. The shell must not be tighter than the
-        Session Runtime the same Flows normally run in.
+        Sandbox the same Flows normally run in.
         """
         import booley.config.settings as cfgmod
         from booley.harness import sandbox as sandbox_mod

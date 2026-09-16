@@ -1,4 +1,4 @@
-"""Tests for session_runtime: headless Session Runtime lifecycle (F-4).
+"""Tests for session_runtime: headless Sandbox lifecycle (F-4).
 
 The spec -> `docker run` translation is the part that must not drift from
 `devcontainer.build_devcontainer_spec`, so it is tested against a real spec
@@ -409,7 +409,7 @@ class TestPrepareMigration:
         remove = Mock()
         monkeypatch.setattr(sr, "_run", remove)
 
-        with pytest.raises(sr.SessionError, match=r"running Session Runtime.*older host issuance"):
+        with pytest.raises(sr.SessionError, match=r"running Sandbox.*older host issuance"):
             sr.prepare(workspace)
 
         remove.assert_not_called()
@@ -891,7 +891,7 @@ class TestIssuedRuntimeDriftFix:
             ["active-vscode"],
         )
 
-        assert "stop VS Code Session Runtime(s) 'active-vscode'" in fix
+        assert "stop VS Code Sandbox(s) 'active-vscode'" in fix
 
     def test_ambiguous_origin_requires_manual_inspection(
         self,
@@ -907,7 +907,7 @@ class TestIssuedRuntimeDriftFix:
             ["ambiguous-runtime"],
         )
 
-        assert "inspect ambiguous Session Runtime resource(s) 'ambiguous-runtime'" in fix
+        assert "inspect ambiguous Sandbox resource(s) 'ambiguous-runtime'" in fix
         assert "will not remove them automatically" in fix
 
     def test_malformed_runtime_state_requires_manual_inspection(
@@ -925,7 +925,7 @@ class TestIssuedRuntimeDriftFix:
             ["malformed-runtime"],
         )
 
-        assert "inspect ambiguous Session Runtime resource(s) 'malformed-runtime'" in fix
+        assert "inspect ambiguous Sandbox resource(s) 'malformed-runtime'" in fix
 
     def test_reports_running_and_ambiguous_resources_together(
         self,
@@ -952,8 +952,8 @@ class TestIssuedRuntimeDriftFix:
             list(states),
         )
 
-        assert "inspect ambiguous Session Runtime resource(s) 'ambiguous-runtime'" in fix
-        assert "stop VS Code Session Runtime(s) 'active-vscode'" in fix
+        assert "inspect ambiguous Sandbox resource(s) 'ambiguous-runtime'" in fix
+        assert "stop VS Code Sandbox(s) 'active-vscode'" in fix
 
     def test_windows_host_paths_identify_running_vscode(
         self,
@@ -975,7 +975,7 @@ class TestIssuedRuntimeDriftFix:
             ["active-vscode"],
         )
 
-        assert "stop VS Code Session Runtime(s) 'active-vscode'" in fix
+        assert "stop VS Code Sandbox(s) 'active-vscode'" in fix
 
 
 # ---------------------------------------------------------------------------
@@ -1825,7 +1825,7 @@ class TestUp:
                 "_strict_all_interactive_states",
                 return_value=[("active-vscode", json.dumps([state]))],
             ),
-            pytest.raises(sr.SessionError, match=r"running Session Runtime.*older host issuance"),
+            pytest.raises(sr.SessionError, match=r"running Sandbox.*older host issuance"),
         ):
             sr.up(workspace)
 
@@ -3160,7 +3160,7 @@ class TestRunProjectCommand:
             patch.object(sr, "_container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
             patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            pytest.raises(sr.SessionError, match="multiple running Session Runtimes"),
+            pytest.raises(sr.SessionError, match="multiple running Sandboxes"),
         ):
             sr.run_project_command(workspace, ["claude", "setup-token"])
 
@@ -3313,7 +3313,7 @@ class TestSessionRefresh:
             assert booley._session_prepare(SimpleNamespace(), tmp_path) == 0
 
         assert capsys.readouterr().out.splitlines() == [
-            "no Session Runtime container for this folder",
+            "no Sandbox container for this folder",
             "stopped",
             "valid",
             "prepared",
@@ -3328,7 +3328,7 @@ class TestSessionRefresh:
             patch.object(
                 session_refresh,
                 "refresh",
-                side_effect=sr.SessionError("VS Code owns Session Runtime 'vscode-owned'"),
+                side_effect=sr.SessionError("VS Code owns Sandbox 'vscode-owned'"),
             ) as refresh,
         ):
             assert booley._cmd_session(args, tmp_path) == 2
@@ -3480,7 +3480,7 @@ class TestSessionRefresh:
         spec_path.write_text('{"image": "sha256:new"}', encoding="utf-8")
         stamp_path.write_text("new stamp\n", encoding="utf-8")
 
-        with pytest.raises(RuntimeError, match="Runtime Image keeper: tag failed"):
+        with pytest.raises(RuntimeError, match="Sandbox Image keeper: tag failed"):
             session_spec.restore_session_spec(tmp_path, snapshot)
 
         assert spec_path.read_bytes() == old_spec
@@ -3506,7 +3506,7 @@ class TestSessionRefresh:
 
         monkeypatch.setattr(init_cmd.subprocess, "run", missing_docker)
 
-        with pytest.raises(RuntimeError, match="Runtime Image keeper: docker missing"):
+        with pytest.raises(RuntimeError, match="Sandbox Image keeper: docker missing"):
             session_spec.restore_session_spec(tmp_path, snapshot)
 
         assert spec_path.read_bytes() == b"old spec"
@@ -3583,4 +3583,4 @@ class TestSessionRefresh:
         output = capsys.readouterr()
         assert "Automatic Doctor is running" in output.err
         assert "Doctor inputs changed" in output.err
-        assert "Session Runtime ready: session" in output.out
+        assert "Sandbox ready: session" in output.out

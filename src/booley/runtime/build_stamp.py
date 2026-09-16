@@ -134,7 +134,7 @@ def resolve_source_updated_at(booley_root: Path) -> str:
 
 
 def iter_payload_files(booley_root: Path) -> Iterator[Path]:
-    """Yield the canonical source inputs baked into a Runtime Image payload."""
+    """Yield the canonical source inputs baked into a Sandbox Image payload."""
     for relative in _PAYLOAD_TREES:
         root = booley_root / relative
         if not root.is_dir():
@@ -152,7 +152,7 @@ def iter_payload_files(booley_root: Path) -> Iterator[Path]:
 
 
 def resolve_payload_fingerprint(booley_root: Path) -> str | None:
-    """Return a path-and-content SHA-256 for every Runtime Image payload input."""
+    """Return a path-and-content SHA-256 for every Sandbox Image payload input."""
     files = sorted(set(iter_payload_files(booley_root)))
     if not files:
         return None
@@ -368,7 +368,7 @@ def extracted_development_context() -> Iterator[Path]:
     try:
         from booley._build_commit import DEVELOPMENT_CONTEXT_SHA256, PAYLOAD_FINGERPRINT
     except (ImportError, AttributeError) as exc:
-        raise ValueError("development wheel has no embedded Runtime Image build context") from exc
+        raise ValueError("development wheel has no embedded Sandbox Image build context") from exc
     if not _is_sha256(DEVELOPMENT_CONTEXT_SHA256) or not _is_sha256(PAYLOAD_FINGERPRINT):
         raise ValueError("development wheel has invalid build-context provenance")
     package_root = Path(__file__).resolve().parents[1]

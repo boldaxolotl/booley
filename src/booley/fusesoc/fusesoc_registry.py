@@ -1910,7 +1910,7 @@ class ResolvedTarget:
 
         Order follows EDAM file order (first occurrence wins). Each is absolute
         and resolved against :attr:`build_root`; generated commands later make
-        the path relative to the Session Runtime workspace where needed.
+        the path relative to the Sandbox workspace where needed.
         """
         dirs: list[Path] = []
         for f in self.rtl_files:

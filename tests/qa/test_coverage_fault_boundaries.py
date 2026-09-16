@@ -19,7 +19,7 @@ SPEC.loader.exec_module(controller)
 @pytest.fixture(scope="module")
 def library(tmp_path_factory):
     if sys.platform != "linux":
-        pytest.skip("Linux preload fixture; Windows QA uses the issued Linux Session Runtime")
+        pytest.skip("Linux preload fixture; Windows QA uses the issued Linux Sandbox")
     target = tmp_path_factory.mktemp("coverage-shim") / "boundary.so"
     result = subprocess.run(
         [

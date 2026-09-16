@@ -26,7 +26,7 @@ from booley.core.checkout_role import require_project_checkout
 logger = logging.getLogger(__name__)
 
 # The project data directory's name inside the RTL repo. On the host the project
-# dir IS <repo>/.booley_project; inside the Session Runtime it is bind-mounted at
+# dir IS <repo>/.booley_project; inside the Sandbox it is bind-mounted at
 # /booley-project, but the same files stay reachable through the workspace mount
 # at <repo>/.booley_project. Code that must name a path valid on both sides of
 # (e.g. guidance_links) builds it from this.

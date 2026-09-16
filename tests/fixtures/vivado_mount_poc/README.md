@@ -2,7 +2,7 @@
 
 This fixture proves that an existing host Vivado installation can supply
 read-only files while the complete Booley FPGA Flow executes inside the
-hardened Session Runtime. It deliberately uses a tiny out-of-context Artix-7
+hardened Sandbox. It deliberately uses a tiny out-of-context Artix-7
 design so the check exercises project generation, synthesis, placement,
 routing, report parsing, and the final Booley verdict without board I/O.
 

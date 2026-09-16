@@ -1,4 +1,4 @@
-"""Opt-in Ticket Mode boundary smoke against the production Runtime Image."""
+"""Opt-in Ticket Mode boundary smoke against the production Sandbox Image."""
 
 from __future__ import annotations
 
@@ -188,7 +188,7 @@ def test_enqueue_recovers_across_session_runtime_project_aliases(
 ) -> None:
     project_value = os.environ.get("BOOLEY_ENQUEUE_ALIAS_PROJECT")
     if project_value is None:
-        pytest.skip("requires the production dual-mount Session Runtime fixture")
+        pytest.skip("requires the production dual-mount Sandbox fixture")
     project = _initialize_project_at(Path(project_value))
     active_project_dir = Path("/booley-project")
     checkout_project_dir = project / ".booley_project"

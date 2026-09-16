@@ -1178,9 +1178,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     )
     code_modifying: bool = False
 
-    # Simulation is always admitted as a heavy Session Runtime job.
+    # Simulation is always admitted as a heavy Sandbox job.
     def _resolve_job_class(self) -> str:
-        """Simulation is a heavy Session Runtime workload."""
+        """Simulation is a heavy Sandbox workload."""
         return job_slots.CLASS_HEAVY
 
     satisfies: ClassVar[list[str]] = [
@@ -2547,9 +2547,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """
         message = (
             f"sim: required executable {exc.binary!r} was not found in the "
-            f"Session Runtime while running Target {target!r}. No "
+            f"Sandbox while running Target {target!r}. No "
             "simulation ran, so there is no pass/fail verdict about the design. "
-            f"Install {exc.binary!r} (or put it on PATH) in the Session Runtime "
+            f"Install {exc.binary!r} (or put it on PATH) in the Sandbox "
             "and re-run; `booley doctor` checks the toolchain."
         )
         tail = "\n".join(exc.context.strip().splitlines()[-15:])
@@ -2869,7 +2869,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if any(t.timed_out for t in r.tests):
                 flags += ", TIMED OUT"
             lines.append(
-                f"[sim] {r.target} (session-runtime): {verdict} "
+                f"[sim] {r.target} (Sandbox): {verdict} "
                 f"({tests_passed}/{len(r.tests)} tests{flags}, "
                 f"{_format_duration(r.elapsed_s)})"
             )
@@ -3042,7 +3042,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             planned_groups=planned_groups,
         )
         result = self._project_execution_outcome(outcome)
-        output_lines.append(f"[sim] {target} (session-runtime)")
+        output_lines.append(f"[sim] {target} (Sandbox)")
         output_lines.extend(result.diagnostics)
         output_lines.extend(self._pre_sim_output_lines(outcome))
         for test in result.tests:

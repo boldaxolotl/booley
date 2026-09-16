@@ -1,4 +1,4 @@
-"""Two finite, separately attributable coverage tests in the Session Runtime."""
+"""Two finite, separately attributable coverage tests in the Sandbox."""
 
 import cocotb
 from cocotb.triggers import Timer

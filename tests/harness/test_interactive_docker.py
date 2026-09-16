@@ -109,7 +109,7 @@ class TestIssuedImageKeepers:
             raise FileNotFoundError("docker")
 
         monkeypatch.setattr(idk, "_run_docker", missing)
-        with pytest.raises(RuntimeError, match="cannot retain issued Runtime Image"):
+        with pytest.raises(RuntimeError, match="cannot retain issued Sandbox Image"):
             idk.tag_image("sha256:abc", "booley-issued-" + "a" * 64 + ":session")
 
     def test_lists_only_well_formed_keeper_tags(self, fake_docker):

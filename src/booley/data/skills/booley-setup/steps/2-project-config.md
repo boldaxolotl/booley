@@ -3,7 +3,7 @@
 > Part of the `booley-setup` skill. Run in order, or invoke this step alone
 > with `booley-setup 2`. Most of this step runs inside the devcontainer. When
 > the plan selects host-provisioned EDA, the small host-authority bootstrap
-> below runs first, before that runtime is created.
+> below runs first, before that Sandbox is created.
 > It **consumes the approved `SETUP-PLAN.md`** (Step 0): every decision-level
 > choice — flow routing, target names, toplevels, TB flavor, sentinels, image,
 > data-file strategy — is already made there. This step turns those decisions
@@ -14,7 +14,7 @@
 
 Booley's canonical Project config is split across **three** artifacts on two
 sides of one line — **FuseSoC owns design-description (how to build); Booley
-owns verification-intent (what to verify) and runtime policy:**
+owns verification-intent (what to verify) and Sandbox Policy:**
 
 1. **`.core` FuseSoC Target(s)** — *design-description*: source files
    (`filesets`), top modules (`toplevel`), build-time parameters/defines
@@ -23,7 +23,7 @@ owns verification-intent (what to verify) and runtime policy:**
 2. **`.booley_project/tests.toml`** — *verification-intent*: per-Target test
    lists and the run-time `select` plusarg template.
 3. **`.booley_project/booley.toml`** (slimmed) — *execution policy + project
-   meta*: each Booley Flow's `enabled` setting, the Runtime Image,
+   meta*: each Booley Flow's `enabled` setting, the Sandbox Image,
    optional approved EDA provisioning, and `[project].name`.
 
 For a fresh IP the job, end to end: list the RTL and TB files in `.core`
@@ -54,9 +54,9 @@ doesn't exist, the TB flavor was misjudged) halts for the user; a config-level
 detail just resolves here, logged in the plan's §3 when it shifts a plan
 detail.
 
-## The Session Runtime, briefly
+## The Sandbox, briefly
 
-Every EDA tool executes inside the Session Runtime. The standard image is
+Every EDA tool executes inside the Sandbox. The standard image is
 `booley-sandbox`; it mounts the worktree at `/work`, and `fusesoc` is pinned in
 the image. Its
 authoritative build recipe is Booley's bundled `data/docker/Dockerfile` —
@@ -74,7 +74,7 @@ Two project-side extension points:
   it may install/build dependencies, copy files, create symlinks, or prepare
   generated inputs.
 - **Project image** — to add open-source tools and project dependencies that
-  must exist in every Session Runtime, build an image extending `booley-sandbox` from
+  must exist in every Sandbox, build an image extending `booley-sandbox` from
   `.booley_project/docker/Dockerfile` and point `[sandbox].image` at it.
   Commercial EDA tools require a built-in Booley provisioning policy; a custom
   Project image does not make one publicly supported.
@@ -118,7 +118,7 @@ booley eda license register <name> \
 Do not invent those values from Project files. When the approved paid-site
 inputs are unavailable, omit the License Profile and record floating licensing
 as an experimental, unverified limitation. After the authority and host Doctor
-are clean, create the issued runtime with VS Code Rebuild/Reopen or
+are clean, create the issued Sandbox with VS Code Rebuild/Reopen or
 `booley session up --rebuild`, then continue the rest of this step inside it.
 
 ## Phase 1 — Gather config-level evidence
@@ -524,7 +524,7 @@ What goes here:
   non-Flow MCP endpoint. There is no source allowlist.
 - **First-run Flows start disabled** (`enabled = false`) for `sim`,
   `lint`, and `synth` unless the user explicitly asks
-  to wire a flow now. Every Flow command runs in the Session Runtime; the EDA
+  to wire a flow now. Every Flow command runs in the Sandbox; the EDA
   tool (verilator/iverilog/yosys/vivado) lives in the `.core` Target's
   `flow_options.tool`. Host-provisioned Vivado is requested separately with
   `[eda.vivado]` and requires an exact Project Grant.
@@ -580,7 +580,7 @@ What goes here:
   what makes the fail-dominant set safe — prove it with the deliberate
   fail-path run below (delete an input, expect FAIL).
 - **Per-test non-RTL build steps** (the plan's row 6): declare them as
-  `[flows.sim].pre_run_commands` — shell lines run inside the Session Runtime
+  `[flows.sim].pre_run_commands` — shell lines run inside the Sandbox
   before each sim run, under the `BOOLEY_*` env contract
   (`BOOLEY_TEST_NAME`, `BOOLEY_RUN_CWD`, …). Pair with `run_cwd` when the TB
   reads fixed-name inputs (e.g. `$readmemh("inst.pat")`) from a specific dir,
@@ -593,7 +593,7 @@ Before showing the proposed config, give a concise plain-English setup summary.
 Restate (don't re-derive) the three artifacts, the first-run Flow and Specialist opt-outs,
 and why those capabilities start disabled, then cover the project-specific bits:
 
-- **What the standard Runtime Image likely provides:** common open-source RTL
+- **What the standard Sandbox Image likely provides:** common open-source RTL
   tooling — FuseSoC, Verilator, Icarus Verilog, Yosys/ABC, sv2v, bwave, Make,
   GCC/G++, Python, Node.js, and npm. Rust is not included; projects that compile
   Rust need a reviewed project image with a pinned toolchain. Project extras

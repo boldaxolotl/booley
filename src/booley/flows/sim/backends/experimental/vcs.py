@@ -4,7 +4,7 @@
 The Synopsys mirror of :mod:`booley.flows.sim.backends.experimental.xcelium`: pure parsing functions
 over captured logs, never a subprocess wrapper. VCS is not publicly eligible
 in Booley; these helpers are retained only to incubate a possible future
-Session Runtime integration:
+Sandbox integration:
 
   * :func:`evaluate_vcs_log` — verdict fields from log text + exit code.
     The TB verdict sentinels (``[SIM_RESULT] PASSED/FAILED``) are

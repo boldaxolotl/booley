@@ -11,7 +11,7 @@ This module materializes the baseline ref in a **throwaway ``git worktree``**
 instead of mutating the current tree, so the caller's working tree is never
 touched and delta mode works identically in both modes. The worktree lives under
 ``<project>/.booley_project/`` — git-ignored (never pollutes ``git status``) and
-inside the Session Runtime workspace. It is force-removed on context exit,
+inside the Sandbox workspace. It is force-removed on context exit,
 even if the body raises.
 
 For Ticket Mode's paired ``.booley_project`` repository, the outer baseline
@@ -420,7 +420,7 @@ def _repoint(link: Path, target: Path) -> None:
     """Replace *link* with a relative symlink to *target*.
 
     Relative rather than absolute so the link keeps meaning the same thing
-    through the Session Runtime workspace mount, like links authored by a
+    through the Sandbox workspace mount, like links authored by a
     project.
     """
     link.unlink()

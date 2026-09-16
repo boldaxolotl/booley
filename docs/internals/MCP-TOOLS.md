@@ -47,7 +47,7 @@ shape in it.
 
 ## Overview
 
-The Developer Agent does not invoke an EDA command, project script, or Specialist directly. It calls a discovered MCP tool inside the Session Runtime. That MCP tool owns the request schema, execution, result interpretation, and any Criterion updates.
+The Developer Agent does not invoke an EDA command, project script, or Specialist directly. It calls a discovered MCP tool inside the Sandbox. That MCP tool owns the request schema, execution, result interpretation, and any Criterion updates.
 
 Booley has three agent-facing implementation families:
 
@@ -57,7 +57,7 @@ Booley has three agent-facing implementation families:
 | `Specialist` | `reviewer`, `mutation_tester` | Run a focused LLM agent with a purpose-built prompt and interpret its response |
 | Direct `McpTool` subclass | `submit_run_report` | Implement orchestration that is neither a deterministic Flow nor a Specialist |
 
-Built-in and custom MCP tools share the same base interfaces and MCP surface. Their source differs, but the calling model does not. Every agent-facing MCP tool and every subprocess it launches runs inside the Session Runtime. A supported host-provisioned EDA installation changes where immutable tool files originate, not where the command executes.
+Built-in and custom MCP tools share the same base interfaces and MCP surface. Their source differs, but the calling model does not. Every agent-facing MCP tool and every subprocess it launches runs inside the Sandbox. A supported host-provisioned EDA installation changes where immutable tool files originate, not where the command executes.
 
 ### The Common Lifecycle
 
@@ -68,7 +68,7 @@ Every agent-facing call follows the same shape:
 3. The MCP tool validates common and endpoint-specific arguments.
 4. The shared coordinator checks Target binding before admission and holds any
    admitted Job Class claim through completion.
-5. A Booley Flow runs deterministic work inside the Session Runtime, a Specialist runs its agent loop, or a direct `McpTool` subclass performs its own orchestration.
+5. A Booley Flow runs deterministic work inside the Sandbox, a Specialist runs its agent loop, or a direct `McpTool` subclass performs its own orchestration.
 6. The implementation interprets raw output into a transport-neutral endpoint
    outcome. `McpToolResult` is the source-compatible public name for that
    outcome in Project-local extensions.
@@ -93,10 +93,10 @@ execution route:
 2. The Project requests host provisioning without naming an installation.
 3. Booley validates and stamps a runtime specification containing the fixed
    image, read-only mount, wrapper, labels, and optional licensing topology.
-4. Docker creates or resumes the Session Runtime only if the issued contract
+4. Docker creates or resumes the Sandbox only if the issued contract
    and live container state still match.
 5. The ordinary built-in Booley Flow launches the EDA subprocess inside the
-   Session Runtime and interprets its evidence there.
+   Sandbox and interprets its evidence there.
 
 Custom MCP code cannot add an arbitrary host path, command, environment
 variable, license destination, or new commercial EDA policy. A new
@@ -105,7 +105,7 @@ after equivalent security and full-Flow evidence.
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  Session Runtime (Docker)                        │
+│  Sandbox (Docker)                        │
 │                                                  │
 │  Agent ──MCP──► MCP tools                        │
 │                 (built-in + custom)              │
@@ -147,8 +147,7 @@ enabled = false                 # remove one discovered Specialist MCP tool
 
 ### Execution Boundary
 
-Agent-facing MCP tools and the subprocesses they launch run inside the Session
-Runtime. A custom endpoint that needs additional software adds it to a Project
+Agent-facing MCP tools and the subprocesses they launch run inside the Sandbox. A custom endpoint that needs additional software adds it to a Project
 image or uses a supported built-in EDA provisioning policy.
 
 ### Configuration Boundary
@@ -190,7 +189,7 @@ typed requests. CLI and MCP adapters expose them through the existing commands
 and schemas; see [Built-in Flow execution](FLOW-EXECUTION.md). Custom Flows retain
 `BooleyFlow`, while Specialists and direct MCP endpoints retain their existing
 `McpTool` extension contract. All paths use the same execution coordinator and
-acceptance/reporting services inside the Session Runtime.
+acceptance/reporting services inside the Sandbox.
 
 Criterion-aware MCP endpoints can produce verdicts against *Criteria* (the named
 pass/fail conditions a ticket gates on). This chapter explains how an
@@ -406,10 +405,10 @@ When any endpoint declares `code_modifying = True`:
 - All criteria matching the modified category (RTL or TB) are reset
 - **Getting it wrong** means stale Criteria: a false negative on `code_modifying` means the Developer Agent won't know to re-run checks after the endpoint changes code
 
-### Runtime Boundary
+### Sandbox Boundary
 
 For agent-facing MCP calls, the endpoint's Python orchestration runs inside the
-Session Runtime, as does any subprocess it starts. Booley Flows enforce that
+Sandbox, as does any subprocess it starts. Booley Flows enforce that
 boundary even when their Python module is invoked directly. A non-Flow custom
 endpoint may support a host-side, read-only diagnostic entry point, but must not
 use it to expose Flow or EDA execution. There is no configurable
@@ -537,7 +536,7 @@ Ticket Preflight warning and can never be selected by a ticket.
 
 #### Try It in Interactive Mode
 
-Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the MCP tool file exists, restart the Session Runtime (for example, stop and reopen the dev container) so its MCP server rebuilds the MCP tool registry. Then ask the Claude Code or Codex agent to use it, just as you would a built-in capability:
+Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the MCP tool file exists, restart the Sandbox (for example, stop and reopen the dev container) so its MCP server rebuilds the MCP tool registry. Then ask the Claude Code or Codex agent to use it, just as you would a built-in capability:
 
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
@@ -547,7 +546,7 @@ The agent selects the arguments and invokes the custom MCP tool. Ticket Mode inv
 #### Diagnose a Flow Through the Direct CLI
 
 `booley flow` is the diagnostic entry point for deterministic Flows. From a
-terminal already inside the Session Runtime:
+terminal already inside the Sandbox:
 
 ```bash
 booley flow drc_check --target variant_a --rule-set signoff
@@ -556,7 +555,7 @@ booley flow drc_check --target variant_a --rule-set signoff
 Invoke Specialists and other non-Flow MCP tools through the Interactive Mode
 agent, which exercises their supported MCP interface.
 
-You do not need `booley session enter` when VS Code or your terminal is already attached to the Session Runtime. That command exists for headless automation that needs to enter the runtime without an Interactive Mode client.
+You do not need `booley session enter` when VS Code or your terminal is already attached to the Sandbox. That command exists for headless automation that needs to enter the runtime without an Interactive Mode client.
 
 Direct Flow runs have no Ticket state: no Criterion is persisted, and
 `report.json` is written only when `--report-dir` is supplied. Exit codes retain
@@ -600,7 +599,7 @@ Category isolation is separate from write isolation. Some built-ins temporarily 
 
 #### Find Its Logs
 
-Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>/`; Ticket Mode logs land under `.booley_project/tickets/logs/<ticket-slug>/`. If a custom MCP tool does not appear in Interactive Mode, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[mcp_tools.<name>]` section is not disabled, and restart the Session Runtime so MCP discovery runs again. In Ticket Mode, also check the Developer Agent output for Ticket Preflight errors.
+Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>/`; Ticket Mode logs land under `.booley_project/tickets/logs/<ticket-slug>/`. If a custom MCP tool does not appear in Interactive Mode, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[mcp_tools.<name>]` section is not disabled, and restart the Sandbox so MCP discovery runs again. In Ticket Mode, also check the Developer Agent output for Ticket Preflight errors.
 
 ---
 
@@ -681,7 +680,7 @@ category    = "rtl"
 
 Host-provisioned EDA is not an MCP transport and not a Project extension point.
 It is a trusted startup policy that makes approved installation files available
-inside the Session Runtime while leaving the ordinary Booley Flow and MCP
+inside the Sandbox while leaving the ordinary Booley Flow and MCP
 contracts unchanged.
 
 ### Authority and Issuance
@@ -712,7 +711,7 @@ error.
 
 A host-provisioned tool is still invoked by its ordinary built-in Booley Flow.
 The agent calls the same MCP schema, the Flow constructs the same
-FuseSoC/Edalize build, the subprocess runs inside the Session Runtime, and the
+FuseSoC/Edalize build, the subprocess runs inside the Sandbox, and the
 Flow produces the same `McpToolResult`, artifacts, and Criteria. Provisioning
 changes only where approved executable files originate.
 
@@ -763,9 +762,9 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 ### Extending It: Validate a Custom Flow
 
 1. Run `booley doctor` and resolve every active custom-MCP-tool and Criterion finding.
-2. Restart the Session Runtime and confirm the MCP tool appears on the MCP surface.
+2. Restart the Sandbox and confirm the MCP tool appears on the MCP surface.
 3. Invoke it in Interactive Mode with a known passing case and a known failing case.
-4. Use `booley flow <name> ...` for a Flow inside the Session Runtime to isolate argument parsing and result interpretation from agent behavior; invoke a non-Flow endpoint through the Interactive Mode agent.
+4. Use `booley flow <name> ...` for a Flow inside the Sandbox to isolate argument parsing and result interpretation from agent behavior; invoke a non-Flow endpoint through the Interactive Mode agent.
 5. For a direct Flow, confirm exit 0, 1, and 2 mean met, unmet, and unable to run respectively; for a non-Flow endpoint, confirm the agent reports those verdict states clearly.
 6. For Ticket use, inspect `booley cheat --criteria` and run a ticket that exercises persistent Criterion updates and invalidation.
 
@@ -781,7 +780,7 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | Add another host-provisioned EDA tool | Implement and validate a built-in policy; custom MCP tools cannot add host mounts or execution paths |
 | Define when my Flow should run | Create a Criterion in `criteria.toml`, reference it in `satisfies` |
 | Configure a built-in Booley Flow | Use the per-Flow reference in [CONFIG.md](../user/CONFIG.md#booleytoml) |
-| Try a custom MCP tool | Restart the Session Runtime, then ask the Interactive Mode agent to invoke it |
+| Try a custom MCP tool | Restart the Sandbox, then ask the Interactive Mode agent to invoke it |
 | Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect Ticket Preflight logs for per-file warnings |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |
 | Wrap a legacy script as a Flow | Subclass `BooleyFlow`, call the script via `_build_command` |

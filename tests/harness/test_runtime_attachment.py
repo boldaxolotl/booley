@@ -1,4 +1,4 @@
-"""Host Runtime Attachment drives the in-runtime execution lifecycle."""
+"""Host Sandbox Attachment drives the in-runtime execution lifecycle."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ _SRC_ROOT = Path(__file__).parents[2] / "src"
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
-    reason="Runtime Attachment execution supervision requires Linux",
+    reason="Sandbox Attachment execution supervision requires Linux",
 )
 
 

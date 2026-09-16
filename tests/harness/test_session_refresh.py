@@ -90,7 +90,7 @@ def test_running_target_is_parked_before_host_bootstrap_refresh(
 
     def refresh_image(*_args, **_kwargs) -> session_refresh.RefreshImage:
         if active:
-            raise RuntimeError("cannot refresh bootstrap while Session Runtimes are active")
+            raise RuntimeError("cannot refresh bootstrap while Sandboxes are active")
         events.append("bootstrap")
         return result
 
@@ -267,7 +267,7 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
         patch.object(sr, "plan_session_refresh", return_value=None),
         patch.object(session_refresh, "restore_session_spec") as restore,
         patch.object(session_refresh, "_verify_restored_journal"),
-        pytest.raises(sr.SessionError, match="immutable Runtime Image ID"),
+        pytest.raises(sr.SessionError, match="immutable Sandbox Image ID"),
     ):
         session_refresh.refresh(tmp_path, images)
 

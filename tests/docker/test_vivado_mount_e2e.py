@@ -1,4 +1,4 @@
-"""Opt-in production Session Runtime proof for host-provisioned Vivado.
+"""Opt-in production Sandbox proof for host-provisioned Vivado.
 
 Set ``BOOLEY_VIVADO_ROOT`` to the Xilinx 2025.2 release root. The test uses
 isolated host authority, a host-issued immutable spec, the real ``booley
@@ -307,7 +307,7 @@ def _assert_headless_lifecycle(docker: str, workspace: Path) -> None:
             assert (
                 "mounted Vivado 2025.2 wrapper, read-only release, and identity verified" in output
             ), output
-            assert "Session Runtime Project data and host-authority isolation verified" in output
+            assert "Sandbox Project data and host-authority isolation verified" in output
         version = _exec(docker, container, "vivado", "-version")
         assert version.returncode == 0, version.stdout + version.stderr
         assert "vivado v2025.2" in version.stdout.lower()
@@ -370,7 +370,7 @@ def test_host_provisioned_vivado_completes_issued_session_runtime_flow_twice(
         check=False,
     )
     host_output = host_doctor.stdout + host_doctor.stderr
-    assert "Session Runtime spec has valid host issuance" in host_output, host_output
+    assert "Sandbox spec has valid host issuance" in host_output, host_output
 
     devcontainer_command = _devcontainer_command()
     if devcontainer_command is not None:

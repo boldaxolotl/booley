@@ -96,7 +96,7 @@ class Environment:
             ("Booley", self.booley_version),
             ("Python", self.python_version),
             ("Platform", self.platform),
-            ("Runtime", "Session Runtime container" if self.in_container else "host CLI"),
+            ("Location", "Sandbox" if self.in_container else "host CLI"),
             ("doctor --deep clean", doctor),
         ]
 

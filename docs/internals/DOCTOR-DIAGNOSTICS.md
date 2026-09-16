@@ -40,11 +40,11 @@ fixes accompanying the extraction.
 
 | Operation | Permitted effects and bounds |
 | --- | --- |
-| Runtime inspection | Reads Project/spec state; invokes bounded Git/Docker probes; calls authoritative validation. With active EDA, validation may create the private authority directory and acquire/create its lock. It does not issue, provision, repair, or start the persistent Session Runtime. No-active-EDA validation does not require writable authority state. |
+| Runtime inspection | Reads Project/spec state; invokes bounded Git/Docker probes; calls authoritative validation. With active EDA, validation may create the private authority directory and acquire/create its lock. It does not issue, provision, repair, or start the persistent Sandbox. No-active-EDA validation does not require writable authority state. |
 | Runtime version check | Runs the existing temporary `docker run --rm --pull=never --network none` version probe with a 30-second CLI timeout. A CLI timeout does not prove remote container cleanup; this pre-existing limitation is unchanged. |
 | In-runtime validation | Checks runtime isolation and mounted Vivado locally (90-second probe timeout), without reading host-private authority. |
 | Retained-resource inspection | Lists state volumes and image keepers; does not delete them. |
-| Host inspection | Uses Bootstrap `Intent.CHECK` and bounded environment probes; installs and repairs nothing. Host preparation/clock probes are skipped inside the Session Runtime. |
+| Host inspection | Uses Bootstrap `Intent.CHECK` and bounded environment probes; installs and repairs nothing. Host preparation/clock probes are skipped inside the Sandbox. |
 | Project loading / INSPECT | Reads and audits; does not repair guidance or projections. |
 | Project RECONCILE | Uses existing guidance-link and core-projection owners to repair generated artifacts. It does not run Init or issue a Runtime. |
 

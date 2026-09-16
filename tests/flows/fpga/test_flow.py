@@ -692,7 +692,7 @@ def test_profile_patch_precedes_out_of_context_and_is_idempotent(tmp_path: Path)
 
 
 # ===========================================================================
-# Session Runtime execution
+# Sandbox execution
 # ===========================================================================
 
 

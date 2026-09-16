@@ -22,7 +22,7 @@ from booley.runtime import (
 
 
 class TestCheckDocker:
-    """QA-3: the container-runtime check must not FAIL inside the Session Runtime.
+    """QA-3: the container-runtime check must not FAIL inside the Sandbox.
 
     In-container there is no nested container runtime and Booley Flows run
     directly, so a missing runtime is expected — SKIP, don't FAIL.

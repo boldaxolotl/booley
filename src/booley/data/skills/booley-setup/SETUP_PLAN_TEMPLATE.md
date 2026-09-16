@@ -65,7 +65,7 @@
 
 ### Execution-time checks
 
-<!-- Verifications that need the Session Runtime and therefore run during Steps 2–4.
+<!-- Verifications that need the Sandbox and therefore run during Steps 2–4.
      A failed check that contradicts a decision triggers the stop-and-ask
      deviation rule. -->
 

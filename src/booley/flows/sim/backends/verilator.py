@@ -10,7 +10,7 @@ This module is the edalize successor to the retired legacy Verilator
 run-half. It is deliberately a **self-contained subprocess entry-point**
 (``python -m booley.flows.sim.backends.verilator …``) so a Booley Flow can supervise the
 whole run — including either the FIFO/B-Wave conversion lifecycle or a
-Target-owned native-FST lifecycle — as one Session Runtime subprocess.
+Target-owned native-FST lifecycle — as one Sandbox subprocess.
 
 Unlike the legacy runner it does **not** build anything and reads no
 ``configs.toml``/``build_file_list`` design-description: the binary location is

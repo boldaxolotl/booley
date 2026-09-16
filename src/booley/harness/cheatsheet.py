@@ -2,7 +2,7 @@
 
 ``booley cheat`` prints the whole sheet by default, but most callers want one
 slice of it: the ticket-create skill only needs the criteria catalog, a user
-debugging a container only needs the Runtime & Docker table. Section flags
+debugging a container only needs the Sandbox & Docker table. Section flags
 (``--criteria``, ``--flows``, ...) narrow the output so neither pays for the
 rest.
 
@@ -49,10 +49,10 @@ SECTIONS: tuple[Section, ...] = (
     Section("skills", "Skills", "Ticket-authoring / triage skills"),
     Section("artifacts", "Artifacts", "Where reports, logs, and state land"),
     Section(
-        "runtime",
-        "Runtime & Docker",
-        "Session Runtime, sandbox image, and container commands",
-        aliases=("docker",),
+        "sandbox",
+        "Sandbox & Docker",
+        "Sandbox, Sandbox Image, and container commands",
+        aliases=("runtime", "docker"),
     ),
 )
 

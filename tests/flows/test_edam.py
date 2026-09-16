@@ -293,7 +293,7 @@ class TestMakeCommand:
 
 
 # ---------------------------------------------------------------------------
-# Relocatable paths inside the Session Runtime workspace
+# Relocatable paths inside the Sandbox workspace
 # ---------------------------------------------------------------------------
 
 

@@ -85,7 +85,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull and resolve RISC-V Session Runtime
+      - name: Pull and resolve RISC-V Sandbox
         id: runtime-image
         run: |
           python .github/scripts/pull_image_identity.py \
@@ -93,7 +93,7 @@ jobs:
             --evidence "${RUNNER_TEMP}/picorv32-demo/image-identity.json" \
             --github-output "${GITHUB_OUTPUT}"
 
-      - name: Retain RISC-V Session Runtime identity
+      - name: Retain RISC-V Sandbox identity
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

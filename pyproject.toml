@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 dependencies = [
-    # Development wheels rebuild their matching Runtime Image from an embedded,
+    # Development wheels rebuild their matching Sandbox Image from an embedded,
     # verified source context. The build frontend is therefore a runtime need,
     # not only a repository-development convenience.
     "build>=1.0",

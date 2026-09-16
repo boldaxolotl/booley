@@ -119,7 +119,7 @@ def test_contract_rejects_invalid_probe_timeout(tmp_path: Path, timeout: object)
         image_contract.load_contract(contract, "standard")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="runtime image probe requires Linux bash")
+@pytest.mark.skipif(sys.platform == "win32", reason="Sandbox Image probe requires Linux bash")
 def test_container_probe_records_absence_hard_links_and_behavior(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

@@ -56,7 +56,7 @@ def status_presentation(status: upgrade_review.ReviewStatus) -> StatusPresentati
     if status.condition is upgrade_review.ReviewCondition.STALE_RUNTIME:
         target = status.pending_target or status.reviewed_through
         return StatusPresentation(
-            f"This runtime has Booley {status.running_version}, behind review target {target}",
+            f"This Sandbox has Booley {status.running_version}, behind review target {target}",
             "upgrade.runtime-stale",
             "invoke /booley-heal",
         )

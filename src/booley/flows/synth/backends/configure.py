@@ -1,7 +1,7 @@
 """Resolve and render the built-in Yosys synthesis specification.
 
 The ASIC synthesis Flow parses this module's option surface in-process, renders
-a generated Makefile, and executes that Makefile through the Session Runtime
+a generated Makefile, and executes that Makefile through the Sandbox
 boundary. This module does not execute EDA tools itself.
 """
 
@@ -56,7 +56,7 @@ def _resolve_extra_rtl(args: argparse.Namespace, root: Path | None = None) -> li
     """Resolve and validate extra RTL files from CLI.
 
     Relative paths resolve against *root* (default: the active checkout)
-    inside the Session Runtime); the in-process configure half (ADR 0037 §8)
+    inside the Sandbox); the in-process configure half (ADR 0037 §8)
     passes the Flow's work_dir explicitly instead of relying on the import-time
     constant.
     """
@@ -76,7 +76,7 @@ def _resolve_inc_dirs(args: argparse.Namespace, root: Path | None = None) -> lis
     """Resolve include directories from CLI.
 
     Relative paths resolve against *root* (default: the active checkout),
-    inside the Session Runtime), so a path the caller relativized against the
+    inside the Sandbox), so a path the caller relativized against the
     worktree stays valid for the generated boundary command — mirroring
     :func:`_resolve_extra_rtl`. The FuseSoC synth path (asic_synthesize) passes
     the resolved ``rtl_include_dirs`` here.

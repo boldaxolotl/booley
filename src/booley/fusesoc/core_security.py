@@ -12,7 +12,7 @@ This module is the validator that enforces those three rules. Read this line and
 believe it: **"validated" here means provenance + confinement, NOT a content-safety
 proof.** We do not read what a generator script *does* — only *who controls it* (is
 it out of the agent's mutable Scope?) and *where it runs* (inside the Session
-Runtime). The Session Runtime is the security boundary; a generator
+Runtime). The Sandbox is the security boundary; a generator
 running inside it is no more dangerous than the simulator binary beside it. The real
 agent-immutability guarantee is the Scope pre-commit hook — this validator only
 *verifies* the provenance that hook mechanically enforces, closing the authoring
@@ -96,7 +96,7 @@ class CoreViolation:
 def _check_fpga_hooks(core_doc: Mapping[str, Any], core_file: Path) -> list[CoreViolation]:
     """Reject every hook declared on an FPGA implementation Target (decision 21).
 
-    Session Runtimes execute inside the container, never through a host-command
+    Sandboxes execute inside the container, never through a host-command
     broker.  The narrower rule remains because implementation hooks add
     uncontrolled side effects around a privileged commercial-tool policy. The
     same axis-first classification as ``flow_can_drive`` prevents a different

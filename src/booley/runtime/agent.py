@@ -37,7 +37,7 @@ async def call_agent(
 
     The backend runs the agent CLI/SDK as a plain subprocess — Booley is
     container-only (ADR 0028), so specialists already execute inside the
-    Session Runtime and the old per-call DockerSandboxBackend wrap is gone.
+    Sandbox and the old per-call DockerSandboxBackend wrap is gone.
     """
     cfg = get_backend_config()
 

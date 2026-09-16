@@ -62,7 +62,7 @@ def test_origin_push_checks_exercise_an_external_git_server():
         item for item in coverage["capabilities"] if item["id"] == "SECURITY-RUNTIME-ISOLATION"
     )
     assert "outside-runtime control push" in capability["contract"]
-    assert "Session Runtime attempts the same authorized transport" in capability["contract"]
+    assert "Sandbox attempts the same authorized transport" in capability["contract"]
     assert "container-local and local-path remotes are out of scope" in capability["contract"]
 
     scenarios = load_scenarios(ROOT)

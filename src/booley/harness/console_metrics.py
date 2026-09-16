@@ -54,7 +54,7 @@ class WorktreeLineCounter:
 
     def normalize_path(self, raw_path: str) -> str | None:
         """Convert an agent-reported path to a safe repository-relative path."""
-        # The agent reports Session Runtime paths using POSIX syntax even when
+        # The agent reports Sandbox paths using POSIX syntax even when
         # the host-side Console runs on Windows, where Path('/work/...') is not
         # considered absolute.
         runtime_worktree = f"{_SESSION_WORKTREE_PREFIX}/{self._worktree.name}"
@@ -65,7 +65,7 @@ class WorktreeLineCounter:
         elif raw_path.startswith("/work/"):
             raw_path = raw_path.removeprefix("/work/")
         elif os.name == "nt" and raw_path.startswith("/"):
-            # A POSIX absolute path outside the Session Runtime workspace is
+            # A POSIX absolute path outside the Sandbox workspace is
             # not a path in the native Windows worktree.
             return None
         path = Path(raw_path)

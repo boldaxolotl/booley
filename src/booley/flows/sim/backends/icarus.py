@@ -11,7 +11,7 @@ This is the Icarus counterpart of :mod:`booley.flows.sim.backends.verilator` and
 edalize successor to the legacy ``run_iverilog_sim`` / ``run_sim_batch`` Icarus
 runners. Like the Verilator run-half it is a **self-contained subprocess
 entry-point** (``python -m booley.flows.sim.backends.icarus …``) so a Booley Flow can
-supervise the whole run through one Session Runtime subprocess.
+supervise the whole run through one Sandbox subprocess.
 
 Empirically-nailed Icarus run-half facts (notes-unitA-edalize-trace-runmany.md):
 

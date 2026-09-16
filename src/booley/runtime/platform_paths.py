@@ -32,7 +32,7 @@ def posix_relpath(path: Path | str, start: Path | str) -> str:
     yields ``..\\rtl\\dut.sv``. Every relative path Booley composes here is
     *container-destined* — it lands in an edalize ``.vc``/Makefile, a ``make``
     command, a filelist, or a run-log pointer that is consumed inside the Linux
-    Session Runtime at ``/work``, where backslashes are meaningless. This
+    Sandbox at ``/work``, where backslashes are meaningless. This
     normalizes to ``/`` on every host so the same string crosses the boundary
     unchanged.
     """

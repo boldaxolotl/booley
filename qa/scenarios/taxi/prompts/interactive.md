@@ -1,8 +1,8 @@
 ### Interactive Mode contract
 
-The Scenario Operator launches one long-lived Interactive Mode child inside the setup-complete Taxi Session Runtime with the Project working directory and MCP access preserved. It receives:
+The Scenario Operator launches one long-lived Interactive Mode child inside the setup-complete Taxi Sandbox with the Project working directory and MCP access preserved. It receives:
 
-> Work read-only in the setup-complete pinned Taxi Project. Confirm the Session Runtime identity, repository cleanliness, Doctor state, and available Target identities. Compare CLI and MCP Target discovery and inspect the resolved build inputs. Run the focused PFC test on `sim_mac_10g` with a fresh native FST trace. Exercise the complete agreed B-Wave semantic surface, persistent aliases and markers, and scoped Waveform Viewer state using PFC request, packet-start, XGMII, timestamp, and statistics signals. Invoke a TB-quality Reviewer against `sim_mac_10g`. Preserve every structured report and artifact. Do not edit files, create commits, weaken checks, or push anything.
+> Work read-only in the setup-complete pinned Taxi Project. Confirm the Sandbox identity, repository cleanliness, Doctor state, and available Target identities. Compare CLI and MCP Target discovery and inspect the resolved build inputs. Run the focused PFC test on `sim_mac_10g` with a fresh native FST trace. Exercise the complete agreed B-Wave semantic surface, persistent aliases and markers, and scoped Waveform Viewer state using PFC request, packet-start, XGMII, timestamp, and statistics signals. Invoke a TB-quality Reviewer against `sim_mac_10g`. Preserve every structured report and artifact. Do not edit files, create commits, weaken checks, or push anything.
 
 The FST exercise must:
 

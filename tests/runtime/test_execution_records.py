@@ -1,4 +1,4 @@
-"""Retention rules for supervised Runtime Attachment execution records."""
+"""Retention rules for supervised Sandbox Attachment execution records."""
 
 from __future__ import annotations
 

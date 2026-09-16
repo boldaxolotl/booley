@@ -1,7 +1,7 @@
 """Ownership-aware reconciliation of agent skill links.
 
 The public interface hides source discovery, precedence, ownership metadata,
-POSIX symlinks, and Windows junctions. Host setup and Session Runtime startup
+POSIX symlinks, and Windows junctions. Host setup and Sandbox startup
 only choose roots and render the returned report.
 """
 

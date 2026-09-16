@@ -1,7 +1,7 @@
 # Independent UART evaluator
 
 This directory stays in Scenario Operator-controlled storage outside the Developer Agent's
-Project, Session Runtime, mounted folders and network reach. Copy only `../spec/`
+Project, Sandbox, mounted folders and network reach. Copy only `../spec/`
 and the approved prompts/Ticket payloads into the Project. Never expose this
 implementation, generated seed/cases, controls, build logs or raw observations to
 the implementing Developer Agent. Source isolation must be demonstrated by the run's
@@ -13,7 +13,7 @@ Git commit. Literal includes must resolve to explicit hashed `include_files`;
 absolute, escaping, ambiguous and macro includes are rejected. Include directives
 are rewritten only to the corresponding Scenario Operator snapshot paths. It does not compile the candidate testbench or trust its pass sentinel.
 Provision cocotb 2.1.0 and Icarus in the isolated Scenario Operator environment before
-the run; record their exact versions and immutable Runtime Image identity in run evidence.
+the run; record their exact versions and immutable Sandbox Image identity in run evidence.
 
 From this directory:
 

@@ -1,4 +1,4 @@
-"""Administrator-gated paid Vivado proof through production Session Runtime.
+"""Administrator-gated paid Vivado proof through production Sandbox.
 
 This test is inert unless ``BOOLEY_LICENSE_TEST=1``. It consumes only approved
 topology metadata, never reads a license file, and accepts checkout evidence

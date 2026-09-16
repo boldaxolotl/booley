@@ -62,7 +62,7 @@ def test_shared_execution_failure_aborts_later_targets_without_losing_completed_
 
     class Unavailable(NativeExecution):
         def build(self, request):
-            raise FileNotFoundError("Session Runtime executable disappeared")
+            raise FileNotFoundError("Sandbox executable disappeared")
 
     flow = SimulateFlow(
         coverage_execution=lambda handle, options: (

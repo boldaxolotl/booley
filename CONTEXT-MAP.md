@@ -7,7 +7,7 @@ the context that owns the work at hand.
 
 | Context | Canonical glossary | Owns |
 |---|---|---|
-| Shared Booley | [docs/CONTEXT.md](docs/CONTEXT.md) | Product lifecycle, execution modes, Session Runtime, Projects, Targets, Booley Flows, EDA provisioning, simulation evidence, and presentation |
+| Shared Booley | [docs/CONTEXT.md](docs/CONTEXT.md) | Product lifecycle, execution modes, Sandbox, Projects, Targets, Booley Flows, EDA provisioning, simulation evidence, and presentation |
 | Ticket Board | [src/booley/ticket_board/CONTEXT.md](src/booley/ticket_board/CONTEXT.md) | Ticket authoring, Criteria, lifecycle, workspaces, acceptance, and escalation |
 | B-Wave | [crates/bwave/CONTEXT.md](crates/bwave/CONTEXT.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
 | Simulation Coverage | [src/booley/flows/sim/CONTEXT.md](src/booley/flows/sim/CONTEXT.md) | Coverage campaigns, measurement points, evaluation policy, waivers, and analysis |

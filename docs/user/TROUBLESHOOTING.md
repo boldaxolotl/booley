@@ -14,13 +14,13 @@ If Booley reports that its version changed, invoke `/booley-heal`.
 For installation see the [README](https://github.com/boldaxolotl/Booley#installation), for project setup see
 [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md), for day-to-day driving see [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md), and for
 the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md). For the Booley-specific
-terms below (Session Runtime, Target, EDA Provisioning, Specialist, Booley Flow, Developer
+terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [CONTEXT.md](https://github.com/boldaxolotl/Booley/blob/main/docs/CONTEXT.md).
 
 ## VS Code says “A mount config is invalid” while reopening the container
 
 Booley validates every host bind in the current generated spec before Docker
-creates the Session Runtime. The error names the missing or unavailable host
+creates the Sandbox. The error names the missing or unavailable host
 source and its container target; restore that source, or run `booley init
 --seed` on the host when the source was intentionally removed.
 
@@ -41,7 +41,7 @@ recovery command.
 
 Run **Developer: Reload Window** so the agent session re-reads its MCP config.
 If it still doesn't appear, check the server is actually serving, from a
-terminal inside the Session Runtime:
+terminal inside the Sandbox:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8814/mcp/
@@ -54,7 +54,7 @@ header, which is exactly what a live MCP endpoint does; `200`/`405` are equally
 fine. Connection refused means it's not up. Your *client* URL stays `/mcp` (the
 redirect is transparent to it). The log is at `/tmp/booley_mcp_http.log`.
 Reload the VS Code window first. If the service still does not return after the
-Session Runtime restarts, run `booley init --seed` on the host and rebuild or
+Sandbox restarts, run `booley init --seed` on the host and rebuild or
 reopen the container. A server that remains absent after that supported
 lifecycle is a Booley bug; report it with the Doctor output and MCP log.
 
@@ -98,7 +98,7 @@ For any other missing MCP tool:
    `[mcp_tools.<name>].enabled` is not `false`.
 2. For a custom MCP tool, fix Python syntax and make `name` and `description` literal
    class attributes so AST discovery can read them.
-3. Restart the Session Runtime after adding or renaming the file.
+3. Restart the Sandbox after adding or renaming the file.
 4. Check whether the MCP server was deliberately narrowed for a nested agent or
    through the explicit `BOOLEY_MCP_TOOLS` environment filter.
 
@@ -119,13 +119,13 @@ launching the editor CLI on the file.
 
 Booley first checks whether VaporView is installed in the attached remote
 window. If it is missing, install it there with
-`code --install-extension lramseyer.vaporview`. If the Session Runtime cannot
+`code --install-extension lramseyer.vaporview`. If the Sandbox cannot
 reach the Marketplace, obtain the official VaporView VSIX on a networked host,
 from the matching version on the
 [official VaporView releases page](https://github.com/Lramseyer/vaporview/releases)
 (`vaporview-1.5.4.vsix` for Booley's currently verified VaporView 1.5.4), then
 use **Extensions: Install from VSIX...** in the attached remote window.
-After installation, the Session Runtime's background watcher patches the
+After installation, the Sandbox's background watcher patches the
 extension automatically; then use **Developer: Reload Window**. Verify with
 `code --list-extensions --show-versions` in the remote terminal; it must list
 `lramseyer.vaporview@1.5.4`. Be careful with a host terminal: a plain host
@@ -196,7 +196,7 @@ from inside WSL. Docker Desktop's WSL2 backend only hosts the containers. Six
 first-run traps:
 
 This supported layout prioritizes normal Windows editor and Git access. The
-checkout is bind-mounted into the Linux Session Runtime, so metadata-heavy EDA
+checkout is bind-mounted into the Linux Sandbox, so metadata-heavy EDA
 builds may perform differently from Linux-native storage. That performance is
 still being qualified; a slow simulation should be reported with its phase
 timings rather than attributed to the bind mount from total elapsed time alone.
@@ -452,11 +452,10 @@ Any pytest fixture under a dotted directory hits this.
 
 ## Host-provisioned Vivado will not start
 
-Run `booley doctor` on the host, then rerun it with `--deep` inside the Session
-Runtime. Confirm that the Project has an exact Grant, the opaque Vivado
+Run `booley doctor` on the host, then rerun it with `--deep` inside the Sandbox. Confirm that the Project has an exact Grant, the opaque Vivado
 installation registration still points to a supported Linux x86-64 Vivado 2025.2
-release, and the generated runtime specification has not drifted. Reseed the
-runtime only after the host authority has been corrected.
+release, and the generated Sandbox specification has not drifted. Reseed the
+Sandbox only after the host authority has been corrected.
 
 Do not attempt to expose a host daemon, a Docker socket, a direct license-server
 address, or a license environment variable to repair this. Those paths are not

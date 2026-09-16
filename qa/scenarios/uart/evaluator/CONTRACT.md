@@ -2,7 +2,7 @@
 
 This is the public-contract derivation used by the independent evaluator. It does not establish qualification. Only the seven permitted documents at `lowRISC/opentitan@615d3c74fadbbf674c8ca05a70f91094989849fb` were retrieved. No implementation, generated register source, tests, DIFs, HJSON or reference model was consulted. Concrete stimuli below are encoding choices within the agreed scope; scenario-defined observation bounds are explicitly separated from documented facts.
 
-All IDs begin `opentitan-uart-clean-room-greenfield.`. The family prefixes below expand that prefix, using dots consistently. A register or field expansion produces independent check/result records, not a single aggregate pass. Source authority is the pinned public corpus plus the accepted scenario MMIO addendum. The public evaluator contract and IDs may live in the suite repository; actual evaluator implementation, materialized cases, seed-private inputs and complete logs remain Scenario Operator-held and inaccessible from the Developer Agent's Project and Session Runtime.
+All IDs begin `opentitan-uart-clean-room-greenfield.`. The family prefixes below expand that prefix, using dots consistently. A register or field expansion produces independent check/result records, not a single aggregate pass. Source authority is the pinned public corpus plus the accepted scenario MMIO addendum. The public evaluator contract and IDs may live in the suite repository; actual evaluator implementation, materialized cases, seed-private inputs and complete logs remain Scenario Operator-held and inaccessible from the Developer Agent's Project and Sandbox.
 
 ## Exact register map and access expansion
 
@@ -165,7 +165,7 @@ evidence/uart/evaluator/<E>/cases/<C>/trace.vcd
 evidence/uart/evaluator/<E>/cases/<C>/execution.log
 ```
 
-`observations.json` records expected/observed values, source-clock times, raw evaluator classification and circuit/operational bound used; each case's append-only result references these files. The exact file format of implementation logs is not a new oracle decision. Keep full Scenario Operator evidence outside the Project and Session Runtime; only up to five accepted bounded diagnostic excerpts go to each repair. Retain those exact excerpts separately in `evidence/uart/repair-1/diagnostics.json` and `repair-2/diagnostics.json` so the Developer Agent's exposure is auditable. Never replace the Scenario Operator case manifest with the bounded-feedback subset.
+`observations.json` records expected/observed values, source-clock times, raw evaluator classification and circuit/operational bound used; each case's append-only result references these files. The exact file format of implementation logs is not a new oracle decision. Keep full Scenario Operator evidence outside the Project and Sandbox; only up to five accepted bounded diagnostic excerpts go to each repair. Retain those exact excerpts separately in `evidence/uart/repair-1/diagnostics.json` and `repair-2/diagnostics.json` so the Developer Agent's exposure is auditable. Never replace the Scenario Operator case manifest with the bounded-feedback subset.
 
 ## Frozen corpus identities
 

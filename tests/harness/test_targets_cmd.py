@@ -157,9 +157,7 @@ class TestTargetsDetail:
         assert _run(project, "sim", "--json") == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["name"] == "sim"
-        assert payload["resolved_error"] == (
-            "detailed Target resolution requires the Session Runtime"
-        )
+        assert payload["resolved_error"] == ("detailed Target resolution requires the Sandbox")
         assert payload["resolution_command"] == (
             "booley session enter -- booley targets sim --json"
         )

@@ -1,4 +1,4 @@
-"""Recoverable Runtime Image reconciliation and Session Runtime replacement."""
+"""Recoverable Sandbox Image reconciliation and Sandbox replacement."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ class RecoveryResult:
 
 @dataclass(frozen=True, slots=True)
 class RefreshImage:
-    """Immutable Runtime Image facts needed by runtime replacement."""
+    """Immutable Sandbox Image facts needed by runtime replacement."""
 
     selected_reference: str
     selected_id: str
@@ -215,7 +215,7 @@ def _decode_runtime(raw: object, project_root: Path) -> sr.ParkedSession | None:
         raise sr.SessionError(f"Session refresh journal prior runtime is invalid: {exc}") from exc
     expected_name = sr.session_container_name(project_root)
     if parked.name != expected_name or parked.backup != f"{expected_name}-pre-refresh":
-        raise sr.SessionError("Session refresh journal contains invalid Session Runtime names")
+        raise sr.SessionError("Session refresh journal contains invalid Sandbox names")
     if parked.reconnect_egress and parked.egress_network_id is None:
         raise sr.SessionError(
             "Session refresh journal prior runtime egress identity is incomplete"
@@ -380,7 +380,7 @@ def _new_journal(
         or not parked.image_id
         or (parked.reconnect_egress and not parked.egress_network_id)
     ):
-        raise sr.SessionError("cannot durably identify the prior Session Runtime")
+        raise sr.SessionError("cannot durably identify the prior Sandbox")
     return _RefreshJournal(
         project_root,
         uuid4().hex,
@@ -409,12 +409,12 @@ def _restore_journal(journal: _RefreshJournal) -> RecoveryResult:
                 candidate_issuance=journal.replacement_issuance,
             )
         except BaseException as exc:  # noqa: BLE001 -- attempt every durable recovery action
-            errors.append(f"Session Runtime {journal.prior_runtime.backup!r}: {exc}")
+            errors.append(f"Sandbox {journal.prior_runtime.backup!r}: {exc}")
     elif journal.replacement_issuance is not None:
         try:
             sr.discard_refresh_candidate(project, journal.replacement_issuance)
         except BaseException as exc:  # noqa: BLE001 -- attempt every durable recovery action
-            errors.append(f"replacement Session Runtime: {exc}")
+            errors.append(f"replacement Sandbox: {exc}")
     if errors:
         raise sr.SessionError("; ".join(errors))
     _verify_restored_journal(journal)
@@ -427,9 +427,9 @@ def _verify_restored_journal(journal: _RefreshJournal) -> None:
     try:
         spec = json.loads(path.read_bytes())
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise sr.SessionError(f"cannot verify restored Session Runtime spec: {exc}") from exc
+        raise sr.SessionError(f"cannot verify restored Sandbox spec: {exc}") from exc
     if not isinstance(spec, dict):
-        raise sr.SessionError("restored Session Runtime spec is not an object")
+        raise sr.SessionError("restored Sandbox spec is not an object")
     try:
         issuance = runtime_spec.load_recovery_snapshot(journal.project_root, spec, path)
     except runtime_spec.RuntimeSpecError as exc:
@@ -579,7 +579,7 @@ def _reject_existing_vscode(project_root: Path) -> None:
     vscode = sr.strict_conflicting_vscode_session(project_root)
     if vscode:
         raise sr.SessionError(
-            f"VS Code owns the active Session Runtime {vscode!r}; use "
+            f"VS Code owns the active Sandbox {vscode!r}; use "
             "'Dev Containers: Rebuild Container' so the editor can replace it safely"
         )
 
@@ -587,9 +587,7 @@ def _reject_existing_vscode(project_root: Path) -> None:
 def _reject_vscode_started(project_root: Path, consequence: str) -> None:
     vscode = sr.strict_conflicting_vscode_session(project_root)
     if vscode:
-        raise sr.SessionError(
-            f"VS Code started Session Runtime {vscode!r} during refresh; {consequence}"
-        )
+        raise sr.SessionError(f"VS Code started Sandbox {vscode!r} during refresh; {consequence}")
 
 
 def _load_recovery_issuance(
@@ -598,19 +596,19 @@ def _load_recovery_issuance(
     try:
         if snapshot is not None:
             if snapshot.spec_content is None:
-                raise runtime_spec.RuntimeSpecError("prior Session Runtime spec is missing")
+                raise runtime_spec.RuntimeSpecError("prior Sandbox spec is missing")
             try:
                 spec = json.loads(snapshot.spec_content)
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise runtime_spec.RuntimeSpecError(
-                    "prior Session Runtime spec is not valid JSON"
+                    "prior Sandbox spec is not valid JSON"
                 ) from exc
             if not isinstance(spec, dict):
-                raise runtime_spec.RuntimeSpecError("prior Session Runtime spec is not an object")
+                raise runtime_spec.RuntimeSpecError("prior Sandbox spec is not an object")
             return runtime_spec.load_recovery_snapshot(project_root, spec, snapshot.spec_path)
         return runtime_spec.load_issued_snapshot(project_root)
     except runtime_spec.RuntimeSpecError as exc:
-        raise sr.SessionError(f"cannot preserve the prior Session Runtime: {exc}") from exc
+        raise sr.SessionError(f"cannot preserve the prior Sandbox: {exc}") from exc
 
 
 def _reconcile_refresh_image(
@@ -625,7 +623,7 @@ def _reconcile_refresh_image(
     _write_journal(journal)
     result = images.refresh(journal.project_root, verbose=verbose)
     if not result.selected_id:
-        raise sr.SessionError("refresh did not produce an immutable Runtime Image ID")
+        raise sr.SessionError("refresh did not produce an immutable Sandbox Image ID")
     journal = replace(
         journal,
         phase=_RefreshPhase.IMAGE_SELECTED,
@@ -723,7 +721,6 @@ def refresh(
         recovered = shared_recovery_blocks_command(read_only=False)
         if recovered:
             raise sr.SessionError(
-                "recovered interrupted Session Runtime host state; "
-                "run `booley session refresh` again"
+                "recovered interrupted Sandbox host state; run `booley session refresh` again"
             )
         return _refresh_unlocked(project_root, images, verbose=verbose)

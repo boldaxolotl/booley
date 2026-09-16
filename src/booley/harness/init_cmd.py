@@ -171,7 +171,7 @@ BOOLEY_TOML_SKELETON = """\
 #
 # Does a test need a non-RTL build step before it can run (e.g. cross-compile
 # the selected test's firmware)? Declare it as Pre-Sim Commands (ADR 0039) —
-# shell lines run inside the Session Runtime immediately before each sim run, under
+# shell lines run inside the Sandbox immediately before each sim run, under
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
 # BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...; see docs/user/CONFIG.md):
 #
@@ -932,7 +932,7 @@ def _project_image_setup_gate(  # noqa: PLR0911 — each early return is a disti
 
 
 def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
-    """Warn when a live Session Runtime still serves the pre-rebuild image (F-9).
+    """Warn when a live Sandbox still serves the pre-rebuild image (F-9).
 
     Rebuilding only moves the tag: a container created from the previous image
     keeps running it, so the change just baked in is absent inside the session
@@ -947,7 +947,7 @@ def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
 
     for name in sr.sessions_on_stale_image(ctx.project_root, image):
         warn(
-            f"the running session container '{name}' was created from the previous "
+            f"the running Sandbox '{name}' was created from the previous "
             f"{image} image and keeps serving it — this rebuild is invisible inside "
             "it. Run `booley session down && booley session up` to restart the "
             "session on the image just built (in VS Code: Reopen in Container / "
@@ -1038,24 +1038,24 @@ def _step_project_image(ctx: InitContext) -> None:
 def _report_image_cleanup(ctx: InitContext, result: LifecycleResult) -> None:
     """Present every cleanup outcome without hiding the image reconciliation result."""
     if result.cleanup.pending:
-        warn("obsolete Runtime Image tags can be removed: " + ", ".join(result.cleanup.pending))
-        ctx.record("docker_image", "warn", "obsolete Runtime Image tags remain")
+        warn("obsolete Sandbox Image tags can be removed: " + ", ".join(result.cleanup.pending))
+        ctx.record("docker_image", "warn", "obsolete Sandbox Image tags remain")
     if result.cleanup.removed:
-        ok("removed obsolete Runtime Image tags: " + ", ".join(result.cleanup.removed))
-        ctx.record("docker_image", "ok", "removed obsolete Runtime Image tags")
+        ok("removed obsolete Sandbox Image tags: " + ", ".join(result.cleanup.removed))
+        ctx.record("docker_image", "ok", "removed obsolete Sandbox Image tags")
     if result.cleanup.retained_required:
         warn(
-            "retained obsolete Runtime Image tags required by containers: "
+            "retained obsolete Sandbox Image tags required by containers: "
             + ", ".join(result.cleanup.retained_required)
         )
-        ctx.record("docker_image", "warn", "obsolete Runtime Image tags are in use")
+        ctx.record("docker_image", "warn", "obsolete Sandbox Image tags are in use")
 
 
 def _step_image_lifecycle(
     ctx: InitContext, *, base_result: LifecycleResult | None = None
 ) -> LifecycleResult | None:
-    """Reconcile the authoritative Runtime Image chain for initialization."""
-    ctx.step_banner("Runtime Image lifecycle")
+    """Reconcile the authoritative Sandbox Image chain for initialization."""
+    ctx.step_banner("Sandbox Image lifecycle")
     intent = (
         ImageLifecycleIntent.CHECK
         if ctx.check_only
@@ -1081,16 +1081,16 @@ def _step_image_lifecycle(
         for diagnostic in result.diagnostics:
             warn(diagnostic.message)
         _report_image_cleanup(ctx, result)
-        ctx.record("docker_image", "warn", "Runtime Image provenance is stale")
+        ctx.record("docker_image", "warn", "Sandbox Image provenance is stale")
         return result
     _report_image_cleanup(ctx, result)
     if result.cleanup.pending:
         return result
     if result.changed_images:
-        ok("reconciled Runtime Images: " + ", ".join(result.changed_images))
+        ok("reconciled Sandbox Images: " + ", ".join(result.changed_images))
         ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
     elif not result.cleanup.removed:
-        skip(f"Runtime Image {result.selected_reference} is current")
+        skip(f"Sandbox Image {result.selected_reference} is current")
         ctx.record("docker_image", "skip", "current")
     return result
 
@@ -1103,7 +1103,7 @@ def _step_image_lifecycle(
 def inspect_refreshable_runtime_image(
     project_root: Path, *, verbose: bool = False
 ) -> LifecycleResult:
-    """Reject a user-managed Runtime Image before refresh causes downtime."""
+    """Reject a user-managed Sandbox Image before refresh causes downtime."""
     inspection = reconcile_images(
         ProjectImageScope(project_root),
         ImageLifecycleIntent.CHECK,
@@ -1124,7 +1124,7 @@ def refresh_runtime_image(
     verbose: bool = False,
     inspection: LifecycleResult | None = None,
 ) -> LifecycleResult:
-    """Rebuild the configured Runtime Image from current Booley sources.
+    """Rebuild the configured Sandbox Image from current Booley sources.
 
     This is the implementation behind ``booley session refresh``. It reuses
     init's image builders with ``force=True`` but never rewrites booley.toml or
@@ -1159,7 +1159,7 @@ def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = F
     _step_interactive(ctx, nangate_pdk_root=pdk_root, runtime_image_id=image_id)
     failures = [result.detail for result in ctx.results if result.status == "err"]
     if failures:
-        raise RuntimeError("Session Runtime spec reissuance failed: " + "; ".join(failures))
+        raise RuntimeError("Sandbox spec reissuance failed: " + "; ".join(failures))
 
 
 def _project_sandbox_memory(project_root: Path) -> str:
@@ -1184,7 +1184,7 @@ def _project_sandbox_memory(project_root: Path) -> str:
 def _project_mask_paths(project_root: Path) -> list[str]:
     """Validated ``[sandbox].mask_paths`` — workspace subtrees to hide.
 
-    Workspace-root-relative POSIX paths the Session Runtime must NOT see
+    Workspace-root-relative POSIX paths the Sandbox must NOT see
     (oracle artifacts, competing lanes, private notes): each becomes a
     read-only bind of an always-empty host dir over the path's container view
     (both views, for a ``.booley_project/`` subtree — see
@@ -1473,7 +1473,7 @@ def _report_interactive_changes(
     if changes.relay_removed:
         ok("removed orphaned license relay from unlicensed Project")
     if changes.runtime_reconciled:
-        ok("reconciled stopped Session Runtime resources from their prior issuance")
+        ok("reconciled stopped Sandbox resources from their prior issuance")
     if changes.exclusions_changed:
         ok("excluded .devcontainer/, .booley_project/, .claude/ from git (info/exclude)")
     notes = [f"app={sources.app}"]
@@ -1496,11 +1496,11 @@ def _interactive_precondition_failed(
         and not (ctx.project_root / ".booley_project").is_dir()
     )
     if ctx.check_only and project_data_missing:
-        warn("would seed the Session Runtime after creating the private project directory")
+        warn("would seed the Sandbox after creating the private project directory")
         ctx.record("interactive", "warn", "project directory would be created first")
         return True
     if nangate_pdk_root is None:
-        err("Session Runtime not seeded because the Nangate45 setup download failed")
+        err("Sandbox not seeded because the Nangate45 setup download failed")
         ctx.record("interactive", "err", "Nangate45 cache unavailable")
         return True
     return False
@@ -1520,7 +1520,7 @@ def _inspect_interactive_plan(
         err(f"commercial EDA authorization failed closed: {detail}")
     except session_runtime.SessionError as exc:
         detail = str(exc)
-        err(f"could not inspect stopped Session Runtime: {detail}")
+        err(f"could not inspect stopped Sandbox: {detail}")
     ctx.record("interactive", "err", detail)
     return None
 
@@ -1535,10 +1535,10 @@ def _apply_interactive_plan(
         return interactive_init.apply(plan, force=ctx.force)
     except session_issuance.RuntimeSpecError as exc:
         detail = str(exc)
-        err(f"could not issue Session Runtime specification: {detail}")
+        err(f"could not issue Sandbox specification: {detail}")
     except session_runtime.SessionError as exc:
         detail = str(exc)
-        err(f"could not reconcile stopped Session Runtime: {detail}")
+        err(f"could not reconcile stopped Sandbox: {detail}")
     ctx.record("interactive", "err", detail)
     return None
 
@@ -1889,7 +1889,7 @@ def _print_summary(ctx: InitContext) -> int:
     else:
         # Setup starts with the skill's plan phase, which runs on the HOST; the
         # skill itself says when to move into the container (only its execution
-        # steps need the Session Runtime toolchain).
+        # steps need the Sandbox toolchain).
         print(green("Booley base setup complete. Run the booley-setup skill from your agent"))
         print(green("chat here on the host — it plans setup with you first, then tells you"))
         print(green('when to "Reopen in Container" for the remaining steps.'))
@@ -1913,7 +1913,7 @@ BOOLEY_MASCOT = r"""
 def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> None:
     """Create/repair the root AGENTS.md & CLAUDE.md links, host-side (F-13).
 
-    The project dir lives at ``/booley-project`` inside the Session Runtime, so
+    The project dir lives at ``/booley-project`` inside the Sandbox, so
     a link written relative to that mount dangles on the host. A host-side
     editor or agent then reads no guidance at all. ``ensure_guidance_links``
     targets a repo-local path valid on both host and runtime and falls back to a
@@ -2250,7 +2250,7 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
         from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         if shared_recovery_blocks_command(read_only=True):
-            err("interrupted Session Runtime host state requires recovery")
+            err("interrupted Sandbox host state requires recovery")
             return 2
         return _run_init_unlocked(args, project_root)
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -2258,6 +2258,6 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
 
     with host_lifecycle_lock("project init"):
         if shared_recovery_blocks_command(read_only=False):
-            err("recovered interrupted Session Runtime host state; run `booley init` again")
+            err("recovered interrupted Sandbox host state; run `booley init` again")
             return 2
         return _run_init_unlocked(args, project_root)

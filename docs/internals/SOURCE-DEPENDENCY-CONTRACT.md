@@ -17,8 +17,8 @@ The package layout maps to the canonical concepts indexed by the
 | Canonical concept | Principal source owners | Responsibility |
 | --- | --- | --- |
 | Host Bootstrap | `booley.harness.bootstrap`, `booley.harness.bootstrap_cli`, `booley.harness.host_sidecars`, `booley.harness.host_diagnostics` | Inspect and reconcile Project-independent host prerequisites and shared infrastructure. |
-| Project Initialization | `booley.harness.init_cmd`, `booley.harness.setup` (including `readiness`), `booley.agent_workspace` | Validate and reconcile one Project before issuing its Session Runtime. |
-| Session Runtime | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment`, `booley.runtime.inspection` | Inspect and own shared execution records, processes, paths, and runtime lifecycle. |
+| Project Initialization | `booley.harness.init_cmd`, `booley.harness.setup` (including `readiness`), `booley.agent_workspace` | Validate and reconcile one Project before issuing its Sandbox. |
+| Sandbox | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment`, `booley.runtime.inspection` | Inspect and own shared execution records, processes, paths, and runtime lifecycle. |
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
 | Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
@@ -79,9 +79,9 @@ The dependency change, compatibility migrations, and measured diagnostics for
 [#444](https://github.com/boldaxolotl/booley/issues/444) are recorded in
 [the implementation evidence](../research/config-runtime-444-evidence.md).
 
-## EDA and Session Runtime boundary
+## EDA and Sandbox boundary
 
-Session Runtime owns spec sealing, issuance persistence, authentication,
+Sandbox owns spec sealing, issuance persistence, authentication,
 validation, image retention, and interrupted invalidation recovery. EDA owns
 installation and License Profile registration, exact Project grants, Vivado
 policy, and resolution of immutable requirements supplied to Runtime. Project
@@ -194,8 +194,8 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D2 | Prefix `booley.criteria` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists` | Forbid | Criteria is acceptance policy; endpoint discovery is an agent-facing mechanism. |
 | D3 | Prefix `booley.specialists` | Prefix `booley.harness` and exact module `booley.mcp.server` | Forbid | A Specialist returns evidence without depending on its Harness or MCP composition mechanism. |
 | D4 | Prefix `booley.mcp` | Prefixes `booley.harness`, `booley.specialists` | Forbid, subject only to C1-C2 | MCP infrastructure is independent of the capabilities composed by its server. |
-| D5 | Prefix `booley.runtime` | Prefixes `booley.mcp`, `booley.specialists` | Forbid | Session Runtime mechanisms must remain usable without agent-facing mechanisms. |
-| D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Forbid, subject only to C8 | Shared Session Runtime mechanisms must not acquire Harness knowledge; exact entry-point composition remains explicit. |
+| D5 | Prefix `booley.runtime` | Prefixes `booley.mcp`, `booley.specialists` | Forbid | Sandbox mechanisms must remain usable without agent-facing mechanisms. |
+| D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Forbid, subject only to C8 | Shared Sandbox mechanisms must not acquire Harness knowledge; exact entry-point composition remains explicit. |
 | D7 | Exact modules `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp`, `booley.ticket_board` | Forbid | Shared Target/Criteria policy is independent of presentation, agent exposure, and Ticket Board persistence. |
 | D8 | Each prefix in `booley.flows.{sim,synth,fpga,lint}` | The other three prefixes in that set | Forbid | Each built-in Booley Flow owns its tool-specific implementation and cannot couple to a sibling Flow. |
 | D9 | Root module and direct file-module children of `booley.flows` (not child package initializers) | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | Flow-neutral policy and evidence modules cannot select a concrete Flow implementation. |
