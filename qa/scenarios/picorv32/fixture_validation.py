@@ -19,6 +19,9 @@ from pathlib import Path
 _GENERATED_INSTANCE_RE = re.compile(r"(?<![A-Za-z0-9])_[0-9a-f]+_p_Instance\b")
 _GENERATED_INSTANCE_RUN_RE = re.compile(r"(?:<generated-instance>\s*)+")
 _TRUNCATED_GENERATED_TAIL_RE = re.compile(r"(<generated-instance-list>).*…$")
+_PARTIAL_GENERATED_INSTANCE_TAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9])_[0-9a-f]+(?:_[A-Za-z_]*)?…$"
+)
 
 
 class FixtureError(ValueError):
@@ -354,6 +357,9 @@ def _stable_warning_signatures(report: dict) -> tuple[int, Counter[tuple]]:
         message = _GENERATED_INSTANCE_RUN_RE.sub("<generated-instance-list> ", message)
         if item.get("truncated") is True:
             message = _TRUNCATED_GENERATED_TAIL_RE.sub(r"\1…", message)
+            message = _PARTIAL_GENERATED_INSTANCE_TAIL_RE.sub(
+                "<generated-instance-list>…", message
+            )
         signatures[
             (item["tool"], item["code"], item["category"], item["count"], message)
         ] += 1
@@ -384,9 +390,15 @@ def interactive_repair(
     )
     _require(baseline != injected, "fault injection did not change baseline")
     _require(baseline != repaired, "repair is byte-identical to baseline")
-    _require(faulty_expression in injected, "injected source lacks the declared fault")
-    _require(faulty_expression not in repaired, "faulty expression remains after repair")
-    _require(fixed_expression in repaired, "repaired source lacks the declared fix")
+    _require(
+        injected.count(faulty_expression) == 1,
+        "injected source must contain exactly one declared fault",
+    )
+    expected_repaired = injected.replace(faulty_expression, fixed_expression, 1)
+    _require(
+        repaired == expected_repaired,
+        "repaired source must replace only the declared fault with the declared fix",
+    )
     return {"meaningful_diff": True, "fault_removed": True, "fixed_expression_present": True}
 
 

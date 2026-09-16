@@ -307,7 +307,7 @@ def test_synth_baseline_requires_successful_numeric_comparison_and_identities():
 
 
 def test_doctor_warning_comparison_ignores_generated_instance_names():
-    def report(instance: str) -> dict:
+    def report(instance: str, *, truncated: bool = False) -> dict:
         return {
             "warning_summary": {
                 "total_warnings": 2,
@@ -318,6 +318,7 @@ def test_doctor_warning_comparison_ignores_generated_instance_names():
                         "category": "constraint",
                         "count": 1,
                         "message": f"[WARNING STA-0349] instance {instance} missing clock.",
+                        "truncated": truncated,
                     },
                     {
                         "tool": "yosys",
@@ -335,6 +336,17 @@ def test_doctor_warning_comparison_ignores_generated_instance_names():
         report("_20159d53f5580000_p_Instance"),
     )
     assert result["stable_warning_count"] == 2
+
+    truncated_pre = report("_deadbeef_p_In", truncated=True)
+    truncated_final = report("_01234567_p_Inst", truncated=True)
+    for candidate, instance in (
+        (truncated_pre, "_deadbeef_p_In"),
+        (truncated_final, "_01234567_p_Inst"),
+    ):
+        candidate["warning_summary"]["representatives"][0]["message"] = (
+            f"[WARNING STA-0349] instance {instance}…"
+        )
+    assert doctor_warning_comparison(truncated_pre, truncated_final)["stable_warning_count"] == 2
 
     changed = report("_20159d53f5580000_p_Instance")
     changed["warning_summary"]["representatives"][0]["message"] = (
@@ -359,6 +371,14 @@ def test_interactive_repair_rejects_exact_head_restoration():
     assert interactive_repair(baseline, injected, repaired, faulty, fixed)["meaningful_diff"]
     with pytest.raises(FixtureError, match="byte-identical to baseline"):
         interactive_repair(baseline, injected, baseline, faulty, fixed)
+    with pytest.raises(FixtureError, match="replace only the declared fault"):
+        interactive_repair(
+            baseline,
+            injected,
+            injected.replace(faulty, "") + "// assign we = |mem_wstrb;\n",
+            faulty,
+            fixed,
+        )
 
 
 def test_vivado_implementation_requires_fresh_declared_artifacts_only(tmp_path):
