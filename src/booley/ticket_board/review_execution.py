@@ -157,21 +157,21 @@ def run_review_command(project_root: Path, slug: str, command: list[str]) -> int
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
     board = tio.find_ticket(slug)
     if board is None or board["status"] != "review":
-        raise ReviewEntryError("review-exec requires a review ticket")
+        raise ReviewEntryError("validate requires a review ticket")
     slug = Path(board["file"]).stem
     log_dir = tio.logs_dir / slug
     command = command[1:] if command[:1] == ["--"] else command
     if not command:
-        raise ReviewEntryError("review-exec requires a command after --")
+        raise ReviewEntryError("validate requires a command after --")
     with tio._ticket_lock(slug, review_operation=True):
         assert_idle(log_dir)
         _quiescent(tio, slug)
         entry = read_entry(log_dir)
         if entry is None or entry["disposition"] != "unaccepted":
-            raise ReviewEntryError("review-exec requires explicitly unaccepted review")
+            raise ReviewEntryError("validate requires explicitly unaccepted review")
         board = tio.find_ticket(slug)
         if board is None or board["status"] != "review":
-            raise ReviewEntryError("review-exec requires a review ticket")
+            raise ReviewEntryError("validate requires a review ticket")
         cwd, env, lease = _environment(
             tio,
             slug,

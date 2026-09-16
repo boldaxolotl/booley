@@ -769,7 +769,9 @@ def test_review_briefing_command_uses_prepared_package_only(tmp_path: Path, monk
     assert opened[0].version == 2
 
 
-def test_review_briefing_command_supports_report_disabled_ticket(tmp_path: Path, monkeypatch):
+def test_review_briefing_command_requires_prepared_report_disabled_package(
+    tmp_path: Path, monkeypatch
+):
     ctx = replace(_ctx(tmp_path), triage_report_enabled=False)
     facts = {
         "version": 2,
@@ -794,13 +796,12 @@ def test_review_briefing_command_supports_report_disabled_ticket(tmp_path: Path,
     }
     monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
     monkeypatch.setattr(rp, "_build_review_facts", lambda _ctx: facts)
+    monkeypatch.setattr(rp, "_source_fingerprint", lambda _ctx: "source")
 
     outcome = rp.review_briefing_command(tmp_path, "demo", open_diffs=False)
 
-    assert outcome.status == "ready"
-    assert "**Recommendation:** hold" in outcome.briefing
-    assert "`rtl/extra.sv` — **Needs review**" in outcome.briefing
-    assert "Polished HTML report: unavailable" in outcome.briefing
+    assert outcome.status == "stale"
+    assert "prepared review package is missing or stale" in outcome.message
 
 
 @pytest.mark.asyncio

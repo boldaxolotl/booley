@@ -379,7 +379,7 @@ class TicketIO:
 
             if normalize_dir(to_dir) in {"board/review", "board/done"}:
                 print(
-                    "Error: use handoff or board request-review; completion requires approve",
+                    "Error: use handoff or board review --request; completion requires approve",
                     file=sys.stderr,
                 )
                 return False
@@ -452,7 +452,7 @@ class TicketIO:
             from .acceptance_ledger import read_acceptance
 
             if read_acceptance(ticket_log_dir(self.logs_dir, slug)).kind != "accepted":
-                print("Error: unaccepted review requires board request-review", file=sys.stderr)
+                print("Error: unaccepted review requires board review --request", file=sys.stderr)
                 return False
         return True
 

@@ -17,6 +17,7 @@ from .explanation import (
 from .triage_package import (
     ResolvedReviewEvidence,
     TriagePackageError,
+    accepted_review_presentation,
     build_review_facts,
     load_triage_package,
     open_package_diffs,
@@ -33,6 +34,7 @@ __all__ = [
     "ReviewPackage",
     "StructuredExplanation",
     "TriagePackageError",
+    "accepted_review_presentation",
     "build_review_evidence",
     "build_review_facts",
     "load_triage_package",

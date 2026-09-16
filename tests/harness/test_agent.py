@@ -7,6 +7,7 @@ import io
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,9 +21,19 @@ from booley.runtime._codex_backend import (
 )
 from booley.runtime.agent import (
     _write_transcript_turn,
+    announce_agent_dispatch,
     call_agent,
     extract_json,
 )
+
+
+def test_agent_notice_names_role_and_purpose_on_stderr(capsys):
+    announce_agent_dispatch(SimpleNamespace(label="triage-report"))
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "triage-report agent to prepare a review package" in output.err
+
+
 from booley.runtime.agent_backend import (
     CodexBackend,
     _codex_ensure_additional_properties,
