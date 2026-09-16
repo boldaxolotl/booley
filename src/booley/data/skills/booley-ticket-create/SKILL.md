@@ -124,7 +124,7 @@ focused diff cannot be produced unambiguously, stop with an approval blocker. As
 For detailed mode, this is the first review artifact shown after grilling. If the user
 chooses `edit`, revise the complete ticket or Target definitions and show the entire review
 artifact again; keep the review at this gate rather than falling back to summaries or partial
-previews. Approval authorizes the complete creation transaction in Step 4; Acceptance-Basis
+previews. Approval authorizes the complete creation transaction in Step 4; Ticket Baseline
 mechanics require no further user confirmation.
 
 **Never write the ticket file until the user explicitly approves** — including agent-invoked creation from other skills.

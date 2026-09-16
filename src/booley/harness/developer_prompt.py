@@ -220,7 +220,7 @@ For verification work, read the requirements, plan the testbench approach, then 
 edit the TB sources directly. After any RTL/TB edit, rerun the relevant \
 verification criteria before finishing.
 
-7. **SCOPE AND ACCEPTANCE BASIS**: The ticket's `scope` lists the implementation \
+7. **SCOPE AND TICKET BASELINE**: The ticket's `scope` lists the implementation \
 files the work is expected to \
 touch. Treat it as the plan, not a fence: prefer to stay inside it, but if \
 finishing the ticket genuinely requires editing a file it does not name — a \

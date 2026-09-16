@@ -26,7 +26,7 @@ def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
     return env
 
 
-def _flow_acceptance_basis() -> TicketBaseline:
+def _flow_ticket_baseline() -> TicketBaseline:
     return TicketBaseline(
         participants=(
             BasisParticipant(
@@ -168,14 +168,14 @@ class TestBooleyFlowExecution:
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
 
-    def test_acceptance_basis_is_checked_before_flow_entry(
+    def test_ticket_baseline_is_checked_before_flow_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime import runtime_context
         from booley.ticket_board.frontmatter import format_frontmatter
         from booley.ticket_board.ticket_baseline import TicketBaselineError
 
-        basis = _flow_acceptance_basis()
+        basis = _flow_ticket_baseline()
         ticket = tmp_path / "ticket.md"
         ticket.write_text(
             format_frontmatter({"machine": basis.ticket_identity()}, "ticket"),
@@ -224,7 +224,7 @@ class TestBooleyFlowExecution:
         assert "acceptance-input-change-required" in rejected.report_text
         assert rejected.report_text.count("acceptance-input-change-required") == 1
 
-    def test_acceptance_basis_uses_nonblank_runtime_ticket_slug(
+    def test_ticket_baseline_uses_nonblank_runtime_ticket_slug(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime import runtime_context
@@ -232,7 +232,7 @@ class TestBooleyFlowExecution:
         ticket = tmp_path / "ticket.md"
         ticket.write_text("ticket\n", encoding="utf-8")
         loaded_slugs = []
-        basis = _flow_acceptance_basis()
+        basis = _flow_ticket_baseline()
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
         monkeypatch.setattr(
             "booley.ticket_board.flow_execution.detect_project_root", lambda: tmp_path
@@ -263,7 +263,7 @@ class TestBooleyFlowExecution:
         assert flow._pre_state_gate() is None
         assert loaded_slugs == ["actual-ticket"]
 
-    def test_acceptance_basis_uses_control_plane_ticket_board(
+    def test_ticket_baseline_uses_control_plane_ticket_board(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime import runtime_context
@@ -273,7 +273,7 @@ class TestBooleyFlowExecution:
         ticket = tmp_path / "runtime" / "ticket.md"
         ticket.parent.mkdir()
         ticket.write_text("ticket\n", encoding="utf-8")
-        basis = _flow_acceptance_basis()
+        basis = _flow_ticket_baseline()
         constructed = []
 
         class FakeTicketIO:
@@ -308,7 +308,7 @@ class TestBooleyFlowExecution:
         assert flow._pre_state_gate() is None
         assert constructed == [(control_tickets, control_root)]
 
-    def test_acceptance_basis_rejects_unsafe_runtime_ticket_slug_before_loading(
+    def test_ticket_baseline_rejects_unsafe_runtime_ticket_slug_before_loading(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime import runtime_context

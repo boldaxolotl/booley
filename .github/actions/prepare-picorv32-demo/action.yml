@@ -68,7 +68,7 @@ runs:
         git -C demo branch --force main HEAD
         git -C demo/.booley_project branch --force main HEAD
 
-    # Publishing the Acceptance Basis performs real Target discovery, so the
+    # Publishing the Ticket Baseline performs real Target discovery, so the
     # host-side installer needs Booley's production Python dependencies.
     - name: Install Booley runtime dependencies
       shell: bash
@@ -76,7 +76,7 @@ runs:
         python -m pip install --disable-pip-version-check --quiet
         "${GITHUB_WORKSPACE}"
 
-    # Acceptance Basis publication runs the project's deterministic preparation
+    # Ticket Baseline publication runs the project's deterministic preparation
     # hook. Use the same reviewed multilib Newlib toolchain family as Booley's
     # RISC-V image so PicoRV32 can compile both rv32im firmware programs.
     - name: Install host RISC-V preparation toolchain

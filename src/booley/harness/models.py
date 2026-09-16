@@ -65,7 +65,7 @@ class TicketContext:
     # Generation stamped atomically when this harness execution activates the ticket.
     execution_id: str = ""
     # Published acceptance identity for this executable Ticket generation.
-    acceptance_basis: TicketBaseline | None = None
+    ticket_baseline: TicketBaseline | None = None
     # Intake defers recorded criteria state until the authoring checkout is ready.
     criteria_state_needs_init: bool = False
 
@@ -74,9 +74,9 @@ class TicketContext:
         """Working directory: worktree if available, else project root."""
         return self.worktree_path or self.project_root
 
-    def acceptance_basis_fields(self) -> dict[str, Any]:
+    def ticket_baseline_fields(self) -> dict[str, Any]:
         """Return the complete Ticket projection used for basis validation."""
-        basis = self.acceptance_basis
+        basis = self.ticket_baseline
         if basis is None:
             raise ValueError("Ticket has no machine metadata")
         return {

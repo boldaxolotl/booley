@@ -316,8 +316,8 @@ def _crlf_safe_script(script: Path) -> Path:
 
 def _worktree_hook_input(ctx: TicketContext) -> str:
     payload = {"name": ctx.slug, "cwd": str(ctx.project_root)}
-    if ctx.acceptance_basis is not None:
-        payload["branch_ref"] = ctx.acceptance_basis.participant("outer").ticket_ref
+    if ctx.ticket_baseline is not None:
+        payload["branch_ref"] = ctx.ticket_baseline.participant("outer").ticket_ref
     return json.dumps(payload)
 
 
@@ -536,7 +536,7 @@ def _attach_clean_detached_basis_branch(
 
 def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult | None:
     """Require the outer checkout to remain on its generation-qualified basis ref."""
-    basis = ctx.acceptance_basis
+    basis = ctx.ticket_baseline
     if basis is None:
         raise ValueError("Ticket baseline is unavailable")
     expected_ref = basis.participant("outer").ticket_ref
@@ -762,11 +762,11 @@ def _current_ticket_path(ctx: TicketContext) -> Path | None:
     return ticket
 
 
-def _validate_materialized_acceptance_basis(
+def _validate_materialized_ticket_baseline(
     ctx: TicketContext, worktree_path: Path
 ) -> StepResult | None:
     """Validate the basis-bound surface after disposable checkouts are materialized."""
-    if ctx.acceptance_basis is None:
+    if ctx.ticket_baseline is None:
         return None
     from booley.ticket_board.acceptance_validation import (
         assert_ticket_worktree_inputs_unchanged,
@@ -781,7 +781,7 @@ def _validate_materialized_acceptance_basis(
     try:
         assert_ticket_worktree_inputs_unchanged(
             ctx.project_root,
-            ctx.acceptance_basis,
+            ctx.ticket_baseline,
             worktree_path,
             slug=ctx.slug,
             ticket_path=ticket_path,
@@ -796,7 +796,7 @@ def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
     _prune_stale_worktree_locks(project_root)
     expected_wt = (
         resolve_project_dir(project_root) / "worktrees" / ctx.slug
-        if ctx.acceptance_basis is not None
+        if ctx.ticket_baseline is not None
         else project_root / ".booley_project" / "worktrees" / ctx.slug
     )
     if not _try_reuse_worktree(ctx, project_root, expected_wt):
@@ -804,7 +804,7 @@ def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
         if fail:
             return fail
     worktree_path = ctx.worktree_path
-    if ctx.acceptance_basis is not None:
+    if ctx.ticket_baseline is not None:
         return _attach_basis_branch(ctx, worktree_path) or _materialize_worktree_submodules(
             project_root, worktree_path
         )
@@ -840,7 +840,7 @@ def _prepare_ticket_checkout(
     ticket_path: Path | None,
     sim_flow_enabled: bool,
 ) -> PreparationResult | StepResult:
-    if ctx.acceptance_basis is None:
+    if ctx.ticket_baseline is None:
         preparation = prepare_project(
             ctx.project_root,
             ctx.work_dir,
@@ -880,7 +880,7 @@ async def run(ctx: TicketContext) -> StepResult:
     preparation = _prepare_ticket_checkout(ctx, ticket_path, sim_flow_enabled)
     if isinstance(preparation, StepResult):
         return preparation
-    basis_failure = _validate_materialized_acceptance_basis(ctx, worktree_path)
+    basis_failure = _validate_materialized_ticket_baseline(ctx, worktree_path)
     if basis_failure is not None:
         return basis_failure
     fail = (

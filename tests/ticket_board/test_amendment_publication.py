@@ -28,7 +28,7 @@ from booley.ticket_board.ticket_baseline import (
 )
 from booley.ticket_board.validation import validate_ticket_spec
 
-from .test_acceptance_basis import _blocked_ticket, _create_v2_ticket, _git, _paired_basis_project
+from .test_ticket_baseline import _blocked_ticket, _create_v2_ticket, _git, _paired_basis_project
 
 
 def _v2_fields(source: str) -> tuple[dict, str]:

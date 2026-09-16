@@ -42,8 +42,8 @@ Mandatory Criteria:
 - Complete upstream `sim_mac_10g` remains pass-to-pass.
 - `sim_mac_10g_observability` records the seeded fail-to-pass transition.
 - `lint_clean` for `lint_mac_10g`.
-- `synthesis_ok` for the directed Acceptance Basis/candidate pair of `synth_mac_10g`, with `cell_count_increase_at_most: 0%`.
-- `synthesis_ok` for the directed Acceptance Basis/candidate pair of `synth_mac_10g_physical`, with `cell_count_increase_at_most: 0%` and `critical_path_ps_increase_at_most: 0%`. Keep the approved five-clock SDC and identical library/recipe on both sides.
+- `synthesis_ok` for the directed baseline/candidate pair of `synth_mac_10g`, with `cell_count_increase_at_most: 0%`.
+- `synthesis_ok` for the directed baseline/candidate pair of `synth_mac_10g_physical`, with `cell_count_increase_at_most: 0%` and `critical_path_ps_increase_at_most: 0%`. Keep the approved five-clock SDC and identical library/recipe on both sides.
 - Clean RTL bugs review, plus terminal RTL protocol and RTL specification reviews.
 
 The Ticket must not weaken or skip tests, alter the Target contract, hide the failure, add waivers, or push a branch.

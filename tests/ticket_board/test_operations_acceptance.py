@@ -11,10 +11,8 @@ import pytest
 
 from booley.ticket_board import (
     operations,
+    ticket_baseline,
     workspace_ops,
-)
-from booley.ticket_board import (
-    ticket_baseline as acceptance_basis,
 )
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
@@ -155,16 +153,16 @@ def test_materialized_handoff_requires_ticket_and_successful_preparation(
     basis = TicketBaseline((_participant(),))
     monkeypatch.setattr(operations, "_load_handoff_basis", lambda *_args: basis)
     monkeypatch.setattr(
-        acceptance_basis,
+        ticket_baseline,
         "validate_current_basis_refs",
         lambda *_args: {"outer": "a" * 40},
     )
     monkeypatch.setattr(
-        acceptance_basis,
+        ticket_baseline,
         "materialize_ticket_commits",
         lambda _root, _basis, _destination, _heads: tmp_path,
     )
-    monkeypatch.setattr(acceptance_basis, "assert_live_inputs_unchanged", lambda *_args: None)
+    monkeypatch.setattr(ticket_baseline, "assert_live_inputs_unchanged", lambda *_args: None)
     monkeypatch.setattr(
         "booley.ticket_board.io.find_ticket_file", lambda *_args, **_kwargs: (None, None)
     )
@@ -216,16 +214,16 @@ def test_handoff_basis_heads_validates_materialized_composite(
     tio = _handoff_tio(tmp_path, monkeypatch)
     monkeypatch.setattr(operations, "_load_handoff_basis", lambda *_args: basis)
     monkeypatch.setattr(
-        acceptance_basis,
+        ticket_baseline,
         "validate_current_basis_refs",
         lambda *_args: {"outer": "a" * 40},
     )
     monkeypatch.setattr(
-        acceptance_basis,
+        ticket_baseline,
         "materialize_ticket_commits",
         lambda _root, _basis, destination, _heads: destination,
     )
-    monkeypatch.setattr(acceptance_basis, "assert_live_inputs_unchanged", lambda *_args: None)
+    monkeypatch.setattr(ticket_baseline, "assert_live_inputs_unchanged", lambda *_args: None)
     monkeypatch.setattr(operations, "_prepare_materialized_basis_view", lambda *_args: [])
     monkeypatch.setattr(operations, "_bind_existing_handoff_snapshot", lambda *_args: True)
     assert operations.op_handoff(tio, "ticket") is True

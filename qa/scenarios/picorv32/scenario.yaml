@@ -757,7 +757,7 @@ steps:
     stimulus: |-
       Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain. Create paired run-owned outer and project-data Ticket destination branches from that initialized state. Before Ticket authoring, commit every authorized acceptance-input change produced by the applicable Configured Scenario's Project Setup—including its Flow enablement, EDA provisioning and Doctor Targets—to the project-data destination branch; prove both destination branches clean.
     expected: |-
-      Project Initialization succeeds and creates or reuses the declared managed RISC-V image/toolchain without requiring it to pre-exist admission. The paired destination refs exist before Ticket Create. The outer ref preserves the pinned upstream source, while the project-data ref contains the initialized, authorized setup for the selected Configured Scenario. Where provisioned Vivado and the FPGA Criterion apply, that commit has `flows.fpga.enabled = true`, `[eda.vivado]` provisioning set to `host`, and the FPGA Doctor Target; configurations that exclude FPGA preserve their declared opt-out. Both repositories are clean, so Ticket Acceptance Basis creation needs no live-worktree configuration change.
+      Project Initialization succeeds and creates or reuses the declared managed RISC-V image/toolchain without requiring it to pre-exist admission. The paired destination refs exist before Ticket Create. The outer ref preserves the pinned upstream source, while the project-data ref contains the initialized, authorized setup for the selected Configured Scenario. Where provisioned Vivado and the FPGA Criterion apply, that commit has `flows.fpga.enabled = true`, `[eda.vivado]` provisioning set to `host`, and the FPGA Doctor Target; configurations that exclude FPGA preserve their declared opt-out. Both repositories are clean, so Ticket Baseline creation needs no live-worktree configuration change.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Repository topology, initialization output, paired full `refs/heads/...` names and commit identities, committed Project Setup diff, clean status for both repositories, and frozen prepared recovery point.
     capture: evidence/picorv32-published-demo-continuity.project.separate-repository
@@ -3229,7 +3229,7 @@ steps:
     sha256: d259076bf94cdebab82c05df4f530c81f69ba7267b5fe48c731af0dd6c210721
   - path: tickets/continuity.md
     audience: Developer Agent
-    sha256: 3d98db91369906cd94e5854c8facbdcecb0fa7ecf07e6aff4dc56b4c16cbf205
+    sha256: fea05b3c86b92475a0cd94e642c134f1aecbe47aa2c0f3bc751d8e6e0047a589
   - path: fixture_validation.py
     audience: scenario-operator
     sha256: 46ab052d0487df1ef10f3941f86c6cfc9a1240001299a7da293cd2bd55fbfae3
@@ -3252,15 +3252,15 @@ steps:
 - id: create.dhrystone-self-checking-cycle-contract.basis
   phase: create
   action: |-
-    Enqueue of `dhrystone-self-checking-cycle-contract` automatically publishes immutable Acceptance Basis; no manual seal or second confirmation.
+    Enqueue of `dhrystone-self-checking-cycle-contract` automatically publishes immutable Ticket Baseline; no manual seal or second confirmation.
   checks:
   - id: create.dhrystone-self-checking-cycle-contract.basis
     capabilities:
     - TICKET-SCOPE
     stimulus: |-
-      Enqueue of `dhrystone-self-checking-cycle-contract` automatically publishes immutable Acceptance Basis; no manual seal or second confirmation.
+      Enqueue of `dhrystone-self-checking-cycle-contract` automatically publishes immutable Ticket Baseline; no manual seal or second confirmation.
     expected: |-
-      Enqueue of `dhrystone-self-checking-cycle-contract` automatically publishes immutable Acceptance Basis; no manual seal or second confirmation.
+      Enqueue of `dhrystone-self-checking-cycle-contract` automatically publishes immutable Ticket Baseline; no manual seal or second confirmation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Published Basis receipt/identity.
     capture: evidence/picorv32-published-demo-continuity.create.dhrystone-self-checking-cycle-contract.basis
@@ -3289,7 +3289,7 @@ steps:
   assets:
   - path: tickets/evolution.md
     audience: Developer Agent
-    sha256: a133c11cf5aeff5b82576b302814a7215782244f8b627b7fa5391c56bb5f37f9
+    sha256: 1ec18271418d23a81f4de2ffc737a8997e27209937e8bbcca1bea7c001744c16
 - id: create.rv32-zbb-pcpi.board
   phase: create
   action: Creation returns board path and `waiting` state for `rv32-zbb-pcpi`.
@@ -3307,15 +3307,15 @@ steps:
   - interactive.restore
 - id: create.rv32-zbb-pcpi.basis
   phase: create
-  action: Enqueue of `rv32-zbb-pcpi` automatically publishes immutable Acceptance Basis; no manual seal or second
+  action: Enqueue of `rv32-zbb-pcpi` automatically publishes immutable Ticket Baseline; no manual seal or second
     confirmation.
   checks:
   - id: create.rv32-zbb-pcpi.basis
     capabilities:
     - TICKET-SCOPE
-    stimulus: Enqueue of `rv32-zbb-pcpi` automatically publishes immutable Acceptance Basis; no manual seal or second
+    stimulus: Enqueue of `rv32-zbb-pcpi` automatically publishes immutable Ticket Baseline; no manual seal or second
       confirmation.
-    expected: Enqueue of `rv32-zbb-pcpi` automatically publishes immutable Acceptance Basis; no manual seal or second
+    expected: Enqueue of `rv32-zbb-pcpi` automatically publishes immutable Ticket Baseline; no manual seal or second
       confirmation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Published Basis receipt/identity.
@@ -3482,7 +3482,7 @@ steps:
     stimulus: Require `dhrystone/testbench.v @ sim_dhry_checked @ dhry @ pass -> pass`.
     expected: Require `dhrystone/testbench.v @ sim_dhry_checked @ dhry @ pass -> pass`.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Acceptance Basis/candidate evidence and test verdict.
+    evidence: baseline/candidate evidence and test verdict.
     capture: evidence/picorv32-published-demo-continuity.ticket1.simulation
   requires:
   - inputs.project-pin
@@ -4784,7 +4784,7 @@ steps:
     stimulus: Require existing default main-core simulation pass-to-pass.
     expected: Require existing default main-core simulation pass-to-pass.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Acceptance Basis and candidate simulation evidence.
+    evidence: Ticket Baseline and candidate simulation evidence.
     capture: evidence/picorv32-published-demo-continuity.ticket2.regression-main-core
   requires:
   - inputs.project-pin
@@ -4800,7 +4800,7 @@ steps:
     stimulus: Require existing default axi simulation pass-to-pass.
     expected: Require existing default axi simulation pass-to-pass.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Acceptance Basis and candidate simulation evidence.
+    evidence: Ticket Baseline and candidate simulation evidence.
     capture: evidence/picorv32-published-demo-continuity.ticket2.regression-axi
   requires:
   - inputs.project-pin
@@ -4816,7 +4816,7 @@ steps:
     stimulus: Require existing default wishbone simulation pass-to-pass.
     expected: Require existing default wishbone simulation pass-to-pass.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Acceptance Basis and candidate simulation evidence.
+    evidence: Ticket Baseline and candidate simulation evidence.
     capture: evidence/picorv32-published-demo-continuity.ticket2.regression-wishbone
   requires:
   - inputs.project-pin

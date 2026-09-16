@@ -104,7 +104,7 @@ def _build_context(
     """Construct execution context from the converted authored Ticket."""
     spec = document.spec
     fields = spec.fields
-    acceptance_basis = _load_context_basis(project_root, ticket_path, slug)
+    ticket_baseline = _load_context_basis(project_root, ticket_path, slug)
     return TicketContext(
         slug=slug,
         ticket_path=ticket_path,
@@ -116,8 +116,8 @@ def _build_context(
         on_success=spec.completion_policy,
         dependencies=fields.get("dependencies", []),
         priority=fields.get("priority", "medium"),
-        base_sha=acceptance_basis.outer_sha if acceptance_basis is not None else "",
-        acceptance_basis=acceptance_basis,
+        base_sha=ticket_baseline.outer_sha if ticket_baseline is not None else "",
+        ticket_baseline=ticket_baseline,
         feature_branch=document.generated.get("feature_branch", ""),
         completed_steps=progress.get("steps_completed", []),
         current_step=progress.get("stage", ""),
@@ -362,10 +362,10 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
     action = _detect_and_apply_resume(ctx, progress)
 
-    _verify_acceptance_basis(ctx, action)
+    _verify_ticket_baseline(ctx, action)
 
     criteria_state_needs_init = action == "fresh" or _criteria_state_needs_reinit(ctx)
-    if ctx.acceptance_basis is None:
+    if ctx.ticket_baseline is None:
         if criteria_state_needs_init:
             _init_criteria_state(ctx)
     else:
@@ -405,10 +405,10 @@ def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str
     return promoted
 
 
-def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
+def _verify_ticket_baseline(ctx: TicketContext, action: str) -> None:
     """Verify durable Ticket baseline refs before criteria state can be initialized."""
     del action
-    basis = ctx.acceptance_basis
+    basis = ctx.ticket_baseline
     if basis is None:
         raise FatalError("machine metadata is required for executable Tickets", slug=ctx.slug)
     from booley.ticket_board.workspace_ops import validate_basis_refs
@@ -426,8 +426,8 @@ def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
         raise FatalError(f"acceptance-input-change-required: {'; '.join(errors)}", slug=ctx.slug)
 
 
-def _acceptance_basis_fields(ctx: TicketContext) -> dict[str, Any]:
-    return ctx.acceptance_basis_fields()
+def _ticket_baseline_fields(ctx: TicketContext) -> dict[str, Any]:
+    return ctx.ticket_baseline_fields()
 
 
 def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
@@ -538,7 +538,7 @@ def _zero_mandatory_amendment_basis(ctx: TicketContext, expanded: dict[str, bool
     """Carry the committed human exception through state reconstruction."""
     if any(required for name, required in expanded.items() if not name.startswith("_")):
         return ""
-    basis = ctx.acceptance_basis
+    basis = ctx.ticket_baseline
     if basis is None:
         return ""
     amendment = (basis.machine or {}).get("amendment", {})
@@ -551,7 +551,7 @@ def _apply_basis_selectors(
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Seed basis identities and callable selectors into runtime Criteria."""
-    basis = ctx.acceptance_basis
+    basis = ctx.ticket_baseline
     if basis is None:
         return
     for key in expanded:

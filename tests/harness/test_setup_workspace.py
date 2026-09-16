@@ -82,11 +82,11 @@ class TestMaterializedTicketBaseline:
         basis = MagicMock()
         basis.as_dict.return_value = {"schema": 3}
         ctx = MagicMock(
-            acceptance_basis=basis,
+            ticket_baseline=basis,
             base_sha="a" * 40,
             criteria={"mandatory": {}},
         )
-        ctx.acceptance_basis_fields.return_value = {
+        ctx.ticket_baseline_fields.return_value = {
             "base_sha": "a" * 40,
             "target_contract": {"schema": 3},
             "criteria": {"mandatory": {}},
@@ -101,26 +101,26 @@ class TestMaterializedTicketBaseline:
         return ctx
 
     def test_accepts_unchanged_materialized_surface(self, tmp_path: Path):
-        from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
+        from booley.harness.setup.workspace import _validate_materialized_ticket_baseline
 
         ctx = self._context(tmp_path)
         with patch(
             "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
             return_value=None,
         ) as validate:
-            result = _validate_materialized_acceptance_basis(ctx, tmp_path)
+            result = _validate_materialized_ticket_baseline(ctx, tmp_path)
 
         assert result is None
         validate.assert_called_once_with(
             ctx.project_root,
-            ctx.acceptance_basis,
+            ctx.ticket_baseline,
             tmp_path,
             slug=ctx.slug,
             ticket_path=ctx.ticket_path,
         )
 
     def test_blocks_changed_materialized_surface(self, tmp_path: Path):
-        from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
+        from booley.harness.setup.workspace import _validate_materialized_ticket_baseline
 
         ctx = self._context(tmp_path)
         from booley.ticket_board.ticket_baseline import TicketBaselineError
@@ -131,7 +131,7 @@ class TestMaterializedTicketBaseline:
                 "acceptance-input-change-required: protected input changed"
             ),
         ):
-            result = _validate_materialized_acceptance_basis(ctx, tmp_path)
+            result = _validate_materialized_ticket_baseline(ctx, tmp_path)
 
         assert result is not None
         assert result.block_reason == ("acceptance-input-change-required: protected input changed")
@@ -342,7 +342,7 @@ class TestScopeJsonExclude:
 
 class TestWorktreeCreateScript:
     @pytest.mark.parametrize("recovery", ["missing", "stale", "prunable"])
-    def test_acceptance_basis_recovery_attaches_recorded_branch(
+    def test_ticket_baseline_recovery_attaches_recorded_branch(
         self,
         tmp_path: Path,
         recovery: str,
@@ -382,7 +382,7 @@ class TestWorktreeCreateScript:
         assert _git(expected_wt, "symbolic-ref", "HEAD").stdout.strip() == ticket_ref
         assert _git(expected_wt, "rev-parse", "HEAD").stdout.strip() == expected_head
 
-    def test_acceptance_basis_reuse_attaches_clean_detached_worktree(
+    def test_ticket_baseline_reuse_attaches_clean_detached_worktree(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.harness.setup import workspace
@@ -418,7 +418,7 @@ class TestWorktreeCreateScript:
             ("divergent", "not contained"),
         ],
     )
-    def test_acceptance_basis_reuse_preserves_unsafe_detached_worktree(
+    def test_ticket_baseline_reuse_preserves_unsafe_detached_worktree(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -476,7 +476,7 @@ class TestWorktreeCreateScript:
         assert "does not exist" in result.stderr
         assert marker.read_text(encoding="utf-8") == "preserve\n"
 
-    def test_acceptance_basis_validation_rejects_divergent_branch(self, tmp_path: Path) -> None:
+    def test_ticket_baseline_validation_rejects_divergent_branch(self, tmp_path: Path) -> None:
         from booley.harness.setup.workspace import (
             _attach_basis_branch,
             _create_fresh_worktree,
@@ -746,7 +746,7 @@ def _make_basis_ctx(
         project_root,
         slug="ticket",
         branch="master",
-        acceptance_basis=basis,
+        ticket_baseline=basis,
     )
 
 
@@ -775,7 +775,7 @@ class TestWorkspaceRun:
         worktree.mkdir()
         ctx = _make_ctx(
             tmp_path,
-            acceptance_basis=MagicMock(),
+            ticket_baseline=MagicMock(),
             worktree_path=worktree,
         )
         ctx.ticket_path.parent.mkdir(parents=True)
@@ -805,7 +805,7 @@ class TestWorkspaceRun:
             ),
             patch.object(
                 workspace_module,
-                "_validate_materialized_acceptance_basis",
+                "_validate_materialized_ticket_baseline",
                 side_effect=validate,
             ),
         ):
