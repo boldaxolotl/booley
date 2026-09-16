@@ -904,8 +904,8 @@ def _report_repository_line_endings(
     crlf = _line_ending_observation(report, LineEndingObservationCode.CRLF_MISMATCH)
     if crlf is not None:
         _fail(
-            f"{identity}: {crlf.count} tracked file(s) are checked out with CRLF — the Session "
-            "Sandbox container sees every one as modified, which breaks the dirty-tree check, "
+            f"{identity}: {crlf.count} tracked file(s) are checked out with CRLF — the "
+            "Sandbox sees every one as modified, which breaks the dirty-tree check, "
             "scope enforcement, and ticket worktrees",
             "booley init   (automatically repairs a clean tree; commit or stash first)",
         )

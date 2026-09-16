@@ -463,9 +463,18 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ needs.changes.outputs.diff_base }}
-        run: >-
-          diff-cover coverage.xml --compare-branch="${BASE_SHA}" --fail-under=90
-          --format html:diff-cover.html,markdown:diff-cover.md
+        run: |
+          python .github/scripts/terminology_diff_exclusions.py --base "${BASE_SHA}" \
+            > "${RUNNER_TEMP}/terminology-only-python.txt"
+          mapfile -t exclusions < "${RUNNER_TEMP}/terminology-only-python.txt"
+          printf 'Verified terminology-only Python files: %s\n' "${#exclusions[@]}"
+          exclude_args=()
+          if (( ${#exclusions[@]} )); then
+            printf '  %s\n' "${exclusions[@]}"
+            exclude_args=(--exclude "${exclusions[@]}")
+          fi
+          diff-cover coverage.xml --compare-branch="${BASE_SHA}" --fail-under=90 \
+            --format html:diff-cover.html,markdown:diff-cover.md "${exclude_args[@]}"
 
       - name: Upload combined coverage report
         if: always()
