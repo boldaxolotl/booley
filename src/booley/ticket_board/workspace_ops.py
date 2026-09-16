@@ -515,15 +515,7 @@ def _draft_generation(root: Path, slug: str) -> str:
     """Return the private generation token allocated for a draft."""
     path = _generation_file(root, slug)
     if path.exists():
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))["generation"]
-        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-            raise TicketBaselineOperationError(
-                f"invalid draft generation descriptor: {path}"
-            ) from exc
-        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{16}", value):
-            return value
-        raise TicketBaselineOperationError(f"invalid draft generation descriptor: {path}")
+        return load_draft_generation(root, slug)
     value = secrets.token_hex(8)
     payload = (json.dumps({"generation": value}, sort_keys=True) + "\n").encode()
     try:
@@ -534,6 +526,18 @@ def _draft_generation(root: Path, slug: str) -> str:
         ) from exc
     if not created:
         return _draft_generation(root, slug)
+    return value
+
+
+def load_draft_generation(root: Path, slug: str) -> str:
+    """Read an existing draft identity without allocating or changing it."""
+    path = runtime_dir(root) / "acceptance" / "drafts" / f"{slug}.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))["generation"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise TicketBaselineOperationError(f"invalid draft generation descriptor: {path}") from exc
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{16}", value):
+        raise TicketBaselineOperationError(f"invalid draft generation descriptor: {path}")
     return value
 
 
@@ -1159,17 +1163,27 @@ def _validate_converted_basis_spec(
         check_files=False,
         provider_placeholders=providers.placeholder_paths,
     )
-    if not errors:
-        with tempfile.TemporaryDirectory(prefix="booley-basis-dry-run-") as build_root:
-            errors.extend(
-                validate_acceptance_spec_targets(
-                    spec,
-                    outer,
-                    build_root,
-                    changed_targets=target_plan.authored_targets,
-                    provider_placeholders=providers.placeholder_paths,
-                )
-            )
+    if errors:
+        raise TicketBaselineOperationError(
+            "Ticket baseline validation failed: " + "; ".join(errors)
+        )
+    _validate_converted_basis_targets(spec, outer, providers, target_plan)
+
+
+def _validate_converted_basis_targets(
+    spec: TicketSpec,
+    outer: Path,
+    providers: ProviderMaterialization,
+    target_plan: TargetPlanAnalysis,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="booley-basis-dry-run-") as build_root:
+        errors = validate_acceptance_spec_targets(
+            spec,
+            outer,
+            build_root,
+            changed_targets=target_plan.authored_targets,
+            provider_placeholders=providers.placeholder_paths,
+        )
     if errors:
         raise TicketBaselineOperationError(
             "Ticket baseline validation failed: " + "; ".join(errors)
@@ -1484,9 +1498,44 @@ def prepare_converted_ticket_baseline(
 
 
 def validate_ticket_spec_authoring_inputs(
-    project_root: Path, workspace: Path, spec: TicketSpec
+    project_root: Path,
+    workspace: Path,
+    spec: TicketSpec,
 ) -> TargetPlanAnalysis:
     """Check authored Target changes against destination trees without publication."""
+    repositories = _authoring_input_repositories(project_root, workspace, spec)
+    try:
+        return analyze_ticket_spec_target_plan(spec, workspace, target_surface_files(repositories))
+    except TargetPlanValidationError as exc:
+        raise TicketBaselineOperationError(f"Ticket Target validation failed: {exc}") from exc
+
+
+def validate_draft_target_plan(
+    project_root: Path,
+    workspace: Path,
+    ticket_path: Path,
+    generation: str,
+    providers: ProviderMaterialization,
+    spec: TicketSpec,
+) -> TargetPlanAnalysis:
+    """Check a draft's authored Targets with its verified provider surfaces."""
+    repositories = _authoring_input_repositories(project_root, workspace, spec)
+    _, plan = _analyze_converted_basis_targets(
+        project_root,
+        workspace,
+        ticket_path,
+        ticket_path.stem,
+        generation,
+        providers,
+        spec,
+        list(repositories),
+    )
+    return plan
+
+
+def _authoring_input_repositories(
+    project_root: Path, workspace: Path, spec: TicketSpec
+) -> tuple[tuple[Path, tuple[str, ...], str], ...]:
     if not workspace.is_dir():
         raise TicketBaselineOperationError(f"Ticket Workspace is missing: {workspace}")
     paired = paired_project_repository(workspace)
@@ -1499,10 +1548,7 @@ def validate_ticket_spec_authoring_inputs(
     repositories = ((workspace, tuple(outer_changes), outer_base),)
     if project is not None:
         repositories += ((project, tuple(project_changes), project_base),)
-    try:
-        return analyze_ticket_spec_target_plan(spec, workspace, target_surface_files(repositories))
-    except TargetPlanValidationError as exc:
-        raise TicketBaselineOperationError(f"Ticket Target validation failed: {exc}") from exc
+    return repositories
 
 
 def prepare_replacement_ticket_baseline(
