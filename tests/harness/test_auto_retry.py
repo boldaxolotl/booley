@@ -126,6 +126,20 @@ class TestMaybeAutoRetry:
         ops.unblock.assert_called_once()
         assert ops.unblock.call_args.kwargs["actor"] == "auto-retry"
 
+    def test_requeue_message_names_stopped_run_and_resume_command(
+        self, tmp_path, monkeypatch, ops
+    ):
+        from booley.harness import terminal
+
+        ctx = _make_ctx(tmp_path, monkeypatch)
+        record_crash(ctx.logs_dir, run_index=1, reason=STALL)
+        with patch.object(terminal, "raw") as output:
+            assert maybe_auto_retry(ctx, tmp_path, 1) is True
+        message = output.call_args.args[0]
+        assert "requeued 1/1; execution has stopped" in message
+        assert "booley run --ticket" in message
+        assert f"--ticket {ctx.slug} -n 1" in message
+
     def test_requeues_cancelled_developer_for_safe_resume(self, tmp_path, monkeypatch, ops):
         ctx = _make_ctx(tmp_path, monkeypatch)
         record_crash(ctx.logs_dir, run_index=1, reason=CANCELLED)
@@ -161,6 +175,18 @@ class TestMaybeAutoRetry:
         record_crash(ctx.logs_dir, run_index=2, reason=STALL)
         assert maybe_auto_retry(ctx, tmp_path, 2) is False
         assert ops.unblock.call_count == 1
+
+    def test_exhausted_message_says_blocked(self, tmp_path, monkeypatch, ops):
+        from booley.harness import terminal
+
+        ctx = _make_ctx(tmp_path, monkeypatch)
+        record_crash(ctx.logs_dir, run_index=1, reason=STALL)
+        assert maybe_auto_retry(ctx, tmp_path, 1) is True
+        record_crash(ctx.logs_dir, run_index=2, reason=STALL)
+        with patch.object(terminal, "raw") as output:
+            assert maybe_auto_retry(ctx, tmp_path, 2) is False
+        assert "remains blocked" in output.call_args.args[0]
+        assert "booley run --ticket" not in output.call_args.args[0]
 
     def test_ignores_crash_from_an_earlier_run(self, tmp_path, monkeypatch, ops):
         ctx = _make_ctx(tmp_path, monkeypatch)

@@ -2368,6 +2368,19 @@ class TestNamedTicketImplications:
     def test_named_ticket_overrides_count(self):
         assert self._parse(["run", "--ticket", "fix-crc", "-n", "2"]).count == 1
 
+    def test_one_ticket_failure_exits_nonzero(self, tmp_path):
+        args = self._parse(["run", "--ticket", "fix-crc"])
+        counts = {"executable": 1}
+        with (
+            patch.object(tlr, "_run_automatic_doctor"),
+            patch.object(tlr, "handle_startup_orphans"),
+            patch.object(tlr, "get_ticket_counts", return_value=counts),
+            patch.object(tlr, "_execute_one_ticket", return_value="next_failed"),
+            patch.object(tlr, "_shutdown_requested", return_value=False),
+            patch.object(tlr.os, "chdir"),
+        ):
+            assert tlr._ticket_loop(args, tmp_path, "/venv/python") == 1
+
 
 class TestCheckReady:
     def _parse(self, argv: list[str]):

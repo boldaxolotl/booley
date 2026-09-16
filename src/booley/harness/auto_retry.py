@@ -194,7 +194,8 @@ def _maybe_auto_retry(ctx: TicketContext, project_root: Path, run_index: int) ->
             max_attempts,
         )
         terminal.raw(
-            f"  {yellow('[AUTO-RETRY]')} budget exhausted ({used}/{max_attempts}) — needs triage"
+            f"  {yellow('[AUTO-RETRY]')} budget exhausted ({used}/{max_attempts}); "
+            "ticket remains blocked and needs triage"
         )
         return False
 
@@ -219,20 +220,27 @@ def _maybe_auto_retry(ctx: TicketContext, project_root: Path, run_index: int) ->
     )
     if not ok:
         logger.warning("Auto-retry requeue failed for %s — staying blocked", ctx.slug)
+        terminal.raw(
+            f"  {yellow('[AUTO-RETRY]')} requeue failed ({attempt}/{max_attempts}); "
+            "ticket remains blocked"
+        )
         return False
 
     crash["auto_retried"] = True
     _save_crashes(ctx.logs_dir, crashes)
 
     logger.warning(
-        "Auto-retried %s after transient crash %s (attempt %d/%d)",
+        "Requeued %s after transient crash %s (attempt %d/%d); execution has stopped; "
+        "resume with booley run --ticket %s -n 1",
         ctx.slug,
         incident_type,
         attempt,
         max_attempts,
+        ctx.slug,
     )
     terminal.raw(
         f"  {yellow('[AUTO-RETRY]')} transient crash ({incident_type}) — "
-        f"requeued {attempt}/{max_attempts}"
+        f"requeued {attempt}/{max_attempts}; execution has stopped. "
+        f"Resume: booley run --ticket {ctx.slug} -n 1"
     )
     return True

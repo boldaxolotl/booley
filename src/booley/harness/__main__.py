@@ -112,7 +112,9 @@ def _run_harness(args: argparse.Namespace, project_root: Path) -> int:
         return 1
     if result is not None:
         print(result.to_cli_line(), flush=True)
-    return 0
+        return 0
+    logging.getLogger(__name__).warning("Ticket run ended without a review result")
+    return 1
 
 
 def _find_project_root() -> Path | None:

@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
@@ -82,6 +83,32 @@ if TYPE_CHECKING:
     from .developer_guardrails import DirtyFile
 
 logger = logging.getLogger(__name__)
+
+
+def _persist_console_failure(
+    project_root: Path, ctx: TicketContext | None, phase: str, error: BaseException
+) -> None:
+    """Append a complete traceback without depending on the Console or file logger."""
+    from .logging_utils import now_iso
+
+    path = (
+        ticket_human_log_file(ctx.logs_dir, "harness.log")
+        if ctx is not None
+        else _resolve_booley_project_dir(project_root) / "logs" / "runner-diagnostics.log"
+    )
+    record = (
+        f"\n{now_iso()} Console failure phase={phase} "
+        f"ticket={ctx.slug if ctx else '<before-intake>'}\n"
+        + "".join(traceback.format_exception(error))
+    ).encode("utf-8", errors="replace")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("ab", buffering=0) as stream:
+            stream.write(record)
+            os.fsync(stream.fileno())
+    except OSError as logging_error:
+        logger.warning("Could not persist Console failure to %s: %s", path, logging_error)
+
 
 RUN_RESULT_PREFIX = "BOOLEY_RUN_RESULT "
 
@@ -438,9 +465,16 @@ async def _run_with_console(
     worker_error: list[BaseException] = []
     harness_completed = False
     ticket_result: TicketRunResult | None = None
+    ctx: TicketContext | None = None
+    worker_failure_recorded = False
+
+    def record_lifecycle_error(error: Exception, phase: ConsolePhase) -> None:
+        _persist_console_failure(project_root, ctx, phase.value, error)
+
+    app.on_lifecycle_error = record_lifecycle_error
 
     async def harness_work() -> None:
-        nonlocal harness_completed, ticket_result
+        nonlocal ctx, harness_completed, ticket_result, worker_failure_recorded
         exec_start = time.monotonic()
         try:
             app.post_message(SetupProgress("loading model/backend config..."))
@@ -469,12 +503,19 @@ async def _run_with_console(
                 app.transition_to(ConsolePhase.RUNNING)
                 ticket_result = await _run_ticket_body(ctx, project_root, exec_start)
                 harness_completed = True
+            except BaseException as error:
+                if not isinstance(error, asyncio.CancelledError):
+                    _persist_console_failure(project_root, ctx, app.phase.value, error)
+                    worker_failure_recorded = True
+                raise
             finally:
                 close_log()
                 teardown_file_logging()
         except BaseException as e:
             # Capture for re-raise after app exits; log to file for post-mortem.
             worker_error.append(e)
+            if not worker_failure_recorded and not isinstance(e, asyncio.CancelledError):
+                _persist_console_failure(project_root, ctx, app.phase.value, e)
             logger.exception("Harness worker failed in console mode")
         finally:
             app.exit()
@@ -483,14 +524,21 @@ async def _run_with_console(
     terminal.set_console_active(True, app=app)
 
     try:
-        await app.run_async()
+        try:
+            await app.run_async()
+        except Exception as error:
+            _persist_console_failure(project_root, ctx, app.phase.value, error)
+            raise
     finally:
         terminal.set_console_active(False)
         app.transition_to(ConsolePhase.EXITED)
 
+    # Textual handles lifecycle errors internally instead of raising from run_async.
+    lifecycle_error = getattr(app, "lifecycle_error", None)
+    if isinstance(lifecycle_error, Exception):
+        raise lifecycle_error
     if worker_error:
         raise worker_error[0]
-    # Textual handles lifecycle errors internally instead of raising from run_async.
     if app.return_code != 0:
         raise RuntimeError(f"Console failed with exit code {app.return_code}")
 
