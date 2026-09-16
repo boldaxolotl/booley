@@ -137,7 +137,7 @@ check_sets:
   - inventory.TICKET-NOTIFICATIONS.notify-unavailable-doctor
   - feature-create
   - feature-run
-  - feature-acceptance-basis
+  - feature-ticket-baseline
   - feature-elaboration
   - feature-simulation
   - feature-lint
@@ -3619,7 +3619,7 @@ steps:
   assets:
   - path: tickets/feature.md
     audience: Developer Agent
-    sha256: 730cdad0fa632b7d25206547718bab42b3425fca1ebc95153deb4ad7a0d3f822
+    sha256: 75866841d60cda4a2701f015cf1660f9d25d7c041ac3132e2e697b74da7e9fd1
   - path: spec/qa_uart.sv
     audience: Developer Agent
     sha256: 019ab153ca1f735225af165ad53c31f542676b95afa9c27322d8d22e404eeb64
@@ -3647,20 +3647,20 @@ steps:
   requires:
   - published-release
   - interactive-commit
-- id: feature-acceptance-basis
+- id: feature-ticket-baseline
   phase: feature
   action: Inspect immutable Ticket inputs and Developer edits.
   checks:
-  - id: feature-acceptance-basis
+  - id: feature-ticket-baseline
     capabilities:
     - TICKET-SCOPE
     stimulus: Inspect immutable Ticket inputs and Developer edits.
     expected: |-
-      Scope, Criteria, Targets, Acceptance Basis and corpus/addendum review bindings preserved; protected acceptance controls not edited.
+      Scope, Criteria, Targets, Ticket Baseline and corpus/addendum review bindings preserved; protected acceptance controls not edited.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
     evidence: |-
-      Scope, Criteria, Targets, Acceptance Basis and corpus/addendum review bindings preserved; protected acceptance controls not edited.
-    capture: evidence/opentitan-uart-clean-room-greenfield.feature-acceptance-basis
+      Scope, Criteria, Targets, Ticket Baseline and corpus/addendum review bindings preserved; protected acceptance controls not edited.
+    capture: evidence/opentitan-uart-clean-room-greenfield.feature-ticket-baseline
   requires:
   - published-release
   - interactive-commit
@@ -5722,7 +5722,7 @@ steps:
     sha256: 48ac4fac57d50a02fb7ec8e16af45016a766faedf00f7bcbcf5e485eb82431de
   - path: tickets/feature.md
     audience: Developer Agent
-    sha256: 730cdad0fa632b7d25206547718bab42b3425fca1ebc95153deb4ad7a0d3f822
+    sha256: 75866841d60cda4a2701f015cf1660f9d25d7c041ac3132e2e697b74da7e9fd1
   - path: spec/mmio-addendum.md
     audience: Developer Agent
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748

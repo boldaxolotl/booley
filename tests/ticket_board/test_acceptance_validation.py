@@ -23,7 +23,7 @@ from booley.mcp.base import McpToolResult
 from booley.runtime import runtime_context
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import acceptance_validation
-from booley.ticket_board import ticket_baseline as acceptance_basis_module
+from booley.ticket_board import ticket_baseline as ticket_baseline_module
 from booley.ticket_board.acceptance_validation import (
     assert_ticket_worktree_inputs_unchanged as _assert_ticket_worktree_inputs_unchanged,
 )
@@ -37,7 +37,7 @@ from booley.ticket_board.ticket_baseline import (
     TicketBaselineError,
 )
 
-from .test_acceptance_basis import _create_v2_ticket
+from .test_ticket_baseline import _create_v2_ticket
 
 
 class _AcceptanceFlow(BooleyFlow):
@@ -267,7 +267,7 @@ def _simulate_host_recorded_outer_worktree(
             return subprocess.CompletedProcess(command, 0, listing, "")
         return real_run(command, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
+    monkeypatch.setattr(ticket_baseline_module.subprocess, "run", run)
     return host_worktree
 
 
@@ -405,7 +405,7 @@ def test_isolated_projection_accepts_recorded_host_root(
             encoding="utf-8",
         )
     monkeypatch.setattr(
-        acceptance_basis_module,
+        ticket_baseline_module,
         "_recorded_worktree_path",
         lambda *_args: host_root,
     )
@@ -532,7 +532,7 @@ async def test_setup_run_enforces_post_setup_marker_contract(
         branch="main",
         summary="Accept generated input",
         project_root=root,
-        acceptance_basis=basis,
+        ticket_baseline=basis,
         worktree_path=workspace,
     )
     monkeypatch.setattr(setup_workspace, "_prepare_outer_worktree", lambda _ctx: None)
@@ -658,16 +658,16 @@ def test_developer_handoff_accepts_matching_post_setup_marker_and_rejects_drift(
         branch="main",
         summary="Accept generated input",
         project_root=root,
-        acceptance_basis=basis,
+        ticket_baseline=basis,
         worktree_path=workspace,
     )
 
-    assert developer._block_changed_acceptance_basis(ctx, run_index=1) is False
+    assert developer._block_changed_ticket_baseline(ctx, run_index=1) is False
     (workspace / "picosoc/FUSESOC_IGNORE").write_text("drift", encoding="utf-8")
     block = MagicMock()
     monkeypatch.setattr(developer, "block_ticket", block)
 
-    assert developer._block_changed_acceptance_basis(ctx, run_index=2) is True
+    assert developer._block_changed_ticket_baseline(ctx, run_index=2) is True
     reason = block.call_args.args[1]
     assert reason.count("acceptance-input-change-required") == 1
 
@@ -691,7 +691,7 @@ async def test_resumed_setup_path_accepts_marker_and_rejects_missing_marker(
         branch="main",
         summary="Accept generated input",
         project_root=root,
-        acceptance_basis=basis,
+        ticket_baseline=basis,
         worktree_path=workspace,
         completed_steps=["setup"],
         feature_branch="generated-input",
@@ -783,11 +783,11 @@ def test_live_guard_materializes_and_prepares_reference_once(
 
     def record_materialization(
         project_root: Path | str,
-        acceptance_basis: TicketBaseline,
+        ticket_baseline: TicketBaseline,
         destination: Path | str,
     ) -> Path:
         destinations.append(Path(destination))
-        return materialize(project_root, acceptance_basis, destination)
+        return materialize(project_root, ticket_baseline, destination)
 
     monkeypatch.setattr(
         acceptance_validation,
@@ -820,11 +820,11 @@ def test_live_guard_cleans_materialized_reference_after_rejection(
 
     def record_materialization(
         project_root: Path | str,
-        acceptance_basis: TicketBaseline,
+        ticket_baseline: TicketBaseline,
         destination: Path | str,
     ) -> Path:
         destinations.append(Path(destination))
-        return materialize(project_root, acceptance_basis, destination)
+        return materialize(project_root, ticket_baseline, destination)
 
     monkeypatch.setattr(
         acceptance_validation,

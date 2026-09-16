@@ -16,9 +16,7 @@ import pytest
 from booley.fusesoc import core_projection
 from booley.ticket_board import (
     acceptance_validation,
-)
-from booley.ticket_board import (
-    ticket_baseline as acceptance_basis,
+    ticket_baseline,
 )
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
@@ -118,7 +116,7 @@ def test_ticket_machine_rejects_malformed_amendment_metadata(
 
 def test_path_policy_and_basis_require_supported_schema_and_outer_participant() -> None:
     with pytest.raises(TicketBaselineError, match="unsupported Acceptance Path Policy"):
-        acceptance_basis.AcceptancePathPolicy(schema=2).discover(Path.cwd())
+        ticket_baseline.AcceptancePathPolicy(schema=2).discover(Path.cwd())
     with pytest.raises(TicketBaselineError, match="requires an outer"):
         TicketBaseline((_participant("project"),))
     with pytest.raises(TicketBaselineError, match="participants must be a list"):
@@ -155,26 +153,26 @@ def test_git_path_and_worktree_command_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        acceptance_basis,
+        ticket_baseline,
         "_worktree_git_command",
         lambda *_args: ["git"],
     )
     monkeypatch.setattr(
-        acceptance_basis.subprocess,
+        ticket_baseline.subprocess,
         "run",
         lambda *_args, **_kwargs: _completed("git", returncode=2, stderr="bad worktree"),
     )
     with pytest.raises(TicketBaselineError, match="bad worktree"):
-        acceptance_basis._git_paths(tmp_path, "status")
+        ticket_baseline._git_paths(tmp_path, "status")
 
     dot_git = tmp_path / ".git"
     dot_git.write_text("malformed", encoding="utf-8")
-    assert acceptance_basis._worktree_git_command(tmp_path) == ["git"]
+    assert ticket_baseline._worktree_git_command(tmp_path) == ["git"]
     dot_git.write_text("other: relative", encoding="utf-8")
-    assert acceptance_basis._worktree_git_command(tmp_path) == ["git"]
+    assert ticket_baseline._worktree_git_command(tmp_path) == ["git"]
     dot_git.write_text("gitdir: relative", encoding="utf-8")
-    monkeypatch.setattr(acceptance_basis, "_git_common_dir", lambda *_args: None)
-    assert acceptance_basis._worktree_git_command(tmp_path) == ["git"]
+    monkeypatch.setattr(ticket_baseline, "_git_common_dir", lambda *_args: None)
+    assert ticket_baseline._worktree_git_command(tmp_path) == ["git"]
 
 
 def test_worktree_command_remaps_inaccessible_admin_path(
@@ -185,8 +183,8 @@ def test_worktree_command_remaps_inaccessible_admin_path(
     common = tmp_path / "common"
     mounted = common / "worktrees/ticket"
     mounted.mkdir(parents=True)
-    monkeypatch.setattr(acceptance_basis, "_git_common_dir", lambda *_args: common)
-    assert acceptance_basis._worktree_git_command(tmp_path) == [
+    monkeypatch.setattr(ticket_baseline, "_git_common_dir", lambda *_args: common)
+    assert ticket_baseline._worktree_git_command(tmp_path) == [
         "git",
         f"--git-dir={mounted}",
         f"--work-tree={tmp_path}",
@@ -198,13 +196,13 @@ def test_destination_and_ticket_commit_inputs_require_complete_full_sha_maps(
 ) -> None:
     basis = TicketBaseline((_participant(),))
     with pytest.raises(TicketBaselineError, match="cover every participant"):
-        acceptance_basis.validate_destination_refs(tmp_path, basis, {})
+        ticket_baseline.validate_destination_refs(tmp_path, basis, {})
     with pytest.raises(TicketBaselineError, match="must be a full Git SHA"):
-        acceptance_basis.validate_destination_refs(tmp_path, basis, {"outer": "bad"})
+        ticket_baseline.validate_destination_refs(tmp_path, basis, {"outer": "bad"})
     with pytest.raises(TicketBaselineError, match="cover every Basis participant"):
-        acceptance_basis.materialize_ticket_commits(tmp_path, basis, tmp_path / "out", {})
+        ticket_baseline.materialize_ticket_commits(tmp_path, basis, tmp_path / "out", {})
     with pytest.raises(TicketBaselineError, match="must be a full Git SHA"):
-        acceptance_basis.materialize_ticket_commits(
+        ticket_baseline.materialize_ticket_commits(
             tmp_path, basis, tmp_path / "out", {"outer": "bad"}
         )
 
@@ -232,7 +230,7 @@ def test_worktree_mapping_and_identity_failures_are_explicit(
 ) -> None:
     recorded = Path("/host/repo/not-an-index/ticket")
     monkeypatch.setattr(
-        acceptance_basis,
+        ticket_baseline,
         "_worktree_records",
         lambda _root: (
             (Path("/host/repo"), "refs/heads/main"),
@@ -240,7 +238,7 @@ def test_worktree_mapping_and_identity_failures_are_explicit(
         ),
     )
     with pytest.raises(TicketBaselineError, match="could not be identified"):
-        acceptance_basis.worktree_for_ref(tmp_path, _participant().ticket_ref)
+        ticket_baseline.worktree_for_ref(tmp_path, _participant().ticket_ref)
 
     responses = iter(
         [
@@ -249,43 +247,39 @@ def test_worktree_mapping_and_identity_failures_are_explicit(
         ]
     )
     monkeypatch.setattr(
-        acceptance_basis,
+        ticket_baseline,
         "_worktree_git_command",
         lambda *_args: ["git"],
     )
     monkeypatch.setattr(
-        acceptance_basis.subprocess,
+        ticket_baseline.subprocess,
         "run",
         lambda *_args, **_kwargs: next(responses),
     )
-    assert (
-        acceptance_basis._worktree_has_identity(tmp_path, "refs/heads/ticket", tmp_path) is False
-    )
-    assert (
-        acceptance_basis._worktree_has_identity(tmp_path, "refs/heads/ticket", tmp_path) is False
-    )
+    assert ticket_baseline._worktree_has_identity(tmp_path, "refs/heads/ticket", tmp_path) is False
+    assert ticket_baseline._worktree_has_identity(tmp_path, "refs/heads/ticket", tmp_path) is False
 
 
 def test_descendant_and_project_repository_failures_are_explicit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        acceptance_basis.subprocess,
+        ticket_baseline.subprocess,
         "run",
         lambda *_args, **_kwargs: _completed("git", returncode=1),
     )
     with pytest.raises(TicketBaselineError, match="ref is unavailable"):
-        acceptance_basis.validate_current_basis_refs(tmp_path, TicketBaseline((_participant(),)))
+        ticket_baseline.validate_current_basis_refs(tmp_path, TicketBaseline((_participant(),)))
     paired = TicketBaseline((_participant(), _participant("project")))
-    monkeypatch.setattr(acceptance_basis, "paired_project_repository", lambda _root: None)
-    monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
+    monkeypatch.setattr(ticket_baseline, "paired_project_repository", lambda _root: None)
+    monkeypatch.setattr(ticket_baseline, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(
-        acceptance_basis,
+        ticket_baseline,
         "_descendant_ref_commit",
         lambda *_args, **_kwargs: "a" * 40,
     )
     with pytest.raises(TicketBaselineError, match="paired project repository"):
-        acceptance_basis.validate_current_basis_refs(tmp_path, paired)
+        ticket_baseline.validate_current_basis_refs(tmp_path, paired)
 
 
 def test_clone_commit_reports_clone_and_checkout_failures(
@@ -293,17 +287,17 @@ def test_clone_commit_reports_clone_and_checkout_failures(
 ) -> None:
     responses = iter([_completed("git", returncode=1, stderr="clone failed")])
     monkeypatch.setattr(
-        acceptance_basis.subprocess,
+        ticket_baseline.subprocess,
         "run",
         lambda *_args, **_kwargs: next(responses),
     )
     with pytest.raises(TicketBaselineError, match="clone failed"):
-        acceptance_basis._clone_commit(tmp_path, tmp_path / "clone", "a" * 40)
+        ticket_baseline._clone_commit(tmp_path, tmp_path / "clone", "a" * 40)
     responses = iter(
         [_completed("git"), _completed("git", returncode=1, stderr="checkout failed")]
     )
     with pytest.raises(TicketBaselineError, match="checkout failed"):
-        acceptance_basis._clone_commit(tmp_path, tmp_path / "clone", "a" * 40)
+        ticket_baseline._clone_commit(tmp_path, tmp_path / "clone", "a" * 40)
 
 
 def test_generated_path_equivalence_handles_symlinks_and_mode_mismatch(tmp_path: Path) -> None:
@@ -311,10 +305,10 @@ def test_generated_path_equivalence_handles_symlinks_and_mode_mismatch(tmp_path:
     right = tmp_path / "right"
     left.symlink_to("target")
     right.symlink_to("target")
-    assert acceptance_basis._same_generated_path(left, right) is True
+    assert ticket_baseline._same_generated_path(left, right) is True
     right.unlink()
     right.symlink_to("other")
-    assert acceptance_basis._same_generated_path(left, right) is False
+    assert ticket_baseline._same_generated_path(left, right) is False
     left.unlink()
     right.unlink()
     if os.name == "nt":
@@ -323,7 +317,7 @@ def test_generated_path_equivalence_handles_symlinks_and_mode_mismatch(tmp_path:
     right.write_text("same", encoding="utf-8")
     left.chmod(0o755)
     right.chmod(0o644)
-    assert acceptance_basis._same_generated_path(left, right) is False
+    assert ticket_baseline._same_generated_path(left, right) is False
 
 
 @pytest.mark.parametrize(
@@ -341,7 +335,7 @@ def test_load_ticket_baseline_rejects_every_retired_field(
     value: object,
 ) -> None:
     with pytest.raises(TicketBaselineError, match="hard cutoff"):
-        acceptance_basis.load_ticket_baseline(
+        ticket_baseline.load_ticket_baseline(
             tmp_path,
             "ticket",
             {retired_field: value},
@@ -352,21 +346,21 @@ def test_ticket_machine_rejects_authored_drift() -> None:
     basis = TicketBaseline((_participant(),))
     fields = {"summary": "Ticket", "branch": "main"}
     body = "## Description\n\nTest."
-    fields["machine"] = acceptance_basis.ticket_machine_fields(
+    fields["machine"] = ticket_baseline.ticket_machine_fields(
         basis, fields=fields, body=body, generation="1" * 32
     )
     fields["summary"] = "Changed"
     with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
-        acceptance_basis.ticket_baseline_from_fields(fields, body)
+        ticket_baseline.ticket_baseline_from_fields(fields, body)
     fields["summary"] = "Ticket"
     with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
-        acceptance_basis.ticket_baseline_from_fields(fields, "different")
+        ticket_baseline.ticket_baseline_from_fields(fields, "different")
 
 
 @pytest.mark.parametrize("retired", ["acceptance_basis", "base_sha", "target_contract"])
 def test_ticket_baseline_rejects_retired_fields_even_when_null(retired: str) -> None:
     with pytest.raises(TicketBaselineError, match=r"unsupported|hard cutoff"):
-        acceptance_basis.ticket_baseline_from_fields({retired: None}, "")
+        ticket_baseline.ticket_baseline_from_fields({retired: None}, "")
 
 
 @pytest.mark.parametrize(
@@ -396,17 +390,17 @@ def test_ticket_baseline_rejects_retired_fields_even_when_null(retired: str) -> 
 )
 def test_machine_metadata_rejects_malformed_authority(change, message: str) -> None:
     basis = TicketBaseline((_participant(),))
-    machine = acceptance_basis.ticket_machine_fields(
+    machine = ticket_baseline.ticket_machine_fields(
         basis, fields={"summary": "ticket"}, body="body", generation="1" * 32
     )
     change(machine)
     with pytest.raises(TicketBaselineError, match=message):
-        acceptance_basis.ticket_baseline_from_machine(machine)
+        ticket_baseline.ticket_baseline_from_machine(machine)
 
 
 def test_machine_metadata_rejects_non_mapping_and_unavailable_identity() -> None:
     with pytest.raises(TicketBaselineError, match="must be a mapping"):
-        acceptance_basis.ticket_baseline_from_machine(None)
+        ticket_baseline.ticket_baseline_from_machine(None)
     with pytest.raises(TicketBaselineError, match="metadata is unavailable"):
         TicketBaseline((_participant(),)).ticket_identity()
 
@@ -431,7 +425,7 @@ def test_provider_binding_rejects_malformed_identity(change, message: str) -> No
     }
     change(row)
     with pytest.raises(TicketBaselineError, match=message):
-        acceptance_basis.provider_binding_from_mapping(row)
+        ticket_baseline.provider_binding_from_mapping(row)
 
 
 @pytest.mark.parametrize(
@@ -458,14 +452,14 @@ def test_ticket_routing_rejects_unpinned_destinations() -> None:
         "b" * 40,
     )
     with pytest.raises(TicketBaselineError, match="outer destination"):
-        acceptance_basis._validate_ticket_routing(TicketBaseline((outer,)), {"branch": "other"})
+        ticket_baseline._validate_ticket_routing(TicketBaseline((outer,)), {"branch": "other"})
     with pytest.raises(TicketBaselineError, match="without a baseline participant"):
-        acceptance_basis._validate_ticket_routing(
+        ticket_baseline._validate_ticket_routing(
             TicketBaseline((outer,)),
             {"branch": "main", "project_destination_ref": "refs/heads/project-main"},
         )
     with pytest.raises(TicketBaselineError, match="project destination"):
-        acceptance_basis._validate_ticket_routing(
+        ticket_baseline._validate_ticket_routing(
             TicketBaseline((outer, project)),
             {"branch": "main", "project_destination_ref": "refs/heads/other"},
         )
@@ -484,26 +478,26 @@ def test_ticket_routing_rejects_unpinned_destinations() -> None:
 )
 def test_authored_digest_rejects_invalid_human_fields(fields: dict, message: str) -> None:
     with pytest.raises(TicketBaselineError, match=message):
-        acceptance_basis.authored_ticket_digest(fields, "body")
+        ticket_baseline.authored_ticket_digest(fields, "body")
 
 
 def test_ticket_commit_trailers_fail_when_authoring_commit_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        acceptance_basis.subprocess,
+        ticket_baseline.subprocess,
         "run",
         lambda *_args, **_kwargs: _completed("git", returncode=128),
     )
     with pytest.raises(TicketBaselineError, match="authoring commit is unavailable"):
-        acceptance_basis.validate_ticket_commit_trailers(
+        ticket_baseline.validate_ticket_commit_trailers(
             tmp_path, "ticket", TicketBaseline((_participant(),)), {}
         )
 
 
 def test_executable_ticket_requires_human_body(tmp_path: Path) -> None:
     with pytest.raises(TicketBaselineError, match="body is required"):
-        acceptance_basis.load_ticket_baseline(tmp_path, "ticket", {})
+        ticket_baseline.load_ticket_baseline(tmp_path, "ticket", {})
 
 
 def test_live_basis_rejects_disappearing_registered_worktree(
@@ -511,12 +505,12 @@ def test_live_basis_rejects_disappearing_registered_worktree(
 ) -> None:
     basis = TicketBaseline((_participant(),))
     monkeypatch.setattr(
-        acceptance_basis, "_partition_protected_inputs", lambda *_args: ("project", set(), set())
+        ticket_baseline, "_partition_protected_inputs", lambda *_args: ("project", set(), set())
     )
-    monkeypatch.setattr(acceptance_basis, "worktree_for_ref", lambda *_args: tmp_path)
-    monkeypatch.setattr(acceptance_basis, "_recorded_worktree_path", lambda *_args: None)
+    monkeypatch.setattr(ticket_baseline, "worktree_for_ref", lambda *_args: tmp_path)
+    monkeypatch.setattr(ticket_baseline, "_recorded_worktree_path", lambda *_args: None)
     with pytest.raises(TicketBaselineError, match="disappeared during validation"):
-        acceptance_basis.assert_live_inputs_unchanged(basis, tmp_path, tmp_path)
+        ticket_baseline.assert_live_inputs_unchanged(basis, tmp_path, tmp_path)
 
 
 def test_control_discovery_reports_failure_in_current_and_baseline_tree(
@@ -524,10 +518,10 @@ def test_control_discovery_reports_failure_in_current_and_baseline_tree(
 ) -> None:
     basis = TicketBaseline((_participant(),))
     with pytest.raises(TicketBaselineError, match="protected-input discovery failed"):
-        acceptance_basis._basis_control_paths(
+        ticket_baseline._basis_control_paths(
             tmp_path, basis, lambda *_args: (_ for _ in ()).throw(OSError("unreadable"))
         )
-    monkeypatch.setattr(acceptance_basis, "materialize_basis_checkout", lambda *_args: None)
+    monkeypatch.setattr(ticket_baseline, "materialize_basis_checkout", lambda *_args: None)
     calls = iter([set(), OSError("baseline unreadable")])
 
     def discover(_root: Path) -> set[str]:
@@ -537,4 +531,4 @@ def test_control_discovery_reports_failure_in_current_and_baseline_tree(
         return value
 
     with pytest.raises(TicketBaselineError, match="baseline unreadable"):
-        acceptance_basis._basis_control_paths(tmp_path, basis, discover)
+        ticket_baseline._basis_control_paths(tmp_path, basis, discover)

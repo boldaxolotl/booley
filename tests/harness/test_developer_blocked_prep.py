@@ -45,7 +45,7 @@ async def test_invalid_resumed_basis_prepares_blocked_triage(
     ctx = _context(
         tmp_path,
         completed_steps=["setup"],
-        acceptance_basis=MagicMock(),
+        ticket_baseline=MagicMock(),
         worktree_path=tmp_path / "worktree",
     )
     monkeypatch.setattr(developer, "_display_ticket_banner", lambda _ctx: None)
@@ -100,12 +100,12 @@ def test_resumed_basis_is_revalidated_in_existing_worktree(
     worktree = tmp_path / "worktree"
     ctx = _context(
         tmp_path,
-        acceptance_basis=MagicMock(),
+        ticket_baseline=MagicMock(),
         worktree_path=worktree,
     )
     validate = MagicMock(return_value=StepResult(block_reason="basis changed"))
     monkeypatch.setattr(
-        "booley.harness.setup.workspace._validate_materialized_acceptance_basis",
+        "booley.harness.setup.workspace._validate_materialized_ticket_baseline",
         validate,
     )
 
@@ -119,12 +119,12 @@ def test_valid_resumed_basis_allows_execution(
     worktree = tmp_path / "worktree"
     ctx = _context(
         tmp_path,
-        acceptance_basis=MagicMock(),
+        ticket_baseline=MagicMock(),
         worktree_path=worktree,
     )
     validate = MagicMock(return_value=None)
     monkeypatch.setattr(
-        "booley.harness.setup.workspace._validate_materialized_acceptance_basis",
+        "booley.harness.setup.workspace._validate_materialized_ticket_baseline",
         validate,
     )
 
@@ -139,7 +139,7 @@ def test_basisless_resume_needs_no_basis_validation(tmp_path: Path) -> None:
 
 
 def test_basis_bound_resume_without_worktree_reports_basis_failure(tmp_path: Path) -> None:
-    ctx = _context(tmp_path, acceptance_basis=MagicMock())
+    ctx = _context(tmp_path, ticket_baseline=MagicMock())
 
     assert developer._resumed_basis_failure(ctx) == (
         "acceptance-input-change-required: Ticket worktree is unavailable"
@@ -152,7 +152,7 @@ def test_pre_handoff_basis_guard_preserves_one_canonical_reason(
 ) -> None:
     worktree = tmp_path / "worktree"
     basis = MagicMock()
-    ctx = _context(tmp_path, acceptance_basis=basis, worktree_path=worktree)
+    ctx = _context(tmp_path, ticket_baseline=basis, worktree_path=worktree)
     validate = MagicMock(
         side_effect=TicketBaselineError("acceptance-input-change-required: projected core changed")
     )
@@ -163,7 +163,7 @@ def test_pre_handoff_basis_guard_preserves_one_canonical_reason(
     )
     monkeypatch.setattr(developer, "block_ticket", block)
 
-    assert developer._block_changed_acceptance_basis(ctx, run_index=3) is True
+    assert developer._block_changed_ticket_baseline(ctx, run_index=3) is True
     validate.assert_called_once_with(
         tmp_path,
         basis,

@@ -271,7 +271,7 @@ def test_project_review_repository_rejects_missing_pair_for_standalone_project_r
         )
 
 
-def test_project_review_repository_uses_project_acceptance_basis(tmp_path: Path, monkeypatch):
+def test_project_review_repository_uses_project_ticket_baseline(tmp_path: Path, monkeypatch):
     project_checkout = tmp_path / "project-worktree"
     project_checkout.mkdir()
     participant = _basis(project_sha="b" * 40).participant("project")

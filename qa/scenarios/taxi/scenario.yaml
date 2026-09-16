@@ -411,10 +411,10 @@ check_sets:
   - inventory.TICKET-SCOPE.scope-deviation
   - inventory.TICKET-SCOPE.scope-justification
   - inventory.TICKET-SCOPE.scope-recovery
-  - inventory.TICKET-ACCEPTANCE-BASIS.basis-edit-reject
-  - inventory.TICKET-ACCEPTANCE-BASIS.basis-pin
-  - inventory.TICKET-ACCEPTANCE-BASIS.basis-redraft
-  - inventory.TICKET-ACCEPTANCE-BASIS.target-disposition
+  - inventory.TICKET-BASELINE.basis-edit-reject
+  - inventory.TICKET-BASELINE.basis-pin
+  - inventory.TICKET-BASELINE.basis-redraft
+  - inventory.TICKET-BASELINE.target-disposition
   - inventory.TICKET-INTEGRATION.briefing-html
   - inventory.TICKET-INTEGRATION.briefing-html-failure
   - inventory.TICKET-INTEGRATION.briefing-json
@@ -892,7 +892,7 @@ steps:
     sha256: 8b185aacd7397372f8c0e732f438c9d431d668a141d6bccf64c196e490d2e873
   - path: fixtures/physical.md
     audience: setup delegate
-    sha256: 2c240a4c109f32c341a275a44337de9b8acf31ec86cbce586433a06d58e876bb
+    sha256: f13cf6bf104a97b46e811aa510e6f6ae122434598ee17801914e9badefcc8f5e
 - id: physical.constraints
   phase: prepare
   action: |-
@@ -916,7 +916,7 @@ steps:
     sha256: 8b185aacd7397372f8c0e732f438c9d431d668a141d6bccf64c196e490d2e873
   - path: fixtures/physical.md
     audience: setup delegate
-    sha256: 2c240a4c109f32c341a275a44337de9b8acf31ec86cbce586433a06d58e876bb
+    sha256: f13cf6bf104a97b46e811aa510e6f6ae122434598ee17801914e9badefcc8f5e
 - id: physical.discovery-doctor
   phase: prepare
   action: Include fourth Target in CLI/MCP identity checks and deep Doctor.
@@ -5932,7 +5932,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
   - path: fixtures/build_submodules.py
     audience: scenario-operator
     sha256: a308078f80982e8967224761af0dbeb98d4fc864ba40fe8535e9255c78a64f8f
@@ -5950,10 +5950,10 @@ steps:
     stimulus: |-
       Create and execute a tiny Verification Ticket at candidate B through the ordinary Ticket Create and `booley run` path; its simulation Criterion consumes DATA/LEAF B.
     expected: |-
-      Ticket Workspace contains exact destination gitlinks B; passing simulation and immutable Acceptance Basis/report identify B and the paired repository.
+      Ticket Workspace contains exact destination gitlinks B; passing simulation and immutable Ticket Baseline/report identify B and the paired repository.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#submodules
     evidence: |-
-      Ticket Workspace contains exact destination gitlinks B; passing simulation and immutable Acceptance Basis/report identify B and the paired repository.
+      Ticket Workspace contains exact destination gitlinks B; passing simulation and immutable Ticket Baseline/report identify B and the paired repository.
     capture: evidence/taxi-10g-mac-port-evolution.submodules.ticket-current
   requires:
   - inputs.pin
@@ -5962,7 +5962,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.simulation-dependency-baseline
   phase: submodules
   action: |-
@@ -5986,7 +5986,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.simulation-missing-top
   phase: submodules
   action: |-
@@ -6011,7 +6011,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.simulation-restore-top
   phase: submodules
   action: Restore the exact recorded `deps/data` hierarchy locally, with no fetch or stub substitution, and rerun
@@ -6033,7 +6033,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
   recovery:
     baseline: submodules.simulation-dependency-baseline
     detection:
@@ -6064,7 +6064,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.simulation-restore-nested
   phase: submodules
   action: Restore the exact leaf commit and rerun the unchanged Target.
@@ -6084,7 +6084,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
   recovery:
     baseline: submodules.simulation-restore-top
     detection:
@@ -6114,7 +6114,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.baseline-historical
   phase: submodules
   action: Run baseline-relative logical synthesis on `synth_submodule_transport` comparing baseline A with candidate
@@ -6138,7 +6138,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.standalone
   phase: submodules
   action: Inspect the repositories materialized by those product operations before their controlled cleanup.
@@ -6160,7 +6160,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.offline
   phase: submodules
   action: Perform the same reconstruction with unreachable committed URLs and default-deny egress.
@@ -6182,7 +6182,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.default-all
   phase: submodules
   action: Omit `[submodules].paths` and materialize a destination with both top-level gitlinks.
@@ -6202,7 +6202,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.select-one
   phase: submodules
   action: Set `paths = ["deps/data"]` for an independently authored generation and materialize.
@@ -6224,7 +6224,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.select-none
   phase: submodules
   action: Set an explicit empty list and materialize.
@@ -6246,7 +6246,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.simulation-excluded-dependency
   phase: submodules
   action: |-
@@ -6271,7 +6271,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.selection-intersection
   phase: submodules
   action: Include an allowed path not present as a gitlink in that destination revision.
@@ -6291,7 +6291,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.paired-always
   phase: submodules
   action: With outer `paths = []`, materialize a destination whose paired Project repository pins control.
@@ -6311,7 +6311,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.missing
   phase: submodules
   action: Remove one initialized source submodule only in a disposable variant, then trigger workspace materialization.
@@ -6331,7 +6331,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.dirty
   phase: submodules
   action: Change a tracked source file without committing in a disposable variant, then materialize.
@@ -6353,7 +6353,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.shallow
   phase: submodules
   action: Supply a demonstrably shallow local source variant and materialize.
@@ -6373,7 +6373,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.incomplete-objects
   phase: submodules
   action: |-
@@ -6397,7 +6397,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.rollback
   phase: submodules
   action: |-
@@ -6421,7 +6421,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.matching-destination
   phase: submodules
   action: |-
@@ -6445,7 +6445,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.restore
   phase: submodules
   action: Restore the complete clean source hierarchy and repeat ordinary materialization and the fixture simulation.
@@ -6463,7 +6463,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
   recovery:
     baseline: submodules.fixture
     detection:
@@ -6494,7 +6494,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: submodules.cleanup
   phase: submodules
   action: Archive companion manifests/reports and release every owned companion resource.
@@ -6516,7 +6516,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 0a9e9bf7a53f29ad7b7b8d7100106d0822afd4d84f6bec33620090b08821305a
+    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
 - id: create.strengthen-10g-mac-observability.payload
   phase: ticket1
   action: |-
@@ -6541,13 +6541,13 @@ steps:
     sha256: 155d38fe5b8a26bddbcc7d5273fa00602f1309d150cec4d5b2a24f94d3a98731
 - id: create.strengthen-10g-mac-observability.basis
   phase: ticket1
-  action: Capture published Acceptance Basis for `strengthen-10g-mac-observability` and queued Board state.
+  action: Capture published Ticket Baseline for `strengthen-10g-mac-observability` and queued Board state.
   checks:
   - id: create.strengthen-10g-mac-observability.basis
     capabilities:
     - TICKET-SCOPE
-    stimulus: Capture published Acceptance Basis for `strengthen-10g-mac-observability` and queued Board state.
-    expected: Capture published Acceptance Basis for `strengthen-10g-mac-observability` and queued Board state.
+    stimulus: Capture published Ticket Baseline for `strengthen-10g-mac-observability` and queued Board state.
+    expected: Capture published Ticket Baseline for `strengthen-10g-mac-observability` and queued Board state.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
     evidence: Immutable receipt, ticket/board evidence and source revision.
     capture: evidence/taxi-10g-mac-port-evolution.create.strengthen-10g-mac-observability.basis
@@ -7595,16 +7595,16 @@ steps:
   assets:
   - path: tickets/repair.md
     audience: Developer Agent
-    sha256: 23c5c68915b71443c0e931321ec15f2e7057cc29933ea105fddda3ad86a797cf
+    sha256: 91d125e4d59e6d9c21c0a458c5fc8bfdb847e50a9518c7a89fa4c49dd6d76627
 - id: create.repair-pfc-priority-routing.basis
   phase: ticket2
-  action: Capture published Acceptance Basis for `repair-pfc-priority-routing` and queued Board state.
+  action: Capture published Ticket Baseline for `repair-pfc-priority-routing` and queued Board state.
   checks:
   - id: create.repair-pfc-priority-routing.basis
     capabilities:
     - TICKET-SCOPE
-    stimulus: Capture published Acceptance Basis for `repair-pfc-priority-routing` and queued Board state.
-    expected: Capture published Acceptance Basis for `repair-pfc-priority-routing` and queued Board state.
+    stimulus: Capture published Ticket Baseline for `repair-pfc-priority-routing` and queued Board state.
+    expected: Capture published Ticket Baseline for `repair-pfc-priority-routing` and queued Board state.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
     evidence: Immutable receipt, ticket/board evidence and source revision.
     capture: evidence/taxi-10g-mac-port-evolution.create.repair-pfc-priority-routing.basis
@@ -7766,13 +7766,13 @@ steps:
   - ticket1.merge
 - id: ticket2.synthesis-cells
   phase: ticket2
-  action: 'Directed Acceptance Basis/candidate `synth_mac_10g`: `cell_count_increase_at_most: 0%`.'
+  action: 'Directed baseline/candidate `synth_mac_10g`: `cell_count_increase_at_most: 0%`.'
   checks:
   - id: ticket2.synthesis-cells
     capabilities:
     - SYNTHESIS-FLOW
-    stimulus: 'Directed Acceptance Basis/candidate `synth_mac_10g`: `cell_count_increase_at_most: 0%`.'
-    expected: 'Directed Acceptance Basis/candidate `synth_mac_10g`: `cell_count_increase_at_most: 0%`.'
+    stimulus: 'Directed baseline/candidate `synth_mac_10g`: `cell_count_increase_at_most: 0%`.'
+    expected: 'Directed baseline/candidate `synth_mac_10g`: `cell_count_increase_at_most: 0%`.'
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
     evidence: Fresh logical-synthesis paired metrics and exact comparison.
     capture: evidence/taxi-10g-mac-port-evolution.ticket2.synthesis-cells
@@ -7849,13 +7849,13 @@ steps:
       On repair failure preserve worktree/report/diff evidence before restoring clean post-Ticket1 point for cleanup. Restoration never changes failure into pass.
 - id: physical.ticket2-cells
   phase: ticket2
-  action: Directed seeded Acceptance Basis/candidate physical pair has cell-count increase at most 0%.
+  action: Directed seeded baseline/candidate physical pair has cell-count increase at most 0%.
   checks:
   - id: physical.ticket2-cells
     capabilities:
     - SYNTHESIS-FLOW
-    stimulus: Directed seeded Acceptance Basis/candidate physical pair has cell-count increase at most 0%.
-    expected: Directed seeded Acceptance Basis/candidate physical pair has cell-count increase at most 0%.
+    stimulus: Directed seeded baseline/candidate physical pair has cell-count increase at most 0%.
+    expected: Directed seeded baseline/candidate physical pair has cell-count increase at most 0%.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
     evidence: Fresh paired cells, Basis identity and exact Criterion comparison.
     capture: evidence/taxi-10g-mac-port-evolution.physical.ticket2-cells
@@ -8587,14 +8587,14 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-SCOPE.scope-recovery
   requires:
   - inputs.pin
-- id: inventory.TICKET-ACCEPTANCE-BASIS.basis-edit-reject
+- id: inventory.TICKET-BASELINE.basis-edit-reject
   phase: ticket2
   action: |-
     Exercise `basis-edit-reject`: Developer-time control input edit.
   checks:
-  - id: inventory.TICKET-ACCEPTANCE-BASIS.basis-edit-reject
+  - id: inventory.TICKET-BASELINE.basis-edit-reject
     capabilities:
-    - TICKET-ACCEPTANCE-BASIS
+    - TICKET-BASELINE
     stimulus: |-
       Exercise `basis-edit-reject`: Developer-time control input edit.
     expected: |-
@@ -8602,17 +8602,17 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Before/after sealed basis and destination core/history manifests. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-ACCEPTANCE-BASIS.basis-edit-reject
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-BASELINE.basis-edit-reject
   requires:
   - inputs.pin
-- id: inventory.TICKET-ACCEPTANCE-BASIS.basis-pin
+- id: inventory.TICKET-BASELINE.basis-pin
   phase: ticket2
   action: |-
     Exercise `basis-pin`: enqueue baseline-relative Ticket.
   checks:
-  - id: inventory.TICKET-ACCEPTANCE-BASIS.basis-pin
+  - id: inventory.TICKET-BASELINE.basis-pin
     capabilities:
-    - TICKET-ACCEPTANCE-BASIS
+    - TICKET-BASELINE
     stimulus: |-
       Exercise `basis-pin`: enqueue baseline-relative Ticket.
     expected: |-
@@ -8620,17 +8620,17 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Before/after sealed basis and destination core/history manifests. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-ACCEPTANCE-BASIS.basis-pin
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-BASELINE.basis-pin
   requires:
   - inputs.pin
-- id: inventory.TICKET-ACCEPTANCE-BASIS.basis-redraft
+- id: inventory.TICKET-BASELINE.basis-redraft
   phase: ticket2
   action: |-
     Exercise `basis-redraft`: return-to-draft/revise/reseal.
   checks:
-  - id: inventory.TICKET-ACCEPTANCE-BASIS.basis-redraft
+  - id: inventory.TICKET-BASELINE.basis-redraft
     capabilities:
-    - TICKET-ACCEPTANCE-BASIS
+    - TICKET-BASELINE
     stimulus: |-
       Exercise `basis-redraft`: return-to-draft/revise/reseal.
     expected: |-
@@ -8638,17 +8638,17 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Before/after sealed basis and destination core/history manifests. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-ACCEPTANCE-BASIS.basis-redraft
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-BASELINE.basis-redraft
   requires:
   - inputs.pin
-- id: inventory.TICKET-ACCEPTANCE-BASIS.target-disposition
+- id: inventory.TICKET-BASELINE.target-disposition
   phase: ticket2
   action: |-
     Exercise `target-disposition`: accept declared persistent/replacement/ephemeral Target Plan.
   checks:
-  - id: inventory.TICKET-ACCEPTANCE-BASIS.target-disposition
+  - id: inventory.TICKET-BASELINE.target-disposition
     capabilities:
-    - TICKET-ACCEPTANCE-BASIS
+    - TICKET-BASELINE
     stimulus: |-
       Exercise `target-disposition`: accept declared persistent/replacement/ephemeral Target Plan.
     expected: |-
@@ -8656,7 +8656,7 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Before/after sealed basis and destination core/history manifests. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-ACCEPTANCE-BASIS.target-disposition
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-BASELINE.target-disposition
   requires:
   - inputs.pin
 - id: inventory.TICKET-INTEGRATION.briefing-html

@@ -89,7 +89,7 @@ def _validate_checkout_basis(
             project_repository = resolve_inner_project_repo(root)
             if project_repository is None:
                 raise TicketBaselineError(
-                    "Acceptance Basis project participant repository is missing"
+                    "Ticket Baseline project participant repository is missing"
                 )
             resolve_commit(project_repository, basis.project_sha)
         ticket, _status = find_ticket_file(tickets_dir, slug)

@@ -128,7 +128,7 @@ def _recover_setup_state(ctx: TicketContext, project_root: Path) -> None:
     if not ctx.worktree_path:
         expected_wt = (
             resolve_project_dir(project_root) / "worktrees" / ctx.slug
-            if ctx.acceptance_basis is not None
+            if ctx.ticket_baseline is not None
             else project_root / ".booley_project" / "worktrees" / ctx.slug
         )
         if (expected_wt / ".git").exists():
@@ -285,13 +285,13 @@ async def _run_setup_step(ctx: TicketContext, project_root: Path) -> bool:
 
 def _resumed_basis_failure(ctx: TicketContext) -> str | None:
     """Return a setup-blocking error when a reused Ticket baseline view is invalid."""
-    if ctx.acceptance_basis is None:
+    if ctx.ticket_baseline is None:
         return None
     if ctx.worktree_path is None:
         return "acceptance-input-change-required: Ticket worktree is unavailable"
-    from .setup.workspace import _validate_materialized_acceptance_basis
+    from .setup.workspace import _validate_materialized_ticket_baseline
 
-    result = _validate_materialized_acceptance_basis(ctx, ctx.worktree_path)
+    result = _validate_materialized_ticket_baseline(ctx, ctx.worktree_path)
     return result.block_reason if result is not None else None
 
 
@@ -514,7 +514,7 @@ def _is_safe_worktree(ctx: TicketContext) -> bool:
     if wt_resolved == root_resolved:
         return False
     allowed_parents = [root_resolved / ".booley_project" / "worktrees"]
-    if ctx.acceptance_basis is not None:
+    if ctx.ticket_baseline is not None:
         allowed_parents.append(resolve_project_dir(root_resolved) / "worktrees")
     return any(wt_resolved.is_relative_to(p) for p in allowed_parents)
 
@@ -1251,16 +1251,16 @@ def _report_scope_deviations(ctx: TicketContext) -> None:
     from .colors import yellow
     from .scope_policy import DEVIATION_REPORT_NAME, committed_deviations, write_deviation_report
 
-    base_ref = ctx.acceptance_basis.outer_sha if ctx.acceptance_basis is not None else ctx.branch
+    base_ref = ctx.ticket_baseline.outer_sha if ctx.ticket_baseline is not None else ctx.branch
     result = committed_deviations(ctx.worktree_path, base_ref, ctx.scope_raw)
-    if ctx.acceptance_basis is not None and ctx.acceptance_basis.project_sha:
+    if ctx.ticket_baseline is not None and ctx.ticket_baseline.project_sha:
         from booley.runtime.project_repositories import paired_project_repository
 
         paired = paired_project_repository(ctx.worktree_path)
         project_result = (
             committed_deviations(
                 paired.worktree,
-                ctx.acceptance_basis.project_sha,
+                ctx.ticket_baseline.project_sha,
                 ctx.scope_raw,
                 path_prefix=paired.path_prefix,
             )
@@ -1439,7 +1439,7 @@ async def _resolve_ticket_disposition(
     endpoint_catalog: CriterionEndpointCatalog,
 ) -> TicketRunResult | None:
     """Read final state, check criteria acceptance, and transition the ticket."""
-    if _block_changed_acceptance_basis(ctx, run_index):
+    if _block_changed_ticket_baseline(ctx, run_index):
         return None
     from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
@@ -1475,9 +1475,9 @@ async def _resolve_ticket_disposition(
     return None
 
 
-def _block_changed_acceptance_basis(ctx: TicketContext, run_index: int) -> bool:
+def _block_changed_ticket_baseline(ctx: TicketContext, run_index: int) -> bool:
     """Fail closed before review handoff when Ticket baseline inputs changed."""
-    basis = ctx.acceptance_basis
+    basis = ctx.ticket_baseline
     if basis is None:
         logger.warning("Ticket %s reaches handoff without an Ticket baseline", ctx.slug)
         return False

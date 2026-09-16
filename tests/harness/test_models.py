@@ -51,7 +51,7 @@ class TestTicketContext:
         )
         assert ctx.logs_dir == tmp_path / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
 
-    def test_acceptance_basis_fields_requires_basis(self, tmp_path: Path) -> None:
+    def test_ticket_baseline_fields_requires_basis(self, tmp_path: Path) -> None:
         ctx = TicketContext(
             slug="my-ticket",
             ticket_path=Path("/t.md"),
@@ -62,7 +62,7 @@ class TestTicketContext:
         )
 
         with pytest.raises(ValueError, match="no machine metadata"):
-            ctx.acceptance_basis_fields()
+            ctx.ticket_baseline_fields()
 
 
 class TestOnSuccess:

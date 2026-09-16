@@ -5783,7 +5783,7 @@ class TestBoardMoveTerminalActionOverrides:
         )
 
     @staticmethod
-    def _acceptance_basis():
+    def _ticket_baseline():
         return {
             "schema": 1,
             "authored_sha256": "b" * 64,
@@ -5808,7 +5808,7 @@ class TestBoardMoveTerminalActionOverrides:
             extra_fields={
                 "on_success": {"destination": "review", "merge": merge, "cleanup": cleanup},
                 "feature_branch": "feat/my-ticket",
-                "machine": TestBoardMoveTerminalActionOverrides._acceptance_basis(),
+                "machine": TestBoardMoveTerminalActionOverrides._ticket_baseline(),
             },
         )
         make_progress(tio, "my-ticket", {"step": "summary"})
@@ -5845,10 +5845,10 @@ class TestBoardMoveTerminalActionOverrides:
             "my-ticket",
             extra_fields={
                 "on_success": {"destination": "review", "merge": True, "cleanup": False},
-                "machine": self._acceptance_basis(),
+                "machine": self._ticket_baseline(),
             },
         )
-        pointer = self._acceptance_basis()
+        pointer = self._ticket_baseline()
         hydrated = replace(
             ticket_baseline_from_machine(pointer),
             target_plan=TargetPlan.from_value([entry]),

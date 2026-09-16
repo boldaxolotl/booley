@@ -404,7 +404,7 @@ capabilities:
     Rejection diagnostics, staged/tree status and restoration diffs. Current public Usage Scope and CONTEXT supersede historical ordinary-file hard rejection. Migrate old scope-reject as superseded; bookkeeping and acceptance inputs remain protected.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: TICKET-ACCEPTANCE-BASIS
+- id: TICKET-BASELINE
   title: Ticket baseline
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters

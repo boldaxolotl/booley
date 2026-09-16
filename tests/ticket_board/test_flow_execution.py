@@ -18,7 +18,7 @@ from booley.ticket_board.frontmatter import format_frontmatter
 from booley.ticket_board.ticket_baseline import TicketBaselineError
 
 
-def test_recorder_rejects_malformed_acceptance_basis(
+def test_recorder_rejects_malformed_ticket_baseline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

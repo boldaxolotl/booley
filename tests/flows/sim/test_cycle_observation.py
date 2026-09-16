@@ -188,7 +188,7 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     return flow, next(iter(state.criteria))
 
 
-def _acceptance_basis() -> TicketBaseline:
+def _ticket_baseline() -> TicketBaseline:
     return TicketBaseline(
         bindings=(
             AcceptanceTargetBinding(
@@ -230,7 +230,7 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
         branch="main",
         summary="Qualified Cycle Count Target",
         project_root=Path(),
-        acceptance_basis=_acceptance_basis(),
+        ticket_baseline=_ticket_baseline(),
     )
     _apply_basis_selectors(context, expanded, params)
     state = DevelopmentState()

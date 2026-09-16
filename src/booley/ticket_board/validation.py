@@ -1215,7 +1215,7 @@ def validate_git_state(
     return errors
 
 
-def _validate_acceptance_basis_field(fields: dict[str, Any]) -> list[str]:
+def _validate_retired_ticket_fields(fields: dict[str, Any]) -> list[str]:
     if "acceptance_basis" in fields:
         return ["unsupported Ticket format: recreate this Ticket without acceptance_basis"]
     if "acceptance_amendment" in fields:
@@ -1299,7 +1299,7 @@ def validate_ticket_fields(
     errors.extend(_validate_basic_fields(fields, body))
     errors.extend(_validate_on_success(fields.get("on_success")))
     errors.extend(_validate_target_plan(fields.get("target_plan"), fields.get("on_success")))
-    errors.extend(_validate_acceptance_basis_field(fields))
+    errors.extend(_validate_retired_ticket_fields(fields))
     approved_optional = _approved_optional_conversions(fields, body, project_root)
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)

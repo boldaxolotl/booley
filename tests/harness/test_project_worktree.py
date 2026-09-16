@@ -165,7 +165,7 @@ def test_basis_bound_workspace_recreates_missing_paired_checkout(
     _git(project, "switch", "main")
     _git(project, "branch", "--set-upstream-to=main", branch)
     outer_sha = _git(ctx.project_root, "rev-parse", "HEAD")
-    ctx.acceptance_basis = TicketBaseline(
+    ctx.ticket_baseline = TicketBaseline(
         (
             BasisParticipant(
                 "outer",

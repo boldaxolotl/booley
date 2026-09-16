@@ -127,11 +127,7 @@ def _cmd_show(tio, args):
     slug = Path(entry["file"]).stem
     ticket_file = Path(tio.tickets_dir) / entry["file"]
     logs_dir = ticket_log_dir(tio.logs_dir, slug)
-    worktree_root = (
-        resolve_project_dir(tio._project_root)
-        if entry.get("acceptance_basis") is not None
-        else tio._project_root / ".booley_project"
-    )
+    worktree_root = resolve_project_dir(tio._project_root)
     worktree = worktree_root / "worktrees" / slug
     criteria = entry.get("criteria") or {}
     mandatory = criteria.get("mandatory") or {}
