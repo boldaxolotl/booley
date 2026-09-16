@@ -44,7 +44,7 @@ _EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
 _BWAVE_EXE = _VCD_PARSER_DIR / "target" / "debug" / f"bwave{_EXE_SUFFIX}"
 _BWAVE_RELEASE = _VCD_PARSER_DIR / "target" / "release" / f"bwave{_EXE_SUFFIX}"
 
-# Prefer the explicitly installed Session Runtime binary, then a release build,
+# Prefer the explicitly installed Sandbox binary, then a release build,
 # then the local debug build.
 _BWAVE_CONFIGURED = os.environ.get("BOOLEY_BWAVE_BIN")
 BWAVE_BIN = str(

@@ -1,4 +1,4 @@
-"""Outer-layer coordination for EDA grant and Session Runtime mutations."""
+"""Outer-layer coordination for EDA grant and Sandbox mutations."""
 
 from __future__ import annotations
 

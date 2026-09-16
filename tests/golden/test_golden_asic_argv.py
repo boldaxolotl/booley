@@ -12,7 +12,7 @@ FuseSoC resolution is stubbed with a canned ResolvedTarget (the
 ``_stub_fusesoc_resolution`` autouse pattern copied from
 ``tests/dev_support/test_asic_synthesize.py``): ``_build_synth_cmd`` would otherwise
 shell out to a real ``fusesoc run --setup``.  Every path in the resulting argv
-is *relative to the work dir* (the Session Runtime boundary contract), so the
+is *relative to the work dir* (the Sandbox boundary contract), so the
 snapshot is tmp-path-free by construction — the helper's leak guard enforces
 that.
 

@@ -1,6 +1,6 @@
 ### Interactive Mode contract
 
-The Scenario Operator launches one long-lived Interactive Mode session as its child inside the same Booley Session Runtime, with the Project working directory, PTY, Session Runtime identity, and MCP tool access preserved. A conforming launch is `booley session enter -- booley` when the environment requires it; a direct inherited child is also valid when those invariants are demonstrably preserved. This is not a separate Specialist or delegate.
+The Scenario Operator launches one long-lived Interactive Mode session as its child inside the same Booley Sandbox, with the Project working directory, PTY, Sandbox identity, and MCP tool access preserved. A conforming launch is `booley session enter -- booley` when the environment requires it; a direct inherited child is also valid when those invariants are demonstrably preserved. This is not a separate Specialist or delegate.
 
 First prompt, before fault injection:
 

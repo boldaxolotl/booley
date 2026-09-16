@@ -1,7 +1,7 @@
-"""Supervise one Runtime Attachment command through complete process-tree exit.
+"""Supervise one Sandbox Attachment command through complete process-tree exit.
 
-The host-side Runtime Attachment owns a durable record and requests cancellation
-through a sibling control file.  This in-runtime supervisor is a Linux
+The host-side Sandbox Attachment owns a durable record and requests cancellation
+through a sibling control file.  This in-Sandbox supervisor is a Linux
 subreaper: descendants that outlive their immediate parent are adopted here,
 so a child that calls ``setsid()`` cannot escape scoped cleanup.
 """
@@ -65,7 +65,7 @@ def _capture_runtime_signals(pending: _RuntimeSignals):
 
 def _become_subreaper() -> None:
     if sys.platform != "linux":
-        raise RuntimeError("Runtime Attachment execution supervision requires Linux")
+        raise RuntimeError("Sandbox Attachment execution supervision requires Linux")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
         errno = ctypes.get_errno()

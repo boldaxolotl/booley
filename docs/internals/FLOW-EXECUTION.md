@@ -14,7 +14,7 @@ result = LintFlow().execute(LintRequest(target="lint", work_dir=Path.cwd(), diag
 print(result.exit_code, result.outcome.detail)
 ```
 
-This entry point runs inside the Session Runtime and performs the same Ticket
+This entry point runs inside the Sandbox and performs the same Ticket
 validation, admission and persistence as the CLI. It constructs no parser or
 schema. `SimRequest`, `SynthRequest` and `FpgaRequest` live beside their respective
 implementations. Requests are copied for execution because preparation and

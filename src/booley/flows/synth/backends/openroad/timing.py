@@ -175,7 +175,7 @@ def write_openroad_script(
     )
     # cwd-relative, NOT work_dir-absolute: the boundary recipe runs OpenROAD
     # under `make -C work_dir`. Keeping this relative also makes the generated
-    # plan relocatable within the Session Runtime workspace.
+    # plan relocatable within the Sandbox workspace.
     out_verilog = f"openroad_{design_name}.v"
     rpt = (report_dir / "overall.rpt").as_posix()
     csv = (report_dir / "overall.csv.rpt").as_posix()

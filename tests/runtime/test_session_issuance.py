@@ -1,4 +1,4 @@
-"""Universal host-issued Session Runtime specification tests."""
+"""Universal host-issued Sandbox specification tests."""
 
 from __future__ import annotations
 
@@ -465,7 +465,7 @@ def test_builder_issuance_serializes_with_concurrent_grant_revoke(
 def test_resolve_image_id_rejects_missing_runtime_image(monkeypatch) -> None:
     monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot resolve Runtime Image"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot resolve Sandbox Image"):
         runtime_spec._resolve_image_id("missing:latest")
 
 
@@ -631,7 +631,7 @@ def test_recovery_snapshot_rejects_missing_keeper_image(issued, monkeypatch) -> 
         raise runtime_spec.RuntimeSpecError("missing")
 
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", missing)
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="Runtime Image keeper is missing"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Sandbox Image keeper is missing"):
         runtime_spec.load_recovery_snapshot(project, spec, path)
 
 
@@ -762,7 +762,7 @@ def test_requested_license_requires_issued_profile_identity(
     monkeypatch.setattr(eda_requirements, "_optional_license", lambda _project: profile)
 
     assert runtime_spec.requested_license(tmp_path, expected_name="site") is profile
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="differs from the issued runtime"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="differs from the issued Sandbox"):
         runtime_spec.requested_license(tmp_path, expected_name="other")
 
 
@@ -1873,7 +1873,7 @@ def test_extracted_image_contract_rejects_unreadable_library(tmp_path: Path) -> 
     (tmp_path / "vivado-wrapper").write_bytes(wrapper_path().read_bytes())
     with pytest.raises(
         eda_requirements.SessionRequirementsError,
-        match="cannot inspect Runtime Image library",
+        match="cannot inspect Sandbox Image library",
     ):
         eda_requirements.validate_image_observations(tmp_path)
 

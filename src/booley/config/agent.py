@@ -121,7 +121,7 @@ class SandboxConfig:
     """Sandbox configuration parsed from booley.toml [sandbox].
 
     ADR 0028: Booley is container-only — everything runs inside the one
-    Session Runtime (devcontainer), so there are no per-Flow containers to
+    Sandbox (devcontainer), so there are no per-Flow containers to
     size or route. ``memory`` is the single container memory limit fed into
     the generated devcontainer; the empty default means "no explicit limit"
     (the pre-ADR-0028 devcontainer set none, so existing installs see no
@@ -364,13 +364,11 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
     """Parse [sandbox] from booley.toml (single container memory limit).
 
     Legacy pre-ADR-0028 memory tier knobs are warned about and ignored; the
-    Session Runtime has one memory limit.
+    Sandbox has one memory limit.
     """
     section = data.get("sandbox", {})
     if "mode" in section:
-        logger.warning(
-            "[sandbox].mode is retired: the Session Runtime is always Docker; delete it"
-        )
+        logger.warning("[sandbox].mode is retired: the Sandbox is always Docker; delete it")
     image = section.get("image", SANDBOX_IMAGE)
     if not isinstance(image, str) or not image.strip():
         logger.warning("Invalid sandbox image %r; falling back to %r", image, SANDBOX_IMAGE)

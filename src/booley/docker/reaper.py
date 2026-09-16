@@ -1,10 +1,10 @@
-"""Idle reaper + concurrency cap for Interactive Mode session containers.
+"""Idle reaper + concurrency cap for Interactive Mode Sandboxes.
 
 ADR 0018 makes this mandatory: VS Code's stop-on-close is unreliable, and an
-orphaned session container is an orphaned copy of the repo with forwarded git
+orphaned Sandbox is an orphaned copy of the repo with forwarded git
 credentials. This runs as the long-lived ``booley-reaper`` container (the only
-container that mounts the docker socket; session containers keep none) and
-periodically stops session containers (label ``booley.role=interactive``) that
+container that mounts the docker socket; Sandboxes keep none) and
+periodically stops Sandboxes (label ``booley.role=interactive``) that
 are idle past a timeout or exceed the concurrency cap.
 
 Self-contained (stdlib only) so it runs in a minimal ``docker:cli`` + python
@@ -54,7 +54,7 @@ DEFAULT_INTERVAL_S = 60
 
 @dataclass(frozen=True)
 class SessionContainer:
-    """A running interactive session container and its activity timestamps."""
+    """A running interactive Sandbox and its activity timestamps."""
 
     id: str
     name: str
@@ -157,7 +157,7 @@ def _run(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
 def list_session_containers(
     run: Callable[..., subprocess.CompletedProcess] = _run,
 ) -> list[tuple[str, str]]:
-    """Return ``(id, name)`` for running interactive session containers."""
+    """Return ``(id, name)`` for running interactive Sandboxes."""
     result = run(
         ["ps", "--filter", f"label={INTERACTIVE_LABEL}", "--format", "{{.ID}}\t{{.Names}}"]
     )
@@ -193,7 +193,7 @@ def _heartbeat(cid: str, run=_run) -> float | None:
 
 
 def collect(run: Callable[..., subprocess.CompletedProcess] = _run) -> list[SessionContainer]:
-    """Gather session containers with their activity timestamps."""
+    """Gather Sandboxes with their activity timestamps."""
     out: list[SessionContainer] = []
     for cid, name in list_session_containers(run):
         started = _started_at(cid, run)
@@ -361,7 +361,7 @@ def reap_once(
         if ownership.project_id is not None:
             cleanup_licensed_session(cid, ownership.project_id, run)
     if stopped:
-        logger.info("reaped %d session container(s): %s", len(stopped), ", ".join(stopped))
+        logger.info("reaped Sandbox instances (%d): %s", len(stopped), ", ".join(stopped))
     cleaned = cleanup_orphaned_license_topologies(run)
     if cleaned:
         logger.info("cleaned %d orphaned license topology(s)", len(cleaned))

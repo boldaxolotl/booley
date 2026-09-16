@@ -78,7 +78,7 @@ class AutocrlfSetting:
 
 @dataclass(frozen=True)
 class LineEndingRepository:
-    """One distinct Git worktree whose files enter the Session Runtime."""
+    """One distinct Git worktree whose files enter the Sandbox."""
 
     role: LineEndingRole
     root: Path

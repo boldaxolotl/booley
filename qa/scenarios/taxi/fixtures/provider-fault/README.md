@@ -1,6 +1,6 @@
 # TICKET-RESILIENCE provider process controls
 
-Use this only in the declared disposable Taxi Session Runtime, after a real selected
+Use this only in the declared disposable Taxi Sandbox, after a real selected
 Codex invocation passes and its absolute executable path/version are recorded.
 Keep authentication in the existing approved store. The fixture does not contact
 a provider, simulate a successful response, or read/retain credentials.
@@ -10,7 +10,7 @@ Create a Scenario Operator-owned directory with a `mode` file containing `subscr
 and `QA_REAL_CODEX` to the recorded original executable. In the run-owned PATH
 prefix, install a `codex` launcher that executes this Python file with unchanged
 arguments (`#!/bin/sh` plus `exec python3 /absolute/fixture/codex_fixture.py "$@"`
-in the Linux Session Runtime used on both native hosts). Set this environment in the disposable Session Runtime terminal that launches the same
+in the Linux Sandbox used on both native hosts). Set this environment in the disposable Sandbox terminal that launches the same
 public Ticket execution used by the baseline; never overwrite the installed binary.
 
 Invoke the normal public Ticket execution command. The shim only intercepts

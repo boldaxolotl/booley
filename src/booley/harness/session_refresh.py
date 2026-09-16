@@ -1,4 +1,4 @@
-"""Project Initialization composition for Session Runtime refresh."""
+"""Project Initialization composition for Sandbox refresh."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class _RuntimeImages:
             inspection=self._inspection,
         )
         if result.selected_id is None:
-            raise SessionError("image refresh did not return an immutable Runtime Image ID")
+            raise SessionError("image refresh did not return an immutable Sandbox Image ID")
         return runtime_refresh.RefreshImage(
             result.selected_reference,
             result.selected_id,
@@ -54,5 +54,5 @@ def refresh(
     *,
     verbose: bool = False,
 ) -> runtime_refresh.RefreshImage:
-    """Refresh the selected image and replace its Session Runtime atomically."""
+    """Refresh the selected image and replace its Sandbox atomically."""
     return runtime_refresh.refresh(project_root, _RuntimeImages(), verbose=verbose)

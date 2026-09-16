@@ -69,7 +69,7 @@ def _retired_flow_key_error(section: str, key: str, value: object) -> str:
     if key == "backend":
         return (
             f"booley.toml [{section}].backend is retired; all Flows run inside "
-            "the Session Runtime; delete the key"
+            "the Sandbox; delete the key"
         )
     return f"booley.toml [{section}].{key} is retired; delete the key"
 

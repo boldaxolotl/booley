@@ -29,7 +29,7 @@ skips as failures or silently counting one as a pass.
 
 Use one of these outcomes when the full contract is not met:
 
-- **Locally clean — user action required**: the Session Runtime is clean, but a host,
+- **Locally clean — user action required**: the Sandbox is clean, but a host,
   credential, license, service, GUI, or other external action remains.
 - **Booley defect — feedback captured**: source inspection confirms Booley or
   its documentation is wrong. State whether a workaround restored health.
@@ -59,9 +59,9 @@ Never describe one of those partial outcomes as healed.
 
 ## 1. Establish the baseline
 
-1. Before Doctor can refresh any health evidence, record the runtime location,
+1. Before Doctor can refresh any health evidence, record the Sandbox location,
    `git status --short`, and `booley upgrade status --json`. Doctor is
-   context-aware, so do not assume a host result proves the Session Runtime or
+   context-aware, so do not assume a host result proves the Sandbox or
    vice versa.
 2. Run plain `booley doctor` and retain its complete output. Manual Doctor is
    the repair entry point for limited housekeeping such as guidance links or
@@ -83,7 +83,7 @@ preserve its JSON as evidence.
 
 Proceed with a pending review only when the state is readable, the running
 version equals `pending_target`, and the packaged changelog contains that exact
-release. A `stale-runtime` status requires a Session Runtime refresh or rebuild;
+release. A `stale-runtime` status requires a Sandbox refresh or rebuild;
 hand that action to the user and stop before acknowledgment. Corrupt or
 unavailable state and a missing target entry also block acknowledgment.
 
@@ -97,7 +97,7 @@ Use `booley.runtime.changelog.releases_between` to read every available entry
 in `(reviewed_through, pending_target]`, oldest first. Report the packaged
 history boundary when the range begins before the oldest available entry.
 Build a concrete checklist from all applicable CLI, configuration, generated
-file, Session Runtime, image, compatibility, and manual migration notes. Keep
+file, Sandbox, image, compatibility, and manual migration notes. Keep
 each item open until source inspection, a repair, or verification demonstrates
 its disposition.
 
@@ -118,7 +118,7 @@ Use evidence in this order:
    ```
 
    Search that `TROUBLESHOOTING.md` using exact error fragments and concrete nouns from the
-   finding. Read the whole matching section, including its commands and runtime-location
+   finding. Read the whole matching section, including its commands and Sandbox-location
    qualifications. The guide documents common residue and pitfalls Doctor cannot
    fully infer; do not force an unrelated recipe onto a finding just because a
    keyword matched.
@@ -162,7 +162,7 @@ user hand-off. Do not let one host-only action hide other useful progress.
 
 ### External or host-only action
 
-Do not execute an action outside the current Session Runtime. Give the user a
+Do not execute an action outside the current Sandbox. Give the user a
 copyable guide containing:
 
 1. **Where:** host OS, named terminal, GUI, license server, or other external system.
@@ -172,7 +172,7 @@ copyable guide containing:
 4. **Expect:** the observable successful result.
 5. **Verify:** the exact command to rerun, usually host `booley doctor`, and
    what must disappear or change.
-6. **Resume:** tell the user to reinvoke `booley-heal` in the Session Runtime.
+6. **Resume:** tell the user to reinvoke `booley-heal` in the Sandbox.
 
 Never claim that a command was run or a service changed when it was only handed
 to the user.
@@ -220,11 +220,10 @@ After deep repairs, run plain Doctor again because deep-side changes can regress
 non-deep checks. Once the repair is settled and plain Doctor is clean, rerun deep
 Doctor as the final evidence; the earlier failed run cannot serve as evidence.
 
-Changes affecting project configuration, Targets, dependencies, or the Session
-Runtime require all of this evidence:
+Changes affecting project configuration, Targets, dependencies, or the Sandbox require all of this evidence:
 
-- Session Runtime: final plain `booley doctor`;
-- Session Runtime: final `booley doctor --deep`;
+- Sandbox: final plain `booley doctor`;
+- Sandbox: final `booley doctor --deep`;
 - host: final plain `booley doctor`.
 
 Run the invocations available in the current context. Hand unavailable external actions
@@ -242,7 +241,7 @@ booley upgrade acknowledge --expected-target <pending_target>
 ```
 
 For an initially `current` status, skip acknowledgment. The command is a
-compare-and-swap: a newer observation, stale runtime, missing
+compare-and-swap: a newer observation, stale Sandbox, missing
 packaged entry, changed target, or unreadable state must fail without changing
 the pending review. On success, run final plain `booley doctor` and confirm the
 pending warning disappears. If that final Doctor finds a new race or unrelated

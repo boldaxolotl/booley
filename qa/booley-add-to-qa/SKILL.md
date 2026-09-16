@@ -16,7 +16,7 @@ authority.
 Read the shared [protocol](../doc/PROTOCOL.md) only when the proposed change depends
 on or changes shared execution behavior, including when designing a new Scenario.
 
-For a Runtime Attachment or Waveform Viewer requirement, also read the
+For a Sandbox Attachment or Waveform Viewer requirement, also read the
 [GUI Check example](references/gui-check-example.md).
 
 ## Classify the requirement

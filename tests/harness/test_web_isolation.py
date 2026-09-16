@@ -1,4 +1,4 @@
-"""Provider-hosted web MCP tools must not bypass the Session Runtime boundary."""
+"""Provider-hosted web MCP tools must not bypass the Sandbox boundary."""
 
 from __future__ import annotations
 

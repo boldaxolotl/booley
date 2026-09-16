@@ -1925,7 +1925,7 @@ async def _launch_developer_agent(
     on_event: object = None,
     developer_budget: DeveloperBudget | None = None,
 ) -> object:
-    """Launch the developer agent natively inside the Session Runtime.
+    """Launch the developer agent natively inside the Sandbox.
 
     ADR 0028 (container-only): the Runner process itself already executes
     inside the devcontainer, so the developer is a plain in-container

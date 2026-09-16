@@ -1,4 +1,4 @@
-"""Recoverable host-issued Session Runtime specification state."""
+"""Recoverable host-issued Sandbox specification state."""
 
 from __future__ import annotations
 
@@ -101,11 +101,11 @@ def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> N
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            errors.append(f"Runtime Image keeper: {exc}")
+            errors.append(f"Sandbox Image keeper: {exc}")
         else:
             if result.returncode != 0:
                 errors.append(
-                    "Runtime Image keeper: " + (result.stderr.strip() or "docker tag failed")
+                    "Sandbox Image keeper: " + (result.stderr.strip() or "docker tag failed")
                 )
     for label, path, content, mode in (
         ("Session spec", snapshot.spec_path, snapshot.spec_content, snapshot.spec_mode),

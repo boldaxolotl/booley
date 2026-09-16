@@ -52,9 +52,9 @@ def test_inspect_returns_one_complete_pending_plan(
 
     assert plan.prepared is prepared
     assert plan.pending_details == (
-        "Session Runtime specification/issuance (spec drifted)",
+        "Sandbox specification/issuance (spec drifted)",
         "Git exclusions",
-        "stopped Session Runtime resources",
+        "stopped Sandbox resources",
     )
     runtime_plan.assert_called_once_with(tmp_path, prepared.prospective_issuance)
 

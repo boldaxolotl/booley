@@ -4,7 +4,7 @@ This is the canonical vocabulary for concepts shared across Booley. Consult it
 when a term is unfamiliar; it is not an onboarding sequence. The
 [context map](../CONTEXT-MAP.md) points to the separately owned vocabularies.
 
-Booley is the **agentic RTL IDE**: the integrated working environment for human-guided and autonomous RTL development. **Interactive Mode** and **Ticket Mode** share the same isolated **Session Runtime**, Booley Flows, and Specialists; neither mode alone defines the product.
+Booley is the **agentic RTL IDE**: the integrated working environment for human-guided and autonomous RTL development. **Interactive Mode** and **Ticket Mode** share the same isolated **Sandbox**, Booley Flows, and Specialists; neither mode alone defines the product.
 _Avoid_ (for the product itself): framework, system, library, platform, toolkit, package, harness
 
 The glossary also records words to _avoid_. Booley's concepts collide with
@@ -25,7 +25,7 @@ Idempotent, Project-independent preparation of the host environment and the curr
 _Avoid_: Project bootstrap, machine setup, installation
 
 **Project Initialization**:
-Idempotent mechanical creation and reconciliation of Booley state and runtime infrastructure for one codebase, making it a **Project** without interpreting its design.
+Idempotent mechanical creation and reconciliation of Booley state and Sandbox infrastructure for one codebase, making it a **Project** without interpreting its design.
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 
 **Project Setup**:
@@ -34,38 +34,38 @@ _Avoid_: Project Initialization, onboarding, porting
 
 ### Execution
 
-How and where Booley work runs. The **Session Runtime** is the execution environment; **Ticket Mode** and **Interactive Mode** are the two ways to drive it; the remaining entries are the machinery inside.
+How and where Booley work runs. The **Sandbox** is the execution environment; **Ticket Mode** and **Interactive Mode** are the two ways to drive it; the remaining entries are the machinery inside.
 
-**Session Runtime**:
-The isolated execution environment for one opened project folder, and the place where all Booley work executes. It owns filesystem access, shell execution, git operations, EDA subprocesses, MCP servers, logs, and secrets; the host may provision immutable EDA installation files and narrowly scoped license connectivity, but never execution authority. Tickets receive their own git worktrees and branches inside the runtime; the branch and its commits are the durable artifact of a run, while the worktree itself is runtime-scoped scratch. Docker is the default implementation, not the domain concept.
-_Avoid_: Session Container, Docker Session, MCP sandbox, per-ticket sandbox
+**Sandbox**:
+The isolated execution environment for one opened project folder, and the place where all Booley work executes. It owns filesystem access, shell execution, git operations, EDA subprocesses, MCP servers, logs, and secrets; the host may provision immutable EDA installation files and narrowly scoped license connectivity, but never execution authority. Tickets receive their own git worktrees and branches inside the Sandbox; the branch and its commits are the durable artifact of a run, while the worktree itself is Sandbox-scoped scratch. Docker is the default implementation, not the domain concept.
+_Avoid_: Session Runtime, Session Container, Docker Session, MCP sandbox, per-ticket sandbox
 
-**Runtime Image**:
-The reusable immutable filesystem and installed-program artifact from which **Session Runtimes** are created. A Project selects either a Booley-owned image, an automatically named Project-derived image, or an explicitly external image; a mutable tag is only a locator and is not the Runtime Image's identity.
-_Avoid_: Session Image, sandbox tag, container, Dockerfile
+**Sandbox Image**:
+The reusable immutable filesystem and installed-program artifact from which **Sandboxes** are created. A Project selects either a Booley-owned image, an automatically named Project-derived image, or an explicitly external image; a mutable tag is only a locator and is not the Sandbox Image's identity.
+_Avoid_: Runtime Image, Session Image, sandbox tag, container, Dockerfile
 
-**Session Runtime Issuance**:
-The host-owned act of sealing and vouching for one exact Session Runtime specification, including its immutable image, trusted mounts, network policy, and granted provisioning inputs. It is distinct from **EDA Provisioning**, which decides where EDA installation files originate.
-_Avoid_: EDA runtime spec, provisioning issuance
+**Sandbox Issuance**:
+The host-owned act of sealing and vouching for one exact Sandbox specification, including its immutable image, trusted mounts, network policy, and granted provisioning inputs. It is distinct from **EDA Provisioning**, which decides where EDA installation files originate.
+_Avoid_: Session Runtime Issuance, EDA runtime spec, provisioning issuance
 
 **Ticket Mode**:
-The ticket-driven execution mode: a `booley run` invocation, issued from inside a Session Runtime, launches a Developer Agent per selected Ticket and drives each Ticket through its lifecycle to completion or escalation. Multiple Tickets may execute concurrently within one Session Runtime, alongside an Interactive Mode session; each Ticket works in its own git worktree and branch. Ticket Mode no longer creates a Session Runtime of its own.
+The ticket-driven execution mode: a `booley run` invocation, issued from inside a Sandbox, launches a Developer Agent per selected Ticket and drives each Ticket through its lifecycle to completion or escalation. Multiple Tickets may execute concurrently within one Sandbox, alongside an Interactive Mode session; each Ticket works in its own git worktree and branch. Ticket Mode no longer creates a Sandbox of its own.
 _Avoid_: batch mode, automated mode, host mode
 
 **Interactive Mode**:
-Execution mode in which a human steers Claude Code or Codex inside a Session Runtime, using the recommended CLI or an optional VS Code extension in a window attached to that runtime. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside that runtime; ordinary interactive work has no Ticket or Criteria tracking. Explicit human review of a Ticket retains its Scope and records Criteria evidence while the human directs the work, without a Developer Agent.
+Execution mode in which a human steers Claude Code or Codex inside a Sandbox, using the recommended CLI or an optional VS Code extension in a window attached to that Sandbox. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; ordinary interactive work has no Ticket or Criteria tracking. Explicit human review of a Ticket retains its Scope and records Criteria evidence while the human directs the work, without a Developer Agent.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
-**Runtime Attachment**:
-The connection method by which a human-facing app or autonomous driver uses a Session Runtime. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") is the first Interactive Mode attachment; direct subprocess execution is the Ticket Mode attachment.
-_Avoid_: remote, tunnel, app bridge
+**Sandbox Attachment**:
+The connection method by which a human-facing app or autonomous driver uses a Sandbox. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") is the first Interactive Mode attachment; direct subprocess execution is the Ticket Mode attachment.
+_Avoid_: Runtime Attachment, remote, tunnel, app bridge
 
 **Ticket Preflight**:
 The fast-fail validation Booley runs before Ticket intake. It checks the execution environment, Ticket Board and Git state, Custom Flow metadata, Criteria structure, and configured agent backend. Blocking failures stop the run before Ticket work begins; non-blocking findings are warnings. `booley doctor` provides related diagnostics without starting a Ticket run, but it does not reproduce every Ticket Preflight result.
 _Avoid_: bare Preflight, Flow validation, doctor, startup test
 
 **Harness**:
-The Ticket Mode runtime infrastructure that the Developer Agent operates within, managing ticket lifecycle, Criteria tracking, logging, and cleanup. Interactive Mode may reuse lower-level Session Runtime infrastructure, but does not run inside the Harness.
+The Ticket Mode infrastructure that the Developer Agent operates within, managing ticket lifecycle, Criteria tracking, logging, and cleanup. Interactive Mode may reuse lower-level Sandbox infrastructure, but does not run inside the Harness.
 _Avoid_: engine, core, framework, harness
 
 **Developer Agent**:
@@ -76,24 +76,24 @@ _Avoid_: bare "Developer", loop, controller, scheduler, harness
 An advisory cluster of Developer Agent activity, useful Specialists, Booley Flows, and intended outcomes. The three Workflow Regions are `pre_sim`, `core_loop`, and `post_sim`; each Criterion declares its region via the `workflow_region` key in criteria.toml, which drives advisory ordering only. Workflow Regions guide ticket execution without imposing mandatory order, mandatory Flow use, or hidden completion gates.
 _Avoid_: stage, phase, pipeline step
 
-**Sandbox**:
-The isolation policy applied to a Session Runtime: mounted paths, network access, credentials, memory, process limits, and Linux capabilities. It is a property of the runtime, not of individual Booley Flows or Specialists: both execute inside the same runtime and share its policy. Network egress is default-deny and admitted only through purpose-specific runtime gateways such as the model-service egress proxy and an authorized **FlexNet License Relay**; there is no per-Flow network boundary.
-_Avoid_: container, jail, runtime; per-Flow network policy
+**Sandbox Policy**:
+The isolation rules applied to a Sandbox: mounted paths, network access, credentials, memory, process limits, and Linux capabilities. Booley Flows and Specialists share this policy within the same Sandbox. Network egress is default-deny and admitted only through purpose-specific gateways such as the model-service egress proxy and an authorized **FlexNet License Relay**; there is no per-Flow network boundary.
+_Avoid_: per-Flow network policy
 
 **Host-Provisioned Sandbox EDA Tool**:
-An EDA tool whose immutable installation files are supplied by the host while every process executes inside the **Session Runtime** under its **Sandbox**. Host provisioning conveys file availability, not host execution authority.
+An EDA tool whose immutable installation files are supplied by the host while every process executes inside the **Sandbox** under its **Sandbox Policy**. Host provisioning conveys file availability, not host execution authority.
 _Avoid_: host execution, host EDA flow, container-installed tool, trusted tool, bare tool
 
 **Image-Provisioned Sandbox EDA Tool**:
-An EDA tool whose installation is part of the selected Runtime Image and whose processes execute inside that runtime. Image provisioning is the default when a Project does not request a host registration for that EDA kind.
+An EDA tool whose installation is part of the selected Sandbox Image and whose processes execute inside that Sandbox. Image provisioning is the default when a Project does not request a host registration for that EDA kind.
 _Avoid_: built-in tool, bare tool
 
 **EDA Provisioning**:
-The policy selecting whether one EDA kind is image-provisioned or host-provisioned for a **Session Runtime**. Provisioning selects where installation files originate, never where EDA processes execute.
+The policy selecting whether one EDA kind is image-provisioned or host-provisioned for a **Sandbox**. Provisioning selects where installation files originate, never where EDA processes execute.
 _Avoid_: execution location, EDA backend
 
 **FlexNet License Relay**:
-A fixed-destination raw-TCP runtime egress gateway through which an authorized **Session Runtime** reaches one registered FlexNet server and its fixed license-manager ports. The relay provides no general network route and is available runtime-wide rather than being a per-Flow boundary.
+A fixed-destination raw-TCP egress gateway through which an authorized **Sandbox** reaches one registered FlexNet server and its fixed license-manager ports. The relay provides no general network route and is available Sandbox-wide rather than being a per-Flow boundary.
 _Avoid_: license proxy, HTTP proxy, license sidecar (except when discussing deployment topology)
 
 **FlexNet SERVER Host Identifier**:
@@ -105,7 +105,7 @@ A background run of a Booley Flow or Specialist, tracked by a `run_id` through t
 _Avoid_: task, process, async call
 
 **Job Class**:
-The admission category of a Job or Developer Agent, determined by which scarce resource it consumes: in-runtime EDA work (`heavy`), model-API-bound Specialist work (`light`), or a Developer Agent itself (`ticket`). Each class carries a configurable concurrency cap; work beyond the cap queues in priority order (Interactive Mode ahead of Ticket Mode) rather than being refused, and running work is never preempted. The one refusal is a full queue: past the configured `queue_max`, admission raises rather than waits.
+The admission category of a Job or Developer Agent, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`), model-API-bound Specialist work (`light`), or a Developer Agent itself (`ticket`). Each class carries a configurable concurrency cap; work beyond the cap queues in priority order (Interactive Mode ahead of Ticket Mode) rather than being refused, and running work is never preempted. The one refusal is a full queue: past the configured `queue_max`, admission raises rather than waits.
 _Avoid_: tier, weight, pool, semaphore
 
 ### Configuration
@@ -146,7 +146,7 @@ A sim **Target** whose testbench is a cocotb Python module, declared in the Targ
 _Avoid_: python testbench config, cocotb core, cocotb suite
 
 **Pre-Sim Commands**:
-Project-declared shell commands that Booley executes inside the **Session Runtime** immediately before each simulation run, with the run's test selection and authoritative run directory in the environment. For an HDL-testbench Target the hook fires once per test; for a **Cocotb Target** it fires once before the batched run. This is the sanctioned seam for non-RTL per-test build steps (per-case firmware compiles, vector staging) that FuseSoC cannot express.
+Project-declared shell commands that Booley executes inside the **Sandbox** immediately before each simulation run, with the run's test selection and authoritative run directory in the environment. For an HDL-testbench Target the hook fires once per test; for a **Cocotb Target** it fires once before the batched run. This is the sanctioned seam for non-RTL per-test build steps (per-case firmware compiles, vector staging) that FuseSoC cannot express.
 _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 
 ### Flows, EDA tools, and MCP tools
@@ -158,7 +158,7 @@ _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 | **MCP tool** | Protocol-level mechanism used to invoke a Flow or Specialist | Implementation detail rather than product taxonomy |
 
 **Booley Flow**:
-Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation). In Ticket Mode it is invoked by the Developer Agent and updates Criteria; in Interactive Mode it is invoked by the outer runtime through an MCP tool with no Criteria side effects. A resolved **Target** supplies the EDA-selection field used during FuseSoC resolution. Simulation and lint drive that selected tool directly; the FPGA Flow rebuilds the resolved design inputs into its fixed Vivado EDAM, so the Target's `fpga` naming axis declares drivability while its EDA-selection field remains a resolution input. Every Booley Flow builds its command through Booley's FuseSoC/Edalize path, executes inside the **Session Runtime**, and interprets the result into evidence.
+Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation). In Ticket Mode it is invoked by the Developer Agent and updates Criteria; in Interactive Mode it is invoked inside the Sandbox through an MCP tool with no Criteria side effects. A resolved **Target** supplies the EDA-selection field used during FuseSoC resolution. Simulation and lint drive that selected tool directly; the FPGA Flow rebuilds the resolved design inputs into its fixed Vivado EDAM, so the Target's `fpga` naming axis declares drivability while its EDA-selection field remains a resolution input. Every Booley Flow builds its command through Booley's FuseSoC/Edalize path, executes inside the **Sandbox**, and interprets the result into evidence.
 _Avoid_: B-Tool, mechanical tool, utility, command
 
 **EDA tool**:
@@ -209,10 +209,10 @@ You will not need these unless you are reading older tickets, code, or docs; the
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.
 - **"agent"**: Overloaded across Booley (Specialist), Claude Code (the outer agent), and the LLM industry generally. Use **Specialist** for Booley's LLM-powered sub-agents, **Developer Agent** for the agent that executes Tickets.
-- **"stage"**, and lowercase **"harness"** used as a synonym for Booley's architecture as a whole: legacy framing: the system is a Developer Agent choosing capabilities, not a fixed pipeline. Do not use them that way. (The capitalized **Harness** *is* canonical: the Ticket Mode runtime infrastructure the Developer Agent runs within; see its entry above. What to avoid is "harness" as a loose synonym for the overall system.)
+- **"stage"**, and lowercase **"harness"** used as a synonym for Booley's architecture as a whole: legacy framing: the system is a Developer Agent choosing capabilities, not a fixed pipeline. Do not use them that way. (The capitalized **Harness** *is* canonical: the Ticket Mode infrastructure the Developer Agent runs within; see its entry above. What to avoid is "harness" as a loose synonym for the overall system.)
 - **"engine" / "core"**: Legacy synonyms for Harness. Do not use.
 - **"Design Configuration"**: Retired. The Booley-side bundle of EDA params no longer exists; design-description lives in a FuseSoC **Target**, and Booley only references it by name. Use **Target**.
-- **"Session ID"**: Never implemented. Branch names and worktree paths derive from the ticket slug, and container names from the workspace folder name; there is no stable per-runtime identity to refer to.
+- **"Session ID"**: Never implemented. Branch names and worktree paths derive from the ticket slug, and container names from the workspace folder name; there is no stable per-Sandbox identity to refer to.
 - **"parameter override"** / **`-d`** / **`--define`**: Retired. There is no per-call build-time injection into a **Target**; declare the value in the Target, or use a different Target.
 - **"colon-free target names"**: Retired absolute. VLNV grammar (the FuseSoC Vendor:Library:Name:Version identifier) is permitted on Booley's surface: bare names when unambiguous, `vlnv#name` on collision.
 - **"target"**: Overloaded: a FuseSoC `.core` build **Target** vs. an EDA "target device/part" (the FPGA/ASIC the design maps to). The part is one field *inside* a Target, not a synonym for it. Always mean the FuseSoC build **Target** unqualified; say "target device" or "part" for the silicon.

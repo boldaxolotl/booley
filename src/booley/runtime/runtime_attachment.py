@@ -1,4 +1,4 @@
-"""Supervised command execution through a Session Runtime attachment."""
+"""Supervised command execution through a Sandbox attachment."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    """Authoritative terminal result from the in-runtime supervisor."""
+    """Authoritative terminal result from the in-Sandbox supervisor."""
 
     exit_code: int
     state: str
@@ -204,7 +204,7 @@ def _report_protocol_failure(result: ExecutionResult) -> None:
     if result.terminal_cause not in {"protocol_mismatch", "protocol_unavailable"}:
         return
     logger.error(
-        "Session Runtime execution protocol is unavailable or incompatible; "
+        "Sandbox execution protocol is unavailable or incompatible; "
         "run `booley session refresh` and retry"
     )
 

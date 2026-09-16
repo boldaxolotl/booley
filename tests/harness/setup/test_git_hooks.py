@@ -179,7 +179,7 @@ class TestProjectCommitMsgHookVendoring:
 
         On a Windows host, Path.write_text with the default newline translates
         every \\n to \\r\\n, so the shebang lands as ``#!/bin/sh\\r``. The Linux
-        Session Runtime then tries to exec ``/bin/sh\\r`` (ENOENT) and EVERY
+        Sandbox then tries to exec ``/bin/sh\\r`` (ENOENT) and EVERY
         in-container commit fails — hence all of Ticket Mode.
         """
         from booley.harness.setup.git_hooks import _step_project_git_hooks

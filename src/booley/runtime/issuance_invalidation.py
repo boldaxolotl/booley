@@ -1,4 +1,4 @@
-"""Durable invalidation of host-issued Session Runtime authority."""
+"""Durable invalidation of host-issued Sandbox authority."""
 
 from __future__ import annotations
 
@@ -79,13 +79,13 @@ def recover_project_locked(
         invalidate_project(pending.project_root)
     except OSError as exc:
         raise InvalidationError(
-            f"cannot invalidate Session Runtime issuance for {pending.project_root}: {exc}"
+            f"cannot invalidate Sandbox issuance for {pending.project_root}: {exc}"
         ) from exc
     if pending.cleanup_resources:
         residual = cleanup_resources(pending.project_root)
         if residual:
             raise InvalidationError(
-                "EDA authority changed, but Session Runtime cleanup left residual objects: "
+                "EDA authority changed, but Sandbox cleanup left residual objects: "
                 + ", ".join(residual)
             )
     cancel(pending)
@@ -134,7 +134,7 @@ def coordinate_mutation(
                     invalidate_project(project_identity)
                 except OSError as exc:
                     raise InvalidationError(
-                        f"cannot invalidate Session Runtime issuance for {project_identity}: {exc}"
+                        f"cannot invalidate Sandbox issuance for {project_identity}: {exc}"
                     ) from exc
             result = commit()
         recover_project_locked(

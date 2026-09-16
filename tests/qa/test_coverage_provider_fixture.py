@@ -15,7 +15,7 @@ provider = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(provider)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux Session Runtime pipe transport")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux Sandbox pipe transport")
 def test_burst_messages_do_not_wait_for_more_fd_input():
     reader, writer = os.pipe()
     os.write(writer, b'{"id":1}\n{"id":2}\n')

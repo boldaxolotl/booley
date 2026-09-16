@@ -349,7 +349,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - Actual VS Code Sandbox Attachment, MCP and WCP with qualified rendered screenshot observer
   check_sets:
   - uart-core
   - uart-gui
@@ -398,7 +398,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - Actual VS Code Sandbox Attachment, MCP and WCP with qualified rendered screenshot observer
   check_sets:
   - uart-core
   - uart-windows
@@ -408,7 +408,7 @@ inputs:
 - id: release
   kind: pre-run
   value: |-
-    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and runtime image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
+    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and Sandbox Image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
   source: https://github.com/boldaxolotl/booley
   verification: Record version, source commit, executable/import origin, package hash, documentation identity and image payload provenance before work.
 - id: corpus
@@ -1469,7 +1469,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1521,7 +1521,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1573,7 +1573,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1625,7 +1625,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1677,7 +1677,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1729,7 +1729,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1781,7 +1781,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1833,7 +1833,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1885,7 +1885,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1937,7 +1937,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1989,7 +1989,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -2041,7 +2041,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -2093,7 +2093,7 @@ steps:
   assets:
   - path: fixtures/host-policy/README.md
     audience: scenario-operator
-    sha256: c66d3d6d9934bc5e59e4519165e20d23192fcdf85c5bcc9332c897a1246dc4e6
+    sha256: fa28a47f470b28747b89510437329cc839a07bc9991dfd4277f28b3fd47cf5e6
   - path: fixtures/host-policy/cap.toml
     audience: scenario-operator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -2325,7 +2325,7 @@ steps:
   assets:
   - path: fixtures/legacy-client/README.md
     audience: scenario-operator
-    sha256: 8307f9152cd1e7882b39ce94bb68c26735650128dde4e51e4d07853e5ca6b914
+    sha256: 8c9d72fc12c710e3d14e910f0cf04ca98a6673a3a7e2f27b08425d948367e306
   - path: fixtures/legacy-client/docker_fixture.py
     audience: scenario-operator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2350,7 +2350,7 @@ steps:
   assets:
   - path: fixtures/legacy-client/README.md
     audience: scenario-operator
-    sha256: 8307f9152cd1e7882b39ce94bb68c26735650128dde4e51e4d07853e5ca6b914
+    sha256: 8c9d72fc12c710e3d14e910f0cf04ca98a6673a3a7e2f27b08425d948367e306
   - path: fixtures/legacy-client/docker_fixture.py
     audience: scenario-operator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2375,7 +2375,7 @@ steps:
   assets:
   - path: fixtures/legacy-client/README.md
     audience: scenario-operator
-    sha256: 8307f9152cd1e7882b39ce94bb68c26735650128dde4e51e4d07853e5ca6b914
+    sha256: 8c9d72fc12c710e3d14e910f0cf04ca98a6673a3a7e2f27b08425d948367e306
   - path: fixtures/legacy-client/docker_fixture.py
     audience: scenario-operator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2400,7 +2400,7 @@ steps:
   assets:
   - path: fixtures/legacy-client/README.md
     audience: scenario-operator
-    sha256: 8307f9152cd1e7882b39ce94bb68c26735650128dde4e51e4d07853e5ca6b914
+    sha256: 8c9d72fc12c710e3d14e910f0cf04ca98a6673a3a7e2f27b08425d948367e306
   - path: fixtures/legacy-client/docker_fixture.py
     audience: scenario-operator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2425,7 +2425,7 @@ steps:
   assets:
   - path: fixtures/legacy-client/README.md
     audience: scenario-operator
-    sha256: 8307f9152cd1e7882b39ce94bb68c26735650128dde4e51e4d07853e5ca6b914
+    sha256: 8c9d72fc12c710e3d14e910f0cf04ca98a6673a3a7e2f27b08425d948367e306
   - path: fixtures/legacy-client/docker_fixture.py
     audience: scenario-operator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2450,7 +2450,7 @@ steps:
   assets:
   - path: fixtures/legacy-client/README.md
     audience: scenario-operator
-    sha256: 8307f9152cd1e7882b39ce94bb68c26735650128dde4e51e4d07853e5ca6b914
+    sha256: 8c9d72fc12c710e3d14e910f0cf04ca98a6673a3a7e2f27b08425d948367e306
   - path: fixtures/legacy-client/docker_fixture.py
     audience: scenario-operator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2475,7 +2475,7 @@ steps:
   assets:
   - path: fixtures/legacy-client/README.md
     audience: scenario-operator
-    sha256: 8307f9152cd1e7882b39ce94bb68c26735650128dde4e51e4d07853e5ca6b914
+    sha256: 8c9d72fc12c710e3d14e910f0cf04ca98a6673a3a7e2f27b08425d948367e306
   - path: fixtures/legacy-client/docker_fixture.py
     audience: scenario-operator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2499,12 +2499,12 @@ steps:
   - published-release
 - id: setup-new
   phase: interactive
-  action: Run packaged /booley-setup new inside Session Runtime.
+  action: Run packaged /booley-setup new inside Sandbox.
   checks:
   - id: setup-new
     capabilities:
     - PROJECT-SETUP
-    stimulus: Run packaged /booley-setup new inside Session Runtime.
+    stimulus: Run packaged /booley-setup new inside Sandbox.
     expected: Design-aware Setup completes from generated counter; allowed-source and skill invocation evidence
       retained.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
@@ -2518,7 +2518,7 @@ steps:
   assets:
   - path: prompts/setup.md
     audience: setup delegate
-    sha256: 0d36ab14dad605ce21a79cc716a76c8b2731c4be34a9b5070878c847008ff3d2
+    sha256: 1b925098789f7b714754570214e47bbc50a2faa38fd6fd59f52b0c47f55ab383
 - id: setup-doctor-plain
   phase: interactive
   action: Run plain Doctor on generated Project.
@@ -3348,18 +3348,18 @@ steps:
 - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   phase: interactive
   action: |-
-    Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
+    Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Sandbox to a separate probe ref.
   checks:
   - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
     capabilities:
     - SECURITY-RUNTIME-ISOLATION
     stimulus: |-
-      Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
+      Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Sandbox to a separate probe ref.
     expected: |-
-      The outside-runtime control push succeeds. The Session Runtime push is blocked by its network boundary—not by Git, server availability, credentials or server authorization—and the external probe ref remains unchanged. Container-local repositories and local-path remotes are out of scope.
+      The outside-runtime control push succeeds. The Sandbox push is blocked by its network boundary—not by Git, server availability, credentials or server authorization—and the external probe ref remains unchanged. Container-local repositories and local-path remotes are out of scope.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model
     evidence: |-
-      Sanitized network transport and endpoint identity; successful outside-runtime control push with its ref identity; exact Session Runtime push argv and exit/stdout/stderr identifying the network-policy denial; and external probe-ref identity before and after. Use a Scenario-owned server, never a public or third-party remote. Container-local repositories and local-path remotes cannot satisfy this Check. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain fresh invocation, source/Target/runtime identities and raw artifacts before restoration.
+      Sanitized network transport and endpoint identity; successful outside-runtime control push with its ref identity; exact Sandbox push argv and exit/stdout/stderr identifying the network-policy denial; and external probe-ref identity before and after. Use a Scenario-owned server, never a public or third-party remote. Container-local repositories and local-path remotes cannot satisfy this Check. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain fresh invocation, source/Target/runtime identities and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   requires:
   - published-release
@@ -3545,13 +3545,13 @@ steps:
   - published-release
 - id: gui-runtime-client
   phase: interactive
-  action: Attach selected supported VS Code client to Session Runtime and perform accepted baseline Interactive
+  action: Attach selected supported VS Code client to Sandbox and perform accepted baseline Interactive
     prompt.
   checks:
   - id: gui-runtime-client
     capabilities:
     - DOCUMENTATION-USABILITY
-    stimulus: Attach selected supported VS Code client to Session Runtime and perform accepted baseline Interactive
+    stimulus: Attach selected supported VS Code client to Sandbox and perform accepted baseline Interactive
       prompt.
     expected: |-
       Actual supported-client/provider/runtime identity, attachment/integration logs and timestamped qualified observation; not headless identity.
@@ -4273,12 +4273,12 @@ steps:
   - published-release
 - id: evaluator-isolation
   phase: evaluate
-  action: Place evaluator outside Project and Session Runtime; inspect access boundaries.
+  action: Place evaluator outside Project and Sandbox; inspect access boundaries.
   checks:
   - id: evaluator-isolation
     capabilities:
     - SIMULATION-FLOW
-    stimulus: Place evaluator outside Project and Session Runtime; inspect access boundaries.
+    stimulus: Place evaluator outside Project and Sandbox; inspect access boundaries.
     expected: Developer cannot access source/cases/prompts/logs/filesystem/network route; Scenario Operator evidence proves
       separation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
@@ -4345,7 +4345,7 @@ steps:
     sha256: 357fbcc3ffdf2d2a65f816fe61b8a61a688bc43a032badc52693c751067a8400
   - path: evaluator/README.md
     audience: independent evaluator
-    sha256: 81921d9a01751524998d336cf5252a21d6d0c1aeaf7ae4c796a3570d07c5c865
+    sha256: 1e3288631f091833898cc13802b3bba84d447f838c4e2a8e4c49699ff2970324
   - path: evaluator/inputs.py
     audience: independent evaluator
     sha256: 7c91bd0a7ece38519395a7a463b8bf2d1e0a5dcbacaec334964748e147098725
@@ -4354,7 +4354,7 @@ steps:
     sha256: 7572e5b3cff19e402ec65ea9c38653cc4a0a10a278b5bf0497944f5151bd5f51
   - path: evaluator/CONTRACT.md
     audience: independent evaluator
-    sha256: e492f5fb60f164fb51b9bca8d1ed63dff64b294d4a7d170c33f26277f7b39d55
+    sha256: b7c7a3f0f264cb92f1746ac0cbfd4c1b030d90ec8dbffbdf8d5cb0bade5e1dbf
 - id: evaluator-candidate
   phase: evaluate
   action: Build accepted commit in disposable Scenario Operator checkout.

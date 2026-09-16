@@ -1,6 +1,6 @@
 # Booley Interactive Mode idle reaper (ADR 0018).
 # The only container that mounts the docker socket; stops idle/over-cap
-# session containers. Build context: src/booley/docker (repo-root .dockerignore
+# Sandboxes. Build context: src/booley/docker (repo-root .dockerignore
 # strips src/).
 FROM docker:29.8.0-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66 AS docker-cli
 

@@ -7,12 +7,12 @@ coverage index or a qualification runner. Execute only through `booley-qa-run`.
 
 ## Fixed inputs and preparation
 
-Use the immutable installed candidate and its issued Linux Session Runtime on the
+Use the immutable installed candidate and its issued Linux Sandbox on the
 configured Ubuntu or Windows host. Record package/source/docs/image, Verilator
 5.052 commit `ea338be98e1e838d3518809ce8899f85a009963c`, Yosys, gcc, Python,
 provider CLI/SDK and exact Specialist model identities. Codex and Claude runs are
 separate. Backend fixture protocol drift is a fixture failure, never a live-model
-pass. Native compilation occurs only in the Session Runtime.
+pass. Native compilation occurs only in the Sandbox.
 
 Create a fresh ledgered Project. Copy `project/` as source, initialize using the
 public Booley route, and install `project/project-data/tests.toml` in the directory

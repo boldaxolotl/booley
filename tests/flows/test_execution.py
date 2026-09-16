@@ -1,4 +1,4 @@
-"""Unit tests for Session Runtime-only Flow selection."""
+"""Unit tests for Sandbox-only Flow selection."""
 
 import pytest
 
@@ -44,7 +44,7 @@ def test_parsed_config_enablement_uses_shared_resolver():
 def test_retired_backend_is_a_hard_migration_error(backend):
     config = {"flows": {"sim": {"backend": backend}}}
 
-    with pytest.raises(FlowConfigError, match=r"all Flows run inside the Session Runtime"):
+    with pytest.raises(FlowConfigError, match=r"all Flows run inside the Sandbox"):
         flow_enabled_from_config("sim", config)
 
 

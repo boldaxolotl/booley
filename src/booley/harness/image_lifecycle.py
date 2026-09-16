@@ -1,4 +1,4 @@
-"""Project Initialization adapters for Runtime Image reconciliation."""
+"""Project Initialization adapters for Sandbox Image reconciliation."""
 
 from __future__ import annotations
 
@@ -58,11 +58,11 @@ class _LegacyBuildAdapter:
         shipped = node.reference == BASE_IMAGE or node.reference in FLAVOR_RECIPES
         if not shipped:
             raise ImageLifecycleError(
-                f"no published Runtime Image source exists for {node.reference}"
+                f"no published Sandbox Image source exists for {node.reference}"
             )
         if not _try_pull_image(node.payload.version, node.reference, adopt=False):
             raise ImageLifecycleError(
-                f"could not pull current packaged Runtime Image {node.reference}"
+                f"could not pull current packaged Sandbox Image {node.reference}"
             )
         return remote_tag(node.reference, node.payload.version)
 
@@ -113,7 +113,7 @@ class _LegacyBuildAdapter:
                 )
         except (OSError, ValueError) as error:
             raise ImageLifecycleError(
-                f"cannot verify the development Runtime Image build context: {error}"
+                f"cannot verify the development Sandbox Image build context: {error}"
             ) from error
 
     def _build_project(self, node: ImageNode, context: InitContext) -> None:
@@ -160,7 +160,7 @@ def _artifact_policy() -> ArtifactPolicy:
             else ArtifactPolicy.LOCAL_ONLY
         )
     raise ImageLifecycleError(
-        "cannot select managed Runtime Images because the running Booley code is "
+        "cannot select managed Sandbox Images because the running Booley code is "
         "neither an attributed source checkout nor an installed distribution"
     )
 

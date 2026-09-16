@@ -292,7 +292,7 @@ def _vscode_dev_containers_finding(command: str) -> BootstrapFinding:
 
 
 def _reconcile_vscode_dev_containers(intent: Intent) -> BootstrapFinding:
-    """Ensure the desktop editor can open Booley's Session Runtime."""
+    """Ensure the desktop editor can open Booley's Sandbox."""
     from booley.config.editor import resolve_editor_management_command
 
     command = resolve_editor_management_command()

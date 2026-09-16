@@ -527,7 +527,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - Actual VS Code Sandbox Attachment, MCP and WCP with qualified rendered screenshot observer
   check_sets:
   - taxi-core
   - taxi-gui
@@ -563,7 +563,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - Actual VS Code Sandbox Attachment, MCP and WCP with qualified rendered screenshot observer
   check_sets:
   - taxi-core
   - taxi-gui
@@ -572,7 +572,7 @@ inputs:
 - id: release
   kind: pre-run
   value: |-
-    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and runtime image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
+    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and Sandbox Image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
   source: https://github.com/boldaxolotl/booley
   verification: Record version, source commit, executable/import origin, package hash, documentation identity and image payload provenance before work.
 - id: upstream
@@ -671,13 +671,13 @@ steps:
 - id: inputs.release
   phase: prepare
   action: |-
-    Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Runtime Image digest; forbid editable, source-checkout and floating inputs.
+    Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Sandbox Image digest; forbid editable, source-checkout and floating inputs.
   checks:
   - id: inputs.release
     capabilities:
     - PRODUCT-ARTIFACT-INSTALLATION
     stimulus: |-
-      Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Runtime Image digest; forbid editable, source-checkout and floating inputs.
+      Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Sandbox Image digest; forbid editable, source-checkout and floating inputs.
     expected: |-
       The installed package, source commit, documentation snapshot, suite/protocol revisions and image provenance all match the declared build; execution is isolated from source checkouts.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
@@ -775,7 +775,7 @@ steps:
   assets:
   - path: prompts/setup.md
     audience: setup delegate
-    sha256: b542b9976dc6dc58bfd545441c60c71659abb5c2fe58f2d2c7f1337d1a6a5025
+    sha256: e11aa87aa50cfbba33b7330b4303e0c8d82233778e42a220bfca115a0290c3df
 - id: setup.image-provenance
   phase: prepare
   action: Build/select Project-derived image from complete pinned `tox.ini` dependency set.
@@ -807,13 +807,13 @@ steps:
   - inputs.pin
 - id: setup.import-check
   phase: prepare
-  action: Verify the real testbench import path inside Session Runtime.
+  action: Verify the real testbench import path inside Sandbox.
   checks:
   - id: setup.import-check
     capabilities:
     - PROJECT-SETUP
-    stimulus: Verify the real testbench import path inside Session Runtime.
-    expected: Verify the real testbench import path inside Session Runtime.
+    stimulus: Verify the real testbench import path inside Sandbox.
+    expected: Verify the real testbench import path inside Sandbox.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
     evidence: Runtime identity, exact import command and result.
     capture: evidence/taxi-10g-mac-port-evolution.setup.import-check
@@ -892,7 +892,7 @@ steps:
     sha256: 8b185aacd7397372f8c0e732f438c9d431d668a141d6bccf64c196e490d2e873
   - path: fixtures/physical.md
     audience: setup delegate
-    sha256: f13cf6bf104a97b46e811aa510e6f6ae122434598ee17801914e9badefcc8f5e
+    sha256: c3ea6057328e7fe4dacca7417ffb0c063cf1ee0990e2799ca2e2aec750c83425
 - id: physical.constraints
   phase: prepare
   action: |-
@@ -916,7 +916,7 @@ steps:
     sha256: 8b185aacd7397372f8c0e732f438c9d431d668a141d6bccf64c196e490d2e873
   - path: fixtures/physical.md
     audience: setup delegate
-    sha256: f13cf6bf104a97b46e811aa510e6f6ae122434598ee17801914e9badefcc8f5e
+    sha256: c3ea6057328e7fe4dacca7417ffb0c063cf1ee0990e2799ca2e2aec750c83425
 - id: physical.discovery-doctor
   phase: prepare
   action: Include fourth Target in CLI/MCP identity checks and deep Doctor.
@@ -2801,15 +2801,15 @@ steps:
   - inputs.pin
 - id: interactive.child-context
   phase: interactive
-  action: Launch one long-lived read-only Interactive child in setup-complete Session Runtime with Project cwd and
+  action: Launch one long-lived read-only Interactive child in setup-complete Sandbox with Project cwd and
     MCP preserved.
   checks:
   - id: interactive.child-context
     capabilities:
     - INTERACTIVE-MODE
-    stimulus: Launch one long-lived read-only Interactive child in setup-complete Session Runtime with Project cwd
+    stimulus: Launch one long-lived read-only Interactive child in setup-complete Sandbox with Project cwd
       and MCP preserved.
-    expected: Launch one long-lived read-only Interactive child in setup-complete Session Runtime with Project cwd
+    expected: Launch one long-lived read-only Interactive child in setup-complete Sandbox with Project cwd
       and MCP preserved.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
     evidence: Child/runtime/client/backend identity and durable log.
@@ -2844,7 +2844,7 @@ steps:
   assets:
   - path: prompts/interactive.md
     audience: Interactive Mode delegate
-    sha256: 2604404e28aed97aba271b64dad568031f94c7a837f1a1242909d6e7cb1f486b
+    sha256: 0b9b8ccb93c94f7e26214c71aef57a9e79a30a2b2b60cfdff9543f79de7f1647
 - id: interactive.discovery
   phase: interactive
   action: Child compares CLI/MCP Target discovery and resolved build inputs.
@@ -3786,18 +3786,18 @@ steps:
 - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   phase: interactive
   action: |-
-    Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
+    Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Sandbox to a separate probe ref.
   checks:
   - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
     capabilities:
     - SECURITY-RUNTIME-ISOLATION
     stimulus: |-
-      Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
+      Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Sandbox to a separate probe ref.
     expected: |-
-      The outside-runtime control push succeeds. The Session Runtime push is blocked by its network boundary—not by Git, server availability, credentials or server authorization—and the external probe ref remains unchanged. Container-local repositories and local-path remotes are out of scope.
+      The outside-runtime control push succeeds. The Sandbox push is blocked by its network boundary—not by Git, server availability, credentials or server authorization—and the external probe ref remains unchanged. Container-local repositories and local-path remotes are out of scope.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model
     evidence: |-
-      Sanitized network transport and endpoint identity; successful outside-runtime control push with its ref identity; exact Session Runtime push argv and exit/stdout/stderr identifying the network-policy denial; and external probe-ref identity before and after. Use a Scenario-owned server, never a public or third-party remote. Container-local repositories and local-path remotes cannot satisfy this Check. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain fresh invocation, source/Target/runtime identities and raw artifacts before restoration.
+      Sanitized network transport and endpoint identity; successful outside-runtime control push with its ref identity; exact Sandbox push argv and exit/stdout/stderr identifying the network-policy denial; and external probe-ref identity before and after. Use a Scenario-owned server, never a public or third-party remote. Container-local repositories and local-path remotes cannot satisfy this Check. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain fresh invocation, source/Target/runtime identities and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   requires:
   - inputs.pin
@@ -5932,7 +5932,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
   - path: fixtures/build_submodules.py
     audience: scenario-operator
     sha256: a308078f80982e8967224761af0dbeb98d4fc864ba40fe8535e9255c78a64f8f
@@ -5962,7 +5962,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.simulation-dependency-baseline
   phase: submodules
   action: |-
@@ -5986,7 +5986,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.simulation-missing-top
   phase: submodules
   action: |-
@@ -6011,7 +6011,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.simulation-restore-top
   phase: submodules
   action: Restore the exact recorded `deps/data` hierarchy locally, with no fetch or stub substitution, and rerun
@@ -6033,7 +6033,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
   recovery:
     baseline: submodules.simulation-dependency-baseline
     detection:
@@ -6064,7 +6064,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.simulation-restore-nested
   phase: submodules
   action: Restore the exact leaf commit and rerun the unchanged Target.
@@ -6084,7 +6084,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
   recovery:
     baseline: submodules.simulation-restore-top
     detection:
@@ -6114,7 +6114,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.baseline-historical
   phase: submodules
   action: Run baseline-relative logical synthesis on `synth_submodule_transport` comparing baseline A with candidate
@@ -6138,7 +6138,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.standalone
   phase: submodules
   action: Inspect the repositories materialized by those product operations before their controlled cleanup.
@@ -6160,7 +6160,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.offline
   phase: submodules
   action: Perform the same reconstruction with unreachable committed URLs and default-deny egress.
@@ -6182,7 +6182,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.default-all
   phase: submodules
   action: Omit `[submodules].paths` and materialize a destination with both top-level gitlinks.
@@ -6202,7 +6202,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.select-one
   phase: submodules
   action: Set `paths = ["deps/data"]` for an independently authored generation and materialize.
@@ -6224,7 +6224,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.select-none
   phase: submodules
   action: Set an explicit empty list and materialize.
@@ -6246,7 +6246,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.simulation-excluded-dependency
   phase: submodules
   action: |-
@@ -6271,7 +6271,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.selection-intersection
   phase: submodules
   action: Include an allowed path not present as a gitlink in that destination revision.
@@ -6291,7 +6291,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.paired-always
   phase: submodules
   action: With outer `paths = []`, materialize a destination whose paired Project repository pins control.
@@ -6311,7 +6311,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.missing
   phase: submodules
   action: Remove one initialized source submodule only in a disposable variant, then trigger workspace materialization.
@@ -6331,7 +6331,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.dirty
   phase: submodules
   action: Change a tracked source file without committing in a disposable variant, then materialize.
@@ -6353,7 +6353,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.shallow
   phase: submodules
   action: Supply a demonstrably shallow local source variant and materialize.
@@ -6373,7 +6373,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.incomplete-objects
   phase: submodules
   action: |-
@@ -6397,7 +6397,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.rollback
   phase: submodules
   action: |-
@@ -6421,7 +6421,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.matching-destination
   phase: submodules
   action: |-
@@ -6445,7 +6445,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.restore
   phase: submodules
   action: Restore the complete clean source hierarchy and repeat ordinary materialization and the fixture simulation.
@@ -6463,7 +6463,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
   recovery:
     baseline: submodules.fixture
     detection:
@@ -6494,7 +6494,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: submodules.cleanup
   phase: submodules
   action: Archive companion manifests/reports and release every owned companion resource.
@@ -6516,7 +6516,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: scenario-operator
-    sha256: 23dd5f60fa77369cdd068636a3cc61a59996763ec4e66a207ac2bf2ea0a2e485
+    sha256: 5e59c5f0dcc22d578272f4533d951a321f300571941dc5a333df26dbcb14a2e5
 - id: create.strengthen-10g-mac-observability.payload
   phase: ticket1
   action: |-
@@ -8806,7 +8806,7 @@ steps:
   assets:
   - path: fixtures/provider-fault/README.md
     audience: scenario-operator
-    sha256: 5ac94e4465fd74616af61897f1e37df1262c6aa747d409d96fc756513b50384e
+    sha256: 48adab805649c39f04d7fafe09968da34d25dfe62f4c52d261a00511aa822533
   - path: fixtures/provider-fault/codex_fixture.py
     audience: scenario-operator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -8831,7 +8831,7 @@ steps:
   assets:
   - path: fixtures/provider-fault/README.md
     audience: scenario-operator
-    sha256: 5ac94e4465fd74616af61897f1e37df1262c6aa747d409d96fc756513b50384e
+    sha256: 48adab805649c39f04d7fafe09968da34d25dfe62f4c52d261a00511aa822533
   - path: fixtures/provider-fault/codex_fixture.py
     audience: scenario-operator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -8856,7 +8856,7 @@ steps:
   assets:
   - path: fixtures/provider-fault/README.md
     audience: scenario-operator
-    sha256: 5ac94e4465fd74616af61897f1e37df1262c6aa747d409d96fc756513b50384e
+    sha256: 48adab805649c39f04d7fafe09968da34d25dfe62f4c52d261a00511aa822533
   - path: fixtures/provider-fault/codex_fixture.py
     audience: scenario-operator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -8881,7 +8881,7 @@ steps:
   assets:
   - path: fixtures/provider-fault/README.md
     audience: scenario-operator
-    sha256: 5ac94e4465fd74616af61897f1e37df1262c6aa747d409d96fc756513b50384e
+    sha256: 48adab805649c39f04d7fafe09968da34d25dfe62f4c52d261a00511aa822533
   - path: fixtures/provider-fault/codex_fixture.py
     audience: scenario-operator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -8906,7 +8906,7 @@ steps:
   assets:
   - path: fixtures/provider-fault/README.md
     audience: scenario-operator
-    sha256: 5ac94e4465fd74616af61897f1e37df1262c6aa747d409d96fc756513b50384e
+    sha256: 48adab805649c39f04d7fafe09968da34d25dfe62f4c52d261a00511aa822533
   - path: fixtures/provider-fault/codex_fixture.py
     audience: scenario-operator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -8931,7 +8931,7 @@ steps:
   assets:
   - path: fixtures/provider-fault/README.md
     audience: scenario-operator
-    sha256: 5ac94e4465fd74616af61897f1e37df1262c6aa747d409d96fc756513b50384e
+    sha256: 48adab805649c39f04d7fafe09968da34d25dfe62f4c52d261a00511aa822533
   - path: fixtures/provider-fault/codex_fixture.py
     audience: scenario-operator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -9504,13 +9504,13 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.archive.evidence
 - id: cleanup.session-runtimes
   phase: cleanup
-  action: Release every run-owned Session Runtime after evidence archive.
+  action: Release every run-owned Sandbox after evidence archive.
   checks:
   - id: cleanup.session-runtimes
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Release every run-owned Session Runtime after evidence archive.
-    expected: Release every run-owned Session Runtime after evidence archive.
+    stimulus: Release every run-owned Sandbox after evidence archive.
+    expected: Release every run-owned Sandbox after evidence archive.
     authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.session-runtimes
@@ -9564,13 +9564,13 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.project-inventory-entries
 - id: cleanup.project-derived-images
   phase: cleanup
-  action: Retain run-owned Project-derived Runtime Images when eligible; otherwise release them.
+  action: Retain run-owned Project-derived Sandbox Images when eligible; otherwise release them.
   checks:
   - id: cleanup.project-derived-images
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Retain run-owned Project-derived Runtime Images when eligible; otherwise release them.
-    expected: Retain run-owned Project-derived Runtime Images when eligible; otherwise release them.
+    stimulus: Retain run-owned Project-derived Sandbox Images when eligible; otherwise release them.
+    expected: Retain run-owned Project-derived Sandbox Images when eligible; otherwise release them.
     authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.project-derived-images

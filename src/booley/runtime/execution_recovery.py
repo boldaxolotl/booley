@@ -1,4 +1,4 @@
-"""Recover an execution after its original in-runtime supervisor disappears."""
+"""Recover an execution after its original in-Sandbox supervisor disappears."""
 
 from __future__ import annotations
 

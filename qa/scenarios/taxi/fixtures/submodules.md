@@ -14,9 +14,9 @@ continues to belong to the production IP Scenarios.
 
 Create only beneath the run-owned companion root and its Scenario Operator-owned fixture
 source directory. Register all Projects, local repositories, branches, worktrees
-and Session Runtimes in the ownership ledger. A separate paired `.booley_project` Git
+and Sandboxes in the ownership ledger. A separate paired `.booley_project` Git
 repository is intentional and independently owned. Use the same exact Booley build
-and Runtime Image identity as the Taxi run. No package installation,
+and Sandbox Image identity as the Taxi run. No package installation,
 network Git fetch, external push or source edit in the real Taxi Project is allowed.
 
 The suite supplies a deterministic construction recipe, not a dependency on a
@@ -73,7 +73,7 @@ failed Simulation Flow, exact restoration, and a fresh passing simulation.
 
 Initialize all sources locally before recording the precondition. Then set each
 committed `.gitmodules` URL to a deliberately unreachable fixture-only SSH
-locator under `example.invalid`; no credentials are supplied. Normal Session Runtime
+locator under `example.invalid`; no credentials are supplied. Normal Sandbox
 default-deny egress remains active. Capture fixture Git subprocess diagnostics
 without secret-bearing environment values. Success must not depend on URLs,
 remote configuration, a shared object store or a working-tree copy.
@@ -112,8 +112,8 @@ is restored before the next check. Fixture creation itself is not product proof.
 | `submodules.rollback` | Cause a later nested materialization to fail after a prior repository was created; place a uniquely hashed pre-existing sentinel in an unrelated destination beforehand. | Attempt-created repositories are rolled back; pre-existing sentinel/content remain byte-identical. Failure and before/after path inventories retained. |
 | `submodules.matching-destination` | Within a live product operation's documented recovery path, retry materialization with an already matching clean destination. | Matching pinned repository is accepted with the same identity. This checks Ticket Workspace recovery, not Scenario Operator restart/resume. |
 | `submodules.restore` | Restore the complete clean source hierarchy and repeat ordinary materialization and the fixture simulation. | Fresh successful evidence and exact expected pins; all earlier negative observations remain retained. |
-| `submodules.taxi-unchanged` | Compare real Taxi Project checkpoints before/after companion work. | Same accepted source/configuration/Runtime Image identities and clean status; companion does not replace any Taxi regression evidence. |
-| `submodules.cleanup` | Archive companion manifests/reports and release every owned companion resource. | Ledger reconciled, fixture repositories, Session Runtimes, worktrees, and inventory roots removed; Taxi and borrowed state preserved. |
+| `submodules.taxi-unchanged` | Compare real Taxi Project checkpoints before/after companion work. | Same accepted source/configuration/Sandbox Image identities and clean status; companion does not replace any Taxi regression evidence. |
+| `submodules.cleanup` | Archive companion manifests/reports and release every owned companion resource. | Ledger reconciled, fixture repositories, Sandboxes, worktrees, and inventory roots removed; Taxi and borrowed state preserved. |
 
 The source-state and selection Checks use separate disposable Ticket drafts
 or copied fixtures so they never edit a live Ticket's protected acceptance inputs.
@@ -132,7 +132,7 @@ the same 40-minute companion allocation; they do not extend the run deadline.
 
 ## Continuation and evidence
 
-The companion requires trustworthy run identity, release and Runtime Image, authority, and
+The companion requires trustworthy run identity, release and Sandbox Image, authority, and
 its own fixture preparation. It does not depend on Taxi's mutation or fault-repair
 outcome. A companion failure blocks only its dependent checks, not independent
 Taxi work. At its cap, capture remaining requirements as blocked and clean up.

@@ -358,7 +358,7 @@ class StandaloneMixin:
         message = (
             f"{frontend} timed out after {self._get_timeout()}s"
             if proc.timed_out
-            else f"{frontend} could not run (is it installed in the Session Runtime?)"
+            else f"{frontend} could not run (is it installed in the Sandbox?)"
         )
         if combined:
             message += f": {combined}"

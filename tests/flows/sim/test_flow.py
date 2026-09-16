@@ -63,7 +63,7 @@ from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
 
-# Built-in Flow execution inside the Session Runtime.
+# Built-in Flow execution inside the Sandbox.
 _FLOW_ENABLED = True
 
 
@@ -1948,7 +1948,7 @@ class TestErrorTailSource:
 
 
 # ---------------------------------------------------------------------------
-# The Session Runtime boundary path (wrapper-Makefile builds, ADR 0037)
+# The Sandbox boundary path (wrapper-Makefile builds, ADR 0037)
 # ---------------------------------------------------------------------------
 
 
@@ -1999,9 +1999,9 @@ class TestTruncationResilientReport:
         tail = "\n".join(lines[marker:])
         # Both targets' verdicts and the passing target's cycle count survive
         # in the tail-truncation-protected block.
-        assert "[sim] lite (session-runtime): PASS (1/1 tests" in tail
+        assert "[sim] lite (Sandbox): PASS (1/1 tests" in tail
         assert "4,242 cycles" in tail
-        assert "[sim] full (session-runtime): FAIL (0/1 tests" in tail
+        assert "[sim] full (Sandbox): FAIL (0/1 tests" in tail
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)

@@ -176,7 +176,7 @@ class TestStealthCoresCheck:
 
 
 class TestGuidanceVenueNote:
-    """Guidance that names Booley Flows must scope them to the Session Runtime.
+    """Guidance that names Booley Flows must scope them to the Sandbox.
 
     The repo root's CLAUDE.md link resolves on the host too, so an unscoped
     file tells a host-side agent to call MCP tools that do not exist there.
@@ -190,10 +190,11 @@ class TestGuidanceVenueNote:
         canon.write_text(body, encoding="utf-8")
         return canon
 
-    def test_scoped_guidance_passes(self, tmp_path):
+    @pytest.mark.parametrize("location", ("inside the Sandbox", "Session Runtime"))
+    def test_scoped_guidance_passes(self, tmp_path, location):
         canon = self._canon(
             tmp_path,
-            "- The MCP tools below exist only inside the Session Runtime.\n"
+            f"- The MCP tools below exist only {location}.\n"
             "- At the start of a tab, call `booley_status`.\n",
         )
         rec = _Rec()

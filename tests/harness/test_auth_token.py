@@ -676,7 +676,7 @@ class TestClaudeMintLocation:
         assert token is None
         prompt.assert_not_called()
         assert errors == [
-            "could not run `claude setup-token` in the Session Runtime: cannot inventory runtimes"
+            "could not run `claude setup-token` in the Sandbox: cannot inventory runtimes"
         ]
 
     def test_non_project_mint_keeps_host_cli_fallback(self, tmp_path, monkeypatch):
@@ -708,7 +708,7 @@ class TestClaudeMintLocation:
 
         assert token is None
         assert "initialized Booley Project" in errors[0]
-        assert "Session Runtime" in errors[0]
+        assert "Sandbox" in errors[0]
 
     def test_failed_host_mint_reports_exit_and_does_not_prompt(self, tmp_path, monkeypatch):
         prompt = Mock()
@@ -827,7 +827,7 @@ class TestClaudeMintLocation:
         assert rc == 1
         auth_token.store_token.assert_called_once_with(_TOKEN, auth_token.APP_CLAUDE)
         assert errors == [
-            "credential was stored, but the Project Session Runtime spec could not be re-seeded; "
+            "credential was stored, but the Project Sandbox spec could not be re-seeded; "
             "run `booley init --seed` and retry"
         ]
 

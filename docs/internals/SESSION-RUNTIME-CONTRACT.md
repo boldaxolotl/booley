@@ -1,7 +1,7 @@
-# Runtime Image contract
+# Sandbox Image contract
 
 This contract defines the required behavior of Booley's standard and RISC-V
-Runtime Images. Image-size work may change packaging, layers, debug
+Sandbox Images. Image-size work may change packaging, layers, debug
 symbols, and implementation details. Removing required behavior needs a separately
 reviewed contract change.
 
@@ -15,7 +15,7 @@ for behavior that command and file probes cannot represent.
 
 The image runs as the unprivileged `agent` user (UID/GID 1000), starts in
 `/work`, and supports writable project bind mounts owned by that user. Booley
-denies network access to Flow subprocesses. The Session Runtime's egress proxy
+denies network access to Flow subprocesses. The Sandbox's egress proxy
 constrains agent traffic, and system policy disables provider-hosted web tools.
 
 The following command families are required:
@@ -49,7 +49,7 @@ not satisfy them.
 
 ## Rust is not included
 
-The standard Session Runtime excludes Cargo, `rustc`, `rustup`, and the Rust
+The standard Sandbox excludes Cargo, `rustc`, `rustup`, and the Rust
 standard library. A throwaway builder stage compiles B-Wave, and the final image
 receives only its runtime binary. Projects that compile Rust need a reviewed
 project image with the required pinned toolchain.

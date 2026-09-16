@@ -155,7 +155,7 @@ def _is_git_tracked(project_root: Path, entry: Path) -> bool:
 def _portable_target(project_root: Path, canon: Path) -> Path:
     """The path a symlink should point at, valid in both launch contexts (F-13).
 
-    Inside the Session Runtime the project dir is bind-mounted at
+    Inside the Sandbox the project dir is bind-mounted at
     ``/booley-project``, outside the workspace — so a link relative to it reads
     ``../booley-project/AGENTS.md``, which on the host resolves to a sibling of
     the repo that does not exist. The host then sees two dangling links and an

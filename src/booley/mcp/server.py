@@ -153,7 +153,7 @@ _POLL_MCP_TOOL_DESCRIPTION = (
     "a poll-loop into one blocking call; if the run is still going afterwards "
     "it returns 'RUNNING' — call again to keep waiting. Prefer few long polls "
     "over many short ones. Claude and Codex: omit 'wait_seconds' to use the "
-    "Session Runtime's configured poll window. Codex: if its programmatic exec "
+    "Sandbox's configured poll window. Codex: if its programmatic exec "
     "yields while this MCP call is still running, keep waiting on the same "
     "running cell in short slices; do not start another booley_poll call. When the "
     "run finishes it returns the full result (EXIT_CODE + report), exactly as "
@@ -286,7 +286,7 @@ def _max_stderr_bytes() -> int:
 
 
 # The reaper (booley.docker.reaper) reads this epoch-seconds heartbeat via
-# ``docker exec`` to decide if a session container is idle (ADR 0018 WS2/WS4).
+# ``docker exec`` to decide if a Sandbox is idle (ADR 0018 WS2/WS4).
 # Canonical path + touch helper live in booley.runtime.heartbeat; the module-level
 # alias stays monkeypatchable for tests.
 _MCP_HEARTBEAT_PATH = REAPER_HEARTBEAT_PATH

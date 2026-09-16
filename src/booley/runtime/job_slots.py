@@ -2,7 +2,7 @@
 
 Container-only Booley runs *everything* — the interactive session, every
 concurrent ticket's Developer Agent, and each Flow/MCP-tool subprocess — inside the one
-Session Runtime, so admission ("may this Job run now, or must it wait?") can
+Sandbox, so admission ("may this Job run now, or must it wait?") can
 no longer live in any single process the way ADR 0027's in-process
 single-flight did.  This module is the replacement: a filesystem-coordinated store of
 claim files under ``<runtime>/jobs/slots/`` that every process shares.
@@ -120,7 +120,7 @@ _ENTRY_CREATE_ATTEMPTS = 20
 # Ranking and waiter->holder promotion must be one serialized decision. Without
 # a gate, two processes can each observe themselves in the last free rank before
 # either rename becomes visible, then both promote. O_EXCL creation is atomic on
-# the local filesystems supported by the Session Runtime and Windows CI.
+# the local filesystems supported by the Sandbox and Windows CI.
 _PROMOTION_GATE_NAME = ".promotion.lock"
 
 # Versioned holder identity + renewable recovery lease. Work budgets remain a

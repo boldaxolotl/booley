@@ -54,7 +54,7 @@ class TestBuildSpec:
         ]
 
     def test_hardening_flags_present_for_every_app(self):
-        """The Session Runtime hardening (ARCHITECTURE.md#security--trust-model)
+        """The Sandbox hardening (ARCHITECTURE.md#security--trust-model)
         must guard the venue where the agent actually runs, for every app and
         regardless of the optional memory limit."""
         for app in dc.SUPPORTED_APPS:

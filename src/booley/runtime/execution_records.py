@@ -1,4 +1,4 @@
-"""Durable protocol records for one supervised Runtime Attachment execution."""
+"""Durable protocol records for one supervised Sandbox Attachment execution."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ _PROTOCOL_FILENAMES = {
 
 
 class ExecutionId(str):
-    """Validated opaque identity shared by one Runtime Attachment execution."""
+    """Validated opaque identity shared by one Sandbox Attachment execution."""
 
     def __new__(cls, value: object) -> ExecutionId:
         if not isinstance(value, str) or _EXECUTION_ID_RE.fullmatch(value) is None:
@@ -36,7 +36,7 @@ class ExecutionId(str):
 
 @dataclass(frozen=True)
 class ExecutionPaths:
-    """Files shared by the host attachment and in-runtime supervisor."""
+    """Files shared by the host attachment and in-Sandbox supervisor."""
 
     root: Path
     record: Path

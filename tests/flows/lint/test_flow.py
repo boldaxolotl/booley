@@ -1745,7 +1745,7 @@ class TestVeribleTargets:
 
 
 # ---------------------------------------------------------------------------
-# Session Runtime execution
+# Sandbox execution
 # ---------------------------------------------------------------------------
 
 
@@ -1759,7 +1759,7 @@ class TestFlowEnablement:
     def test_verible_missing_message_names_runtime(self):
         from booley.flows.lint.flow import _verible_missing_msg
 
-        assert "Session Runtime" in _verible_missing_msg()
+        assert "Sandbox" in _verible_missing_msg()
 
 
 # ---------------------------------------------------------------------------

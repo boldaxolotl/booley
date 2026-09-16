@@ -92,7 +92,7 @@ class TestCheckInsideContainer:
         monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
         with (
             patch.object(Path, "exists", lambda self: False),
-            pytest.raises(TicketPreflightError, match="Session Runtime"),
+            pytest.raises(TicketPreflightError, match="Sandbox"),
         ):
             _check_inside_container()
 

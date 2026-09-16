@@ -23,8 +23,8 @@ _D3_REASON = (
     "a Specialist returns evidence without depending on its Harness or MCP composition mechanism"
 )
 _D4_REASON = "MCP infrastructure is independent of capabilities composed by its server"
-_D5_REASON = "Session Runtime mechanisms must remain usable without agent-facing mechanisms"
-_D6_REASON = "shared Session Runtime mechanisms must not acquire Harness knowledge"
+_D5_REASON = "Sandbox mechanisms must remain usable without agent-facing mechanisms"
+_D6_REASON = "shared Sandbox mechanisms must not acquire Harness knowledge"
 _D7_REASON = (
     "shared Target/Criteria policy is independent of presentation, agent exposure, and "
     "Ticket Board persistence"

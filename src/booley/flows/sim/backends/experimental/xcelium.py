@@ -3,7 +3,7 @@
 
 This module contains pure parsing functions over captured logs and never
 launches a subprocess. Xcelium is not publicly eligible in Booley; these
-helpers are retained only to incubate a possible future Session Runtime
+helpers are retained only to incubate a possible future Sandbox
 integration:
 
   * :func:`evaluate_xcelium_log` — verdict fields from log text + exit code.

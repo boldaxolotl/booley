@@ -93,7 +93,7 @@ where setup stands:
 ## Host or container?
 
 Steps 0–1 run on the **host** — the plan is written before the devcontainer
-exists. Steps 2–4 run **inside the Session Runtime**: the per-folder
+exists. Steps 2–4 run **inside the Sandbox**: the per-folder
 devcontainer entered via **Reopen in Container** in VS Code, or
 `booley session up` headlessly. There, each step edits files in the
 worktree and runs the `booley` CLI in a container terminal; the sandbox
@@ -223,11 +223,11 @@ plain-English reason it matters.
 2. **Commercial EDA authority · host.** Only if row 14 selects
    host-provisioned EDA: perform Step 2's
    [host-authority bootstrap](steps/2-project-config.md#host-authority-bootstrap)
-   before creating the licensed/mounted runtime. This writes the planned
+   before creating the licensed/mounted Sandbox. This writes the planned
    `[eda.<kind>]` request, registers the installation, adds the exact Project
    Grant, reseeds the issued specification, and runs host Doctor. Skip when
    every selected EDA tool is image-provisioned.
-3. **Enter the Session Runtime** (Reopen in Container, or
+3. **Enter the Sandbox** (Reopen in Container, or
    `booley session up --rebuild`).
 4. **Steps 2 → 4 in order**, per the plan: finish config, AGENTS.md, then the doctor
    gate.

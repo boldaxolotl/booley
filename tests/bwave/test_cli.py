@@ -46,7 +46,7 @@ def _dead_port() -> int:
 
 @pytest.fixture(autouse=True)
 def _inside_session_runtime(monkeypatch):
-    """bwave is container-only (ADR 0028); simulate the Session Runtime."""
+    """bwave is container-only (ADR 0028); simulate the Sandbox."""
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
 
 
@@ -2013,7 +2013,7 @@ def test_gui_is_container_only(monkeypatch, capsys):
         bwave.main()
 
     assert exc.value.code == 2
-    assert "Session Runtime" in capsys.readouterr().err
+    assert "Sandbox" in capsys.readouterr().err
 
 
 # ── tier 2: subprocess smoke ────────────────────────────────────────────────

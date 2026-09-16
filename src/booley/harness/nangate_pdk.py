@@ -3,7 +3,7 @@
 Booley deliberately does not redistribute these files.  ``booley init``
 downloads a pinned upstream revision into the user's Booley config directory,
 verifies every file by SHA-256, and mounts that directory read-only into the
-Session Runtime at :data:`CONTAINER_ROOT`.
+Sandbox at :data:`CONTAINER_ROOT`.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Authoritative provenance and ancestry reconciliation for Runtime Images."""
+"""Authoritative provenance and ancestry reconciliation for Sandbox Images."""
 
 from __future__ import annotations
 
@@ -61,14 +61,14 @@ class Intent(StrEnum):
 
 
 class ArtifactSource(StrEnum):
-    """Authorized source for one managed Runtime Image mutation."""
+    """Authorized source for one managed Sandbox Image mutation."""
 
     LOCAL_BUILD = "local-build"
     VERIFIED_RELEASE_PULL = "verified-release-pull"
 
 
 class ArtifactPolicy(StrEnum):
-    """Ordered acquisition policy for Booley-shipped Runtime Images."""
+    """Ordered acquisition policy for Booley-shipped Sandbox Images."""
 
     LOCAL_ONLY = "local-only"
     VERIFIED_RELEASE_ONLY = "verified-release-only"
@@ -96,12 +96,12 @@ class Status(StrEnum):
 
 
 class ImageLifecycleError(RuntimeError):
-    """A managed Runtime Image could not be reconciled or verified."""
+    """A managed Sandbox Image could not be reconciled or verified."""
 
 
 @dataclass(frozen=True, slots=True)
 class HostImageScope:
-    """Project-independent ownership of the base Runtime Image."""
+    """Project-independent ownership of the base Sandbox Image."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +117,7 @@ ImageScope: TypeAlias = HostImageScope | ProjectImageScope
 
 @dataclass(frozen=True)
 class PayloadProvenance:
-    """Booley payload identity embedded in a Runtime Image."""
+    """Booley payload identity embedded in a Sandbox Image."""
 
     schema: str
     version: str
@@ -126,7 +126,7 @@ class PayloadProvenance:
 
 @dataclass(frozen=True)
 class BuildProvenance:
-    """Recipe and direct-parent inputs that produced a Runtime Image."""
+    """Recipe and direct-parent inputs that produced a Sandbox Image."""
 
     recipe_fingerprint: str
     parent_artifact: str | None
@@ -410,7 +410,7 @@ def _nodes(project_root: Path, selected: str, docker: DockerPort) -> tuple[Image
         return _with_parent_artifacts((base, _flavor_node(selected, base, payload)), docker)
     generated = project_image.project_image_name(project_root)
     if selected != generated:
-        raise ImageLifecycleError(f"unsupported managed Runtime Image {selected!r}")
+        raise ImageLifecycleError(f"unsupported managed Sandbox Image {selected!r}")
     parent_name = project_image.dockerfile_parent_image(
         _direct_project_dir(project_root) / "docker" / "Dockerfile"
     )
@@ -543,7 +543,7 @@ def _schema_two_parent_current(
 
 
 def _base_parent_current(origin: str, recorded_parent: str, docker: DockerPort) -> bool:
-    """Validate the build-only parent of the base Runtime Image."""
+    """Validate the build-only parent of the base Sandbox Image."""
     if origin == "registry":
         return normalize_registry_digest(recorded_parent) is not None
     if not is_local_image_id(recorded_parent):
@@ -1066,7 +1066,7 @@ def _verified_result(
     selected_id = docker.image_id(selected)
     sources = _sources_for_node(selected_node, shipped_sources)
     if selected_id is None or not _node_current_from(selected_node, docker, sources):
-        raise ImageLifecycleError(f"selected Runtime Image {selected!r} did not verify")
+        raise ImageLifecycleError(f"selected Sandbox Image {selected!r} did not verify")
     return LifecycleResult(
         selected,
         selected_id,

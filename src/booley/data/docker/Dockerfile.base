@@ -5,7 +5,7 @@
 # the exact 26Q3 binary and Corresponding Source from its official builder, but
 # run from the exact dependency image used by upstream's final stage. The
 # builder is intentionally throwaway: its object files and regression fixtures
-# account for most of the old Runtime Image.
+# account for most of the old Sandbox Image.
 FROM docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a AS openroad-artifacts
 
 USER root
@@ -103,7 +103,7 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
         > /usr/local/share/verilator/BOOLEY-SOURCE.txt \
     && rm -rf /tmp/verilator
 
-# Minimal Session Runtime. The immutable upstream development image remains the
+# Minimal Sandbox. The immutable upstream development image remains the
 # EDA builder, but none of its compilers, Docker tooling, Pandoc, LLVM, CMake,
 # headers, or build caches become runtime layers.
 FROM docker.io/library/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
@@ -336,9 +336,9 @@ RUN mkdir -p /home/agent/.local/lib/python3.13/site-packages /home/agent/.local/
 ENV PATH="/home/agent/.local/bin:${PATH}"
 ENV PYTHONUSERBASE="/home/agent/.local"
 
-# Session Runtime detection (ADR 0028): marks every process in this image — including
+# Sandbox detection (ADR 0028): marks every process in this image — including
 # bare `docker exec` sessions, which devcontainer remoteEnv cannot reach —
-# as running inside the Booley Session Runtime. /.dockerenv is the fallback
+# as running inside the Booley Sandbox. /.dockerenv is the fallback
 # for containers from images built before this was added.
 ENV BOOLEY_CONTAINER=1
 

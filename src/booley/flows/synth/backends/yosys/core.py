@@ -156,7 +156,7 @@ def sv2v_argv(
     """
 
     def boundary_path(value: Path | str) -> str:
-        """Render a path for the Linux Session Runtime command boundary."""
+        """Render a path for the Linux Sandbox command boundary."""
         return str(value).replace("\\", "/")
 
     argv = [boundary_path(sv2v)]
@@ -655,7 +655,7 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
     STA constraint SDC files (ADR 0029): one per ``--sta-sdc``, sourced from
     the Target's ``file_type: SDC`` fileset (the Flow forwards them) or passed
     directly to the configure surface. A relative path resolves against
-    the project root (``/work`` in the Session Runtime), not cwd — same
+    the project root (``/work`` in the Sandbox), not cwd — same
     convention as ``--inc-dir`` / ``--extra-rtl`` — so a path the caller
     relativized against the worktree stays valid for the generated boundary
     command. There is no TOML fallback: ``[flows.synth.timing].sdc`` is a

@@ -113,7 +113,7 @@ configured_scenarios:
     install.
   - Docker/storage and selected provider authentication; no credential bytes in evidence.
   - Pinned Verilator v5.052 ea338be98e1e838d3518809ce8899f85a009963c, Yosys formal SAT support, gcc and Python in
-    issued Linux Session Runtime.
+    issued Linux Sandbox.
   - Exact Specialist model and external CLI/SDK identities; Codex exact-model metadata cache available when selected.
   - Authority over declared disposable Projects/Tickets/local branches, runtime processes and fault roots; no host-wide
     LD_PRELOAD or binary replacement.
@@ -136,7 +136,7 @@ configured_scenarios:
     install.
   - Docker/storage and selected provider authentication; no credential bytes in evidence.
   - Pinned Verilator v5.052 ea338be98e1e838d3518809ce8899f85a009963c, Yosys formal SAT support, gcc and Python in
-    issued Linux Session Runtime.
+    issued Linux Sandbox.
   - Exact Specialist model and external CLI/SDK identities; Codex exact-model metadata cache available when selected.
   - Authority over declared disposable Projects/Tickets/local branches, runtime processes and fault roots; no host-wide
     LD_PRELOAD or binary replacement.
@@ -159,7 +159,7 @@ configured_scenarios:
     install.
   - Docker/storage and selected provider authentication; no credential bytes in evidence.
   - Pinned Verilator v5.052 ea338be98e1e838d3518809ce8899f85a009963c, Yosys formal SAT support, gcc and Python in
-    issued Linux Session Runtime.
+    issued Linux Sandbox.
   - Exact Specialist model and external CLI/SDK identities; Codex exact-model metadata cache available when selected.
   - Authority over declared disposable Projects/Tickets/local branches, runtime processes and fault roots; no host-wide
     LD_PRELOAD or binary replacement.
@@ -182,7 +182,7 @@ configured_scenarios:
     install.
   - Docker/storage and selected provider authentication; no credential bytes in evidence.
   - Pinned Verilator v5.052 ea338be98e1e838d3518809ce8899f85a009963c, Yosys formal SAT support, gcc and Python in
-    issued Linux Session Runtime.
+    issued Linux Sandbox.
   - Exact Specialist model and external CLI/SDK identities; Codex exact-model metadata cache available when selected.
   - Authority over declared disposable Projects/Tickets/local branches, runtime processes and fault roots; no host-wide
     LD_PRELOAD or binary replacement.
@@ -194,7 +194,7 @@ configured_scenarios:
 inputs:
 - id: release
   kind: pre-run
-  value: Exact immutable booley-rtl package SHA-256, full source commit, matching docs, runtime image digest and
+  value: Exact immutable booley-rtl package SHA-256, full source commit, matching docs, Sandbox Image digest and
     selected provider/model identity.
   source: https://github.com/boldaxolotl/booley/blob/main/README.md
   verification: Record identities before setup; pre-run selection cannot alter fixture bytes, suites or thresholds.
@@ -310,7 +310,7 @@ steps:
   - path: coverage/RUNBOOK.md
     base: shared
     audience: scenario-operator
-    sha256: 216e061687934ee83fcc07166e3ed61b1bebd76ba8fa719792e657b10ec0a84e
+    sha256: 0339bce8f8ba6ac37e19f79fd960f91de557a261e1f3c8b3e4b9df67ca45810c
   - path: coverage/approval-inputs.json
     base: shared
     audience: scenario-operator
@@ -398,7 +398,7 @@ steps:
   - path: coverage/project/tb/cocotb_cases.py
     base: shared
     audience: scenario-operator
-    sha256: 467fe73fbf8c80cf9ff0f6216fffe9f6ae10d6432e1931005993f658f0c71878
+    sha256: a92223d8c97f367b5210135948118b5cd44592ff0e03c48152421497e7c90f0a
   - path: coverage/project/tb/scale_tb.sv
     base: shared
     audience: scenario-operator
@@ -426,7 +426,7 @@ steps:
   - path: coverage/project/tb/cocotb_staged.py
     base: shared
     audience: scenario-operator
-    sha256: 107bd339e165b03bec9694ba4c7f3c2c76f87f33429feba5f38be073c1118458
+    sha256: 221475902decba5776ea1f7fbb297002a4497ef313e3a6e81da7cf3d45cbfdbd
   - path: coverage/project/tb/staged_main.cpp
     base: shared
     audience: scenario-operator
@@ -3441,16 +3441,16 @@ steps:
   timeout_minutes: 5
 - id: cleanup.runtime
   phase: cleanup
-  action: Release owned Session Runtimes, attachments and Project inventory entries through product routes; preserve
+  action: Release owned Sandboxes, attachments and Project inventory entries through product routes; preserve
     borrowed entries.
   checks:
   - id: cleanup.runtime
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
     - SECURITY-RUNTIME-ISOLATION
-    stimulus: Release owned Session Runtimes, attachments and Project inventory entries through product routes;
+    stimulus: Release owned Sandboxes, attachments and Project inventory entries through product routes;
       preserve borrowed entries.
-    expected: Release owned Session Runtimes, attachments and Project inventory entries through product routes;
+    expected: Release owned Sandboxes, attachments and Project inventory entries through product routes;
       preserve borrowed entries.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/qa/doc/FINISH.md
     evidence: 'Exact CLI argv/MCP request, exit/envelope, timestamps, Target/tests and source/build/runtime/model
@@ -3458,7 +3458,7 @@ steps:
       retain actual transcript, bounded tool responses and audit. Independent oracle compares raw native data with
       normalized points and fixed expected operands; source rollups only for line/branch/expression/toggle, overall
       rollups for cover_property. For faults preserve the concrete mutation or consumed syscall/provider handshake
-      before restoration. Specific result to demonstrate: Release owned Session Runtimes, attachments and Project
+      before restoration. Specific result to demonstrate: Release owned Sandboxes, attachments and Project
       inventory entries through product routes; preserve borrowed entries.'
     capture: evidence/coverage-lifecycle.cleanup.runtime
   timeout_minutes: 5

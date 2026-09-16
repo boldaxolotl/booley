@@ -32,10 +32,10 @@ APP_NONE = "none"
 SUPPORTED_APPS = (APP_CLAUDE, APP_CODEX, APP_NONE)
 
 # --- Long-lived Docker objects created by ``booley init`` (WS1/WS2) ---
-# The session container attaches to this --internal network; the dual-homed
+# The Sandbox attaches to this --internal network; the dual-homed
 # ``booley-proxy`` is its sole egress path.
 # Versioned because the original ``booley-egress`` used Docker's default
-# internal-bridge gateway, which remained reachable from Session containers.
+# internal-bridge gateway, which remained reachable from Sandboxes.
 # A distinct name lets ``booley init`` migrate without disrupting an already
 # running legacy Session; new specs can only attach to the host-isolated v2.
 EGRESS_NETWORK = "booley-egress-v2"
@@ -43,10 +43,10 @@ PROXY_HOST = "booley-proxy"
 PROXY_PORT = 8080
 PROXY_URL = f"http://{PROXY_HOST}:{PROXY_PORT}"
 
-# Label the idle reaper (WS2) matches to find/own session containers.
+# Label the idle reaper (WS2) matches to find/own Sandboxes.
 INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
 
-# Process cap for the whole Session Runtime (fork-bomb ceiling, not a tuning
+# Process cap for the whole Sandbox (fork-bomb ceiling, not a tuning
 # knob). Sized far above the retired per-Flow sandbox's 512 because this one
 # container hosts the VS Code server, the agent CLI, the in-container
 # developer, and up to ``[jobs] max_tickets`` concurrent tickets each
@@ -129,7 +129,7 @@ _LIVE_PREVIEW_SETTINGS = {
 # above; emitted into the spec's VS Code settings for every app.
 _HIGHLIGHT_FILE_ASSOCIATIONS = {"*.sdc": "tcl", "*.xdc": "tcl"}
 
-# The Session Runtime installs the framework and its Python dependencies system-wide;
+# The Sandbox installs the framework and its Python dependencies system-wide;
 # a workspace ``.venv`` belongs to the host and is neither needed nor reliably
 # usable in the container.  VS Code's Python Environments extension otherwise
 # discovers it asynchronously and sends ``source .venv/bin/activate`` to every
@@ -510,7 +510,7 @@ def spec_installs_live_preview(spec: dict) -> bool:
     """Whether *spec* installs and safely configures the HTML report viewer.
 
     Live Preview is delivered by VS Code from the devcontainer spec, not by the
-    runtime image. Restored remote-port tunnels can retain Live Preview's
+    Sandbox Image. Restored remote-port tunnels can retain Live Preview's
     default ports without a live server, producing a blank embedded preview.
     The health check uses this detector to identify projects whose spec either
     predates rendered HTML reports or still restores stale forwarded ports.
@@ -554,7 +554,7 @@ def mask_paths_error(value: object) -> str | None:
     """Validation error for a ``[sandbox].mask_paths`` value, or ``None``.
 
     The knob is a list of workspace-root-relative POSIX paths to HIDE from the
-    Session Runtime (each becomes a read-only bind of an always-empty host dir
+    Sandbox (each becomes a read-only bind of an always-empty host dir
     over ``/work/<rel>``, see :func:`_mask_mounts`). Only clean relative
     subpaths are accepted: an absolute path would mask an arbitrary container
     path and a ``..`` segment would walk the mask outside the workspace mount —
@@ -601,7 +601,7 @@ def _mask_mounts(mask_paths: Sequence[str], mask_source: str) -> list[str]:
 
     Each entry becomes a bind of *mask_source* — a dedicated ALWAYS-EMPTY host
     dir — over ``/work/<rel>``, so the subtree simply reads as an empty dir in
-    the Session Runtime. Since ADR 0028 every agent is an in-container
+    the Sandbox. Since ADR 0028 every agent is an in-container
     subprocess sharing the one workspace mount (no per-agent mounts), an
     over-mount is the only per-path visibility control left. Two deliberate
     choices:
@@ -766,7 +766,7 @@ def _build_run_args(memory: str) -> list[str]:
         str(SESSION_PIDS_LIMIT),
     ]
     if memory:
-        # The single Session Runtime memory limit (ADR 0028 Decision 12).
+        # The single Sandbox memory limit (ADR 0028 Decision 12).
         run_args += ["--memory", memory]
     return run_args
 
@@ -870,7 +870,7 @@ def build_devcontainer_spec(
     Args:
         app: one of :data:`SUPPORTED_APPS`; selects the agent extension and the
             auth-token target. ``"none"`` installs no agent extension.
-        image: the prebuilt runtime image (``booley-sandbox`` by default; the
+        image: the prebuilt Sandbox Image (``booley-sandbox`` by default; the
             published ref can be substituted by the caller).
         project_dir_source: host-side mount source for ``.booley_project``.
         project_id: canonical Project-root identity used to scope persistent
@@ -914,7 +914,7 @@ def build_devcontainer_spec(
             start, built-ins winning any name clash. Empty (the default) mounts
             no host skills.
         mask_paths: workspace-root-relative POSIX paths from
-            ``[sandbox] mask_paths`` to HIDE from the Session Runtime. Each is
+            ``[sandbox] mask_paths`` to HIDE from the Sandbox. Each is
             rendered as a read-only bind of *mask_source* over
             ``/work/<rel>`` — and, for a path under ``.booley_project/``, a
             second bind over ``/booley-project/<rest>``, because that tree is

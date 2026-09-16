@@ -1,4 +1,4 @@
-"""Host issuance and full validation of immutable Session Runtime specs."""
+"""Host issuance and full validation of immutable Sandbox specs."""
 
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ _FIXED_SEED_FRAGMENTS = frozenset(
 
 
 class RuntimeSpecError(RuntimeError):
-    """A Session Runtime spec is missing, drifted, or outside issued policy."""
+    """A Sandbox spec is missing, drifted, or outside issued policy."""
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,7 @@ class SessionSpecInputs:
 
 @dataclass(frozen=True, slots=True)
 class PreparedSessionSpec:
-    """Side-effect-free, pinned and sealed prospective Runtime specification."""
+    """Side-effect-free, pinned and sealed prospective Sandbox specification."""
 
     spec: dict[str, Any]
     digest: str
@@ -207,7 +207,7 @@ def _stamp_store() -> PrivateStore:
     return PrivateStore(
         config_dir() / "runtime" / "session-specs",
         config_dir().parent,
-        "host-issued Session Runtime spec",
+        "host-issued Sandbox spec",
         RuntimeSpecError,
     )
 
@@ -256,16 +256,16 @@ def load_recovery_snapshot(project_root: Path, spec: dict[str, Any], spec_path: 
         or issuance.file_sha256 != _file_sha256(spec_path)
         or issuance.spec_sha256 != _spec_digest(spec)
     ):
-        raise RuntimeSpecError("prior Session Runtime spec differs from its issuance stamp")
+        raise RuntimeSpecError("prior Sandbox spec differs from its issuance stamp")
     expected_keeper = keeper_image(project)
     if issuance.keeper_image != expected_keeper:
-        raise RuntimeSpecError("prior Session Runtime keeper belongs to a different Project")
+        raise RuntimeSpecError("prior Sandbox keeper belongs to a different Project")
     try:
         retained_id = _resolve_image_id(expected_keeper)
     except RuntimeSpecError as exc:
-        raise RuntimeSpecError("prior Runtime Image keeper is missing") from exc
+        raise RuntimeSpecError("prior Sandbox Image keeper is missing") from exc
     if retained_id != issuance.image_id:
-        raise RuntimeSpecError("prior Runtime Image keeper points at different bytes")
+        raise RuntimeSpecError("prior Sandbox Image keeper points at different bytes")
     return issuance
 
 
@@ -294,7 +294,7 @@ def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> 
         image_id = _resolve_image_id(expected_image_id)
         if image_id != expected_image_id:
             raise RuntimeSpecError(
-                "reconciled Runtime Image ID no longer resolves to the same artifact"
+                "reconciled Sandbox Image ID no longer resolves to the same artifact"
             )
     spec["image"] = image_id
     return image_id
@@ -370,7 +370,7 @@ def _seal_with_requirements(
     if not isinstance(run_args, list) or any(not isinstance(item, str) for item in run_args):
         raise RuntimeSpecError("devcontainer.json runArgs must be a string list")
     if any(_is_issuance_label(item) for item in run_args):
-        raise RuntimeSpecError("generated Session Runtime spec is already sealed")
+        raise RuntimeSpecError("generated Sandbox spec is already sealed")
     if requirements.private_network is not None:
         run_args += ["--network", requirements.private_network]
     digest = _spec_digest(spec)
@@ -410,7 +410,7 @@ def requested_license(
 
     ``expected_name=None`` is the validated no-licence runtime path: it avoids
     opening the EDA authority store. Omitting the argument retains discovery
-    for ``booley init``, before a runtime issuance exists.
+    for ``booley init``, before a Sandbox issuance exists.
     """
     try:
         return eda_requirements.requested_license(
@@ -450,13 +450,13 @@ def inspect_prepared(project_root: Path, prepared: PreparedSessionSpec) -> Issua
     project = project_root.resolve(strict=True)
     path = devcontainer_path(project)
     if not path.is_file():
-        raise RuntimeSpecError("prepared Session Runtime specification is missing")
+        raise RuntimeSpecError("prepared Sandbox specification is missing")
     try:
         actual = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise RuntimeSpecError("prepared Session Runtime specification cannot be read") from exc
+        raise RuntimeSpecError("prepared Sandbox specification cannot be read") from exc
     if prepared.digest != _spec_digest(prepared.spec):
-        raise RuntimeSpecError("prepared Session Runtime specification digest is inconsistent")
+        raise RuntimeSpecError("prepared Sandbox specification digest is inconsistent")
     if actual != render_devcontainer_json(prepared.spec):
         raise RuntimeSpecError("devcontainer.json differs from the prepared specification")
     return validate(project, prepared.spec, path)
@@ -473,7 +473,7 @@ def _prepare_spec(
     project_data_path = inputs.project_data_source
     spec = build_spec(inputs)
     if not isinstance(spec, dict):
-        raise RuntimeSpecError("Session Runtime spec builder must return a dictionary")
+        raise RuntimeSpecError("Sandbox spec builder must return a dictionary")
     pin_image(spec, expected_image_id=expected_image_id)
     _pin_initialize_command(project, spec)
     _pin_project_data_mount(
@@ -533,7 +533,7 @@ def issue_prepared(
     """Persist one exact preview after revalidating its authority inputs."""
     project = project_root.resolve(strict=True)
     if prepared.digest != _spec_digest(prepared.spec):
-        raise RuntimeSpecError("prepared Session Runtime specification digest is inconsistent")
+        raise RuntimeSpecError("prepared Sandbox specification digest is inconsistent")
     try:
         with eda_requirements.lease_build_requirements(
             project,
@@ -541,7 +541,7 @@ def issue_prepared(
         ) as leased:
             if prepared.inputs != _session_spec_inputs(project, leased.build):
                 raise RuntimeSpecError(
-                    "Session Runtime authority changed after its specification was prepared"
+                    "Sandbox authority changed after its specification was prepared"
                 )
             prospective = _prospective_issuance(
                 project,
@@ -552,7 +552,7 @@ def issue_prepared(
             )
             if prepared.prospective_issuance != prospective:
                 raise RuntimeSpecError(
-                    "Session Runtime policy changed after its specification was prepared"
+                    "Sandbox policy changed after its specification was prepared"
                 )
             requirements = eda_requirements.prepare_runtime_dependencies(
                 project,
@@ -596,7 +596,7 @@ def issue(
             raise RuntimeSpecError(str(exc)) from exc
     if isinstance(prepared_or_spec, PreparedSessionSpec):
         if spec_path is not None:
-            raise TypeError("spec_path is not accepted with a prepared Session Runtime spec")
+            raise TypeError("spec_path is not accepted with a prepared Sandbox spec")
         return _persist_prepared(project_root, prepared_or_spec)
     if spec_path is None:
         raise TypeError("spec_path is required when issuing a spec dictionary")
@@ -682,7 +682,7 @@ def _current_keeper_id(project: Path) -> str | None:
         return docker.image_id_strict(keeper_image(project))
     except RuntimeError as exc:
         raise RuntimeSpecError(
-            "cannot snapshot the prior Runtime Image keeper before issuance"
+            "cannot snapshot the prior Sandbox Image keeper before issuance"
         ) from exc
 
 
@@ -697,11 +697,11 @@ def _restore_keeper(project: Path, image_id: str | None) -> None:
         docker.tag_image(image_id, keeper)
     except RuntimeError as exc:
         raise RuntimeSpecError(
-            "failed issuance also prevented restoration of the prior Runtime Image keeper"
+            "failed issuance also prevented restoration of the prior Sandbox Image keeper"
         ) from exc
     if _resolve_image_id(keeper) != image_id:
         raise RuntimeSpecError(
-            "failed issuance restored the prior stamp but not its Runtime Image keeper"
+            "failed issuance restored the prior stamp but not its Sandbox Image keeper"
         )
 
 
@@ -748,7 +748,7 @@ def _issue_document_with_requirements(
     image_id = _resolve_image_id(image)
     if image != image_id:
         raise RuntimeSpecError(
-            "Session Runtime spec image is mutable; regenerate it through `booley init`"
+            "Sandbox spec image is mutable; regenerate it through `booley init`"
         )
     if requirements.installation is not None:
         _validate_image_contract(image_id)
@@ -771,16 +771,16 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
             if stamp.image != spec.get("image") or stamp.image_id != _resolve_image_id(
                 stamp.image
             ):
-                raise RuntimeSpecError("Runtime Image tag/digest has drifted since issuance")
+                raise RuntimeSpecError("Sandbox Image tag/digest has drifted since issuance")
             expected_keeper = keeper_image(project)
             if stamp.keeper_image != expected_keeper:
-                raise RuntimeSpecError("Runtime Image keeper differs from this Project")
+                raise RuntimeSpecError("Sandbox Image keeper differs from this Project")
             try:
                 retained_id = _resolve_image_id(stamp.keeper_image)
             except RuntimeSpecError as exc:
-                raise RuntimeSpecError("issued Runtime Image keeper is missing") from exc
+                raise RuntimeSpecError("issued Sandbox Image keeper is missing") from exc
             if retained_id != stamp.image_id:
-                raise RuntimeSpecError("issued Runtime Image keeper points at different bytes")
+                raise RuntimeSpecError("issued Sandbox Image keeper points at different bytes")
             expected_installation = (
                 requirements.installation.name if requirements.installation else None
             )
@@ -791,11 +791,9 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
                 stamp.installation != expected_installation
                 or stamp.license_profile != expected_profile
             ):
-                raise RuntimeSpecError(
-                    "Project grant differs from the issued Session Runtime spec"
-                )
+                raise RuntimeSpecError("Project grant differs from the issued Sandbox spec")
             if stamp.policy_revision != requirements.policy_revision:
-                raise RuntimeSpecError("Session Runtime EDA policy revision has drifted")
+                raise RuntimeSpecError("Sandbox EDA policy revision has drifted")
             if stamp.relay_image_id != requirements.relay_image_id:
                 raise RuntimeSpecError("FlexNet relay image has drifted since spec issuance")
             if stamp.wrapper_sha256 != requirements.wrapper_sha256:
@@ -938,7 +936,7 @@ def _validate_generated_spec(
     if app not in {"claude", "codex", "none"} or spec.get("name") != (
         f"Booley Interactive ({app})"
     ):
-        raise RuntimeSpecError("devcontainer.json Session Runtime identity has drifted")
+        raise RuntimeSpecError("devcontainer.json Sandbox identity has drifted")
     expected_workspace = "source=${localWorkspaceFolder},target=/work,type=bind"
     if spec.get("workspaceMount") != expected_workspace:
         raise RuntimeSpecError("devcontainer.json Project workspace mount has drifted")
@@ -1015,7 +1013,7 @@ def _validate_run_args(
         cursor += 2
     if private_network is not None:
         if raw[cursor : cursor + 2] != ["--network", private_network]:
-            raise RuntimeSpecError("licensed Session Runtime private network has drifted")
+            raise RuntimeSpecError("licensed Sandbox private network has drifted")
         cursor += 2
     expected_tail = [value for label in expected_labels for value in ("--label", label)]
     if raw[cursor:] != expected_tail:
@@ -1043,7 +1041,7 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
         "BOOLEY_AGENT_APP",
     }
     if not required_remote.issubset(remote):
-        raise RuntimeSpecError("devcontainer.json is missing fixed Session Runtime environment")
+        raise RuntimeSpecError("devcontainer.json is missing fixed Sandbox environment")
     if any(
         not isinstance(key, str) or not isinstance(value, str) for key, value in remote.items()
     ):
@@ -1054,9 +1052,7 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
         LOCAL_TIMEZONE_ENV,
     }
     if set(remote) - allowed_remote:
-        raise RuntimeSpecError(
-            "devcontainer.json contains unsupported Session Runtime environment"
-        )
+        raise RuntimeSpecError("devcontainer.json contains unsupported Sandbox environment")
     fixed_values = {
         "HTTP_PROXY": "http://booley-proxy:8080",
         "HTTPS_PROXY": "http://booley-proxy:8080",
@@ -1067,7 +1063,7 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
         "BOOLEY_PROJECT_DIR": "/booley-project",
     }
     if any(remote.get(key) != value for key, value in fixed_values.items()):
-        raise RuntimeSpecError("devcontainer.json fixed Session Runtime environment has drifted")
+        raise RuntimeSpecError("devcontainer.json fixed Sandbox environment has drifted")
     app = remote.get("BOOLEY_AGENT_APP")
     credential_key = {"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "OPENAI_API_KEY"}.get(app)
     for key in ("CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"):
@@ -1189,7 +1185,7 @@ def _reject_project_authored_mount_override(project: Path) -> None:
     section = raw.get("project")
     if isinstance(section, dict) and section.get("dir"):
         raise RuntimeSpecError(
-            "Project-authored [project].dir cannot authorize a Session Runtime host mount; "
+            "Project-authored [project].dir cannot authorize a Sandbox host mount; "
             "set BOOLEY_PROJECT_DIR in the trusted host environment"
         )
 
@@ -1570,7 +1566,7 @@ def _resolve_image_id(image: str) -> str:
 
     value = docker.image_id(image)
     if not value:
-        raise RuntimeSpecError(f"cannot resolve Runtime Image to an immutable ID: {image}")
+        raise RuntimeSpecError(f"cannot resolve Sandbox Image to an immutable ID: {image}")
     return value
 
 
@@ -1594,7 +1590,7 @@ def _retain_issued_image(issuance: Issuance) -> None:
     except RuntimeError as exc:
         raise RuntimeSpecError(str(exc)) from exc
     if _resolve_image_id(issuance.keeper_image) != issuance.image_id:
-        raise RuntimeSpecError("issued Runtime Image keeper could not be verified")
+        raise RuntimeSpecError("issued Sandbox Image keeper could not be verified")
 
 
 def _validate_image_contract(image_id: str) -> None:
@@ -1622,7 +1618,7 @@ def _validate_image_contract(image_id: str) -> None:
     )
     container = created.stdout.strip()
     if created.returncode != 0 or not container:
-        raise RuntimeSpecError("cannot create inert container for Runtime Image inspection")
+        raise RuntimeSpecError("cannot create inert container for Sandbox Image inspection")
     try:
         with tempfile.TemporaryDirectory(prefix="booley-image-contract-") as raw:
             root = Path(raw)
@@ -1639,7 +1635,7 @@ def _validate_image_contract(image_id: str) -> None:
                 )
                 if copied.returncode != 0:
                     raise RuntimeSpecError(
-                        "Runtime Image does not satisfy the built-in "
+                        "Sandbox Image does not satisfy the built-in "
                         f"Vivado compatibility contract ({source} is unavailable)"
                     )
             try:
@@ -1650,7 +1646,7 @@ def _validate_image_contract(image_id: str) -> None:
         removed = docker._run_docker(["container", "rm", "-f", container], timeout=30)
         if removed.returncode != 0:
             raise RuntimeSpecError(
-                f"inert Runtime Image inspection container could not be removed: {container}"
+                f"inert Sandbox Image inspection container could not be removed: {container}"
             )
 
 
@@ -1665,7 +1661,7 @@ def _file_sha256(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
-        raise RuntimeSpecError(f"cannot hash generated Session Runtime spec: {exc}") from exc
+        raise RuntimeSpecError(f"cannot hash generated Sandbox spec: {exc}") from exc
 
 
 def _load_stamp(path: Path) -> Issuance:

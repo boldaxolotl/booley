@@ -508,7 +508,7 @@ def test_resume_validation_rejects_session_on_outbound_network() -> None:
             )
         return _result(stdout="true" if name == resources.private_network else "false")
 
-    with pytest.raises(RelayDockerError, match=r"Session Runtime is attached.*outbound"):
+    with pytest.raises(RelayDockerError, match=r"Sandbox is attached.*outbound"):
         validate_relay(
             resources,
             "session-container",
