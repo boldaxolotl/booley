@@ -31,8 +31,7 @@ def run_bootstrap(args: object) -> int:
             if shared_recovery_blocks_command(read_only=False):
                 print(
                     yellow(
-                        "Recovered interrupted Sandbox host state; "
-                        "run `booley bootstrap` again."
+                        "Recovered interrupted Sandbox host state; run `booley bootstrap` again."
                     )
                 )
                 return 2

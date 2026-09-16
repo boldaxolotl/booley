@@ -947,7 +947,7 @@ def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
 
     for name in sr.sessions_on_stale_image(ctx.project_root, image):
         warn(
-            f"the running session container '{name}' was created from the previous "
+            f"the running Sandbox '{name}' was created from the previous "
             f"{image} image and keeps serving it — this rebuild is invisible inside "
             "it. Run `booley session down && booley session up` to restart the "
             "session on the image just built (in VS Code: Reopen in Container / "

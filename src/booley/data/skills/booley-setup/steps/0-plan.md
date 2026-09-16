@@ -101,7 +101,7 @@ The buckets:
   administrator has already registered and granted the installation and no
   unvalidated floating-license behavior is required. Fastest path.
 - **Yellow:** feasible, but something the plan **cannot fully settle through
-  the approved runtime policy** is still in the way. Three shapes: an external
+  the approved Sandbox Policy** is still in the way. Three shapes: an external
   dependency or experimental gate (a missing Vivado registration/Grant, or a
   required floating FlexNet checkout whose real paid-site behavior has not been
   validated); an

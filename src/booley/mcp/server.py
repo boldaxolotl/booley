@@ -286,7 +286,7 @@ def _max_stderr_bytes() -> int:
 
 
 # The reaper (booley.docker.reaper) reads this epoch-seconds heartbeat via
-# ``docker exec`` to decide if a session container is idle (ADR 0018 WS2/WS4).
+# ``docker exec`` to decide if a Sandbox is idle (ADR 0018 WS2/WS4).
 # Canonical path + touch helper live in booley.runtime.heartbeat; the module-level
 # alias stays monkeypatchable for tests.
 _MCP_HEARTBEAT_PATH = REAPER_HEARTBEAT_PATH

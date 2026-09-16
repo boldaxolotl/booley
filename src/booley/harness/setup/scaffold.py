@@ -264,9 +264,7 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
 
     fpga_part = getattr(args, "fpga_part", None)
     if fpga_part is None and interactive:
-        if _ask_yes_no(
-            "Enable FPGA implementation (Vivado Sandbox policy)?", default=False
-        ):
+        if _ask_yes_no("Enable FPGA implementation (Vivado Sandbox policy)?", default=False):
             fpga_part = _ask_text("Vivado part (e.g. xc7a200tfbg484-1)")
             if not fpga_part:
                 info("no part given — skipping the fpga flow")

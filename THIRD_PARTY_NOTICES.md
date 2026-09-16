@@ -62,7 +62,7 @@ POSSIBILITY OF SUCH DAMAGE.
 Booley does **not** distribute the Nangate Open Cell Library in its repository,
 Python packages, or sandbox image. `booley init` can download four files from a
 pinned OpenROAD revision into the user's local Booley cache for the ASIC timing
-flow. The cache is mounted read-only into the Session Runtime and includes this
+flow. The cache is mounted read-only into the Sandbox and includes this
 license statement:
 
 - `Nangate45_typ.lib`

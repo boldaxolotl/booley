@@ -838,7 +838,7 @@ jobs:
             '{{json .}}' booley-test \
             | tee "${RUNNER_TEMP}/docker-build-evidence/layers.jsonl"
 
-      - name: Validate standard Session Runtime contract
+      - name: Validate standard Sandbox contract
         run: |
           PYTHONPATH=src python .github/scripts/image_contract.py \
             --image booley-test \

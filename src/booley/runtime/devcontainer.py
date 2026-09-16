@@ -32,10 +32,10 @@ APP_NONE = "none"
 SUPPORTED_APPS = (APP_CLAUDE, APP_CODEX, APP_NONE)
 
 # --- Long-lived Docker objects created by ``booley init`` (WS1/WS2) ---
-# The session container attaches to this --internal network; the dual-homed
+# The Sandbox attaches to this --internal network; the dual-homed
 # ``booley-proxy`` is its sole egress path.
 # Versioned because the original ``booley-egress`` used Docker's default
-# internal-bridge gateway, which remained reachable from Session containers.
+# internal-bridge gateway, which remained reachable from Sandboxes.
 # A distinct name lets ``booley init`` migrate without disrupting an already
 # running legacy Session; new specs can only attach to the host-isolated v2.
 EGRESS_NETWORK = "booley-egress-v2"
@@ -43,7 +43,7 @@ PROXY_HOST = "booley-proxy"
 PROXY_PORT = 8080
 PROXY_URL = f"http://{PROXY_HOST}:{PROXY_PORT}"
 
-# Label the idle reaper (WS2) matches to find/own session containers.
+# Label the idle reaper (WS2) matches to find/own Sandboxes.
 INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
 
 # Process cap for the whole Sandbox (fork-bomb ceiling, not a tuning
@@ -510,7 +510,7 @@ def spec_installs_live_preview(spec: dict) -> bool:
     """Whether *spec* installs and safely configures the HTML report viewer.
 
     Live Preview is delivered by VS Code from the devcontainer spec, not by the
-    runtime image. Restored remote-port tunnels can retain Live Preview's
+    Sandbox Image. Restored remote-port tunnels can retain Live Preview's
     default ports without a live server, producing a blank embedded preview.
     The health check uses this detector to identify projects whose spec either
     predates rendered HTML reports or still restores stale forwarded ports.
@@ -870,7 +870,7 @@ def build_devcontainer_spec(
     Args:
         app: one of :data:`SUPPORTED_APPS`; selects the agent extension and the
             auth-token target. ``"none"`` installs no agent extension.
-        image: the prebuilt runtime image (``booley-sandbox`` by default; the
+        image: the prebuilt Sandbox Image (``booley-sandbox`` by default; the
             published ref can be substituted by the caller).
         project_dir_source: host-side mount source for ``.booley_project``.
         project_id: canonical Project-root identity used to scope persistent

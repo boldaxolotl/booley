@@ -358,7 +358,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - Actual VS Code Sandbox Attachment, MCP and WCP with qualified rendered screenshot observer
   - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
@@ -446,7 +446,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - Actual VS Code Sandbox Attachment, MCP and WCP with qualified rendered screenshot observer
   check_sets:
   - picorv32-core
   - picorv32-codex
@@ -532,7 +532,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - Actual VS Code Sandbox Attachment, MCP and WCP with qualified rendered screenshot observer
   - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
@@ -553,7 +553,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - Actual VS Code Sandbox Attachment, MCP and WCP with qualified rendered screenshot observer
   check_sets:
   - picorv32-core
   - picorv32-gui
@@ -630,7 +630,7 @@ inputs:
 - id: release
   kind: pre-run
   value: |-
-    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and runtime image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
+    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and Sandbox Image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
   source: https://github.com/boldaxolotl/booley
   verification: Record version, source commit, executable/import origin, package hash, documentation identity and image payload provenance before work.
 - id: project
@@ -1144,7 +1144,7 @@ steps:
       Fresh named firmware is reproducible, the validated probe executes under Spike, and the expected execution result is observed.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
     evidence: |-
-      Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
+      Storage proof, versions, compile and execution logs, firmware digest; link existing Sandbox Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.RISC-V-TOOLCHAIN.riscv-firmware
   requires:
   - inputs.project-pin
@@ -1176,7 +1176,7 @@ steps:
       All declared tools run, and the required ISA, privileged, debug, and other declared subjects occur in the offline PDFs even when subjects share a file.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
     evidence: |-
-      Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
+      Storage proof, versions, compile and execution logs, firmware digest; link existing Sandbox Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration. Retain fixture preflight, declared expected result, independently observed result, and exact source/report identity.
     capture: evidence/picorv32-published-demo-continuity.inventory.RISC-V-TOOLCHAIN.riscv-tools
   requires:
   - inputs.project-pin
@@ -2044,10 +2044,10 @@ steps:
     stimulus: |-
       Exercise `profile-attach`: attach to exact Grant.
     expected: |-
-      Runtime policy matches authorized destination.
+      Sandbox Policy matches authorized destination.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy
     evidence: |-
-      Redacted registry/Grant/runtime policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Redacted registry/Grant/Sandbox Policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.EDA-LICENSE-POLICY.profile-attach
   requires:
   - inputs.project-pin
@@ -2065,7 +2065,7 @@ steps:
       No owned resources remain.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy
     evidence: |-
-      Redacted registry/Grant/runtime policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Redacted registry/Grant/Sandbox Policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.EDA-LICENSE-POLICY.profile-cleanup
   requires:
   - inputs.project-pin
@@ -2083,7 +2083,7 @@ steps:
       Same safe identity.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy
     evidence: |-
-      Redacted registry/Grant/runtime policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Redacted registry/Grant/Sandbox Policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.EDA-LICENSE-POLICY.profile-crud
   requires:
   - inputs.project-pin
@@ -2381,22 +2381,22 @@ steps:
       Blocked.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy
     evidence: |-
-      Redacted registry/Grant/runtime policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Redacted registry/Grant/Sandbox Policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.EDA-LICENSE-POLICY.relay-isolation
   requires:
   - inputs.project-pin
 - id: interactive.child-context
   phase: interactive
   action: |-
-    Launch one long-lived child inside the same Session Runtime with Project cwd, PTY, runtime identity and MCP access preserved; direct inherited child or conforming `booley session enter -- booley` is allowed.
+    Launch one long-lived child inside the same Sandbox with Project cwd, PTY, runtime identity and MCP access preserved; direct inherited child or conforming `booley session enter -- booley` is allowed.
   checks:
   - id: interactive.child-context
     capabilities:
     - INTERACTIVE-MODE
     stimulus: |-
-      Launch one long-lived child inside the same Session Runtime with Project cwd, PTY, runtime identity and MCP access preserved; direct inherited child or conforming `booley session enter -- booley` is allowed.
+      Launch one long-lived child inside the same Sandbox with Project cwd, PTY, runtime identity and MCP access preserved; direct inherited child or conforming `booley session enter -- booley` is allowed.
     expected: |-
-      Launch one long-lived child inside the same Session Runtime with Project cwd, PTY, runtime identity and MCP access preserved; direct inherited child or conforming `booley session enter -- booley` is allowed.
+      Launch one long-lived child inside the same Sandbox with Project cwd, PTY, runtime identity and MCP access preserved; direct inherited child or conforming `booley session enter -- booley` is allowed.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Child/runtime/client/backend identities and launch context; no generic outer subagent substitution.
     capture: evidence/picorv32-published-demo-continuity.interactive.child-context
@@ -2720,7 +2720,7 @@ steps:
   assets:
   - path: fixtures/wishbone-fault.md
     audience: scenario-operator
-    sha256: f6af33e5888197f3c9ab97181876322da71f01119aa92fea7dd412e72bc7bc8f
+    sha256: a0975610c686cda029c316012335759a7b587680cb0792d3f8d674460425c0bb
 - id: interactive.reproduce
   phase: interactive
   action: |-
@@ -2880,15 +2880,15 @@ steps:
 - id: interactive.supported-client
   phase: interactive
   action: |-
-    When claiming actual supported VS Code integration, exercise this Scenario through that client and verify runtime attachment/context and MCP operations.
+    When claiming actual supported VS Code integration, exercise this Scenario through that client and verify Sandbox Attachment/context and MCP operations.
   checks:
   - id: interactive.supported-client
     capabilities:
     - INTERACTIVE-MODE
     stimulus: |-
-      When claiming actual supported VS Code integration, exercise this Scenario through that client and verify runtime attachment/context and MCP operations.
+      When claiming actual supported VS Code integration, exercise this Scenario through that client and verify Sandbox Attachment/context and MCP operations.
     expected: |-
-      When claiming actual supported VS Code integration, exercise this Scenario through that client and verify runtime attachment/context and MCP operations.
+      When claiming actual supported VS Code integration, exercise this Scenario through that client and verify Sandbox Attachment/context and MCP operations.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Actual client/backend/version, attachment evidence and durable client operation logs; headless child
       is insufficient.
@@ -3044,18 +3044,18 @@ steps:
 - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   phase: interactive
   action: |-
-    Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
+    Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Sandbox to a separate probe ref.
   checks:
   - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
     capabilities:
     - SECURITY-RUNTIME-ISOLATION
     stimulus: |-
-      Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
+      Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Sandbox to a separate probe ref.
     expected: |-
-      The outside-runtime control push succeeds. The Session Runtime push is blocked by its network boundary—not by Git, server availability, credentials or server authorization—and the external probe ref remains unchanged. Container-local repositories and local-path remotes are out of scope.
+      The outside-runtime control push succeeds. The Sandbox push is blocked by its network boundary—not by Git, server availability, credentials or server authorization—and the external probe ref remains unchanged. Container-local repositories and local-path remotes are out of scope.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model
     evidence: |-
-      Sanitized network transport and endpoint identity; successful outside-runtime control push with its ref identity; exact Session Runtime push argv and exit/stdout/stderr identifying the network-policy denial; and external probe-ref identity before and after. Use a Scenario-owned server, never a public or third-party remote. Container-local repositories and local-path remotes cannot satisfy this Check. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain fresh invocation, source/Target/runtime identities and raw artifacts before restoration.
+      Sanitized network transport and endpoint identity; successful outside-runtime control push with its ref identity; exact Sandbox push argv and exit/stdout/stderr identifying the network-policy denial; and external probe-ref identity before and after. Use a Scenario-owned server, never a public or third-party remote. Container-local repositories and local-path remotes cannot satisfy this Check. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain fresh invocation, source/Target/runtime identities and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   requires:
   - inputs.project-pin
@@ -5795,13 +5795,13 @@ steps:
 - id: cleanup.runtimes
   phase: cleanup
   action: |-
-    Release every run-owned Session Runtime after retaining issuance and mount evidence; prove absence and preserve borrowed Sessions.
+    Release every run-owned Sandbox after retaining issuance and mount evidence; prove absence and preserve borrowed Sessions.
   checks:
   - id: cleanup.runtimes
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: |-
-      Release every run-owned Session Runtime after retaining issuance and mount evidence; prove absence and preserve borrowed Sessions.
+      Release every run-owned Sandbox after retaining issuance and mount evidence; prove absence and preserve borrowed Sessions.
     expected: |-
       Run-owned Sessions are absent and borrowed Sessions remain untouched.
     authority_ref: ../../doc/FINISH.md

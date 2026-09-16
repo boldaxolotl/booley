@@ -458,7 +458,7 @@ class TestProjectImagePreservation:
 
 
 class TestStaleSessionWarning:
-    """F-9: rebuilding the project image while a session container is live leaves
+    """F-9: rebuilding the project image while a Sandbox is live leaves
     that container on the old image, silently. Init must say so at the build."""
 
     @pytest.fixture

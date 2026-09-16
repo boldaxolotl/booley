@@ -599,9 +599,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     try:
         mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
     except OSError as exc:
-        report.fail(
-            f"cannot inspect mounted Vivado release: {exc}", "recreate the Sandbox"
-        )
+        report.fail(f"cannot inspect mounted Vivado release: {exc}", "recreate the Sandbox")
         return False
     fields = [line.split(" - ", 1)[0].split() for line in mountinfo.splitlines()]
     matches = [parts for parts in fields if len(parts) > 5 and parts[4] == CONTAINER_TARGET]

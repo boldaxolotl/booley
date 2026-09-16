@@ -171,9 +171,7 @@ class TestCheatCommand:
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
         out = capsys.readouterr().out
         assert out.index("Host-only commands") < out.index("Sandbox-only commands")
-        assert out.index("Sandbox-only commands") < out.index(
-            "Either-location and mixed commands"
-        )
+        assert out.index("Sandbox-only commands") < out.index("Either-location and mixed commands")
 
     def test_board_flag_explains_review_without_partial_rework(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--board"]), Path.cwd()) == 0

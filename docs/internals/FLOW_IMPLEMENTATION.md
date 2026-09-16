@@ -76,7 +76,7 @@ examples for all three. The table is repeated here only because ownership of an
 input determines which layer may interpret it.
 
 Every Flow command executes inside the Sandbox. Most EDA binaries ship
-in the runtime image. A supported commercial tool may instead come from an
+in the Sandbox Image. A supported commercial tool may instead come from an
 administrator-registered host installation mounted read-only under a built-in
 policy. Project configuration requests host provisioning, while the exact host
 Grant selects the Installation Registration; Project data cannot select a host
@@ -465,7 +465,7 @@ the verdict flows through the warning tally and the knob instead.
 **FAIL versus ERROR splits on *who* failed.** A linter that ran and rejected
 the design is the linter working, so that is a design FAIL, the same grade
 Simulation's build stage gives the identical source. A linter that could not run at all is
-an ERROR that names the installation fix (normally rebuilding the runtime image).
+an ERROR that names the installation fix (normally rebuilding the Sandbox Image).
 Verible's EDA tool node is invoked
 `--parse_fatal --lint_fatal=false` precisely to preserve that split: a parse
 failure makes Verible itself exit non-zero → ERROR, while findings leave

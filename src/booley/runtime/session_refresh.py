@@ -587,9 +587,7 @@ def _reject_existing_vscode(project_root: Path) -> None:
 def _reject_vscode_started(project_root: Path, consequence: str) -> None:
     vscode = sr.strict_conflicting_vscode_session(project_root)
     if vscode:
-        raise sr.SessionError(
-            f"VS Code started Sandbox {vscode!r} during refresh; {consequence}"
-        )
+        raise sr.SessionError(f"VS Code started Sandbox {vscode!r} during refresh; {consequence}")
 
 
 def _load_recovery_issuance(
@@ -723,7 +721,6 @@ def refresh(
         recovered = shared_recovery_blocks_command(read_only=False)
         if recovered:
             raise sr.SessionError(
-                "recovered interrupted Sandbox host state; "
-                "run `booley session refresh` again"
+                "recovered interrupted Sandbox host state; run `booley session refresh` again"
             )
         return _refresh_unlocked(project_root, images, verbose=verbose)

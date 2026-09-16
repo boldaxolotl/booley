@@ -791,9 +791,7 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
                 stamp.installation != expected_installation
                 or stamp.license_profile != expected_profile
             ):
-                raise RuntimeSpecError(
-                    "Project grant differs from the issued Sandbox spec"
-                )
+                raise RuntimeSpecError("Project grant differs from the issued Sandbox spec")
             if stamp.policy_revision != requirements.policy_revision:
                 raise RuntimeSpecError("Sandbox EDA policy revision has drifted")
             if stamp.relay_image_id != requirements.relay_image_id:
@@ -1054,9 +1052,7 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
         LOCAL_TIMEZONE_ENV,
     }
     if set(remote) - allowed_remote:
-        raise RuntimeSpecError(
-            "devcontainer.json contains unsupported Sandbox environment"
-        )
+        raise RuntimeSpecError("devcontainer.json contains unsupported Sandbox environment")
     fixed_values = {
         "HTTP_PROXY": "http://booley-proxy:8080",
         "HTTPS_PROXY": "http://booley-proxy:8080",

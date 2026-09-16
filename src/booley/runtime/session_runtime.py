@@ -135,7 +135,7 @@ def _vscode_local_folder(name: str) -> str | None:
 def _serves_workspace(name: str, workspace: Path) -> bool:
     """True if container *name* is Interactive Mode for *workspace*.
 
-    Two shapes to recognise: our own session container is named after the
+    Two shapes to recognise: our own Sandbox is named after the
     workspace, while VS Code's carries the host folder in a label (with whatever
     drive-letter case the host used, hence the casefold).
     """
@@ -403,7 +403,7 @@ def _warn_on_stale_booley_bake(workspace: Path) -> None:
 
 
 def _warn_on_stale_session_containers(spec: dict, workspace: Path) -> None:
-    """Warn when a live session container was created from a superseded image.
+    """Warn when a live Sandbox was created from a superseded image.
 
     A rebuild moves the tag but never touches running containers, so a fresh
     build is silently not what the open session executes. Uses
@@ -436,7 +436,7 @@ def _run(argv: list[str], *, capture: bool = True) -> subprocess.CompletedProces
 
 @dataclass(frozen=True)
 class ParkedSession:
-    """One retained Session container that can be restored or discarded."""
+    """One retained Sandbox that can be restored or discarded."""
 
     name: str
     backup: str
@@ -459,9 +459,7 @@ def _strict_refresh_container(name: str) -> dict[str, Any] | None:
     try:
         state = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise SessionError(
-            f"Docker returned invalid inspection for Sandbox {name!r}"
-        ) from exc
+        raise SessionError(f"Docker returned invalid inspection for Sandbox {name!r}") from exc
     if not isinstance(state, dict):
         raise SessionError(f"Docker returned invalid inspection for Sandbox {name!r}")
     config = state.get("Config")
@@ -491,8 +489,7 @@ def _assert_refresh_container_owned(name: str, state: dict[str, Any], project_id
     labels = _refresh_container_labels(state)
     if labels.get("booley.role") != "interactive" or labels.get("booley.project-id") != project_id:
         raise SessionError(
-            f"container {name!r} is not the issued Sandbox for this Project; "
-            "it was not modified"
+            f"container {name!r} is not the issued Sandbox for this Project; it was not modified"
         )
 
 
@@ -554,9 +551,7 @@ def _park_session_container(parked: ParkedSession) -> None:
     if parked.was_running:
         stopped = _run(["docker", "stop", parked.name])
         if stopped.returncode:
-            raise SessionError(
-                f"could not stop existing Sandbox: {stopped.stderr.strip()}"
-            )
+            raise SessionError(f"could not stop existing Sandbox: {stopped.stderr.strip()}")
     renamed = _run(["docker", "rename", parked.name, parked.backup])
     if renamed.returncode:
         restart_detail = ""
@@ -627,8 +622,7 @@ def _restore_incomplete_park(parked: ParkedSession) -> None:
         original = _strict_refresh_container(parked.name)
         if original is None:
             raise SessionError(
-                f"neither Sandbox {parked.name!r} nor recovery container "
-                f"{parked.backup!r} exists"
+                f"neither Sandbox {parked.name!r} nor recovery container {parked.backup!r} exists"
             )
         _assert_refresh_predecessor(parked.name, original, parked)
         connected = _validate_refresh_egress(parked, original)
@@ -1131,8 +1125,7 @@ def _authenticate_quiesce_validate(
     except runtime_spec.RuntimeSpecError as exc:
         recovery = _quiesced_validation_recovery(quiesced)
         raise SessionError(
-            f"refusing Sandbox preparation: {exc}; run `booley init --seed` on the host"
-            f"{recovery}"
+            f"refusing Sandbox preparation: {exc}; run `booley init --seed` on the host{recovery}"
         ) from exc
     return issuance, quiesced
 
@@ -1235,9 +1228,7 @@ def _stop_legacy_vscode_container(container: _LegacyVscodeContainer) -> None:
         detail = result.stderr.strip() or result.stdout.strip() or "container identity changed"
         raise SessionError(f"cannot stop legacy Sandbox {container.name!r}: {detail}")
     if _inspected_running(state) is not False:
-        raise SessionError(
-            f"legacy Sandbox {container.name!r} is still running after stop"
-        )
+        raise SessionError(f"legacy Sandbox {container.name!r} is still running after stop")
 
 
 def _quiesced_validation_recovery(container: _LegacyVscodeContainer | None) -> str:
@@ -2059,7 +2050,7 @@ def _warn_on_mangled_args(command: list[str]) -> None:
         return
     logger.warning(
         "argument(s) %s look like Windows host paths, which do not exist inside "
-        "the session container — Git Bash/MSYS rewrites '/tmp/...' style "
+        "the Sandbox — Git Bash/MSYS rewrites '/tmp/...' style "
         "arguments when it launches booley. If you meant a container path, "
         "re-run with MSYS_NO_PATHCONV=1 (or MSYS2_ARG_CONV_EXCL='*'), or double "
         "the leading slash ('//tmp/rep').",
@@ -2189,7 +2180,7 @@ def verify_refreshed_session(
 
 
 def _down_unlocked(workspace: Path, *, remove: bool = True) -> bool:
-    """Stop (and by default remove) the session container. False if absent."""
+    """Stop (and by default remove) the Sandbox. False if absent."""
     name = session_container_name(workspace)
     relay = _relay_resources(workspace)
     session_exists = idk.container_exists(name)

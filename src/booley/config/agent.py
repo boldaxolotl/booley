@@ -368,9 +368,7 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
     """
     section = data.get("sandbox", {})
     if "mode" in section:
-        logger.warning(
-            "[sandbox].mode is retired: the Sandbox is always Docker; delete it"
-        )
+        logger.warning("[sandbox].mode is retired: the Sandbox is always Docker; delete it")
     image = section.get("image", SANDBOX_IMAGE)
     if not isinstance(image, str) or not image.strip():
         logger.warning("Invalid sandbox image %r; falling back to %r", image, SANDBOX_IMAGE)

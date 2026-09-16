@@ -6287,9 +6287,7 @@ class TestNoDockerSkipReason:
             None, None, "booley-sandbox", False, rec.p, rec.w, rec.s, rec.f
         )
 
-        assert any(
-            "already inside the Sandbox" in m for lvl, m in rec.events if lvl == "skip"
-        )
+        assert any("already inside the Sandbox" in m for lvl, m in rec.events if lvl == "skip")
         assert any(
             "provider-side web access disabled" in m for lvl, m in rec.events if lvl == "pass"
         )

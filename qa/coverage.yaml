@@ -47,7 +47,7 @@ capabilities:
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: SESSION-RUNTIME-LIFECYCLE
-  title: Session Runtime lifecycle
+  title: Sandbox lifecycle
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#entering-the-session-runtime-without-vs-code
   - |-
@@ -80,8 +80,8 @@ capabilities:
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy
   contract: |-
-    `profile-crud`: register/list/show disposable License Profile → same safe identity. `profile-attach`: attach to exact Grant → runtime policy matches authorized destination. `relay-isolation`: controlled relay infrastructure attempts unapproved destination → blocked. `relay-failure`: make approved controlled destination unavailable → precise diagnostic without leaked secret. `relay-recovery`: restore controlled endpoint → approved route usable. `profile-cleanup`: detach/remove owned profile and relay → no owned resources remain.
-    Redacted registry/Grant/runtime policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success.
+    `profile-crud`: register/list/show disposable License Profile → same safe identity. `profile-attach`: attach to exact Grant → Sandbox Policy matches authorized destination. `relay-isolation`: controlled relay infrastructure attempts unapproved destination → blocked. `relay-failure`: make approved controlled destination unavailable → precise diagnostic without leaked secret. `relay-recovery`: restore controlled endpoint → approved route usable. `profile-cleanup`: detach/remove owned profile and relay → no owned resources remain.
+    Redacted registry/Grant/Sandbox Policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. Paid-seat observations remain optional experimental with site authority; common CRUD is supported.
 - id: DOCTOR-DIAGNOSTICS
@@ -180,7 +180,7 @@ capabilities:
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: PROJECT-RUNTIME-IMAGE
-  title: Project Runtime Image
+  title: Project Sandbox Image
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#sandbox-sandbox
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#advanced-setups
@@ -195,7 +195,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
   contract: |-
     `riscv-tools`: inspect runtime GCC/srec_cat/dtc/Spike and offline specs → declared supported image tools ready. `riscv-firmware`: pre-run real firmware build and Spike use → fresh named firmware and expected execution evidence.
-    Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario.
+    Storage proof, versions, compile and execution logs, firmware digest; link existing Sandbox Image recovery checks in this Scenario.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: VENDORED-CORE-DISCOVERY
@@ -562,11 +562,11 @@ capabilities:
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: SECURITY-RUNTIME-ISOLATION
-  title: Session Runtime isolation
+  title: Sandbox isolation
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model
   contract: |-
-    `runtime-user`: inspect UID/capabilities → non-root/restricted. `mount-boundary`: inspect mounts → absent host home/SSH/Docker socket. `pdk-readonly`: benign owned-name write attempt to PDK mount → refused. PicoRV32 `vivado-readonly` same on provisioned mount → refused. `network-deny`: controlled undeclared route → blocked. `provider-allow`: real selected-provider call → works through allowed path. `origin-push-deny`: outside-runtime control push to a Scenario-owned Git server succeeds, then the Session Runtime attempts the same authorized transport to a separate probe ref → runtime network boundary blocks the push and the probe ref remains unchanged; container-local and local-path remotes are out of scope. `interrupt-cleanup`: interrupt owned work → no descendants.
+    `runtime-user`: inspect UID/capabilities → non-root/restricted. `mount-boundary`: inspect mounts → absent host home/SSH/Docker socket. `pdk-readonly`: benign owned-name write attempt to PDK mount → refused. PicoRV32 `vivado-readonly` same on provisioned mount → refused. `network-deny`: controlled undeclared route → blocked. `provider-allow`: real selected-provider call → works through allowed path. `origin-push-deny`: outside-runtime control push to a Scenario-owned Git server succeeds, then the Sandbox attempts the same authorized transport to a separate probe ref → runtime network boundary blocks the push and the probe ref remains unchanged; container-local and local-path remotes are out of scope. `interrupt-cleanup`: interrupt owned work → no descendants.
     Mount/capability metadata and benign check outputs; do not enumerate unrelated secrets. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
@@ -719,7 +719,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#coverage-campaign-orchestration
   contract: Explicit collection, native harness/window/tool and suite contracts, fresh per-test evidence and independent
     result truths.
-  applicability: Required on Ubuntu/Windows Session Runtimes with selected Codex/Claude native client; exact evidence
+  applicability: Required on Ubuntu/Windows Sandboxes with selected Codex/Claude native client; exact evidence
     and disjoint Checks are owned by the coverage Scenarios.
 - id: COVERAGE-CRITERIA-POLICY
   title: Coverage Criteria policy
@@ -730,7 +730,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#coverage-campaign-orchestration
   contract: Exact Target/suite policies, native metric eligibility and rational thresholds, independent durable
     Ticket acceptance.
-  applicability: Required on Ubuntu/Windows Session Runtimes with selected Codex/Claude native client; exact evidence
+  applicability: Required on Ubuntu/Windows Sandboxes with selected Codex/Claude native client; exact evidence
     and disjoint Checks are owned by the coverage Scenarios.
 - id: COVERAGE-APPROVED-WAIVERS
   title: Approved coverage waivers
@@ -739,7 +739,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#native-coverage-configuration
   contract: Exact human-approved point/source/Target exclusions, formal proofs, provenance and atomic validation;
     candidates have no authority.
-  applicability: Required on Ubuntu/Windows Session Runtimes with selected Codex/Claude native client; exact evidence
+  applicability: Required on Ubuntu/Windows Sandboxes with selected Codex/Claude native client; exact evidence
     and disjoint Checks are owned by the coverage Scenarios.
 - id: COVERAGE-CAMPAIGN-STORAGE
   title: Coverage Campaign storage
@@ -748,7 +748,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#coverage-campaign-orchestration
   contract: Canonical integrity-linked V3 point stores and manifests, source/overall rollups, durable publication
     and fresh restart.
-  applicability: Required on Ubuntu/Windows Session Runtimes with selected Codex/Claude native client; exact evidence
+  applicability: Required on Ubuntu/Windows Sandboxes with selected Codex/Claude native client; exact evidence
     and disjoint Checks are owned by the coverage Scenarios.
 - id: COVERAGE-CAMPAIGN-RETENTION
   title: Coverage Campaign retention
@@ -756,7 +756,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#exact-coverage-retention
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#coverage-campaign-orchestration
   contract: Exact safe pruning, locks, retry, immutable normalized evidence and permanent invocation-number reservation.
-  applicability: Required on Ubuntu/Windows Session Runtimes with selected Codex/Claude native client; exact evidence
+  applicability: Required on Ubuntu/Windows Sandboxes with selected Codex/Claude native client; exact evidence
     and disjoint Checks are owned by the coverage Scenarios.
 - id: SPECIALIST-COVERAGE-ANALYSIS
   title: Coverage Analyst
@@ -766,7 +766,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/MCP-TOOLS.md#report-driven-coverage-analyst
   contract: Exact-path advisory analysis with verified or report-only sources, unchanged measurement/acceptance
     and screened unapproved candidates.
-  applicability: Required on Ubuntu/Windows Session Runtimes with selected Codex/Claude native client; exact evidence
+  applicability: Required on Ubuntu/Windows Sandboxes with selected Codex/Claude native client; exact evidence
     and disjoint Checks are owned by the coverage Scenarios.
 - id: COVERAGE-ANALYST-EVIDENCE-BOUNDARY
   title: Coverage Analyst evidence boundary
@@ -775,5 +775,5 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/MCP-TOOLS.md#report-driven-coverage-analyst
   contract: Bounded Campaign-scoped retrieval, delivered reference authorization, audit, isolated model capabilities
     and failure handling.
-  applicability: Required on Ubuntu/Windows Session Runtimes with selected Codex/Claude native client; exact evidence
+  applicability: Required on Ubuntu/Windows Sandboxes with selected Codex/Claude native client; exact evidence
     and disjoint Checks are owned by the coverage Scenarios.

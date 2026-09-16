@@ -281,7 +281,7 @@ def relay_private_connect_argv(resources: RelayResources, profile: RelayProfile)
 def session_private_connect_argv(resources: RelayResources, session_container: str) -> list[str]:
     """Attach a Sandbox only to its private license network."""
     if not isinstance(session_container, str) or not session_container:
-        raise RelayDockerError("Session container name must be non-empty")
+        raise RelayDockerError("Sandbox name must be non-empty")
     return ["network", "connect", resources.private_network, session_container]
 
 
@@ -433,9 +433,7 @@ def validate_relay(
     if session_container is not None:
         session_networks = _inspect_networks(run, session_container)
         if resources.private_network not in session_networks:
-            raise RelayDockerError(
-                "Sandbox is not attached to its private license network"
-            )
+            raise RelayDockerError("Sandbox is not attached to its private license network")
         if resources.outbound_network in session_networks:
             raise RelayDockerError("Sandbox is attached to the relay outbound network")
     _validate_network(

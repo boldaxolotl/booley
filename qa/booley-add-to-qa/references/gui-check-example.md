@@ -1,7 +1,7 @@
 # GUI Check example
 
 Read this example only when a proposed requirement covers the supported VS Code
-Runtime Attachment or Waveform Viewer.
+Sandbox Attachment or Waveform Viewer.
 
 The Taxi Scenario's `viewer.visual-capture` Check proves that the Waveform Viewer shows
 the expected signals, markers, and cursor. This is distinct from

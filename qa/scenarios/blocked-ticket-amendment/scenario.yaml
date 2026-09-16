@@ -31,8 +31,8 @@ check_sets:
   - final.records
   - cleanup.owned
 shared_pre_run_requirements:
-- An immutable installed product artifact containing the blocked-Ticket amendment, its full source commit, matching public documentation, and runtime image digest; no editable source install.
-- Docker and Verilator in the issued Session Runtime, sufficient storage, and working authentication for the selected Ticket backend. Record identities without credential bytes.
+- An immutable installed product artifact containing the blocked-Ticket amendment, its full source commit, matching public documentation, and Sandbox Image digest; no editable source install.
+- Docker and Verilator in the issued Sandbox, sufficient storage, and working authentication for the selected Ticket backend. Record identities without credential bytes.
 - A live Human Maintainer available to approve each exact before/after proposal. An operator or Developer Agent cannot fabricate that approval.
 - Authority over three disposable Projects and Tickets, their branches/workspaces, runtime processes, and owned temporary files. No remote publication or cleanup of borrowed resources.
 - Preserve the literal 438-cycle workload, initial 400-cycle ceiling, approved 450-cycle ceiling, and exact selected Target/test. Do not calibrate thresholds during the Run.
@@ -186,7 +186,7 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: Exact workload bytes, CLI result, Flow report, named cycle observation, recipe/source hashes and independent count of 438 clock edges.
     capture: evidence/blocked-ticket-amendment.fixture.measurement
-  resources: [three disposable Project roots, outer and project Git repositories, Session Runtime]
+  resources: [three disposable Project roots, outer and project Git repositories, Sandbox]
   timeout_minutes: 55
 - id: ticket.blocked
   phase: block

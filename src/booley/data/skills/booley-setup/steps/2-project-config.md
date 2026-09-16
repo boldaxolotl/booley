@@ -14,7 +14,7 @@
 
 Booley's canonical Project config is split across **three** artifacts on two
 sides of one line — **FuseSoC owns design-description (how to build); Booley
-owns verification-intent (what to verify) and runtime policy:**
+owns verification-intent (what to verify) and Sandbox Policy:**
 
 1. **`.core` FuseSoC Target(s)** — *design-description*: source files
    (`filesets`), top modules (`toplevel`), build-time parameters/defines

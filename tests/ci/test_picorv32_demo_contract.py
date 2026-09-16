@@ -148,9 +148,7 @@ def test_demo_uses_and_retains_the_pulled_immutable_image_identity() -> None:
     resolver = next(
         step for step in steps if step.get("name") == "Pull and resolve RISC-V Sandbox"
     )
-    upload = next(
-        step for step in steps if step.get("name") == "Retain RISC-V Sandbox identity"
-    )
+    upload = next(step for step in steps if step.get("name") == "Retain RISC-V Sandbox identity")
     verify = next(
         step
         for step in steps
