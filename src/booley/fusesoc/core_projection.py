@@ -264,7 +264,10 @@ def _absolute_fileset_path(raw: str, root: Path, core_file: Path) -> str:
             f"native-core isolation requires literal fileset paths; found {raw!r} in {core_file}"
         )
     path = Path(raw)
-    return str(path if path.is_absolute() else (root / path).resolve(strict=False))
+    absolute = path if path.is_absolute() else (root / path).resolve(strict=False)
+    # FuseSoC 2.4.7 parses fileset paths as expressions and rejects the
+    # backslashes emitted by Windows' ``str(Path)`` representation.
+    return absolute.as_posix()
 
 
 def _write_projection(destination: Path, content: str) -> bool:
