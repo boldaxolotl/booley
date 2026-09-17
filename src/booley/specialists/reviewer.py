@@ -1303,7 +1303,10 @@ match the strength of the evidence.
 """,
         ]
         self._append_review_guides(sections, focus, category, gp)
-        if focus == "quality":
+        style_focus = (category == "rtl" and focus == "code_style") or (
+            category == "tb" and focus == "quality"
+        )
+        if style_focus:
             self._append_style_guides(sections, category, gp)
         sections.append(self._output_instructions(focus, category))
         return "\n".join(sections)
