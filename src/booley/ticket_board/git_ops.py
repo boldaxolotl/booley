@@ -99,11 +99,7 @@ def _bind_mount_relative_path(root: Path, candidate: Path) -> str | None:
     matches: list[Path] = []
     ancestor = candidate
     while True:
-        try:
-            existing = ancestor.is_dir()
-        except OSError:
-            existing = False
-        if existing:
+        if ancestor.is_dir():
             try:
                 if ancestor.samefile(root):
                     matches.append(ancestor)
@@ -115,10 +111,7 @@ def _bind_mount_relative_path(root: Path, candidate: Path) -> str | None:
         ancestor = parent
     if len(matches) != 1:
         return None
-    try:
-        return candidate.relative_to(matches[0]).as_posix()
-    except ValueError:
-        return None
+    return candidate.relative_to(matches[0]).as_posix()
 
 
 def _is_allowed_unstaged_rename(
