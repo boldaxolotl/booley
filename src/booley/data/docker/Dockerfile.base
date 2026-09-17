@@ -312,7 +312,7 @@ ENV PIP_DEFAULT_TIMEOUT=120 \
 # Edalize only *invokes* the EDA tools built above; it does not manage their
 # versions (ADR 0019 decision).
 RUN python -m pip install --break-system-packages --no-cache-dir \
-    "edalize==0.6.8" "fusesoc==2.4.6"
+    "edalize==0.6.8" "fusesoc==2.4.7"
 
 # Cocotb verification layer (ADR 0034 decision 10) — cocotb 2.x plus the
 # small curated, pinned Python set a testbench may import (Booley Flows have no
