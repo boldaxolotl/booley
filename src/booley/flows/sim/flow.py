@@ -96,6 +96,12 @@ from .build import (
     prepare_simulation_build,
     setup_failure_outcome,
 )
+from .build_session import (
+    SimulationBuildSession,
+    SimulationBuildSlotError,
+    preview_generation_root,
+    project_compile_surface,
+)
 from .execution import (
     DefaultSelection,
     NamedTests,
@@ -364,6 +370,7 @@ def _build_outcome_entry(outcome: BuildOutcome | None) -> dict[str, Any] | None:
         "oom_kill_delta": outcome.oom_kill_delta,
         "terminal_record": outcome.terminal_record,
         "reason": outcome.reason,
+        "cache_decision": outcome.cache_decision,
     }
 
 
@@ -1440,11 +1447,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         revision: str | None,
     ) -> WorkUnitPlan:
         """Normalize one resolved Simulation command into the shared plan model."""
-        build_root = work_root_for(
-            self.args.work_dir,
-            "sim",
-            target,
-            variant="trace" if self.args.trace else "",
+        build_root = preview_generation_root(
+            self._target_handle(target), "trace" if self.args.trace else ""
         )
         sources = normalize_plan_paths(preview.sources, self.args.work_dir)
         constraints = normalize_plan_paths(preview.constraints, self.args.work_dir)
@@ -1965,7 +1969,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if len(command) == 1 and command[0].startswith("ERROR:"):
             raise ValueError(command[0])
         sources, constraints = normalize_plan_inputs(inspection.inputs, self.args.work_dir)
-        build_root = work_root_for(self.args.work_dir, "sim", target)
+        build_root = preview_generation_root(handle)
         recipe = {
             "environment_fingerprint": plan_value_fingerprint(self._target_sim_env(target)),
             "flow_options": inspection.flow_options,
@@ -2148,23 +2152,49 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _run_one_elab_only(self, target: str) -> ElabOnlyTargetResult:
         """Run one canonical untraced Simulation build and archive its output."""
         started = time.monotonic()
-        work_root = work_root_for(self.args.work_dir, "sim", target)
-        self._open_run_log(target, work_root)
-        prepared = self._prepare_elab_only_target(target, started)
-        if isinstance(prepared, ElabOnlyTargetResult):
-            return prepared
-        self._register_prepared_build(target, prepared)
-        return self._execute_elab_only_build(target, prepared)
+        handle = self._target_handle(target)
+        try:
+            sources_before = project_compile_surface(handle.project_root)
+            with SimulationBuildSession(handle) as session:
+                candidate = session.new_generation()
+                self._open_run_log(target, candidate)
+                prepared = self._prepare_elab_only_target(
+                    target, started, handle=handle, build_root=candidate
+                )
+                if isinstance(prepared, ElabOnlyTargetResult):
+                    return prepared
+                if project_compile_surface(handle.project_root) != sources_before:
+                    raise SimulationBuildSlotError(
+                        "Project compile inputs changed during elaboration preparation"
+                    )
+                self._register_prepared_build(target, prepared)
+                inputs = (
+                    session.capture_inputs(prepared) if prepared.work_root == candidate else {}
+                )
+                result = self._execute_elab_only_build(target, prepared)
+                if result.outcome.passed and prepared.work_root == candidate:
+                    session.authorize_fresh_image(prepared, inputs)
+                return result
+        except SimulationBuildSlotError as exc:
+            outcome = setup_failure_outcome(
+                f"Simulation build slot failed: {exc}",
+                elapsed_s=time.monotonic() - started,
+            )
+            return ElabOnlyTargetResult(target=target, outcome=outcome)
 
     def _prepare_elab_only_target(
         self,
         target: str,
         started: float,
+        *,
+        handle: TargetHandle,
+        build_root: Path,
     ) -> PreparedSimulationBuild | ElabOnlyTargetResult:
         """Prepare one Target or return its expected setup-error result."""
         try:
             return prepare_simulation_build(
-                self._target_handle(target),
+                handle,
+                build_root=build_root,
                 environment=self._target_sim_env(target),
             )
         except SimulationBuildPreparationError as exc:
@@ -2343,9 +2373,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return self._dry_run_result(self._flow_plan)
 
     def _elab_only_dry_command(self, target: str) -> list[str]:
-        build_root = work_root_for(self.args.work_dir, "sim", target)
         try:
             handle = self._target_handle(target)
+            build_root = preview_generation_root(handle)
             setup = fusesoc_registry.setup_command_for_handle(
                 handle,
                 build_root=build_root,

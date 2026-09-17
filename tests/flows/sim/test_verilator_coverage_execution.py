@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -110,10 +111,31 @@ def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     assert build.success is True
     assert build.collector == PINNED_VERILATOR
     assert captured["prepare"]["variant"] == "coverage"
+    assert "generations" in captured["prepare"]["build_root"].parts
     assert captured["prepare"]["resolution_vlnv"] == "::coverage:0"
     assert captured["work"].plusargs[-1] == f"+verilator+coverage+file+{raw_path}"
     assert "BOOLEY_COVERAGE_RUN_ID=run:001:wrap" in captured["run_script"]
     assert run.verdict == "pass"
+
+
+def test_coverage_image_changed_after_build_cannot_launch(tmp_path: Path, monkeypatch) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    build = execution.build(
+        SimulationBuildRequest(
+            target,
+            SimulationBuildVariant(trace=False, coverage=True),
+            VERILATOR_COVERAGE_INSTRUMENTATION,
+        )
+    )
+    assert build.success
+    image = captured["prepare"]["build_root"] / "Vcounter_tb"
+    image.write_text("changed image", encoding="utf-8")
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == "inconclusive"
+    assert "image changed" in result.output
+    assert "run_script" not in captured
 
 
 def _execution_fixture(tmp_path: Path, monkeypatch):
@@ -172,8 +194,9 @@ def _fake_overlay(tmp_path: Path):
 def _fake_prepare(prepared, captured):
     def fake_prepare(*args, **kwargs):
         captured["prepare"] = kwargs
-        prepared.build_root.mkdir(parents=True, exist_ok=True)
-        return prepared
+        root = kwargs["build_root"]
+        root.mkdir(parents=True, exist_ok=True)
+        return replace(prepared, work_root=root, build_root=root)
 
     return fake_prepare
 
@@ -193,6 +216,9 @@ def _fake_invoke(captured, raw_path: Path):
         script = command[2]
         if "BOOLEY_BUILD_STAGE" in script:
             token = re.search(r"token=([0-9a-f]+)", script).group(1)
+            image = captured["prepare"]["build_root"] / "Vcounter_tb"
+            image.write_text("compiled image", encoding="utf-8")
+            image.chmod(0o755)
             return SubprocessResult(
                 returncode=0,
                 stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0 duration_ms=1\n",

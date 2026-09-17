@@ -88,6 +88,7 @@ class BuildOutcome:
     oom_kill_delta: int = 0
     terminal_record: bool = False
     reason: str = ""
+    cache_decision: str = ""
 
     @property
     def passed(self) -> bool:
@@ -109,6 +110,7 @@ def prepare_simulation_build(
     handle: TargetHandle,
     *,
     variant: str = "",
+    build_root: Path | None = None,
     resolution_vlnv: str | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> PreparedSimulationBuild:
@@ -117,6 +119,7 @@ def prepare_simulation_build(
         return _prepare_simulation_build(
             handle,
             variant=variant,
+            build_root=build_root,
             resolution_vlnv=resolution_vlnv,
             environment=environment,
         )
@@ -133,13 +136,14 @@ def _prepare_simulation_build(
     handle: TargetHandle,
     *,
     variant: str,
+    build_root: Path | None,
     resolution_vlnv: str | None,
     environment: Mapping[str, str] | None,
 ) -> PreparedSimulationBuild:
     """Prepare one supported simulator Target after boundary normalization."""
     root = handle.project_root
     target = handle.selector
-    work_root = work_root_for(root, "sim", target, variant=variant)
+    work_root = build_root or work_root_for(root, "sim", target, variant=variant)
     resolved = fusesoc_registry.resolve_target_handle(
         handle,
         build_root=work_root,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.core.build_paths import work_root_for
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -27,6 +29,7 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.sim.build_session import SimulationBuildSlotError, simulation_build_slot
 from booley.flows.sim.execution import (
     DefaultSelection,
     NamedTests,
@@ -203,6 +206,63 @@ def _write_fake_icarus_tools(root: Path) -> Path:
     return fake_bin
 
 
+def _write_stale_compiler_fixture(root: Path) -> tuple[Path, Path]:
+    """A compiler that deliberately leaves an existing image stale."""
+    project = root / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    source = project / "tb.sv"
+    source.write_text("module tb; // OLD\nendmodule\n", encoding="utf-8")
+    (project / "multi.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:multi:1\n"
+        "filesets:\n"
+        "  tb:\n"
+        "    files: [tb.sv]\n"
+        "    file_type: systemVerilogSource\n"
+        "targets:\n"
+        "  sim_a:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: icarus}\n"
+        "    filesets: [tb]\n"
+        "    toplevel: tb\n"
+        "  sim_b:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: icarus}\n"
+        "    filesets: [tb]\n"
+        "    toplevel: tb\n",
+        encoding="utf-8",
+    )
+    fake_bin = root / "bin"
+    fake_bin.mkdir()
+    compiler = fake_bin / "iverilog"
+    compiler.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "output = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])\n"
+        "if not output.exists():\n"
+        "    source = next(pathlib.Path.cwd().rglob('tb.sv'))\n"
+        "    if 'BAD' in source.read_text(): sys.exit(1)\n"
+        "    word = 'NEW' if 'NEW' in source.read_text() else 'OLD'\n"
+        "    output.write_text('[SIM_RESULT] PASSED\\n' + word + '\\n')\n",
+        encoding="utf-8",
+    )
+    compiler.chmod(0o755)
+    runner = fake_bin / "vvp"
+    runner.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "image = next(pathlib.Path(arg) for arg in sys.argv[1:] "
+        "if pathlib.Path(arg).is_file())\n"
+        "print(image.read_text(), end='')\n"
+        "hook = image.parent / 'hook.txt'\n"
+        "if hook.exists(): print('HOOK=' + hook.read_text())\n",
+        encoding="utf-8",
+    )
+    runner.chmod(0o755)
+    return project, source
+
+
 def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
     def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
         started = time.monotonic()
@@ -241,6 +301,15 @@ def _run_execution(
         artifact_root=artifact_root,
     )
     with ExitStack() as stack:
+        stack.enter_context(
+            patch.object(
+                execution,
+                "_run_groups_with_session",
+                side_effect=lambda current_handle, groups: [
+                    execution._run_group(current_handle, group) for group in groups
+                ],
+            )
+        )
         stack.enter_context(
             patch(
                 "booley.flows.sim.execution.engine.TargetCatalog.build",
@@ -814,7 +883,222 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
     assert not (project / "firmware.hex").is_symlink()
 
 
-def test_fresh_build_reset_failure_is_typed_infrastructure(tmp_path: Path) -> None:
+def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, source = _write_stale_compiler_fixture(tmp_path)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    catalog = TargetCatalog.build(project)
+    handles = tuple(catalog.select(name, for_flow="sim") for name in ("sim_a", "sim_b"))
+    observed: list[str] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        result = base_invoke(command, timeout=timeout)
+        if "booley.flows.sim.backends.icarus" in command[-1]:
+            observed.append(result.stdout)
+        return result
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    for handle in handles:
+        assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert len(observed) == 2 and all("OLD" in item for item in observed)
+
+    old_stat = source.stat()
+    source.write_text("module tb; // NEW\nendmodule\n", encoding="utf-8")
+    os.utime(source, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+    observed.clear()
+    for handle in handles:
+        assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert len(observed) == 2 and all("NEW" in item and "OLD" not in item for item in observed)
+
+
+def test_matching_closed_icarus_inputs_reuse_verified_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(
+        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+    )
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    commands: list[list[str]] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        commands.append(command)
+        return base_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    first = execution.run(handle, NamedTests(("first",)))
+    second = execution.run(handle, NamedTests(("second",)))
+    assert first.passed and second.passed
+    assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 1
+    assert second.builds[0].ran is False
+    assert second.builds[0].cache_decision.startswith("hit;")
+
+
+def test_changed_input_with_failed_rebuild_never_launches_prior_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, source = _write_stale_compiler_fixture(tmp_path)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(
+        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+    )
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    observed: list[str] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        result = base_invoke(command, timeout=timeout)
+        if "booley.flows.sim.backends.icarus" in command[-1]:
+            observed.append(result.stdout)
+        return result
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    assert execution.run(handle, NamedTests(("smoke",))).passed
+    old_stat = source.stat()
+    source.write_text("module tb; // BAD\nendmodule\n", encoding="utf-8")
+    os.utime(source, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+    outcome = execution.run(handle, NamedTests(("smoke",)))
+    assert not outcome.passed
+    assert len(observed) == 1
+
+
+@pytest.mark.parametrize("tamper", ["image", "pointer"])
+def test_corrupt_cache_forces_fresh_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(
+        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+    )
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    commands: list[list[str]] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        commands.append(command)
+        return base_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    assert execution.run(handle, NamedTests(("smoke",))).passed
+    slot = simulation_build_slot(handle)
+    pointer = json.loads((slot / "current.json").read_text(encoding="utf-8"))
+    if tamper == "image":
+        build_root = slot / "generations" / pointer["generation"] / pointer["build_root"]
+        image = next(build_root.glob("*.scr")).with_suffix("")
+        image.write_text("[SIM_RESULT] PASSED\nSTALE\n", encoding="utf-8")
+    else:
+        pointer["build_root"] = "../outside"
+        (slot / "current.json").write_text(json.dumps(pointer), encoding="utf-8")
+    assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 2
+
+
+def test_missing_new_image_is_build_infrastructure_and_never_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    launched = False
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        nonlocal launched
+        result = base_invoke(command, timeout=timeout)
+        if "BOOLEY_BUILD_STAGE" in command[-1]:
+            for script in (project / ".booley_project" / ".runtime").rglob("*.scr"):
+                script.with_suffix("").unlink(missing_ok=True)
+        if "booley.flows.sim.backends.icarus" in command[-1]:
+            launched = True
+        return result
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    outcome = execution.run(handle, NamedTests(("smoke",)))
+    assert outcome.infrastructure_failure is not None
+    assert outcome.infrastructure_failure.kind == "build"
+    assert launched is False
+
+
+def test_each_pre_sim_hook_runs_in_its_launched_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    (project / ".booley_project" / "booley.toml").write_text(
+        "[flows.sim]\n"
+        'pre_run_commands = ["printf %s \\"$BOOLEY_TEST_NAME\\" > '
+        '\\"$BOOLEY_BUILD_ROOT/hook.txt\\""]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(
+        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+    )
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    observed: list[str] = []
+    builds = 0
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        nonlocal builds
+        result = base_invoke(command, timeout=timeout)
+        builds += "BOOLEY_BUILD_STAGE" in command[-1]
+        if "booley.flows.sim.backends.icarus" in command[-1]:
+            observed.append(result.stdout)
+        return result
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    outcome = execution.run(handle, NamedTests(("a", "b")))
+    assert outcome.passed
+    assert builds == 2
+    assert "HOOK=a" in observed[0]
+    assert "HOOK=b" in observed[1]
+
+
+def test_hook_editing_project_source_after_setup_cannot_launch_staged_old_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    (project / ".booley_project" / "booley.toml").write_text(
+        '[flows.sim]\npre_run_commands = ["sed -i s/OLD/NEW/ tb.sv"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    commands: list[list[str]] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        commands.append(command)
+        return base_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    outcome = execution.run(handle, NamedTests(("smoke",)))
+    assert outcome.infrastructure_failure is not None
+    assert outcome.infrastructure_failure.kind == "build"
+    assert "changed during setup or Pre-Sim Commands" in outcome.infrastructure_failure.detail
+    assert not commands
+
+
+def test_generation_allocation_failure_is_typed_infrastructure(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(trace=True))
 
@@ -824,10 +1108,9 @@ def test_fresh_build_reset_failure_is_typed_infrastructure(tmp_path: Path) -> No
             return_value=_inspection(cocotb=False),
         ),
         patch(
-            "booley.flows.sim.execution.engine.work_root_for",
-            return_value=tmp_path / "build",
+            "booley.flows.sim.execution.engine.SimulationBuildSession.new_generation",
+            side_effect=SimulationBuildSlotError("busy"),
         ),
-        patch("booley.flows.sim.execution.engine.shutil.rmtree", side_effect=OSError("busy")),
     ):
         outcome = execution.run(handle, NamedTests(("smoke",)))
 
@@ -835,7 +1118,7 @@ def test_fresh_build_reset_failure_is_typed_infrastructure(tmp_path: Path) -> No
     assert outcome.tests == ()
     assert outcome.infrastructure_failure is not None
     assert outcome.infrastructure_failure.kind == "build"
-    assert "could not reset traced Simulation build root" in outcome.infrastructure_failure.detail
+    assert "busy" in outcome.infrastructure_failure.detail
 
 
 def _assert_live_and_preview_build_variant(
@@ -858,6 +1141,10 @@ def _assert_live_and_preview_build_variant(
             "booley.flows.sim.execution.engine.work_root_for",
             return_value=work_root,
         ) as work_root_for,
+        patch(
+            "booley.flows.sim.execution.engine.preview_generation_root",
+            return_value=work_root,
+        ) as preview_root,
         patch.object(execution, "_reset_build_root") as reset,
         patch(
             "booley.flows.sim.execution.engine.prepare_simulation_build",
@@ -878,10 +1165,8 @@ def _assert_live_and_preview_build_variant(
         execution._prepare_build(handle)
         execution._preview_group(handle, _inspection(cocotb=False), ("smoke",), False)
 
-    assert [call.kwargs["variant"] for call in work_root_for.call_args_list] == [
-        expected,
-        expected,
-    ]
+    assert [call.kwargs["variant"] for call in work_root_for.call_args_list] == [expected]
+    preview_root.assert_called_once_with(handle, expected)
     assert reset.call_args.args[0] == work_root
     assert reset.call_args.args[1].variant == expected
     assert prepare.call_args.kwargs["variant"] == expected
@@ -917,94 +1202,25 @@ def test_live_and_preview_use_the_same_build_variant(
     _assert_live_and_preview_build_variant(tmp_path, trace=trace, expected=expected)
 
 
-@pytest.mark.parametrize("cocotb, groups_per_run", [(False, 2), (True, 1)])
-def test_fresh_build_root_resets_once_per_run(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cocotb: bool,
-    groups_per_run: int,
-) -> None:
-    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=cocotb)
-    groups = (("a", "b"),) if cocotb else (("a",), ("b",))
-    tokens = tuple(f"{index:032x}" for index in range(groups_per_run * 2))
-    attempts = tuple(zip(tokens, groups * 2, strict=True))
-    invoke = _passing_attempt_invoker(
-        handle,
-        prepared,
-        attempts,
-        adapter="cocotb" if cocotb else "icarus",
-    )
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
-    with (
-        patch(
-            "booley.flows.sim.execution.engine.TargetCatalog.build",
-            return_value=_inspection(cocotb=cocotb),
-        ),
-        patch(
-            "booley.flows.sim.execution.engine.work_root_for",
-            return_value=prepared.build_root,
-        ),
-        patch(
-            "booley.flows.sim.execution.engine.prepare_simulation_build",
-            return_value=prepared,
-        ),
-        patch(
-            "booley.flows.sim.execution.engine.new_attempt_token",
-            side_effect=tokens,
-        ),
-        patch("booley.flows.sim.execution.engine.shutil.rmtree") as reset,
-    ):
-        outcomes = (
-            execution.run(handle, NamedTests(("a", "b"))),
-            execution.run(handle, NamedTests(("a", "b"))),
-        )
-
-    assert all(outcome.passed for outcome in outcomes)
-    assert reset.call_count == 2
-
-
-def test_ordinary_build_root_is_never_reset(
+def test_legacy_selector_root_is_preserved_but_not_used(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    sentinel = prepared.build_root / "cached"
-    sentinel.write_text("keep\n", encoding="utf-8")
-    invoke = _passing_attempt_invoker(
-        handle,
-        prepared,
-        (("0" * 32, ("smoke",)),),
-        adapter="icarus",
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    legacy = work_root_for(project, "sim", handle.selector)
+    legacy.mkdir(parents=True)
+    sentinel = legacy / "old-image"
+    sentinel.write_text("stale\n", encoding="utf-8")
+
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=5000)
     )
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
-
-    with (
-        patch(
-            "booley.flows.sim.execution.engine.TargetCatalog.build",
-            return_value=_inspection(cocotb=False),
-        ),
-        patch(
-            "booley.flows.sim.execution.engine.work_root_for",
-            return_value=prepared.build_root,
-        ),
-        patch(
-            "booley.flows.sim.execution.engine.prepare_simulation_build",
-            return_value=prepared,
-        ),
-        patch(
-            "booley.flows.sim.execution.engine.new_attempt_token",
-            return_value="0" * 32,
-        ),
-        patch("booley.flows.sim.execution.engine.shutil.rmtree") as reset,
-    ):
-        outcome = execution.run(handle, NamedTests(("smoke",)))
-
-    assert outcome.passed is True
-    reset.assert_not_called()
-    assert sentinel.read_text(encoding="utf-8") == "keep\n"
+    assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert sentinel.read_text(encoding="utf-8") == "stale\n"
+    assert tuple((simulation_build_slot(handle) / "generations").iterdir())
 
 
 @pytest.mark.parametrize(
@@ -1034,6 +1250,13 @@ def test_pre_sim_stage_preserves_elaboration_and_infrastructure_classes(
     prepared = _prepared(handle, cocotb=False)
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
     with (
+        patch.object(
+            execution,
+            "_run_groups_with_session",
+            side_effect=lambda current_handle, groups: [
+                execution._run_group(current_handle, group) for group in groups
+            ],
+        ),
         patch(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
@@ -1456,6 +1679,13 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
     run = _ChangingTraceRun(handle, prepared, config, traces)
     execution = SimulationExecution(invoke=run.invoke, options=SimulationOptions(trace=True))
     with (
+        patch.object(
+            execution,
+            "_run_groups_with_session",
+            side_effect=lambda current_handle, groups: [
+                execution._run_group(current_handle, group) for group in groups
+            ],
+        ),
         patch(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
