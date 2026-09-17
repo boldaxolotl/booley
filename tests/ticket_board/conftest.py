@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,26 @@ def _make_tio(tmp_path: Path) -> TicketIO:
     # tmp base — where stale .core files from other tests' retained runs leak
     # into .core-derived validation (tb_source_prefixes rglob).
     return TicketIO(tickets_dir, project_root=tmp_path)
+
+
+@pytest.fixture
+def fake_bind_mounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[Path, Collection[Path]], None]:
+    """Make selected paths report the same filesystem identity as a root."""
+    real_samefile = Path.samefile
+
+    def install(root: Path, aliases: Collection[Path]) -> None:
+        identities = {frozenset((root, alias)) for alias in aliases}
+
+        def samefile(left: Path, right: Path) -> bool:
+            if frozenset((Path(left), Path(right))) in identities:
+                return True
+            return real_samefile(left, right)
+
+        monkeypatch.setattr(Path, "samefile", samefile)
+
+    return install
 
 
 @pytest.fixture
