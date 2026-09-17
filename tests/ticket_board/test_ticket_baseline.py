@@ -393,8 +393,11 @@ def _remap_generated_test_view(workspace: Path, host_root: Path) -> None:
     reconcile_projected_cores(workspace)
     reconcile_isolated_registry(workspace)
     for core in isolated_registry_root(workspace).glob("*.core"):
+        content = core.read_text(encoding="utf-8")
         core.write_text(
-            core.read_text(encoding="utf-8").replace(str(workspace), str(host_root)),
+            content.replace(str(workspace), str(host_root)).replace(
+                workspace.as_posix(), host_root.as_posix()
+            ),
             encoding="utf-8",
         )
 

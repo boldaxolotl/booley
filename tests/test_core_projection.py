@@ -143,8 +143,11 @@ def test_isolated_registry_rebases_files_and_excludes_native_cores(tmp_path: Pat
     generated = result.written[0]
     assert generated.parent == isolated_registry_root(root)
     text = generated.read_text(encoding="utf-8")
-    assert str(root / "rtl" / "demo.sv") in text
-    assert str(root / "rtl") in text
+    assert any(
+        path in text
+        for path in (str(root / "rtl" / "demo.sv"), (root / "rtl" / "demo.sv").as_posix())
+    )
+    assert any(path in text for path in (str(root / "rtl"), (root / "rtl").as_posix()))
     assert "native.core" not in text
     assert core.read_text(encoding="utf-8").startswith("CAPI=2:\nname: booley::demo:0")
 
