@@ -927,16 +927,28 @@ def test_matching_closed_icarus_inputs_reuse_verified_image(
     )
     handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
     commands: list[list[str]] = []
+    process_results: list[SubprocessResult] = []
     base_invoke = _subprocess_invoker(project)
 
     def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
         commands.append(command)
-        return base_invoke(command, timeout=timeout)
+        result = base_invoke(command, timeout=timeout)
+        process_results.append(result)
+        return result
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     first = execution.run(handle, NamedTests(("first",)))
+    first_process_results = tuple(process_results)
     second = execution.run(handle, NamedTests(("second",)))
-    assert first.passed, (first.builds, first.tests, first.infrastructure_failure)
+    if not first.passed:
+        adapter_process = first_process_results[-1]
+        pytest.fail(
+            f"adapter rc={adapter_process.returncode}; "
+            f"stdout={adapter_process.stdout[-2000:]!r}; "
+            f"stderr={adapter_process.stderr[-2000:]!r}; "
+            f"failure={first.infrastructure_failure!r}",
+            pytrace=False,
+        )
     assert second.passed, (second.builds, second.tests, second.infrastructure_failure)
     assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 1
     assert second.builds[0].ran is False
