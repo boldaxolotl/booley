@@ -1,12 +1,13 @@
-# Keep queue validation in-place: one PR per batch, one check slot, and no
-# automatic retries. Changing any of those constraints requires a draft-PR
-# compatibility canary for Booley's required checks first.
+# Validate up to three cumulative candidates concurrently, with one PR per
+# batch and no automatic retries. Before rollout, verify required checks on a
+# draft-PR compatibility canary and disable strict up-to-date branch checks
+# while retaining required checks and Mergify-exclusive merges.
 merge_queue:
   mode: serial
   # Keep queue progress in Mergify's dashboard and checks instead of posting
   # status comments that notify every participant on each pull request.
   status_comments: none
-  max_parallel_checks: 1
+  max_parallel_checks: 3
   queued_label: queued
   checking_label: merge-queue-checking
   dequeued_label: dequeued
@@ -26,8 +27,7 @@ queue_rules:
       - base = main
       - check-success = @github-actions/ci-required
       - check-success = @github-actions/confidential-content
-    # Keep these identical to queue_conditions so Mergify can check the
-    # original PR instead of creating a temporary batch PR.
+    # Require the same checks for queue admission and speculative candidates.
     merge_conditions:
       - base = main
       - check-success = @github-actions/ci-required

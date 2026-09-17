@@ -1,13 +1,34 @@
 # Merge queue
 
-Mergify is the only normal merge path into `main`. It updates and validates one
-PR at a time, avoiding refreshes of every waiting branch after each merge.
+Mergify is the only normal merge path into `main`. It validates up to three
+cumulative candidates concurrently and merges in queue order. Each batch adds
+one PR: the candidates represent A, A+B, and A+B+C, rather than three unrelated
+changes tested against the same old `main`.
+
+## Enable speculative checks
+
+Before rolling out multiple check slots, verify that both `ci-required` and
+`confidential-content` run and report success on a draft-PR compatibility
+canary. Mergify uses temporary draft batch PRs for speculative validation;
+ordinary PR success alone does not establish compatibility with their metadata
+and cumulative commits.
+
+The `main_protection` ruleset must have **Require branches to be up to date
+before merging** disabled (`strict_required_status_checks_policy: false`).
+With strict checks enabled, Mergify limits validation to one check slot even
+when `max_parallel_checks` is three. Retain both required status checks, the
+rest of `main_protection`, and the separate `mergify_exclusive` ruleset.
+Coordinate this live setting with rollout; a configuration PR cannot change
+the GitHub ruleset. Ensure runner capacity supports three concurrent CI runs.
+
+See [Mergify queue modes](https://docs.mergify.com/merge-queue/queue-modes/)
+and [parallel checks](https://docs.mergify.com/merge-queue/performance/).
 
 ## Queue a ready PR
 
 Queue only a final, non-draft PR targeting `main` after its initial required
-GitHub Actions checks pass. Mergify updates it against the latest `main` and
-reruns those checks in the queue before merging. The authenticated GitHub
+GitHub Actions checks pass. Mergify validates the cumulative candidate against
+`main` and its queue predecessors before merging. The authenticated GitHub
 identity must have write permission.
 
 ```bash
