@@ -147,6 +147,7 @@ class ConsoleApp(App):
     ]
 
     _harness_work: Callable[[], Coroutine] | None = None
+    on_lifecycle_error: Callable[[Exception, ConsolePhase], None] | None = None
 
     def __init__(
         self,
@@ -159,6 +160,17 @@ class ConsoleApp(App):
         self._strip_timer: Timer | None = None
         self._phase: ConsolePhase = ConsolePhase.PRE_MOUNT
         self._phase_lock = threading.Lock()
+        self.lifecycle_error: Exception | None = None
+        self.lifecycle_error_phase: ConsolePhase | None = None
+
+    def _handle_exception(self, error: Exception) -> None:
+        """Retain Textual's original exception before it renders and exits."""
+        if self.lifecycle_error is None:
+            self.lifecycle_error = error
+            self.lifecycle_error_phase = self.phase
+            if self.on_lifecycle_error is not None:
+                self.on_lifecycle_error(error, self.phase)
+        super()._handle_exception(error)
 
     # --- Phase machinery ----------------------------------------------------
 
