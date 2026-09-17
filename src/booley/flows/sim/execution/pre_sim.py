@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 
+from booley.core.file_lock import active_child_lease_fd
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
@@ -86,6 +87,10 @@ def _invoke_pre_sim(
     """Execute one prepared hook and normalize its result."""
     started = time.monotonic()
     try:
+        lease_fd = active_child_lease_fd()
+        child_kwargs = (
+            {"pass_fds": (lease_fd,)} if os.name != "nt" and lease_fd is not None else {}
+        )
         result = subprocess.run(
             [bash_bin(), "-c", "\n".join(("set -e", *commands))],
             cwd=root,
@@ -94,6 +99,7 @@ def _invoke_pre_sim(
             text=True,
             timeout=timeout_s,
             check=False,
+            **child_kwargs,
         )
     except subprocess.TimeoutExpired as exc:
         return PreSimEvidence(

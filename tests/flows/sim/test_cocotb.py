@@ -13,12 +13,27 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.backends import cocotb_results as cr
+from booley.flows.sim.execution import SimulationExecution
 from booley.flows.sim.result import format_summary
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
+
+
+@pytest.fixture(autouse=True)
+def _use_legacy_build_transport_for_canned_cocotb_tests():
+    """Canned FuseSoC output here has no leased generation."""
+    with patch.object(
+        SimulationExecution,
+        "_run_groups_with_session",
+        lambda self, handle, groups: [self._run_group(handle, group) for group in groups],
+    ):
+        yield
+
 
 # A .core declaring a Cocotb Target (flow_options.cocotb_module — decision 2).
 _COCOTB_CORE_TEXT = """\

@@ -71,6 +71,17 @@ class SimulateFlow(ProductionSimulateFlow):
     """Concrete Flow used by the campaign compatibility tests."""
 
 
+@pytest.fixture(autouse=True)
+def _use_legacy_build_transport_for_canned_flow_tests():
+    """Canned builds in this module live outside a real generation slot."""
+    with patch.object(
+        SimulationExecution,
+        "_run_groups_with_session",
+        lambda self, handle, groups: [self._run_group(handle, group) for group in groups],
+    ):
+        yield
+
+
 def test_target_metadata_resolution_is_counted_as_setup(tmp_path: Path) -> None:
     flow = _make_flow(tmp_path, config="lite")
     target_result = TargetResult(
