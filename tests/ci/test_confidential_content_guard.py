@@ -1289,8 +1289,7 @@ def test_workflow_trusts_mergify_identity_for_pr_updates_and_main_history() -> N
     )[0]
 
     allowed_identity = (
-        'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: '
-        '"37929162+mergify[[]bot[]]@users.noreply.github.com"'
+        'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "37929162+mergify[[]bot[]]@users.noreply.github.com"'
     )
     assert allowed_identity in pr_scan
     assert allowed_identity in main_scan
