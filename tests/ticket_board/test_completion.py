@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -224,20 +224,14 @@ def _paired_completion(
 def _paired_completion_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    fake_bind_mounts: Callable[[Path, Collection[Path]], None],
 ) -> tuple[Path, Path, _TicketIO]:
     root, project, tio, _participants = _paired_completion(tmp_path, monkeypatch)
     runtime_alias = tmp_path / "runtime-project-alias"
     (runtime_alias / "tickets" / "board" / "queue").mkdir(parents=True)
     (runtime_alias / "tickets" / "board" / "review").mkdir()
 
-    real_samefile = Path.samefile
-
-    def samefile(left: Path, right: Path) -> bool:
-        if {Path(left), Path(right)} == {runtime_alias, project}:
-            return True
-        return real_samefile(left, right)
-
-    monkeypatch.setattr(Path, "samefile", samefile)
+    fake_bind_mounts(project, (runtime_alias,))
     tio.tickets_dir = runtime_alias / "tickets"
     return root, project, tio
 
@@ -2100,8 +2094,9 @@ def test_complete_rejects_unrelated_dirty_product_edit(tmp_path: Path) -> None:
 def test_complete_accepts_project_board_transition_through_bind_mount_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    fake_bind_mounts: Callable[[Path, Collection[Path]], None],
 ) -> None:
-    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch)
+    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
 
     assert (project / "tickets" / "board" / "review" / "change-target.md").is_file()
     assert complete_review_ticket(tio, "change-target", _Policy()) is True
@@ -2110,8 +2105,9 @@ def test_complete_accepts_project_board_transition_through_bind_mount_alias(
 def test_complete_rejects_staged_board_transition_through_bind_mount_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    fake_bind_mounts: Callable[[Path, Collection[Path]], None],
 ) -> None:
-    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch)
+    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
     _git(project, "add", "tickets/board/review/change-target.md")
 
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
@@ -2121,8 +2117,9 @@ def test_complete_rejects_staged_board_transition_through_bind_mount_alias(
 def test_complete_rejects_unrelated_project_edit_through_bind_mount_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    fake_bind_mounts: Callable[[Path, Collection[Path]], None],
 ) -> None:
-    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch)
+    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
     (project / "unrelated.txt").write_text("unrelated\n", encoding="utf-8")
 
     assert complete_review_ticket(tio, "change-target", _Policy()) is False

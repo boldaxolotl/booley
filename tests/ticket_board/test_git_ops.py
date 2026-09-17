@@ -115,21 +115,14 @@ class TestWorktreeRelativePath:
 
         assert _worktree_relative_path(str(root), alias / "design.txt") == "design.txt"
 
-    def test_translates_proven_bind_mount_alias(self, tmp_path, monkeypatch):
+    def test_translates_proven_bind_mount_alias(self, tmp_path, fake_bind_mounts):
         root = tmp_path / "checkout"
         root.mkdir()
         alias = tmp_path / "runtime-alias"
         (alias / "tickets" / "board" / "review").mkdir(parents=True)
         candidate = alias / "tickets" / "board" / "review" / "ticket.md"
 
-        real_samefile = Path.samefile
-
-        def samefile(left, right):
-            if {Path(left), Path(right)} == {alias, root}:
-                return True
-            return real_samefile(left, right)
-
-        monkeypatch.setattr(Path, "samefile", samefile)
+        fake_bind_mounts(root, (alias,))
 
         assert _worktree_relative_path(str(root), candidate) == "tickets/board/review/ticket.md"
 
@@ -141,7 +134,7 @@ class TestWorktreeRelativePath:
 
         assert _worktree_relative_path(str(root), unrelated / "ticket.md") is None
 
-    def test_rejects_ambiguous_bind_mount_ancestors(self, tmp_path, monkeypatch):
+    def test_rejects_ambiguous_bind_mount_ancestors(self, tmp_path, fake_bind_mounts):
         root = tmp_path / "checkout"
         root.mkdir()
         alias = tmp_path / "runtime-alias"
@@ -149,14 +142,7 @@ class TestWorktreeRelativePath:
         nested_alias.mkdir(parents=True)
         candidate = nested_alias / "ticket.md"
 
-        real_samefile = Path.samefile
-
-        def samefile(left, right):
-            if {Path(left), Path(right)} in ({alias, root}, {nested_alias, root}):
-                return True
-            return real_samefile(left, right)
-
-        monkeypatch.setattr(Path, "samefile", samefile)
+        fake_bind_mounts(root, (alias, nested_alias))
 
         assert _worktree_relative_path(str(root), candidate) is None
 
