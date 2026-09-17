@@ -37,12 +37,12 @@ import logging
 import os
 import subprocess
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
-from fusesoc.capi2.exprs import Exprs
+from fusesoc.capi2 import exprs as _fusesoc_exprs
 
 from booley.core.boundary import is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
@@ -1165,12 +1165,13 @@ def _partition_fileset_files(
         if not isinstance(fileset, Mapping):
             continue
         for path, tags, is_include in _fileset_entries(fileset):
-            lexical = core_relative_to_project(core_file, project_root, path)
-            rel = canonical_project_path(project_root, lexical)
-            if "tb" in tags:
-                tb.append(rel)
-            elif include_headers or not is_include:
-                rtl.append(rel)
+            for declared in _possible_expression_values(path):
+                lexical = core_relative_to_project(core_file, project_root, declared)
+                rel = canonical_project_path(project_root, lexical)
+                if "tb" in tags:
+                    tb.append(rel)
+                elif include_headers or not is_include:
+                    rtl.append(rel)
 
 
 def _dependency_fileset_names(doc: Mapping[str, Any]) -> list[str]:
@@ -1309,7 +1310,7 @@ def _possible_expression_values(value: str) -> list[str]:
     caller can apply the same conservative non-literal policy as FuseSoC.
     """
     try:
-        ast = Exprs(value).ast
+        ast = _parse_capi2_expression(value)
     except ValueError:
         return [value]
 
@@ -1324,6 +1325,14 @@ def _possible_expression_values(value: str) -> list[str]:
 
     _walk(ast)
     return values
+
+
+def _parse_capi2_expression(value: str) -> list[Any]:
+    """Parse a CAPI2 expression across FuseSoC 2.4.x parser APIs."""
+    parser = getattr(_fusesoc_exprs, "parse", None)
+    if parser is not None:
+        return parser(value)
+    return _fusesoc_exprs.Exprs(value).ast
 
 
 def possible_target_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
@@ -1361,7 +1370,7 @@ def target_parameter_specs(target_def: Mapping[str, Any] | None) -> list[str]:
 def _possible_parameter_specs(value: str) -> list[str]:
     """Return possible CAPI2 parameter specs without splitting values on spaces."""
     try:
-        ast = Exprs(value).ast
+        ast = _parse_capi2_expression(value)
     except ValueError:
         return [value]
 
@@ -1973,6 +1982,33 @@ def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarg
     )
 
 
+def _restore_tb_tags(
+    resolved: ResolvedTarget,
+    *,
+    project_root: Path,
+    source_ref: TargetRef | None,
+) -> ResolvedTarget:
+    """Restore TB tags omitted by FuseSoC 2.4.7's EDAM writer."""
+    if source_ref is None:
+        return resolved
+    tb_paths = {
+        PurePosixPath(str(path).replace("\\", "/")).as_posix()
+        for path in target_source_files_for_ref(project_root, source_ref).tb_files
+    }
+    if not tb_paths:
+        return resolved
+
+    def _is_tb(name: str) -> bool:
+        normalized = PurePosixPath(name.replace("\\", "/")).as_posix()
+        return any(normalized == path or normalized.endswith(f"/{path}") for path in tb_paths)
+
+    files = tuple(
+        replace(file, tags=(*file.tags, "tb")) if not file.is_tb and _is_tb(file.name) else file
+        for file in resolved.files
+    )
+    return replace(resolved, files=files)
+
+
 def _find_edam(build_root: Path, target: str) -> Path:
     """Locate the resolved ``.eda.yml`` for *target* under *build_root*.
 
@@ -2163,12 +2199,17 @@ def _resolve_target(
     # the *enumerated* core for `target`, so an explicit-vlnv resolve (e.g. a
     # --trace overlay, which reuses the base core's filesets) is covered too.
     _preflight_target_sources(bare_target, project_root)
+    try:
+        source_ref = _resolve_ref(project_root, target)
+    except FuseSocError:
+        source_ref = None
     return _run_setup_command(
         cmd,
         project_root=project_root,
         build_root=build_root,
         target=bare_target,
         vlnv=vlnv,
+        source_ref=source_ref,
         fusesoc_cmd=fusesoc_cmd,
         env=env,
         runner=runner,
@@ -2182,6 +2223,7 @@ def _run_setup_command(
     build_root: Path,
     target: str,
     vlnv: str,
+    source_ref: TargetRef | None,
     fusesoc_cmd: Sequence[str],
     env: Mapping[str, str] | None,
     runner: Callable[..., subprocess.CompletedProcess[str]],
@@ -2209,7 +2251,8 @@ def _run_setup_command(
         )
 
     edam_path = _find_edam(build_root, target)
-    return parse_edam(edam_path, target=target, vlnv=vlnv)
+    resolved = parse_edam(edam_path, target=target, vlnv=vlnv)
+    return _restore_tb_tags(resolved, project_root=project_root, source_ref=source_ref)
 
 
 def resolve_target_handle(
@@ -2231,18 +2274,19 @@ def resolve_target_handle(
         resolution_vlnv=resolution_vlnv,
         fusesoc_cmd=fusesoc_cmd,
     )
+    source_ref = TargetRef(
+        name=handle.name,
+        vlnv=handle.vlnv,
+        core_file=handle.core_file,
+        eda_tool=handle.eda_tool,
+        flow=handle.flow,
+        cocotb_module=handle.cocotb_module,
+        doctor_flows=handle.doctor_flows,
+        doctor_selftest=handle.doctor_private,
+    )
     preflight_target_sources_for_ref(
         root,
-        TargetRef(
-            name=handle.name,
-            vlnv=handle.vlnv,
-            core_file=handle.core_file,
-            eda_tool=handle.eda_tool,
-            flow=handle.flow,
-            cocotb_module=handle.cocotb_module,
-            doctor_flows=handle.doctor_flows,
-            doctor_selftest=handle.doctor_private,
-        ),
+        source_ref,
     )
     return _run_setup_command(
         cmd,
@@ -2250,6 +2294,7 @@ def resolve_target_handle(
         build_root=build,
         target=handle.name,
         vlnv=vlnv,
+        source_ref=source_ref,
         fusesoc_cmd=fusesoc_cmd,
         env=env,
         runner=runner,

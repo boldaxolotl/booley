@@ -37,7 +37,7 @@ dependencies = [
     # pairs with fusesoc 2.4.x). Tool *versions* stay the sandbox image's;
     # Edalize only invokes them (ADR 0019 decision: it does not manage versions).
     "edalize==0.6.8",
-    "fusesoc==2.4.6",
+    "fusesoc==2.4.7",
     "httpx>=0.28",
     "httpx-sse>=0.4",
     "Jinja2>=3.1.6",
@@ -71,7 +71,7 @@ test = [
 ]
 quality = [
     "pyright==1.1.414",
-    "ruff==0.16.6",
+    "ruff==0.16.7",
 ]
 mutation = [
     "mutmut==3.7.0",
@@ -103,7 +103,7 @@ dev = [
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
     # in the same commit, and re-run `ruff check .` + `ruff format --check .` first.
-    "ruff==0.16.6",
+    "ruff==0.16.7",
 ]
 
 [project.scripts]
