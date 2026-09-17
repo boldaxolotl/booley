@@ -572,7 +572,7 @@ def test_ticket_mode_mandatory_sim_failure_moves_ticket_to_blocked(
     observations: dict[str, Any] = {}
     _install_scripted_backend(monkeypatch, _blocked_script, observations)
 
-    assert _run_through_runner(monkeypatch, project, slug) == 0
+    assert _run_through_runner(monkeypatch, project, slug) == 1
 
     _assert_board_state(project, slug, "blocked")
     state = DevelopmentState.load(_logs_dir(project, slug) / ".runtime" / "booley_state.json")

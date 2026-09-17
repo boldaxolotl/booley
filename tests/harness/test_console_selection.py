@@ -104,3 +104,97 @@ def test_console_lifecycle_failure_returns_cli_error(tmp_path, monkeypatch):
     assert child._run_harness(args, tmp_path) == 1
     prepare.assert_not_awaited()
     assert terminal.get_console_app() is None
+    diagnostic = tmp_path / ".booley" / "project" / "logs" / "runner-diagnostics.log"
+    assert "RuntimeError: Console mount failed" in diagnostic.read_text()
+    assert "phase=pre_mount" in diagnostic.read_text()
+
+
+@pytest.mark.asyncio
+async def test_console_io_failure_during_active_worker_keeps_original_traceback(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    from booley.harness.console.app import ConsoleApp
+    from booley.harness.console.events import AgentThinking
+    from booley.harness.models import TicketContext
+    from booley.ticket_board.paths import ticket_human_log_file
+
+    ctx = TicketContext(
+        slug="demo",
+        ticket_path=tmp_path / "demo.md",
+        ticket_type="refactor",
+        branch="main",
+        summary="demo",
+        project_root=tmp_path,
+    )
+    run_async = ConsoleApp.run_async
+
+    async def run_headless(app):
+        await run_async(app, headless=True)
+
+    async def active_worker(_ctx, _project_root, _start):
+        terminal.get_console_app().post_message(AgentThinking("working"))
+        await asyncio.sleep(10)
+
+    def fail_output(_app, _event):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(ConsoleApp, "run_async", run_headless)
+    monkeypatch.setattr(ConsoleApp, "on_agent_thinking", fail_output)
+    monkeypatch.setattr(developer, "_prepare_ticket", AsyncMock(return_value=ctx))
+    monkeypatch.setattr(developer, "_attach_click_links", lambda *_args: None)
+    monkeypatch.setattr(developer, "_run_ticket_body", active_worker)
+
+    with pytest.raises(OSError, match="Input/output error"):
+        await developer.run_ticket("demo", tmp_path)
+
+    diagnostic = ticket_human_log_file(ctx.logs_dir, "harness.log").read_text()
+    assert "OSError: [Errno 5] Input/output error" in diagnostic
+    assert "fail_output" in diagnostic
+    assert "phase=running" in diagnostic
+
+
+@pytest.mark.asyncio
+async def test_worker_failure_is_persisted_before_file_logger_teardown(tmp_path, monkeypatch):
+    from booley.harness.console.app import ConsoleApp
+    from booley.harness.models import TicketContext
+    from booley.ticket_board.paths import ticket_human_log_file
+
+    ctx = TicketContext(
+        slug="demo",
+        ticket_path=tmp_path / "demo.md",
+        ticket_type="refactor",
+        branch="main",
+        summary="demo",
+        project_root=tmp_path,
+    )
+    run_async = ConsoleApp.run_async
+
+    async def run_headless(app):
+        await run_async(app, headless=True)
+
+    async def fail_worker(_ctx, _project_root, _start):
+        raise OSError(5, "worker I/O failed")
+
+    monkeypatch.setattr(ConsoleApp, "run_async", run_headless)
+    monkeypatch.setattr(developer, "_prepare_ticket", AsyncMock(return_value=ctx))
+    monkeypatch.setattr(developer, "_attach_click_links", lambda *_args: None)
+    monkeypatch.setattr(developer, "_run_ticket_body", fail_worker)
+
+    with pytest.raises(OSError, match="worker I/O failed"):
+        await developer.run_ticket("demo", tmp_path)
+
+    diagnostic = ticket_human_log_file(ctx.logs_dir, "harness.log").read_text()
+    assert "OSError: [Errno 5] worker I/O failed" in diagnostic
+    assert "fail_worker" in diagnostic
+
+
+def test_diagnostic_write_failure_does_not_replace_original_error(tmp_path, caplog):
+    from pathlib import Path
+    from unittest.mock import patch
+
+    with patch.object(Path, "open", side_effect=OSError(5, "diagnostic unavailable")):
+        developer._persist_console_failure(tmp_path, None, "running", OSError(5, "original"))
+
+    assert "Could not persist Console failure" in caplog.text

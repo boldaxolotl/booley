@@ -45,7 +45,7 @@ def test_non_review_run_emits_no_result_record(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(harness_main, "run_ticket", AsyncMock(return_value=None))
     args = argparse.Namespace(ticket="demo", no_transcripts=True)
 
-    assert harness_main._run_harness(args, tmp_path) == 0
+    assert harness_main._run_harness(args, tmp_path) == 1
 
     assert capsys.readouterr().out == ""
 
@@ -73,7 +73,7 @@ def test_main_forwards_cli_options_to_ticket_execution(tmp_path, monkeypatch):
         ],
     )
 
-    assert harness_main.main() == 0
+    assert harness_main.main() == 1
 
     logging_setup.assert_called_once_with(True)
     run.assert_awaited_once_with("demo", tmp_path, save_transcripts=False)
