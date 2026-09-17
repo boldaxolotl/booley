@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fusesoc.coremanager import CoreManager, DependencyError
@@ -20,6 +20,7 @@ from booley.targets.domain import (
     TargetHandle,
     TargetInput,
     TargetInspection,
+    TargetRef,
 )
 
 
@@ -86,22 +87,31 @@ def _inspection_flags(handle: TargetHandle) -> dict[str, Any]:
 
 
 def _inspect_inputs(
-    root: Path, cores: list[Any], flags: Mapping[str, Any]
+    root: Path,
+    cores: list[Any],
+    flags: Mapping[str, Any],
+    *,
+    tb_paths: Collection[str],
 ) -> tuple[TargetInput, ...]:
     inputs: list[TargetInput] = []
+    normalized_tb_paths = {PurePosixPath(path).as_posix() for path in tb_paths}
     top = cores[-1]
     for core in cores:
         core_flags = dict(flags)
         core_flags["is_toplevel"] = core.name == top.name
         for item in core.get_files(core_flags):
+            path = fusesoc_registry.core_relative_to_project(
+                Path(core.core_file), root, str(item["name"])
+            )
+            tags = tuple(item.get("tags") or ())
+            if PurePosixPath(path).as_posix() in normalized_tb_paths and "tb" not in tags:
+                tags = (*tags, "tb")
             inputs.append(
                 TargetInput(
-                    path=fusesoc_registry.core_relative_to_project(
-                        Path(core.core_file), root, str(item["name"])
-                    ),
+                    path=path,
                     core=str(core.name),
                     file_type=str(item.get("file_type", "user")),
-                    tags=tuple(item.get("tags") or ()),
+                    tags=tags,
                     is_include=bool(item.get("is_include_file")),
                     attributes={key: value for key, value in item.items() if key != "name"},
                 )
@@ -246,6 +256,19 @@ class _TargetSourceInspector:
     def _inspect_handle(self, handle: TargetHandle) -> TargetInspection:
         """Inspect one canonical handle with fresh Target-specific flags."""
         flags = _inspection_flags(handle)
+        source_ref = TargetRef(
+            name=handle.name,
+            vlnv=handle.vlnv,
+            core_file=handle.core_file,
+            eda_tool=handle.eda_tool,
+            flow=handle.flow,
+            cocotb_module=handle.cocotb_module,
+            doctor_flows=handle.doctor_flows,
+            doctor_selftest=handle.doctor_private,
+        )
+        tb_paths = fusesoc_registry.target_source_files_for_ref(
+            self.root, source_ref, include_dependencies=True
+        ).tb_files
         cores = self._cores(
             identity=handle.identity,
             vlnv=handle.vlnv,
@@ -267,7 +290,7 @@ class _TargetSourceInspector:
                 eda_tool=handle.eda_tool,
                 flow_options=dict(core.get_flow_options(flags)),
                 parameters=_inspect_parameters(cores, flags),
-                inputs=_inspect_inputs(self.root, cores, flags),
+                inputs=_inspect_inputs(self.root, cores, flags, tb_paths=tb_paths),
             )
         except (OSError, SyntaxError, RuntimeError, ValueError) as exc:
             raise fusesoc_registry.FuseSocError(

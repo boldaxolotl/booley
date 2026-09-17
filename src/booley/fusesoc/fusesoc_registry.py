@@ -1165,12 +1165,13 @@ def _partition_fileset_files(
         if not isinstance(fileset, Mapping):
             continue
         for path, tags, is_include in _fileset_entries(fileset):
-            lexical = core_relative_to_project(core_file, project_root, path)
-            rel = canonical_project_path(project_root, lexical)
-            if "tb" in tags:
-                tb.append(rel)
-            elif include_headers or not is_include:
-                rtl.append(rel)
+            for declared in _possible_expression_values(path):
+                lexical = core_relative_to_project(core_file, project_root, declared)
+                rel = canonical_project_path(project_root, lexical)
+                if "tb" in tags:
+                    tb.append(rel)
+                elif include_headers or not is_include:
+                    rtl.append(rel)
 
 
 def _dependency_fileset_names(doc: Mapping[str, Any]) -> list[str]:
@@ -2002,9 +2003,7 @@ def _restore_tb_tags(
         return any(normalized == path or normalized.endswith(f"/{path}") for path in tb_paths)
 
     files = tuple(
-        replace(file, tags=(*file.tags, "tb"))
-        if not file.is_tb and _is_tb(file.name)
-        else file
+        replace(file, tags=(*file.tags, "tb")) if not file.is_tb and _is_tb(file.name) else file
         for file in resolved.files
     )
     return replace(resolved, files=files)
