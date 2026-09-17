@@ -511,17 +511,19 @@ def test_audit_finds_blob_deleted_later_in_history(tmp_path: Path) -> None:
     assert SENTINEL not in result.stderr
 
 
-def test_audit_accepts_glob_escaped_mergify_bot_identity(tmp_path: Path) -> None:
+def test_audit_accepts_mergify_merge_commit_identity(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     (repo / "bot.txt").write_text("clean bot-authored content\n", encoding="utf-8")
     head = _commit(
         repo,
         "add bot-authored fixture",
-        name="mergify[bot]",
+        name="Mergify",
         email="37929162+mergify[bot]@users.noreply.github.com",
     )
     env = _sealed_fixture(repo, _encoded_config()) | {
-        "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": "mergify[[]bot[]]",
+        "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": (
+            "37929162+mergify[[]bot[]]@users.noreply.github.com"
+        ),
     }
 
     result = subprocess.run(
@@ -1286,5 +1288,9 @@ def test_workflow_trusts_mergify_identity_for_pr_updates_and_main_history() -> N
         "- name: Publish scan status", 1
     )[0]
 
-    assert 'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[[]bot[]]"' in pr_scan
-    assert 'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[[]bot[]]"' in main_scan
+    allowed_identity = (
+        'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: '
+        '"37929162+mergify[[]bot[]]@users.noreply.github.com"'
+    )
+    assert allowed_identity in pr_scan
+    assert allowed_identity in main_scan
