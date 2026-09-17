@@ -111,7 +111,7 @@ def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     assert build.success is True
     assert build.collector == PINNED_VERILATOR
     assert captured["prepare"]["variant"] == "coverage"
-    assert "generations" in captured["prepare"]["build_root"].parts
+    assert "g" in captured["prepare"]["build_root"].parts
     assert captured["prepare"]["resolution_vlnv"] == "::coverage:0"
     assert captured["work"].plusargs[-1] == f"+verilator+coverage+file+{raw_path}"
     assert "BOOLEY_COVERAGE_RUN_ID=run:001:wrap" in captured["run_script"]

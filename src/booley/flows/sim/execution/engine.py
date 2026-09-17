@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 import re
 import shlex
@@ -16,7 +15,7 @@ from typing import Any
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.build_paths import work_root_for
 from booley.flows import edam as edam_layer
-from booley.flows.base import SubprocessResult
+from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
 from booley.flows.run_log import begin_run_log, write_run_log
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim import trace_overlay
@@ -116,6 +115,15 @@ class _Attempt:
     cache_key: str | None = None
     reused: bool = False
     cache_decision: str = ""
+
+
+def _adapter_shell_command(attempt: _Attempt) -> tuple[str, str, str]:
+    """Preserve the Target environment when build and run use separate processes."""
+    exports = "".join(
+        f"export {name}={shlex.quote(value)}\n" for name, value in attempt.simulator_environment
+    )
+    invocation = shlex.join(prepare_adapter_invocation(attempt.work))
+    return "sh", "-c", f"{exports}{invocation}"
 
 
 @dataclass(frozen=True)
@@ -386,9 +394,8 @@ class SimulationExecution:
         run_cwd = Path(attempt.work.run_cwd)
         if not run_cwd.is_absolute():
             run_cwd = handle.project_root / run_cwd
-        invocation = prepare_adapter_invocation(attempt.work)
         request = AdapterAttemptRequest(
-            ("sh", "-c", shlex.join(invocation)),
+            _adapter_shell_command(attempt),
             attempt.wrapper_timeout_s,
             attempt.identity,
             attempt.prepared.build_root,
@@ -419,21 +426,14 @@ class SimulationExecution:
                 attempt.identity.attempt_token,
                 environment=dict(attempt.simulator_environment),
             )
-            build_started = time.monotonic()
-            build_process = self._invoke(["sh", "-c", script], timeout=attempt.wrapper_timeout_s)
+            build_process = self._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
             build = classify_build_outcome(build_process, attempt.identity.attempt_token)
             if not build.passed or build_process.returncode != 0 or build_process.timed_out:
                 return AdapterAttemptOutcome(build_process, None, None)
             session.authorize_fresh_image(attempt.prepared, inputs, attempt.cache_key)
-            remaining = attempt.wrapper_timeout_s - (time.monotonic() - build_started)
-            if remaining < 1:
-                return AdapterAttemptOutcome(
-                    replace(build_process, returncode=-1, timed_out=True), None, None
-                )
-            invocation = prepare_adapter_invocation(attempt.work)
             request = AdapterAttemptRequest(
-                ("sh", "-c", shlex.join(invocation)),
-                math.floor(remaining),
+                _adapter_shell_command(attempt),
+                attempt.wrapper_timeout_s,
                 attempt.identity,
                 attempt.prepared.build_root,
             )
@@ -461,12 +461,17 @@ class SimulationExecution:
         )
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
         token = new_attempt_token()
+        result_name = (
+            f".a-{token[:24]}.json"
+            if self._build_session is not None
+            else f".booley-adapter-{token}.json"
+        )
         identity = AdapterTransportIdentity(
             adapter=adapter,
             attempt_token=token,
             target_identity=handle.identity,
             selected_tests=test_names,
-            result_path=prepared.build_root / f".booley-adapter-{token}.json",
+            result_path=prepared.build_root / result_name,
         )
         work = prepare_simulation_work(
             handle,

@@ -38,7 +38,7 @@ def test_slot_uses_durable_target_identity_not_selector_spelling(tmp_path: Path)
     )
     assert simulation_build_slot(first) == simulation_build_slot(alias)
     assert simulation_build_slot(first) != simulation_build_slot(second)
-    assert len(simulation_build_slot(first).name) <= 42
+    assert len(simulation_build_slot(first).name) <= 20
 
 
 def test_compile_surface_does_not_require_project_initialization(tmp_path: Path) -> None:

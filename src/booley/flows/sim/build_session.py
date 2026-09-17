@@ -39,6 +39,9 @@ class SimulationBuildSlotError(RuntimeError):
     """A Simulation build slot cannot be used safely."""
 
 
+_GENERATION_DIR = "g"
+
+
 def _hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -89,7 +92,7 @@ def _build_input_hashes(prepared: PreparedSimulationBuild) -> dict[str, str]:
                 raise SimulationBuildSlotError(f"symlinked generated build input: {path}")
             if path.is_dir():
                 continue
-            if path.name == RUN_LOG_NAME or path.name.startswith(".booley-adapter-"):
+            if path.name == RUN_LOG_NAME or path.name.startswith((".booley-adapter-", ".a-")):
                 continue
             if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
                 raise SimulationBuildSlotError(f"unsafe generated build input: {path}")
@@ -361,7 +364,7 @@ def _retained_build_root(slot: Path) -> tuple[Path, Path] | None:
     generation = pointer["generation"]
     if not isinstance(generation, str) or not re.fullmatch(r"[0-9a-f]{16}", generation):
         return None
-    root = slot / "generations" / generation
+    root = slot / _GENERATION_DIR / generation
     if root.is_symlink() or not root.is_dir() or not root.resolve().is_relative_to(slot.resolve()):
         return None
     relative = Path(pointer["build_root"])
@@ -403,13 +406,12 @@ def simulation_build_slot(handle: TargetHandle, variant: str = "") -> Path:
     parent = work_root_for(handle.project_root, "sim", "slot").parent
     identity = f"{handle.identity}\0{variant}"
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    label = re.sub(r"[^A-Za-z0-9_]+", "_", handle.identity).strip("_")
-    return parent / f"{label[:16] or 'target'}--{digest[:24]}"
+    return parent / digest[:20]
 
 
 def preview_generation_root(handle: TargetHandle, variant: str = "") -> Path:
     """Describe an unallocated generation path without touching slot state."""
-    return simulation_build_slot(handle, variant) / "generations" / "<generation>"
+    return simulation_build_slot(handle, variant) / _GENERATION_DIR / "<generation>"
 
 
 class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
@@ -451,7 +453,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         """Allocate an empty, never-reused FuseSoC output root under the lease."""
         if self._lock is None:
             raise SimulationBuildSlotError("Simulation slot is not leased")
-        generations = self.slot / "generations"
+        generations = self.slot / _GENERATION_DIR
         try:
             generations.mkdir(exist_ok=True)
             if generations.is_symlink():
@@ -554,7 +556,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         """Reauthenticate a non-reusable image while holding its Target lease."""
         if self._lock is None:
             raise SimulationBuildSlotError("Simulation slot is not leased")
-        if prepared.work_root.parent != self.slot / "generations":
+        if prepared.work_root.parent != self.slot / _GENERATION_DIR:
             raise SimulationBuildSlotError("Simulation image is outside its leased generation")
         manifest_path = prepared.build_root / ".booley-build-manifest.json"
         try:
@@ -584,7 +586,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
 
     def discard_candidate(self, root: Path) -> None:
         """Remove only the unused fresh generation after a verified hit."""
-        if self._lock is None or root.parent != self.slot / "generations" or root.is_symlink():
+        if self._lock is None or root.parent != self.slot / _GENERATION_DIR or root.is_symlink():
             raise SimulationBuildSlotError(f"unsafe candidate cleanup path: {root}")
         try:
             shutil.rmtree(root)
@@ -628,7 +630,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         if self._lock is None:
             raise SimulationBuildSlotError("Simulation slot is not leased")
         root = prepared.build_root.resolve()
-        if not root.is_relative_to((self.slot / "generations").resolve()):
+        if not root.is_relative_to((self.slot / _GENERATION_DIR).resolve()):
             raise SimulationBuildSlotError(f"build root escaped leased slot: {root}")
         try:
             current_inputs = _build_input_hashes(prepared)

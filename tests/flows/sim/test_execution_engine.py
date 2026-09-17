@@ -936,7 +936,8 @@ def test_matching_closed_icarus_inputs_reuse_verified_image(
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     first = execution.run(handle, NamedTests(("first",)))
     second = execution.run(handle, NamedTests(("second",)))
-    assert first.passed and second.passed
+    assert first.passed, (first.builds, first.tests, first.infrastructure_failure)
+    assert second.passed, (second.builds, second.tests, second.infrastructure_failure)
     assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 1
     assert second.builds[0].ran is False
     assert second.builds[0].cache_decision.startswith("hit;")
@@ -996,7 +997,7 @@ def test_corrupt_cache_forces_fresh_build(
     slot = simulation_build_slot(handle)
     pointer = json.loads((slot / "current.json").read_text(encoding="utf-8"))
     if tamper == "image":
-        build_root = slot / "generations" / pointer["generation"] / pointer["build_root"]
+        build_root = slot / "g" / pointer["generation"] / pointer["build_root"]
         image = next(build_root.glob("*.scr")).with_suffix("")
         image.write_text("[SIM_RESULT] PASSED\nSTALE\n", encoding="utf-8")
     else:
@@ -1220,7 +1221,7 @@ def test_legacy_selector_root_is_preserved_but_not_used(
     )
     assert execution.run(handle, NamedTests(("smoke",))).passed
     assert sentinel.read_text(encoding="utf-8") == "stale\n"
-    assert tuple((simulation_build_slot(handle) / "generations").iterdir())
+    assert tuple((simulation_build_slot(handle) / "g").iterdir())
 
 
 @pytest.mark.parametrize(
