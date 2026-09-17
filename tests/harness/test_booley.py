@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from argparse import Namespace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
@@ -46,6 +47,30 @@ def test_doctor_parser_accepts_deep_flag():
 
     assert args.command == "doctor"
     assert args.deep is True
+
+
+def test_board_review_surface_parses_public_actions():
+    parser = tlr._build_parser()
+    requested = parser.parse_args(["board", "review", "demo", "--request", "--reason", "inspect"])
+    validation = parser.parse_args(["board", "validate", "demo", "--", "python", "-m", "example"])
+    approval = parser.parse_args(["board", "approve", "demo", "--no-cleanup"])
+    shown = parser.parse_args(["board", "show", "demo", "--no-open-diffs"])
+
+    assert requested.request and requested.reason == "inspect"
+    assert validation.endpoint_command == ["python", "-m", "example"]
+    assert approval.no_cleanup
+    assert shown.slug == "demo" and shown.no_open_diffs
+
+
+def test_board_help_hides_deprecated_review_commands(capsys):
+    parser = tlr._build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["board", "--help"])
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert "{show,review,approve,validate,create,move,reset,archive}" in output
+    assert "request-review" not in output
+    assert "[may invoke agent]" in output
 
 
 def test_doctor_parser_accepts_concise_flag():
@@ -586,6 +611,98 @@ def test_blocked_briefing_board_parser():
     args = tlr._build_parser().parse_args(["board", "blocked-briefing", "demo-ticket"])
     assert args.board_command == "blocked-briefing"
     assert args.slug == "demo-ticket"
+
+
+def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, capsys):
+    from booley.harness import blocked_prep
+    from booley.ticket_board import io, review_lifecycle
+
+    assert tlr._cmd_board(Namespace(board_command=None), tmp_path) == 0
+
+    async def review(*_args, **_kwargs):
+        return Namespace(ready=True, package_path=tmp_path / "review.json", message="fresh")
+
+    monkeypatch.setattr(review_lifecycle, "review_command", review)
+    review_args = tlr._build_parser().parse_args(["board", "review", "demo"])
+    assert tlr._cmd_board_review(review_args, tmp_path) == 0
+
+    async def failed_review(*_args, **_kwargs):
+        return Namespace(ready=False, message="review unavailable")
+
+    monkeypatch.setattr(review_lifecycle, "review_command", failed_review)
+    assert tlr._cmd_board_review(review_args, tmp_path) == 2
+    assert "review unavailable" in capsys.readouterr().err
+
+    monkeypatch.setattr(review_lifecycle, "approve_review_command", lambda *_a, **_k: True)
+    approve_args = tlr._build_parser().parse_args(["board", "approve", "demo"])
+    assert tlr._cmd_board_approve(approve_args, tmp_path) == 0
+
+    monkeypatch.setattr(
+        review_lifecycle,
+        "approve_review_command",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("bad approval")),
+    )
+    assert tlr._cmd_board_approve(approve_args, tmp_path) == 2
+    assert "bad approval" in capsys.readouterr().err
+
+    class FakeTio:
+        board = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def find_ticket(self, _slug):
+            return self.board
+
+    monkeypatch.setattr(io, "TicketIO", FakeTio)
+    missing_args = tlr._build_parser().parse_args(["board", "show", "demo"])
+    assert tlr._cmd_board_show(missing_args, tmp_path) == 2
+
+    FakeTio.board = {"file": "board/active/demo.md", "status": "active", "summary": "work"}
+    assert tlr._cmd_board_show(missing_args, tmp_path) == 0
+    assert "demo: active — work" in capsys.readouterr().out
+
+    FakeTio.board = {"file": "board/blocked/demo.md", "status": "blocked", "summary": "work"}
+    monkeypatch.setattr(
+        blocked_prep,
+        "render_blocked_dossier",
+        lambda *_a, **_k: Namespace(ready=False, message="dossier unavailable"),
+    )
+    assert tlr._cmd_board_show(missing_args, tmp_path) == 2
+    assert "dossier unavailable" in capsys.readouterr().err
+
+    monkeypatch.setattr(
+        blocked_prep,
+        "render_blocked_dossier",
+        lambda *_a, **_k: Namespace(ready=True, message="dossier"),
+    )
+    monkeypatch.setattr(
+        review_lifecycle,
+        "review_briefing_command",
+        lambda *_a, **_k: Namespace(status="ready", briefing="briefing"),
+    )
+    assert tlr._cmd_board_show(missing_args, tmp_path) == 0
+    output = capsys.readouterr().out
+    assert "dossier" in output
+    assert "briefing" in output
+
+    monkeypatch.setattr(
+        review_lifecycle,
+        "review_briefing_command",
+        lambda *_a, **_k: Namespace(status="failed", message="briefing unavailable"),
+    )
+    assert tlr._cmd_board_show(missing_args, tmp_path) == 2
+    assert "briefing unavailable" in capsys.readouterr().err
+
+
+def test_board_review_handler_rejects_inconsistent_options(capsys, tmp_path):
+    reason = tlr._build_parser().parse_args(["board", "review", "demo", "--reason", "why"])
+    assert tlr._cmd_board_review(reason, tmp_path) == 2
+    assert "--reason requires --request" in capsys.readouterr().err
+
+    force = tlr._build_parser().parse_args(["board", "review", "demo", "--request", "--force"])
+    assert tlr._cmd_board_review(force, tmp_path) == 2
+    assert "--force cannot be combined with --request" in capsys.readouterr().err
 
 
 # ===========================================================================

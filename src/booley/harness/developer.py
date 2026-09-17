@@ -2003,6 +2003,9 @@ async def _launch_developer_agent(
     if developer_budget is not None:
         backend_kwargs["developer_budget"] = developer_budget
     with scoped_environment(endpoint_env):
+        from booley.runtime.agent import announce_agent_dispatch
+
+        announce_agent_dispatch(params)
         return await cfg.active_backend.call(configure_agent_call(params), **backend_kwargs)
 
 

@@ -143,7 +143,7 @@ def _validate_action(tio: TicketIO, slug: str, action: str, repair: bool) -> Non
     if action == "request":
         if board["status"] != "blocked" and not (repair and board["status"] == "review"):
             raise ReviewEntryError(
-                "request-review requires blocked; use --repair for stranded review"
+                "board review --request requires blocked; use --repair for stranded review"
             )
     elif board["status"] != "review" or prior is None:
         raise ReviewEntryError("refresh/finalize requires an explicitly requested review")
@@ -247,7 +247,7 @@ def _publish_acceptance(ctx: prep.ReviewPrepContext, operation: dict[str, Any]) 
 def _commit(tio: TicketIO, ctx: prep.ReviewPrepContext, operation: dict[str, Any]) -> None:
     row = ctx.inspection
     assert row is not None
-    if row["disposition"] == "accepted":
+    if row["disposition"] == "accepted" or operation["action"] == "approve":
         _publish_acceptance(ctx, operation)
     _write(entry_path(ctx.log_dir), {"entry": row, "sha256": digest(row)})
     board = tio.find_ticket(ctx.slug)
@@ -345,42 +345,76 @@ def _seal_package(ctx: prep.ReviewPrepContext) -> None:
     _write(manifest_path, manifest)
 
 
-async def _generate(tio: TicketIO, slug: str, operation: dict[str, Any]) -> prep.ReviewPrepOutcome:
-    action = operation["action"]
-    prior = read_entry(tio.logs_dir / slug)
-    disposition: Literal["unaccepted", "accepted"] = (
-        "accepted" if action == "finalize" else "unaccepted"
-    )
+def _generation_disposition(
+    tio: TicketIO, slug: str, action: str, prior: dict[str, Any] | None
+) -> Literal["unaccepted", "accepted"]:
+    """Select the immutable disposition for one preparation generation."""
+    if action == "finalize":
+        return "accepted"
     if action == "regenerate" and prior is not None:
-        disposition = prior["disposition"]
-    ctx = _capture(tio, slug, operation["reason"], disposition)
+        return (
+            "accepted"
+            if read_acceptance(tio.logs_dir / slug).kind == "accepted"
+            else prior["disposition"]
+        )
+    return "unaccepted"
+
+
+def _validate_regeneration(
+    tio: TicketIO,
+    slug: str,
+    action: str,
+    prior: dict[str, Any] | None,
+    ctx: prep.ReviewPrepContext,
+) -> None:
+    """Ensure regeneration keeps the selected review inputs immutable."""
+    if action != "regenerate":
+        return
     assert ctx.inspection is not None
-    if ctx.triage_report_enabled:
-        prep.load_backend_config(tio._project_root)
-    if action == "regenerate" and (
+    if (
         prior is None
         or prior["heads"] != ctx.inspection["heads"]
         or prior["state"] != ctx.inspection["state"]
     ):
-        raise ReviewEntryError("inspection changed; use board refresh-review to select new inputs")
+        if read_acceptance(tio.logs_dir / slug).kind == "accepted":
+            raise ReviewEntryError("accepted review inputs changed; use acceptance recovery")
+        raise ReviewEntryError("inspection changed; use board review to select new inputs")
+
+
+async def _generate(tio: TicketIO, slug: str, operation: dict[str, Any]) -> prep.ReviewPrepOutcome:
+    """Generate and publish one selected review package."""
+    action = operation["action"]
+    prior = read_entry(tio.logs_dir / slug)
+    disposition = _generation_disposition(tio, slug, action, prior)
+    ctx = _capture(tio, slug, operation["reason"], disposition)
+    assert ctx.inspection is not None
+    if ctx.triage_report_enabled:
+        prep.load_backend_config(tio._project_root)
+    _validate_regeneration(tio, slug, action, prior, ctx)
     if action == "finalize":
         _acceptance_ready(tio, ctx)
-        # Acceptance validation can mark stale evidence: capture its final projection.
         ctx = _capture(tio, slug, operation["reason"], disposition)
-    assert ctx.inspection is not None
     prompt, prompt_sha = prep._review_prompt(ctx)
     source_sha = ctx.inspection["capture_sha"]
     outcome = await prep._prepare_resolved_review(
-        ctx,
-        prompt,
-        prompt_sha,
-        source_sha,
-        time.monotonic(),
-        force=True,
+        ctx, prompt, prompt_sha, source_sha, time.monotonic(), force=True
     )
     if not outcome.ready:
         return outcome
     _seal_package(ctx)
+    return await _publish_generation(tio, slug, ctx, operation, outcome, disposition, source_sha)
+
+
+async def _publish_generation(
+    tio: TicketIO,
+    slug: str,
+    ctx: prep.ReviewPrepContext,
+    operation: dict[str, Any],
+    outcome: prep.ReviewPrepOutcome,
+    disposition: Literal["unaccepted", "accepted"],
+    source_sha: str,
+) -> prep.ReviewPrepOutcome:
+    """Publish a generated package after rechecking its live inputs."""
     with tio._ticket_lock(slug, review_operation=True):
         _check_capture(tio, ctx, source_sha)
         operation.update(
@@ -431,6 +465,180 @@ async def request_review_command(
             pending = None
         if pending and pending.get("pid") == os.getpid() and pending.get("phase") == "preparing":
             operation_path(tio.logs_dir / slug).unlink(missing_ok=True)
+
+
+def _selected_context(tio: TicketIO, slug: str) -> prep.ReviewPrepContext:
+    row = read_entry(tio.logs_dir / slug)
+    if row is None:
+        raise ReviewEntryError("no selected review; run board review first")
+    ctx = prep._resolve_context(
+        tio._project_root,
+        slug,
+        require_review=True,
+        allow_report_disabled=True,
+        inspect_unaccepted=True,
+        locked_basis=tio._load_basis_unlocked(slug),
+    )
+    return replace(ctx, inspection=row, runtime_dir=package_dir(ctx.log_dir, row))
+
+
+def _require_selected_package(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
+    row = ctx.inspection
+    assert row is not None
+    try:
+        _check_capture(tio, ctx, row["capture_sha"])
+    except prep.ReviewPrepConcurrentChangeError as exc:
+        accepted = read_acceptance(ctx.log_dir)
+        guidance = "acceptance recovery" if accepted.kind == "accepted" else "board review"
+        raise ReviewEntryError(f"selected review inputs changed; use {guidance}") from exc
+    manifest = prep._read_manifest(ctx)
+    _prompt, prompt_sha = prep._review_prompt(ctx)
+    if prep._fresh_outcome(ctx, manifest, prompt_sha, row["capture_sha"]) is None:
+        raise ReviewEntryError("selected package is missing or stale; run board review first")
+
+
+def _approve_done_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_cleanup: bool) -> bool:
+    """Retry terminal actions for a previously accepted Ticket."""
+    from booley.core.models import OnSuccess
+
+    from .operations import _completion_acceptance_valid, op_complete
+
+    if _completion_acceptance_valid(tio, slug) is None:
+        return False
+    entry = tio.find_ticket(slug)
+    assert entry is not None
+    policy = OnSuccess.from_dict(entry.get("on_success"))
+    if policy.merge and not no_merge:
+        return op_complete(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
+    return True
+
+
+def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_cleanup: bool) -> bool:
+    """Publish acceptance for a selected review and complete the Ticket."""
+    from .operations import _completion_context, op_complete
+
+    completion = _completion_context(tio, slug, no_merge, no_cleanup)
+    if completion is None:
+        return False
+    if not completion[1].merge and tio.load_basis(slug).target_plan is not None:
+        raise ReviewEntryError("Target Plan acceptance requires merge")
+    _recover(tio, slug)
+    with tio._ticket_lock(slug, review_operation=True):
+        assert_idle(tio.logs_dir / slug)
+        _quiescent(tio, slug)
+        ctx = _selected_context(tio, slug)
+        _require_selected_package(tio, ctx)
+        accepted = read_acceptance(ctx.log_dir)
+        if accepted.kind == "corrupt":
+            raise ReviewEntryError(f"Criteria Satisfaction Record is corrupt: {accepted.reason}")
+        if accepted.kind == "unavailable":
+            _acceptance_ready(tio, ctx)
+            _require_selected_package(tio, ctx)
+            operation = {
+                "pid": os.getpid(),
+                "phase": "accepting",
+                "action": "approve",
+                "reason": ctx.inspection["reason"],
+                "entry": ctx.inspection,
+                "source_sha": ctx.inspection["capture_sha"],
+                "accepted_at": utc_now_rfc3339(),
+            }
+            _write(operation_path(ctx.log_dir), operation)
+            _commit(tio, ctx, operation)
+    return op_complete(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
+
+
+def approve_review_command(
+    project_root: Path, slug: str, *, no_merge: bool = False, no_cleanup: bool = False
+) -> bool:
+    """Accept the selected inspection and complete without agent preparation."""
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    board = tio.find_ticket(slug)
+    if board is None:
+        raise ReviewEntryError(f"ticket {slug!r} not found")
+    slug = Path(board["file"]).stem
+    if board["status"] == "done":
+        return _approve_done_ticket(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
+    if board["status"] != "review":
+        raise ReviewEntryError("approve requires a review ticket")
+    return _approve_review_ticket(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
+
+
+def _current_review_package(tio: TicketIO, slug: str) -> prep.ReviewPrepOutcome | None:
+    try:
+        with tio._ticket_lock(slug, review_operation=True):
+            ctx = _selected_context(tio, slug)
+            _require_selected_package(tio, ctx)
+            manifest = prep._read_manifest(ctx)
+            assert manifest is not None
+            _prompt, prompt_sha = prep._review_prompt(ctx)
+            return prep._fresh_outcome(ctx, manifest, prompt_sha, ctx.inspection["capture_sha"])
+    except (ReviewEntryError, prep.ReviewPrepError, OSError, ValueError):
+        return None
+
+
+async def _review_blocked_ticket(
+    project_root: Path, slug: str, tio: TicketIO, *, force: bool
+) -> prep.ReviewPrepOutcome:
+    """Prepare blocked diagnostics and review material without transitioning."""
+    from booley.harness.blocked_prep import prepare_blocked_dossier
+
+    try:
+        with tio._ticket_lock(slug, review_operation=True):
+            assert_idle(tio.logs_dir / slug)
+            _quiescent(tio, slug)
+    except ReviewEntryError as exc:
+        return prep.ReviewPrepOutcome("failed", str(exc))
+    dossier = await prepare_blocked_dossier(project_root, slug, force=force)
+    if not dossier.ready:
+        return prep.ReviewPrepOutcome("failed", dossier.message)
+    return await prep.prepare_review_command(project_root, slug, force=force)
+
+
+async def _review_existing_ticket(
+    project_root: Path, slug: str, tio: TicketIO, *, force: bool
+) -> prep.ReviewPrepOutcome:
+    """Reuse or refresh review material for an existing review Ticket."""
+    if not force and (fresh := _current_review_package(tio, slug)) is not None:
+        return fresh
+    accepted = read_acceptance(tio.logs_dir / slug)
+    if accepted.kind == "corrupt":
+        return prep.ReviewPrepOutcome(
+            "failed", f"Criteria Satisfaction Record is corrupt: {accepted.reason}"
+        )
+    action = "regenerate" if force or accepted.kind == "accepted" else "refresh"
+    return await request_review_command(project_root, slug, action=action)
+
+
+async def review_command(  # noqa: PLR0911 — each Ticket state has a distinct outcome
+    project_root: Path,
+    slug: str,
+    *,
+    request: bool = False,
+    reason: str = "",
+    force: bool = False,
+    repair: bool = False,
+) -> prep.ReviewPrepOutcome:
+    """Prepare review material according to the Ticket's lifecycle state."""
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    board = tio.find_ticket(slug)
+    if board is None:
+        return prep.ReviewPrepOutcome("failed", f"ticket {slug!r} not found")
+    slug = Path(board["file"]).stem
+    status = board["status"]
+    if request:
+        if status != "blocked" and not (repair and status == "review"):
+            return prep.ReviewPrepOutcome("failed", "--request requires a blocked ticket")
+        return await request_review_command(
+            project_root, slug, action="request", reason=reason, repair=repair
+        )
+    if repair:
+        return prep.ReviewPrepOutcome("failed", "--repair requires --request")
+    if status == "blocked":
+        return await _review_blocked_ticket(project_root, slug, tio, force=force)
+    if status != "review":
+        return prep.ReviewPrepOutcome("failed", f"review requires blocked or review, got {status}")
+    return await _review_existing_ticket(project_root, slug, tio, force=force)
 
 
 async def prepare_review(

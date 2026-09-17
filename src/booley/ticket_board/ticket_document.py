@@ -206,6 +206,7 @@ class TicketConversionContext:
 
     stage: TicketStage
     resolve_view: Callable[[Mapping[str, Any]], TicketAuthoringView]
+    checkout_root: Callable[[], Path] | None = None
 
 
 class _TargetResolutionError(ValueError):
@@ -257,29 +258,44 @@ def ticket_conversion_context(
     if stage == "draft":
         from booley.runtime.project_dir import resolve_project_dir
 
-        def resolve_view(_generated: Mapping[str, Any]) -> TicketAuthoringView:
-            workspace = resolve_project_dir(root) / "worktrees" / slug
-            authoring_root = workspace if workspace.is_dir() else root
-            return ticket_authoring_view(authoring_root)
+        selected: Path | None = None
 
-        yield TicketConversionContext("draft", resolve_view)
+        def resolve_view(_generated: Mapping[str, Any]) -> TicketAuthoringView:
+            nonlocal selected
+            workspace = resolve_project_dir(root) / "worktrees" / slug
+            selected = workspace if workspace.is_dir() else root
+            return ticket_authoring_view(selected)
+
+        def checkout_root() -> Path:
+            if selected is None:
+                raise ValueError("Ticket conversion has not selected a checkout")
+            return selected
+
+        yield TicketConversionContext("draft", resolve_view, checkout_root)
         return
 
     from .ticket_baseline import materialize_ticket_commits, ticket_baseline_from_machine
 
     with tempfile.TemporaryDirectory(prefix="booley-ticket-conversion-") as temporary:
         destination = Path(temporary) / "checkout"
+        selected: Path | None = None
 
         def resolve_view(generated: Mapping[str, Any]) -> TicketAuthoringView:
+            nonlocal selected
             pointer = generated.get("machine")
             if not isinstance(pointer, Mapping):
                 raise ValueError("Executable Ticket has no valid machine baseline")
             basis = ticket_baseline_from_machine(pointer)
             authoring = {item.role: item.authoring_sha for item in basis.participants}
-            checkout = materialize_ticket_commits(root, basis, destination, authoring)
-            return ticket_authoring_view(checkout)
+            selected = materialize_ticket_commits(root, basis, destination, authoring)
+            return ticket_authoring_view(selected)
 
-        yield TicketConversionContext("executable", resolve_view)
+        def checkout_root() -> Path:
+            if selected is None:
+                raise ValueError("Ticket conversion has not selected a checkout")
+            return selected
+
+        yield TicketConversionContext("executable", resolve_view, checkout_root)
 
 
 def _source_position(node: Node) -> tuple[int, int]:

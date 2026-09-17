@@ -99,9 +99,9 @@ def test_triage_review_briefing_is_fixed_compact_and_html_linked():
     template = _skill_text("booley-ticket-triage", "review-template.md")
 
     for required in (
-        "booley board review-briefing $SLUG",
+        "booley board show $SLUG",
         "fast freshness check",
-        "Do not run `prepare-review` during\ninteractive triage",
+        "Do not run `board review` during\ninteractive triage",
         "Do not routinely reread",
         "every declared criterion",
         "feature-branch commit (oldest first)",
@@ -168,7 +168,7 @@ def test_triage_review_distinguishes_direct_fix_from_clean_reset():
         "For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**",
         "For a briefing marked **unaccepted**",
         "Criteria Satisfaction Records are immutable",
-        "only a successful finalization makes approval available",
+        "publishes first acceptance, and completes the Ticket",
         "This is a clean start",
         "Do not selectively retain reviewed work",
         "never resumes through an ordinary move to `queued`",

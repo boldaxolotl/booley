@@ -16,6 +16,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+_GENERATED_INSTANCE_RE = re.compile(r"(?<![A-Za-z0-9])_[0-9a-f]+_p_Instance\b")
+_GENERATED_INSTANCE_RUN_RE = re.compile(r"(?:<generated-instance>\s*)+")
+_TRUNCATED_GENERATED_TAIL_RE = re.compile(r"(<generated-instance-list>).*…$")
+_PARTIAL_GENERATED_INSTANCE_TAIL_RE = re.compile(r"(?<![A-Za-z0-9])_[0-9a-f]+(?:_[A-Za-z_]*)?…$")
+
 
 class FixtureError(ValueError):
     """A stimulus or retained result cannot support the declared Check."""
@@ -318,6 +323,81 @@ def synth_baseline(summary: dict, report: dict, expected: dict) -> dict:
     }
 
 
+def _stable_warning_signatures(report: dict) -> tuple[int, Counter[tuple]]:
+    """Extract bounded warning identities without generated instance names."""
+    summary = _mapping(report.get("warning_summary"), "synthesis warning summary")
+    total = summary.get("total_warnings")
+    _require(type(total) is int and total >= 0, "synthesis warning total is invalid")
+    representatives = summary.get("representatives")
+    _require(isinstance(representatives, list), "synthesis warning representatives are invalid")
+    signatures: Counter[tuple] = Counter()
+    for value in representatives:
+        item = _mapping(value, "synthesis warning representative")
+        _require(
+            all(field in item for field in ("tool", "code", "category", "count", "message")),
+            "synthesis warning representative lacks identity fields",
+        )
+        _require(
+            isinstance(item["tool"], str)
+            and bool(item["tool"])
+            and (item["code"] is None or isinstance(item["code"], str))
+            and isinstance(item["category"], str)
+            and bool(item["category"])
+            and type(item["count"]) is int
+            and item["count"] > 0
+            and isinstance(item["message"], str)
+            and bool(item["message"]),
+            "synthesis warning representative has invalid identity fields",
+        )
+        message = _GENERATED_INSTANCE_RE.sub(
+            "<generated-instance>", " ".join(item["message"].split())
+        )
+        message = _GENERATED_INSTANCE_RUN_RE.sub("<generated-instance-list> ", message)
+        if item.get("truncated") is True:
+            message = _TRUNCATED_GENERATED_TAIL_RE.sub(r"\1…", message)
+            message = _PARTIAL_GENERATED_INSTANCE_TAIL_RE.sub(
+                "<generated-instance-list>…", message
+            )
+        signatures[(item["tool"], item["code"], item["category"], item["count"], message)] += 1
+    return total, signatures
+
+
+def doctor_warning_comparison(pre: dict, final: dict) -> dict:
+    """Compare deep-Doctor warning samples using stable semantic signatures."""
+    pre_total, pre_signatures = _stable_warning_signatures(_mapping(pre, "pre-waiver report"))
+    final_total, final_signatures = _stable_warning_signatures(_mapping(final, "final report"))
+    _require(pre_total == final_total, "warning totals differ")
+    _require(pre_signatures == final_signatures, "warning signatures differ")
+    return {"total_warnings": pre_total, "stable_warning_count": len(pre_signatures)}
+
+
+def interactive_repair(
+    baseline: str,
+    injected: str,
+    repaired: str,
+    faulty_expression: str,
+    fixed_expression: str,
+) -> dict:
+    """Require a real, known root-cause repair diff from the clean source."""
+    values = (baseline, injected, repaired, faulty_expression, fixed_expression)
+    _require(
+        all(isinstance(value, str) and bool(value) for value in values),
+        "repair sources are invalid",
+    )
+    _require(baseline != injected, "fault injection did not change baseline")
+    _require(baseline != repaired, "repair is byte-identical to baseline")
+    _require(
+        injected.count(faulty_expression) == 1,
+        "injected source must contain exactly one declared fault",
+    )
+    expected_repaired = injected.replace(faulty_expression, fixed_expression, 1)
+    _require(
+        repaired == expected_repaired,
+        "repaired source must replace only the declared fault with the declared fix",
+    )
+    return {"meaningful_diff": True, "fault_removed": True, "fixed_expression_present": True}
+
+
 def lint_command(argv: list[str]) -> dict:
     """Reject the session-enter typo before invoking the hard-error stimulus."""
     _require(
@@ -513,6 +593,16 @@ def oracle(record: dict) -> dict:
         )
     elif kind == "synth-baseline":
         result = synth_baseline(record["summary"], record["report"], record["expected"])
+    elif kind == "doctor-warning-comparison":
+        result = doctor_warning_comparison(record["pre"], record["final"])
+    elif kind == "interactive-repair":
+        result = interactive_repair(
+            record["baseline"],
+            record["injected"],
+            record["repaired"],
+            record["faulty_expression"],
+            record["fixed_expression"],
+        )
     elif kind == "riscv-subjects":
         result = required_subjects(record["pdf_text"], record["subjects"])
     elif kind == "vivado-implementation":

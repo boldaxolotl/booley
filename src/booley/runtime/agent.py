@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 from typing import Any
 
 from booley.config.settings import STEP_TIERS
@@ -21,6 +22,17 @@ from .agent_config import get_backend_config
 from .agent_errors import TransientAPIError  # noqa: F401 (re-export for importers)
 
 logger = logging.getLogger(__name__)
+
+
+def announce_agent_dispatch(params: AgentCallParams) -> None:
+    """Disclose an actual Booley-owned agent call before backend dispatch."""
+    role = params.label or "specialist"
+    purpose = {
+        "developer": "execute the Ticket",
+        "triage-report": "prepare a review package",
+        "blocked-triage-report": "diagnose a blocked Ticket",
+    }.get(role, "perform the requested Specialist analysis")
+    print(f"Booley is starting the {role} agent to {purpose}.", file=sys.stderr)
 
 
 async def call_agent(
@@ -47,6 +59,7 @@ async def call_agent(
         if params.reasoning_effort is None:
             params.reasoning_effort = cfg.settings.effort_for_tier(tier)
 
+    announce_agent_dispatch(params)
     return await cfg.active_backend.call(params, on_event=on_event)
 
 

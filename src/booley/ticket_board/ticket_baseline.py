@@ -700,10 +700,13 @@ def load_ticket_baseline(
 
 
 def load_ticket_baseline_from_document(
-    project_root: Path | str, slug: str, document: TicketDocument
+    project_root: Path | str,
+    slug: str,
+    document: TicketDocument,
+    *,
+    authoring_checkout: Path | None = None,
 ) -> TicketBaseline:
     """Resolve a v2 Ticket's pinned inputs from its converted authored meaning."""
-    from .acceptance_targets import canonical_acceptance_bindings, criterion_targets_from_spec
 
     spec = document.spec
     machine = document.generated.get("machine")
@@ -715,18 +718,14 @@ def load_ticket_baseline_from_document(
         raise TicketBaselineError(f"{BLOCK_REASON}: amendment names another Ticket")
     validate_ticket_commit_trailers(project_root, slug, basis, machine)
     _validate_ticket_routing(basis, spec.fields)
-    with tempfile.TemporaryDirectory(prefix="booley-ticket-baseline-") as directory:
-        checkout = materialize_basis_checkout(project_root, basis, Path(directory) / "checkout")
-        from booley.fusesoc.core_projection import (
-            native_cores_ignored,
-            reconcile_isolated_registry,
-            reconcile_projected_cores,
-        )
-
-        reconcile_projected_cores(checkout)
-        if native_cores_ignored(checkout):
-            reconcile_isolated_registry(checkout)
-        bindings = canonical_acceptance_bindings(checkout, criterion_targets_from_spec(spec))
+    if authoring_checkout is None:
+        with tempfile.TemporaryDirectory(prefix="booley-ticket-baseline-") as directory:
+            checkout = materialize_basis_checkout(
+                project_root, basis, Path(directory) / "checkout"
+            )
+            bindings = _canonical_document_bindings(checkout, spec)
+    else:
+        bindings = _canonical_document_bindings(authoring_checkout, spec)
     plan = spec.target_plan
     return TicketBaseline(
         basis.participants,
@@ -737,6 +736,23 @@ def load_ticket_baseline_from_document(
         basis.providers,
         machine=dict(machine),
     )
+
+
+def _canonical_document_bindings(
+    checkout: Path, spec: TicketSpec
+) -> tuple[AcceptanceTargetBinding, ...]:
+    from booley.fusesoc.core_projection import (
+        native_cores_ignored,
+        reconcile_isolated_registry,
+        reconcile_projected_cores,
+    )
+
+    from .acceptance_targets import canonical_acceptance_bindings, criterion_targets_from_spec
+
+    reconcile_projected_cores(checkout)
+    if native_cores_ignored(checkout):
+        reconcile_isolated_registry(checkout)
+    return canonical_acceptance_bindings(checkout, criterion_targets_from_spec(spec))
 
 
 def _git_paths(repository: Path, *args: str, owner: Path | None = None) -> set[str]:

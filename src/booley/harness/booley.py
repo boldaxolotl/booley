@@ -394,7 +394,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    run_p = sub.add_parser("run", help="Run the ticket execution loop")
+    run_p = sub.add_parser(
+        "run",
+        help="Run ticket execution [may invoke agent]",
+        description="Run selected Tickets. Each executed Ticket starts a Developer Agent; review handoff may start report agents.",
+    )
     run_p.add_argument(
         "--ticket",
         "-t",
@@ -483,11 +487,12 @@ def _add_board_subparsers(sub) -> None:
     # driving the board for another checkout meant cd-ing or exporting env.
     root_opt = _project_root_parent()
     board_p = sub.add_parser("board", help="Ticket board operations", parents=[root_opt])
-    board_sub = board_p.add_subparsers(dest="board_command")
-
-    board_sub.add_parser(
-        "show", help="Display the board (default when no subcommand)", parents=[root_opt]
+    board_sub = board_p.add_subparsers(
+        dest="board_command",
+        metavar="{show,review,approve,validate,create,move,reset,archive}",
     )
+
+    _add_board_review_subparsers(board_sub, root_opt)
 
     create_p = board_sub.add_parser("create", help="Create a new ticket draft", parents=[root_opt])
     create_p.add_argument("slug", help="Ticket slug")
@@ -525,23 +530,73 @@ def _add_board_subparsers(sub) -> None:
         help="Archive a ticket that is not 'done' (discards its state)",
     )
 
+
+def _add_board_review_subparsers(board_sub, root_opt) -> None:
+    """Register public review commands and their compatibility adapters."""
+    _add_public_board_review_subparsers(board_sub, root_opt)
+    _add_legacy_board_review_subparsers(board_sub, root_opt)
+    _hide_legacy_board_commands(board_sub)
+
+
+def _add_public_board_review_subparsers(board_sub, root_opt) -> None:
+    """Register the supported board review commands."""
+    show_p = board_sub.add_parser(
+        "show", help="Display the board or a prepared ticket briefing", parents=[root_opt]
+    )
+    show_p.add_argument("slug", nargs="?", help="Ticket to inspect")
+    show_p.add_argument("--no-open-diffs", action="store_true", help="Do not open prepared diffs")
+
+    review_p = board_sub.add_parser(
+        "review",
+        help="Prepare blocked or review material [may invoke agent]",
+        parents=[root_opt],
+        description="Prepare blocked or review material. A report agent runs when current material must be generated. --request enters human review from blocked.",
+    )
+    review_p.add_argument("slug")
+    review_p.add_argument("--request", action="store_true", help="Enter human review from blocked")
+    review_p.add_argument("--reason", default="", help="Recorded reason for entering human review")
+    review_p.add_argument(
+        "--force", action="store_true", help="Regenerate current report artifacts"
+    )
+    review_p.add_argument(
+        "--repair", action="store_true", help="Recover a stranded review entry with --request"
+    )
+
+    approve_p = board_sub.add_parser(
+        "approve",
+        help="Accept reviewed inputs and complete the ticket",
+        parents=[root_opt],
+        description="Accept the selected review without an agent call, then merge and clean up according to on_success.",
+    )
+    approve_p.add_argument("slug")
+    approve_p.add_argument("--no-merge", action="store_true", help="Skip configured merge")
+    approve_p.add_argument("--no-cleanup", action="store_true", help="Skip configured cleanup")
+
+    validate_p = board_sub.add_parser(
+        "validate",
+        help="Run ticket-bound validation (agent use depends on child command)",
+        parents=[root_opt],
+        description="Run a validation command in the ticket's worktree and record evidence through participating Booley endpoints. Agent use depends on the supplied command.",
+    )
+    validate_p.add_argument("slug")
+    validate_p.add_argument("endpoint_command", nargs=argparse.REMAINDER)
+
+
+def _add_legacy_board_review_subparsers(board_sub, root_opt) -> None:
+    """Register deprecated review command adapters without advertising them."""
     for command in ("request-review", "refresh-review", "finalize-review"):
-        review_p = board_sub.add_parser(
-            command, help="Prepare explicit human review", parents=[root_opt]
-        )
+        review_p = board_sub.add_parser(command, help=argparse.SUPPRESS, parents=[root_opt])
         review_p.add_argument("slug")
         review_p.add_argument("--reason", default="")
         if command == "request-review":
             review_p.add_argument("--repair", action="store_true")
-    exec_p = board_sub.add_parser(
-        "review-exec", help="Run an endpoint in this review ticket", parents=[root_opt]
-    )
+    exec_p = board_sub.add_parser("review-exec", help=argparse.SUPPRESS, parents=[root_opt])
     exec_p.add_argument("slug")
     exec_p.add_argument("endpoint_command", nargs=argparse.REMAINDER)
 
     prepare_p = board_sub.add_parser(
         "prepare-review",
-        help="Generate or refresh a review/blocked ticket's HTML change explanation",
+        help=argparse.SUPPRESS,
         parents=[root_opt],
     )
     prepare_p.add_argument("slug", help="Review or blocked ticket slug")
@@ -553,7 +608,7 @@ def _add_board_subparsers(sub) -> None:
 
     briefing_p = board_sub.add_parser(
         "review-briefing",
-        help="Render a prepared review/blocked briefing without running an agent",
+        help=argparse.SUPPRESS,
         parents=[root_opt],
     )
     briefing_p.add_argument("slug", help="Review or blocked ticket slug")
@@ -565,10 +620,26 @@ def _add_board_subparsers(sub) -> None:
 
     blocked_p = board_sub.add_parser(
         "blocked-briefing",
-        help="Render a prepared blocked-ticket dossier without running an agent",
+        help=argparse.SUPPRESS,
         parents=[root_opt],
     )
     blocked_p.add_argument("slug", help="Blocked ticket slug")
+
+
+def _hide_legacy_board_commands(board_sub) -> None:
+    """Keep deprecated adapters parseable while removing them from help."""
+    legacy = {
+        "request-review",
+        "refresh-review",
+        "finalize-review",
+        "review-exec",
+        "prepare-review",
+        "review-briefing",
+        "blocked-briefing",
+    }
+    board_sub._choices_actions = [  # argparse exposes no alias-hiding API
+        action for action in board_sub._choices_actions if action.dest not in legacy
+    ]
 
 
 def _add_cheat_subparser(sub) -> None:
@@ -617,8 +688,9 @@ def _add_doctor_subparser(sub) -> None:
     """Add setup and environment diagnostics."""
     doctor_p = sub.add_parser(
         "doctor",
-        help="Run setup and environment health checks",
+        help="Run setup and environment health checks [may invoke agent]",
         parents=[_project_root_parent()],
+        description="Check setup and environment health. Deep checks may invoke a Developer Agent authorization probe unless skipped.",
     )
     output = doctor_p.add_mutually_exclusive_group()
     output.add_argument("--verbose", "-v", action="store_true")
@@ -831,7 +903,11 @@ def _add_shell_subparser(sub) -> None:
 
 def _add_utility_subparsers(sub) -> None:
     """Add host utilities, setup commands, and direct Flow commands."""
-    sub.add_parser("chat", help="Open this Project's configured agent CLI")
+    sub.add_parser(
+        "chat",
+        help="Open this Project's configured agent CLI [invokes agent]",
+        description="Open the configured interactive agent CLI for this Project.",
+    )
     _add_cheat_subparser(sub)
 
     from booley.eda import cli as eda_cli
@@ -1090,7 +1166,7 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
 
     board_cmd = getattr(args, "board_command", None)
 
-    if board_cmd is None or board_cmd == "show":
+    if board_cmd is None or (board_cmd == "show" and not getattr(args, "slug", None)):
         from booley.ticket_board.io import scan_all_tickets
         from booley.ticket_board.reporting import display_board
 
@@ -1146,6 +1222,10 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
         return 0 if ok else 1
 
     special = {
+        "show": lambda: _cmd_board_show(args, project_root),
+        "review": lambda: _cmd_board_review(args, project_root),
+        "approve": lambda: _cmd_board_approve(args, project_root),
+        "validate": lambda: _cmd_review_exec(args, project_root),
         "archive": lambda: _cmd_board_archive(args, tio),
         "request-review": lambda: _cmd_requested_review(args, project_root, "request"),
         "refresh-review": lambda: _cmd_requested_review(args, project_root, "refresh"),
@@ -1199,6 +1279,86 @@ def _cmd_requested_review(args: argparse.Namespace, project_root: Path, action: 
         print(f"ERROR: {outcome.message}", file=sys.stderr)
         return 2
     print(f"Review package ready: {outcome.package_path}")
+    return 0
+
+
+def _cmd_board_review(args: argparse.Namespace, project_root: Path) -> int:
+    import asyncio
+
+    from booley.ticket_board.review_lifecycle import review_command
+
+    if args.reason and not args.request:
+        print("ERROR: --reason requires --request", file=sys.stderr)
+        return 2
+    if args.request and args.force:
+        print("ERROR: --force cannot be combined with --request", file=sys.stderr)
+        return 2
+    outcome = asyncio.run(
+        review_command(
+            project_root,
+            args.slug,
+            request=args.request,
+            reason=args.reason,
+            force=args.force,
+            repair=args.repair,
+        )
+    )
+    if not outcome.ready:
+        print(f"ERROR: {outcome.message}", file=sys.stderr)
+        return 2
+    print(f"Review package ready: {outcome.package_path}")
+    print(f"Status: {outcome.message}")
+    return 0
+
+
+def _cmd_board_approve(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.ticket_board.review_lifecycle import ReviewPrepError, approve_review_command
+
+    try:
+        ok = approve_review_command(
+            project_root,
+            args.slug,
+            no_merge=args.no_merge,
+            no_cleanup=args.no_cleanup,
+        )
+    except (ValueError, OSError, ReviewPrepError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    return 0 if ok else 1
+
+
+def _cmd_board_show(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.ticket_board.io import TicketIO
+
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    board = tio.find_ticket(args.slug)
+    if board is None:
+        print(f"ERROR: ticket {args.slug!r} not found", file=sys.stderr)
+        return 2
+    slug = Path(board["file"]).stem
+    status = board["status"]
+    if status == "blocked":
+        from booley.harness.blocked_prep import render_blocked_dossier
+
+        dossier = render_blocked_dossier(project_root, slug)
+        if not dossier.ready:
+            print(f"ERROR: {dossier.message}; run booley board review {slug}", file=sys.stderr)
+            return 2
+        print(dossier.message)
+    if status in {"blocked", "review"}:
+        from booley.ticket_board.review_lifecycle import review_briefing_command
+
+        outcome = review_briefing_command(
+            project_root,
+            slug,
+            open_diffs=not args.no_open_diffs,
+        )
+        if outcome.status != "ready":
+            print(f"ERROR: {outcome.message}; run booley board review {slug}", file=sys.stderr)
+            return 2
+        print(outcome.briefing)
+        return 0
+    print(f"{slug}: {status} — {board.get('summary', '')}")
     return 0
 
 

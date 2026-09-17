@@ -1,30 +1,30 @@
 # Booley
 
 Booley is a Python framework for agentic FPGA/ASIC development, including
-simulation, synthesis, linting, and ticket-based workflows.
+simulation, synthesis, linting, and ticket workflows.
 
 ## Repository Rules
 
-- In every new chat, before modifying Booley code, create a new worktree with a
-  new branch based on `main`. Always isolate the work this way, especially when
-  the existing checkout has dirty files.
-- Keep worktree branches local by default. Push a branch or create or update a
-  pull request only when the user explicitly requests that external action. A
-  request to create or update a pull request authorizes its required branch
-  push. A request to implement, edit, or commit does not authorize a push or
-  pull request.
+- Before modifying Booley code in a new chat, create a worktree and new branch
+  from `main`, even when the existing checkout has dirty files.
+- Keep worktree branches local. Push a branch or create/update a pull request
+  only on explicit request. A request to create/update a PR authorizes its
+  required branch push; an implement, edit, or commit request does not.
 - For every agent-authored PR creation, title/body edit, comment, or review,
-  write the public text to local draft files and submit it through
+  draft the public text in local files and submit it through
   `python3 .github/scripts/confidential_content_guard.py --repo . publish-pr`.
-  The command scans and sends the same text in one operation; see
-  `docs/internals/agents/confidential-content.md` for each action. Review links
-  and attachments for confidential facts the vocabulary cannot match.
-- `main` is protected. Queue or merge a pull request only when the user
-  explicitly asks to merge it. Use the Mergify queue workflow for that merge;
-  read `docs/internals/agents/merge-queue.md` before queueing, dequeueing,
-  retrying, monitoring, or cleaning up that pull request.
-- After Mergify reports an authorized pull request merged, delete its local
-  branch and worktree, and delete its branch on GitHub.
+  It scans and sends the same bytes; see
+  `docs/internals/agents/confidential-content.md` for each action.
+- For every agent-authored issue creation, title/body edit, comment, or close
+  comment, draft the public text in local files. Scan each draft with
+  `python3 .github/scripts/confidential_content_guard.py --repo . pr-text --file <draft>`
+  before submitting that same text with `gh`. Review PR and issue links and
+  attachments for confidential facts the vocabulary cannot match.
+- `main` is protected. Queue or merge a PR only when the user asks to merge it.
+  Use the Mergify queue and read `docs/internals/agents/merge-queue.md` before
+  queueing, dequeueing, retrying, monitoring, or cleaning up that PR. After
+  Mergify reports an authorized merge, delete its local branch and worktree
+  and its GitHub branch.
 - Read `docs/internals/CODING_PRINCIPLES.md` before writing Python code.
 - Run `ruff check src/ tests/` before committing Python changes.
 - Keep project-specific content in the directory resolved by `booley.runtime.project_dir`;
