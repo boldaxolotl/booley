@@ -87,9 +87,37 @@ def _worktree_relative_path(wt_path: str, path: str | Path) -> str | None:
     candidate = Path(path)
     if not candidate.is_absolute():
         return candidate.as_posix().removeprefix("./")
+    root = Path(wt_path)
     try:
-        return candidate.resolve().relative_to(Path(wt_path).resolve()).as_posix()
-    except (OSError, ValueError):
+        return candidate.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return _bind_mount_relative_path(root, candidate)
+
+
+def _bind_mount_relative_path(root: Path, candidate: Path) -> str | None:
+    """Translate an absolute path through one proven bind-mount identity."""
+    matches: list[Path] = []
+    ancestor = candidate
+    while True:
+        try:
+            existing = ancestor.is_dir()
+        except OSError:
+            existing = False
+        if existing:
+            try:
+                if ancestor.samefile(root):
+                    matches.append(ancestor)
+            except OSError:
+                pass
+        parent = ancestor.parent
+        if parent == ancestor:
+            break
+        ancestor = parent
+    if len(matches) != 1:
+        return None
+    try:
+        return candidate.relative_to(matches[0]).as_posix()
+    except ValueError:
         return None
 
 

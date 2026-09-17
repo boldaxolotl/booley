@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.ticket_board.git_ops import (
+    _worktree_relative_path,
     add_worktree,
     cleanup_worktree_and_branch,
     delete_branch,
@@ -91,6 +92,86 @@ class TestFindWorktreeForBranch:
     def test_returns_none_on_git_failure(self, mock_git):
         mock_git.return_value = None
         assert find_worktree_for_branch("any") is None
+
+
+class TestWorktreeRelativePath:
+    def test_preserves_lexical_relative_path(self, tmp_path):
+        assert _worktree_relative_path(str(tmp_path), Path("./tickets/board")) == "tickets/board"
+
+    def test_returns_relative_path_in_same_namespace(self, tmp_path):
+        root = tmp_path / "checkout"
+        child = root / "tickets" / "board" / "review.md"
+        child.parent.mkdir(parents=True)
+        child.write_text("ticket\n")
+
+        assert _worktree_relative_path(str(root), child) == "tickets/board/review.md"
+
+    def test_resolves_symlink_alias(self, tmp_path):
+        root = tmp_path / "checkout"
+        root.mkdir()
+        (root / "design.txt").write_text("design\n")
+        alias = tmp_path / "alias"
+        alias.symlink_to(root, target_is_directory=True)
+
+        assert _worktree_relative_path(str(root), alias / "design.txt") == "design.txt"
+
+    def test_translates_proven_bind_mount_alias(self, tmp_path, monkeypatch):
+        root = tmp_path / "checkout"
+        root.mkdir()
+        alias = tmp_path / "runtime-alias"
+        (alias / "tickets" / "board" / "review").mkdir(parents=True)
+        candidate = alias / "tickets" / "board" / "review" / "ticket.md"
+
+        real_samefile = Path.samefile
+
+        def samefile(left, right):
+            if {Path(left), Path(right)} == {alias, root}:
+                return True
+            return real_samefile(left, right)
+
+        monkeypatch.setattr(Path, "samefile", samefile)
+
+        assert _worktree_relative_path(str(root), candidate) == "tickets/board/review/ticket.md"
+
+    def test_rejects_unrelated_absolute_path(self, tmp_path):
+        root = tmp_path / "checkout"
+        unrelated = tmp_path / "unrelated"
+        root.mkdir()
+        unrelated.mkdir()
+
+        assert _worktree_relative_path(str(root), unrelated / "ticket.md") is None
+
+    def test_rejects_ambiguous_bind_mount_ancestors(self, tmp_path, monkeypatch):
+        root = tmp_path / "checkout"
+        root.mkdir()
+        alias = tmp_path / "runtime-alias"
+        nested_alias = alias / "nested"
+        nested_alias.mkdir(parents=True)
+        candidate = nested_alias / "ticket.md"
+
+        real_samefile = Path.samefile
+
+        def samefile(left, right):
+            if {Path(left), Path(right)} in ({alias, root}, {nested_alias, root}):
+                return True
+            return real_samefile(left, right)
+
+        monkeypatch.setattr(Path, "samefile", samefile)
+
+        assert _worktree_relative_path(str(root), candidate) is None
+
+    def test_rejects_bind_mount_identity_lookup_errors(self, tmp_path, monkeypatch):
+        root = tmp_path / "checkout"
+        root.mkdir()
+        alias = tmp_path / "runtime-alias"
+        (alias / "tickets").mkdir(parents=True)
+
+        def samefile(_left, _right):
+            raise OSError("identity unavailable")
+
+        monkeypatch.setattr(Path, "samefile", samefile)
+
+        assert _worktree_relative_path(str(root), alias / "tickets" / "ticket.md") is None
 
 
 # ---------------------------------------------------------------------------

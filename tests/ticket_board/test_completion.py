@@ -221,6 +221,27 @@ def _paired_completion(
     return root, project, _TicketIO(root, _contract(root, participants)), participants
 
 
+def _paired_completion_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, _TicketIO]:
+    root, project, tio, _participants = _paired_completion(tmp_path, monkeypatch)
+    runtime_alias = tmp_path / "runtime-project-alias"
+    (runtime_alias / "tickets" / "board" / "queue").mkdir(parents=True)
+    (runtime_alias / "tickets" / "board" / "review").mkdir()
+
+    real_samefile = Path.samefile
+
+    def samefile(left: Path, right: Path) -> bool:
+        if {Path(left), Path(right)} == {runtime_alias, project}:
+            return True
+        return real_samefile(left, right)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    tio.tickets_dir = runtime_alias / "tickets"
+    return root, project, tio
+
+
 def test_git_failures_report_repository_and_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2073,4 +2094,36 @@ def test_complete_rejects_unrelated_dirty_product_edit(tmp_path: Path) -> None:
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
 
     assert _git(root, "show", "main:design.txt") == "base"
+    assert tio.entry["status"] == "review"
+
+
+def test_complete_accepts_project_board_transition_through_bind_mount_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch)
+
+    assert (project / "tickets" / "board" / "review" / "change-target.md").is_file()
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+
+
+def test_complete_rejects_staged_board_transition_through_bind_mount_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch)
+    _git(project, "add", "tickets/board/review/change-target.md")
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert tio.entry["status"] == "review"
+
+
+def test_complete_rejects_unrelated_project_edit_through_bind_mount_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch)
+    (project / "unrelated.txt").write_text("unrelated\n", encoding="utf-8")
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert tio.entry["status"] == "review"
