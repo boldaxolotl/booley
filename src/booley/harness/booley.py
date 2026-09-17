@@ -2342,6 +2342,7 @@ def _ticket_loop(
     os.chdir(str(project_root))
     attempt = 0
     tickets_run = 0
+    had_failed_ticket = False
     idle = _IdleState()
 
     while not _shutdown_requested():
@@ -2367,10 +2368,12 @@ def _ticket_loop(
             return 1
         if result == "continue":
             continue
+        if result == "next_failed":
+            had_failed_ticket = True
 
         tickets_run += 1
         if args.count and tickets_run >= args.count:
-            logger.info("Completed %d/%d tickets, exiting", tickets_run, args.count)
+            logger.info("Attempted %d/%d tickets, exiting", tickets_run, args.count)
             break
 
         if not _sleep_until_next_ticket(args, project_root):
@@ -2379,7 +2382,7 @@ def _ticket_loop(
     if _shutdown_requested():
         handle_post_run_orphans(project_root, 130, 0)
     logger.info("=== Booley exiting ===")
-    return 0
+    return 1 if had_failed_ticket else 0
 
 
 def _execute_one_ticket(
@@ -2389,7 +2392,7 @@ def _execute_one_ticket(
     attempt: int,
     counts: dict[str, int],
 ) -> str:
-    """Execute a single ticket iteration. Returns action: 'next', 'break', 'abort', 'continue'."""
+    """Execute one ticket, marking failed attempts for the parent exit status."""
     _log_attempt(args, attempt, counts)
 
     if args.dry_run:
@@ -2397,7 +2400,10 @@ def _execute_one_ticket(
         return "break"
 
     exit_code, elapsed = _run_harness(args, project_root, venv_py)
-    return _handle_post_run(args, project_root, exit_code, elapsed)
+    action = _handle_post_run(args, project_root, exit_code, elapsed)
+    if exit_code != 0 and action == "next":
+        return "next_failed"
+    return action
 
 
 def _show_dry_run(venv_py: str) -> None:

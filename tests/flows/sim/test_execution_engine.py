@@ -787,7 +787,9 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
     )
     execution = SimulationExecution(
         invoke=_subprocess_invoker(project),
-        options=SimulationOptions(timeout_ms=5_000),
+        # Real FuseSoC setup and Icarus startup are substantially slower on
+        # Windows runners than the lightweight adapter tests around this one.
+        options=SimulationOptions(timeout_ms=30_000),
     )
     with patch.object(
         fusesoc_registry,
