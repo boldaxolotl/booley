@@ -240,6 +240,21 @@ class TestDevelopmentBuildContext:
         docker_dir = extracted / "src" / "booley" / "data" / "docker"
         assert init_docker_image._local_build_inputs(ctx, docker_dir) is not None
 
+    def test_archive_includes_bwave_build_inputs(self, tmp_path: Path):
+        archive_path = tmp_path / "context.tar.gz"
+        _write_development_context(SOURCE_ROOT, archive_path)
+
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            names = {member.name for member in archive.getmembers()}
+
+        assert {
+            "crates/bwave/benches/micro.rs",
+            "crates/bwave/benches/throughput.rs",
+            "crates/bwave/docs/public/intro.md",
+            "crates/bwave/docs/skills/bwave.md",
+            "crates/bwave/schema/bwave.json",
+        } <= names
+
     def test_hash_mismatch_writes_nothing(self, tmp_path: Path):
         archive = tmp_path / "context.tar.gz"
         _write_development_context(SOURCE_ROOT, archive)
