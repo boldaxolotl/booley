@@ -60,7 +60,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "cryptography==46.0.5",
+    "cryptography==50.0.1",
     "hypothesis>=6.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -79,7 +79,7 @@ mutation = [
 dev = [
     # The repository-owned confidential vocabulary uses AES-GCM in its local
     # guard and the trusted CI scanner.
-    "cryptography==46.0.5",
+    "cryptography==50.0.1",
     "hypothesis>=6.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
