@@ -31,6 +31,45 @@ class _InspectionConfig:
     allow_additional_properties: bool = False
 
 
+def _new_library_manager() -> LibraryManager:
+    """Create a LibraryManager across FuseSoC 2.4.x constructor APIs."""
+    try:
+        return LibraryManager()
+    except TypeError:
+        return LibraryManager("")
+
+
+def _portable_core_data(data: Any) -> Mapping[str, Any]:
+    """Normalize Windows fileset separators before FuseSoC parses expressions."""
+    if not isinstance(data, Mapping) or not isinstance(data.get("filesets"), Mapping):
+        return data
+    filesets = dict(data["filesets"])
+    for name, fileset in filesets.items():
+        if not isinstance(fileset, Mapping) or not isinstance(fileset.get("files"), list):
+            continue
+        entries: list[Any] = []
+        for entry in fileset["files"]:
+            if isinstance(entry, str):
+                entries.append(entry.replace("\\", "/"))
+            elif isinstance(entry, Mapping) and len(entry) == 1:
+                path, attributes = next(iter(entry.items()))
+                entries.append({str(path).replace("\\", "/"): attributes})
+            else:
+                entries.append(entry)
+        filesets[name] = {**fileset, "files": entries}
+    return {**data, "filesets": filesets}
+
+
+class _PortableCoreParser:
+    """Keep FuseSoC target inspection portable across host path conventions."""
+
+    def __init__(self, parser: Any) -> None:
+        self._parser = parser
+
+    def read(self, core_file: str, validate_core: bool = True) -> Mapping[str, Any]:
+        return _portable_core_data(self._parser.read(core_file, validate_core))
+
+
 def _target_flags(name: str, flow: str | None, eda_tool: str | None) -> dict[str, Any]:
     """Build fresh FuseSoC condition flags for one Target."""
     flags: dict[str, Any] = {"is_toplevel": True, "target": name}
@@ -124,7 +163,8 @@ class _TargetSourceInspector:
             return self._prepared_state
         try:
             plan = fusesoc_registry.prepare_core_library_plan(self.root)
-            manager = CoreManager(_InspectionConfig(), library_manager=LibraryManager(""))
+            manager = CoreManager(_InspectionConfig(), library_manager=_new_library_manager())
+            manager.core2parser = _PortableCoreParser(manager.core2parser)
             for index, (library_root, ignored_dirs) in enumerate(
                 zip(plan.roots, plan.ignored_dirs, strict=True)
             ):

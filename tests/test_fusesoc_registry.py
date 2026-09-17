@@ -7,6 +7,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,6 +103,13 @@ def test_malformed_unselected_core_does_not_hide_valid_targets(tmp_path: Path) -
     (tmp_path / "legacy.core").write_text("targets: [unterminated", encoding="utf-8")
 
     assert "sim" in available_targets(tmp_path)
+
+
+def test_possible_expression_values_supports_fusesoc_247_parser(monkeypatch) -> None:
+    modern_exprs = SimpleNamespace(parse=lambda _value: ["modern-value"])
+    monkeypatch.setattr(fusesoc_registry, "_fusesoc_exprs", modern_exprs, raising=False)
+
+    assert fusesoc_registry._possible_expression_values("anything") == ["modern-value"]
 
 
 # Exactly the shape `fusesoc run --setup` emits (captured from the spike).
