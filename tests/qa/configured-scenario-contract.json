@@ -55,6 +55,24 @@
       "checks": "c0045b872f669795ef95f473106745cdc4d86fc840641bdfb32f6ad92988badd",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
+    "picorv32-windows-claude-cli": {
+      "required": true,
+      "semantics": "42a6445dbd6f96017135d8d1a3eb3d1ab08bf8372d66b374eb5a4dfc3d3d3843",
+      "checks": "53c38029e34c6a68632e36ecf7e9b1db75c48e8d160b54c729f85ae292b1c184",
+      "exclusions": "48f0eb0768d7921bc337f38d3c45983b28ff098ac46ff79ac5db863a15f32733"
+    },
+    "taxi-windows-claude-cli": {
+      "required": true,
+      "semantics": "3b0d7954ba55054c9caa50cf67653f563660a0e8e9a21eb76b18d35a65aa544e",
+      "checks": "d7755808ad8f940572ac60d73c0f36dccc97da54f29e66f949a966f52336af15",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "uart-windows-claude-cli": {
+      "required": true,
+      "semantics": "3b0d7954ba55054c9caa50cf67653f563660a0e8e9a21eb76b18d35a65aa544e",
+      "checks": "c0045b872f669795ef95f473106745cdc4d86fc840641bdfb32f6ad92988badd",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
     "picorv32-windows-codex-vscode": {
       "required": true,
       "semantics": "1974692113eb19294628c5b979cf885ab8910c9b90e9d568f6de8798ef1b50eb",
