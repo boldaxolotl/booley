@@ -924,6 +924,7 @@ def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
     assert len(observed) == 2 and all("NEW" in item and "OLD" not in item for item in observed)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
 def test_matching_closed_icarus_inputs_reuse_verified_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -982,6 +983,7 @@ def test_changed_input_with_failed_rebuild_never_launches_prior_image(
     assert len(observed) == 1
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
 @pytest.mark.parametrize("tamper", ["image", "pointer"])
 def test_corrupt_cache_forces_fresh_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
