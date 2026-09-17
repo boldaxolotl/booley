@@ -248,17 +248,26 @@ def _write_stale_compiler_fixture(root: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     compiler.chmod(0o755)
-    runner = fake_bin / "vvp"
-    runner.write_text(
-        "#!/usr/bin/env python3\n"
-        "import pathlib, sys\n"
-        "image = next(pathlib.Path(arg) for arg in sys.argv[1:] "
-        "if pathlib.Path(arg).is_file())\n"
-        "print(image.read_text(), end='')\n"
-        "hook = image.parent / 'hook.txt'\n"
-        "if hook.exists(): print('HOOK=' + hook.read_text())\n",
-        encoding="utf-8",
-    )
+    runner = fake_bin / ("vvp.bat" if os.name == "nt" else "vvp")
+    if os.name == "nt":
+        runner.write_text(
+            "@echo off\n"
+            'type "%~3"\n'
+            'if exist "%~dp3hook.txt" for /f "usebackq delims=" %%A in '
+            '("%~dp3hook.txt") do echo HOOK=%%A\n',
+            encoding="utf-8",
+        )
+    else:
+        runner.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            "image = next(pathlib.Path(arg) for arg in sys.argv[1:] "
+            "if pathlib.Path(arg).is_file())\n"
+            "print(image.read_text(), end='')\n"
+            "hook = image.parent / 'hook.txt'\n"
+            "if hook.exists(): print('HOOK=' + hook.read_text())\n",
+            encoding="utf-8",
+        )
     runner.chmod(0o755)
     return project, source
 
@@ -927,28 +936,16 @@ def test_matching_closed_icarus_inputs_reuse_verified_image(
     )
     handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
     commands: list[list[str]] = []
-    process_results: list[SubprocessResult] = []
     base_invoke = _subprocess_invoker(project)
 
     def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
         commands.append(command)
-        result = base_invoke(command, timeout=timeout)
-        process_results.append(result)
-        return result
+        return base_invoke(command, timeout=timeout)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     first = execution.run(handle, NamedTests(("first",)))
-    first_process_results = tuple(process_results)
     second = execution.run(handle, NamedTests(("second",)))
-    if not first.passed:
-        adapter_process = first_process_results[-1]
-        pytest.fail(
-            f"adapter rc={adapter_process.returncode}; "
-            f"stdout={adapter_process.stdout[-2000:]!r}; "
-            f"stderr={adapter_process.stderr[-2000:]!r}; "
-            f"failure={first.infrastructure_failure!r}",
-            pytrace=False,
-        )
+    assert first.passed, first.infrastructure_failure
     assert second.passed, (second.builds, second.tests, second.infrastructure_failure)
     assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 1
     assert second.builds[0].ran is False
