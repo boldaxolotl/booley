@@ -22,6 +22,11 @@ from booley.flows.sim.build import (
     new_attempt_token,
     prepare_simulation_build,
 )
+from booley.flows.sim.build_session import (
+    SimulationBuildSession,
+    SimulationBuildSlotError,
+    project_compile_surface,
+)
 from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
 from booley.flows.sim.execution.attempt import (
     AdapterAttemptOutcome,
@@ -88,25 +93,44 @@ class VerilatorCoverageExecution:
         identity, version_output = self._collector_identity()
         if identity is None:
             return SimulationBuildResult(False, version_output, infrastructure_error=True)
-        prepared = self._prepare_build(request)
-        if isinstance(prepared, str):
-            return SimulationBuildResult(False, prepared)
-        return self._execute_build(prepared, identity)
-
-    def _prepare_build(self, request: SimulationBuildRequest) -> PreparedSimulationBuild | str:
-        variant = request.variant.name
-        build_root = work_root_for(
-            self._handle.project_root,
-            "sim",
-            self._handle.selector,
-            variant=variant,
-        )
         try:
-            shutil.rmtree(build_root)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            return f"could not reset coverage build root: {exc}"
+            sources_before = project_compile_surface(self._handle.project_root)
+            with SimulationBuildSession(self._handle, request.variant.name) as session:
+                candidate = session.new_generation()
+                prepared = self._prepare_build(request, build_root=candidate)
+                if isinstance(prepared, str):
+                    return SimulationBuildResult(False, prepared)
+                if project_compile_surface(self._handle.project_root) != sources_before:
+                    raise SimulationBuildSlotError(
+                        "Project compile inputs changed during coverage preparation"
+                    )
+                if prepared.work_root != candidate:
+                    raise SimulationBuildSlotError(
+                        "coverage preparation escaped its leased generation"
+                    )
+                inputs = session.capture_inputs(prepared)
+                result = self._execute_build(prepared, identity)
+                if result.success:
+                    session.authorize_fresh_image(prepared, inputs)
+                return result
+        except SimulationBuildSlotError as exc:
+            self._prepared = None
+            return SimulationBuildResult(False, str(exc), infrastructure_error=True)
+
+    def _prepare_build(
+        self, request: SimulationBuildRequest, *, build_root: Path | None = None
+    ) -> PreparedSimulationBuild | str:
+        variant = request.variant.name
+        if build_root is None:
+            build_root = work_root_for(
+                self._handle.project_root, "sim", self._handle.selector, variant=variant
+            )
+            try:
+                shutil.rmtree(build_root)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                return f"could not reset coverage build root: {exc}"
 
         overlay: CoverageOverlay | None = None
         try:
@@ -118,6 +142,7 @@ class VerilatorCoverageExecution:
             prepared = prepare_simulation_build(
                 self._handle,
                 variant=variant,
+                build_root=build_root,
                 resolution_vlnv=overlay.vlnv,
                 environment=simulation_target_environment(self._handle),
             )

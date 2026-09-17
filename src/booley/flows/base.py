@@ -82,6 +82,18 @@ def _cgroup_oom_kill_count() -> int | None:
     return None
 
 
+def _popen_kwargs_with_lease() -> dict[str, Any]:
+    """Carry the active build lease into a supervised process group on POSIX."""
+    from booley.core.file_lock import active_child_lease_fd
+    from booley.runtime.platform_paths import popen_new_group_kwargs
+
+    kwargs = popen_new_group_kwargs()
+    lease_fd = active_child_lease_fd()
+    if os.name != "nt" and lease_fd is not None:
+        kwargs["pass_fds"] = (lease_fd,)
+    return kwargs
+
+
 def _linux_process_tree_rss_bytes(root_pid: int) -> int | None:
     """Best-effort aggregate RSS for *root_pid* and its descendants.
 
@@ -236,7 +248,7 @@ class FlowMechanics:
         import sys as _sys
         import time
 
-        from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
+        from booley.runtime.platform_paths import kill_process_tree
 
         # python3 is not on PATH on Windows; use the running interpreter.
         if cmd and cmd[0] == "python3" and _sys.platform == "win32":
@@ -256,7 +268,7 @@ class FlowMechanics:
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
-                **popen_new_group_kwargs(),
+                **_popen_kwargs_with_lease(),
             )
         except FileNotFoundError:
             logger.error("Command not found: %s", cmd[0])

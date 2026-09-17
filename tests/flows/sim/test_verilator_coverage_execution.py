@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.sim.build_session import SimulationBuildSession
 from booley.flows.sim.coverage_overlay import CoverageOverlay
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.trace_recipe import TraceMode
@@ -110,6 +112,7 @@ def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     assert build.success is True
     assert build.collector == PINNED_VERILATOR
     assert captured["prepare"]["variant"] == "coverage"
+    assert "generations" in captured["prepare"]["build_root"].parts
     assert captured["prepare"]["resolution_vlnv"] == "::coverage:0"
     assert captured["work"].plusargs[-1] == f"+verilator+coverage+file+{raw_path}"
     assert "BOOLEY_COVERAGE_RUN_ID=run:001:wrap" in captured["run_script"]
@@ -146,6 +149,7 @@ def _execution_fixture(tmp_path: Path, monkeypatch):
         "booley.flows.sim.verilator_coverage_execution.prepare_simulation_build",
         _fake_prepare(prepared, captured),
     )
+    monkeypatch.setattr(SimulationBuildSession, "authorize_fresh_image", lambda *args: None)
     monkeypatch.setattr(
         "booley.flows.sim.verilator_coverage_execution.prepare_adapter_invocation",
         _fake_adapter(captured),
@@ -172,8 +176,9 @@ def _fake_overlay(tmp_path: Path):
 def _fake_prepare(prepared, captured):
     def fake_prepare(*args, **kwargs):
         captured["prepare"] = kwargs
-        prepared.build_root.mkdir(parents=True, exist_ok=True)
-        return prepared
+        root = kwargs["build_root"]
+        root.mkdir(parents=True, exist_ok=True)
+        return replace(prepared, work_root=root, build_root=root)
 
     return fake_prepare
 

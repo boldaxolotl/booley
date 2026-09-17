@@ -83,6 +83,13 @@ def _run(
     inspection = SimpleNamespace(toplevel="tb_core", eda_tool="icarus", flow_options={})
     inspection.inspect = lambda _handle: inspection
     with (
+        patch.object(
+            execution,
+            "_run_groups_with_session",
+            side_effect=lambda current_handle, groups: [
+                execution._run_group(current_handle, group) for group in groups
+            ],
+        ),
         patch("booley.flows.sim.execution.engine.TargetCatalog.build", return_value=inspection),
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value=_TOKEN),

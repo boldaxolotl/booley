@@ -7,6 +7,7 @@ module owns the platform locking semantics.
 
 from __future__ import annotations
 
+import contextvars
 import errno
 import math
 import os
@@ -15,6 +16,25 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import IO, Any
+
+_CHILD_LEASE_FD: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "booley_child_lease_fd", default=None
+)
+
+
+def active_child_lease_fd() -> int | None:
+    """Return the leased descriptor a supervised child must inherit, if any."""
+    return _CHILD_LEASE_FD.get()
+
+
+def set_child_lease_fd(fd: int) -> contextvars.Token[int | None]:
+    """Mark one leased descriptor for child inheritance in this context."""
+    return _CHILD_LEASE_FD.set(fd)
+
+
+def reset_child_lease_fd(token: contextvars.Token[int | None]) -> None:
+    """Clear a previously installed child lease descriptor."""
+    _CHILD_LEASE_FD.reset(token)
 
 
 class LockContentionError(BlockingIOError):
