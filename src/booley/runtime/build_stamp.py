@@ -47,9 +47,15 @@ _PAYLOAD_FILES = (
 )
 _PAYLOAD_EXCLUDED = frozenset({STAMP_RELPATH, DEVELOPMENT_CONTEXT_RELPATH})
 
+# Keep every non-generated tree read by the B-Wave Cargo build. Cargo validates
+# declared bench paths while parsing the manifest, and the binary embeds docs
+# and the schema at compile time.
 _DEVELOPMENT_CONTEXT_TREES = (
     "src/booley",
     "crates/bwave/src",
+    "crates/bwave/benches",
+    "crates/bwave/docs",
+    "crates/bwave/schema",
     "crates/bwave/vendor",
 )
 _DEVELOPMENT_CONTEXT_FILES = (
