@@ -167,10 +167,10 @@ def test_isolated_core_equivalence_normalizes_only_checkout_root(tmp_path: Path)
     assert isolated_core_contents_equivalent(left, right)
 
     host_root = Path("/host/checkout")
-    left.write_text(
-        left.read_text(encoding="utf-8").replace(str(left_root.resolve()), str(host_root)),
-        encoding="utf-8",
-    )
+    left_content = left.read_text(encoding="utf-8")
+    for checkout_spelling in (str(left_root.resolve()), left_root.resolve().as_posix()):
+        left_content = left_content.replace(checkout_spelling, str(host_root))
+    left.write_text(left_content, encoding="utf-8")
     assert not isolated_core_contents_equivalent(left, right)
     assert isolated_core_contents_equivalent(
         left,

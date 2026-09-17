@@ -1992,14 +1992,14 @@ def _restore_tb_tags(
     if source_ref is None:
         return resolved
     tb_paths = {
-        PurePosixPath(path).as_posix()
+        PurePosixPath(str(path).replace("\\", "/")).as_posix()
         for path in target_source_files_for_ref(project_root, source_ref).tb_files
     }
     if not tb_paths:
         return resolved
 
     def _is_tb(name: str) -> bool:
-        normalized = PurePosixPath(name).as_posix()
+        normalized = PurePosixPath(name.replace("\\", "/")).as_posix()
         return any(normalized == path or normalized.endswith(f"/{path}") for path in tb_paths)
 
     files = tuple(
