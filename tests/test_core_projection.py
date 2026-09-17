@@ -143,8 +143,11 @@ def test_isolated_registry_rebases_files_and_excludes_native_cores(tmp_path: Pat
     generated = result.written[0]
     assert generated.parent == isolated_registry_root(root)
     text = generated.read_text(encoding="utf-8")
-    assert str(root / "rtl" / "demo.sv") in text
-    assert str(root / "rtl") in text
+    assert any(
+        path in text
+        for path in (str(root / "rtl" / "demo.sv"), (root / "rtl" / "demo.sv").as_posix())
+    )
+    assert any(path in text for path in (str(root / "rtl"), (root / "rtl").as_posix()))
     assert "native.core" not in text
     assert core.read_text(encoding="utf-8").startswith("CAPI=2:\nname: booley::demo:0")
 
@@ -164,10 +167,10 @@ def test_isolated_core_equivalence_normalizes_only_checkout_root(tmp_path: Path)
     assert isolated_core_contents_equivalent(left, right)
 
     host_root = Path("/host/checkout")
-    left.write_text(
-        left.read_text(encoding="utf-8").replace(str(left_root.resolve()), str(host_root)),
-        encoding="utf-8",
-    )
+    left_content = left.read_text(encoding="utf-8")
+    for checkout_spelling in (str(left_root.resolve()), left_root.resolve().as_posix()):
+        left_content = left_content.replace(checkout_spelling, str(host_root))
+    left.write_text(left_content, encoding="utf-8")
     assert not isolated_core_contents_equivalent(left, right)
     assert isolated_core_contents_equivalent(
         left,
