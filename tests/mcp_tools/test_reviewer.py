@@ -1679,10 +1679,10 @@ class TestPromptConstruction:
         assert "code_review/rtl/" not in prompt
 
     @pytest.mark.parametrize(
-        ("category", "scope", "label"),
+        ("category", "scope", "label", "focus"),
         [
-            ("rtl", "rtl/mod_a.sv", "RTL"),
-            ("tb", "tb/mod_a_tb.sv", "Testbench"),
+            ("rtl", "rtl/mod_a.sv", "RTL", "code_style"),
+            ("tb", "tb/mod_a_tb.sv", "Testbench", "quality"),
         ],
     )
     def test_project_style_overlay_is_inlined(
@@ -1692,6 +1692,7 @@ class TestPromptConstruction:
         category: str,
         scope: str,
         label: str,
+        focus: str,
     ):
         """A project-authored overlay is appended after the packaged guide."""
         overlay = tmp_path / ".booley_project" / f"{category}_style_guide.md"
@@ -1706,12 +1707,12 @@ class TestPromptConstruction:
                 "--category",
                 category,
                 "--focus",
-                "quality",
+                focus,
                 "--work-dir",
                 str(tmp_path),
             ]
         )
-        system = endpoint._build_system_prompt("quality")
+        system = endpoint._build_system_prompt(focus)
 
         assert f"## {label} style guide\n" in system
         assert f"## {label} style guide — project overlay" in system
@@ -1722,8 +1723,11 @@ class TestPromptConstruction:
         )
 
     @pytest.mark.parametrize(
-        ("category", "scope"),
-        [("rtl", "rtl/mod_a.sv"), ("tb", "tb/mod_a_tb.sv")],
+        ("category", "scope", "focus"),
+        [
+            ("rtl", "rtl/mod_a.sv", "code_style"),
+            ("tb", "tb/mod_a_tb.sv", "quality"),
+        ],
     )
     def test_missing_project_style_overlay_is_omitted(
         self,
@@ -1731,6 +1735,7 @@ class TestPromptConstruction:
         tmp_path: Path,
         category: str,
         scope: str,
+        focus: str,
     ):
         """No overlay authored is the normal case — review still runs."""
         endpoint = ReviewerSpecialist()
@@ -1741,12 +1746,12 @@ class TestPromptConstruction:
                 "--category",
                 category,
                 "--focus",
-                "quality",
+                focus,
                 "--work-dir",
                 str(tmp_path),
             ]
         )
-        system = endpoint._build_system_prompt("quality")
+        system = endpoint._build_system_prompt(focus)
 
         assert "style guide — project overlay" not in system
         assert "style guide" in system.lower()
