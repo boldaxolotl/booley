@@ -568,6 +568,23 @@ configured_scenarios:
   - taxi-core
   - taxi-gui
   exclusions: []
+- id: taxi-windows-claude-cli
+  required: true
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Claude
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Claude
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  check_sets:
+  - taxi-core
+  exclusions: []
 inputs:
 - id: release
   kind: pre-run
