@@ -327,9 +327,11 @@ def _normalized_isolated_core(
 
 def _normalize_checkout_paths(value: object, checkout_root: str) -> object:
     if isinstance(value, str):
+        value = value.replace("\\", "/")
+        checkout_root = checkout_root.replace("\\", "/")
         if value == checkout_root:
             return "${BOOLEY_WORKTREE}"
-        if value.startswith(checkout_root + os.sep):
+        if value.startswith(checkout_root + "/"):
             return "${BOOLEY_WORKTREE}" + value[len(checkout_root) :]
         return value
     if isinstance(value, Mapping):
