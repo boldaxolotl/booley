@@ -75,13 +75,30 @@ def _remove_shadow(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _mirror_excluded_ancestor(
+    source: Path,
+    destination: Path,
+    shadow_root: Path,
+    excluded_dir: Path,
+) -> bool:
+    """Materialize an ancestor of *excluded_dir* without mirroring it."""
+    resolved_source = source.resolve()
+    if not source.is_dir() or not excluded_dir.is_relative_to(resolved_source):
+        return False
+    if source.is_symlink():
+        raise SelftestOverlayError(f"self-test overlay crosses a symlinked runtime path: {source}")
+    _mirror_runtime_dir(source, destination, set(), shadow_root, excluded_dir)
+    return True
+
+
 def _mirror_runtime_dir(
     source_dir: Path,
     shadow_dir: Path,
     overlay_parts: set[tuple[str, ...]],
     shadow_root: Path,
+    excluded_dir: Path,
 ) -> None:
-    """Mirror *source_dir* cheaply, materializing only overlay ancestors."""
+    """Mirror *source_dir* cheaply, excluding project infrastructure."""
     shadow_dir.mkdir(parents=True, exist_ok=True)
     branches: dict[str, set[tuple[str, ...]]] = {}
     for parts in overlay_parts:
@@ -91,9 +108,14 @@ def _mirror_runtime_dir(
         for source in source_dir.iterdir():
             if source == shadow_root:
                 continue
+            resolved_source = source.resolve()
+            if resolved_source == excluded_dir:
+                continue
             remainders = branches.get(source.name)
             destination = shadow_dir / source.name
             if remainders is None:
+                if _mirror_excluded_ancestor(source, destination, shadow_root, excluded_dir):
+                    continue
                 destination.symlink_to(source.resolve(), target_is_directory=source.is_dir())
                 continue
             if source.is_symlink():
@@ -106,12 +128,18 @@ def _mirror_runtime_dir(
                     raise SelftestOverlayError(
                         f"self-test overlay runtime ancestor is not a directory: {source}"
                     )
-                _mirror_runtime_dir(source, destination, deeper, shadow_root)
+                _mirror_runtime_dir(source, destination, deeper, shadow_root, excluded_dir)
 
     for name, remainders in branches.items():
         deeper = {parts for parts in remainders if parts}
         if deeper and not (shadow_dir / name).exists():
-            _mirror_runtime_dir(source_dir / name, shadow_dir / name, deeper, shadow_root)
+            _mirror_runtime_dir(
+                source_dir / name,
+                shadow_dir / name,
+                deeper,
+                shadow_root,
+                excluded_dir,
+            )
 
 
 def stage_bad_run_overlay(
@@ -129,6 +157,7 @@ def stage_bad_run_overlay(
     visible through symlinks, while overlay paths are private real files in the
     per-build shadow.  The project-owned inputs are never modified.
     """
+    project_dir = project_dir.resolve()
     source_root = bad_overlay_dir(project_dir, flow_name)
     files = [
         path for path in sorted(source_root.rglob("*")) if path.is_file() and not path.is_symlink()
@@ -139,5 +168,5 @@ def stage_bad_run_overlay(
         raise SelftestOverlayError(f"simulation run_cwd is not a directory: {run_cwd}")
     overlay_parts = {path.relative_to(source_root).parts for path in files}
     _remove_shadow(shadow_root)
-    _mirror_runtime_dir(run_cwd, shadow_root, overlay_parts, shadow_root)
+    _mirror_runtime_dir(run_cwd, shadow_root, overlay_parts, shadow_root, project_dir)
     return stage_bad_overlay(project_dir, flow_name, shadow_root)

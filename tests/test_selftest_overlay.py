@@ -94,6 +94,66 @@ def test_stage_bad_run_overlay_shadows_runtime_assets_without_mutating_them(
     assert runtime_file.read_text(encoding="utf-8") == "good\n"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_stage_bad_run_overlay_excludes_project_dir_from_mirror(tmp_path: Path) -> None:
+    """The shadow must not symlink .booley_project — it is project infra, not a
+    runtime input, and FuseSoC chokes on a symlinked project dir (#586)."""
+    project_dir = tmp_path / ".booley_project"
+    overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay_file.parent.mkdir(parents=True)
+    overlay_file.write_text("bad\n", encoding="utf-8")
+    run_cwd = tmp_path
+    (run_cwd / "vectors").mkdir()
+    (run_cwd / "vectors" / "input.hex").write_text("vec\n", encoding="utf-8")
+    shadow = tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR
+
+    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", run_cwd, shadow)
+
+    assert (shadow / "vectors").is_symlink()
+    assert not (shadow / ".booley_project").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_stage_bad_run_overlay_excludes_configured_project_dir_from_mirror(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project-control" / "data"
+    overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay_file.parent.mkdir(parents=True)
+    overlay_file.write_text("bad\n", encoding="utf-8")
+    shadow = tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR
+
+    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", tmp_path, shadow)
+
+    project_relative = project_dir.relative_to(tmp_path)
+    assert (shadow / project_relative.parent).is_dir()
+    assert not (shadow / project_relative.parent).is_symlink()
+    assert not (shadow / project_relative).exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_stage_bad_run_overlay_rejects_symlinked_project_dir_ancestor(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    project_dir = tmp_path / "linked" / "data"
+    (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
+    overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay_file.parent.mkdir(parents=True)
+    overlay_file.write_text("bad\n", encoding="utf-8")
+    shadow = tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR
+
+    with pytest.raises(selftest_overlay.SelftestOverlayError, match="symlinked runtime path"):
+        selftest_overlay.stage_bad_run_overlay(project_dir, "sim", tmp_path, shadow)
+
+
 def test_stage_bad_run_overlay_rejects_symlinked_overlay_ancestor(tmp_path: Path) -> None:
     project_dir = tmp_path / ".booley_project"
     overlay_file = (
