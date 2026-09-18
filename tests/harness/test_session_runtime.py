@@ -2366,6 +2366,21 @@ class TestProjectDataMountPinned:
 
         assert not sr._project_data_mount_root_is_pinned(raw, workspace, pending)
 
+    def test_nonwritable_workspace_view_is_rejected(self, monkeypatch: pytest.MonkeyPatch):
+        from booley.runtime import platform_paths
+
+        monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
+        workspace, pending = self._windows_workspace()
+        raw = json.loads(
+            self._mount_inspect_json(
+                "/c/Users/dev/project/.booley_project",
+                "/c/Users/dev/project/.booley_project",
+            )
+        )
+        raw[0]["Mounts"][1]["RW"] = False
+
+        assert not sr._project_data_mount_root_is_pinned(json.dumps(raw), workspace, pending)
+
     def test_malformed_inspect_json_is_rejected(self):
         workspace, pending = self._windows_workspace()
 
@@ -2382,6 +2397,15 @@ class TestCanonicalBindSource:
         mounts = [{"Destination": "/work", "Source": None, "Type": "bind", "RW": True}]
 
         assert not sr._mounts_match_spec(mounts, spec, workspace)
+
+    def test_volume_source_is_compared_by_name(self, workspace: Path):
+        spec = {
+            "workspaceMount": "source=vscode,target=/work,type=volume",
+            "mounts": [],
+        }
+        mounts = [{"Destination": "/work", "Name": "vscode", "Type": "volume", "RW": True}]
+
+        assert sr._mounts_match_spec(mounts, spec, workspace)
 
 
 class TestLicensedRelayLifecycle:
