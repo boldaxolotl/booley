@@ -407,6 +407,7 @@ def _restore_journal(journal: _RefreshJournal) -> RecoveryResult:
             sr.restore_refresh_session(
                 journal.prior_runtime,
                 candidate_issuance=journal.replacement_issuance,
+                recovery=True,
             )
         except BaseException as exc:  # noqa: BLE001 -- attempt every durable recovery action
             errors.append(f"Sandbox {journal.prior_runtime.backup!r}: {exc}")
@@ -437,7 +438,7 @@ def _verify_restored_journal(journal: _RefreshJournal) -> None:
     if issuance != journal.prior_issuance:
         raise sr.SessionError("restored host issuance differs from the recorded predecessor")
     if journal.prior_runtime is not None:
-        sr.verify_restored_refresh_session(journal.prior_runtime)
+        sr.verify_restored_refresh_session(journal.prior_runtime, recovery=True)
 
 
 def _replacement_is_coherent(journal: _RefreshJournal) -> bool:
@@ -666,7 +667,18 @@ def _issue_and_verify_replacement(
     return journal
 
 
+def _force_cleanup_stale_journal(journal: _RefreshJournal | None) -> None:
+    """Best-effort journal removal so subsequent commands are not permanently blocked."""
+    if journal is None:
+        return
+    try:
+        _delete_journal(journal.project_root)
+    except BaseException:  # noqa: BLE001 -- last-resort cleanup must not mask the real error
+        pass
+
+
 def _recover_failed_refresh(project_root: Path, original: BaseException) -> None:
+    current: _RefreshJournal | None = None
     try:
         current = _load_journal(project_root)
         if current is None:
@@ -675,6 +687,7 @@ def _recover_failed_refresh(project_root: Path, original: BaseException) -> None
             raise sr.SessionError("Session refresh already committed forward")
         _restore_journal(current)
     except BaseException as recovery_error:  # noqa: BLE001 -- preserve original failure
+        _force_cleanup_stale_journal(current)
         raise sr.SessionError(
             f"Session refresh failed ({original}); recovery was incomplete: {recovery_error}"
         ) from original

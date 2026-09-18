@@ -502,7 +502,9 @@ def _assert_refresh_predecessor(name: str, state: dict[str, Any], parked: Parked
         raise SessionError(f"container {name!r} uses the wrong predecessor image")
 
 
-def _validate_refresh_egress(parked: ParkedSession, state: dict[str, Any]) -> bool:
+def _validate_refresh_egress(
+    parked: ParkedSession, state: dict[str, Any], *, recovery: bool = False
+) -> bool:
     network = state["NetworkSettings"]["Networks"].get(dc.EGRESS_NETWORK)
     if network is None:
         return False
@@ -510,6 +512,8 @@ def _validate_refresh_egress(parked: ParkedSession, state: dict[str, Any]) -> bo
         raise SessionError("Sandbox inspection contains invalid egress network state")
     actual_id = network.get("NetworkID")
     if parked.egress_network_id is not None and actual_id != parked.egress_network_id:
+        if recovery:
+            return True
         raise SessionError("Sandbox egress network identity changed during refresh")
     return True
 
@@ -614,7 +618,7 @@ def _verify_refresh_park(parked: ParkedSession) -> None:
         raise SessionError(f"parked Sandbox {parked.backup!r} is still attached to egress")
 
 
-def _restore_incomplete_park(parked: ParkedSession) -> None:
+def _restore_incomplete_park(parked: ParkedSession, *, recovery: bool = False) -> None:
     """Best-effort compensation while parking has not yet crossed bootstrap."""
     assert parked.project_id is not None
     state = _strict_refresh_container(parked.backup)
@@ -625,14 +629,14 @@ def _restore_incomplete_park(parked: ParkedSession) -> None:
                 f"neither Sandbox {parked.name!r} nor recovery container {parked.backup!r} exists"
             )
         _assert_refresh_predecessor(parked.name, original, parked)
-        connected = _validate_refresh_egress(parked, original)
+        connected = _validate_refresh_egress(parked, original, recovery=recovery)
         if connected != parked.reconnect_egress:
             raise SessionError("canonical Sandbox egress state changed during refresh")
         if parked.was_running and not original["State"]["Running"]:
             _start_session_container(parked.name)
         return
     _assert_refresh_predecessor(parked.backup, state, parked)
-    connected = _validate_refresh_egress(parked, state)
+    connected = _validate_refresh_egress(parked, state, recovery=recovery)
     if parked.reconnect_egress and not connected:
         connected = _run(["docker", "network", "connect", dc.EGRESS_NETWORK, parked.backup])
         if connected.returncode:
@@ -641,7 +645,7 @@ def _restore_incomplete_park(parked: ParkedSession) -> None:
                 f"{connected.stderr.strip()}"
             )
         verified = _strict_refresh_container(parked.backup)
-        if verified is None or not _validate_refresh_egress(parked, verified):
+        if verified is None or not _validate_refresh_egress(parked, verified, recovery=recovery):
             raise SessionError("recovery Session did not reconnect to the recorded egress network")
     elif not parked.reconnect_egress and connected:
         raise SessionError("recovery Session gained unauthorized egress during refresh")
@@ -714,7 +718,10 @@ def park_session_for_refresh(workspace: Path, issuance: Issuance) -> ParkedSessi
 
 
 def restore_refresh_session(
-    parked: ParkedSession, candidate_issuance: Issuance | None = None
+    parked: ParkedSession,
+    candidate_issuance: Issuance | None = None,
+    *,
+    recovery: bool = False,
 ) -> None:
     """Restore the exact pre-refresh container after a failed replacement."""
     assert parked.project_id is not None
@@ -727,7 +734,7 @@ def restore_refresh_session(
         if _strict_refresh_container(parked.backup) is not None:
             raise SessionError("both canonical and recovery predecessor containers exist")
         _assert_refresh_predecessor(parked.name, candidate, parked)
-        connected = _validate_refresh_egress(parked, candidate)
+        connected = _validate_refresh_egress(parked, candidate, recovery=recovery)
         if connected != parked.reconnect_egress:
             raise SessionError("canonical Sandbox egress state changed during refresh")
         if parked.was_running and not candidate["State"]["Running"]:
@@ -743,10 +750,10 @@ def restore_refresh_session(
                 "it was preserved"
             )
         _remove_session_candidate(parked.name)
-    _restore_incomplete_park(parked)
+    _restore_incomplete_park(parked, recovery=recovery)
 
 
-def verify_restored_refresh_session(parked: ParkedSession) -> None:
+def verify_restored_refresh_session(parked: ParkedSession, *, recovery: bool = False) -> None:
     """Verify the exact predecessor's restored name, state, image, and egress."""
     state = _strict_refresh_container(parked.name)
     if state is None:
@@ -754,7 +761,7 @@ def verify_restored_refresh_session(parked: ParkedSession) -> None:
     _assert_refresh_predecessor(parked.name, state, parked)
     if state["State"]["Running"] != parked.was_running:
         raise SessionError("restored Sandbox running state is incorrect")
-    if _validate_refresh_egress(parked, state) != parked.reconnect_egress:
+    if _validate_refresh_egress(parked, state, recovery=recovery) != parked.reconnect_egress:
         raise SessionError("restored Sandbox egress state is incorrect")
 
 
