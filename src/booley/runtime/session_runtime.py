@@ -750,7 +750,10 @@ def restore_refresh_session(
                 "it was preserved"
             )
         _remove_session_candidate(parked.name)
-    _restore_incomplete_park(parked, recovery=recovery)
+    if recovery:
+        _restore_incomplete_park(parked, recovery=True)
+    else:
+        _restore_incomplete_park(parked)
 
 
 def verify_restored_refresh_session(parked: ParkedSession, *, recovery: bool = False) -> None:

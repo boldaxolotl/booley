@@ -556,10 +556,10 @@ def test_recovery_tolerates_egress_network_identity_change(tmp_path: Path, monke
     assert not journal_path.exists()
 
 
-def test_inline_recovery_cleans_journal_on_unrecoverable_failure(
+def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """When inline rollback fails completely, the journal is deleted so init is not blocked."""
+    """When inline rollback fails, keep the journal for the next automatic retry."""
     project = (tmp_path / "project").resolve()
     project.mkdir()
     config = tmp_path / "config"
@@ -614,7 +614,7 @@ def test_inline_recovery_cleans_journal_on_unrecoverable_failure(
 
     identity = hashlib.sha256(str(project).encode()).hexdigest()
     journal = config / "booley" / "eda" / "session-refresh" / f"{identity}.json"
-    assert not journal.exists()
+    assert journal.is_file()
 
 
 def test_validate_refresh_egress_strict_without_recovery(tmp_path: Path) -> None:
