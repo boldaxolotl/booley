@@ -407,6 +407,7 @@ def _restore_journal(journal: _RefreshJournal) -> RecoveryResult:
             sr.restore_refresh_session(
                 journal.prior_runtime,
                 candidate_issuance=journal.replacement_issuance,
+                recovery=True,
             )
         except BaseException as exc:  # noqa: BLE001 -- attempt every durable recovery action
             errors.append(f"Sandbox {journal.prior_runtime.backup!r}: {exc}")
@@ -437,7 +438,7 @@ def _verify_restored_journal(journal: _RefreshJournal) -> None:
     if issuance != journal.prior_issuance:
         raise sr.SessionError("restored host issuance differs from the recorded predecessor")
     if journal.prior_runtime is not None:
-        sr.verify_restored_refresh_session(journal.prior_runtime)
+        sr.verify_restored_refresh_session(journal.prior_runtime, recovery=True)
 
 
 def _replacement_is_coherent(journal: _RefreshJournal) -> bool:
