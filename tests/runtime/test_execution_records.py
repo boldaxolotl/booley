@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from booley.runtime.execution_records import ExecutionId, execution_paths, gc_terminal_executions
+from booley.runtime.execution_records import (
+    ExecutionId,
+    execution_paths,
+    gc_terminal_executions,
+    read_attachment_heartbeat,
+    write_attachment_heartbeat,
+)
 
 
 def test_execution_id_owns_validation() -> None:
@@ -25,6 +31,24 @@ def _old_terminal(project_dir: Path, execution_id: str) -> None:
         encoding="utf-8",
     )
     os.utime(paths.record, (1, 1))
+
+
+def test_heartbeat_rename_permission_error_does_not_crash(tmp_path: Path, monkeypatch) -> None:
+    """Windows [WinError 5] on replace() must not crash the auth flow."""
+    paths = execution_paths("a" * 32, project_dir=tmp_path)
+    write_attachment_heartbeat(paths, generation=1)
+    assert read_attachment_heartbeat(paths) == 1
+
+    original_replace = Path.replace
+
+    def fail_replace(self, target):
+        if "heartbeat" in str(target):
+            raise PermissionError("[WinError 5] Access is denied")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    write_attachment_heartbeat(paths, generation=2)
+    assert read_attachment_heartbeat(paths) == 1
 
 
 def test_gc_keeps_slot_referenced_and_nonterminal_execution_records(tmp_path: Path) -> None:
