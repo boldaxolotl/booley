@@ -69,7 +69,7 @@
     },
     "uart-windows-claude-cli": {
       "required": true,
-      "semantics": "3b0d7954ba55054c9caa50cf67653f563660a0e8e9a21eb76b18d35a65aa544e",
+      "semantics": "11b1f0a08f169111cdba1c425e6e727273524ab0b231c55362862a35bb2c153c",
       "checks": "c0045b872f669795ef95f473106745cdc4d86fc840641bdfb32f6ad92988badd",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },

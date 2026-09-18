@@ -413,6 +413,7 @@ configured_scenarios:
     agent_provider: Claude
     interactive_mode_client: native CLI
     ticket_mode_backend: Claude
+    auth_class: subscription
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
