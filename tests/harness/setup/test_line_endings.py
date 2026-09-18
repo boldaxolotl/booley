@@ -494,3 +494,20 @@ def test_separate_repository_failure_does_not_rollback_safe_outer_progress(tmp_p
     assert by_role["project-data"].status is LineEndingStatus.UNSAFE
     assert (data / "hook.sh").read_bytes() == dirty
     assert _git(outer, "config", "--local", "--get", "core.autocrlf").stdout.strip() == b"false"
+
+
+def test_readonly_staged_file_cleanup_does_not_crash(tmp_path: Path):
+    """Windows [WinError 5] when unlinking a read-only temp file must not crash."""
+    from booley.harness.setup.line_endings import _cleanup_staged_files
+
+    readonly = tmp_path / ".booley-eol-readonly"
+    readonly.write_bytes(b"staged content")
+    readonly.chmod(0o444)
+
+    _cleanup_staged_files({"a.v": readonly})
+
+    if os.name == "nt":
+        readonly.chmod(0o644)
+        readonly.unlink()
+    else:
+        assert not readonly.exists()
