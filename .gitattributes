@@ -1,3 +1,4 @@
+* text=auto eol=lf
 # Shell scripts execute under bash/sh in the Linux Session Runtime container,
 # and package-data (`tools/*.sh`, docker scripts) is copied into the wheel and
 # image verbatim from the working tree. A CRLF checkout on a Windows host
