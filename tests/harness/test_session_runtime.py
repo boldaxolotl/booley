@@ -2275,6 +2275,11 @@ class TestMountIssuance:
             allow_vscode_mounts=True,
         )
 
+    def test_vscode_volume_mount_is_recognized(self):
+        assert sr._is_vscode_managed_mount(
+            {"Destination": "/vscode", "Name": "vscode", "Type": "volume", "RW": True}
+        )
+
     @pytest.mark.parametrize("spec_source", ["/c/Users/dev/project", "/C/Users/dev/project"])
     def test_wsl2_mount_path_matches_spec(self, monkeypatch: pytest.MonkeyPatch, spec_source: str):
         from booley.runtime import platform_paths
@@ -2365,6 +2370,7 @@ class TestProjectDataMountPinned:
         workspace, pending = self._windows_workspace()
 
         assert not sr._project_data_mount_root_is_pinned("not-json", workspace, pending)
+        assert sr._decode_container_inspect("not-json") is None
 
 
 class TestCanonicalBindSource:
