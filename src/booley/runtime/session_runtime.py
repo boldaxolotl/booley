@@ -1611,20 +1611,23 @@ def _project_data_mount_root_is_pinned(
     if pending_project_data != local_source:
         return True
     state = _decode_container_inspect(raw)
-    if state is None:
-        return False
-    mounts = state.get("Mounts")
+    mounts = state.get("Mounts") if state is not None else None
     if not isinstance(mounts, list) or any(not isinstance(item, dict) for item in mounts):
         return False
     by_target = {item.get("Destination"): item for item in mounts}
     project_data = by_target.get("/booley-project")
     if not _writable_bind(project_data):
         return False
-    source = Path(str(project_data.get("Source", "")))
-    if source != local_source:
+    raw_source = project_data.get("Source", "")
+    source = host_path_from_docker_mount(raw_source) if isinstance(raw_source, str) else None
+    if source is None or source != local_source:
         return False
     workspace_view = by_target.get("/work/.booley_project")
-    return _writable_bind(workspace_view) and workspace_view.get("Source") == str(source)
+    if not _writable_bind(workspace_view):
+        return False
+    ws_raw = workspace_view.get("Source", "")
+    ws_source = host_path_from_docker_mount(ws_raw) if isinstance(ws_raw, str) else None
+    return ws_source is not None and ws_source == source
 
 
 def _decode_container_inspect(raw: str) -> dict | None:
@@ -1778,6 +1781,14 @@ def _memory_bytes(value: str) -> int | None:
     return int(match.group(1)) * multipliers[match.group(2).lower()]
 
 
+def _canonical_bind_source(raw: object) -> str | None:
+    """Return a bind source in Docker's canonical mount format, if usable."""
+    if not isinstance(raw, str):
+        return None
+    host_path = host_path_from_docker_mount(raw)
+    return None if host_path is None else docker_mount_path(host_path)
+
+
 def _mounts_match_spec(
     raw: object,
     spec: dict,
@@ -1817,9 +1828,16 @@ def _mounts_match_spec(
             continue
         source, kind, writable = expected[target]
         observed_source = item.get("Name") if kind == "volume" else item.get("Source")
-        source_matches = observed_source == source
-        if kind == "bind" and isinstance(observed_source, str) and not source_matches:
-            source_matches = docker_mount_path(Path(observed_source)) == source
+        if kind == "bind":
+            observed_source = _canonical_bind_source(observed_source)
+            expected_source = _canonical_bind_source(source)
+            source_matches = (
+                observed_source is not None
+                and expected_source is not None
+                and observed_source == expected_source
+            )
+        else:
+            source_matches = observed_source == source
         if not source_matches or item.get("Type") != kind or item.get("RW") is not writable:
             return False
     return True
