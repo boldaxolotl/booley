@@ -2275,6 +2275,108 @@ class TestMountIssuance:
             allow_vscode_mounts=True,
         )
 
+    @pytest.mark.parametrize("spec_source", ["/c/Users/dev/project", "/C/Users/dev/project"])
+    def test_wsl2_mount_path_matches_spec(self, monkeypatch: pytest.MonkeyPatch, spec_source: str):
+        from booley.runtime import platform_paths
+
+        monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
+        spec = {
+            "workspaceMount": f"source={spec_source},target=/work,type=bind",
+            "mounts": [],
+        }
+        mounts = [
+            {
+                "Destination": "/work",
+                "Source": "/run/desktop/mnt/host/c/Users/dev/project",
+                "Type": "bind",
+                "RW": True,
+            },
+        ]
+        workspace = Path("/c/Users/dev/project")
+
+        assert sr._mounts_match_spec(mounts, spec, workspace)
+
+
+class TestProjectDataMountPinned:
+    @staticmethod
+    def _mount_inspect_json(project_source: str, workspace_source: str) -> str:
+        state = [
+            {
+                "Mounts": [
+                    {
+                        "Destination": "/booley-project",
+                        "Source": project_source,
+                        "Type": "bind",
+                        "RW": True,
+                    },
+                    {
+                        "Destination": "/work/.booley_project",
+                        "Source": workspace_source,
+                        "Type": "bind",
+                        "RW": True,
+                    },
+                ],
+            }
+        ]
+        return json.dumps(state)
+
+    @staticmethod
+    def _windows_workspace() -> tuple[SimpleNamespace, Path]:
+        workspace = SimpleNamespace(resolve=lambda: Path("C:/Users/dev/project"))
+        return workspace, workspace.resolve() / ".booley_project"
+
+    def test_wsl2_prefixed_sources_are_recognized(self, monkeypatch: pytest.MonkeyPatch):
+        from booley.runtime import platform_paths
+
+        monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
+        workspace, pending = self._windows_workspace()
+        raw = self._mount_inspect_json(
+            "/run/desktop/mnt/host/c/Users/dev/project/.booley_project",
+            "/run/desktop/mnt/host/c/Users/dev/project/.booley_project",
+        )
+
+        assert sr._project_data_mount_root_is_pinned(raw, workspace, pending)
+
+    def test_native_sources_still_match(self, monkeypatch: pytest.MonkeyPatch):
+        from booley.runtime import platform_paths
+
+        monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
+        workspace, pending = self._windows_workspace()
+        raw = self._mount_inspect_json(
+            "/c/Users/dev/project/.booley_project",
+            "/c/Users/dev/project/.booley_project",
+        )
+
+        assert sr._project_data_mount_root_is_pinned(raw, workspace, pending)
+
+    def test_mismatched_sources_are_rejected(self, monkeypatch: pytest.MonkeyPatch):
+        from booley.runtime import platform_paths
+
+        monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
+        workspace, pending = self._windows_workspace()
+        raw = self._mount_inspect_json(
+            "/run/desktop/mnt/host/c/Users/dev/project/.booley_project",
+            "/run/desktop/mnt/host/c/Users/dev/other/.booley_project",
+        )
+
+        assert not sr._project_data_mount_root_is_pinned(raw, workspace, pending)
+
+    def test_malformed_inspect_json_is_rejected(self):
+        workspace, pending = self._windows_workspace()
+
+        assert not sr._project_data_mount_root_is_pinned("not-json", workspace, pending)
+
+
+class TestCanonicalBindSource:
+    def test_non_string_observed_source_is_rejected(self, workspace: Path):
+        spec = {
+            "workspaceMount": f"source={workspace},target=/work,type=bind",
+            "mounts": [],
+        }
+        mounts = [{"Destination": "/work", "Source": None, "Type": "bind", "RW": True}]
+
+        assert not sr._mounts_match_spec(mounts, spec, workspace)
+
 
 class TestLicensedRelayLifecycle:
     @staticmethod
