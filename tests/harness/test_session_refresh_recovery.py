@@ -238,7 +238,7 @@ def test_fresh_recovery_restores_interrupted_park(tmp_path: Path, monkeypatch) -
     parked = restore_runtime.call_args.args[0]
     assert parked.container_id == "container-prior"
     assert parked.egress_network_id == "network-egress"
-    verify_runtime.assert_called_once_with(parked)
+    verify_runtime.assert_called_once_with(parked, recovery=True)
     assert not journal_path.exists()
 
 
@@ -519,6 +519,129 @@ def test_shared_mutators_stop_after_host_wide_recovery(tmp_path: Path) -> None:
     ):
         assert init_cmd.run_init(args, tmp_path) == 2
     run_init.assert_not_called()
+
+
+def test_recovery_tolerates_egress_network_identity_change(tmp_path: Path, monkeypatch) -> None:
+    """Recovery succeeds when Docker Desktop has recycled the egress network ID."""
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    journal_path = _write_restore_journal(config, project)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    stamp_directory = runtime_spec.stamp_path(project).parent
+    stamp_directory.mkdir(parents=True, mode=0o700)
+    if os.name != "nt":
+        stamp_directory.chmod(0o700)
+
+    def restore_with_recovery_only(parked, candidate_issuance=None, *, recovery=False):
+        if not recovery:
+            raise sr.SessionError("Sandbox egress network identity changed during refresh")
+
+    def verify_with_recovery_only(parked, *, recovery=False):
+        if not recovery:
+            raise sr.SessionError("restored Sandbox egress state is incorrect")
+
+    with (
+        patch.object(sr, "restore_refresh_session", side_effect=restore_with_recovery_only),
+        patch.object(sr, "verify_restored_refresh_session", side_effect=verify_with_recovery_only),
+        patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:prior"),
+        patch(
+            "booley.runtime.session_spec.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stderr=""),
+        ),
+    ):
+        result = session_refresh.recover_project_locked(project)
+
+    assert result.outcome is session_refresh.RecoveryOutcome.RESTORED
+    assert not journal_path.exists()
+
+
+def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When inline rollback fails, keep the journal for the next automatic retry."""
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    issuance = _issuance(project)
+    parked = sr.ParkedSession(
+        sr.session_container_name(project),
+        f"{sr.session_container_name(project)}-pre-refresh",
+        True,
+        project_id=hashlib.sha256(str(project).encode()).hexdigest(),
+        reconnect_egress=True,
+        container_id="container-prior",
+        image_id="sha256:prior",
+        egress_network_id="network-egress",
+    )
+    snapshot = SessionSpecSnapshot(
+        project / ".devcontainer" / "devcontainer.json",
+        b'{"image":"sha256:prior"}\n',
+        0o644,
+        config / "booley" / "eda" / "session-specs" / "stamp.json",
+        b'{"version":4}\n',
+        0o600,
+        "sha256:prior",
+    )
+
+    def fail_during_image_refresh(*_args, **_kwargs):
+        identity = hashlib.sha256(str(project).encode()).hexdigest()
+        journal = config / "booley" / "eda" / "session-refresh" / f"{identity}.json"
+        assert journal.is_file()
+        raise RuntimeError("Docker unreachable")
+
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.refresh.side_effect = fail_during_image_refresh
+
+    def restore_always_fails(parked, candidate_issuance=None, *, recovery=False):
+        raise sr.SessionError("Docker unreachable")
+
+    with (
+        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
+        patch.object(session_refresh, "_load_recovery_issuance", return_value=issuance),
+        patch.object(sr, "plan_session_refresh", return_value=parked),
+        patch.object(sr, "park_planned_session"),
+        patch.object(session_refresh, "restore_session_spec"),
+        patch.object(sr, "restore_refresh_session", side_effect=restore_always_fails),
+        pytest.raises(sr.SessionError, match="recovery was incomplete"),
+    ):
+        session_refresh.refresh(
+            project,
+            images,
+        )
+
+    identity = hashlib.sha256(str(project).encode()).hexdigest()
+    journal = config / "booley" / "eda" / "session-refresh" / f"{identity}.json"
+    assert journal.is_file()
+
+
+def test_validate_refresh_egress_strict_without_recovery(tmp_path: Path) -> None:
+    """Without recovery=True, egress identity mismatch still raises."""
+    parked = sr.ParkedSession(
+        "session",
+        "session-pre-refresh",
+        True,
+        project_id="proj",
+        reconnect_egress=True,
+        container_id="cid",
+        image_id="sha256:img",
+        egress_network_id="network-original",
+    )
+    from booley.runtime import devcontainer as dc
+
+    state = {
+        "NetworkSettings": {
+            "Networks": {
+                dc.EGRESS_NETWORK: {"NetworkID": "network-different"},
+            }
+        }
+    }
+    with pytest.raises(sr.SessionError, match="egress network identity changed"):
+        sr._validate_refresh_egress(parked, state)
+
+    assert sr._validate_refresh_egress(parked, state, recovery=True) is True
 
 
 def test_recovery_snapshot_rejects_keeper_on_different_image(tmp_path: Path) -> None:
