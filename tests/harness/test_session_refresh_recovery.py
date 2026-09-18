@@ -620,9 +620,13 @@ def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
 def test_validate_refresh_egress_strict_without_recovery(tmp_path: Path) -> None:
     """Without recovery=True, egress identity mismatch still raises."""
     parked = sr.ParkedSession(
-        "session", "session-pre-refresh", True,
-        project_id="proj", reconnect_egress=True,
-        container_id="cid", image_id="sha256:img",
+        "session",
+        "session-pre-refresh",
+        True,
+        project_id="proj",
+        reconnect_egress=True,
+        container_id="cid",
+        image_id="sha256:img",
         egress_network_id="network-original",
     )
     from booley.runtime import devcontainer as dc
