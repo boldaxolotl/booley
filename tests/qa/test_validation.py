@@ -227,6 +227,28 @@ def test_scenario_schema_rejects_misspelled_agent_provider(tmp_path):
     assert "agent_provder" in result.stderr
 
 
+@pytest.mark.parametrize("auth_class", ["subscription", "api_key", "auto"])
+def test_scenario_schema_accepts_supported_auth_classes(tmp_path, auth_class):
+    scenario = write_suite(tmp_path)
+    scenario["configured_scenarios"][0]["parameters"]["auth_class"] = auth_class
+    write_scenario(tmp_path, scenario)
+
+    result = run_validator(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_scenario_schema_rejects_unknown_auth_class(tmp_path):
+    scenario = write_suite(tmp_path)
+    scenario["configured_scenarios"][0]["parameters"]["auth_class"] = "oauth"
+    write_scenario(tmp_path, scenario)
+
+    result = run_validator(tmp_path)
+
+    assert result.returncode == 1
+    assert "is not one of" in result.stderr
+
+
 @pytest.mark.parametrize(
     "target",
     ["configured_scenario_id", "parameter", "pre_run_requirement", "exclusion_reason"],

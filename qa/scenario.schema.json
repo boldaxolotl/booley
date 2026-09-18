@@ -102,6 +102,10 @@
                 "type": "string",
                 "minLength": 1,
                 "pattern": "\\S"
+              },
+              "auth_class": {
+                "type": "string",
+                "enum": ["subscription", "api_key", "auto"]
               }
             },
             "required": [
