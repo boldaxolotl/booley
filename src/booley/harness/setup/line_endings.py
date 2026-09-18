@@ -641,7 +641,7 @@ def _staged_paths(project_root: Path, output: bytes) -> dict[str, Path]:
 
 def _cleanup_staged_files(paths: dict[str, Path]) -> None:
     for path in paths.values():
-        with suppress(FileNotFoundError):
+        with suppress(FileNotFoundError, PermissionError):
             path.unlink()
 
 
@@ -734,7 +734,7 @@ def _rewrite_from_stage(  # noqa: PLR0911 -- each refusal is a pre-write safety 
     except OSError as exc:
         return f"could not atomically normalize {name!r}: {exc}"
     finally:
-        with suppress(FileNotFoundError):
+        with suppress(FileNotFoundError, PermissionError):
             staged.unlink()
 
 
@@ -1191,7 +1191,7 @@ def _create_attributes(path: Path, content: bytes) -> str | None:
     except OSError as exc:
         return f"could not atomically publish .gitattributes: {exc}"
     finally:
-        with suppress(FileNotFoundError):
+        with suppress(FileNotFoundError, PermissionError):
             staged.unlink()
     return None
 
@@ -1209,7 +1209,7 @@ def _update_attributes(path: Path, expected: _FileIdentity, content: bytes) -> s
     except OSError as exc:
         return f"could not atomically publish .gitattributes: {exc}"
     finally:
-        with suppress(FileNotFoundError):
+        with suppress(FileNotFoundError, PermissionError):
             staged.unlink()
     return None
 

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,11 @@ def write_attachment_heartbeat(paths: ExecutionPaths, *, generation: int) -> Non
     paths.root.mkdir(parents=True, exist_ok=True)
     tmp = paths.heartbeat.with_name(f".{paths.heartbeat.name}.{os.getpid()}.tmp")
     tmp.write_text(f"{generation}\n", encoding="ascii")
-    tmp.replace(paths.heartbeat)
+    try:
+        tmp.replace(paths.heartbeat)
+    except PermissionError:
+        with suppress(OSError):
+            tmp.unlink()
 
 
 def read_attachment_heartbeat(paths: ExecutionPaths) -> int | None:
