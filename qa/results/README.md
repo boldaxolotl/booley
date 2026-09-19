@@ -10,7 +10,9 @@ Qualification, which require Human Maintainer triage.
 The `format_version: 1` snapshot records run, Scenario, and Configured Scenario
 IDs; product and suite revisions; normalized UTC completion time; execution and
 cleanup statuses; run-manifest SHA-256; and a `checks` map for every selected
-Check. Values are `pass`, `fail`, `blocked`, or `unavailable`. Corrected attempts
+Check. Cleanup status is `complete`, `unverified`, or `failed`; historical
+`complete` retains the earlier reporting contract. Check values are `pass`,
+`fail`, `blocked`, or `unavailable`. Corrected attempts
 do not count, but later success does not erase an uncorrected `fail`. A Check
 that could not be exercised is `blocked` or `unavailable`, never missing.
 `add` refuses to overwrite a run ID with different data; a reviewed correction

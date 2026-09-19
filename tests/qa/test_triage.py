@@ -37,7 +37,16 @@ def write_suite(root: Path, configured: list[tuple[str, bool]]) -> Path:
                 "id": "exercise",
                 "checks": [
                     {"id": check_id}
-                    for check_id in ["check", "dependent", "independent", "one", "root", "two"]
+                    for check_id in [
+                        "check",
+                        "dependent",
+                        "independent",
+                        "one",
+                        "root",
+                        "two",
+                        "cleanup.preserve-borrowed",
+                        "cleanup-preservation",
+                    ]
                 ],
                 "requires": [],
             }
@@ -112,6 +121,8 @@ def write_run(
     parameters: dict | None = None,
     seal: bool = True,
 ) -> Path:
+    if not (root / "suite" / "scenarios" / "sample" / "scenario.yaml").is_file():
+        write_suite(root, [(configured_id, True)])
     run_root = root / run_id
     (run_root / "evidence").mkdir(parents=True)
     (run_root / "evidence/log.txt").write_text("evidence\n")
@@ -830,6 +841,303 @@ def test_cleanup_failure_is_incomplete_without_a_candidate(tmp_path):
     assert qualification["qualification"] == "incomplete"
 
 
+def reseal_with_resources(run_root: Path, resources: list[dict]) -> triage.RunRecords:
+    (run_root / "run-manifest.json").unlink()
+    ledger = triage.read_json(run_root / "cleanup-ledger.json")
+    ledger["resources"] = resources
+    write_json(run_root / "cleanup-ledger.json", ledger)
+    return triage.seal_run(run_root, run_root.parent / "suite")
+
+
+@pytest.mark.parametrize(
+    ("resources", "status", "outcome"),
+    [
+        (
+            [
+                {
+                    "identity": "scratch",
+                    "actual_disposition": None,
+                    "active_authority_possible": False,
+                    "cleanup_reason": "no release record",
+                }
+            ],
+            "unverified",
+            "passed",
+        ),
+        (
+            [
+                {
+                    "identity": "session",
+                    "actual_disposition": None,
+                    "active_authority_possible": True,
+                    "cleanup_reason": "shutdown unknown",
+                }
+            ],
+            "unverified",
+            "incomplete",
+        ),
+        (
+            [
+                {
+                    "identity": "session",
+                    "actual_disposition": "released",
+                    "active_authority_possible": None,
+                    "cleanup_reason": "shutdown unknown",
+                }
+            ],
+            "unverified",
+            "incomplete",
+        ),
+        (
+            [
+                {
+                    "identity": "session",
+                    "actual_disposition": "released",
+                    "active_authority_possible": None,
+                    "safe_shutdown_evidence_refs": ["evidence/log.txt"],
+                }
+            ],
+            "unverified",
+            "passed",
+        ),
+        ([{"actual_disposition": None}], "unverified", "incomplete"),
+        (
+            [
+                {
+                    "identity": "session",
+                    "actual_disposition": "release-failed",
+                    "active_authority_possible": True,
+                }
+            ],
+            "failed",
+            "incomplete",
+        ),
+    ],
+)
+def test_cleanup_reconciliation_and_qualification(tmp_path, resources, status, outcome):
+    suite = write_suite(tmp_path, [("required", True)])
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    sealed = reseal_with_resources(run_root, resources)
+    assert sealed.manifest["cleanup_status"] == status
+    assert sealed.state["cleanup_status"] == status
+    assert f"Cleanup status: `{status}`" in (run_root / "run-summary.md").read_text()
+    assert (
+        triage.seal_run(run_root, run_root.parent / "suite").manifest_hash == sealed.manifest_hash
+    )
+
+    triage_root = init_triage(tmp_path, suite)
+    admit(triage_root, run_root)
+    summary = (triage_root / "triage-summary.md").read_text()
+    assert resources[0].get("identity", "resource #1") in summary
+    qualification = triage.finalize_session(triage_root, "finish")["qualification"]
+    assert qualification["scenario_run_outcomes"]["run-1"] == outcome
+    assert (
+        status in " ".join(qualification["scenario_run_reasons"]["run-1"]).lower()
+        or status == "failed"
+    )
+
+
+def test_cleanup_complete_with_disposition_stays_complete(tmp_path):
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    sealed = reseal_with_resources(
+        run_root,
+        [
+            {
+                "identity": "scratch",
+                "actual_disposition": "released",
+                "active_authority_possible": False,
+                "safe_shutdown_evidence_refs": ["evidence/log.txt"],
+            }
+        ],
+    )
+    assert sealed.manifest["cleanup_status"] == "complete"
+    assert "Cleanup reconciliation" not in (run_root / "run-summary.md").read_text()
+
+
+def test_four_unknown_dispositions_seal_and_remain_visible(tmp_path):
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    resources = [
+        {
+            "identity": f"resource-{number}",
+            "actual_disposition": None,
+            "active_authority_possible": False,
+            "cleanup_reason": "disposition not observed",
+        }
+        for number in range(4)
+    ]
+    sealed = reseal_with_resources(run_root, resources)
+    assert sealed.manifest["cleanup_status"] == "unverified"
+    summary = (run_root / "run-summary.md").read_text()
+    for number in range(4):
+        assert f"`resource-{number}`: disposition `unknown`" in summary
+
+
+@pytest.mark.parametrize(
+    ("status", "resource"),
+    [
+        (
+            "unverified",
+            {
+                "identity": "scratch",
+                "actual_disposition": None,
+                "active_authority_possible": False,
+                "cleanup_reason": "missing release proof",
+            },
+        ),
+        (
+            "failed",
+            {
+                "identity": "session",
+                "actual_disposition": "release-failed",
+                "active_authority_possible": True,
+                "cleanup_reason": "shutdown failed",
+            },
+        ),
+    ],
+)
+def test_premarked_cleanup_status_still_records_affected_resources(tmp_path, status, resource):
+    run_root = write_run(
+        tmp_path,
+        "run-1",
+        "required",
+        [check_result("run-1", "ok", "check", "pass")],
+        cleanup_status=status,
+    )
+    sealed = reseal_with_resources(run_root, [resource])
+    summary = (run_root / "run-summary.md").read_text()
+    assert f"Cleanup status: `{status}`" in summary
+    assert resource["identity"] in summary
+    assert resource["cleanup_reason"] in summary
+    assert (
+        triage.seal_run(run_root, run_root.parent / "suite").manifest_hash == sealed.manifest_hash
+    )
+    assert (run_root / "run-summary.md").read_text() == summary
+
+
+def test_legacy_complete_seal_keeps_historical_outcome(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    ledger = triage.read_json(run_root / "cleanup-ledger.json")
+    ledger["resources"] = [{"name": "old resource", "actual_disposition": None}]
+    write_json(run_root / "cleanup-ledger.json", ledger)
+    manifest = triage.read_json(run_root / "run-manifest.json")
+    manifest["files"]["cleanup-ledger.json"] = triage.sha256_file(run_root / "cleanup-ledger.json")
+    write_json(run_root / "run-manifest.json", manifest)
+    assert triage.validate_run(run_root).manifest["cleanup_status"] == "complete"
+
+    triage_root = init_triage(tmp_path, suite)
+    admit(triage_root, run_root)
+    qualification = triage.finalize_session(triage_root, "finish")["qualification"]
+    assert qualification["scenario_run_outcomes"]["run-1"] == "passed"
+
+
+def test_shutdown_evidence_reference_must_be_sealed(tmp_path):
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    with pytest.raises(triage.TriageError, match="unknown shutdown evidence"):
+        reseal_with_resources(
+            run_root,
+            [
+                {
+                    "identity": "session",
+                    "actual_disposition": None,
+                    "active_authority_possible": True,
+                    "safe_shutdown_evidence_refs": ["evidence/missing.txt"],
+                }
+            ],
+        )
+
+
+@pytest.mark.parametrize("check_id", ["cleanup.preserve-borrowed", "cleanup-preservation"])
+def test_borrowed_preservation_pass_links_scoped_setup_and_end_evidence(tmp_path, check_id):
+    result = check_result("run-1", "borrowed", check_id, "pass")
+    run_root = write_run(tmp_path, "run-1", "required", [result], seal=False)
+    with pytest.raises(triage.TriageError, match="lacks scoped_resource_identities"):
+        triage.seal_run(run_root, run_root.parent / "suite")
+
+    (run_root / "evidence/setup.txt").write_text("installation before run\n")
+    (run_root / "evidence/end.txt").write_text("installation after run\n")
+    result["borrowed_preservation"] = {
+        "scoped_resource_identities": ["vivado-installation-1"],
+        "setup_evidence_refs": ["evidence/setup.txt"],
+        "end_evidence_refs": ["evidence/end.txt"],
+    }
+    write_jsonl(run_root / "check-results.jsonl", [result])
+    with pytest.raises(triage.TriageError, match="evidence must be linked"):
+        triage.seal_run(run_root, run_root.parent / "suite")
+
+    result["evidence_refs"].extend(["evidence/setup.txt", "evidence/end.txt"])
+    write_jsonl(run_root / "check-results.jsonl", [result])
+    assert triage.seal_run(run_root, run_root.parent / "suite").manifest["run_id"] == "run-1"
+
+
+def test_borrowed_preservation_unavailable_needs_pre_run_absence_assessment(tmp_path):
+    result = check_result("run-1", "borrowed", "cleanup.preserve-borrowed", "unavailable")
+    run_root = write_run(tmp_path, "run-1", "required", [result], seal=False)
+    with pytest.raises(triage.TriageError, match="lacks pre_run_absence_assessment"):
+        triage.seal_run(run_root, run_root.parent / "suite")
+
+    (run_root / "evidence/absence.txt").write_text("No borrowed grants at admission\n")
+    result["borrowed_preservation"] = {
+        "pre_run_absence_assessment": "No borrowed resource granted at admission",
+        "pre_run_absence_evidence_refs": ["evidence/absence.txt"],
+    }
+    result["evidence_refs"].append("evidence/absence.txt")
+    write_jsonl(run_root / "check-results.jsonl", [result])
+    with pytest.raises(triage.TriageError, match="recorded during admission"):
+        triage.seal_run(run_root, run_root.parent / "suite")
+
+    run = triage.read_json(run_root / "run.json")
+    run["admission_evidence"] = ["evidence/absence.txt"]
+    write_json(run_root / "run.json", run)
+    assert triage.seal_run(run_root, run_root.parent / "suite").manifest["run_id"] == "run-1"
+
+
+def test_borrowed_preservation_without_evidence_can_be_blocked(tmp_path):
+    result = check_result("run-1", "borrowed", "cleanup.preserve-borrowed", "blocked")
+    run_root = write_run(tmp_path, "run-1", "required", [result], seal=False)
+    assert triage.seal_run(run_root, run_root.parent / "suite").manifest["run_id"] == "run-1"
+
+
+def test_interrupted_cleanup_reconciliation_retries_without_duplicate_summary(
+    tmp_path, monkeypatch
+):
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    (run_root / "run-manifest.json").unlink()
+    ledger = triage.read_json(run_root / "cleanup-ledger.json")
+    ledger["resources"] = [
+        {"identity": "scratch", "actual_disposition": None, "active_authority_possible": False}
+    ]
+    write_json(run_root / "cleanup-ledger.json", ledger)
+    original = triage.atomic_json
+    interrupted = False
+
+    def fail_state_once(path, value):
+        nonlocal interrupted
+        if path.name == "operator-state.json" and not interrupted:
+            interrupted = True
+            raise OSError("interrupted")
+        original(path, value)
+
+    monkeypatch.setattr(triage, "atomic_json", fail_state_once)
+    with pytest.raises(OSError, match="interrupted"):
+        triage.seal_run(run_root, run_root.parent / "suite")
+    sealed = triage.seal_run(run_root, run_root.parent / "suite")
+    assert sealed.manifest["cleanup_status"] == "unverified"
+    assert (run_root / "run-summary.md").read_text().count("## Cleanup reconciliation") == 1
+
+
 @pytest.mark.parametrize("condition", ["operator-error", "invalid-evidence"])
 def test_invalid_execution_or_evidence_cannot_pass(tmp_path, condition):
     suite = write_suite(tmp_path, [("required", True)])
@@ -903,9 +1211,7 @@ def test_qualification_records_input_identities_decisions_and_reasons(tmp_path):
             "supersession_reason": None,
         }
     ]
-    assert qualification["scenario_run_reasons"]["run-1"] == [
-        "All selected Checks are satisfied and required cleanup completed."
-    ]
+    assert qualification["scenario_run_reasons"]["run-1"] == ["All selected Checks are satisfied."]
 
 
 def test_optional_configured_scenario_is_reported_separately(tmp_path):
