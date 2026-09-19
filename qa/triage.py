@@ -16,6 +16,7 @@ from typing import Any
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
+from booley.core.boundary import as_dict, as_str, is_str_list
 from booley.runtime.timefmt import utc_now_rfc3339
 
 try:
@@ -242,11 +243,17 @@ def validate_evidence_refs(
             )
 
 
-def parse_run_files(run_root: Path) -> tuple[dict[str, Any], ...]:
+def parse_run_files(
+    run_root: Path, evidence_override: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], ...]:
     run = read_json(run_root / "run.json")
     state = read_json(run_root / "operator-state.json")
     cleanup = read_json(run_root / "cleanup-ledger.json")
-    evidence = read_json(run_root / "evidence-manifest.json")
+    evidence = (
+        evidence_override
+        if evidence_override is not None
+        else read_json(run_root / "evidence-manifest.json")
+    )
     results = read_jsonl(run_root / "check-results.jsonl")
     observations = read_jsonl(run_root / "observations.jsonl")
     validate_definition(run, "run-record.schema.json", "run", str(run_root / "run.json"))
@@ -271,8 +278,12 @@ def parse_run_files(run_root: Path) -> tuple[dict[str, Any], ...]:
     return run, state, cleanup, evidence, results, observations
 
 
-def validate_run_contents(run_root: Path) -> tuple[dict[str, Any], ...]:
-    run, state, cleanup, evidence, results, observations = parse_run_files(run_root)
+def validate_run_contents(
+    run_root: Path, evidence_override: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], ...]:
+    run, state, cleanup, evidence, results, observations = parse_run_files(
+        run_root, evidence_override
+    )
     run_id = run["run_id"]
     all_records = [state, cleanup, evidence, *results, *observations]
     if any(record["run_id"] != run_id for record in all_records):
@@ -401,7 +412,15 @@ def recording_diagnostics(results: list[dict[str, Any]]) -> list[str]:
     for result in results:
         if result["status"] not in NONPASS:
             continue
-        if result["expected"].strip() == result["observed"].strip():
+        if not result["expected"].strip():
+            diagnostics.append(f"{result['check_result_id']}: expected text is blank")
+        if not result["observed"].strip():
+            diagnostics.append(f"{result['check_result_id']}: observed text is blank")
+        if (
+            result["expected"].strip()
+            and result["observed"].strip()
+            and result["expected"].strip() == result["observed"].strip()
+        ):
             diagnostics.append(
                 f"{result['check_result_id']}: expected and observed text are identical"
             )
@@ -477,6 +496,39 @@ def render_run_summary(
     return "\n".join(lines) + "\n"
 
 
+def build_run_manifest(
+    run_root: Path,
+    candidate: RunRecords,
+    evidence: dict[str, Any],
+    generated: dict[str, str],
+    scenario_digest: str,
+) -> dict[str, Any]:
+    files = {
+        name: (
+            hashlib.sha256(generated[name].encode("utf-8")).hexdigest()
+            if name in generated
+            else sha256_file(run_root / name)
+        )
+        for name in sorted(REQUIRED_RUN_FILES)
+    }
+    return {
+        "run_record_format_version": RUN_FORMAT_VERSION,
+        "record_type": "run-manifest",
+        "run_id": candidate.run["run_id"],
+        "sealed_at": utc_now_rfc3339(),
+        "execution_status": candidate.state["execution_status"],
+        "cleanup_status": candidate.state["cleanup_status"],
+        "record_counts": {
+            "check_results": len(candidate.results),
+            "observations": len(candidate.observations),
+            "evidence": len(evidence["entries"]),
+        },
+        "files": files,
+        "evidence_manifest_sha256": files["evidence-manifest.json"],
+        "scenario_snapshot_sha256": scenario_digest,
+    }
+
+
 def seal_run(run_root: Path, suite_root: Path | None = None) -> RunRecords:
     if suite_root is None:
         raise TriageError(f"{run_root}: seal-run requires --suite-root")
@@ -492,12 +544,7 @@ def seal_run(run_root: Path, suite_root: Path | None = None) -> RunRecords:
     configured, scenario_files = load_suite(suite_root)
     snapshot = {"configured_scenarios": configured, "scenario_files": scenario_files}
     evidence = build_evidence_manifest(run_root, run["run_id"], results, observations)
-    # Validate the complete candidate in memory before publishing final projections.
-    validate_definition(
-        evidence, "run-record.schema.json", "evidenceManifest", "evidence manifest"
-    )
-    atomic_json(run_root / "evidence-manifest.json", evidence)
-    values = validate_run_contents(run_root)
+    values = validate_run_contents(run_root, evidence)
     run, state, _cleanup, evidence, results, observations, _paths = values
     validate_terminal_state(state, run_root)
     validate_run_against_suite_data(run_root, run, results, snapshot)
@@ -507,26 +554,22 @@ def seal_run(run_root: Path, suite_root: Path | None = None) -> RunRecords:
     candidates_for_run(candidate)
     diagnostics = recording_diagnostics(results)
     summary = render_run_summary(run, state, results, observations, diagnostics)
-    atomic_text(run_root / "run-summary.md", summary)
-    scenario_digest = scenario_snapshot_digest(suite_root, scenario_files)
-    files = {name: sha256_file(run_root / name) for name in sorted(REQUIRED_RUN_FILES)}
-    manifest = {
-        "run_record_format_version": RUN_FORMAT_VERSION,
-        "record_type": "run-manifest",
-        "run_id": run["run_id"],
-        "sealed_at": utc_now_rfc3339(),
-        "execution_status": state["execution_status"],
-        "cleanup_status": state["cleanup_status"],
-        "record_counts": {
-            "check_results": len(results),
-            "observations": len(observations),
-            "evidence": len(evidence["entries"]),
-        },
-        "files": files,
-        "evidence_manifest_sha256": files["evidence-manifest.json"],
-        "scenario_snapshot_sha256": scenario_digest,
+    generated = {
+        "evidence-manifest.json": json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+        "run-summary.md": summary,
     }
+    manifest = build_run_manifest(
+        run_root,
+        candidate,
+        evidence,
+        generated,
+        scenario_snapshot_digest(suite_root, scenario_files),
+    )
     validate_definition(manifest, "run-record.schema.json", "runManifest", "run manifest")
+    for name, content in generated.items():
+        atomic_text(run_root / name, content)
+    if any(sha256_file(run_root / name) != digest for name, digest in manifest["files"].items()):
+        raise TriageError(f"{run_root}: final records changed during sealing")
     atomic_json(manifest_path, manifest)
     return validate_run(run_root)
 
@@ -693,7 +736,7 @@ def load_suite(suite_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, s
             scenario = yaml.safe_load(content)
         except (OSError, yaml.YAMLError) as error:
             raise TriageError(f"{path}: {error}") from error
-        if not isinstance(scenario, dict) or not isinstance(scenario.get("scenario_id"), str):
+        if as_dict(scenario) is None or as_str(scenario.get("scenario_id")) is None:
             raise TriageError(f"{path}: invalid Scenario")
         if not isinstance(scenario.get("steps"), list) or not scenario["steps"]:
             raise TriageError(f"{path}: Scenario has no Steps")
@@ -755,8 +798,8 @@ def validate_scenario_binding_shape(scenario: dict[str, Any], path: Path) -> Non
     """Validate the fields consumed by run/suite binding, including uniqueness."""
     steps = scenario["steps"]
     if any(
-        not isinstance(step, dict)
-        or not isinstance(step.get("id"), str)
+        as_dict(step) is None
+        or as_str(step.get("id")) is None
         or not isinstance(step.get("checks"), list)
         for step in steps
     ):
@@ -765,18 +808,14 @@ def validate_scenario_binding_shape(scenario: dict[str, Any], path: Path) -> Non
     if len(step_ids) != len(set(step_ids)):
         raise TriageError(f"{path}: duplicate Step IDs")
     checks = [check for step in steps for check in step["checks"]]
-    if any(
-        not isinstance(check, dict) or not isinstance(check.get("id"), str) for check in checks
-    ):
+    if any(as_dict(check) is None or as_str(check.get("id")) is None for check in checks):
         raise TriageError(f"{path}: invalid Scenario Checks")
     check_ids = [check["id"] for check in checks]
     if len(check_ids) != len(set(check_ids)):
         raise TriageError(f"{path}: duplicate Check IDs")
     for step in steps:
         requires = step.get("requires", [])
-        if not isinstance(requires, list) or any(
-            not isinstance(item, str) or item not in step_ids for item in requires
-        ):
+        if not is_str_list(requires) or any(item not in step_ids for item in requires):
             raise TriageError(f"{path}: {step['id']}: invalid required Steps")
     validate_configured_binding_shape(scenario, path)
     validate_check_sets_binding_shape(scenario, path, check_ids)
@@ -785,18 +824,17 @@ def validate_scenario_binding_shape(scenario: dict[str, Any], path: Path) -> Non
 def validate_configured_binding_shape(scenario: dict[str, Any], path: Path) -> None:
     configured = scenario.get("configured_scenarios")
     if not isinstance(configured, list) or any(
-        not isinstance(item, dict) or not isinstance(item.get("id"), str) for item in configured
+        as_dict(item) is None or as_str(item.get("id")) is None for item in configured
     ):
         raise TriageError(f"{path}: invalid Configured Scenarios")
     for item in configured:
         selected_sets = item.get("check_sets", [])
         exclusions = item.get("exclusions", [])
         if (
-            not isinstance(selected_sets, list)
-            or any(not isinstance(value, str) for value in selected_sets)
+            not is_str_list(selected_sets)
             or not isinstance(exclusions, list)
             or any(
-                not isinstance(value, dict) or not isinstance(value.get("check"), str)
+                as_dict(value) is None or as_str(value.get("check")) is None
                 for value in exclusions
             )
             or not isinstance(item.get("parameters", {}), dict)
@@ -812,10 +850,10 @@ def validate_check_sets_binding_shape(
 ) -> None:
     check_sets = scenario.get("check_sets", [])
     if not isinstance(check_sets, list) or any(
-        not isinstance(item, dict)
-        or not isinstance(item.get("id"), str)
-        or not isinstance(item.get("checks"), list)
-        or any(not isinstance(check, str) or check not in check_ids for check in item["checks"])
+        as_dict(item) is None
+        or as_str(item.get("id")) is None
+        or not is_str_list(item.get("checks"))
+        or any(check not in check_ids for check in item["checks"])
         for item in check_sets
     ):
         raise TriageError(f"{path}: invalid Check sets")

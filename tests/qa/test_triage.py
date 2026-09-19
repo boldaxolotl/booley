@@ -498,6 +498,8 @@ def test_seal_rejects_wrong_step_with_actionable_identity(tmp_path):
     ):
         triage.seal_run(root, suite)
     assert not (root / "run-manifest.json").exists()
+    assert not (root / "evidence-manifest.json").exists()
+    assert (root / "run-summary.md").read_text() == "# Run summary\n"
 
 
 def test_seal_rejects_unselected_result(tmp_path):
@@ -561,6 +563,23 @@ def test_summary_replaces_phantom_check_and_reports_suspicions(tmp_path):
     before = (root / "run-manifest.json").read_bytes()
     triage.seal_run(root, suite)
     assert (root / "run-manifest.json").read_bytes() == before
+
+
+def test_summary_flags_blank_nonpass_fields(tmp_path):
+    write_suite(tmp_path, [("required", True)])
+    blocked = check_result("run-1", "blank-expected", "check", "blocked")
+    blocked["expected"] = "   "
+    unavailable = check_result("run-1", "blank-observed", "one", "unavailable")
+    unavailable["observed"] = "\t"
+    root = write_run(tmp_path, "run-1", "required", [blocked, unavailable])
+
+    summary = (root / "run-summary.md").read_text()
+    assert "blank-expected: expected text is blank" in summary
+    assert "blank-observed: observed text is blank" in summary
+    assert [item["status"] for item in triage.validate_run(root).results] == [
+        "blocked",
+        "unavailable",
+    ]
 
 
 def test_seal_requires_suite_root_in_api_and_cli(tmp_path):
