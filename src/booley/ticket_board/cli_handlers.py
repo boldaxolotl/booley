@@ -26,7 +26,7 @@ from .analytics import (
     parse_transitions_log,
     usage_entries_to_steps,
 )
-from .archive import op_archive
+from .archive import op_archive, report_archive_outcome
 from .constants import (
     VALID_TYPES,
     normalize_dir,
@@ -566,18 +566,10 @@ def _cmd_enqueue(tio, args):
 
 def _cmd_archive(tio, args):
     slug = getattr(args, "slug", None)
-    archived = op_archive(
+    outcome = op_archive(
         tio, slug=slug, keep_logs=args.keep_logs, force=getattr(args, "force", False)
     )
-    if archived:
-        print(f"Archived {len(archived)} ticket(s):")
-        for name in archived:
-            print(f"  - {name}")
-        return 0
-    print("No tickets to archive.")
-    # A named ticket that was not archived (missing or refused) is a failure;
-    # the no-slug sweep legitimately finds nothing.
-    return 1 if slug else 0
+    return report_archive_outcome(outcome)
 
 
 def _cmd_log_incident(tio, args):
