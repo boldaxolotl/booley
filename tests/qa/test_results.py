@@ -80,6 +80,7 @@ def sealed_run(tmp_path: Path) -> RunRecords:
         attempts,
         (),
         frozenset(),
+        {"resources": []},
     )
 
 

@@ -151,6 +151,17 @@
             "expected": {"type": "string", "minLength": 1},
             "observed": {"type": "string", "minLength": 1},
             "evidence_refs": {"$ref": "#/$defs/stringArray"},
+            "borrowed_preservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "scoped_resource_identities": {"$ref": "#/$defs/stringArray"},
+                "setup_evidence_refs": {"$ref": "#/$defs/stringArray"},
+                "end_evidence_refs": {"$ref": "#/$defs/stringArray"},
+                "pre_run_absence_assessment": {"type": "string", "minLength": 1},
+                "pre_run_absence_evidence_refs": {"$ref": "#/$defs/stringArray"}
+              }
+            },
             "producing_step_identities": {"type": "object"},
             "caused_by_result_ids": {"$ref": "#/$defs/stringArray"},
             "corrects_result_id": {"type": ["string", "null"]},

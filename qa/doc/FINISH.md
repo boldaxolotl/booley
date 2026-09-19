@@ -69,6 +69,10 @@ before the manifest, retry Finish to reconcile and seal the same available recor
 this may update terminal status and timestamp, but never reopen product work. Once
 sealed, do not modify the run.
 
+For selected borrowed-resource preservation Checks, the helper rejects a `pass`
+without scoped identities and linked setup/end evidence, or `unavailable` without
+a linked pre-run absence assessment. Record `blocked` when that evidence is missing.
+
 Report the sealed artifact root to the Human Maintainer and tell them that Findings,
 outcomes, and Qualification require a separate explicit invocation of
 `booley-qa-triage`.

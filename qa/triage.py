@@ -10,7 +10,6 @@ import tempfile
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +52,7 @@ REQUIRED_RUN_FILES = {
     "evidence-manifest.json",
     "run-summary.md",
 }
+BORROWED_PRESERVATION_CHECK_IDS = {"cleanup.preserve-borrowed", "cleanup-preservation"}
 
 
 class TriageError(ValueError):
@@ -69,7 +69,7 @@ class RunRecords:
     results: tuple[dict[str, Any], ...]
     observations: tuple[dict[str, Any], ...]
     evidence_paths: frozenset[str]
-    cleanup: dict[str, Any] = dataclass_field(default_factory=lambda: {"resources": []})
+    cleanup: dict[str, Any]
 
     @property
     def run_id(self) -> str:
@@ -239,6 +239,46 @@ def validate_evidence_refs(
         if unknown := refs - evidence_paths:
             raise TriageError(
                 f"{run_root}: {record[id_field]}: unknown evidence {sorted(unknown)}"
+            )
+
+
+def validate_borrowed_preservation_claims(
+    run: dict[str, Any], results: list[dict[str, Any]], run_root: Path
+) -> None:
+    for result in results:
+        if result["check_id"] not in BORROWED_PRESERVATION_CHECK_IDS:
+            continue
+        status = result["status"]
+        if status not in {"pass", "unavailable"}:
+            continue
+        claim = result.get("borrowed_preservation") or {}
+        if status == "pass":
+            required = ("scoped_resource_identities", "setup_evidence_refs", "end_evidence_refs")
+        else:
+            required = ("pre_run_absence_assessment", "pre_run_absence_evidence_refs")
+        missing = [key for key in required if not claim.get(key)]
+        if status == "unavailable" and not claim.get("pre_run_absence_assessment", "").strip():
+            missing = sorted(set(missing) | {"pre_run_absence_assessment"})
+        if missing:
+            raise TriageError(
+                f"{run_root}: {result['check_result_id']}: borrowed preservation "
+                f"{status} lacks {', '.join(missing)}"
+            )
+        refs = set(result["evidence_refs"])
+        claim_refs = (
+            set(claim["setup_evidence_refs"] + claim["end_evidence_refs"])
+            if status == "pass"
+            else set(claim["pre_run_absence_evidence_refs"])
+        )
+        if not claim_refs <= refs:
+            raise TriageError(
+                f"{run_root}: {result['check_result_id']}: borrowed preservation "
+                "evidence must be linked from the Check Result"
+            )
+        if status == "unavailable" and not claim_refs <= set(run["admission_evidence"]):
+            raise TriageError(
+                f"{run_root}: {result['check_result_id']}: borrowed preservation "
+                "absence assessment must be recorded during admission"
             )
 
 
@@ -424,15 +464,17 @@ def cleanup_findings(cleanup: dict[str, Any]) -> list[dict[str, Any]]:
             kind = "unverified"
         else:
             continue
-        findings.append({
-            "identity": resource_identity(resource, index),
-            "disposition": disposition,
-            "active_authority_possible": authority,
-            "safe_shutdown_evidence_refs": shutdown_refs,
-            "reason": resource.get("cleanup_reason"),
-            "kind": kind,
-            "unresolved_authority": disposition is None and authority is not False and not shutdown_refs,
-        })
+        findings.append(
+            {
+                "identity": resource_identity(resource, index),
+                "disposition": disposition,
+                "active_authority_possible": authority,
+                "safe_shutdown_evidence_refs": shutdown_refs,
+                "reason": resource.get("cleanup_reason"),
+                "kind": kind,
+                "unresolved_authority": authority is not False and not shutdown_refs,
+            }
+        )
     return findings
 
 
@@ -447,18 +489,22 @@ def reconciled_cleanup_status(status: str, findings: list[dict[str, Any]]) -> st
 def reconcile_cleanup(run_root: Path, state: dict[str, Any], cleanup: dict[str, Any]) -> None:
     findings = cleanup_findings(cleanup)
     status = reconciled_cleanup_status(state["cleanup_status"], findings)
+    summary_path = run_root / "run-summary.md"
+    if findings:
+        original_summary = summary_path.read_text()
+        summary = original_summary.split("\n## Cleanup reconciliation\n", 1)[0]
+        lines = ["", "## Cleanup reconciliation", "", f"Cleanup status: `{status}`."]
+        for item in findings:
+            lines.append(
+                f"- `{item['identity']}`: disposition `{item['disposition'] or 'unknown'}`; "
+                f"active authority possible `{item['active_authority_possible']}`; "
+                f"reason: {item['reason'] or 'disposition or safety classification unverified'}."
+            )
+        updated_summary = summary.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+        if updated_summary != original_summary:
+            atomic_text(summary_path, updated_summary)
     if status == state["cleanup_status"]:
         return
-    summary_path = run_root / "run-summary.md"
-    summary = summary_path.read_text().split("\n## Cleanup reconciliation\n", 1)[0]
-    lines = ["", "## Cleanup reconciliation", "", f"Cleanup status: `{status}`."]
-    for item in findings:
-        lines.append(
-            f"- `{item['identity']}`: disposition `{item['disposition'] or 'unknown'}`; "
-            f"active authority possible `{item['active_authority_possible']}`; "
-            f"reason: {item['reason'] or 'disposition or safety classification unverified'}."
-        )
-    atomic_text(summary_path, summary.rstrip("\n") + "\n" + "\n".join(lines) + "\n")
     state["cleanup_status"] = status
     state["last_updated_at"] = utc_now_rfc3339()
     if state["status"] == "complete":
@@ -481,6 +527,7 @@ def seal_run(run_root: Path) -> RunRecords:
     values = validate_run_contents(run_root)
     run, state, cleanup, evidence, results, observations, _paths = values
     validate_terminal_state(state, run_root)
+    validate_borrowed_preservation_claims(run, results, run_root)
     reconcile_cleanup(run_root, state, cleanup)
     files = {name: sha256_file(run_root / name) for name in sorted(REQUIRED_RUN_FILES)}
     manifest = {

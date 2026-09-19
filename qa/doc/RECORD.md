@@ -14,6 +14,16 @@ A capability lost after admission is `fail` or `blocked`. Exclusions are fixed b
 Configured Scenario and are not passes. Preserve every trustworthy failed attempt;
 later success does not erase it.
 
+For the selected borrowed-resource preservation Checks (`cleanup.preserve-borrowed`
+and `cleanup-preservation`), a `pass` Check Result also records
+`borrowed_preservation.scoped_resource_identities`, `setup_evidence_refs`, and
+`end_evidence_refs`. Each list must be nonempty, and both evidence lists must be
+included in the Check Result's `evidence_refs`. An `unavailable` result instead
+records `pre_run_absence_assessment` and `pre_run_absence_evidence_refs` under
+`borrowed_preservation`; those evidence paths must also appear in the Check Result
+and in `run.json` admission evidence. Use `blocked` when the comparison or pre-run
+absence assessment lacks trustworthy evidence. Older sealed runs remain readable.
+
 Candidate creation, operator-only CLI installation, and Host Bootstrap during
 admission are preparation provenance, not Check Results. Retain their verified
 pre/post evidence under `evidence/admission/` when admission succeeds and link it from
