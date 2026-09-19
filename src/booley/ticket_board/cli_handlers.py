@@ -566,18 +566,19 @@ def _cmd_enqueue(tio, args):
 
 def _cmd_archive(tio, args):
     slug = getattr(args, "slug", None)
-    archived = op_archive(
+    outcome = op_archive(
         tio, slug=slug, keep_logs=args.keep_logs, force=getattr(args, "force", False)
     )
-    if archived:
-        print(f"Archived {len(archived)} ticket(s):")
-        for name in archived:
+    if outcome.archived:
+        print(f"Archived {len(outcome.archived)} ticket(s):")
+        for name in outcome.archived:
             print(f"  - {name}")
-        return 0
-    print("No tickets to archive.")
-    # A named ticket that was not archived (missing or refused) is a failure;
-    # the no-slug sweep legitimately finds nothing.
-    return 1 if slug else 0
+    if outcome.failures:
+        print("Failed to archive: " + ", ".join(outcome.failures), file=sys.stderr)
+        return 1
+    if not outcome.archived:
+        print("No tickets to archive.")
+    return 0
 
 
 def _cmd_log_incident(tio, args):
