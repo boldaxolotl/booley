@@ -3375,8 +3375,7 @@ class TestOpArchive:
 
         archived = op_archive(tio)
 
-        assert len(archived) == 1
-        assert archived[0] == "done ticket"
+        assert archived.archived == ["done ticket"]
         assert not (tio.tickets_dir / "board" / "done" / "t1.md").exists()
         assert not (tio.logs_dir / "t1").exists()
         # active ticket should still exist
@@ -3395,7 +3394,7 @@ class TestOpArchive:
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "active", "t1")
         archived = op_archive(tio)
-        assert archived == []
+        assert archived.archived == []
 
 
 class TestValidateCriteriaField:
@@ -5934,8 +5933,7 @@ class TestArchiveWithSlug:
         write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
 
         archived = op_archive(tio, slug="t1")
-        assert len(archived) == 1
-        assert archived[0] == "done ticket"
+        assert archived.archived == ["done ticket"]
         assert not (tio.tickets_dir / "board" / "done" / "t1.md").exists()
         assert not (tio.logs_dir / "t1").exists()
 
@@ -5946,7 +5944,7 @@ class TestArchiveWithSlug:
         write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
 
         archived = op_archive(tio, slug="t1")
-        assert archived == []
+        assert archived.archived == []
         assert (tio.tickets_dir / "board" / "blocked" / "t1.md").exists()
 
     def test_archive_blocked_ticket_by_slug_with_force(self, tmp_path):
@@ -5956,8 +5954,7 @@ class TestArchiveWithSlug:
         write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
 
         archived = op_archive(tio, slug="t1", force=True)
-        assert len(archived) == 1
-        assert archived[0] == "blocked ticket"
+        assert archived.archived == ["blocked ticket"]
         assert not (tio.tickets_dir / "board" / "blocked" / "t1.md").exists()
 
     def test_archive_slug_keep_logs(self, tmp_path):
@@ -5967,7 +5964,7 @@ class TestArchiveWithSlug:
         write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
 
         archived = op_archive(tio, slug="t1", keep_logs=True)
-        assert len(archived) == 1
+        assert len(archived.archived) == 1
         # Ticket file should be gone
         assert not (tio.tickets_dir / "board" / "done" / "t1.md").exists()
         # Logs should be preserved
@@ -5977,7 +5974,7 @@ class TestArchiveWithSlug:
         """Archive nonexistent slug returns empty list."""
         tio = make_tio(tmp_path)
         archived = op_archive(tio, slug="nonexistent")
-        assert archived == []
+        assert archived.archived == []
 
 
 class TestActivateTransitionDetail:

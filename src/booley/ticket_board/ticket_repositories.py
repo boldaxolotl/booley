@@ -259,6 +259,12 @@ def project_ticket_branch(slug: str) -> str:
     return f"{PROJECT_BRANCH_PREFIX}{slug}"
 
 
+def has_project_ticket_branch(project_root: Path, slug: str) -> bool:
+    """Whether a legacy Ticket branch remains in the paired repository."""
+    repository = resolve_inner_project_repo(project_root)
+    return repository is not None and _branch_exists(repository, project_ticket_branch(slug))
+
+
 def ticket_project_worktree(ticket_worktree: Path) -> Path:
     """Return the conventional project-data checkout nested in a ticket."""
     return ticket_worktree / PROJECT_DIR_NAME
