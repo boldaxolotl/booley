@@ -93,7 +93,7 @@
             "active_assignments": {"type": "array", "items": {"type": "object"}},
             "outstanding_mutations": {"type": "array", "items": {"type": "object"}},
             "execution_status": {"enum": ["completed", "deadline-reached", "operator-error"]},
-            "cleanup_status": {"enum": ["complete", "failed"]},
+            "cleanup_status": {"enum": ["complete", "unverified", "failed"]},
             "last_updated_at": {"type": "string", "format": "date-time"}
           }
         }
@@ -151,6 +151,17 @@
             "expected": {"type": "string", "minLength": 1},
             "observed": {"type": "string", "minLength": 1},
             "evidence_refs": {"$ref": "#/$defs/stringArray"},
+            "borrowed_preservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "scoped_resource_identities": {"$ref": "#/$defs/stringArray"},
+                "setup_evidence_refs": {"$ref": "#/$defs/stringArray"},
+                "end_evidence_refs": {"$ref": "#/$defs/stringArray"},
+                "pre_run_absence_assessment": {"type": "string", "minLength": 1},
+                "pre_run_absence_evidence_refs": {"$ref": "#/$defs/stringArray"}
+              }
+            },
             "producing_step_identities": {"type": "object"},
             "caused_by_result_ids": {"$ref": "#/$defs/stringArray"},
             "corrects_result_id": {"type": ["string", "null"]},
@@ -227,7 +238,19 @@
             "run_record_format_version": {"const": 2},
             "record_type": {"const": "cleanup-ledger"},
             "run_id": {"type": "string", "minLength": 1},
-            "resources": {"type": "array", "items": {"type": "object"}}
+            "resources": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "identity": {"type": "string", "minLength": 1},
+                  "actual_disposition": {"type": ["string", "null"]},
+                  "active_authority_possible": {"type": ["boolean", "null"]},
+                  "safe_shutdown_evidence_refs": {"$ref": "#/$defs/stringArray"},
+                  "cleanup_reason": {"type": "string", "minLength": 1}
+                }
+              }
+            }
           }
         }
       ]
@@ -284,7 +307,7 @@
             "run_id": {"type": "string", "minLength": 1},
             "sealed_at": {"type": "string", "format": "date-time"},
             "execution_status": {"enum": ["completed", "deadline-reached", "operator-error"]},
-            "cleanup_status": {"enum": ["complete", "failed"]},
+            "cleanup_status": {"enum": ["complete", "unverified", "failed"]},
             "record_counts": {
               "type": "object",
               "additionalProperties": false,

@@ -5981,15 +5981,15 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.cleanup.mounts
 - id: cleanup.preserve-borrowed
   phase: cleanup
-  action: Preserve borrowed Vivado installation, credentials, base images, caches and pre-existing host administration.
+  action: Preserve borrowed resources granted to or used by this run, identified from admission and use records.
   checks:
   - id: cleanup.preserve-borrowed
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Preserve borrowed Vivado installation, credentials, base images, caches and pre-existing host administration.
-    expected: Preserve borrowed Vivado installation, credentials, base images, caches and pre-existing host administration.
+    stimulus: Identify borrowed resources granted to or used by this run and compare their recorded setup and end states.
+    expected: The scoped borrowed resources remain unchanged; no claim is made about unobserved host resources.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Before/after preserved resource identities; no secret values.
+    evidence: Scoped identities from admission or use records plus setup/end-state nonmutation evidence; no secret values. Missing evidence is blocked. Unavailable requires a defensible pre-run assessment of no applicable borrowed resource; no post-admission access alone is insufficient.
     capture: evidence/picorv32-published-demo-continuity.cleanup.preserve-borrowed
 - id: cleanup.clean-pins
   phase: cleanup

@@ -6089,15 +6089,15 @@ steps:
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-evaluator
 - id: cleanup-preservation
   phase: cleanup
-  action: Compare borrowed/pre-existing state to declaration.
+  action: Compare borrowed resources granted to or used by this run to their recorded setup state.
   checks:
   - id: cleanup-preservation
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Compare borrowed/pre-existing state to declaration.
-    expected: Credentials, caches, pre-existing state and supplied external image preserved.
+    stimulus: Identify borrowed resources from admission or use records and compare scoped setup and end states.
+    expected: Scoped credentials, caches, pre-existing state and supplied external image remain unchanged.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
-    evidence: Credentials, caches, pre-existing state and supplied external image preserved.
+    evidence: Scoped identities and setup/end-state nonmutation evidence without secret values; missing evidence is blocked. Unavailable requires a defensible pre-run absence assessment.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-preservation
 - id: deadline
   phase: cleanup

@@ -24,6 +24,6 @@ uncertain side effect.
 After context compaction, reread this file, `operator-state.json`, [Record](RECORD.md),
 and the current stage, then continue the same live run. After an operator interruption,
 a replacement may enter [Finish](FINISH.md) for reconciliation only. Terminal state
-without a valid manifest permits manifest-only Finish recovery, never new product
+without a valid manifest permits cleanup-status reconciliation and sealing, never new product
 work. Further product work requires a fresh Scenario Run ID; Check Results from the
 interrupted run do not satisfy the new run.

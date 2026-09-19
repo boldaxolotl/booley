@@ -14,6 +14,16 @@ A capability lost after admission is `fail` or `blocked`. Exclusions are fixed b
 Configured Scenario and are not passes. Preserve every trustworthy failed attempt;
 later success does not erase it.
 
+For the selected borrowed-resource preservation Checks (`cleanup.preserve-borrowed`
+and `cleanup-preservation`), a `pass` Check Result also records
+`borrowed_preservation.scoped_resource_identities`, `setup_evidence_refs`, and
+`end_evidence_refs`. Each list must be nonempty, and both evidence lists must be
+included in the Check Result's `evidence_refs`. An `unavailable` result instead
+records `pre_run_absence_assessment` and `pre_run_absence_evidence_refs` under
+`borrowed_preservation`; those evidence paths must also appear in the Check Result
+and in `run.json` admission evidence. Use `blocked` when the comparison or pre-run
+absence assessment lacks trustworthy evidence. Older sealed runs remain readable.
+
 Candidate creation, operator-only CLI installation, and Host Bootstrap during
 admission are preparation provenance, not Check Results. Retain their verified
 pre/post evidence under `evidence/admission/` when admission succeeds and link it from
@@ -38,6 +48,13 @@ owned resource, add its planned identity, ownership, and intended disposition to
 immediately after acquisition and before dependent work. Keep the ledger sufficient
 for another operator to safely shut down and clean up run-owned resources without
 touching unrelated state.
+For each new ledger row, record `identity` and `active_authority_possible` (`true`,
+`false`, or `null` when unknown). Record `actual_disposition` separately from the
+intended disposition; null is valid while cleanup is uncertain. When shutdown is
+confirmed independently of disposition, put its evidence paths in
+`safe_shutdown_evidence_refs`. Record `cleanup_reason` for failed or uncertain rows.
+Legacy rows without these fields remain readable, with a positional identity shown
+by triage when no usable identity field exists.
 
 Keep immutable evidence outside mutable Project state; retained workspace state cannot
 be the only evidence for a claim. The Scenario Operator does not create
