@@ -203,6 +203,23 @@ def test_archive_refuses_unidentified_canonical_workspace(tmp_path: Path, monkey
     assert _git(outer, "branch", "--list", branch)
 
 
+def test_archive_refuses_unbound_generation_without_descriptor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tio, outer, project, branch = _draft(tmp_path, monkeypatch, paired=False)
+    assert project is None
+    canonical = outer / ".booley_project" / "worktrees" / "ticket"
+    _git(outer, "worktree", "remove", "--force", str(canonical))
+    descriptor = outer / ".booley_project" / ".runtime" / "acceptance" / "drafts" / "ticket.json"
+    descriptor.unlink()
+
+    outcome = op_archive(tio, slug="ticket", force=True)
+
+    assert "generation refs without a descriptor" in outcome.failures["ticket"]
+    assert _git(outer, "branch", "--list", branch)
+    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+
+
 def test_archive_workspace_free_draft_without_descriptor(tmp_path: Path, monkeypatch) -> None:
     tio, outer, project, branch = _draft(tmp_path, monkeypatch, paired=False)
     assert project is None
@@ -419,7 +436,9 @@ def test_done_sweep_resumes_after_ticket_unlink(tmp_path: Path, monkeypatch) -> 
     ticket = _create_v2_ticket(
         tio,
         "ticket",
-        TicketFileSpec(summary="Ticket", ticket_type="feature", branch="main", scope=["README.md"]),
+        TicketFileSpec(
+            summary="Ticket", ticket_type="feature", branch="main", scope=["README.md"]
+        ),
     )
     assert ticket is not None
     assert tio.enqueue_ticket("ticket")
@@ -443,6 +462,41 @@ def test_done_sweep_resumes_after_ticket_unlink(tmp_path: Path, monkeypatch) -> 
     assert retried.failures == {}
     assert retried.archived == ["Ticket"]
     assert json.loads(marker.read_text(encoding="utf-8"))["logs_cleaned"] is True
+
+
+@pytest.mark.parametrize(
+    "field,bad_value,message",
+    [
+        ("unknown", True, "archive marker is invalid"),
+        ("step", 1, "step must be a non-empty string"),
+        ("digest", "bad", "archive marker identity is invalid"),
+    ],
+)
+def test_done_sweep_reports_corrupt_recovery_marker(
+    tmp_path: Path, monkeypatch, field: str, bad_value: object, message: str
+) -> None:
+    tio, outer, _project, _branch = _draft(tmp_path, monkeypatch, paired=False)
+    archived = op_archive(tio, slug="ticket", force=True)
+    assert archived.failures == {}
+    marker_path = outer / ".booley_project" / ".runtime" / "acceptance" / "archive" / "ticket.json"
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["logs_cleaned"] = False
+    marker[field] = bad_value
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    outcome = op_archive(tio)
+
+    assert message in outcome.failures["ticket"]
+
+
+def test_empty_done_sweep_reports_no_tickets(tmp_path: Path, monkeypatch, capsys) -> None:
+    tio, _outer, _project, _branch = _draft(tmp_path, monkeypatch, paired=False)
+    args = SimpleNamespace(slug=None, keep_logs=False, force=False)
+
+    result = _cmd_archive(tio, args)
+
+    assert result == 0
+    assert "No tickets to archive." in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
