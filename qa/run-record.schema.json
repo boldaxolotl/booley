@@ -329,6 +329,10 @@
             "evidence_manifest_sha256": {
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
+            },
+            "scenario_snapshot_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
             }
           }
         }

@@ -16,12 +16,19 @@ from typing import Any
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
+from booley.core.boundary import as_dict, as_str, is_str_list
 from booley.runtime.timefmt import utc_now_rfc3339
 
 try:
+    from .run_suite import RunSuiteError as TriageError
+    from .run_suite import transitive_requirements, validate_run_suite
     from .triage_lock import exclusive_file_lock
 except ImportError:
+    from run_suite import RunSuiteError as TriageError
+    from run_suite import transitive_requirements, validate_run_suite
     from triage_lock import exclusive_file_lock
+
+__all__ = ["transitive_requirements"]
 
 RUN_FORMAT_VERSION = 2
 TRIAGE_FORMAT_VERSION = 1
@@ -53,10 +60,6 @@ REQUIRED_RUN_FILES = {
     "run-summary.md",
 }
 BORROWED_PRESERVATION_CHECK_IDS = {"cleanup.preserve-borrowed", "cleanup-preservation"}
-
-
-class TriageError(ValueError):
-    """A persisted QA record violates the triage contract."""
 
 
 @dataclass(frozen=True)
@@ -119,7 +122,12 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 def atomic_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}-", delete=False
+        mode="w",
+        encoding="utf-8",
+        newline="\n",
+        dir=path.parent,
+        prefix=f".{path.name}-",
+        delete=False,
     ) as stream:
         temporary = Path(stream.name)
         try:
@@ -282,11 +290,17 @@ def validate_borrowed_preservation_claims(
             )
 
 
-def parse_run_files(run_root: Path) -> tuple[dict[str, Any], ...]:
+def parse_run_files(
+    run_root: Path, evidence_override: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], ...]:
     run = read_json(run_root / "run.json")
     state = read_json(run_root / "operator-state.json")
     cleanup = read_json(run_root / "cleanup-ledger.json")
-    evidence = read_json(run_root / "evidence-manifest.json")
+    evidence = (
+        evidence_override
+        if evidence_override is not None
+        else read_json(run_root / "evidence-manifest.json")
+    )
     results = read_jsonl(run_root / "check-results.jsonl")
     observations = read_jsonl(run_root / "observations.jsonl")
     validate_definition(run, "run-record.schema.json", "run", str(run_root / "run.json"))
@@ -311,8 +325,12 @@ def parse_run_files(run_root: Path) -> tuple[dict[str, Any], ...]:
     return run, state, cleanup, evidence, results, observations
 
 
-def validate_run_contents(run_root: Path) -> tuple[dict[str, Any], ...]:
-    run, state, cleanup, evidence, results, observations = parse_run_files(run_root)
+def validate_run_contents(
+    run_root: Path, evidence_override: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], ...]:
+    run, state, cleanup, evidence, results, observations = parse_run_files(
+        run_root, evidence_override
+    )
     run_id = run["run_id"]
     all_records = [state, cleanup, evidence, *results, *observations]
     if any(record["run_id"] != run_id for record in all_records):
@@ -444,6 +462,128 @@ def build_evidence_manifest(
     }
 
 
+def recording_diagnostics(results: list[dict[str, Any]]) -> list[str]:
+    diagnostics = []
+    for result in results:
+        if result["status"] not in NONPASS:
+            continue
+        if not result["expected"].strip():
+            diagnostics.append(f"{result['check_result_id']}: expected text is blank")
+        if not result["observed"].strip():
+            diagnostics.append(f"{result['check_result_id']}: observed text is blank")
+        if (
+            result["expected"].strip()
+            and result["observed"].strip()
+            and result["expected"].strip() == result["observed"].strip()
+        ):
+            diagnostics.append(
+                f"{result['check_result_id']}: expected and observed text are identical"
+            )
+        if not result["evidence_refs"]:
+            diagnostics.append(f"{result['check_result_id']}: no direct evidence reference")
+    return diagnostics
+
+
+def result_summary(item: dict[str, Any]) -> str:
+    links = [f"corrects `{item['corrects_result_id']}`"] if item["corrects_result_id"] else []
+    links.extend(f"caused by `{cause}`" for cause in item["caused_by_result_ids"])
+    detail = (
+        f"; integrity: {item['evidence_integrity']}"
+        f"; review: {', '.join(item['review_reasons']) or 'none'}"
+    )
+    if item["deviation"] is not None:
+        detail += f"; deviation: {json.dumps(item['deviation'], sort_keys=True)}"
+    return (
+        f"- `{item['check_result_id']}`: `{item['check_id']}` / `{item['step_id']}` "
+        f"{item['status']}; evidence: {', '.join(item['evidence_refs']) or 'none'}"
+        + (f"; {', '.join(links)}" if links else "")
+        + detail
+    )
+
+
+def observation_summary(item: dict[str, Any]) -> str:
+    return (
+        f"- `{item['observation_id']}`: {json.dumps(item['text'])}; evidence: "
+        f"{', '.join(item['evidence_refs']) or 'none'}; "
+        f"results: {', '.join(item['check_result_ids']) or 'none'}; "
+        f"causes: {', '.join(item['caused_by_result_ids']) or 'none'}; "
+        f"corrects: {item['corrects_observation_id'] or 'none'}"
+    )
+
+
+def render_run_summary(
+    run: dict[str, Any],
+    state: dict[str, Any],
+    results: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    diagnostics: list[str],
+) -> str:
+    counts = {
+        status: sum(item["status"] == status for item in results)
+        for status in ("pass", "fail", "blocked", "unavailable")
+    }
+    lines = [
+        f"# Scenario Run {run['run_id']}",
+        "",
+        f"Scenario: `{run['scenario_id']}`; Configured Scenario: `{run['configured_scenario_id']}`",
+        f"Product revision: `{run['product_revision']}`; suite revision: `{run['suite_revision']}`",
+        f"Execution: `{state['execution_status']}`; cleanup: `{state['cleanup_status']}`",
+        "",
+        "## Selected Checks",
+        "",
+        *[f"- `{check}`" for check in sorted(run["selected_check_ids"])],
+        "",
+        "## Check Results",
+        "",
+        f"Attempts: {len(results)}; "
+        + ", ".join(f"{status}: {count}" for status, count in counts.items()),
+        "",
+    ]
+    lines.extend(result_summary(item) for item in results)
+    lines.extend(["", "## Observations", ""])
+    lines.extend(observation_summary(item) for item in observations)
+    if not observations:
+        lines.append("None.")
+    lines.extend(["", "## Recording review", ""])
+    lines.extend(f"- {message}" for message in diagnostics)
+    if not diagnostics:
+        lines.append("None.")
+    return "\n".join(lines) + "\n"
+
+
+def build_run_manifest(
+    run_root: Path,
+    candidate: RunRecords,
+    evidence: dict[str, Any],
+    generated: dict[str, str],
+    scenario_digest: str,
+) -> dict[str, Any]:
+    files = {
+        name: (
+            hashlib.sha256(generated[name].encode("utf-8")).hexdigest()
+            if name in generated
+            else sha256_file(run_root / name)
+        )
+        for name in sorted(REQUIRED_RUN_FILES)
+    }
+    return {
+        "run_record_format_version": RUN_FORMAT_VERSION,
+        "record_type": "run-manifest",
+        "run_id": candidate.run["run_id"],
+        "sealed_at": utc_now_rfc3339(),
+        "execution_status": candidate.state["execution_status"],
+        "cleanup_status": candidate.state["cleanup_status"],
+        "record_counts": {
+            "check_results": len(candidate.results),
+            "observations": len(candidate.observations),
+            "evidence": len(evidence["entries"]),
+        },
+        "files": files,
+        "evidence_manifest_sha256": files["evidence-manifest.json"],
+        "scenario_snapshot_sha256": scenario_digest,
+    }
+
+
 def resource_identity(resource: dict[str, Any], index: int) -> str:
     """Give legacy ledger rows a stable display identity."""
     for key in ("identity", "resource_id", "name", "path"):
@@ -486,67 +626,88 @@ def reconciled_cleanup_status(status: str, findings: list[dict[str, Any]]) -> st
     return "complete"
 
 
-def reconcile_cleanup(run_root: Path, state: dict[str, Any], cleanup: dict[str, Any]) -> None:
-    findings = cleanup_findings(cleanup)
-    status = reconciled_cleanup_status(state["cleanup_status"], findings)
-    summary_path = run_root / "run-summary.md"
-    if findings:
-        original_summary = summary_path.read_text()
-        summary = original_summary.split("\n## Cleanup reconciliation\n", 1)[0]
-        lines = ["", "## Cleanup reconciliation", "", f"Cleanup status: `{status}`."]
-        for item in findings:
-            lines.append(
-                f"- `{item['identity']}`: disposition `{item['disposition'] or 'unknown'}`; "
-                f"active authority possible `{item['active_authority_possible']}`; "
-                f"reason: {item['reason'] or 'disposition or safety classification unverified'}."
-            )
-        updated_summary = summary.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
-        if updated_summary != original_summary:
-            atomic_text(summary_path, updated_summary)
+def reconcile_cleanup_state(state: dict[str, Any], cleanup: dict[str, Any]) -> dict[str, Any]:
+    status = reconciled_cleanup_status(state["cleanup_status"], cleanup_findings(cleanup))
     if status == state["cleanup_status"]:
-        return
-    state["cleanup_status"] = status
-    state["last_updated_at"] = utc_now_rfc3339()
-    if state["status"] == "complete":
-        state["completed_at"] = state["last_updated_at"]
-    atomic_json(run_root / "operator-state.json", state)
+        return state
+    updated = {**state, "cleanup_status": status, "last_updated_at": utc_now_rfc3339()}
+    if updated["status"] == "complete":
+        updated["completed_at"] = updated["last_updated_at"]
+    return updated
 
 
-def seal_run(run_root: Path) -> RunRecords:
+def append_cleanup_summary(summary: str, state: dict[str, Any], cleanup: dict[str, Any]) -> str:
+    findings = cleanup_findings(cleanup)
+    if not findings:
+        return summary
+    lines = ["", "## Cleanup reconciliation", "", f"Cleanup status: `{state['cleanup_status']}`."]
+    for item in findings:
+        lines.append(
+            f"- `{item['identity']}`: disposition `{item['disposition'] or 'unknown'}`; "
+            f"active authority possible `{item['active_authority_possible']}`; "
+            f"reason: {item['reason'] or 'disposition or safety classification unverified'}."
+        )
+    return summary.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+
+
+def publish_seal(
+    run_root: Path, generated: dict[str, str], state: dict[str, Any], manifest: dict[str, Any]
+) -> None:
+    for name, content in generated.items():
+        if name == "operator-state.json":
+            atomic_json(run_root / name, state)
+        else:
+            atomic_text(run_root / name, content)
+    if any(sha256_file(run_root / name) != digest for name, digest in manifest["files"].items()):
+        raise TriageError(f"{run_root}: final records changed during sealing")
+    atomic_json(run_root / "run-manifest.json", manifest)
+
+
+def seal_run(run_root: Path, suite_root: Path | None = None) -> RunRecords:
+    if suite_root is None:
+        raise TriageError(f"{run_root}: seal-run requires --suite-root")
     manifest_path = run_root / "run-manifest.json"
     if manifest_path.exists():
         return validate_run(run_root)
-    for name in REQUIRED_RUN_FILES - {"evidence-manifest.json"}:
+    for name in REQUIRED_RUN_FILES - {"evidence-manifest.json", "run-summary.md"}:
         if not (run_root / name).is_file():
             raise TriageError(f"{run_root / name}: missing final run record")
     run = read_json(run_root / "run.json")
     results = read_jsonl(run_root / "check-results.jsonl")
     observations = read_jsonl(run_root / "observations.jsonl")
+    configured, scenario_files = load_suite(suite_root)
+    snapshot = {"configured_scenarios": configured, "scenario_files": scenario_files}
     evidence = build_evidence_manifest(run_root, run["run_id"], results, observations)
-    atomic_json(run_root / "evidence-manifest.json", evidence)
-    values = validate_run_contents(run_root)
-    run, state, cleanup, evidence, results, observations, _paths = values
+    values = validate_run_contents(run_root, evidence)
+    run, state, cleanup, evidence, results, observations, evidence_paths = values
     validate_terminal_state(state, run_root)
+    validate_run_against_suite_data(run_root, run, results, snapshot)
     validate_borrowed_preservation_claims(run, results, run_root)
-    reconcile_cleanup(run_root, state, cleanup)
-    files = {name: sha256_file(run_root / name) for name in sorted(REQUIRED_RUN_FILES)}
-    manifest = {
-        "run_record_format_version": RUN_FORMAT_VERSION,
-        "record_type": "run-manifest",
-        "run_id": run["run_id"],
-        "sealed_at": utc_now_rfc3339(),
-        "execution_status": state["execution_status"],
-        "cleanup_status": state["cleanup_status"],
-        "record_counts": {
-            "check_results": len(results),
-            "observations": len(observations),
-            "evidence": len(evidence["entries"]),
-        },
-        "files": files,
-        "evidence_manifest_sha256": files["evidence-manifest.json"],
+    original_state = state
+    state = reconcile_cleanup_state(state, cleanup)
+    validate_definition(state, "run-record.schema.json", "operatorState", "operator state")
+    diagnostics = recording_diagnostics(results)
+    summary = render_run_summary(run, state, results, observations, diagnostics)
+    summary = append_cleanup_summary(summary, state, cleanup)
+    candidate = RunRecords(
+        run_root, "", run, state, {}, tuple(results), tuple(observations), evidence_paths, cleanup
+    )
+    candidates_for_run(candidate)
+    generated = {
+        "evidence-manifest.json": json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+        "run-summary.md": summary,
     }
+    if state != original_state:
+        generated["operator-state.json"] = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    manifest = build_run_manifest(
+        run_root,
+        candidate,
+        evidence,
+        generated,
+        scenario_snapshot_digest(suite_root, scenario_files),
+    )
     validate_definition(manifest, "run-record.schema.json", "runManifest", "run manifest")
-    atomic_json(manifest_path, manifest)
+    publish_seal(run_root, generated, state, manifest)
     return validate_run(run_root)
 
 
@@ -708,16 +869,20 @@ def load_suite(suite_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, s
     scenario_files = []
     for path in sorted((suite_root / "scenarios").glob("*/scenario.yaml")):
         try:
-            scenario = yaml.safe_load(path.read_text())
+            content = path.read_bytes()
+            scenario = yaml.safe_load(content)
         except (OSError, yaml.YAMLError) as error:
             raise TriageError(f"{path}: {error}") from error
-        if not isinstance(scenario, dict) or not isinstance(scenario.get("scenario_id"), str):
+        if as_dict(scenario) is None or as_str(scenario.get("scenario_id")) is None:
             raise TriageError(f"{path}: invalid Scenario")
+        if not isinstance(scenario.get("steps"), list) or not scenario["steps"]:
+            raise TriageError(f"{path}: Scenario has no Steps")
+        validate_scenario_binding_shape(scenario, path)
         scenario_files.append(
             {
                 "scenario_id": scenario["scenario_id"],
                 "path": str(path.resolve()),
-                "sha256": sha256_file(path),
+                "sha256": hashlib.sha256(content).hexdigest(),
             }
         )
         check_sets = {
@@ -766,6 +931,84 @@ def load_suite(suite_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, s
     return configured, scenario_files
 
 
+def validate_scenario_binding_shape(scenario: dict[str, Any], path: Path) -> None:
+    """Validate the fields consumed by run/suite binding, including uniqueness."""
+    steps = scenario["steps"]
+    if any(
+        as_dict(step) is None
+        or as_str(step.get("id")) is None
+        or not isinstance(step.get("checks"), list)
+        for step in steps
+    ):
+        raise TriageError(f"{path}: invalid Scenario Steps")
+    step_ids = [step["id"] for step in steps]
+    if len(step_ids) != len(set(step_ids)):
+        raise TriageError(f"{path}: duplicate Step IDs")
+    checks = [check for step in steps for check in step["checks"]]
+    if any(as_dict(check) is None or as_str(check.get("id")) is None for check in checks):
+        raise TriageError(f"{path}: invalid Scenario Checks")
+    check_ids = [check["id"] for check in checks]
+    if len(check_ids) != len(set(check_ids)):
+        raise TriageError(f"{path}: duplicate Check IDs")
+    for step in steps:
+        requires = step.get("requires", [])
+        if not is_str_list(requires) or any(item not in step_ids for item in requires):
+            raise TriageError(f"{path}: {step['id']}: invalid required Steps")
+    validate_configured_binding_shape(scenario, path)
+    validate_check_sets_binding_shape(scenario, path, check_ids)
+
+
+def validate_configured_binding_shape(scenario: dict[str, Any], path: Path) -> None:
+    configured = scenario.get("configured_scenarios")
+    if not isinstance(configured, list) or any(
+        as_dict(item) is None or as_str(item.get("id")) is None for item in configured
+    ):
+        raise TriageError(f"{path}: invalid Configured Scenarios")
+    for item in configured:
+        selected_sets = item.get("check_sets", [])
+        exclusions = item.get("exclusions", [])
+        if (
+            not is_str_list(selected_sets)
+            or not isinstance(exclusions, list)
+            or any(
+                as_dict(value) is None or as_str(value.get("check")) is None
+                for value in exclusions
+            )
+            or not isinstance(item.get("parameters", {}), dict)
+            or not isinstance(item.get("pre_run_requirements", []), list)
+        ):
+            raise TriageError(f"{path}: {item['id']}: invalid Configured Scenario binding")
+    if not isinstance(scenario.get("shared_pre_run_requirements", []), list):
+        raise TriageError(f"{path}: invalid shared pre-run requirements")
+
+
+def validate_check_sets_binding_shape(
+    scenario: dict[str, Any], path: Path, check_ids: list[str]
+) -> None:
+    check_sets = scenario.get("check_sets", [])
+    if not isinstance(check_sets, list) or any(
+        as_dict(item) is None
+        or as_str(item.get("id")) is None
+        or not is_str_list(item.get("checks"))
+        or any(check not in check_ids for check in item["checks"])
+        for item in check_sets
+    ):
+        raise TriageError(f"{path}: invalid Check sets")
+
+
+def scenario_snapshot_digest(suite_root: Path, files: list[dict[str, str]]) -> str:
+    """Digest sorted relative Scenario paths and their content hashes."""
+    return stable_digest(
+        [
+            {
+                "path": Path(item["path"]).relative_to(suite_root.resolve()).as_posix(),
+                "sha256": item["sha256"],
+            }
+            for item in files
+        ]
+    )
+
+
 def validate_suite_snapshot(session: dict[str, Any]) -> None:
     for entry in session["scenario_files"]:
         path = Path(entry["path"])
@@ -779,7 +1022,10 @@ def bound_scenario(session: dict[str, Any], scenario_id: str) -> dict[str, Any]:
         raise TriageError(f"{scenario_id}: Scenario is absent from frozen suite")
     path = Path(matches[0]["path"])
     try:
-        scenario = yaml.safe_load(path.read_text())
+        content = path.read_bytes()
+        if hashlib.sha256(content).hexdigest() != matches[0]["sha256"]:
+            raise TriageError(f"{path}: frozen Scenario definition changed")
+        scenario = yaml.safe_load(content)
     except (OSError, yaml.YAMLError) as error:
         raise TriageError(f"{path}: {error}") from error
     if not isinstance(scenario, dict):
@@ -787,84 +1033,42 @@ def bound_scenario(session: dict[str, Any], scenario_id: str) -> dict[str, Any]:
     return scenario
 
 
-def transitive_requirements(steps: dict[str, dict[str, Any]], step_id: str) -> set[str]:
-    requirements = set()
-    pending = list(steps[step_id].get("requires", []))
-    while pending:
-        requirement = pending.pop()
-        if requirement in requirements:
-            continue
-        if requirement not in steps:
-            raise TriageError(f"{step_id}: unknown required Step {requirement}")
-        requirements.add(requirement)
-        pending.extend(steps[requirement].get("requires", []))
-    return requirements
-
-
-def validate_run_against_suite(run: RunRecords, session: dict[str, Any]) -> None:
-    scenario = bound_scenario(session, run.run["scenario_id"])
+def validate_run_against_suite_data(
+    root: Path,
+    run: dict[str, Any],
+    results: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    session: dict[str, Any],
+) -> None:
+    scenario = bound_scenario(session, run["scenario_id"])
     matches = [
         item
         for item in session["configured_scenarios"]
-        if item["scenario_id"] == run.run["scenario_id"]
-        and item["configured_scenario_id"] == run.run["configured_scenario_id"]
+        if item["scenario_id"] == run["scenario_id"]
+        and item["configured_scenario_id"] == run["configured_scenario_id"]
     ]
     if len(matches) != 1:
-        raise TriageError(f"{run.root}: Configured Scenario is absent from bound Scenario")
-    configured = matches[0]
-    if run.run["parameters"] != configured["parameters"]:
-        raise TriageError(f"{run.root}: parameters differ from Configured Scenario")
-    expected_check_ids = configured["expected_check_ids"]
-    if expected_check_ids is not None and set(run.run["selected_check_ids"]) != set(
-        expected_check_ids
+        raise TriageError(f"{root}: Configured Scenario is absent from bound Scenario")
+    validate_run_suite(run, results, scenario, matches[0], str(root))
+
+
+def validate_run_against_suite(run: RunRecords, session: dict[str, Any]) -> None:
+    if (
+        run.run["suite_revision"] == session["target_suite_revision"]
+        and "scenario_snapshot_sha256" in run.manifest
     ):
-        raise TriageError(f"{run.root}: selected Checks differ from Configured Scenario")
-    steps = {
-        item["id"]: item
-        for item in scenario.get("steps", [])
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    }
-    if not steps:
-        raise TriageError(f"{run.root}: bound Scenario has no Steps")
-    check_steps = {
-        check["id"]: step_id
-        for step_id, step in steps.items()
-        for check in step.get("checks", [])
-        if isinstance(check, dict) and isinstance(check.get("id"), str)
-    }
-    if unknown := set(run.run["selected_check_ids"]) - check_steps.keys():
-        raise TriageError(
-            f"{run.root}: selected Checks absent from bound Scenario: {sorted(unknown)}"
-        )
-    if unselected := {result["check_id"] for result in run.results} - set(
-        run.run["selected_check_ids"]
-    ):
-        raise TriageError(
-            f"{run.root}: Check Results include unselected Checks: {sorted(unselected)}"
-        )
-    by_result = {result["check_result_id"]: result for result in run.results}
-    for result in run.results:
-        expected_step = check_steps.get(result["check_id"])
-        if expected_step != result["step_id"]:
+        digest = scenario_snapshot_digest(Path(session["suite_root"]), session["scenario_files"])
+        if run.manifest["scenario_snapshot_sha256"] != digest:
             raise TriageError(
-                f"{run.root}: {result['check_result_id']}: Check does not belong to recorded Step"
+                f"{run.root}: Scenario snapshot differs despite equal suite revisions"
             )
-        if result["status"] != "blocked":
-            continue
-        allowed_steps = transitive_requirements(steps, result["step_id"])
-        allowed_steps.add(result["step_id"])
-        for cause_id in result["caused_by_result_ids"]:
-            if by_result[cause_id]["step_id"] not in allowed_steps:
-                raise TriageError(
-                    f"{run.root}: {result['check_result_id']}: blocked cause does not follow "
-                    "the Scenario prerequisite direction"
-                )
+    validate_run_against_suite_data(run.root, run.run, run.results, session)
 
 
 def helper_revision() -> str:
     root = Path(__file__).parent
     names = [
         "triage.py",
+        "run_suite.py",
         "triage_cli.py",
         "triage_lock.py",
         "triage-record.schema.json",
