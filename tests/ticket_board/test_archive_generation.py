@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -108,6 +110,84 @@ def test_archive_draft_releases_paired_generation(tmp_path: Path, monkeypatch) -
     assert unrelated_path.is_dir()
     assert not (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
     assert not (project / ".runtime" / "acceptance" / "drafts" / "ticket.json").exists()
+
+
+def test_archive_cli_records_paired_refs_and_worktrees(tmp_path: Path, monkeypatch) -> None:
+    tio, outer, project, branch = _draft(tmp_path, monkeypatch, paired=True)
+    assert project is not None
+    repositories = (outer, project)
+    before_refs = [
+        set(_git(repo, "for-each-ref", "--format=%(refname)", "refs/heads").splitlines())
+        for repo in repositories
+    ]
+    before_worktrees = [_git(repo, "worktree", "list", "--porcelain") for repo in repositories]
+    command = [
+        sys.executable,
+        "-m",
+        "booley.ticket_board",
+        "archive",
+        "ticket",
+        "--force",
+    ]
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"),
+        "TICKETS_DIR": str(tio.tickets_dir),
+    }
+
+    result = subprocess.run(
+        command, cwd=outer, env=env, capture_output=True, text=True, timeout=60, check=False
+    )
+
+    after_refs = [
+        set(_git(repo, "for-each-ref", "--format=%(refname)", "refs/heads").splitlines())
+        for repo in repositories
+    ]
+    after_worktrees = [_git(repo, "worktree", "list", "--porcelain") for repo in repositories]
+    recorded_ref = f"refs/heads/{branch}"
+    assert result.returncode == 0, (command, result.stdout, result.stderr)
+    assert "Archived 1 ticket(s)" in result.stdout
+    for old_refs, new_refs, old_worktrees, new_worktrees in zip(
+        before_refs, after_refs, before_worktrees, after_worktrees, strict=True
+    ):
+        assert recorded_ref in old_refs
+        assert new_refs == old_refs - {recorded_ref}
+        assert recorded_ref in old_worktrees
+        assert recorded_ref not in new_worktrees
+
+
+def test_archive_releases_unbound_paired_generation(tmp_path: Path, monkeypatch) -> None:
+    tio, outer, project, branch = _draft(tmp_path, monkeypatch, paired=True)
+    assert project is not None
+    canonical = outer / ".booley_project" / "worktrees" / "ticket"
+    _git(project, "worktree", "remove", "--force", str(canonical / ".booley_project"))
+    _git(outer, "worktree", "remove", "--force", str(canonical))
+    assert _git(outer, "branch", "--list", branch)
+    assert _git(project, "branch", "--list", branch)
+
+    outcome = op_archive(tio, slug="ticket", force=True)
+
+    assert outcome.failures == {}
+    assert outcome.archived == ["Ticket"]
+    assert _git(outer, "branch", "--list", branch) == ""
+    assert _git(project, "branch", "--list", branch) == ""
+
+
+def test_archive_releases_recorded_legacy_resources(tmp_path: Path, monkeypatch) -> None:
+    tio, outer, project, _branch = _draft(tmp_path, monkeypatch, paired=True)
+    assert project is not None
+    # find_ticket uses the slug as a feature_branch fallback; it does not own
+    # an unrelated outer branch merely because the names happen to match.
+    _git(outer, "branch", "ticket", "main")
+    project_legacy = outer.parent / "project-legacy"
+    _git(project, "worktree", "add", "-b", "booley-ticket/ticket", str(project_legacy), "main")
+
+    outcome = op_archive(tio, slug="ticket", force=True)
+
+    assert outcome.failures == {}
+    assert _git(outer, "branch", "--list", "ticket")
+    assert _git(project, "branch", "--list", "booley-ticket/ticket") == ""
+    assert not project_legacy.exists()
 
 
 def test_archive_refuses_unidentified_canonical_workspace(tmp_path: Path, monkeypatch) -> None:
@@ -330,6 +410,39 @@ def test_archive_resumes_log_cleanup_after_ticket_unlink(tmp_path: Path, monkeyp
     retried = op_archive(tio, slug="ticket", force=True)
     assert retried.failures == {}
     assert retried.archived == ["Ticket"]
+
+
+def test_done_sweep_resumes_after_ticket_unlink(tmp_path: Path, monkeypatch) -> None:
+    reset_cache()
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    root, project, tio = _paired_basis_project(tmp_path)
+    ticket = _create_v2_ticket(
+        tio,
+        "ticket",
+        TicketFileSpec(summary="Ticket", ticket_type="feature", branch="main", scope=["README.md"]),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("ticket")
+    queued = project / "tickets" / "board" / "queue" / "ticket.md"
+    done = project / "tickets" / "board" / "done"
+    done.mkdir(parents=True)
+    queued.rename(done / queued.name)
+    original = archive_module._cleanup_log_dir
+
+    def fail_cleanup(_log_dir: Path, _keep_logs: bool) -> None:
+        raise OSError("injected log cleanup failure")
+
+    monkeypatch.setattr(archive_module, "_cleanup_log_dir", fail_cleanup)
+    failed = op_archive(tio)
+    assert "injected log cleanup failure" in failed.failures["ticket"]
+    assert not (done / "ticket.md").exists()
+
+    monkeypatch.setattr(archive_module, "_cleanup_log_dir", original)
+    retried = op_archive(tio)
+    marker = root / ".booley_project" / ".runtime" / "acceptance" / "archive" / "ticket.json"
+    assert retried.failures == {}
+    assert retried.archived == ["Ticket"]
+    assert json.loads(marker.read_text(encoding="utf-8"))["logs_cleaned"] is True
 
 
 @pytest.mark.parametrize(

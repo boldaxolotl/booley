@@ -26,7 +26,7 @@ from .analytics import (
     parse_transitions_log,
     usage_entries_to_steps,
 )
-from .archive import op_archive
+from .archive import op_archive, report_archive_outcome
 from .constants import (
     VALID_TYPES,
     normalize_dir,
@@ -569,16 +569,7 @@ def _cmd_archive(tio, args):
     outcome = op_archive(
         tio, slug=slug, keep_logs=args.keep_logs, force=getattr(args, "force", False)
     )
-    if outcome.archived:
-        print(f"Archived {len(outcome.archived)} ticket(s):")
-        for name in outcome.archived:
-            print(f"  - {name}")
-    if outcome.failures:
-        print("Failed to archive: " + ", ".join(outcome.failures), file=sys.stderr)
-        return 1
-    if not outcome.archived:
-        print("No tickets to archive.")
-    return 0
+    return report_archive_outcome(outcome)
 
 
 def _cmd_log_incident(tio, args):

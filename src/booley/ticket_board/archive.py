@@ -14,12 +14,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import require_bool, require_dict, require_str
 from booley.runtime.project_dir import runtime_dir
 
 from .archive_generation import plan_generation, release_generation
+from .frontmatter import parse_frontmatter
+from .git_ops import cleanup_worktree_and_branch
 from .io import scan_all_tickets
 from .paths import existing_ticket_runtime_file, ticket_log_dir
 from .persistence import atomic_replace_bytes
+from .ticket_repositories import (
+    TicketWorkspace,
+    WorkspaceDisposition,
+    has_project_ticket_branch,
+)
 
 
 @dataclass
@@ -97,7 +105,7 @@ def _save_marker(path: Path, marker: dict) -> None:
 def _load_marker(path: Path, slug: str) -> dict | None:
     if not path.exists():
         return None
-    marker = json.loads(path.read_text(encoding="utf-8"))
+    marker = require_dict(json.loads(path.read_text(encoding="utf-8")), field="archive marker")
     expected = {
         "digest",
         "file",
@@ -110,29 +118,22 @@ def _load_marker(path: Path, slug: str) -> dict | None:
         "descriptor_retired",
         "logs_cleaned",
     }
-    if not isinstance(marker, dict) or set(marker) != expected:
+    if set(marker) != expected:
         raise ValueError(f"archive marker is invalid: {path}")
-    if not isinstance(marker["file"], str):
-        raise ValueError(f"archive marker identity is invalid: {path}")
-    ticket = Path(marker["file"])
+    ticket = Path(require_str(marker, "file"))
+    for key in ("digest", "summary", "status"):
+        require_str(marker, key)
+    for key in ("keep_logs", "transitioned", "unlinked", "descriptor_retired", "logs_cleaned"):
+        require_bool(marker, key)
+    # A blank step is valid for an untouched draft Ticket.
+    if marker["step"] != "":
+        require_str(marker, "step")
     if (
         ticket.name != f"{slug}.md"
         or len(ticket.parts) != 3
         or ticket.parts[0] != "board"
         or ticket.parts[1] in {".", ".."}
-        or not isinstance(marker["digest"], str)
         or re.fullmatch(r"[0-9a-f]{64}", marker["digest"]) is None
-        or any(not isinstance(marker[key], str) for key in ("summary", "status", "step"))
-        or any(
-            not isinstance(marker[key], bool)
-            for key in (
-                "keep_logs",
-                "transitioned",
-                "unlinked",
-                "descriptor_retired",
-                "logs_cleaned",
-            )
-        )
     ):
         raise ValueError(f"archive marker identity is invalid: {path}")
     return marker
@@ -224,6 +225,18 @@ def _prepare_marker(tio: Any, slug: str, path: Path, keep_logs: bool, force: boo
         return marker
     _pending_operations(tio, slug)
     release_generation(plan_generation(Path(tio._project_root), slug, status, fields))
+    if has_project_ticket_branch(Path(tio._project_root), slug):
+        ok, detail = TicketWorkspace.retire(
+            Path(tio._project_root), slug, WorkspaceDisposition.DISCARD
+        )
+        if not ok:
+            raise RuntimeError(f"legacy project workspace cleanup failed: {detail}")
+    # find_ticket supplies the slug as a fallback alias. Only an explicitly
+    # recorded legacy branch belongs to this Ticket.
+    authored_fields, _ = parse_frontmatter(file_path.read_text(encoding="utf-8"))
+    feature_branch = authored_fields.get("feature_branch", "")
+    if feature_branch and not cleanup_worktree_and_branch(feature_branch, force=True):
+        raise RuntimeError(f"feature branch cleanup failed: {feature_branch}")
     _warn_dependents(tio, slug)
     marker = {
         "digest": digest,
@@ -283,11 +296,40 @@ def op_archive(
 
     outcome = ArchiveOutcome()
     scan_dir = tio.tickets_dir / "board" / "done"
-    if not scan_dir.is_dir():
-        return outcome
-
     for md_file in sorted(scan_dir.glob("*.md")):
         single = _archive_single(tio, md_file.stem, keep_logs, force)
         outcome.archived.extend(single.archived)
         outcome.failures.update(single.failures)
+    archive_dir = runtime_dir(Path(tio._project_root)) / "acceptance" / "archive"
+    for marker_path in sorted(archive_dir.glob("*.json")):
+        slug = marker_path.stem
+        if slug in outcome.failures:
+            continue
+        try:
+            marker = _load_marker(marker_path, slug)
+            if marker is None or marker["logs_cleaned"]:
+                continue
+            ticket_path = tio.tickets_dir / marker["file"]
+            if ticket_path.exists():
+                continue
+            single = _archive_single(tio, slug, keep_logs, force)
+            outcome.archived.extend(single.archived)
+            outcome.failures.update(single.failures)
+        except (OSError, ValueError, RuntimeError) as exc:
+            outcome.failures[slug] = str(exc)
+            print(f"Error: could not resume archive '{slug}': {exc}", file=sys.stderr)
     return outcome
+
+
+def report_archive_outcome(outcome: ArchiveOutcome) -> int:
+    """Print one archive result consistently for both CLI entry points."""
+    if outcome.archived:
+        print(f"Archived {len(outcome.archived)} ticket(s):")
+        for name in outcome.archived:
+            print(f"  - {name}")
+    if outcome.failures:
+        print("Failed to archive: " + ", ".join(outcome.failures), file=sys.stderr)
+        return 1
+    if not outcome.archived:
+        print("No tickets to archive.")
+    return 0

@@ -1242,7 +1242,7 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _cmd_board_archive(args: argparse.Namespace, tio: TicketIO) -> int:
-    from booley.ticket_board.archive import op_archive
+    from booley.ticket_board.archive import op_archive, report_archive_outcome
 
     outcome = op_archive(
         tio,
@@ -1250,16 +1250,7 @@ def _cmd_board_archive(args: argparse.Namespace, tio: TicketIO) -> int:
         keep_logs=getattr(args, "keep_logs", False),
         force=getattr(args, "force", False),
     )
-    if outcome.archived:
-        print(f"Archived {len(outcome.archived)} ticket(s):")
-        for name in outcome.archived:
-            print(f"  - {name}")
-    if outcome.failures:
-        print("Failed to archive: " + ", ".join(outcome.failures), file=sys.stderr)
-        return 1
-    if not outcome.archived:
-        print("No tickets to archive.")
-    return 0
+    return report_archive_outcome(outcome)
 
 
 def _cmd_requested_review(args: argparse.Namespace, project_root: Path, action: str) -> int:
