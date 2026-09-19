@@ -43,21 +43,28 @@ ledger resource has a disposition, active assignments and uncertain mutations ar
 reconciled, and required cleanup has evidence. Report execution status as `completed`,
 `deadline-reached`, or `operator-error`, and cleanup status as `complete` or `failed`.
 
-Write `run-summary.md` with identities, execution and cleanup status, Check Result
-counts and links, Observations, deviations, and retained review locations. It contains
-no Findings, Scenario Run Outcome, or Qualification.
+Record operator narrative in structured Observations. The helper regenerates
+`run-summary.md` from structured records before sealing; it contains no Findings,
+Scenario Run Outcome, or Qualification.
 
 Set `operator-state.json` to Protocol Stage `finish` with status `complete`, then run:
 
 ```sh
-python qa/triage.py seal-run <run-root>
+python qa/triage.py seal-run <run-root> --suite-root <frozen-suite-root>
 ```
 
-The helper validates every version-2 record, writes `evidence-manifest.json`, and
+The helper validates every version-2 record against the frozen Scenario snapshot,
+writes `evidence-manifest.json` and a deterministic `run-summary.md`, and
 writes `run-manifest.json` last. A valid manifest is the completion authority. If the
 operator stops after terminal state but before the manifest, a replacement may resume
 only to validate or regenerate the final projections and seal the same records. Once
 sealed, do not modify the run.
+
+The manifest's Scenario snapshot hash covers Scenario YAML paths and bytes, while
+`suite_revision` remains a declared label. Successful sealing establishes run-content
+admission validity against this snapshot; triage still checks its session, target
+revisions, and any needed editorial-equivalence decision separately. Review any
+result-ID diagnostics in the generated summary before handing off the run.
 
 Report the sealed artifact root to the Human Maintainer and tell them that Findings,
 outcomes, and Qualification require a separate explicit invocation of

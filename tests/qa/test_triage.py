@@ -110,6 +110,7 @@ def write_run(
     cleanup_status: str = "complete",
     execution_status: str = "completed",
     parameters: dict | None = None,
+    seal: bool = True,
 ) -> Path:
     run_root = root / run_id
     (run_root / "evidence").mkdir(parents=True)
@@ -150,7 +151,8 @@ def write_run(
     write_jsonl(run_root / "check-results.jsonl", results)
     write_jsonl(run_root / "observations.jsonl", observations or [])
     (run_root / "run-summary.md").write_text("# Run summary\n")
-    triage.seal_run(run_root)
+    if seal:
+        triage.seal_run(run_root, root / "suite")
     return run_root
 
 
@@ -263,11 +265,10 @@ def test_blocked_cause_must_follow_scenario_prerequisite_direction(tmp_path):
             step_id="root-step",
         ),
     ]
-    run_root = write_run(tmp_path, "run-1", "required", results)
-    triage_root = init_triage(tmp_path, suite)
-
+    run_root = write_run(tmp_path, "run-1", "required", results, seal=False)
     with pytest.raises(triage.TriageError, match="prerequisite direction"):
-        admit(triage_root, run_root)
+        triage.seal_run(run_root, suite)
+    assert not (run_root / "run-manifest.json").exists()
 
 
 def test_corrected_failure_and_observation_remain_candidates(tmp_path):
@@ -430,11 +431,10 @@ def test_admission_rejects_narrowed_configured_scenario_scope(tmp_path):
         "required",
         [check_result("run-1", "ok", "one", "pass")],
         parameters={"host_os": "test-os"},
+        seal=False,
     )
-    triage_root = init_triage(tmp_path, suite)
-
     with pytest.raises(triage.TriageError, match="selected Checks differ"):
-        admit(triage_root, run_root)
+        triage.seal_run(run_root, suite)
 
 
 def test_admission_rejects_changed_configured_scenario_parameters(tmp_path):
@@ -449,11 +449,10 @@ def test_admission_rejects_changed_configured_scenario_parameters(tmp_path):
         "required",
         [check_result("run-1", "ok", "check", "pass")],
         parameters={"host_os": "different"},
+        seal=False,
     )
-    triage_root = init_triage(tmp_path, suite)
-
     with pytest.raises(triage.TriageError, match="parameters differ"):
-        admit(triage_root, run_root)
+        triage.seal_run(run_root, suite)
 
 
 def test_recording_error_uses_only_sealed_evidence(tmp_path):
@@ -474,6 +473,7 @@ def test_recording_error_uses_only_sealed_evidence(tmp_path):
 
 
 def test_manifest_is_completion_authority(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
     results = [check_result("run-1", "ok", "check", "pass")]
     run_root = tmp_path / "run-1"
     (run_root / "evidence").mkdir(parents=True)
@@ -481,10 +481,100 @@ def test_manifest_is_completion_authority(tmp_path):
     complete_run_files(run_root, results)
 
     assert not (run_root / "run-manifest.json").exists()
-    sealed = triage.seal_run(run_root)
+    sealed = triage.seal_run(run_root, suite)
 
     assert sealed.run_id == "run-1"
     assert (run_root / "run-manifest.json").is_file()
+
+
+def test_seal_rejects_wrong_step_with_actionable_identity(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    result = check_result("run-1", "bad-step", "check", "fail", step_id="check")
+    root = write_run(tmp_path, "run-1", "required", [result], seal=False)
+
+    with pytest.raises(
+        triage.TriageError,
+        match="bad-step: Check check recorded Step check; required Step exercise",
+    ):
+        triage.seal_run(root, suite)
+    assert not (root / "run-manifest.json").exists()
+
+
+def test_seal_rejects_unselected_result(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(
+        tmp_path,
+        "run-1",
+        "required",
+        [
+            check_result("run-1", "extra", "check", "pass"),
+            check_result("run-1", "selected", "one", "pass"),
+        ],
+        seal=False,
+    )
+    run = triage.read_json(root / "run.json")
+    run["selected_check_ids"] = ["one"]
+    write_json(root / "run.json", run)
+
+    with pytest.raises(triage.TriageError, match="unselected Checks"):
+        triage.seal_run(root, suite)
+    assert not (root / "run-manifest.json").exists()
+
+
+def test_historical_manifest_without_scenario_digest_still_admits(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")])
+    path = root / "run-manifest.json"
+    manifest = triage.read_json(path)
+    del manifest["scenario_snapshot_sha256"]
+    write_json(path, manifest)
+
+    assert admit(init_triage(tmp_path, suite), root)["runs"]["run-1"]
+
+
+def test_snapshot_mismatch_rejected_at_admission(tmp_path):
+    write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")])
+    target = write_suite(tmp_path / "other", [("required", True)])
+    scenario_path = target / "scenarios/sample/scenario.yaml"
+    scenario_path.write_text(scenario_path.read_text() + "# editorial change\n")
+    triage_root = init_triage(tmp_path / "other", target)
+
+    with pytest.raises(triage.TriageError, match="snapshot differs"):
+        admit(triage_root, root)
+
+
+def test_summary_replaces_phantom_check_and_reports_suspicions(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    result = check_result("run-1", "uncertain", "check", "fail", observed="expected behavior")
+    result["evidence_refs"] = []
+    result["evidence_integrity"] = "uncertain"
+    root = write_run(tmp_path, "run-1", "required", [result], seal=False)
+    (root / "run-summary.md").write_text("# Failed Check phantom\n")
+    triage.seal_run(root, suite)
+    summary = (root / "run-summary.md").read_text()
+
+    assert "uncertain: expected and observed text are identical" in summary
+    assert "uncertain: no direct evidence reference" in summary
+    assert "phantom" not in summary
+    assert triage.validate_run(root).results[0]["evidence_integrity"] == "uncertain"
+    before = (root / "run-manifest.json").read_bytes()
+    triage.seal_run(root, suite)
+    assert (root / "run-manifest.json").read_bytes() == before
+
+
+def test_seal_requires_suite_root_in_api_and_cli(tmp_path):
+    root = tmp_path / "run-1"
+    with pytest.raises(triage.TriageError, match="requires --suite-root"):
+        triage.seal_run(root)
+    command = subprocess.run(
+        [sys.executable, "qa/triage.py", "seal-run", str(root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert command.returncode != 0
+    assert "--suite-root" in command.stderr
 
 
 def test_cross_run_duplicate_fails_both_runs_without_duplicate_finding(tmp_path):
@@ -814,6 +904,7 @@ def test_optional_configured_scenario_is_reported_separately(tmp_path):
 
 
 def test_version_one_run_record_is_rejected(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
     run_root = tmp_path / "run-1"
     (run_root / "evidence").mkdir(parents=True)
     (run_root / "evidence/log.txt").write_text("evidence\n")
@@ -823,7 +914,7 @@ def test_version_one_run_record_is_rejected(tmp_path):
     write_json(run_root / "run.json", run)
 
     with pytest.raises(triage.TriageError, match="2 was expected"):
-        triage.seal_run(run_root)
+        triage.seal_run(run_root, suite)
 
 
 def test_frozen_helper_revision_blocks_resume(tmp_path, monkeypatch):

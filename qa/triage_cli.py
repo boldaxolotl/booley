@@ -28,6 +28,7 @@ def parser() -> argparse.ArgumentParser:
 def add_run_commands(commands: Any) -> None:
     seal = commands.add_parser("seal-run")
     seal.add_argument("run_root", type=Path)
+    seal.add_argument("--suite-root", type=Path, required=True)
     validate = commands.add_parser("validate-run")
     validate.add_argument("run_root", type=Path)
 
@@ -107,7 +108,12 @@ def execute(args: argparse.Namespace) -> Any:
 
 
 def execute_seal(args: argparse.Namespace) -> dict[str, Any]:
-    return {"run_id": core.seal_run(args.run_root).run_id, "sealed": True}
+    run = core.seal_run(args.run_root, args.suite_root)
+    return {
+        "run_id": run.run_id,
+        "sealed": True,
+        "recording_diagnostics": core.recording_diagnostics(list(run.results)),
+    }
 
 
 def execute_validate(args: argparse.Namespace) -> dict[str, Any]:

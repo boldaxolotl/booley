@@ -37,8 +37,8 @@ transfer every still-owned resource to `cleanup-ledger.json` before execution.
 | `cleanup-ledger.json` | Mutable resource ownership, authority/scarcity, intended and actual disposition, evidence, and retention details |
 | `evidence/` | Immutable admission provenance, artifacts, logs, traces, diffs, reports, and case manifests |
 | `evidence-manifest.json` | Every retained evidence path, SHA-256, size, and referencing Check Result or Observation |
-| `run-summary.md` | Tested identities, execution and cleanup statuses, Check Result counts and links, Observations, deviations, and retained review locations; no Findings or verdicts |
-| `run-manifest.json` | Final seal: terminal statuses, record counts, evidence-manifest hash, and hashes of every final run record except itself |
+| `run-summary.md` | Deterministic projection of structured identities, selected Checks, statuses, Check Result links, Observations, evidence locations, and recording diagnostics; no Findings or verdicts |
+| `run-manifest.json` | Final seal: terminal statuses, record counts, Scenario snapshot hash, evidence-manifest hash, and hashes of every final run record except itself |
 
 Check Result statuses are `pass`, `fail`, `blocked`, or `unavailable` as defined by
 [Record](RECORD.md). `caused_by_result_ids` names exact earlier attempts. For a blocked
@@ -57,8 +57,9 @@ Human Maintainer may record a clerical interpretation correction during triage, 
 evidence already in the sealed evidence manifest. New behavioral evidence requires a
 new Scenario Run.
 
-`python qa/triage.py seal-run <run-root>` validates the terminal records, writes the
-evidence manifest, and writes `run-manifest.json` last. A valid manifest—not terminal
+`python qa/triage.py seal-run <run-root> --suite-root <frozen-suite-root>` validates
+the terminal records against the frozen Scenario snapshot, writes the evidence manifest
+and replaces the summary, then writes `run-manifest.json` last. A valid manifest—not terminal
 operator state alone—is the completion authority. A crash after the terminal
 checkpoint may resume Finish only to regenerate final projections and seal the same
 records. Once sealed, the run is immutable.
