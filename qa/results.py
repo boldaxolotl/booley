@@ -106,7 +106,7 @@ def validate_metadata(value: dict) -> None:
         raise ValueError("completed_at must be second-resolution UTC RFC 3339")
     if value["execution_status"] not in ("completed", "deadline-reached", "operator-error"):
         raise ValueError("invalid execution_status")
-    if value["cleanup_status"] not in ("complete", "failed"):
+    if value["cleanup_status"] not in ("complete", "unverified", "failed"):
         raise ValueError("invalid cleanup_status")
 
 

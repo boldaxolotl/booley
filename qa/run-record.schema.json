@@ -93,7 +93,7 @@
             "active_assignments": {"type": "array", "items": {"type": "object"}},
             "outstanding_mutations": {"type": "array", "items": {"type": "object"}},
             "execution_status": {"enum": ["completed", "deadline-reached", "operator-error"]},
-            "cleanup_status": {"enum": ["complete", "failed"]},
+            "cleanup_status": {"enum": ["complete", "unverified", "failed"]},
             "last_updated_at": {"type": "string", "format": "date-time"}
           }
         }
@@ -227,7 +227,19 @@
             "run_record_format_version": {"const": 2},
             "record_type": {"const": "cleanup-ledger"},
             "run_id": {"type": "string", "minLength": 1},
-            "resources": {"type": "array", "items": {"type": "object"}}
+            "resources": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "identity": {"type": "string", "minLength": 1},
+                  "actual_disposition": {"type": ["string", "null"]},
+                  "active_authority_possible": {"type": ["boolean", "null"]},
+                  "safe_shutdown_evidence_refs": {"$ref": "#/$defs/stringArray"},
+                  "cleanup_reason": {"type": "string", "minLength": 1}
+                }
+              }
+            }
           }
         }
       ]
@@ -284,7 +296,7 @@
             "run_id": {"type": "string", "minLength": 1},
             "sealed_at": {"type": "string", "format": "date-time"},
             "execution_status": {"enum": ["completed", "deadline-reached", "operator-error"]},
-            "cleanup_status": {"enum": ["complete", "failed"]},
+            "cleanup_status": {"enum": ["complete", "unverified", "failed"]},
             "record_counts": {
               "type": "object",
               "additionalProperties": false,

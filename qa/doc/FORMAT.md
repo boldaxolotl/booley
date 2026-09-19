@@ -34,7 +34,7 @@ transfer every still-owned resource to `cleanup-ledger.json` before execution.
 | `operator-state.json` | Mutable Protocol Stage checkpoint, active work, terminal execution status, and cleanup status |
 | `check-results.jsonl` | Append-only Check attempts with expected/observed behavior, evidence, status, correction, cause, review, integrity, deviation, recovery, and producing-Step fields |
 | `observations.jsonl` | Append-only unclassified Observations with stable identity, original text, producing Step, Check Result/cause/correction links, and evidence |
-| `cleanup-ledger.json` | Mutable resource ownership, authority/scarcity, intended and actual disposition, evidence, and retention details |
+| `cleanup-ledger.json` | Mutable resource ownership, authority/scarcity, intended and actual disposition, evidence, and retention details; new rows identify the resource and classify possible active authority |
 | `evidence/` | Immutable admission provenance, artifacts, logs, traces, diffs, reports, and case manifests |
 | `evidence-manifest.json` | Every retained evidence path, SHA-256, size, and referencing Check Result or Observation |
 | `run-summary.md` | Tested identities, execution and cleanup statuses, Check Result counts and links, Observations, deviations, and retained review locations; no Findings or verdicts |
@@ -57,11 +57,18 @@ Human Maintainer may record a clerical interpretation correction during triage, 
 evidence already in the sealed evidence manifest. New behavioral evidence requires a
 new Scenario Run.
 
-`python qa/triage.py seal-run <run-root>` validates the terminal records, writes the
-evidence manifest, and writes `run-manifest.json` last. A valid manifest—not terminal
+`cleanup_status` is `complete`, `unverified`, or `failed`. A null ledger disposition
+is a report of uncertainty, not a release or a failure. New ledger rows use `identity`,
+`actual_disposition`, and `active_authority_possible`; `safe_shutdown_evidence_refs`
+may establish shutdown despite an unknown disposition. Old sealed `complete` records
+retain their original meaning under the earlier reporting contract.
+
+`python qa/triage.py seal-run <run-root>` validates the terminal records, reconciles
+obvious cleanup contradictions, writes the evidence manifest, and writes
+`run-manifest.json` last. A valid manifest—not terminal
 operator state alone—is the completion authority. A crash after the terminal
-checkpoint may resume Finish only to regenerate final projections and seal the same
-records. Once sealed, the run is immutable.
+checkpoint may resume Finish to reconcile status and summary and seal the same
+available records. Once sealed, the run is immutable.
 
 ## Triage records
 
@@ -122,7 +129,10 @@ candidates need different dispositions.
 Independently of case dispositions, a terminal execution status other than
 `completed`, invalid or uncertain evidence integrity, or failed required cleanup
 makes the linked run incomplete unless a failure-producing disposition takes
-precedence.
+precedence. Ordinary `unverified` cleanup remains visible without independently
+making the run incomplete. If an uncertain resource may retain active authority and
+safe shutdown has no sealed evidence, the run is incomplete; unknown safety
+classification is treated the same way.
 
 Finding-producing dispositions record owner (`project`, `Booley`, `documentation`, or
 unresolved), qualification scope (`in-scope`, `out-of-scope`, or `unresolved`), and a

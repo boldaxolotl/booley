@@ -10,6 +10,7 @@ import tempfile
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,7 @@ class RunRecords:
     results: tuple[dict[str, Any], ...]
     observations: tuple[dict[str, Any], ...]
     evidence_paths: frozenset[str]
+    cleanup: dict[str, Any] = dataclass_field(default_factory=lambda: {"resources": []})
 
     @property
     def run_id(self) -> str:
@@ -286,6 +288,13 @@ def validate_run_contents(run_root: Path) -> tuple[dict[str, Any], ...]:
     evidence_paths = validate_evidence(run_root, evidence)
     validate_evidence_refs(results, evidence_paths, "check_result_id", run_root)
     validate_evidence_refs(observations, evidence_paths, "observation_id", run_root)
+    for index, resource in enumerate(cleanup["resources"], 1):
+        unknown = set(resource.get("safe_shutdown_evidence_refs", [])) - evidence_paths
+        if unknown:
+            raise TriageError(
+                f"{run_root}: {resource_identity(resource, index)}: "
+                f"unknown shutdown evidence {sorted(unknown)}"
+            )
     return run, state, cleanup, evidence, results, observations, evidence_paths
 
 
@@ -314,7 +323,7 @@ def validate_run(run_root: Path) -> RunRecords:
         if not path.is_file() or sha256_file(path) != expected:
             raise TriageError(f"{path}: sealed record changed")
     values = validate_run_contents(run_root)
-    run, state, _cleanup, evidence, results, observations, evidence_paths = values
+    run, state, cleanup, evidence, results, observations, evidence_paths = values
     validate_terminal_state(state, run_root)
     validate_manifest_counts(manifest, results, observations, evidence)
     if manifest["run_id"] != run["run_id"]:
@@ -334,6 +343,7 @@ def validate_run(run_root: Path) -> RunRecords:
         tuple(results),
         tuple(observations),
         evidence_paths,
+        cleanup,
     )
 
 
@@ -394,6 +404,68 @@ def build_evidence_manifest(
     }
 
 
+def resource_identity(resource: dict[str, Any], index: int) -> str:
+    """Give legacy ledger rows a stable display identity."""
+    for key in ("identity", "resource_id", "name", "path"):
+        if isinstance(resource.get(key), str) and resource[key]:
+            return resource[key]
+    return f"resource #{index}"
+
+
+def cleanup_findings(cleanup: dict[str, Any]) -> list[dict[str, Any]]:
+    findings = []
+    for index, resource in enumerate(cleanup["resources"], 1):
+        disposition = resource.get("actual_disposition")
+        authority = resource.get("active_authority_possible")
+        shutdown_refs = resource.get("safe_shutdown_evidence_refs", [])
+        if disposition == "release-failed":
+            kind = "failed"
+        elif disposition is None or authority is None:
+            kind = "unverified"
+        else:
+            continue
+        findings.append({
+            "identity": resource_identity(resource, index),
+            "disposition": disposition,
+            "active_authority_possible": authority,
+            "safe_shutdown_evidence_refs": shutdown_refs,
+            "reason": resource.get("cleanup_reason"),
+            "kind": kind,
+            "unresolved_authority": disposition is None and authority is not False and not shutdown_refs,
+        })
+    return findings
+
+
+def reconciled_cleanup_status(status: str, findings: list[dict[str, Any]]) -> str:
+    if status == "failed" or any(item["kind"] == "failed" for item in findings):
+        return "failed"
+    if status == "unverified" or findings:
+        return "unverified"
+    return "complete"
+
+
+def reconcile_cleanup(run_root: Path, state: dict[str, Any], cleanup: dict[str, Any]) -> None:
+    findings = cleanup_findings(cleanup)
+    status = reconciled_cleanup_status(state["cleanup_status"], findings)
+    if status == state["cleanup_status"]:
+        return
+    summary_path = run_root / "run-summary.md"
+    summary = summary_path.read_text().split("\n## Cleanup reconciliation\n", 1)[0]
+    lines = ["", "## Cleanup reconciliation", "", f"Cleanup status: `{status}`."]
+    for item in findings:
+        lines.append(
+            f"- `{item['identity']}`: disposition `{item['disposition'] or 'unknown'}`; "
+            f"active authority possible `{item['active_authority_possible']}`; "
+            f"reason: {item['reason'] or 'disposition or safety classification unverified'}."
+        )
+    atomic_text(summary_path, summary.rstrip("\n") + "\n" + "\n".join(lines) + "\n")
+    state["cleanup_status"] = status
+    state["last_updated_at"] = utc_now_rfc3339()
+    if state["status"] == "complete":
+        state["completed_at"] = state["last_updated_at"]
+    atomic_json(run_root / "operator-state.json", state)
+
+
 def seal_run(run_root: Path) -> RunRecords:
     manifest_path = run_root / "run-manifest.json"
     if manifest_path.exists():
@@ -407,8 +479,9 @@ def seal_run(run_root: Path) -> RunRecords:
     evidence = build_evidence_manifest(run_root, run["run_id"], results, observations)
     atomic_json(run_root / "evidence-manifest.json", evidence)
     values = validate_run_contents(run_root)
-    run, state, _cleanup, evidence, results, observations, _paths = values
+    run, state, cleanup, evidence, results, observations, _paths = values
     validate_terminal_state(state, run_root)
+    reconcile_cleanup(run_root, state, cleanup)
     files = {name: sha256_file(run_root / name) for name in sorted(REQUIRED_RUN_FILES)}
     manifest = {
         "run_record_format_version": RUN_FORMAT_VERSION,
@@ -1377,10 +1450,27 @@ def progress_summary(
     active = active_cases(cases)
     resolved = sum(case["disposition"] is not None for case in active)
     lines = summary_header(session, runs, candidates, active, hints, resolved)
+    lines.extend(summary_cleanup(runs))
     lines.extend(summary_hints(hints))
     lines.extend(summary_cases(active, candidates))
     lines.extend(summary_outputs(cases, candidates, qualification))
     return "\n".join(lines) + "\n"
+
+
+def summary_cleanup(runs: dict[str, RunRecords]) -> list[str]:
+    lines = ["## Cleanup reporting", ""]
+    for run_id, run in sorted(runs.items()):
+        lines.append(f"- `{run_id}`: `{run.manifest['cleanup_status']}`")
+        for item in cleanup_findings(run.cleanup):
+            safety = item["active_authority_possible"]
+            unresolved = " (unresolved active authority)" if item["unresolved_authority"] else ""
+            lines.append(
+                f"  - `{item['identity']}`: `{item['disposition'] or 'unknown'}`; "
+                f"active authority possible: `{safety}`{unresolved}; "
+                f"reason: {item['reason'] or 'not recorded'}."
+            )
+    lines.append("")
+    return lines
 
 
 def summary_header(
@@ -1591,6 +1681,30 @@ def _render_session_unlocked(triage_root: Path) -> dict[str, Any]:
     }
 
 
+def cleanup_reasons(run: RunRecords) -> tuple[list[str], bool]:
+    issues = cleanup_findings(run.cleanup)
+    unresolved = [item for item in issues if item["unresolved_authority"]]
+    requires_incomplete = bool(unresolved) and run.manifest["cleanup_status"] == "unverified"
+    reasons = []
+    if run.manifest["cleanup_status"] == "failed":
+        reasons.append("Required cleanup failed.")
+    elif run.manifest["cleanup_status"] == "unverified":
+        reasons.append("Cleanup is unverified.")
+    for item in issues:
+        reasons.append(
+            f"Cleanup resource {item['identity']}: "
+            f"{item['disposition'] or 'unknown disposition'}; "
+            f"active authority possible: {item['active_authority_possible']}."
+        )
+    if requires_incomplete:
+        reasons.append(
+            "Safe shutdown remains unresolved for: "
+            + ", ".join(item["identity"] for item in unresolved)
+            + "."
+        )
+    return reasons, requires_incomplete
+
+
 def run_outcomes_and_reasons(
     runs: dict[str, RunRecords],
     candidates: dict[str, dict[str, Any]],
@@ -1611,8 +1725,8 @@ def run_outcomes_and_reasons(
     outcomes = {}
     for run_id, run in runs.items():
         effects = conditions[run_id]
-        if run.manifest["cleanup_status"] == "failed":
-            reasons[run_id].append("Required cleanup failed.")
+        cleanup_details, unresolved = cleanup_reasons(run)
+        reasons[run_id].extend(cleanup_details)
         if run.manifest["execution_status"] != "completed":
             reasons[run_id].append(f"Execution status: {run.manifest['execution_status']}.")
         invalid_results = [
@@ -1627,13 +1741,14 @@ def run_outcomes_and_reasons(
         elif (
             "incomplete" in effects
             or run.manifest["cleanup_status"] == "failed"
+            or unresolved
             or run.manifest["execution_status"] != "completed"
             or any(result["evidence_integrity"] != "valid" for result in run.results)
         ):
             outcomes[run_id] = "incomplete"
         else:
             outcomes[run_id] = "passed"
-            reasons[run_id] = ["All selected Checks are satisfied and required cleanup completed."]
+            reasons[run_id].insert(0, "All selected Checks are satisfied.")
     return outcomes, reasons
 
 

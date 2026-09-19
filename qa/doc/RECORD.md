@@ -38,6 +38,13 @@ owned resource, add its planned identity, ownership, and intended disposition to
 immediately after acquisition and before dependent work. Keep the ledger sufficient
 for another operator to safely shut down and clean up run-owned resources without
 touching unrelated state.
+For each new ledger row, record `identity` and `active_authority_possible` (`true`,
+`false`, or `null` when unknown). Record `actual_disposition` separately from the
+intended disposition; null is valid while cleanup is uncertain. When shutdown is
+confirmed independently of disposition, put its evidence paths in
+`safe_shutdown_evidence_refs`. Record `cleanup_reason` for failed or uncertain rows.
+Legacy rows without these fields remain readable, with a positional identity shown
+by triage when no usable identity field exists.
 
 Keep immutable evidence outside mutable Project state; retained workspace state cannot
 be the only evidence for a claim. The Scenario Operator does not create

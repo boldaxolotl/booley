@@ -97,6 +97,15 @@ def test_sealed_attempts_preserve_uncorrected_failure(tmp_path):
     assert snapshot["completed_at"] == "2026-09-14T10:00:00Z"
 
 
+def test_unverified_cleanup_survives_compact_history(tmp_path):
+    run = sealed_run(tmp_path)
+    run.state["cleanup_status"] = "unverified"
+    assert results.from_sealed_run(run)["cleanup_status"] == "unverified"
+    snapshot = sample_result("run-2", "2026-09-14T10:00:00Z", {"first": "pass"})
+    snapshot["cleanup_status"] = "unverified"
+    assert results.validate_result(snapshot)["cleanup_status"] == "unverified"
+
+
 def test_report_shows_scenario_trend_and_latest_and_ever_exercised(tmp_path, monkeypatch):
     scenario = {
         "scenario_id": "sample",

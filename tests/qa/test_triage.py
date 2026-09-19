@@ -721,6 +721,134 @@ def test_cleanup_failure_is_incomplete_without_a_candidate(tmp_path):
     assert qualification["qualification"] == "incomplete"
 
 
+def reseal_with_resources(run_root: Path, resources: list[dict]) -> triage.RunRecords:
+    (run_root / "run-manifest.json").unlink()
+    ledger = triage.read_json(run_root / "cleanup-ledger.json")
+    ledger["resources"] = resources
+    write_json(run_root / "cleanup-ledger.json", ledger)
+    return triage.seal_run(run_root)
+
+
+@pytest.mark.parametrize(
+    ("resources", "status", "outcome"),
+    [
+        ([{"identity": "scratch", "actual_disposition": None,
+           "active_authority_possible": False, "cleanup_reason": "no release record"}],
+         "unverified", "passed"),
+        ([{"identity": "session", "actual_disposition": None,
+           "active_authority_possible": True, "cleanup_reason": "shutdown unknown"}],
+         "unverified", "incomplete"),
+        ([{"actual_disposition": None}], "unverified", "incomplete"),
+        ([{"identity": "session", "actual_disposition": "release-failed",
+           "active_authority_possible": True}], "failed", "incomplete"),
+    ],
+)
+def test_cleanup_reconciliation_and_qualification(tmp_path, resources, status, outcome):
+    suite = write_suite(tmp_path, [("required", True)])
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    sealed = reseal_with_resources(run_root, resources)
+    assert sealed.manifest["cleanup_status"] == status
+    assert sealed.state["cleanup_status"] == status
+    assert f"Cleanup status: `{status}`" in (run_root / "run-summary.md").read_text()
+    assert triage.seal_run(run_root).manifest_hash == sealed.manifest_hash
+
+    triage_root = init_triage(tmp_path, suite)
+    admit(triage_root, run_root)
+    summary = (triage_root / "triage-summary.md").read_text()
+    assert resources[0].get("identity", "resource #1") in summary
+    qualification = triage.finalize_session(triage_root, "finish")["qualification"]
+    assert qualification["scenario_run_outcomes"]["run-1"] == outcome
+    assert status in " ".join(qualification["scenario_run_reasons"]["run-1"]).lower() or status == "failed"
+
+
+def test_cleanup_complete_with_disposition_stays_complete(tmp_path):
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    sealed = reseal_with_resources(run_root, [{
+        "identity": "scratch", "actual_disposition": "released",
+        "active_authority_possible": False, "safe_shutdown_evidence_refs": ["evidence/log.txt"],
+    }])
+    assert sealed.manifest["cleanup_status"] == "complete"
+    assert "Cleanup reconciliation" not in (run_root / "run-summary.md").read_text()
+
+
+def test_four_unknown_dispositions_seal_and_remain_visible(tmp_path):
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    resources = [
+        {"identity": f"resource-{number}", "actual_disposition": None,
+         "active_authority_possible": False, "cleanup_reason": "disposition not observed"}
+        for number in range(4)
+    ]
+    sealed = reseal_with_resources(run_root, resources)
+    assert sealed.manifest["cleanup_status"] == "unverified"
+    summary = (run_root / "run-summary.md").read_text()
+    for number in range(4):
+        assert f"`resource-{number}`: disposition `unknown`" in summary
+
+
+def test_legacy_complete_seal_keeps_historical_outcome(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    ledger = triage.read_json(run_root / "cleanup-ledger.json")
+    ledger["resources"] = [{"name": "old resource", "actual_disposition": None}]
+    write_json(run_root / "cleanup-ledger.json", ledger)
+    manifest = triage.read_json(run_root / "run-manifest.json")
+    manifest["files"]["cleanup-ledger.json"] = triage.sha256_file(run_root / "cleanup-ledger.json")
+    write_json(run_root / "run-manifest.json", manifest)
+    assert triage.validate_run(run_root).manifest["cleanup_status"] == "complete"
+
+    triage_root = init_triage(tmp_path, suite)
+    admit(triage_root, run_root)
+    qualification = triage.finalize_session(triage_root, "finish")["qualification"]
+    assert qualification["scenario_run_outcomes"]["run-1"] == "passed"
+
+
+def test_shutdown_evidence_reference_must_be_sealed(tmp_path):
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    with pytest.raises(triage.TriageError, match="unknown shutdown evidence"):
+        reseal_with_resources(run_root, [{
+            "identity": "session", "actual_disposition": None,
+            "active_authority_possible": True,
+            "safe_shutdown_evidence_refs": ["evidence/missing.txt"],
+        }])
+
+
+def test_interrupted_cleanup_reconciliation_retries_without_duplicate_summary(tmp_path, monkeypatch):
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    (run_root / "run-manifest.json").unlink()
+    ledger = triage.read_json(run_root / "cleanup-ledger.json")
+    ledger["resources"] = [{"identity": "scratch", "actual_disposition": None,
+                            "active_authority_possible": False}]
+    write_json(run_root / "cleanup-ledger.json", ledger)
+    original = triage.atomic_json
+    interrupted = False
+
+    def fail_state_once(path, value):
+        nonlocal interrupted
+        if path.name == "operator-state.json" and not interrupted:
+            interrupted = True
+            raise OSError("interrupted")
+        original(path, value)
+
+    monkeypatch.setattr(triage, "atomic_json", fail_state_once)
+    with pytest.raises(OSError, match="interrupted"):
+        triage.seal_run(run_root)
+    sealed = triage.seal_run(run_root)
+    assert sealed.manifest["cleanup_status"] == "unverified"
+    assert (run_root / "run-summary.md").read_text().count("## Cleanup reconciliation") == 1
+
+
 @pytest.mark.parametrize("condition", ["operator-error", "invalid-evidence"])
 def test_invalid_execution_or_evidence_cannot_pass(tmp_path, condition):
     suite = write_suite(tmp_path, [("required", True)])
@@ -795,7 +923,7 @@ def test_qualification_records_input_identities_decisions_and_reasons(tmp_path):
         }
     ]
     assert qualification["scenario_run_reasons"]["run-1"] == [
-        "All selected Checks are satisfied and required cleanup completed."
+        "All selected Checks are satisfied."
     ]
 
 
