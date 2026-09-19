@@ -51,23 +51,29 @@ eligible for retention; `failed` for an observed failed release or known unsafe
 resource; `unverified` for missing or inconclusive disposition or evidence. Do not
 infer failure from an unknown disposition.
 
-Write `run-summary.md` with identities, execution and cleanup status, Check Result
-counts and links, Observations, deviations, and retained review locations. It contains
-no Findings, Scenario Run Outcome, or Qualification.
+Record operator narrative in structured Observations. The helper regenerates
+`run-summary.md` from structured records before sealing; it contains no Findings,
+Scenario Run Outcome, or Qualification.
 
 Set `operator-state.json` to Protocol Stage `finish` with status `complete`, then run:
 
 ```sh
-python qa/triage.py seal-run <run-root>
+python qa/triage.py seal-run <run-root> --suite-root <frozen-suite-root>
 ```
 
-The helper validates every version-2 record and reconciles obvious cleanup status
-contradictions with precedence `failed` > `unverified` > `complete`. It updates the
-terminal checkpoint and summary when needed, then hashes the records and writes
-`run-manifest.json` last. A valid manifest is the completion authority. If interrupted
-before the manifest, retry Finish to reconcile and seal the same available records;
-this may update terminal status and timestamp, but never reopen product work. Once
-sealed, do not modify the run.
+The helper validates every version-2 record against the frozen Scenario snapshot and
+reconciles cleanup status with precedence `failed` > `unverified` > `complete`. It
+generates the evidence manifest and summary from validated records, updates the
+terminal checkpoint when needed, and writes `run-manifest.json` last. A valid manifest
+is the completion authority. If interrupted before the manifest, retry Finish to
+reconcile and seal the same available records; this may update terminal status and
+timestamp, but never reopen product work. Once sealed, do not modify the run.
+
+The manifest's Scenario snapshot hash covers Scenario YAML paths and bytes, while
+`suite_revision` remains a declared label. Successful sealing establishes run-content
+admission validity against this snapshot; triage still checks its session, target
+revisions, and any needed editorial-equivalence decision separately. Review any
+result-ID diagnostics in the generated summary before handing off the run.
 
 For selected borrowed-resource preservation Checks, the helper rejects a `pass`
 without scoped identities and linked setup/end evidence, or `unavailable` without

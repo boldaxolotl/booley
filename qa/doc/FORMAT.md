@@ -37,8 +37,8 @@ transfer every still-owned resource to `cleanup-ledger.json` before execution.
 | `cleanup-ledger.json` | Mutable resource ownership, authority/scarcity, intended and actual disposition, evidence, and retention details; new rows identify the resource and classify possible active authority |
 | `evidence/` | Immutable admission provenance, artifacts, logs, traces, diffs, reports, and case manifests |
 | `evidence-manifest.json` | Every retained evidence path, SHA-256, size, and referencing Check Result or Observation |
-| `run-summary.md` | Tested identities, execution and cleanup statuses, Check Result counts and links, Observations, deviations, and retained review locations; no Findings or verdicts |
-| `run-manifest.json` | Final seal: terminal statuses, record counts, evidence-manifest hash, and hashes of every final run record except itself |
+| `run-summary.md` | Deterministic projection of structured identities, selected Checks, statuses, Check Result links, Observations, evidence locations, and recording diagnostics; no Findings or verdicts |
+| `run-manifest.json` | Final seal: terminal statuses, record counts, Scenario snapshot hash, evidence-manifest hash, and hashes of every final run record except itself |
 
 Check Result statuses are `pass`, `fail`, `blocked`, or `unavailable` as defined by
 [Record](RECORD.md). `caused_by_result_ids` names exact earlier attempts. For a blocked
@@ -63,9 +63,10 @@ is a report of uncertainty, not a release or a failure. New ledger rows use `ide
 may establish shutdown despite an unknown disposition. Old sealed `complete` records
 retain their original meaning under the earlier reporting contract.
 
-`python qa/triage.py seal-run <run-root>` validates the terminal records, reconciles
-obvious cleanup contradictions, writes the evidence manifest, and writes
-`run-manifest.json` last. A valid manifest—not terminal
+`python qa/triage.py seal-run <run-root> --suite-root <frozen-suite-root>` validates
+the terminal records against the frozen Scenario snapshot, reconciles cleanup status,
+generates the evidence manifest and summary, and writes `run-manifest.json` last. A
+valid manifest—not terminal
 operator state alone—is the completion authority. A crash after the terminal
 checkpoint may resume Finish to reconcile status and summary and seal the same
 available records. Once sealed, the run is immutable.
