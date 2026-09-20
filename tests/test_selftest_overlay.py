@@ -97,6 +97,55 @@ def test_stage_bad_run_overlay_shadows_runtime_assets_without_mutating_them(
 @pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
 )
+def test_doctor_shadow_keeps_projected_core_outside_generation(tmp_path: Path) -> None:
+    project_dir = tmp_path / ".booley_project"
+    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("bad\n", encoding="utf-8")
+    projected = tmp_path / ".booley-projected-demo.core"
+    projected.write_text("generated core\n", encoding="utf-8")
+    work_root = project_dir / ".runtime" / "edalize" / "sim" / "slot" / "g" / "abcd"
+    work_root.mkdir(parents=True)
+    shadow = selftest_overlay.doctor_shadow_path(tmp_path, work_root)
+
+    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", tmp_path, shadow)
+
+    assert (shadow / projected.name).is_symlink()
+    assert not any(work_root.rglob("*.core"))
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_doctor_shadow_rejects_symlinked_parent(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(selftest_overlay.SelftestOverlayError, match="shadow parent is a symlink"):
+        selftest_overlay.doctor_shadow_path(tmp_path, tmp_path / "linked" / "generation")
+
+
+def test_doctor_shadow_rejects_build_outside_project(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    with pytest.raises(selftest_overlay.SelftestOverlayError, match="outside the Project"):
+        selftest_overlay.doctor_shadow_path(project, tmp_path / "outside" / "generation")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_doctor_shadow_rejects_symlinked_generation(tmp_path: Path) -> None:
+    generation = tmp_path / "generation"
+    generation.symlink_to(tmp_path / "outside", target_is_directory=True)
+    with pytest.raises(selftest_overlay.SelftestOverlayError, match="Doctor build is a symlink"):
+        selftest_overlay.doctor_shadow_path(tmp_path, generation)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
 def test_stage_bad_run_overlay_excludes_project_dir_from_mirror(tmp_path: Path) -> None:
     """The shadow must not symlink .booley_project — it is project infra, not a
     runtime input, and FuseSoC chokes on a symlinked project dir (#586)."""
