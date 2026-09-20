@@ -40,6 +40,7 @@ from booley.flows.sim.execution import (
     SimulationTestOutcome,
 )
 from booley.flows.sim.trace_recipe import TraceMode
+from booley.flows.sim.trace_session import TraceSession
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.runtime.paths import native_bwave_binary
@@ -1116,39 +1117,39 @@ def _write_fake_trace_tools(root: Path) -> None:
         runner.chmod(0o755)
 
 
-def _assert_queryable_trace_when_bwave_is_available(
-    outcome: SimulationTargetOutcome, native_bwave: Path | None
-) -> None:
-    if native_bwave is None:
-        assert any(Path(artifact.path).suffix == ".vcd" for artifact in outcome.artifacts)
-        return
+def _assert_queryable_trace(outcome: SimulationTargetOutcome, cache_root: Path) -> None:
     traces = [artifact for artifact in outcome.artifacts if artifact.kind == "trace"]
     assert len(traces) == 1 and Path(traces[0].path).is_file()
-    probe = subprocess.run(
-        [str(native_bwave), "list", traces[0].path, "--format", "json", "--limit", "1"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=True,
-    )
-    metadata = json.loads(probe.stdout)["data"]
-    assert metadata["signal_count"] > 0
-    assert metadata["total_ticks"] > 0
+    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
+        session = TraceSession(Path(traces[0].path).parent)
+        session.postprocess(Path(traces[0].path))
+        inspection = session.inspect(session.work_bwave_path)
+    assert inspection.usable
+    assert inspection.artifact is not None
+    assert inspection.artifact.signal_count > 0
+    assert inspection.artifact.total_ticks > 0
 
 
-@pytest.mark.parametrize("native_isolation", [True, False])
+@pytest.mark.parametrize(
+    "queryable",
+    [False, pytest.param(True, marks=pytest.mark.native_bwave)],
+    ids=["execution", "queryable"],
+)
 def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_isolation: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, queryable: bool
 ) -> None:
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
+    native_bwave = native_bwave_binary()
+    if queryable and native_bwave is None:
+        pytest.skip("native B-Wave binary is required to verify a queryable Trace Artifact")
     project, _ = _write_stale_compiler_fixture(tmp_path)
     state = project / ".booley_project"
     cores = state / "cores"
     cores.mkdir()
     (project / "multi.core").rename(cores / "multi.core")
     (state / "booley.toml").write_text(
-        f"[stealth]\nenabled = true\nignore_native_cores = {str(native_isolation).lower()}\n",
+        "[stealth]\nenabled = true\nignore_native_cores = true\n",
         encoding="utf-8",
     )
     (state / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
@@ -1163,11 +1164,13 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
         return base_invoke(command, timeout=timeout)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(trace=True))
-    native_bwave = native_bwave_binary()
     for _ in range(2):
         outcome = execution.run(handle, NamedTests(("smoke",)))
         assert outcome.passed
-        _assert_queryable_trace_when_bwave_is_available(outcome, native_bwave)
+        if queryable:
+            _assert_queryable_trace(outcome, tmp_path / "bwave-cache")
+        else:
+            assert any(Path(artifact.path).suffix == ".vcd" for artifact in outcome.artifacts)
         assert any("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
         assert any("booley.flows.sim.backends.icarus" in command[-1] for command in commands)
         commands.clear()
@@ -1228,7 +1231,7 @@ def test_hook_editing_authored_core_cannot_launch_image(
     pytest.importorskip("edalize")
     project, _ = _write_stale_compiler_fixture(tmp_path)
     (project / ".booley_project" / "booley.toml").write_text(
-        '[flows.sim]\npre_run_commands = ["printf \'\\n# mutation\\n\' >> multi.core"]\n',
+        "[flows.sim]\npre_run_commands = [\"printf '\\n# mutation\\n' >> multi.core\"]\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
@@ -1246,6 +1249,43 @@ def test_hook_editing_authored_core_cannot_launch_image(
     assert outcome.infrastructure_failure is not None
     assert "compile inputs changed during setup or Pre-Sim Commands" in (
         outcome.infrastructure_failure.detail
+    )
+    assert not calls
+
+
+def test_hook_editing_generated_isolated_core_cannot_launch_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    state = project / ".booley_project"
+    cores = state / "cores"
+    cores.mkdir()
+    (project / "multi.core").rename(cores / "multi.core")
+    (state / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n"
+        "[flows.sim]\npre_run_commands = ["
+        "\"printf '\\n# mutation\\n' >> "
+        '.booley_project/tmp/fusesoc-isolated-cores/booley-isolated-multi.core"]\n',
+        encoding="utf-8",
+    )
+    (state / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    calls: list[list[str]] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        calls.append(command)
+        return base_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    outcome = execution.run(handle, NamedTests(("smoke",)))
+
+    assert outcome.infrastructure_failure is not None
+    assert (
+        "compile inputs changed during Pre-Sim Commands" in outcome.infrastructure_failure.detail
     )
     assert not calls
 

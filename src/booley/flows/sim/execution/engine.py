@@ -265,6 +265,9 @@ class SimulationExecution:
         except OSError as exc:
             detail = f"could not establish current run log: {exc}"
             return _artifact_failure(handle, attempt, None, None, detail, started)
+        prepared_surface = project_compile_surface(
+            handle.project_root, include_generated_isolated_cores=True
+        )
         prepared_inputs = snapshot_build_inputs(attempt.prepared)
         pre_sim = self._run_pre_sim(handle, attempt)
         if pre_sim is not None and pre_sim.status != "passed":
@@ -278,6 +281,13 @@ class SimulationExecution:
         if project_compile_surface(handle.project_root) != sources_before:
             raise SimulationBuildSlotError(
                 "Project compile inputs changed during setup or Pre-Sim Commands; rerun the attempt"
+            )
+        if (
+            project_compile_surface(handle.project_root, include_generated_isolated_cores=True)
+            != prepared_surface
+        ):
+            raise SimulationBuildSlotError(
+                "Project compile inputs changed during Pre-Sim Commands"
             )
         attempt = self._select_generation_for_group(handle, attempt)
         attempt = _with_workload_inputs(handle, attempt)

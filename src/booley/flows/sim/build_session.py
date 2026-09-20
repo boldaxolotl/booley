@@ -117,7 +117,9 @@ def _raise_walk_error(exc: OSError) -> None:
     raise exc
 
 
-def project_compile_surface(project_root: Path) -> dict[str, str]:
+def project_compile_surface(
+    project_root: Path, *, include_generated_isolated_cores: bool = False
+) -> dict[str, str]:
     """Snapshot Project HDL and core metadata around setup and Pre-Sim Commands."""
     suffixes = {".core", ".v", ".sv", ".vh", ".svh"}
     result: dict[str, str] = {}
@@ -134,7 +136,9 @@ def project_compile_surface(project_root: Path) -> dict[str, str]:
                 path = root / name
                 if path.suffix.lower() not in suffixes:
                     continue
-                if is_generated_isolated_core(project_root, path):
+                if not include_generated_isolated_cores and is_generated_isolated_core(
+                    project_root, path
+                ):
                     continue
                 identity = path.relative_to(project_root).as_posix()
                 if path.is_symlink():

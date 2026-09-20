@@ -138,7 +138,7 @@ def is_generated_isolated_core(project_root: Path, path: Path) -> bool:
             return False
         source = project_root / marker[len(_MARKER_PREFIX) :]
         return isolated_core_path(project_root, source) == path
-    except (OSError, ValueError):
+    except (OSError, UnicodeError, CoreProjectionError):
         return False
 
 

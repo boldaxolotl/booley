@@ -271,7 +271,11 @@ def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Pa
 
 @pytest.mark.parametrize(
     "path",
-    ["tests/bwave/test_contract.py", "src/booley/bwave/cli.py"],
+    [
+        "tests/bwave/test_contract.py",
+        "src/booley/bwave/cli.py",
+        "tests/flows/sim/test_execution_engine.py",
+    ],
 )
 def test_native_bwave_changes_require_the_owning_integration_job(
     tmp_path: Path, path: str

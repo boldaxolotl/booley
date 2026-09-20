@@ -80,6 +80,32 @@ def test_compile_surface_skips_only_owned_isolated_core_projections(tmp_path: Pa
     assert foreign.relative_to(tmp_path).as_posix() in surface
     assert any(name.startswith(linked.relative_to(tmp_path).as_posix()) for name in surface)
 
+    linked.unlink()
+    surface = project_compile_surface(tmp_path)
+    prepared_surface = project_compile_surface(tmp_path, include_generated_isolated_cores=True)
+    assert generated.relative_to(tmp_path).as_posix() in prepared_surface
+    generated.write_text(generated.read_text(encoding="utf-8") + "# mutated\n", encoding="utf-8")
+    assert project_compile_surface(tmp_path) == surface
+    assert (
+        project_compile_surface(tmp_path, include_generated_isolated_cores=True)
+        != prepared_surface
+    )
+
+
+def test_compile_surface_hashes_foreign_isolated_cores_without_decoding(tmp_path: Path) -> None:
+    registry = isolated_core_path(tmp_path, tmp_path / ".booley_project/cores/design.core").parent
+    registry.mkdir(parents=True)
+    invalid_utf8 = registry / "booley-isolated-invalid.core"
+    invalid_utf8.write_bytes(b"\xff\n")
+    invalid_source = registry / "booley-isolated-foreign.core"
+    invalid_source.write_text(
+        "CAPI=2:\n# Booley stealth core projection: outside.core\n", encoding="utf-8"
+    )
+
+    surface = project_compile_surface(tmp_path)
+    assert invalid_utf8.relative_to(tmp_path).as_posix() in surface
+    assert invalid_source.relative_to(tmp_path).as_posix() in surface
+
 
 def _handle(root: Path) -> TargetHandle:
     (root / ".booley_project").mkdir(exist_ok=True)
