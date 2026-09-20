@@ -123,6 +123,25 @@ def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
     return isolated_registry_root(root) / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
 
 
+def is_generated_isolated_core(project_root: Path, path: Path) -> bool:
+    """Identify a directly contained Booley projection, not an authored core."""
+    if path.parent != isolated_registry_root(project_root) or path.is_symlink():
+        return False
+    if not path.name.startswith(_ISOLATED_CORE_PREFIX) or path.suffix != ".core":
+        return False
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            if stream.readline().strip() != "CAPI=2:":
+                return False
+            marker = stream.readline().strip()
+        if not marker.startswith(_MARKER_PREFIX):
+            return False
+        source = project_root / marker[len(_MARKER_PREFIX) :]
+        return isolated_core_path(project_root, source) == path
+    except (OSError, ValueError):
+        return False
+
+
 def isolated_core_contents_equivalent(
     left: Path,
     right: Path,

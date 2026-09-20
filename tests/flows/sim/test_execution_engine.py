@@ -42,6 +42,7 @@ from booley.flows.sim.execution import (
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+from booley.runtime.paths import native_bwave_binary
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -1083,6 +1084,95 @@ def test_each_pre_sim_hook_runs_in_its_launched_generation(
     assert "HOOK=b" in observed[1]
 
 
+def _write_fake_trace_tools(root: Path) -> None:
+    compiler = root / "bin" / "iverilog"
+    compiler.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "output = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])\n"
+        "output.write_text('[SIM_RESULT] PASSED\\n')\n",
+        encoding="utf-8",
+    )
+    runner_source = (
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "image = next(pathlib.Path(arg) for arg in sys.argv[1:] "
+        "if pathlib.Path(arg).is_file())\n"
+        "print(image.read_text(), end='')\n"
+        "pathlib.Path('dump.vcd').write_text(\n"
+        "    '$date\\nnow\\n$end\\n$timescale 1ns $end\\n'\n"
+        "    '$scope module tb $end\\n$var wire 1 ! signal $end\\n'\n"
+        "    '$upscope $end\\n$enddefinitions $end\\n#0\\n0!\\n#1\\n1!\\n'\n"
+        ")\n"
+    )
+    if os.name == "nt":
+        (root / "bin" / "trace_vvp.py").write_text(runner_source, encoding="utf-8")
+        (root / "bin" / "vvp.bat").write_text(
+            '@echo off\npython "%~dp0trace_vvp.py" %*\n', encoding="utf-8"
+        )
+    else:
+        runner = root / "bin" / "vvp"
+        runner.write_text(runner_source, encoding="utf-8")
+        runner.chmod(0o755)
+
+
+def _assert_queryable_trace_when_bwave_is_available(
+    outcome: SimulationTargetOutcome, native_bwave: Path | None
+) -> None:
+    if native_bwave is None:
+        assert any(Path(artifact.path).suffix == ".vcd" for artifact in outcome.artifacts)
+        return
+    traces = [artifact for artifact in outcome.artifacts if artifact.kind == "trace"]
+    assert len(traces) == 1 and Path(traces[0].path).is_file()
+    probe = subprocess.run(
+        [str(native_bwave), "list", traces[0].path, "--format", "json", "--limit", "1"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    metadata = json.loads(probe.stdout)["data"]
+    assert metadata["signal_count"] > 0
+    assert metadata["total_ticks"] > 0
+
+
+@pytest.mark.parametrize("native_isolation", [True, False])
+def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_isolation: bool
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    state = project / ".booley_project"
+    cores = state / "cores"
+    cores.mkdir()
+    (project / "multi.core").rename(cores / "multi.core")
+    (state / "booley.toml").write_text(
+        f"[stealth]\nenabled = true\nignore_native_cores = {str(native_isolation).lower()}\n",
+        encoding="utf-8",
+    )
+    (state / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    _write_fake_trace_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    commands: list[list[str]] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        commands.append(command)
+        return base_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(trace=True))
+    native_bwave = native_bwave_binary()
+    for _ in range(2):
+        outcome = execution.run(handle, NamedTests(("smoke",)))
+        assert outcome.passed
+        _assert_queryable_trace_when_bwave_is_available(outcome, native_bwave)
+        assert any("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
+        assert any("booley.flows.sim.backends.icarus" in command[-1] for command in commands)
+        commands.clear()
+
+
 def test_hook_editing_project_source_after_setup_cannot_launch_staged_old_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1108,6 +1198,56 @@ def test_hook_editing_project_source_after_setup_cannot_launch_staged_old_copy(
     assert outcome.infrastructure_failure.kind == "build"
     assert "changed during setup or Pre-Sim Commands" in outcome.infrastructure_failure.detail
     assert not commands
+
+
+def test_hook_editing_staged_source_cannot_launch_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    (project / ".booley_project" / "booley.toml").write_text(
+        '[flows.sim]\npre_run_commands = ["printf MUTATED >> '
+        '\\"$BOOLEY_BUILD_ROOT/src/acme_lib_multi_1/tb.sv\\""]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    invoke = _subprocess_invoker(project)
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    outcome = execution.run(handle, NamedTests(("smoke",)))
+
+    assert outcome.infrastructure_failure is not None
+    assert "build input changed during Pre-Sim Commands" in outcome.infrastructure_failure.detail
+
+
+def test_hook_editing_authored_core_cannot_launch_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    (project / ".booley_project" / "booley.toml").write_text(
+        '[flows.sim]\npre_run_commands = ["printf \'\\n# mutation\\n\' >> multi.core"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    calls: list[list[str]] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        calls.append(command)
+        return base_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    outcome = execution.run(handle, NamedTests(("smoke",)))
+
+    assert outcome.infrastructure_failure is not None
+    assert "compile inputs changed during setup or Pre-Sim Commands" in (
+        outcome.infrastructure_failure.detail
+    )
+    assert not calls
 
 
 def test_generation_allocation_failure_is_typed_infrastructure(tmp_path: Path) -> None:
