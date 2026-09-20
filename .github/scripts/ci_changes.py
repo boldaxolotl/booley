@@ -93,6 +93,7 @@ _RELEASE_SENSITIVE_FILES = {
 _STANDARD_IMAGE_PREFIXES = _RELEASE_SENSITIVE_PREFIXES
 _STANDARD_IMAGE_FILES = _RELEASE_SENSITIVE_FILES
 _NATIVE_BWAVE_PREFIXES = ("src/booley/bwave/", "tests/bwave/")
+_NATIVE_BWAVE_FILES = {"tests/flows/sim/test_execution_engine.py"}
 _SIDECAR_PREFIXES = (
     "src/booley/docker/",
     "src/booley/eda/provisioning/licensing/",
@@ -196,7 +197,7 @@ def _path_categories(path: str) -> set[str]:
     categories.update(_release_image_categories(path))
     categories.update(_riscv_image_categories(path))
     categories.update(_recovery_categories(path))
-    if path.startswith(_NATIVE_BWAVE_PREFIXES):
+    if path.startswith(_NATIVE_BWAVE_PREFIXES) or path in _NATIVE_BWAVE_FILES:
         categories.add("native_bwave")
     categories.update(_sidecar_categories(path))
     if path.startswith("crates/") or path in {"Cargo.lock", "Cargo.toml"}:

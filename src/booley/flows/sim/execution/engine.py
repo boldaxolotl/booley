@@ -38,6 +38,8 @@ from booley.flows.sim.build_session import (
     SimulationBuildSlotError,
     preview_generation_root,
     project_compile_surface,
+    snapshot_build_inputs,
+    verify_existing_build_inputs,
 )
 from booley.flows.sim.config import (
     resolve_cycle_sentinels,
@@ -263,6 +265,10 @@ class SimulationExecution:
         except OSError as exc:
             detail = f"could not establish current run log: {exc}"
             return _artifact_failure(handle, attempt, None, None, detail, started)
+        prepared_surface = project_compile_surface(
+            handle.project_root, include_generated_isolated_cores=True
+        )
+        prepared_inputs = snapshot_build_inputs(attempt.prepared)
         pre_sim = self._run_pre_sim(handle, attempt)
         if pre_sim is not None and pre_sim.status != "passed":
             failure = (
@@ -271,9 +277,17 @@ class SimulationExecution:
                 else _pre_sim_failure
             )
             return failure(handle, attempt, pre_sim, started)
+        verify_existing_build_inputs(attempt.prepared, prepared_inputs)
         if project_compile_surface(handle.project_root) != sources_before:
             raise SimulationBuildSlotError(
                 "Project compile inputs changed during setup or Pre-Sim Commands; rerun the attempt"
+            )
+        if (
+            project_compile_surface(handle.project_root, include_generated_isolated_cores=True)
+            != prepared_surface
+        ):
+            raise SimulationBuildSlotError(
+                "Project compile inputs changed during Pre-Sim Commands"
             )
         attempt = self._select_generation_for_group(handle, attempt)
         attempt = _with_workload_inputs(handle, attempt)

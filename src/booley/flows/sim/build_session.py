@@ -30,6 +30,7 @@ from booley.core.file_lock import (
 from booley.flows import edam as edam_layer
 from booley.flows.run_log import RUN_LOG_NAME
 from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.fusesoc.core_projection import is_generated_isolated_core
 from booley.targets.domain import TargetHandle
 
 from .build import PreparedSimulationBuild
@@ -80,7 +81,7 @@ def _runtime_artifacts(prepared: PreparedSimulationBuild) -> tuple[Path, ...]:
     return images
 
 
-def _build_input_hashes(prepared: PreparedSimulationBuild) -> dict[str, str]:
+def snapshot_build_inputs(prepared: PreparedSimulationBuild) -> dict[str, str]:
     """Snapshot files already present in a newly resolved generation."""
     root = prepared.work_root
     hashes: dict[str, str] = {}
@@ -103,11 +104,22 @@ def _build_input_hashes(prepared: PreparedSimulationBuild) -> dict[str, str]:
         raise SimulationBuildSlotError(f"cannot read generated build input: {exc}") from exc
 
 
+def verify_existing_build_inputs(
+    prepared: PreparedSimulationBuild, before: Mapping[str, str]
+) -> None:
+    """Reject edits to staged inputs while allowing new Pre-Sim outputs."""
+    after = snapshot_build_inputs(prepared)
+    if any(after.get(name) != digest for name, digest in before.items()):
+        raise SimulationBuildSlotError("Simulation build input changed during Pre-Sim Commands")
+
+
 def _raise_walk_error(exc: OSError) -> None:
     raise exc
 
 
-def project_compile_surface(project_root: Path) -> dict[str, str]:
+def project_compile_surface(
+    project_root: Path, *, include_generated_isolated_cores: bool = False
+) -> dict[str, str]:
     """Snapshot Project HDL and core metadata around setup and Pre-Sim Commands."""
     suffixes = {".core", ".v", ".sv", ".vh", ".svh"}
     result: dict[str, str] = {}
@@ -123,6 +135,10 @@ def project_compile_surface(project_root: Path) -> dict[str, str]:
             for name in names:
                 path = root / name
                 if path.suffix.lower() not in suffixes:
+                    continue
+                if not include_generated_isolated_cores and is_generated_isolated_core(
+                    project_root, path
+                ):
                     continue
                 identity = path.relative_to(project_root).as_posix()
                 if path.is_symlink():
@@ -472,7 +488,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         """Capture the bytes present immediately before compilation."""
         if self._lock is None:
             raise SimulationBuildSlotError("Simulation slot is not leased")
-        return _build_input_hashes(prepared)
+        return snapshot_build_inputs(prepared)
 
     def reusable_key(
         self, prepared: PreparedSimulationBuild, inputs: Mapping[str, str], *, hooks: bool
@@ -635,7 +651,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         if not root.is_relative_to((self.slot / _GENERATION_DIR).resolve()):
             raise SimulationBuildSlotError(f"build root escaped leased slot: {root}")
         try:
-            current_inputs = _build_input_hashes(prepared)
+            current_inputs = snapshot_build_inputs(prepared)
             if any(current_inputs.get(name) != digest for name, digest in inputs.items()):
                 raise SimulationBuildSlotError("Simulation build input changed during compilation")
             if key is not None and self.reusable_key(prepared, inputs, hooks=False) != key:
@@ -712,4 +728,6 @@ __all__ = [
     "preview_generation_root",
     "project_compile_surface",
     "simulation_build_slot",
+    "snapshot_build_inputs",
+    "verify_existing_build_inputs",
 ]

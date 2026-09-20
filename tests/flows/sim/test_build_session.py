@@ -24,6 +24,7 @@ from booley.flows.sim.build_session import (
     simulation_build_slot,
 )
 from booley.fusesoc import selftest_overlay
+from booley.fusesoc.core_projection import isolated_core_path
 from booley.fusesoc.selftest_overlay import doctor_shadow_path
 from booley.targets.domain import TargetHandle
 
@@ -55,6 +56,57 @@ def test_compile_surface_does_not_require_project_initialization(tmp_path: Path)
     generated.write_text("module generated; endmodule\n", encoding="utf-8")
 
     assert set(project_compile_surface(tmp_path)) == {"counter.sv"}
+
+
+def test_compile_surface_skips_only_owned_isolated_core_projections(tmp_path: Path) -> None:
+    authored = tmp_path / ".booley_project" / "cores" / "design.core"
+    authored.parent.mkdir(parents=True)
+    authored.write_text("CAPI=2:\nname: ::design:0\n", encoding="utf-8")
+    overlay = authored.with_name("design.booleytrace.core")
+    generated = isolated_core_path(tmp_path, overlay)
+    generated.parent.mkdir(parents=True)
+    generated.write_text(
+        "CAPI=2:\n"
+        "# Booley stealth core projection: .booley_project/cores/design.booleytrace.core\n"
+        "name: ::design-booleytrace:0\n",
+        encoding="utf-8",
+    )
+    foreign = generated.parent / "foreign.core"
+    foreign.write_text("CAPI=2:\nname: ::foreign:0\n", encoding="utf-8")
+    linked = generated.parent / "booley-isolated-linked.core"
+    linked.symlink_to(generated.name)
+
+    surface = project_compile_surface(tmp_path)
+    assert authored.relative_to(tmp_path).as_posix() in surface
+    assert generated.relative_to(tmp_path).as_posix() not in surface
+    assert foreign.relative_to(tmp_path).as_posix() in surface
+    assert any(name.startswith(linked.relative_to(tmp_path).as_posix()) for name in surface)
+
+    linked.unlink()
+    surface = project_compile_surface(tmp_path)
+    prepared_surface = project_compile_surface(tmp_path, include_generated_isolated_cores=True)
+    assert generated.relative_to(tmp_path).as_posix() in prepared_surface
+    generated.write_text(generated.read_text(encoding="utf-8") + "# mutated\n", encoding="utf-8")
+    assert project_compile_surface(tmp_path) == surface
+    assert (
+        project_compile_surface(tmp_path, include_generated_isolated_cores=True)
+        != prepared_surface
+    )
+
+
+def test_compile_surface_hashes_foreign_isolated_cores_without_decoding(tmp_path: Path) -> None:
+    registry = isolated_core_path(tmp_path, tmp_path / ".booley_project/cores/design.core").parent
+    registry.mkdir(parents=True)
+    invalid_utf8 = registry / "booley-isolated-invalid.core"
+    invalid_utf8.write_bytes(b"\xff\n")
+    invalid_source = registry / "booley-isolated-foreign.core"
+    invalid_source.write_text(
+        "CAPI=2:\n# Booley stealth core projection: outside.core\n", encoding="utf-8"
+    )
+
+    surface = project_compile_surface(tmp_path)
+    assert invalid_utf8.relative_to(tmp_path).as_posix() in surface
+    assert invalid_source.relative_to(tmp_path).as_posix() in surface
 
 
 def _handle(root: Path) -> TargetHandle:
@@ -89,12 +141,12 @@ def test_generated_inputs_reject_symlinks_and_exclude_runtime_outputs(tmp_path: 
     (root / "run.log").write_text("ignored", encoding="utf-8")
     (root / ".booley-adapter-result.json").write_text("ignored", encoding="utf-8")
     prepared = SimpleNamespace(work_root=root)
-    assert build_session._build_input_hashes(prepared) == {
+    assert build_session.snapshot_build_inputs(prepared) == {
         "source.sv": hashlib.sha256(source.read_bytes()).hexdigest()
     }
     (root / "alias.sv").symlink_to(source)
     with pytest.raises(SimulationBuildSlotError, match="symlinked"):
-        build_session._build_input_hashes(prepared)
+        build_session.snapshot_build_inputs(prepared)
 
 
 @pytest.mark.parametrize(
