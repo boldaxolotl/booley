@@ -42,6 +42,7 @@ from booley.flows.sim.execution import (
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -846,17 +847,7 @@ def test_conflicting_runtime_input_is_typed_infrastructure_failure(tmp_path: Pat
     invoke.assert_not_called()
 
 
-def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
-    project = tmp_path / "project"
-    state = _write_runtime_input_project(project)
-    fake_bin = _write_fake_icarus_tools(tmp_path)
-    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
-
-    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+def _run_real_icarus(project: Path, handle: TargetHandle) -> SimulationTargetOutcome:
     real_resolve = fusesoc_registry.resolve_target_handle
     fusesoc_cmd = (
         list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
@@ -877,7 +868,44 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
             **{**kwargs, "fusesoc_cmd": fusesoc_cmd},
         ),
     ):
-        outcome = execution.run(handle, NamedTests(("dhry",)))
+        return execution.run(handle, NamedTests(("dhry",)))
+
+
+def _run_sim_cli(project: Path) -> subprocess.CompletedProcess[str]:
+    source = Path(__file__).resolve().parents[3] / "src"
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from booley.harness.booley import main; raise SystemExit(main())",
+            "flow",
+            "sim",
+            "--target",
+            "sim",
+            "--test",
+            "dhry",
+        ],
+        cwd=project,
+        env={**os.environ, "PYTHONPATH": str(source), "BOOLEY_CONTAINER": "1"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project)
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    outcome = _run_real_icarus(project, handle)
 
     edam = next((state / ".runtime").rglob("*.eda.yml"))
     resolved = fusesoc_registry.parse_edam(
@@ -890,6 +918,45 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
     ] == [("firmware.hex", "user")]
     assert outcome.passed is True
     assert not (project / "firmware.hex").is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Doctor runtime shadow requires symlinks")
+def test_projected_core_bad_overlay_reaches_design_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project)
+    (project / ".booley-projected-demo.core").write_text(
+        "CAPI=2:\nname: acme:lib:projected:1\n", encoding="utf-8"
+    )
+    overlay = selftest_overlay.bad_overlay_dir(state, "sim") / "firmware.hex"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("broken\n", encoding="utf-8")
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    (fake_bin / "vvp").write_text(
+        "#!/bin/sh\n"
+        "if grep -qx broken firmware.hex; then\n"
+        "  echo '[SIM_RESULT] FAILED'\n"
+        "  exit 1\n"
+        "fi\n"
+        "echo '[SIM_RESULT] PASSED'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    reset_cache()
+
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    outcome = _run_real_icarus(project, handle)
+
+    assert outcome.verdict == "fail"
+    assert outcome.infrastructure_failure is None
+    assert any(test.verdict == "fail" for test in outcome.tests), outcome.tests
+    result = _run_sim_cli(project)
+    assert result.returncode == 1, result.stdout + result.stderr
 
 
 def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(

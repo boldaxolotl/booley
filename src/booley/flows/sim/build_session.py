@@ -589,8 +589,9 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         if self._lock is None or root.parent != self.slot / _GENERATION_DIR or root.is_symlink():
             raise SimulationBuildSlotError(f"unsafe candidate cleanup path: {root}")
         try:
-            shutil.rmtree(root)
             selftest_overlay.remove_doctor_shadow(self.handle.project_root, root)
+            if root.exists():
+                shutil.rmtree(root)
         except OSError as exc:
             raise SimulationBuildSlotError(f"cannot discard unused candidate: {exc}") from exc
 

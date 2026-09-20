@@ -23,6 +23,7 @@ from booley.flows.sim.build_session import (
     project_compile_surface,
     simulation_build_slot,
 )
+from booley.fusesoc import selftest_overlay
 from booley.fusesoc.selftest_overlay import doctor_shadow_path
 from booley.targets.domain import TargetHandle
 
@@ -422,6 +423,60 @@ def test_discard_candidate_removes_only_its_doctor_shadow(tmp_path: Path) -> Non
         assert not discarded_shadow.exists()
         assert retained.is_dir()
         assert retained_shadow.is_dir()
+
+
+def test_discard_candidate_retries_after_shadow_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = SimulationBuildSession(_handle(tmp_path))
+    with session:
+        candidate = session.new_generation()
+        shadow = doctor_shadow_path(tmp_path, candidate)
+        shadow.mkdir()
+        remove = selftest_overlay.remove_doctor_shadow
+        attempts = 0
+
+        def fail_once(project_root: Path, work_root: Path) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("interrupted shadow cleanup")
+            remove(project_root, work_root)
+
+        monkeypatch.setattr(selftest_overlay, "remove_doctor_shadow", fail_once)
+        with pytest.raises(SimulationBuildSlotError, match="interrupted shadow cleanup"):
+            session.discard_candidate(candidate)
+        assert candidate.is_dir()
+        assert shadow.is_dir()
+
+        session.discard_candidate(candidate)
+        session.discard_candidate(candidate)
+        assert not candidate.exists()
+        assert not shadow.exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) -> None:
+    session = SimulationBuildSession(_handle(tmp_path))
+    overlay = selftest_overlay.bad_overlay_dir(tmp_path / ".booley_project", "sim") / "fixture.hex"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("bad\n", encoding="utf-8")
+    (tmp_path / ".booley-projected-demo.core").write_text("core\n", encoding="utf-8")
+    with session:
+        generation = session.new_generation()
+        build_input = generation / "input.sv"
+        build_input.write_text("module demo; endmodule\n", encoding="utf-8")
+        shadow = doctor_shadow_path(tmp_path, generation)
+        selftest_overlay.stage_bad_run_overlay(
+            tmp_path / ".booley_project", "sim", tmp_path, shadow
+        )
+
+        assert (shadow / ".booley-projected-demo.core").is_symlink()
+        assert session.capture_inputs(SimpleNamespace(work_root=generation)) == {
+            "input.sv": hashlib.sha256(build_input.read_bytes()).hexdigest()
+        }
 
 
 def test_authorization_rejects_unleased_escaped_and_changed_builds(tmp_path: Path) -> None:
