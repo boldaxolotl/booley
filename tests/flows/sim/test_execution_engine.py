@@ -1120,10 +1120,14 @@ def _write_fake_trace_tools(root: Path) -> None:
 def _assert_queryable_trace(outcome: SimulationTargetOutcome, cache_root: Path) -> None:
     traces = [artifact for artifact in outcome.artifacts if artifact.kind == "trace"]
     assert len(traces) == 1 and Path(traces[0].path).is_file()
+    trace_path = Path(traces[0].path)
+    assert trace_path.suffix in {".fst", ".vcd"}
     with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
-        session = TraceSession(Path(traces[0].path).parent)
-        session.postprocess(Path(traces[0].path))
-        inspection = session.inspect(session.work_bwave_path)
+        session = TraceSession(trace_path.parent)
+        if trace_path.suffix == ".vcd":
+            session.postprocess(trace_path)
+            trace_path = session.work_bwave_path
+        inspection = session.inspect(trace_path)
     assert inspection.usable
     assert inspection.artifact is not None
     assert inspection.artifact.signal_count > 0
