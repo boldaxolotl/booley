@@ -590,7 +590,7 @@ def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
         detail = _FAILED_ACTION_DETAILS[failed.kind]
     elif refused and refused.kind is LineEndingActionKind.NORMALIZE_FILES:
         detail = refused.detail or "candidate unsafe"
-        detail = "dirty tree" if detail.startswith("working tree has") else "candidate unsafe"
+        detail = "dirty tree" if detail.startswith("working tree has") else detail
     elif report.actions:
         observation_detail = next(
             (detail for code, detail in _OBSERVATION_RESULT_DETAILS if code in codes),
@@ -642,7 +642,10 @@ def _step_line_endings(ctx: InitContext, project_dir: Path | None = None) -> Non
         display = line_ending_repository_display(failure.role, failure.candidate)
         warn(f"could not inspect {display}: {failure.detail}")
         details.append(f"{failure.role}: {failure.detail}")
-    status = "ok" if report.status is LineEndingStatus.SAFE else "warn"
+    if report.status is LineEndingStatus.SAFE:
+        status = "ok"
+    else:
+        status = "warn" if ctx.check_only else "err"
     if len(report.repositories) == 1 and not report.discovery_failures:
         detail = _line_ending_result_detail(report.repositories[0])
     elif status == "ok":
