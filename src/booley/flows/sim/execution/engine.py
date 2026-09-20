@@ -760,9 +760,9 @@ def _plusarg_key(value: str) -> str | None:
     return None if stripped.startswith("-") else stripped.partition("=")[0] or None
 
 
-def _simulation_run_cwd(root: Path, build_dir: str) -> str:
+def _simulation_run_cwd(root: Path, work_root: Path) -> str:
     if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND:
-        return (Path(build_dir) / selftest_overlay.BAD_RUN_CWD_DIR).as_posix()
+        return selftest_overlay.doctor_shadow_path(root, work_root).relative_to(root).as_posix()
     return resolve_run_cwd(root)
 
 
@@ -785,7 +785,7 @@ def prepare_simulation_work(
     return PreparedSimulationWork(
         adapter="cocotb" if cocotb else prepared.eda_tool,
         build_dir=rel,
-        run_cwd=_simulation_run_cwd(root, rel),
+        run_cwd=_simulation_run_cwd(root, prepared.work_root),
         timeout_s=max(1, (options.timeout_ms or resolve_sim_timeout_ms(root)) // 1000),
         eda_tool=prepared.eda_tool,
         max_rundir_bytes=resolve_max_rundir_bytes(root),
@@ -823,7 +823,7 @@ def _preview_work(
     return PreparedSimulationWork(
         adapter="cocotb" if cocotb else eda_tool,
         build_dir=rel,
-        run_cwd=_simulation_run_cwd(root, rel),
+        run_cwd=_simulation_run_cwd(root, root / rel),
         timeout_s=max(1, execution._effective_timeout_ms(handle) // 1000),
         eda_tool=eda_tool,
         max_rundir_bytes=resolve_max_rundir_bytes(root),
