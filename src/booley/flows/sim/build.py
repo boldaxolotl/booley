@@ -156,7 +156,7 @@ def _prepare_simulation_build(
             f"simulator {eda_tool!r} is not supported by the public sim Flow; "
             "select a Verilator or Icarus Target"
         )
-    _stage_doctor_overlay(root, resolved.build_root)
+    _stage_doctor_overlay(root, work_root, resolved.build_root)
     try:
         inspection = TargetCatalog.build(root).inspect(handle)
         fileset = {
@@ -180,7 +180,7 @@ def _prepare_simulation_build(
     )
 
 
-def _stage_doctor_overlay(project_root: Path, build_root: Path) -> None:
+def _stage_doctor_overlay(project_root: Path, work_root: Path, build_root: Path) -> None:
     """Apply Doctor's bad fixture to isolated build and runtime views."""
     import os
 
@@ -198,7 +198,7 @@ def _stage_doctor_overlay(project_root: Path, build_root: Path) -> None:
         project_dir,
         "sim",
         run_cwd,
-        build_root / selftest_overlay.BAD_RUN_CWD_DIR,
+        selftest_overlay.doctor_shadow_path(project_root, work_root),
     )
 
 

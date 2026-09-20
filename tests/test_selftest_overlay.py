@@ -4,9 +4,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from booley.flows.sim.build_session import _build_input_hashes
+from booley.flows.sim.execution.engine import _simulation_run_cwd
 from booley.fusesoc import selftest_overlay
 
 
@@ -92,6 +95,36 @@ def test_stage_bad_run_overlay_shadows_runtime_assets_without_mutating_them(
     assert (shadow / "vectors" / "input.hex").read_text(encoding="utf-8") == "vector\n"
     assert (shadow / "vectors").is_symlink()
     assert runtime_file.read_text(encoding="utf-8") == "good\n"
+
+
+def test_doctor_shadow_does_not_enter_generated_build_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("bad\n", encoding="utf-8")
+    projected = tmp_path / ".booley-projected-demo.core"
+    projected.write_text("generated core\n", encoding="utf-8")
+    work_root = project_dir / ".runtime" / "edalize" / "sim" / "slot" / "g" / "abcd"
+    work_root.mkdir(parents=True)
+    shadow = selftest_overlay.doctor_shadow_path(tmp_path, work_root)
+
+    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", tmp_path, shadow)
+
+    assert (shadow / projected.name).is_symlink()
+    assert _build_input_hashes(SimpleNamespace(work_root=work_root)) == {}
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    assert _simulation_run_cwd(tmp_path, work_root) == shadow.relative_to(tmp_path).as_posix()
+
+
+def test_doctor_shadow_rejects_symlinked_parent(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(selftest_overlay.SelftestOverlayError, match="shadow parent is a symlink"):
+        selftest_overlay.doctor_shadow_path(tmp_path, tmp_path / "linked" / "generation")
 
 
 @pytest.mark.skipif(

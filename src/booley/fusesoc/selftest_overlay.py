@@ -22,6 +22,23 @@ class SelftestOverlayError(RuntimeError):
     """A Doctor self-test overlay is unsafe or cannot be staged."""
 
 
+def doctor_shadow_path(project_root: Path, work_root: Path) -> Path:
+    """Locate this build's private runtime view outside its input generation."""
+    root = project_root.resolve()
+    try:
+        parent = work_root.parent.relative_to(root)
+    except ValueError as exc:
+        raise SelftestOverlayError(f"Doctor build is outside the Project: {work_root}") from exc
+    current = root
+    for part in parent.parts:
+        current /= part
+        if current.is_symlink():
+            raise SelftestOverlayError(f"Doctor shadow parent is a symlink: {current}")
+    if work_root.is_symlink():
+        raise SelftestOverlayError(f"Doctor build is a symlink: {work_root}")
+    return work_root.parent / f"{BAD_RUN_CWD_DIR}-{work_root.name}"
+
+
 def bad_overlay_dir(project_dir: Path, flow_name: str) -> Path:
     """Return the conventional bad-fixture overlay directory for *flow_name*."""
     return project_dir / "selftest" / flow_name / _BAD_OVERLAY_DIR
@@ -73,6 +90,11 @@ def _remove_shadow(path: Path) -> None:
         path.unlink()
     elif path.is_dir():
         shutil.rmtree(path)
+
+
+def remove_doctor_shadow(project_root: Path, work_root: Path) -> None:
+    """Remove the runtime view belonging to one discarded build generation."""
+    _remove_shadow(doctor_shadow_path(project_root, work_root))
 
 
 def _mirror_excluded_ancestor(

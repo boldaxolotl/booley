@@ -29,7 +29,7 @@ from booley.core.file_lock import (
 )
 from booley.flows import edam as edam_layer
 from booley.flows.run_log import RUN_LOG_NAME
-from booley.fusesoc import fusesoc_registry
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.domain import TargetHandle
 
 from .build import PreparedSimulationBuild
@@ -590,6 +590,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             raise SimulationBuildSlotError(f"unsafe candidate cleanup path: {root}")
         try:
             shutil.rmtree(root)
+            selftest_overlay.remove_doctor_shadow(self.handle.project_root, root)
         except OSError as exc:
             raise SimulationBuildSlotError(f"cannot discard unused candidate: {exc}") from exc
 

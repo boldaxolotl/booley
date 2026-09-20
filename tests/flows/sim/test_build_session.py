@@ -23,6 +23,7 @@ from booley.flows.sim.build_session import (
     project_compile_surface,
     simulation_build_slot,
 )
+from booley.fusesoc.selftest_overlay import doctor_shadow_path
 from booley.targets.domain import TargetHandle
 
 
@@ -401,6 +402,26 @@ def test_lease_rejects_symlinked_lock_and_unsafe_cache_pointer(tmp_path: Path) -
         assert session.cache_decision == "malformed provenance"
         with pytest.raises(SimulationBuildSlotError, match="unsafe candidate"):
             session.discard_candidate(tmp_path)
+
+
+def test_discard_candidate_removes_only_its_doctor_shadow(tmp_path: Path) -> None:
+    session = SimulationBuildSession(_handle(tmp_path))
+    with session:
+        discarded = session.new_generation()
+        retained = session.new_generation()
+        discarded_shadow = doctor_shadow_path(tmp_path, discarded)
+        retained_shadow = doctor_shadow_path(tmp_path, retained)
+        discarded_shadow.mkdir()
+        retained_shadow.mkdir()
+        (discarded_shadow / "fixture.hex").write_text("bad\n", encoding="utf-8")
+        (retained_shadow / "fixture.hex").write_text("bad\n", encoding="utf-8")
+
+        session.discard_candidate(discarded)
+
+        assert not discarded.exists()
+        assert not discarded_shadow.exists()
+        assert retained.is_dir()
+        assert retained_shadow.is_dir()
 
 
 def test_authorization_rejects_unleased_escaped_and_changed_builds(tmp_path: Path) -> None:
