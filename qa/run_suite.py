@@ -59,13 +59,10 @@ def validate_run_suite(
                 f"{context}: {result['check_result_id']}: Check {result['check_id']} "
                 f"recorded Step {result['step_id']}; required Step {required_step}"
             )
-        if result["status"] != "blocked":
-            continue
-        allowed = transitive_requirements(steps, result["step_id"])
-        allowed.add(result["step_id"])
+        allowed = set(steps[result["step_id"]].get("requires", []))
         for cause_id in result["caused_by_result_ids"]:
             if by_result[cause_id]["step_id"] not in allowed:
                 raise RunSuiteError(
-                    f"{context}: {result['check_result_id']}: blocked cause does not follow "
-                    "the Scenario prerequisite direction"
+                    f"{context}: {result['check_result_id']}: cause does not follow "
+                    "a direct Scenario prerequisite"
                 )

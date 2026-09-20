@@ -37,6 +37,22 @@ only when one exact prior Check Result caused the current result. Record integri
 concerns, deviations, and conflicts in their structured fields so triage can enumerate
 them deterministically.
 
+Submit each proposed Check Result as a JSON object through the pre-append recorder:
+
+```sh
+python3 qa/record_check.py <run-root> <result.json> --suite-root <frozen-suite-root>
+```
+
+The recorder checks the schema, run and Check identity, earlier result links,
+correction chain, and direct Scenario prerequisite direction before appending. A
+rejected candidate remains outside `check-results.jsonl`; fix the candidate and
+retry. Do not edit or replace an appended row. To correct an accepted recording
+error before sealing, append a new Check Result with a new `check_result_id`, the
+same `check_id`, a higher `attempt`, `corrects_result_id` naming the earlier row,
+and `correction-chain` in `review_reasons`. Retain the earlier row and any
+evidence it cites. A new product execution is a new attempt, not a clerical
+rewrite. After sealing, follow [Format](FORMAT.md) for human triage corrections.
+
 Append unexpected behavior, incidental facts, friction, impressions, and wins to
 `observations.jsonl` without classifying them as Findings. Preserve the original text
 and link any producing Step, Check Result, cause, correction, and evidence. The Human
