@@ -2884,6 +2884,7 @@ steps:
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
   - interactive.wishbone-baseline
+  - interactive.reproduce
   assets:
   - path: fixture_validation.py
     audience: scenario-operator
@@ -2904,6 +2905,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.repair
 - id: interactive.rerun-lint
   phase: interactive
   action: Child reruns relevant lint Target; require clean result.
@@ -2920,6 +2922,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.repair
 - id: interactive.local-commit
   phase: interactive
   action: Child commits the non-empty repair locally; remote push remains blocked.
@@ -2936,6 +2939,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.repair
 - id: interactive.restore
   phase: interactive
   action: Restore clean pre-exercise checkpoint and discard all Interactive changes.

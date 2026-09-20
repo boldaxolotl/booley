@@ -1,6 +1,7 @@
 """A rejected Check Result must leave the append-only log unchanged."""
 
 import json
+import os
 
 import pytest
 import yaml
@@ -28,7 +29,8 @@ def test_invalid_review_reason_is_rejected_before_append(tmp_path):
     assert log.read_bytes() == before
 
 
-def test_indirect_cause_is_rejected_before_append(tmp_path):
+@pytest.mark.parametrize("status", ["blocked", "fail", "pass", "unavailable"])
+def test_indirect_cause_is_rejected_before_append(tmp_path, status):
     suite = write_suite(tmp_path, [("required", True)])
     path = suite / "scenarios/sample/scenario.yaml"
     scenario = yaml.safe_load(path.read_text())
@@ -46,13 +48,37 @@ def test_indirect_cause_is_rejected_before_append(tmp_path):
     log = root / "check-results.jsonl"
     before = log.read_bytes()
     result = check_result(
-        "run-1", "leaf-result", "leaf", "blocked", caused_by=["root-result"],
+        "run-1",
+        "leaf-result",
+        "leaf",
+        status,
+        caused_by=["root-result"],
         step_id="leaf-step",
     )
 
     with pytest.raises(triage.TriageError, match="direct Scenario prerequisite"):
         record_check.append_check_result(root, suite, append_source(tmp_path, result))
     assert log.read_bytes() == before
+
+
+def test_failed_atomic_publication_preserves_original_log(tmp_path, monkeypatch):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [], seal=False)
+    log = root / "check-results.jsonl"
+    before = log.read_bytes()
+    result = check_result("run-1", "result-1", "check", "pass")
+    run = triage.read_json(root / "run.json")
+    run["selected_check_ids"] = ["check"]
+    write_json(root / "run.json", run)
+
+    def fail_fsync(_descriptor):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    with pytest.raises(OSError, match="simulated write failure"):
+        record_check.append_check_result(root, suite, append_source(tmp_path, result))
+    assert log.read_bytes() == before
+    assert list(root.glob(".check-results.jsonl-*")) == []
 
 
 def test_correction_appends_and_preserves_original_bytes(tmp_path):
@@ -69,9 +95,7 @@ def test_correction_appends_and_preserves_original_bytes(tmp_path):
     record_check.append_check_result(root, suite, append_source(tmp_path, corrected))
 
     assert log.read_bytes().startswith(before)
-    assert [item["check_result_id"] for item in triage.read_jsonl(log)] == [
-        "result-1", "result-2"
-    ]
+    assert [item["check_result_id"] for item in triage.read_jsonl(log)] == ["result-1", "result-2"]
     sealed = triage.seal_run(root, suite)
     assert [item["check_result_id"] for item in sealed.results] == ["result-1", "result-2"]
 

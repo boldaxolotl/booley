@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 try:
@@ -43,20 +42,16 @@ def append_check_result(run_root: Path, suite_root: Path, source: Path) -> None:
             proposed,
             {"configured_scenarios": configured, "scenario_files": scenario_files},
         )
-        if result["corrects_result_id"] is not None and "correction-chain" not in result[
-            "review_reasons"
-        ]:
+        if (
+            result["corrects_result_id"] is not None
+            and "correction-chain" not in result["review_reasons"]
+        ):
             raise triage.TriageError(f"{source}: correction needs correction-chain review reason")
-        if result["corrects_result_id"] is None and "correction-chain" in result[
-            "review_reasons"
-        ]:
+        if result["corrects_result_id"] is None and "correction-chain" in result["review_reasons"]:
             raise triage.TriageError(f"{source}: correction-chain needs a correction target")
         line = (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        with destination.open("ab") as stream:
-            written = os.write(stream.fileno(), line)
-            if written != len(line):
-                raise OSError(f"{destination}: short Check Result append")
-            os.fsync(stream.fileno())
+        # Replace only after the complete candidate is durable; retain every prior byte.
+        triage.atomic_text(destination, (destination.read_bytes() + line).decode("utf-8"))
 
 
 def main() -> int:

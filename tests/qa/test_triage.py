@@ -235,12 +235,37 @@ def qa_change_details(invalidates: bool) -> dict:
 
 def test_explicit_cause_groups_failures_but_similar_text_does_not(tmp_path):
     suite = write_suite(tmp_path, [("required", True)])
+    scenario_path = suite / "scenarios/sample/scenario.yaml"
+    scenario = yaml.safe_load(scenario_path.read_text())
+    scenario["steps"] = [
+        {"id": "root-step", "checks": [{"id": "root"}], "requires": []},
+        {
+            "id": "dependent-step",
+            "checks": [{"id": "dependent"}],
+            "requires": ["root-step"],
+        },
+        {"id": "independent-step", "checks": [{"id": "independent"}], "requires": []},
+    ]
+    scenario_path.write_text(yaml.safe_dump(scenario))
     results = [
-        check_result("run-1", "root", "root", "fail", observed="same error"),
+        check_result("run-1", "root", "root", "fail", observed="same error", step_id="root-step"),
         check_result(
-            "run-1", "dependent", "dependent", "fail", caused_by=["root"], observed="same error"
+            "run-1",
+            "dependent",
+            "dependent",
+            "fail",
+            caused_by=["root"],
+            observed="same error",
+            step_id="dependent-step",
         ),
-        check_result("run-1", "independent", "independent", "fail", observed="same error"),
+        check_result(
+            "run-1",
+            "independent",
+            "independent",
+            "fail",
+            observed="same error",
+            step_id="independent-step",
+        ),
     ]
     run_root = write_run(tmp_path, "run-1", "required", results)
 
@@ -296,7 +321,11 @@ def test_blocked_cause_requires_direct_check_prerequisite(tmp_path):
         check_result("run-1", "root-result", "root", "fail", step_id="root-step"),
         check_result("run-1", "middle-result", "middle", "blocked", step_id="middle-step"),
         check_result(
-            "run-1", "leaf-result", "leaf", "blocked", caused_by=["root-result"],
+            "run-1",
+            "leaf-result",
+            "leaf",
+            "blocked",
+            caused_by=["root-result"],
             step_id="leaf-step",
         ),
     ]
