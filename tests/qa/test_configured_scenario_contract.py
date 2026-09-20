@@ -107,6 +107,27 @@ def test_picorv32_ticket_destinations_include_applicable_project_setup():
 
 def test_picorv32_public_qa_corrections_are_explicitly_contractual():
     scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
+    for name in ("wave", "find", "sample", "distance", "value"):
+        assert (
+            "interactive.wishbone-baseline"
+            in scenario_step(scenario, f"bwave.semantic-{name}")["requires"]
+        )
+    for name in ("list", "signal", "diff", "stats", "stuck"):
+        assert (
+            "interactive.wishbone-baseline"
+            not in scenario_step(scenario, f"bwave.rejection-{name}")["requires"]
+        )
+    assert (
+        "interactive.reproduce"
+        in scenario_step(scenario, "interactive.trace-observability")["requires"]
+    )
+    assert (
+        "interactive.trace-observability"
+        in scenario_step(scenario, "interactive.bwave-diagnosis")["requires"]
+    )
+    assert "interactive.reproduce" in scenario_step(scenario, "interactive.repair")["requires"]
+    for name in ("rerun-simulation", "rerun-lint", "local-commit"):
+        assert "interactive.repair" in scenario_step(scenario, f"interactive.{name}")["requires"]
     baseline = scenario_step(scenario, "baseline.source-unchanged")
     assert "post-setup destination ref" in baseline["checks"][0]["expected"]
     assert (

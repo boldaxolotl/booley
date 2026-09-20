@@ -642,13 +642,13 @@ class TestLineEndingsStep:
 
         _step_line_endings(ctx)
 
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
         assert ctx.results[-1].detail == "dirty tree"
         output = capsys.readouterr().out
         assert "[!!] 1 tracked file(s) are checked out with CRLF" in output
         assert "[ii] detected core.autocrlf=true" in output
 
-    def test_failed_autocrlf_update_remains_a_warning(self, tmp_path: Path, capsys):
+    def test_failed_autocrlf_update_blocks_readiness(self, tmp_path: Path, capsys):
         from booley.harness.setup import line_endings as init_git_hooks
         from booley.harness.setup.git_hooks import _step_line_endings
         from booley.harness.setup.line_endings import (
@@ -673,7 +673,7 @@ class TestLineEndingsStep:
         with patch.object(init_git_hooks, "_pin_autocrlf", return_value=failure):
             _step_line_endings(ctx)
 
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
         assert ctx.results[-1].detail == "autocrlf update failed"
         output = capsys.readouterr().out
         assert "[!!] core.autocrlf=true" in output
@@ -908,7 +908,7 @@ class TestLineEndingRepositoryDiscovery:
 
         _step_line_endings(ctx, tmp_path / "missing project data")
 
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
         assert "project-data: directory does not exist" in ctx.results[-1].detail
 
     def test_check_only_does_not_mutate_either_repository(self, tmp_path: Path):
@@ -968,7 +968,7 @@ class TestLineEndingRepositoryDiscovery:
 
         assert _local_autocrlf(tmp_path) == "false"
         assert hook.read_bytes() == dirty
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
         assert "project-data: dirty tree" in ctx.results[-1].detail
         for repository in (tmp_path, project_dir):
             staged = subprocess.run(
@@ -1187,7 +1187,7 @@ class TestLineEndingsAutoFix:
             check=True,
         )
         assert status.stdout == ""
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
 
         retry = _ctx(tmp_path)
         _step_line_endings(retry)
@@ -1250,7 +1250,7 @@ class TestLineEndingsAutoFix:
 
         _step_line_endings(ctx)
 
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
         assert ctx.results[-1].detail == "dirty tree"
         assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
 
@@ -1361,7 +1361,7 @@ class TestLineEndingsAutoFix:
         _step_line_endings(ctx)
 
         assert (tmp_path / "a.v").read_bytes() == local_edit
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
 
     def test_auto_fix_treats_tracked_names_as_literals(self, tmp_path: Path):
         """A candidate filename must not expand onto a hidden neighboring edit."""
@@ -1452,7 +1452,7 @@ class TestLineEndingsAutoFix:
         with patch.object(init_git_hooks, "_crlf_worktree_files", return_value=None):
             _step_line_endings(ctx)
 
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
         assert ctx.results[-1].detail == "EOL scan unreadable"
 
     def test_unreadable_post_normalization_scan_never_reports_success(self, tmp_path: Path):
@@ -1472,7 +1472,7 @@ class TestLineEndingsAutoFix:
             ctx = _ctx(tmp_path)
             _step_line_endings(ctx)
 
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
         assert ctx.results[-1].detail == "EOL verification unreadable"
 
     @pytest.mark.skipif(os.name == "nt", reason="Windows filenames are Unicode")
@@ -1535,7 +1535,7 @@ class TestLineEndingsAutoFix:
         _step_line_endings(ctx)
 
         assert (tmp_path / "a.v").read_bytes() == original
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
 
     def test_edit_after_cleanliness_probe_is_not_overwritten(self, tmp_path: Path):
         from booley.harness.setup import line_endings as init_git_hooks
@@ -1553,7 +1553,7 @@ class TestLineEndingsAutoFix:
             _step_line_endings(ctx)
 
         assert (tmp_path / "a.v").read_bytes() == local_edit
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
     def test_hardlinked_candidate_is_refused_without_breaking_link(self, tmp_path: Path):
@@ -1570,4 +1570,44 @@ class TestLineEndingsAutoFix:
         after = (tmp_path / "a.v").stat()
         assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
         assert (tmp_path / "a.v").read_bytes() == mirror.read_bytes()
-        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].status == "err"
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_project_data_guidance_hardlink_blocks_init_readiness(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from booley.harness.init_cmd import _print_summary
+        from booley.harness.setup.git_hooks import _step_line_endings
+
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        subprocess.run(
+            ["git", "-C", str(project_dir), "config", "core.autocrlf", "true"],
+            capture_output=True,
+            check=True,
+        )
+        TestLineEndingsStep._add_file(project_dir, "AGENTS.md", b"guidance\n")
+        _git_commit(project_dir)
+        canonical = project_dir / "AGENTS.md"
+        canonical.unlink()
+        _run_git(project_dir, "checkout", "--", "AGENTS.md")
+        assert canonical.read_bytes() == b"guidance\r\n"
+        os.link(canonical, tmp_path / "AGENTS.md")
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx, project_dir)
+
+        assert ctx.results[-1].status == "err"
+        assert "project-data" in ctx.results[-1].detail
+        assert "hard-linked tracked path 'AGENTS.md'" in ctx.results[-1].detail
+        assert _print_summary(ctx) == 2
+        assert "Setup incomplete" in capsys.readouterr().out
+        assert canonical.read_bytes() == b"guidance\r\n"
+        assert canonical.samefile(tmp_path / "AGENTS.md")
+
+        inspection = _ctx(tmp_path, check_only=True)
+        _step_line_endings(inspection, project_dir)
+        assert inspection.results[-1].status == "warn"
+        assert _print_summary(inspection) == 1

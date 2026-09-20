@@ -231,7 +231,10 @@ experiment, not a setup requirement.
   and reconciles Git's cached metadata for only those paths. This preserves
   filesystem metadata, leaves the index content unchanged, and leaves untracked
   and unaffected tracked files alone. Init refuses dirty trees, Git-protected
-  affected paths, and hard-linked candidates; commit or stash changes and rerun:
+  affected paths, and hard-linked candidates. If reconciliation remains unsafe,
+  normal init reports setup incomplete and names the affected repository and
+  refusal; `--check-only` reports pending work without changing files. Commit
+  or stash changes and rerun:
 
   ```bash
   booley init

@@ -121,26 +121,24 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def atomic_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        newline="\n",
-        dir=path.parent,
-        prefix=f".{path.name}-",
-        delete=False,
-    ) as stream:
-        temporary = Path(stream.name)
-        try:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}-",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        except OSError:
-            temporary.unlink(missing_ok=True)
-            raise
-    try:
         temporary.replace(path)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def atomic_json(path: Path, value: Any) -> None:

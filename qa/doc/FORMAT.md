@@ -41,9 +41,11 @@ transfer every still-owned resource to `cleanup-ledger.json` before execution.
 | `run-manifest.json` | Final seal: terminal statuses, record counts, Scenario snapshot hash, evidence-manifest hash, and hashes of every final run record except itself |
 
 Check Result statuses are `pass`, `fail`, `blocked`, or `unavailable` as defined by
-[Record](RECORD.md). `caused_by_result_ids` names exact earlier attempts. For a blocked
-prerequisite, the relationship must agree with the Scenario's declared dependency
-direction. Similar text, timing, tool, or resource identity is not a causal link.
+[Record](RECORD.md). `caused_by_result_ids` names exact earlier attempts. For every
+status, a cause must be a direct `requires` entry on the current Check's Step. Similar
+text, timing, tool, or resource identity is not a causal link. A timeout or operator
+error may block a Check without a prior Check Result cause; explain it in `observed`
+and retain its evidence.
 
 `review_reasons` uses `nonpass`, `conflicting`, `correction-chain`, `deviation`, or
 `evidence-integrity`. Evidence integrity is `valid`, `invalid`, or `uncertain`.
