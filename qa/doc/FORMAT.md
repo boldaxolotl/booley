@@ -43,7 +43,10 @@ transfer every still-owned resource to `cleanup-ledger.json` before execution.
 Check Result statuses are `pass`, `fail`, `blocked`, or `unavailable` as defined by
 [Record](RECORD.md). `caused_by_result_ids` names exact earlier attempts. For a blocked
 prerequisite, the relationship must agree with the Scenario's declared dependency
-direction. Similar text, timing, tool, or resource identity is not a causal link.
+direction through a direct `requires` entry on the blocked Check's Step. Similar
+text, timing, tool, or resource identity is not a causal link. A timeout or operator
+error may block a Check without a prior Check Result cause; explain it in `observed`
+and retain its evidence.
 
 `review_reasons` uses `nonpass`, `conflicting`, `correction-chain`, `deviation`, or
 `evidence-integrity`. Evidence integrity is `valid`, `invalid`, or `uncertain`.

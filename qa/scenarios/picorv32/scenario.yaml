@@ -2526,6 +2526,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.wishbone-baseline
   assets:
   - path: fixtures/virtual-signals.md
     audience: scenario-operator
@@ -2546,6 +2547,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.wishbone-baseline
   assets:
   - path: fixtures/virtual-signals.md
     audience: scenario-operator
@@ -2566,6 +2568,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.wishbone-baseline
   assets:
   - path: fixtures/virtual-signals.md
     audience: scenario-operator
@@ -2590,6 +2593,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.wishbone-baseline
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
@@ -2617,6 +2621,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.wishbone-baseline
   assets:
   - path: fixtures/virtual-signals.md
     audience: scenario-operator
@@ -2831,6 +2836,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.reproduce
 - id: interactive.bwave-diagnosis
   phase: interactive
   action: |-
@@ -2852,6 +2858,7 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  - interactive.trace-observability
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator

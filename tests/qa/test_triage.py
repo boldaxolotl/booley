@@ -277,9 +277,32 @@ def test_blocked_cause_must_follow_scenario_prerequisite_direction(tmp_path):
         ),
     ]
     run_root = write_run(tmp_path, "run-1", "required", results, seal=False)
-    with pytest.raises(triage.TriageError, match="prerequisite direction"):
+    with pytest.raises(triage.TriageError, match="direct Scenario prerequisite"):
         triage.seal_run(run_root, suite)
     assert not (run_root / "run-manifest.json").exists()
+
+
+def test_blocked_cause_requires_direct_check_prerequisite(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    scenario_path = suite / "scenarios/sample/scenario.yaml"
+    scenario = yaml.safe_load(scenario_path.read_text())
+    scenario["steps"] = [
+        {"id": "root-step", "checks": [{"id": "root"}], "requires": []},
+        {"id": "middle-step", "checks": [{"id": "middle"}], "requires": ["root-step"]},
+        {"id": "leaf-step", "checks": [{"id": "leaf"}], "requires": ["middle-step"]},
+    ]
+    scenario_path.write_text(yaml.safe_dump(scenario))
+    results = [
+        check_result("run-1", "root-result", "root", "fail", step_id="root-step"),
+        check_result("run-1", "middle-result", "middle", "blocked", step_id="middle-step"),
+        check_result(
+            "run-1", "leaf-result", "leaf", "blocked", caused_by=["root-result"],
+            step_id="leaf-step",
+        ),
+    ]
+    run_root = write_run(tmp_path, "run-1", "required", results, seal=False)
+    with pytest.raises(triage.TriageError, match="direct Scenario prerequisite"):
+        triage.seal_run(run_root, suite)
 
 
 def test_corrected_failure_and_observation_remain_candidates(tmp_path):

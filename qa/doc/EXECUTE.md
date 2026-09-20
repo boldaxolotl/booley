@@ -35,7 +35,10 @@ Record alternatives and deviations with the affected Check. A declared alternati
 may satisfy it. An undeclared change to inputs, actions, authority, or evidence blocks
 the claim unless trustworthy failure evidence already exists; preserve that failure.
 Use an exact `caused_by_result_ids` link only when a prior Check Result caused the
-current result. Shared messages, tools, resources, and timing alone are not causality.
+current result and its Check's Step directly requires the prior Check's Step. Retain
+evidence explaining why that result prevented this Check's stimulus. Shared messages,
+tools, resources, and timing alone are not causality. If declared prerequisites pass,
+run the independent stimulus rather than marking it blocked by another Step's failure.
 
 Execution ends when every selected Check has a Check Result and no active assignment
 or uncertain mutation remains. On a deadline, loss of control, or other stop, record
