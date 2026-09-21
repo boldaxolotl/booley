@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from typing import TextIO
 
+from booley.runtime.docker_capacity import ensure_docker_build_capacity
+
 HEARTBEAT_INTERVAL_S = 60.0
 _QUEUE_SIZE = 256
 _EOF = object()
@@ -84,11 +86,26 @@ def _present_progress(output: TextIO, line: str, *, verbose: bool, last: str) ->
     return last, False
 
 
-def _diagnostics(tail: deque[tuple[int, str]], salient: deque[tuple[int, str]]) -> tuple[str, ...]:
+def _diagnostics(
+    tail: deque[tuple[int, str]],
+    salient: deque[tuple[int, str]],
+    *,
+    include_output: bool = True,
+    storage_exhausted: bool = False,
+) -> tuple[str, ...]:
     retained = dict((*salient, *tail))
-    return tuple(
+    output = tuple(
         retained[sequence] for sequence in sorted(retained) if ">>>" not in retained[sequence]
     )
+    guidance = (
+        (
+            "Docker storage filled during the build; free unused cache with "
+            "`docker builder prune`, then retry.",
+        )
+        if storage_exhausted or any("no space left on device" in line.lower() for line in output)
+        else ()
+    )
+    return (*(output if include_output else ()), *guidance)
 
 
 @dataclass
@@ -100,12 +117,15 @@ class _ProgressState:
     deadline: float
     last_visible: float
     last_progress: str = ""
+    storage_exhausted: bool = False
     sequence: int = 0
     tail: deque[tuple[int, str]] = field(default_factory=lambda: deque(maxlen=100))
     salient: deque[tuple[int, str]] = field(default_factory=lambda: deque(maxlen=20))
 
     def accept(self, record: str) -> None:
         line = record.rstrip("\n")
+        if "no space left on device" in line.lower():
+            self.storage_exhausted = True
         self.tail.append((self.sequence, line))
         if any(word in line.lower() for word in _SALIENT_WORDS):
             self.salient.append((self.sequence, line))
@@ -193,8 +213,13 @@ def _run_captured(
     finally:
         _close_capture(process, stop, reader)
     diagnostics = (
-        _diagnostics(state.tail, state.salient)
-        if (timed_out or process.returncode) and not verbose
+        _diagnostics(
+            state.tail,
+            state.salient,
+            include_output=not verbose,
+            storage_exhausted=state.storage_exhausted,
+        )
+        if (timed_out or process.returncode)
         else ()
     )
     return DockerBuildResult(None if timed_out else process.returncode, timed_out, diagnostics)
@@ -209,11 +234,6 @@ def run_docker_build(
     output: TextIO | None = None,
 ) -> DockerBuildResult:
     """Run one Docker build while keeping useful progress observable."""
+    ensure_docker_build_capacity(command, image=image)
     sink = sys.stdout if output is None else output
-    if verbose and sink.isatty():
-        try:
-            completed = subprocess.run(command, timeout=timeout, check=False)
-        except subprocess.TimeoutExpired:
-            return DockerBuildResult(None, timed_out=True)
-        return DockerBuildResult(completed.returncode)
     return _run_captured(command, image=image, verbose=verbose, timeout=timeout, output=sink)

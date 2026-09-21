@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import os
+import runpy
+import shlex
+import subprocess
 import sys
 import threading
 import time
+from collections import namedtuple
 from pathlib import Path
 from queue import Queue
 
 import pytest
 
-from booley.runtime import docker_build
+from booley.runtime import docker_build, docker_capacity
 from booley.runtime.docker_build import run_docker_build
 
 
@@ -76,6 +81,61 @@ class _ExitedProcess:
         return self.returncode
 
 
+def _install_fake_docker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cached: bool,
+    build_cache: str = "20GB",
+    info_failure: bool = False,
+) -> tuple[Path, str]:
+    marker = tmp_path / "build-started"
+    fake_docker = tmp_path / "fake_docker.py"
+    fake_docker.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"marker = Path({str(marker)!r})\n"
+        f"cache = {build_cache!r}\n"
+        f"cached = {cached!r}\n"
+        f"info_failure = {info_failure!r}\n"
+        "command = sys.argv[1:]\n"
+        "if command and command[0] == 'info':\n"
+        "    if info_failure:\n"
+        "        print('Docker daemon unavailable', file=sys.stderr)\n"
+        "        raise SystemExit(1)\n"
+        f"    print({str(tmp_path)!r})\n"
+        "elif command and command[0] == 'image':\n"
+        "    if cached:\n"
+        "        print('sha256:cached')\n"
+        "    else:\n"
+        "        print('Error response from daemon: No such image', file=sys.stderr)\n"
+        "        raise SystemExit(1)\n"
+        "elif command and command[0] == 'system':\n"
+        "    print(f'Build Cache\\t{cache}\\t18GB')\n"
+        "elif command and command[0] == 'build':\n"
+        "    marker.touch()\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        docker = tmp_path / "docker.cmd"
+        docker.write_text(f'@"{sys.executable}" "{fake_docker}" %*\r\n', encoding="utf-8")
+    else:
+        docker = tmp_path / "docker"
+        docker.write_text(
+            f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
+            f'{shlex.quote(str(fake_docker))} "$@"\n',
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(tmp_path), os.environ["PATH"])))
+    return marker, docker.name
+
+
+def _set_free_space(monkeypatch: pytest.MonkeyPatch, gib: int) -> None:
+    disk_usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr("shutil.disk_usage", lambda _path: disk_usage(100, 88, gib * 2**30))
+
+
 def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -> None:
     release = tmp_path / "release"
     child = (
@@ -108,6 +168,116 @@ def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -
 
     assert not worker.is_alive()
     assert results[0].returncode == 0
+
+
+def test_docker_build_refuses_low_capacity_before_starting(tmp_path: Path, monkeypatch) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    _set_free_space(monkeypatch, 12)
+
+    with pytest.raises(OSError) as raised:
+        run_docker_build(
+            [docker, "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    message = str(raised.value)
+    assert "12.0 GiB available" in message
+    assert "35.0 GiB required" in message
+    assert "30.0 GiB cold-build headroom" in message
+    assert "5.0 GiB safety reserve" in message
+    assert "16.8 GiB reclaimable" in message
+    assert "docker builder prune" in message
+    assert "BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1" in message
+    assert not marker.exists()
+
+
+def test_cached_docker_build_uses_smaller_headroom(tmp_path: Path, monkeypatch) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
+    _set_free_space(monkeypatch, 16)
+
+    result = run_docker_build(
+        [docker, "build", "-t", "booley-sandbox", "."],
+        image="booley-sandbox",
+        verbose=False,
+        timeout=10,
+        output=_RecordingOutput(),
+    )
+
+    assert result.returncode == 0
+    assert marker.exists()
+
+
+def test_cached_docker_build_preserves_five_gib_safety_reserve(
+    tmp_path: Path, monkeypatch
+) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
+    _set_free_space(monkeypatch, 14)
+
+    with pytest.raises(OSError, match=r"15\.0 GiB required") as raised:
+        run_docker_build(
+            [docker, "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    assert "10.0 GiB cached-target headroom" in str(raised.value)
+    assert not marker.exists()
+
+
+def test_target_without_build_cache_uses_cold_build_headroom(tmp_path: Path, monkeypatch) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=True, build_cache="0B")
+    _set_free_space(monkeypatch, 16)
+
+    with pytest.raises(OSError, match=r"35\.0 GiB required") as raised:
+        run_docker_build(
+            [docker, "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    assert "30.0 GiB cold-build headroom" in str(raised.value)
+    assert not marker.exists()
+
+
+def test_disk_preflight_override_allows_expert_build(tmp_path: Path, monkeypatch) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    _set_free_space(monkeypatch, 1)
+    monkeypatch.setenv("BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT", "1")
+
+    result = run_docker_build(
+        [docker, "build", "-t", "booley-sandbox", "."],
+        image="booley-sandbox",
+        verbose=False,
+        timeout=10,
+        output=_RecordingOutput(),
+    )
+
+    assert result.returncode == 0
+    assert marker.exists()
+
+
+def test_disk_preflight_override_accepts_only_one(tmp_path: Path, monkeypatch) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    _set_free_space(monkeypatch, 1)
+    monkeypatch.setenv("BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT", "true")
+
+    with pytest.raises(OSError, match="Insufficient disk capacity"):
+        run_docker_build(
+            [docker, "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    assert not marker.exists()
 
 
 def test_redirected_silent_build_emits_bounded_heartbeat(tmp_path: Path, monkeypatch) -> None:
@@ -207,7 +377,7 @@ def test_output_capture_failure_is_reported_with_build_context(monkeypatch) -> N
 
     with pytest.raises(OSError, match="booley-sandbox Docker build output capture failed"):
         run_docker_build(
-            ["docker", "build", "."],
+            [sys.executable, "-c", "pass"],
             image="booley-sandbox",
             verbose=False,
             timeout=10,
@@ -233,6 +403,153 @@ def test_failure_retains_early_error_despite_noisy_cleanup() -> None:
     assert result.returncode == 1
     assert "ERROR: package checksum mismatch" in result.diagnostics
     assert len(result.diagnostics) <= 120
+
+
+def test_capacity_exhaustion_after_preflight_has_cleanup_guidance() -> None:
+    result = run_docker_build(
+        [
+            sys.executable,
+            "-c",
+            "print('ERROR: no space left on device'); raise SystemExit(1)",
+        ],
+        image="booley-sandbox",
+        verbose=False,
+        timeout=10,
+        output=_RecordingOutput(),
+    )
+
+    assert result.returncode == 1
+    assert result.diagnostics[-1] == (
+        "Docker storage filled during the build; free unused cache with "
+        "`docker builder prune`, then retry."
+    )
+
+
+def test_capacity_exhaustion_in_verbose_tty_has_cleanup_guidance() -> None:
+    output = _RecordingOutput(tty=True)
+    result = run_docker_build(
+        [
+            sys.executable,
+            "-c",
+            "print('ERROR: no space left on device'); raise SystemExit(1)",
+        ],
+        image="booley-sandbox",
+        verbose=True,
+        timeout=10,
+        output=output,
+    )
+
+    assert result.returncode == 1
+    assert result.diagnostics == (
+        "Docker storage filled during the build; free unused cache with "
+        "`docker builder prune`, then retry.",
+    )
+
+
+def test_capacity_probe_failure_stops_build_before_starting(tmp_path: Path, monkeypatch) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False, info_failure=True)
+
+    with pytest.raises(OSError, match="could not query Docker storage root"):
+        run_docker_build(
+            [docker, "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    assert not marker.exists()
+
+
+def test_capacity_probe_process_failure_is_fail_closed(monkeypatch) -> None:
+    def fail(*_args, **_kwargs):
+        raise OSError("probe unavailable")
+
+    monkeypatch.setattr(docker_capacity.subprocess, "run", fail)
+
+    with pytest.raises(
+        docker_capacity.DockerCapacityError, match="could not run Docker capacity probe"
+    ):
+        docker_capacity._run_docker_probe(["docker", "info"])
+
+
+def test_capacity_probe_rejects_invalid_storage_root(monkeypatch) -> None:
+    result = subprocess.CompletedProcess(["docker"], 0, stdout="relative", stderr="")
+    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: result)
+
+    with pytest.raises(docker_capacity.DockerCapacityError, match="invalid storage root"):
+        docker_capacity._docker_storage("docker")
+
+
+def test_capacity_probe_rejects_unexpected_image_inspection_failure(monkeypatch) -> None:
+    result = subprocess.CompletedProcess(["docker"], 1, stdout="", stderr="permission denied")
+    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: result)
+
+    with pytest.raises(docker_capacity.DockerCapacityError, match="could not inspect target"):
+        docker_capacity._target_is_cached("docker", "booley-sandbox")
+
+
+def test_capacity_probe_rejects_malformed_external_sizes() -> None:
+    with pytest.raises(docker_capacity.DockerCapacityError, match="invalid size"):
+        docker_capacity._size_bytes("unknown")
+
+
+def test_capacity_probe_rejects_cache_query_failures(monkeypatch) -> None:
+    failed = subprocess.CompletedProcess(["docker"], 1, stdout="", stderr="daemon down")
+    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: failed)
+
+    with pytest.raises(
+        docker_capacity.DockerCapacityError, match="could not query Docker build cache"
+    ):
+        docker_capacity._build_cache("docker")
+
+
+def test_capacity_probe_rejects_missing_cache_report(monkeypatch) -> None:
+    result = subprocess.CompletedProcess(["docker"], 0, stdout="Images\t1GB\t0B", stderr="")
+    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: result)
+
+    with pytest.raises(docker_capacity.DockerCapacityError, match="did not report build-cache"):
+        docker_capacity._build_cache("docker")
+
+
+def test_capacity_probe_reports_storage_usage_failure(monkeypatch) -> None:
+    monkeypatch.delenv(docker_capacity.SKIP_PREFLIGHT_ENV, raising=False)
+    monkeypatch.setattr(docker_capacity, "_docker_storage", lambda _docker: Path("/storage"))
+    monkeypatch.setattr(
+        docker_capacity.shutil,
+        "disk_usage",
+        lambda _path: (_ for _ in ()).throw(OSError("usage unavailable")),
+    )
+
+    with pytest.raises(
+        docker_capacity.DockerCapacityError, match="could not inspect Docker storage"
+    ):
+        docker_capacity.ensure_docker_build_capacity(["docker", "build"], image="image")
+
+
+def test_capacity_cli_handles_success_and_failure(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        docker_capacity, "ensure_docker_build_capacity", lambda *_args, **_kwargs: None
+    )
+    assert docker_capacity.main(["--image", "image", "--", "docker", "build"]) == 0
+
+    def fail(*_args, **_kwargs):
+        raise docker_capacity.DockerCapacityError("not enough space")
+
+    monkeypatch.setattr(docker_capacity, "ensure_docker_build_capacity", fail)
+    assert docker_capacity.main(["--image", "image", "--", "docker", "build"]) == 1
+    assert "Docker image-build preflight failed: not enough space" in capsys.readouterr().err
+
+
+def test_capacity_cli_requires_a_build_command() -> None:
+    with pytest.raises(SystemExit):
+        docker_capacity.main(["--image", "image"])
+
+
+def test_capacity_module_entrypoint_runs(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["docker_capacity.py", "--image", "image", "--", "echo"])
+    with pytest.raises(SystemExit, match="0"):
+        runpy.run_path(docker_capacity.__file__, run_name="__main__")
 
 
 def test_closed_progress_sink_does_not_fail_a_healthy_build() -> None:

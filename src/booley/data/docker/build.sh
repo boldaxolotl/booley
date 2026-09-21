@@ -123,14 +123,22 @@ BASE_METADATA_ARGS=(
   --build-arg "BOOLEY_BASE_BUILT_AT=$IMAGE_BUILT_AT"
 )
 
+run_docker_build() {
+  local image="$1"
+  shift
+  PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -m booley.runtime.docker_capacity \
+    --image "$image" -- "$@"
+  "$@"
+}
+
 echo ">>> Building stable EDA/runtime base (cacheable across candidate changes)..."
-docker build "${BASE_METADATA_ARGS[@]}" "$@" \
+run_docker_build booley-runtime-base:local docker build "${BASE_METADATA_ARGS[@]}" "$@" \
   -t booley-runtime-base:local -f "$SCRIPT_DIR/Dockerfile.base" "$BOOLEY_ROOT"
 RUNTIME_BASE_ID="$(docker image inspect booley-runtime-base:local --format '{{.Id}}')"
 LABEL_ARGS+=(--label "io.booley.build.parent-artifact=$RUNTIME_BASE_ID")
 
 echo ">>> Building booley-sandbox Docker image..."
-docker build "${LABEL_ARGS[@]}" "${BUILD_METADATA_ARGS[@]}" "$@" \
+run_docker_build booley-sandbox docker build "${LABEL_ARGS[@]}" "${BUILD_METADATA_ARGS[@]}" "$@" \
   --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=$RUNTIME_BASE_ID" \
   --build-context booley-runtime-base=docker-image://booley-runtime-base:local \
   -t booley-sandbox -f "$SCRIPT_DIR/Dockerfile" "$BOOLEY_ROOT"
