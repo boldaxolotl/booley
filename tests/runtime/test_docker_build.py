@@ -86,7 +86,7 @@ def _install_fake_docker(
     cached: bool,
     build_cache: str = "20GB",
     info_failure: bool = False,
-) -> Path:
+) -> tuple[Path, str]:
     marker = tmp_path / "build-started"
     fake_docker = tmp_path / "fake_docker.py"
     fake_docker.write_text(
@@ -126,7 +126,7 @@ def _install_fake_docker(
         )
         docker.chmod(0o755)
     monkeypatch.setenv("PATH", os.pathsep.join((str(tmp_path), os.environ["PATH"])))
-    return marker
+    return marker, docker.name
 
 
 def _set_free_space(monkeypatch: pytest.MonkeyPatch, gib: int) -> None:
@@ -169,12 +169,12 @@ def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -
 
 
 def test_docker_build_refuses_low_capacity_before_starting(tmp_path: Path, monkeypatch) -> None:
-    marker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
     _set_free_space(monkeypatch, 12)
 
     with pytest.raises(OSError) as raised:
         run_docker_build(
-            ["docker", "build", "-t", "booley-sandbox", "."],
+            [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
             timeout=10,
@@ -193,11 +193,11 @@ def test_docker_build_refuses_low_capacity_before_starting(tmp_path: Path, monke
 
 
 def test_cached_docker_build_uses_smaller_headroom(tmp_path: Path, monkeypatch) -> None:
-    marker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
     _set_free_space(monkeypatch, 16)
 
     result = run_docker_build(
-        ["docker", "build", "-t", "booley-sandbox", "."],
+        [docker, "build", "-t", "booley-sandbox", "."],
         image="booley-sandbox",
         verbose=False,
         timeout=10,
@@ -211,12 +211,12 @@ def test_cached_docker_build_uses_smaller_headroom(tmp_path: Path, monkeypatch) 
 def test_cached_docker_build_preserves_five_gib_safety_reserve(
     tmp_path: Path, monkeypatch
 ) -> None:
-    marker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
     _set_free_space(monkeypatch, 14)
 
     with pytest.raises(OSError, match=r"15\.0 GiB required") as raised:
         run_docker_build(
-            ["docker", "build", "-t", "booley-sandbox", "."],
+            [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
             timeout=10,
@@ -228,12 +228,12 @@ def test_cached_docker_build_preserves_five_gib_safety_reserve(
 
 
 def test_target_without_build_cache_uses_cold_build_headroom(tmp_path: Path, monkeypatch) -> None:
-    marker = _install_fake_docker(tmp_path, monkeypatch, cached=True, build_cache="0B")
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=True, build_cache="0B")
     _set_free_space(monkeypatch, 16)
 
     with pytest.raises(OSError, match=r"35\.0 GiB required") as raised:
         run_docker_build(
-            ["docker", "build", "-t", "booley-sandbox", "."],
+            [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
             timeout=10,
@@ -245,12 +245,12 @@ def test_target_without_build_cache_uses_cold_build_headroom(tmp_path: Path, mon
 
 
 def test_disk_preflight_override_allows_expert_build(tmp_path: Path, monkeypatch) -> None:
-    marker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
     _set_free_space(monkeypatch, 1)
     monkeypatch.setenv("BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT", "1")
 
     result = run_docker_build(
-        ["docker", "build", "-t", "booley-sandbox", "."],
+        [docker, "build", "-t", "booley-sandbox", "."],
         image="booley-sandbox",
         verbose=False,
         timeout=10,
@@ -262,13 +262,13 @@ def test_disk_preflight_override_allows_expert_build(tmp_path: Path, monkeypatch
 
 
 def test_disk_preflight_override_accepts_only_one(tmp_path: Path, monkeypatch) -> None:
-    marker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
     _set_free_space(monkeypatch, 1)
     monkeypatch.setenv("BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT", "true")
 
     with pytest.raises(OSError, match="Insufficient disk capacity"):
         run_docker_build(
-            ["docker", "build", "-t", "booley-sandbox", "."],
+            [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
             timeout=10,
@@ -445,11 +445,11 @@ def test_capacity_exhaustion_in_verbose_tty_has_cleanup_guidance() -> None:
 
 
 def test_capacity_probe_failure_stops_build_before_starting(tmp_path: Path, monkeypatch) -> None:
-    marker = _install_fake_docker(tmp_path, monkeypatch, cached=False, info_failure=True)
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False, info_failure=True)
 
     with pytest.raises(OSError, match="could not query Docker storage root"):
         run_docker_build(
-            ["docker", "build", "-t", "booley-sandbox", "."],
+            [docker, "build", "-t", "booley-sandbox", "."],
             image="booley-sandbox",
             verbose=False,
             timeout=10,

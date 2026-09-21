@@ -31,7 +31,7 @@ class _BuildCache:
 
 
 def _is_docker_build(command: Sequence[str]) -> bool:
-    if len(command) < 2 or Path(command[0]).name != "docker":
+    if len(command) < 2 or Path(command[0]).stem.lower() != "docker":
         return False
     return command[1] == "build" or list(command[1:3]) == ["buildx", "build"]
 
