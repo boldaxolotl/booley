@@ -9,7 +9,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from booley.flows.sim.campaign.codec import (
-    CampaignIntegrityError,
+    SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_build_result,
     decode_simulation_result,
@@ -96,11 +96,11 @@ def test_result_structural_mutations_are_rejected(mutation: str, kind: str) -> N
         document["bundle"] = None
     else:
         document["executable_snapshot"] = None
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         decoder(canonical_json_bytes(document))
     value_type = BundleBuildResult if kind == "build" else SimulationResult
     encoder = encode_bundle_build_result if kind == "build" else encode_simulation_result
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         encoder(value_type(document))
 
 
@@ -108,12 +108,12 @@ def test_result_structural_mutations_are_rejected(mutation: str, kind: str) -> N
 def test_simulation_result_rejects_observation_resource_overflow(field: str) -> None:
     document = json.loads(_simulation_result("completed"))
     document["observations"][0][field] = "x" * (513 if field == "test" else 2049)
-    with pytest.raises(CampaignIntegrityError, match="ceiling"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="ceiling"):
         decode_simulation_result(canonical_json_bytes(document))
 
 
 def test_nested_evidence_reference_rejects_unknown_fields() -> None:
     document = json.loads(_simulation_result("completed"))
     document["executable_snapshot"]["manifest"]["unexpected"] = True
-    with pytest.raises(CampaignIntegrityError, match="exact fields"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         decode_simulation_result(canonical_json_bytes(document))

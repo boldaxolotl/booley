@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 
 from booley.flows.sim.campaign.codec import (
     MANIFEST_MAX_BYTES,
-    CampaignIntegrityError,
+    SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
     decode_executable_snapshot,
@@ -28,8 +28,6 @@ from booley.flows.sim.campaign.model import (
     FailureClass,
     FunctionalObservation,
     SimulationAttempt,
-    SimulationCampaignManifest,
-    SimulationCampaignPlan,
     SimulatorBundle,
     grade_observations,
 )
@@ -78,15 +76,8 @@ def test_directly_constructed_documents_deep_freeze_and_validate_on_write() -> N
         value.document["run_directory"]["owned"] = False  # type: ignore[index]
 
     invalid = SimulationAttempt(_attempt() | {"attempt_ordinal": 0})
-    with pytest.raises(CampaignIntegrityError, match="positive integer"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="positive integer"):
         encode_simulation_attempt(invalid)
-
-
-def test_campaign_plan_copies_work_item_order_into_an_immutable_tuple() -> None:
-    work_item_ids = ["item:0000:0123456789abcdef"]
-    plan = SimulationCampaignPlan(SimulationCampaignManifest({}), work_item_ids)
-    work_item_ids.append("item:0001:fedcba9876543210")
-    assert plan.work_item_ids == ("item:0000:0123456789abcdef",)
 
 
 def test_attempt_golden_fixture_is_independent_literal_bytes() -> None:
@@ -129,17 +120,17 @@ def test_document_encoders_round_trip_validated_values(name, decoder, encoder) -
 
 def test_attempt_codec_rejects_unknown_fields_and_bool_integer() -> None:
     unknown = _attempt() | {"surprise": True}
-    with pytest.raises(CampaignIntegrityError, match="exact fields"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         decode_simulation_attempt(canonical_json_bytes(unknown))
     invalid = _attempt()
     invalid["attempt_ordinal"] = True
-    with pytest.raises(CampaignIntegrityError, match="positive integer"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="positive integer"):
         decode_simulation_attempt(canonical_json_bytes(invalid))
 
 
 @pytest.mark.parametrize("ordinal", [10_001, 1_000_000])
 def test_attempt_codec_enforces_attempt_resource_ceiling(ordinal: int) -> None:
-    with pytest.raises(CampaignIntegrityError, match="attempt ceiling"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="attempt ceiling"):
         decode_simulation_attempt(canonical_json_bytes(_attempt() | {"attempt_ordinal": ordinal}))
 
 
@@ -150,7 +141,7 @@ def test_build_attempt_codec_enforces_attempt_resource_ceiling() -> None:
     )
     document = json.loads(path.read_bytes())
     document["build_attempt_ordinal"] = 10_001
-    with pytest.raises(CampaignIntegrityError, match="attempt ceiling"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="attempt ceiling"):
         decode_bundle_build_attempt(canonical_json_bytes(document))
 
 
@@ -158,15 +149,15 @@ def test_build_attempt_codec_enforces_attempt_resource_ceiling() -> None:
 def test_attempt_codec_rejects_non_string_run_directory_fields(field: str) -> None:
     attempt = _attempt()
     attempt["run_directory"][field] = 1  # type: ignore[index]
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         decode_simulation_attempt(canonical_json_bytes(attempt))
 
 
 def test_codec_rejects_noncanonical_or_oversized_json() -> None:
     raw = json.dumps(_attempt()).encode()
-    with pytest.raises(CampaignIntegrityError, match="canonical"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="canonical"):
         decode_simulation_attempt(raw)
-    with pytest.raises(CampaignIntegrityError, match="size ceiling"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="size ceiling"):
         decode_simulation_attempt(b" " * (MANIFEST_MAX_BYTES + 1))
 
 
@@ -174,7 +165,7 @@ def test_codec_rejects_noncanonical_or_oversized_json() -> None:
 def test_attempt_missing_field_mutation_is_rejected(field: str) -> None:
     mutated = _attempt()
     del mutated[field]
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         decode_simulation_attempt(canonical_json_bytes(mutated))
 
 
@@ -182,7 +173,7 @@ def test_attempt_missing_field_mutation_is_rejected(field: str) -> None:
 def test_attempt_unknown_field_mutation_is_rejected(field: str) -> None:
     if field in _attempt():
         return
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         decode_simulation_attempt(canonical_json_bytes(_attempt() | {field: None}))
 
 
@@ -190,7 +181,7 @@ def test_attempt_unknown_field_mutation_is_rejected(field: str) -> None:
 def test_attempt_integer_type_mutation_is_rejected(value: object) -> None:
     mutated = _attempt()
     mutated["attempt_ordinal"] = value
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         decode_simulation_attempt(canonical_json_bytes(mutated))
 
 
@@ -200,13 +191,13 @@ def test_attempt_digest_mutation_is_rejected(digest: str) -> None:
         return
     mutated = _attempt()
     mutated["manifest_sha256"] = "sha256:" + digest
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         decode_simulation_attempt(canonical_json_bytes(mutated))
 
 
 @given(st.sampled_from(["", "/root", "../escape", "a/../b", "a//b", "C:/run", "a\\b"]))
 def test_campaign_paths_reject_traversal_and_nonportable_forms(path: str) -> None:
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         validate_relative_path(path)
 
 
@@ -251,11 +242,11 @@ def test_bundle_and_snapshot_structural_mutations_are_rejected(
         document["sharing"] = "private_work_item"
     else:
         artifact["kind"] = "runtime_input"
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         decoder(canonical_json_bytes(document))
     value_type = SimulatorBundle if name == "bundle.json" else ExecutableSnapshot
     encoder = encode_simulator_bundle if name == "bundle.json" else encode_executable_snapshot
-    with pytest.raises(CampaignIntegrityError):
+    with pytest.raises(SimulationCampaignIntegrityError):
         encoder(value_type(document))
 
 

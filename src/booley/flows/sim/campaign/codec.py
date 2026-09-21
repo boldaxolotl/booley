@@ -11,6 +11,7 @@ import json
 import re
 import uuid
 from collections.abc import Callable, Mapping
+from string import Formatter
 from typing import TypeAlias, TypeVar, cast
 
 from booley.core.boundary import (
@@ -66,7 +67,7 @@ _WORK_ITEM_ID_RE = re.compile(r"item:[0-9]{4}:[0-9a-f]{16}\Z")
 _WINDOWS_DRIVE_RE = re.compile(r"[A-Za-z]:")
 
 
-class CampaignIntegrityError(ValueError):
+class SimulationCampaignIntegrityError(ValueError):
     """An authoritative campaign value violates its exact contract."""
 
 
@@ -90,7 +91,7 @@ def canonical_json_bytes(value: object) -> bytes:
             separators=(",", ":"),
         )
     except (TypeError, ValueError) as exc:
-        raise CampaignIntegrityError(f"value is not canonical JSON: {exc}") from exc
+        raise SimulationCampaignIntegrityError(f"value is not canonical JSON: {exc}") from exc
     return text.encode("utf-8") + b"\n"
 
 
@@ -231,40 +232,40 @@ def _decode(
     value_type: type[T],
 ) -> T:
     if len(raw) > limit:
-        raise CampaignIntegrityError(f"document exceeds {limit}-byte size ceiling")
+        raise SimulationCampaignIntegrityError(f"document exceeds {limit}-byte size ceiling")
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
-        raise CampaignIntegrityError(f"document is not valid UTF-8 JSON: {exc}") from exc
+        raise SimulationCampaignIntegrityError(f"document is not valid UTF-8 JSON: {exc}") from exc
     try:
         document = require_dict(value, field="document")
     except BoundaryError as exc:
-        raise CampaignIntegrityError(str(exc)) from exc
+        raise SimulationCampaignIntegrityError(str(exc)) from exc
     if set(document) != fields:
         missing = sorted(fields - set(document))
         unknown = sorted(set(document) - fields)
-        raise CampaignIntegrityError(
+        raise SimulationCampaignIntegrityError(
             f"document must have exact fields; missing={missing}, unknown={unknown}"
         )
     if document.get("$schema") != schema:
-        raise CampaignIntegrityError(f"unsupported $schema {document.get('$schema')!r}")
+        raise SimulationCampaignIntegrityError(f"unsupported $schema {document.get('$schema')!r}")
     try:
         _validate_json(document)
         _validate_common(document)
         if canonical_json_bytes(document) != raw:
-            raise CampaignIntegrityError("document is not canonical JSON")
+            raise SimulationCampaignIntegrityError("document is not canonical JSON")
         _validate_document(schema, document)
     except BoundaryError as exc:
-        raise CampaignIntegrityError(str(exc)) from exc
+        raise SimulationCampaignIntegrityError(str(exc)) from exc
     return value_type(cast(Mapping[str, FrozenJson], document))
 
 
 def _validate_json(value: object, *, depth: int = 0) -> None:
     if depth > MAX_JSON_DEPTH:
-        raise CampaignIntegrityError("JSON nesting exceeds resource ceiling")
+        raise SimulationCampaignIntegrityError("JSON nesting exceeds resource ceiling")
     if isinstance(value, str):
         if len(value.encode("utf-8")) > MAX_COMMAND_BYTES:
-            raise CampaignIntegrityError("string exceeds resource ceiling")
+            raise SimulationCampaignIntegrityError("string exceeds resource ceiling")
         return
     if isinstance(value, bool | int) or value is None:
         return
@@ -273,7 +274,7 @@ def _validate_json(value: object, *, depth: int = 0) -> None:
         return
     if isinstance(value, list):
         if len(value) > MAX_LIST_ITEMS:
-            raise CampaignIntegrityError("list exceeds resource ceiling")
+            raise SimulationCampaignIntegrityError("list exceeds resource ceiling")
         for item in value:
             _validate_json(item, depth=depth + 1)
         return
@@ -282,16 +283,16 @@ def _validate_json(value: object, *, depth: int = 0) -> None:
             require_str_value(key, field="object key", allow_empty=True)
             _validate_json(item, depth=depth + 1)
         return
-    raise CampaignIntegrityError(f"unsupported JSON type {type(value).__name__}")
+    raise SimulationCampaignIntegrityError(f"unsupported JSON type {type(value).__name__}")
 
 
 def _require_positive_int(value: object, field: str) -> int:
     try:
         parsed = require_int(value, field=field)
     except BoundaryError as exc:
-        raise CampaignIntegrityError(f"{field} must be a positive integer") from exc
+        raise SimulationCampaignIntegrityError(f"{field} must be a positive integer") from exc
     if parsed <= 0:
-        raise CampaignIntegrityError(f"{field} must be a positive integer")
+        raise SimulationCampaignIntegrityError(f"{field} must be a positive integer")
     return parsed
 
 
@@ -299,9 +300,9 @@ def _require_nonnegative_int(value: object, field: str) -> int:
     try:
         parsed = require_int(value, field=field)
     except BoundaryError as exc:
-        raise CampaignIntegrityError(f"{field} must be a nonnegative integer") from exc
+        raise SimulationCampaignIntegrityError(f"{field} must be a nonnegative integer") from exc
     if parsed < 0:
-        raise CampaignIntegrityError(f"{field} must be a nonnegative integer")
+        raise SimulationCampaignIntegrityError(f"{field} must be a nonnegative integer")
     return parsed
 
 
@@ -309,9 +310,9 @@ def _require_digest(value: object, field: str) -> str:
     try:
         parsed = require_str_value(value, field=field)
     except BoundaryError as exc:
-        raise CampaignIntegrityError(str(exc)) from exc
+        raise SimulationCampaignIntegrityError(str(exc)) from exc
     if not _DIGEST_RE.fullmatch(parsed):
-        raise CampaignIntegrityError(f"{field} must be a sha256 digest")
+        raise SimulationCampaignIntegrityError(f"{field} must be a sha256 digest")
     return parsed
 
 
@@ -319,34 +320,34 @@ def _require_uuid(value: object, field: str) -> str:
     try:
         parsed_value = require_str_value(value, field=field)
     except BoundaryError as exc:
-        raise CampaignIntegrityError(str(exc)) from exc
+        raise SimulationCampaignIntegrityError(str(exc)) from exc
     try:
         parsed = uuid.UUID(parsed_value)
     except ValueError as exc:
-        raise CampaignIntegrityError(f"{field} must be lowercase UUIDv4") from exc
+        raise SimulationCampaignIntegrityError(f"{field} must be lowercase UUIDv4") from exc
     if parsed.version != 4 or str(parsed) != parsed_value:
-        raise CampaignIntegrityError(f"{field} must be lowercase UUIDv4")
+        raise SimulationCampaignIntegrityError(f"{field} must be lowercase UUIDv4")
     return parsed_value
 
 
 def _require_variant_id(value: object) -> str:
     parsed = _bounded_string(value, "build_variant_id")
     if not _VARIANT_ID_RE.fullmatch(parsed):
-        raise CampaignIntegrityError("build_variant_id is invalid")
+        raise SimulationCampaignIntegrityError("build_variant_id is invalid")
     return parsed
 
 
 def _require_work_item_id(value: object) -> str:
     parsed = _bounded_string(value, "work_item_id")
     if not _WORK_ITEM_ID_RE.fullmatch(parsed):
-        raise CampaignIntegrityError("work_item_id is invalid")
+        raise SimulationCampaignIntegrityError("work_item_id is invalid")
     return parsed
 
 
 def _require_nonnegative_number(value: object, field: str) -> None:
     parsed = require_finite_number(value, field=field)
     if parsed < 0:
-        raise CampaignIntegrityError(f"{field} must be a finite nonnegative number")
+        raise SimulationCampaignIntegrityError(f"{field} must be a finite nonnegative number")
 
 
 def _bounded_string(
@@ -358,14 +359,14 @@ def _bounded_string(
 ) -> str:
     parsed = require_str_value(value, field=field, allow_empty=allow_empty)
     if len(parsed.encode("utf-8")) > limit:
-        raise CampaignIntegrityError(f"{field} exceeds {limit}-byte ceiling")
+        raise SimulationCampaignIntegrityError(f"{field} exceeds {limit}-byte ceiling")
     return parsed
 
 
 def _bounded_canonical_value(value: object, field: str, limit: int) -> None:
     _validate_json(value)
     if len(canonical_json_bytes(value)) - 1 > limit:
-        raise CampaignIntegrityError(f"{field} exceeds {limit}-byte ceiling")
+        raise SimulationCampaignIntegrityError(f"{field} exceeds {limit}-byte ceiling")
 
 
 def _validate_bounded_json_strings(value: object, field: str) -> None:
@@ -397,7 +398,7 @@ def _bounded_string_list(
         for index, item in enumerate(items)
     ]
     if unique and len(set(decoded)) != len(decoded):
-        raise CampaignIntegrityError(f"{field} must contain unique strings")
+        raise SimulationCampaignIntegrityError(f"{field} must contain unique strings")
     return decoded
 
 
@@ -416,29 +417,20 @@ def _validate_common(value: Mapping[str, object]) -> None:
             try:
                 parsed_timestamp = parse_timestamp(parsed_value)
             except (TypeError, ValueError) as exc:
-                raise CampaignIntegrityError(f"{key} must be canonical UTC RFC3339") from exc
+                raise SimulationCampaignIntegrityError(f"{key} must be canonical UTC RFC3339") from exc
             if "." in parsed_value or not parsed_value.endswith("Z"):
-                raise CampaignIntegrityError(f"{key} must be canonical UTC RFC3339")
+                raise SimulationCampaignIntegrityError(f"{key} must be canonical UTC RFC3339")
             del parsed_timestamp
 
 
 def _validate_document(schema: str, value: Mapping[str, object]) -> None:
-    validators = {
-        "booley.simulation-campaign-manifest/v1": _validate_manifest,
-        "booley.simulation-attempt/v1": _validate_simulation_attempt,
-        "booley.bundle-build-attempt/v1": _validate_build_attempt,
-        "booley.bundle-build-result/v1": _validate_build_result,
-        "booley.simulation-result/v1": _validate_simulation_result,
-        "booley.simulator-bundle/v1": _validate_bundle_document,
-        "booley.executable-snapshot/v1": _validate_snapshot_document,
-    }
-    validators[schema](value)
+    _DOCUMENT_VALIDATORS[schema](value)
 
 
 def _validate_attempt_identity(value: Mapping[str, object], ordinal_key: str) -> None:
     ordinal = _require_positive_int(value[ordinal_key], ordinal_key)
     if ordinal > MAX_ATTEMPTS_PER_ITEM:
-        raise CampaignIntegrityError(
+        raise SimulationCampaignIntegrityError(
             f"{ordinal_key} exceeds {MAX_ATTEMPTS_PER_ITEM}-attempt ceiling"
         )
     _require_positive_int(value["producer_invocation_id"], "producer_invocation_id")
@@ -448,7 +440,7 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
     _validate_attempt_identity(value, "attempt_ordinal")
     _require_uuid(value["attempt_id"], "attempt_id")
     if value["pre_sim_build_access"] not in {"immutable", "legacy-per-test"}:
-        raise CampaignIntegrityError("attempt pre_sim_build_access is invalid")
+        raise SimulationCampaignIntegrityError("attempt pre_sim_build_access is invalid")
     _require_variant_id(value["build_variant_id"])
     _require_work_item_id(value["work_item_id"])
     run_directory = _exact_object(
@@ -457,7 +449,7 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
         "run_directory",
     )
     if run_directory["kind"] not in {"literal", "templated"}:
-        raise CampaignIntegrityError("invalid run directory kind")
+        raise SimulationCampaignIntegrityError("invalid run directory kind")
     configured = _bounded_string(
         run_directory["configured"], "run_directory.configured", allow_empty=True
     )
@@ -478,11 +470,11 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
 def _validate_child_identity(value: Mapping[str, object]) -> None:
     child_id, child_digest = value["child_execution_id"], value["child_entry_sha256"]
     if (child_id is None) != (child_digest is None):
-        raise CampaignIntegrityError("child execution fields must both be null or present")
+        raise SimulationCampaignIntegrityError("child execution fields must both be null or present")
     if child_id is not None:
         parsed_child_id = _bounded_string(child_id, "child_execution_id")
         if not _EXECUTION_ID_RE.fullmatch(parsed_child_id):
-            raise CampaignIntegrityError("child_execution_id must be 32 lowercase hex")
+            raise SimulationCampaignIntegrityError("child_execution_id must be 32 lowercase hex")
     if child_digest is not None:
         _require_digest(child_digest, "child_entry_sha256")
 
@@ -501,13 +493,13 @@ def _validate_build_attempt(value: Mapping[str, object]) -> None:
         _bounded_string(item, f"tool_provenance.{key}")
     sharing = value["sharing"]
     if sharing not in {"shared_variant", "private_work_item"}:
-        raise CampaignIntegrityError("invalid build sharing scope")
+        raise SimulationCampaignIntegrityError("invalid build sharing scope")
     owner_values = tuple(owner.values())
     if any(item is None for item in owner_values) != all(item is None for item in owner_values):
-        raise CampaignIntegrityError("build owner fields must both be null or present")
+        raise SimulationCampaignIntegrityError("build owner fields must both be null or present")
     expected_private = all(item is not None for item in owner_values)
     if (sharing == "private_work_item") != expected_private:
-        raise CampaignIntegrityError("build owner disagrees with sharing scope")
+        raise SimulationCampaignIntegrityError("build owner disagrees with sharing scope")
     if expected_private:
         _require_work_item_id(owner["work_item_id"])
         _require_uuid(owner["simulation_attempt_id"], "owner.simulation_attempt_id")
@@ -522,20 +514,20 @@ def _validate_build_result(value: Mapping[str, object]) -> None:
         "infrastructure_error": ({"pre_sim", "build_transport", "storage"}, False, True),
     }
     if value["state"] not in states:
-        raise CampaignIntegrityError("invalid build result state")
+        raise SimulationCampaignIntegrityError("invalid build result state")
     phases, has_bundle, has_observation = states[cast(str, value["state"])]
     if value["phase"] not in phases:
-        raise CampaignIntegrityError("build result phase disagrees with state")
+        raise SimulationCampaignIntegrityError("build result phase disagrees with state")
     if (value["bundle"] is not None) != has_bundle or (
         value["observation"] is not None
     ) != has_observation:
-        raise CampaignIntegrityError("build result nullability disagrees with state")
+        raise SimulationCampaignIntegrityError("build result nullability disagrees with state")
     _validate_bundle(value["bundle"])
     _validate_build_observation(value["observation"])
     if value["observation"] is not None:
         observed_class = cast(Mapping[str, object], value["observation"])["class"]
         if (value["state"] == "design_failure") != (observed_class == "design"):
-            raise CampaignIntegrityError("build observation class disagrees with state")
+            raise SimulationCampaignIntegrityError("build observation class disagrees with state")
     _validate_evidence_list(value["evidence"], "evidence")
 
 
@@ -547,9 +539,9 @@ def _validate_simulation_result(value: Mapping[str, object]) -> None:
     build_result = _validate_simulation_build_ref(value["build_result"])
     state = value["state"]
     if state not in {"completed", "timeout", "crash", "setup_error", "blocked_by_build"}:
-        raise CampaignIntegrityError("invalid simulation result state")
+        raise SimulationCampaignIntegrityError("invalid simulation result state")
     if value["grade"] not in {grade.value for grade in StrictGrade}:
-        raise CampaignIntegrityError("invalid strict grade")
+        raise SimulationCampaignIntegrityError("invalid strict grade")
     _validate_result_state(value, build_result)
     _validate_runtime_inputs(value["runtime_inputs"], blocked=state == "blocked_by_build")
     observations = _validate_observations(value["observations"], cast(str, state))
@@ -573,22 +565,22 @@ def _validate_bundle_document(value: Mapping[str, object]) -> None:
     artifacts = _exact_list(value["artifacts"], "artifacts", MAX_EVIDENCE_REFS)
     decoded = [_validate_bundle_artifact(item, index) for index, item in enumerate(artifacts)]
     if len({item["path"] for item in decoded}) != len(decoded):
-        raise CampaignIntegrityError("bundle artifact paths must be unique")
+        raise SimulationCampaignIntegrityError("bundle artifact paths must be unique")
     if value["inventory_sha256"] != _digest(artifacts):
-        raise CampaignIntegrityError("bundle inventory digest disagrees")
+        raise SimulationCampaignIntegrityError("bundle inventory digest disagrees")
     snapshot = [
         item for item in artifacts if cast(Mapping[str, object], item)["kind"] != "runtime_input"
     ]
     if value["snapshot_inventory_sha256"] != _digest(snapshot):
-        raise CampaignIntegrityError("bundle snapshot inventory digest disagrees")
+        raise SimulationCampaignIntegrityError("bundle snapshot inventory digest disagrees")
     private = value["sharing"] == "private_work_item"
     owner_values = tuple(owner.values())
     if any(item is None for item in owner_values) != all(item is None for item in owner_values):
-        raise CampaignIntegrityError("bundle owner fields must both be null or present")
+        raise SimulationCampaignIntegrityError("bundle owner fields must both be null or present")
     if value["sharing"] not in {"shared_variant", "private_work_item"} or private != all(
         item is not None for item in owner_values
     ):
-        raise CampaignIntegrityError("bundle sharing/owner disagrees")
+        raise SimulationCampaignIntegrityError("bundle sharing/owner disagrees")
     if private:
         _require_work_item_id(owner["work_item_id"])
         _require_uuid(owner["simulation_attempt_id"], "owner.simulation_attempt_id")
@@ -602,24 +594,24 @@ def _validate_snapshot_document(value: Mapping[str, object]) -> None:
     artifacts = _exact_list(value["artifacts"], "artifacts", MAX_EVIDENCE_REFS)
     decoded = [_validate_bundle_artifact(item, index) for index, item in enumerate(artifacts)]
     if any(item["kind"] == "runtime_input" for item in decoded):
-        raise CampaignIntegrityError("snapshot cannot contain runtime inputs")
+        raise SimulationCampaignIntegrityError("snapshot cannot contain runtime inputs")
     if len({item["path"] for item in decoded}) != len(decoded):
-        raise CampaignIntegrityError("snapshot artifact paths must be unique")
+        raise SimulationCampaignIntegrityError("snapshot artifact paths must be unique")
     if value["inventory_sha256"] != _digest(artifacts):
-        raise CampaignIntegrityError("snapshot inventory digest disagrees")
+        raise SimulationCampaignIntegrityError("snapshot inventory digest disagrees")
 
 
 def _exact_object(value: object, fields: set[str], field: str) -> Mapping[str, object]:
     decoded = require_dict(value, field=field)
     if set(decoded) != fields:
-        raise CampaignIntegrityError(f"{field} must have exact fields {sorted(fields)}")
+        raise SimulationCampaignIntegrityError(f"{field} must have exact fields {sorted(fields)}")
     return cast(Mapping[str, object], decoded)
 
 
 def _exact_list(value: object, field: str, ceiling: int) -> list[object]:
     decoded = require_list(value, field=field)
     if len(decoded) > ceiling:
-        raise CampaignIntegrityError(f"{field} must be a list capped at {ceiling}")
+        raise SimulationCampaignIntegrityError(f"{field} must be a list capped at {ceiling}")
     return decoded
 
 
@@ -630,11 +622,11 @@ def _validate_build_result_ref(value: object) -> Mapping[str, object]:
         "build_attempt",
     )
     if reference["kind"] != "bundle_build_attempt":
-        raise CampaignIntegrityError("build_attempt reference has wrong kind")
+        raise SimulationCampaignIntegrityError("build_attempt reference has wrong kind")
     _validate_evidence_members(reference, "build_attempt")
     _require_uuid(reference["build_attempt_id"], "build_attempt_id")
     if reference["owner"] != reference["build_attempt_id"]:
-        raise CampaignIntegrityError("build_attempt owner disagrees with identity")
+        raise SimulationCampaignIntegrityError("build_attempt owner disagrees with identity")
     return reference
 
 
@@ -654,15 +646,15 @@ def _validate_simulation_build_ref(value: object) -> Mapping[str, object]:
         "build_result",
     )
     if reference["kind"] != "bundle_build_result":
-        raise CampaignIntegrityError("build_result reference has wrong kind")
+        raise SimulationCampaignIntegrityError("build_result reference has wrong kind")
     _validate_evidence_members(reference, "build_result")
     if reference["state"] not in {"ready", "design_failure"}:
-        raise CampaignIntegrityError("simulation result references invalid build state")
+        raise SimulationCampaignIntegrityError("simulation result references invalid build state")
     if reference["sharing"] not in {"shared_variant", "private_work_item"}:
-        raise CampaignIntegrityError("simulation result references invalid sharing scope")
+        raise SimulationCampaignIntegrityError("simulation result references invalid sharing scope")
     _require_uuid(reference["build_attempt_id"], "build_attempt_id")
     if reference["owner"] != reference["build_attempt_id"]:
-        raise CampaignIntegrityError("build_result owner disagrees with identity")
+        raise SimulationCampaignIntegrityError("build_result owner disagrees with identity")
     return reference
 
 
@@ -686,14 +678,14 @@ def _validate_bundle(value: object) -> None:
     _require_nonnegative_int(bundle["manifest_bytes"], "bundle.manifest_bytes")
     _require_digest(bundle["manifest_sha256"], "bundle.manifest_sha256")
     if bundle["sharing"] not in {"shared_variant", "private_work_item"}:
-        raise CampaignIntegrityError("bundle sharing scope is invalid")
+        raise SimulationCampaignIntegrityError("bundle sharing scope is invalid")
     artifacts = _exact_list(bundle["artifacts"], "bundle.artifacts", MAX_EVIDENCE_REFS)
     decoded = [_validate_bundle_artifact(item, index) for index, item in enumerate(artifacts)]
     paths = [item["path"] for item in decoded]
     if len(set(paths)) != len(paths):
-        raise CampaignIntegrityError("bundle artifact paths must be unique")
+        raise SimulationCampaignIntegrityError("bundle artifact paths must be unique")
     if not any(item["kind"] == "simulator_executable" for item in decoded):
-        raise CampaignIntegrityError("ready bundle requires a simulator executable")
+        raise SimulationCampaignIntegrityError("ready bundle requires a simulator executable")
 
 
 def _validate_bundle_artifact(value: object, index: int) -> Mapping[str, object]:
@@ -709,7 +701,7 @@ def _validate_bundle_artifact(value: object, index: int) -> Mapping[str, object]
         "runtime_data",
         "runtime_input",
     }:
-        raise CampaignIntegrityError("bundle artifact kind is invalid")
+        raise SimulationCampaignIntegrityError("bundle artifact kind is invalid")
     return artifact
 
 
@@ -718,7 +710,7 @@ def _validate_build_observation(value: object) -> None:
         return
     observation = _exact_object(value, {"class", "code", "message", "detail"}, "build observation")
     if observation["class"] not in {"design", "infrastructure"}:
-        raise CampaignIntegrityError("build observation class is invalid")
+        raise SimulationCampaignIntegrityError("build observation class is invalid")
     for key in ("code", "message"):
         _bounded_string(observation[key], f"build observation {key}")
     _bounded_canonical_value(observation["detail"], "build observation detail", MAX_DETAIL_BYTES)
@@ -730,15 +722,15 @@ def _validate_result_state(
     state = value["state"]
     if state == "blocked_by_build":
         if build_result["state"] != "design_failure":
-            raise CampaignIntegrityError("blocked result requires design-failure build")
+            raise SimulationCampaignIntegrityError("blocked result requires design-failure build")
         if value["bundle_id"] is not None or value["executable_snapshot"] is not None:
-            raise CampaignIntegrityError("blocked result cannot bind a bundle or snapshot")
+            raise SimulationCampaignIntegrityError("blocked result cannot bind a bundle or snapshot")
         return
     if build_result["state"] != "ready":
-        raise CampaignIntegrityError("non-blocked result requires ready build")
+        raise SimulationCampaignIntegrityError("non-blocked result requires ready build")
     _require_uuid(value["bundle_id"], "bundle_id")
     if state in {"completed", "timeout", "crash"} and value["executable_snapshot"] is None:
-        raise CampaignIntegrityError("post-launch result requires executable snapshot")
+        raise SimulationCampaignIntegrityError("post-launch result requires executable snapshot")
     _validate_executable_snapshot(value["executable_snapshot"], value["attempt_id"])
 
 
@@ -761,19 +753,19 @@ def _validate_executable_snapshot(value: object, attempt_id: object) -> None:
         manifest["kind"] != "executable_snapshot_manifest"
         or manifest["owner"] != attempt_id
     ):
-        raise CampaignIntegrityError("executable snapshot manifest identity disagrees")
+        raise SimulationCampaignIntegrityError("executable snapshot manifest identity disagrees")
     for key in ("bundle_manifest_sha256", "pre_launch_sha256", "post_exit_sha256"):
         _require_digest(snapshot[key], f"executable_snapshot.{key}")
     if snapshot["pre_launch_sha256"] != snapshot["post_exit_sha256"]:
-        raise CampaignIntegrityError("executable snapshot changed during execution")
+        raise SimulationCampaignIntegrityError("executable snapshot changed during execution")
     if snapshot["verified_after_exit"] is not True:
-        raise CampaignIntegrityError("executable snapshot must be verified after exit")
+        raise SimulationCampaignIntegrityError("executable snapshot must be verified after exit")
 
 
 def _validate_runtime_inputs(value: object, *, blocked: bool) -> None:
     inputs = _exact_list(value, "runtime_inputs", MAX_EVIDENCE_REFS)
     if blocked and inputs:
-        raise CampaignIntegrityError("blocked result runtime_inputs must be empty")
+        raise SimulationCampaignIntegrityError("blocked result runtime_inputs must be empty")
     destinations: list[object] = []
     declarations: list[object] = []
     for index, item in enumerate(inputs):
@@ -794,7 +786,7 @@ def _validate_runtime_inputs(value: object, *, blocked: bool) -> None:
         _validate_evidence_ref(binding["authoritative_copy"], "authoritative_copy")
         validate_relative_path(cast(str, binding["destination"]))
         if binding["method"] not in {"copy", "link", "identical_existing"}:
-            raise CampaignIntegrityError("runtime input method is invalid")
+            raise SimulationCampaignIntegrityError("runtime input method is invalid")
         _require_nonnegative_int(binding["destination_bytes"], "destination_bytes")
         _require_digest(binding["destination_sha256"], "destination_sha256")
         authoritative = cast(Mapping[str, object], binding["authoritative_copy"])
@@ -802,18 +794,18 @@ def _validate_runtime_inputs(value: object, *, blocked: bool) -> None:
             authoritative["bytes"] != binding["destination_bytes"]
             or authoritative["sha256"] != binding["destination_sha256"]
         ):
-            raise CampaignIntegrityError("runtime input copy and destination disagree")
+            raise SimulationCampaignIntegrityError("runtime input copy and destination disagree")
         require_bool_value(binding["owned"], field="runtime input owned")
         destinations.append(binding["destination"])
         declarations.append(binding["declaration_id"])
     if len(set(destinations)) != len(destinations) or len(set(declarations)) != len(declarations):
-        raise CampaignIntegrityError("runtime input identities must be unique")
+        raise SimulationCampaignIntegrityError("runtime input identities must be unique")
 
 
 def _validate_observations(value: object, state: str) -> list[Mapping[str, object]]:
     observations = _exact_list(value, "observations", MAX_OBSERVATIONS)
     if not observations:
-        raise CampaignIntegrityError("result observations must be nonempty")
+        raise SimulationCampaignIntegrityError("result observations must be nonempty")
     tests: list[object] = []
     decoded: list[Mapping[str, object]] = []
     for index, item in enumerate(observations):
@@ -821,14 +813,14 @@ def _validate_observations(value: object, state: str) -> list[Mapping[str, objec
         tests.append(observation["test"])
         decoded.append(observation)
         if state == "completed" and observation["execution"] != "completed":
-            raise CampaignIntegrityError("completed result requires completed observations")
+            raise SimulationCampaignIntegrityError("completed result requires completed observations")
         if state == "blocked_by_build" and observation["execution"] != "blocked_by_build":
-            raise CampaignIntegrityError("blocked result requires blocked observations")
+            raise SimulationCampaignIntegrityError("blocked result requires blocked observations")
         if state == "setup_error" and observation["execution"] != "setup_error":
-            raise CampaignIntegrityError("setup result requires setup observations")
+            raise SimulationCampaignIntegrityError("setup result requires setup observations")
     named = [test for test in tests if test is not None]
     if len(set(named)) != len(named):
-        raise CampaignIntegrityError("observation test names must be unique")
+        raise SimulationCampaignIntegrityError("observation test names must be unique")
     if state in {"completed", "timeout", "crash"}:
         strength = {"completed": 0, "timeout": 1, "crash": 2}
         expected = max(
@@ -836,7 +828,7 @@ def _validate_observations(value: object, state: str) -> list[Mapping[str, objec
             key=lambda execution: strength.get(execution, 3),
         )
         if expected != state:
-            raise CampaignIntegrityError("result state disagrees with observations")
+            raise SimulationCampaignIntegrityError("result state disagrees with observations")
     return decoded
 
 
@@ -858,7 +850,7 @@ def _validate_result_grade(value: object, observations: list[Mapping[str, object
     }
     expected = max(grades, key=precedence.__getitem__)
     if value != expected.value:
-        raise CampaignIntegrityError("result grade disagrees with observations")
+        raise SimulationCampaignIntegrityError("result grade disagrees with observations")
 
 
 def _validate_observation(value: object, index: int) -> Mapping[str, object]:
@@ -883,13 +875,13 @@ def _validate_observation(value: object, index: int) -> Mapping[str, object]:
         "setup_error",
         "blocked_by_build",
     }:
-        raise CampaignIntegrityError("observation execution is invalid")
+        raise SimulationCampaignIntegrityError("observation execution is invalid")
     if observation["failure_class"] not in {None, "design", "infrastructure"}:
-        raise CampaignIntegrityError("observation failure class is invalid")
+        raise SimulationCampaignIntegrityError("observation failure class is invalid")
     if observation["functional"] not in {"pass", "fail", "inconclusive", "not_observed"}:
-        raise CampaignIntegrityError("functional observation is invalid")
+        raise SimulationCampaignIntegrityError("functional observation is invalid")
     if observation["assertions"] not in {"clean", "dirty", "not_observed"}:
-        raise CampaignIntegrityError("assertion observation is invalid")
+        raise SimulationCampaignIntegrityError("assertion observation is invalid")
     if observation["test"] is not None:
         _bounded_string(
             observation["test"],
@@ -903,7 +895,7 @@ def _validate_observation(value: object, index: int) -> Mapping[str, object]:
     if observation["cycle_count"] is not None:
         _require_nonnegative_int(observation["cycle_count"], "cycle_count")
         if observation["execution"] != "completed":
-            raise CampaignIntegrityError("cycle count requires completed execution")
+            raise SimulationCampaignIntegrityError("cycle count requires completed execution")
     _validate_observation_matrix(observation)
     return observation
 
@@ -915,7 +907,7 @@ def _validate_observation_matrix(observation: Mapping[str, object]) -> None:
         or observation["assertions"] != "not_observed"
         or observation["cycle_count"] is not None
     ):
-        raise CampaignIntegrityError("setup/build-block observation matrix is invalid")
+        raise SimulationCampaignIntegrityError("setup/build-block observation matrix is invalid")
 
 
 def _validate_diagnostics(value: object) -> None:
@@ -925,7 +917,7 @@ def _validate_diagnostics(value: object) -> None:
             item, {"severity", "code", "pointer", "message"}, f"diagnostics[{index}]"
         )
         if diagnostic["severity"] not in {"warning", "error"}:
-            raise CampaignIntegrityError("diagnostic severity is invalid")
+            raise SimulationCampaignIntegrityError("diagnostic severity is invalid")
         _bounded_string(diagnostic["code"], f"diagnostics[{index}].code")
         _bounded_string(
             diagnostic["pointer"], f"diagnostics[{index}].pointer", allow_empty=True
@@ -940,7 +932,7 @@ def _validate_manifest(value: Mapping[str, object]) -> None:
         execution_id, "origin.execution_id", allow_empty=True
     )
     if parsed_execution_id and not _EXECUTION_ID_RE.fullmatch(parsed_execution_id):
-        raise CampaignIntegrityError("origin.execution_id must be empty or 32 lowercase hex")
+        raise SimulationCampaignIntegrityError("origin.execution_id must be empty or 32 lowercase hex")
     _require_positive_int(origin["invocation_id"], "origin.invocation_id")
     target = _validate_target(value["target"], "target")
     workload = _validate_workload(value["workload"])
@@ -964,7 +956,7 @@ def _validate_target(value: object, field: str) -> Mapping[str, object]:
         _bounded_string(target[key], f"{field}.{key}")
     _bounded_string(target["display_name"], f"{field}.display_name", allow_empty=True)
     if target["role"] not in {"candidate", "cycle_count_baseline"}:
-        raise CampaignIntegrityError(f"{field}.role is invalid")
+        raise SimulationCampaignIntegrityError(f"{field}.role is invalid")
     return target
 
 
@@ -987,7 +979,7 @@ def _validate_workload(value: object) -> Mapping[str, object]:
         "workload",
     )
     if workload["mode"] != "simulate":
-        raise CampaignIntegrityError("workload mode/trace/coverage is invalid")
+        raise SimulationCampaignIntegrityError("workload mode/trace/coverage is invalid")
     require_bool_value(workload["trace"], field="workload.trace")
     require_bool_value(workload["coverage"], field="workload.coverage")
     _validate_eda(workload["eda"])
@@ -998,7 +990,7 @@ def _validate_workload(value: object) -> Mapping[str, object]:
     _validate_source_recipe(workload["source_recipe"])
     _validate_build_recipe(workload["build_recipe"])
     if workload["pre_sim_build_access"] not in {"immutable", "legacy-per-test"}:
-        raise CampaignIntegrityError("pre_sim_build_access is invalid")
+        raise SimulationCampaignIntegrityError("pre_sim_build_access is invalid")
     return workload
 
 
@@ -1011,26 +1003,55 @@ def _validate_eda(value: object) -> None:
 def _validate_run_cwd(value: object) -> None:
     run_cwd = _exact_object(value, {"configured", "kind", "placeholders"}, "run_cwd")
     if run_cwd["kind"] not in {"literal", "templated"}:
-        raise CampaignIntegrityError("run_cwd.kind is invalid")
-    placeholders = _exact_list(run_cwd["placeholders"], "run_cwd.placeholders", 4)
-    if len(set(placeholders)) != len(placeholders) or set(placeholders) - {
+        raise SimulationCampaignIntegrityError("run_cwd.kind is invalid")
+    placeholders = _bounded_string_list(
+        run_cwd["placeholders"],
+        "run_cwd.placeholders",
+        count_limit=4,
+        byte_limit=MAX_STRING_BYTES,
+        unique=True,
+    )
+    if set(placeholders) - {
         "campaign",
         "target",
         "test",
         "attempt",
     }:
-        raise CampaignIntegrityError("run_cwd placeholders are invalid")
+        raise SimulationCampaignIntegrityError("run_cwd placeholders are invalid")
     configured = _bounded_string(run_cwd["configured"], "run_cwd.configured", allow_empty=True)
-    parsed = list(dict.fromkeys(re.findall(r"\{(campaign|target|test|attempt)\}", configured)))
-    _validate_configured_run_kind(configured, cast(str, run_cwd["kind"]))
+    parsed = _validate_configured_run_kind(configured, cast(str, run_cwd["kind"]))
     if placeholders != parsed:
-        raise CampaignIntegrityError("run_cwd placeholders/kind disagree with configured value")
+        raise SimulationCampaignIntegrityError("run_cwd placeholders/kind disagree with configured value")
 
 
-def _validate_configured_run_kind(configured: str, kind: str) -> None:
-    placeholders = re.findall(r"\{(campaign|target|test|attempt)\}", configured)
+def _validate_configured_run_kind(configured: str, kind: str) -> list[str]:
+    placeholders = _parse_run_placeholders(configured)
     if (kind == "literal") != (not placeholders):
-        raise CampaignIntegrityError("run-directory kind disagrees with configured value")
+        raise SimulationCampaignIntegrityError("run-directory kind disagrees with configured value")
+    return placeholders
+
+
+def _parse_run_placeholders(configured: str) -> list[str]:
+    allowed = {"campaign", "target", "test", "attempt"}
+    ordered: list[str] = []
+    try:
+        parts = Formatter().parse(configured)
+        for _, field_name, format_spec, conversion in parts:
+            if field_name is None:
+                continue
+            if field_name not in allowed:
+                raise SimulationCampaignIntegrityError(
+                    f"unknown run-directory placeholder {field_name!r}"
+                )
+            if conversion is not None or format_spec:
+                raise SimulationCampaignIntegrityError(
+                    "run-directory placeholders cannot use conversion or format specs"
+                )
+            if field_name not in ordered:
+                ordered.append(field_name)
+    except ValueError as exc:
+        raise SimulationCampaignIntegrityError("invalid run-directory format string") from exc
+    return ordered
 
 
 def _validate_runtime_declarations(value: object) -> None:
@@ -1047,11 +1068,11 @@ def _validate_runtime_declarations(value: object) -> None:
         destination = validate_relative_path(cast(str, declaration["destination"]))
         expected = _digest({"source_artifact_path": source, "destination": destination})
         if declaration["declaration_id"] != expected:
-            raise CampaignIntegrityError("runtime declaration digest disagrees")
+            raise SimulationCampaignIntegrityError("runtime declaration digest disagrees")
         ids.append(expected)
         destinations.append(destination)
     if len(set(ids)) != len(ids) or len(set(destinations)) != len(destinations):
-        raise CampaignIntegrityError("runtime declarations must be unique")
+        raise SimulationCampaignIntegrityError("runtime declarations must be unique")
 
 
 def _validate_source_recipe(value: object) -> None:
@@ -1067,7 +1088,7 @@ def _validate_source_recipe(value: object) -> None:
         _validate_bounded_json_strings(parameter["value"], f"parameters[{index}].value")
         names.append(parameter["name"])
     if len(set(names)) != len(names):
-        raise CampaignIntegrityError("parameter names must be unique")
+        raise SimulationCampaignIntegrityError("parameter names must be unique")
     _bounded_string_list(
         recipe["defines"], "defines", count_limit=10_000, byte_limit=MAX_STRING_BYTES
     )
@@ -1088,7 +1109,7 @@ def _validate_source_entries(value: object, field: str) -> list[Mapping[str, obj
         _require_nonnegative_int(entry["bytes"], f"{field}.bytes")
         _require_digest(entry["sha256"], f"{field}.sha256")
         if entry["kind"] not in {"rtl", "testbench", "constraint", "user", "generated_input"}:
-            raise CampaignIntegrityError(f"{field}.kind is invalid")
+            raise SimulationCampaignIntegrityError(f"{field}.kind is invalid")
         decoded.append(entry)
     return decoded
 
@@ -1128,15 +1149,15 @@ def _validate_required_suite(value: object) -> Mapping[str, object]:
     if source_path:
         validate_relative_path(source_path)
     elif not suite["default_invocation"]:
-        raise CampaignIntegrityError("catalog-backed required suite needs a source path")
+        raise SimulationCampaignIntegrityError("catalog-backed required suite needs a source path")
     if suite["default_invocation"] != (not names):
-        raise CampaignIntegrityError("required suite default flag disagrees with names")
+        raise SimulationCampaignIntegrityError("required suite default flag disagrees with names")
     if suite["default_invocation"] and (
         suite["source_path"] != ""
         or suite["source_bytes"] != 0
         or suite["source_sha256"] != _digest_bytes(b"")
     ):
-        raise CampaignIntegrityError("default required suite must authenticate empty source")
+        raise SimulationCampaignIntegrityError("default required suite must authenticate empty source")
     return suite
 
 
@@ -1155,13 +1176,13 @@ def _validate_variants(
         decoded.append(variant)
     ids = [item["build_variant_id"] for item in decoded]
     if len(set(ids)) != len(ids):
-        raise CampaignIntegrityError("build variant IDs must be unique")
+        raise SimulationCampaignIntegrityError("build variant IDs must be unique")
     return decoded
 
 
 def _validate_variant(variant: Mapping[str, object], workload: Mapping[str, object]) -> None:
     if variant["kind"] not in {"candidate", "trace", "coverage"}:
-        raise CampaignIntegrityError("build variant kind is invalid")
+        raise SimulationCampaignIntegrityError("build variant kind is invalid")
     require_bool_value(variant["sharing_eligible"], field="sharing_eligible")
     _validate_source_entries(variant["source_closure"], "source_closure")
     recipe = {
@@ -1177,7 +1198,7 @@ def _validate_variant(variant: Mapping[str, object], workload: Mapping[str, obje
     if variant["recipe_sha256"] != expected or variant["build_variant_id"] != (
         f"variant:{expected.removeprefix('sha256:')}"
     ):
-        raise CampaignIntegrityError("build variant recipe digest/ID disagrees")
+        raise SimulationCampaignIntegrityError("build variant recipe digest/ID disagrees")
 
 
 def _validate_disclosures(value: object) -> list[Mapping[str, object]]:
@@ -1201,7 +1222,7 @@ def _validate_disclosures(value: object) -> list[Mapping[str, object]]:
             _bounded_string(entry, f"planning tool_provenance.{key}")
         cleanup = _exact_object(disclosure["cleanup"], {"removed"}, "cleanup")
         if require_bool_value(cleanup["removed"], field="cleanup.removed") is not True:
-            raise CampaignIntegrityError("planning scratch must be removed")
+            raise SimulationCampaignIntegrityError("planning scratch must be removed")
         decoded.append(disclosure)
     return decoded
 
@@ -1220,11 +1241,11 @@ def _validate_prerequisites(value: object) -> list[Mapping[str, object]]:
             prerequisite["role"] != "cycle_count_baseline"
             or prerequisite["required_observation"] != "cycle_count"
         ):
-            raise CampaignIntegrityError("prerequisite role/observation is invalid")
+            raise SimulationCampaignIntegrityError("prerequisite role/observation is invalid")
         _require_uuid(prerequisite["campaign_id"], "prerequisite campaign_id")
         target = _validate_target(prerequisite["target"], "prerequisite.target")
         if target["role"] != "cycle_count_baseline":
-            raise CampaignIntegrityError("prerequisite target must have baseline role")
+            raise SimulationCampaignIntegrityError("prerequisite target must have baseline role")
         _require_work_item_id(prerequisite["work_item_id"])
         manifest = _exact_object(
             prerequisite["manifest"],
@@ -1235,18 +1256,18 @@ def _validate_prerequisites(value: object) -> list[Mapping[str, object]]:
             manifest["path_base"] != "origin_invocation"
             or manifest["kind"] != "simulation_campaign_manifest"
         ):
-            raise CampaignIntegrityError("prerequisite manifest reference is invalid")
+            raise SimulationCampaignIntegrityError("prerequisite manifest reference is invalid")
         _validate_evidence_members(manifest, "prerequisite.manifest")
         if not cast(str, manifest["path"]).startswith("targets/"):
-            raise CampaignIntegrityError("prerequisite manifest must start beneath targets/")
+            raise SimulationCampaignIntegrityError("prerequisite manifest must start beneath targets/")
         if manifest["owner"] != prerequisite["campaign_id"]:
-            raise CampaignIntegrityError("prerequisite manifest owner disagrees")
+            raise SimulationCampaignIntegrityError("prerequisite manifest owner disagrees")
         identities.append(
             (prerequisite["campaign_id"], target["project_identity"], target["revision"])
         )
         decoded.append(prerequisite)
     if len(set(identities)) != len(identities):
-        raise CampaignIntegrityError("prerequisite identities must be unique")
+        raise SimulationCampaignIntegrityError("prerequisite identities must be unique")
     return decoded
 
 
@@ -1262,17 +1283,17 @@ def _validate_work_items(
     for ordinal, item in enumerate(items):
         decoded = _decode_work_item(item, ordinal)
         if decoded["target"] != target or decoded["build_variant_id"] not in variant_ids:
-            raise CampaignIntegrityError("work item target/build variant disagrees")
+            raise SimulationCampaignIntegrityError("work item target/build variant disagrees")
         if decoded["role"] != target["role"] or decoded["revision"] != target["revision"]:
-            raise CampaignIntegrityError("work item role/revision disagrees with target")
+            raise SimulationCampaignIntegrityError("work item role/revision disagrees with target")
         selection = cast(Mapping[str, object], decoded["selection"])
         if selection["kind"] == "default" and not suite["default_invocation"]:
-            raise CampaignIntegrityError("default work item requires an unnamed target")
+            raise SimulationCampaignIntegrityError("default work item requires an unnamed target")
         if selection["kind"] == "named" and any(
             name not in cast(list[object], suite["names"])
             for name in cast(list[object], selection["names"])
         ):
-            raise CampaignIntegrityError("work item selection is outside required suite")
+            raise SimulationCampaignIntegrityError("work item selection is outside required suite")
         identity_input = {
             key: entry
             for key, entry in decoded.items()
@@ -1281,7 +1302,7 @@ def _validate_work_items(
         expected = _digest(identity_input)
         expected_id = f"item:{ordinal:04d}:{expected.removeprefix('sha256:')[:16]}"
         if decoded["fingerprint_sha256"] != expected or decoded["work_item_id"] != expected_id:
-            raise CampaignIntegrityError("work item fingerprint/ID disagrees")
+            raise SimulationCampaignIntegrityError("work item fingerprint/ID disagrees")
         decoded_items.append(decoded)
     observation_count = sum(
         len(cast(Mapping[str, object], item["selection"])["names"])
@@ -1289,7 +1310,7 @@ def _validate_work_items(
         for item in decoded_items
     )
     if observation_count > MAX_OBSERVATIONS:
-        raise CampaignIntegrityError("planned observations exceed campaign ceiling")
+        raise SimulationCampaignIntegrityError("planned observations exceed campaign ceiling")
     return decoded_items
 
 
@@ -1312,11 +1333,11 @@ def _decode_work_item(value: object, ordinal: int) -> Mapping[str, object]:
         f"work_items[{ordinal}]",
     )
     if require_int(item["ordinal"], field="work item ordinal") != ordinal:
-        raise CampaignIntegrityError("work item ordinal disagrees with order")
+        raise SimulationCampaignIntegrityError("work item ordinal disagrees with order")
     if item["kind"] not in {"ordinary_hdl", "cocotb_batch", "coverage_aggregate"}:
-        raise CampaignIntegrityError("work item kind is invalid")
+        raise SimulationCampaignIntegrityError("work item kind is invalid")
     if item["role"] not in {"candidate", "cycle_count_baseline"}:
-        raise CampaignIntegrityError("work item role is invalid")
+        raise SimulationCampaignIntegrityError("work item role is invalid")
     _bounded_string(item["revision"], "work item revision")
     _validate_work_item_selection(item["selection"], cast(str, item["kind"]))
     _validate_work_item_run_directory(item["run_directory"])
@@ -1336,19 +1357,19 @@ def _validate_work_item_selection(value: object, work_item_kind: str) -> None:
         unique=True,
     )
     if selection["kind"] == "named" and not names:
-        raise CampaignIntegrityError("named selection must be nonempty")
+        raise SimulationCampaignIntegrityError("named selection must be nonempty")
     if selection["kind"] in {"default", "unfiltered"} and names:
-        raise CampaignIntegrityError("unnamed selection must have no names")
+        raise SimulationCampaignIntegrityError("unnamed selection must have no names")
     if selection["kind"] not in {"named", "default", "unfiltered"}:
-        raise CampaignIntegrityError("selection kind is invalid")
+        raise SimulationCampaignIntegrityError("selection kind is invalid")
     if work_item_kind == "ordinary_hdl" and selection["kind"] == "named" and len(names) != 1:
-        raise CampaignIntegrityError("named ordinary work item requires one test")
+        raise SimulationCampaignIntegrityError("named ordinary work item requires one test")
     if work_item_kind == "ordinary_hdl" and selection["kind"] == "unfiltered":
-        raise CampaignIntegrityError("ordinary work item cannot be unfiltered")
+        raise SimulationCampaignIntegrityError("ordinary work item cannot be unfiltered")
     if work_item_kind == "cocotb_batch" and selection["kind"] == "default":
-        raise CampaignIntegrityError("Cocotb work item cannot use default selection")
+        raise SimulationCampaignIntegrityError("Cocotb work item cannot use default selection")
     if work_item_kind == "coverage_aggregate" and selection["kind"] != "named":
-        raise CampaignIntegrityError("coverage work item requires named selection")
+        raise SimulationCampaignIntegrityError("coverage work item requires named selection")
 
 
 def _validate_work_item_run_directory(value: object) -> None:
@@ -1356,7 +1377,7 @@ def _validate_work_item_run_directory(value: object) -> None:
         value, {"configured", "kind", "collision_template"}, "run_directory"
     )
     if run_directory["kind"] not in {"literal", "templated"}:
-        raise CampaignIntegrityError("work item run-directory kind is invalid")
+        raise SimulationCampaignIntegrityError("work item run-directory kind is invalid")
     configured = _bounded_string(
         run_directory["configured"], "work item run_directory.configured", allow_empty=True
     )
@@ -1396,7 +1417,7 @@ def _validate_manifest_fingerprints(
     )
     for key, digest in expected.items():
         if fingerprints[key] != digest:
-            raise CampaignIntegrityError(f"fingerprints.{key} disagrees")
+            raise SimulationCampaignIntegrityError(f"fingerprints.{key} disagrees")
 
 
 def _manifest_component_digests(
@@ -1476,134 +1497,137 @@ def _validate_evidence_list(value: object, field: str) -> None:
         _validate_evidence_ref(reference, f"{field}[{index}]")
 
 
-def decode_campaign_manifest(raw: bytes) -> SimulationCampaignManifest:
-    return _decode(
-        raw,
-        schema="booley.simulation-campaign-manifest/v1",
-        fields=_MANIFEST_FIELDS,
-        limit=MANIFEST_MAX_BYTES,
-        value_type=SimulationCampaignManifest,
-    )
+_DOCUMENT_SPECS: dict[
+    type[SimulationCampaignDocument],
+    tuple[str, frozenset[str], int, Callable[[Mapping[str, object]], None]],
+] = {
+    SimulationCampaignManifest: (
+        "booley.simulation-campaign-manifest/v1",
+        _MANIFEST_FIELDS,
+        MANIFEST_MAX_BYTES,
+        _validate_manifest,
+    ),
+    SimulationAttempt: (
+        "booley.simulation-attempt/v1",
+        _ATTEMPT_FIELDS,
+        RECORD_MAX_BYTES,
+        _validate_simulation_attempt,
+    ),
+    BundleBuildAttempt: (
+        "booley.bundle-build-attempt/v1",
+        _BUILD_ATTEMPT_FIELDS,
+        RECORD_MAX_BYTES,
+        _validate_build_attempt,
+    ),
+    BundleBuildResult: (
+        "booley.bundle-build-result/v1",
+        _BUILD_RESULT_FIELDS,
+        RECORD_MAX_BYTES,
+        _validate_build_result,
+    ),
+    SimulationResult: (
+        "booley.simulation-result/v1",
+        _RESULT_FIELDS,
+        RECORD_MAX_BYTES,
+        _validate_simulation_result,
+    ),
+    SimulatorBundle: (
+        "booley.simulator-bundle/v1",
+        _BUNDLE_FIELDS,
+        MANIFEST_MAX_BYTES,
+        _validate_bundle_document,
+    ),
+    ExecutableSnapshot: (
+        "booley.executable-snapshot/v1",
+        _SNAPSHOT_FIELDS,
+        MANIFEST_MAX_BYTES,
+        _validate_snapshot_document,
+    ),
+}
+_DOCUMENT_VALIDATORS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values()}
+
+
+def _decode_registered(raw: bytes, value_type: type[T]) -> T:
+    schema, fields, limit, _ = _DOCUMENT_SPECS[value_type]
+    return _decode(raw, schema=schema, fields=fields, limit=limit, value_type=value_type)
+
+
+def decode_simulation_campaign_manifest(raw: bytes) -> SimulationCampaignManifest:
+    return _decode_registered(raw, SimulationCampaignManifest)
 
 
 def decode_simulation_attempt(raw: bytes) -> SimulationAttempt:
-    return _decode(
-        raw,
-        schema="booley.simulation-attempt/v1",
-        fields=_ATTEMPT_FIELDS,
-        limit=RECORD_MAX_BYTES,
-        value_type=SimulationAttempt,
-    )
+    return _decode_registered(raw, SimulationAttempt)
 
 
 def decode_bundle_build_attempt(raw: bytes) -> BundleBuildAttempt:
-    return _decode(
-        raw,
-        schema="booley.bundle-build-attempt/v1",
-        fields=_BUILD_ATTEMPT_FIELDS,
-        limit=RECORD_MAX_BYTES,
-        value_type=BundleBuildAttempt,
-    )
+    return _decode_registered(raw, BundleBuildAttempt)
 
 
 def decode_bundle_build_result(raw: bytes) -> BundleBuildResult:
-    return _decode(
-        raw,
-        schema="booley.bundle-build-result/v1",
-        fields=_BUILD_RESULT_FIELDS,
-        limit=RECORD_MAX_BYTES,
-        value_type=BundleBuildResult,
-    )
+    return _decode_registered(raw, BundleBuildResult)
 
 
 decode_build_result = decode_bundle_build_result
 
 
 def decode_simulation_result(raw: bytes) -> SimulationResult:
-    return _decode(
-        raw,
-        schema="booley.simulation-result/v1",
-        fields=_RESULT_FIELDS,
-        limit=RECORD_MAX_BYTES,
-        value_type=SimulationResult,
-    )
+    return _decode_registered(raw, SimulationResult)
 
 
 def decode_simulator_bundle(raw: bytes) -> SimulatorBundle:
-    return _decode(
-        raw,
-        schema="booley.simulator-bundle/v1",
-        fields=_BUNDLE_FIELDS,
-        limit=MANIFEST_MAX_BYTES,
-        value_type=SimulatorBundle,
-    )
+    return _decode_registered(raw, SimulatorBundle)
 
 
 def decode_executable_snapshot(raw: bytes) -> ExecutableSnapshot:
-    return _decode(
-        raw,
-        schema="booley.executable-snapshot/v1",
-        fields=_SNAPSHOT_FIELDS,
-        limit=MANIFEST_MAX_BYTES,
-        value_type=ExecutableSnapshot,
-    )
+    return _decode_registered(raw, ExecutableSnapshot)
 
 
 def _encode_checked(
     value: SimulationCampaignDocument,
     expected_type: type[T],
-    decoder: Callable[[bytes], T],
 ) -> bytes:
     if type(value) is not expected_type:
-        raise CampaignIntegrityError(f"expected {expected_type.__name__}")
+        raise SimulationCampaignIntegrityError(f"expected {expected_type.__name__}")
     raw = canonical_json_bytes(value.document)
-    decoder(raw)
+    _decode_registered(raw, expected_type)
     return raw
 
 
-def encode_campaign_manifest(value: SimulationCampaignManifest) -> bytes:
-    return _encode_checked(value, SimulationCampaignManifest, decode_campaign_manifest)
+def encode_simulation_campaign_manifest(value: SimulationCampaignManifest) -> bytes:
+    return _encode_checked(value, SimulationCampaignManifest)
 
 
 def encode_simulation_attempt(value: SimulationAttempt) -> bytes:
-    return _encode_checked(value, SimulationAttempt, decode_simulation_attempt)
+    return _encode_checked(value, SimulationAttempt)
 
 
 def encode_bundle_build_attempt(value: BundleBuildAttempt) -> bytes:
-    return _encode_checked(value, BundleBuildAttempt, decode_bundle_build_attempt)
+    return _encode_checked(value, BundleBuildAttempt)
 
 
 def encode_bundle_build_result(value: BundleBuildResult) -> bytes:
-    return _encode_checked(value, BundleBuildResult, decode_bundle_build_result)
+    return _encode_checked(value, BundleBuildResult)
 
 
 def encode_simulation_result(value: SimulationResult) -> bytes:
-    return _encode_checked(value, SimulationResult, decode_simulation_result)
+    return _encode_checked(value, SimulationResult)
 
 
 def encode_simulator_bundle(value: SimulatorBundle) -> bytes:
-    return _encode_checked(value, SimulatorBundle, decode_simulator_bundle)
+    return _encode_checked(value, SimulatorBundle)
 
 
 def encode_executable_snapshot(value: ExecutableSnapshot) -> bytes:
-    return _encode_checked(value, ExecutableSnapshot, decode_executable_snapshot)
+    return _encode_checked(value, ExecutableSnapshot)
 
 
-def encode_campaign_document(value: SimulationCampaignDocument) -> bytes:
+def encode_simulation_campaign_document(value: SimulationCampaignDocument) -> bytes:
     """Validate and canonically encode any Phase-1 campaign document value."""
-    encoders = {
-        SimulationCampaignManifest: encode_campaign_manifest,
-        SimulationAttempt: encode_simulation_attempt,
-        BundleBuildAttempt: encode_bundle_build_attempt,
-        BundleBuildResult: encode_bundle_build_result,
-        SimulationResult: encode_simulation_result,
-        SimulatorBundle: encode_simulator_bundle,
-        ExecutableSnapshot: encode_executable_snapshot,
-    }
-    encoder = encoders.get(type(value))
-    if encoder is None:
-        raise CampaignIntegrityError(f"unsupported campaign value {type(value).__name__}")
-    return encoder(value)  # type: ignore[arg-type]
+    value_type = type(value)
+    if value_type not in _DOCUMENT_SPECS:
+        raise SimulationCampaignIntegrityError(f"unsupported campaign value {type(value).__name__}")
+    return _encode_checked(value, value_type)
 
 
 def validate_relative_path(path: object) -> str:
@@ -1611,12 +1635,12 @@ def validate_relative_path(path: object) -> str:
     try:
         parsed = require_str_value(path, field="path")
     except BoundaryError as exc:
-        raise CampaignIntegrityError(str(exc)) from exc
+        raise SimulationCampaignIntegrityError(str(exc)) from exc
     if len(parsed.encode("utf-8")) > MAX_PATH_BYTES:
-        raise CampaignIntegrityError("path must be nonempty and at most 1 KiB")
+        raise SimulationCampaignIntegrityError("path must be nonempty and at most 1 KiB")
     if "\\" in parsed or parsed.startswith("/") or _WINDOWS_DRIVE_RE.match(parsed):
-        raise CampaignIntegrityError("path must be separator-normalized and relative")
+        raise SimulationCampaignIntegrityError("path must be separator-normalized and relative")
     parts = parsed.split("/")
     if any(part in {"", ".", ".."} for part in parts):
-        raise CampaignIntegrityError("path must be contained and normalized")
+        raise SimulationCampaignIntegrityError("path must be contained and normalized")
     return parsed

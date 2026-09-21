@@ -8,12 +8,16 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from booley.flows.sim.campaign.codec import (
-    CampaignIntegrityError,
+    SimulationCampaignIntegrityError,
     canonical_json_bytes,
-    decode_campaign_manifest,
-    encode_campaign_manifest,
+    decode_simulation_campaign_manifest,
+    encode_simulation_campaign_manifest,
 )
-from booley.flows.sim.campaign.model import SimulationCampaignManifest
+from booley.flows.sim.campaign.model import (
+    SimulationCampaignManifest,
+    SimulationCampaignPlan,
+    create_simulation_campaign_plan,
+)
 
 
 def _sha(value: object) -> str:
@@ -146,17 +150,33 @@ def _manifest() -> dict[str, object]:
 
 def test_manifest_exact_codec_recomputes_all_component_digests() -> None:
     raw = canonical_json_bytes(_manifest())
-    value = decode_campaign_manifest(raw)
+    value = decode_simulation_campaign_manifest(raw)
     assert value.canonical_bytes() == raw
-    assert encode_campaign_manifest(value) == raw
+    assert encode_simulation_campaign_manifest(value) == raw
+
+
+def test_campaign_plan_is_derived_only_from_a_validated_manifest() -> None:
+    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    plan = create_simulation_campaign_plan(manifest)
+    assert plan.manifest == manifest
+    assert plan.work_item_ids == (manifest.document["work_items"][0]["work_item_id"],)  # type: ignore[index]
+    with pytest.raises(TypeError, match="create_simulation_campaign_plan"):
+        SimulationCampaignPlan()
+    with pytest.raises(TypeError):
+        SimulationCampaignPlan(manifest, ("item:0000:ffffffffffffffff",))  # type: ignore[call-arg]
+
+
+def test_campaign_plan_rejects_an_unvalidated_manifest_value() -> None:
+    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
+        create_simulation_campaign_plan(SimulationCampaignManifest({}))
 
 
 @given(st.sampled_from(["workload_sha256", "target_recipe_sha256", "work_items_sha256"]))
 def test_manifest_digest_mutations_are_rejected(field: str) -> None:
     manifest = _manifest()
     manifest["fingerprints"][field] = "sha256:" + "f" * 64  # type: ignore[index]
-    with pytest.raises(CampaignIntegrityError, match="disagrees"):
-        decode_campaign_manifest(canonical_json_bytes(manifest))
+    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
+        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
 
 @given(st.sampled_from(["missing", "unknown", "type", "path", "digest", "conditional"]))
@@ -175,10 +195,10 @@ def test_manifest_structural_mutations_are_rejected(mutation: str) -> None:
         manifest["fingerprints"]["workload_sha256"] = "sha256:" + "f" * 64  # type: ignore[index]
     else:
         manifest["work_items"][0]["role"] = "cycle_count_baseline"  # type: ignore[index]
-    with pytest.raises(CampaignIntegrityError):
-        decode_campaign_manifest(canonical_json_bytes(manifest))
-    with pytest.raises(CampaignIntegrityError):
-        encode_campaign_manifest(SimulationCampaignManifest(manifest))
+    with pytest.raises(SimulationCampaignIntegrityError):
+        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
+    with pytest.raises(SimulationCampaignIntegrityError):
+        encode_simulation_campaign_manifest(SimulationCampaignManifest(manifest))
 
 
 @pytest.mark.parametrize(
@@ -191,8 +211,8 @@ def test_manifest_structural_mutations_are_rejected(mutation: str) -> None:
 def test_manifest_rejects_recipe_string_resource_overflow(field: str, value: object) -> None:
     manifest = _manifest()
     manifest["workload"]["source_recipe"][field] = value  # type: ignore[index]
-    with pytest.raises(CampaignIntegrityError, match="ceiling"):
-        decode_campaign_manifest(canonical_json_bytes(manifest))
+    with pytest.raises(SimulationCampaignIntegrityError, match="ceiling"):
+        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
 
 @pytest.mark.parametrize(
@@ -202,16 +222,16 @@ def test_manifest_rejects_recipe_string_resource_overflow(field: str, value: obj
 def test_work_item_role_and_revision_must_match_target(field: str, value: str) -> None:
     manifest = _manifest()
     manifest["work_items"][0][field] = value  # type: ignore[index]
-    with pytest.raises(CampaignIntegrityError, match="role/revision"):
-        decode_campaign_manifest(canonical_json_bytes(manifest))
+    with pytest.raises(SimulationCampaignIntegrityError, match="role/revision"):
+        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
 
 @pytest.mark.parametrize("names", [[], [1], ["smoke", "smoke"]])
 def test_named_selection_requires_unique_nonempty_bounded_strings(names: list[object]) -> None:
     manifest = _manifest()
     manifest["work_items"][0]["selection"] = {"kind": "named", "names": names}  # type: ignore[index]
-    with pytest.raises(CampaignIntegrityError):
-        decode_campaign_manifest(canonical_json_bytes(manifest))
+    with pytest.raises(SimulationCampaignIntegrityError):
+        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
 
 @pytest.mark.parametrize("mutation", ["target_role", "work_item_id"])
@@ -237,5 +257,31 @@ def test_prerequisite_binds_a_baseline_target_and_valid_work_item(mutation: str)
         ),
     }
     manifest["prerequisites"] = [prerequisite]
-    with pytest.raises(CampaignIntegrityError):
-        decode_campaign_manifest(canonical_json_bytes(manifest))
+    with pytest.raises(SimulationCampaignIntegrityError):
+        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
+
+
+def test_run_cwd_rejects_non_string_placeholder_items_as_campaign_errors() -> None:
+    manifest = _manifest()
+    manifest["workload"]["run_cwd"] = {  # type: ignore[index]
+        "configured": "run",
+        "kind": "literal",
+        "placeholders": [[]],
+    }
+    with pytest.raises(SimulationCampaignIntegrityError):
+        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
+
+
+@pytest.mark.parametrize(
+    "configured",
+    ["{bogus}", "{test!r}", "{test:>4}", "{test", "{test/foo}"],
+)
+def test_run_cwd_rejects_noncanonical_format_syntax(configured: str) -> None:
+    manifest = _manifest()
+    manifest["workload"]["run_cwd"] = {  # type: ignore[index]
+        "configured": configured,
+        "kind": "templated",
+        "placeholders": ["test"],
+    }
+    with pytest.raises(SimulationCampaignIntegrityError):
+        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))

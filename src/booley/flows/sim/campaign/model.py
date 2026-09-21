@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
@@ -99,9 +99,9 @@ class SimulationCampaignDocument:
         object.__setattr__(self, "document", frozen)
 
     def canonical_bytes(self) -> bytes:
-        from .codec import encode_campaign_document
+        from .codec import encode_simulation_campaign_document
 
-        return encode_campaign_document(self)
+        return encode_simulation_campaign_document(self)
 
 
 @dataclass(frozen=True)
@@ -139,19 +139,40 @@ class ExecutableSnapshot(SimulationCampaignDocument):
     pass
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class SimulationCampaignPlan:
     """A validated manifest paired with its immutable scheduled work-item order."""
 
     manifest: SimulationCampaignManifest
     work_item_ids: tuple[str, ...]
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.manifest, SimulationCampaignManifest):
-            raise TypeError("plan manifest must be a SimulationCampaignManifest")
-        work_item_ids = tuple(self.work_item_ids)
-        if any(not isinstance(item, str) or not item for item in work_item_ids):
-            raise TypeError("plan work-item IDs must be non-empty strings")
-        if len(set(work_item_ids)) != len(work_item_ids):
-            raise ValueError("plan work-item IDs must be unique")
-        object.__setattr__(self, "work_item_ids", work_item_ids)
+    def __new__(cls) -> SimulationCampaignPlan:
+        raise TypeError("use create_simulation_campaign_plan()")
+
+    @classmethod
+    def _from_validated_manifest(
+        cls, manifest: SimulationCampaignManifest
+    ) -> SimulationCampaignPlan:
+        from .codec import (
+            decode_simulation_campaign_manifest,
+            encode_simulation_campaign_manifest,
+        )
+
+        raw = encode_simulation_campaign_manifest(manifest)
+        validated = decode_simulation_campaign_manifest(raw)
+        items = cast(tuple[Mapping[str, FrozenJson], ...], validated.document["work_items"])
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "manifest", validated)
+        object.__setattr__(
+            instance,
+            "work_item_ids",
+            tuple(cast(str, item["work_item_id"]) for item in items),
+        )
+        return instance
+
+
+def create_simulation_campaign_plan(
+    manifest: SimulationCampaignManifest,
+) -> SimulationCampaignPlan:
+    """Validate a manifest and derive its immutable scheduled work-item order."""
+    return SimulationCampaignPlan._from_validated_manifest(manifest)
