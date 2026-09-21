@@ -52,6 +52,11 @@ def prepare_execution(
         return early_outcome
     endpoint.read_state()
     endpoint._default_target_args()
+    flow = getattr(endpoint, "flow", None)
+    if endpoint.name == "sim" and hasattr(flow, "prepare_simulation_endpoint"):
+        simulation_error = flow.prepare_simulation_endpoint()
+        if simulation_error is not None:
+            return simulation_error
     display_target = endpoint._resolve_display_config()
     display_label = endpoint._resolve_display_label()
     dry_run = bool(getattr(endpoint.args, "dry_run", False))

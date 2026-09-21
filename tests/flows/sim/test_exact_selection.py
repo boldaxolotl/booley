@@ -37,6 +37,32 @@ def test_tests_file_ignores_comments_and_blanks(tmp_path) -> None:
     assert request.test == ("smoke", "edge")
 
 
+def test_resume_preserves_omitted_mode_and_requires_no_target(tmp_path) -> None:
+    manifest = tmp_path / "manifest.json"
+    request = parse_request(SimulateFlow(), ["--resume-from", str(manifest)])
+    assert request.target == ""
+    assert request.mode is None
+    assert request.resume_from == manifest
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        ["--target", "sim"],
+        ["--test", "smoke"],
+        ["--mode", "simulate"],
+        ["--coverage"],
+        ["--trace"],
+    ],
+)
+def test_resume_rejects_selection_conflicts(tmp_path, conflict) -> None:
+    with pytest.raises(SystemExit):
+        parse_request(
+            SimulateFlow(),
+            ["--resume-from", str(tmp_path / "manifest.json"), *conflict],
+        )
+
+
 @pytest.mark.parametrize(
     "argv",
     [

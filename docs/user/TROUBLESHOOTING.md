@@ -508,7 +508,11 @@ An `availability.json` status of `pruning` means cleanup was interrupted. Retry
 the same exact maintenance command after resolving the filesystem error. A lock
 contention error means the invocation is still executing or another maintenance
 operation is using it. Do not delete the lock file to bypass it. An interrupted
-Simulation starts a new numbered invocation when rerun; it never resumes old
+Simulation starts a new numbered invocation when rerun without an exact
+`--resume-from <manifest.json>`. Durable ordinary-HDL campaigns resume only the
+named manifest; Booley never guesses a “latest” campaign. A resume still creates
+a new compatibility invocation while authoritative results remain beside the
+original manifest. Legacy, elaboration-only, Cocotb, and coverage invocations do not resume old
 native databases. Empty `.pruned-N` directories reserve historical invocation
 numbers and should be retained.
 

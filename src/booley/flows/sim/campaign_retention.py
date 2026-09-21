@@ -223,6 +223,20 @@ def _validate_invocation_targets(root: Path) -> None:
                 target for target in targets if target_report_directory(root, target) == directory
             )
             _target(root, selector, require_projection=False)
+        campaign = directory / "campaign"
+        if (campaign / "manifest.json").exists():
+            from .campaign.store import CampaignStore
+
+            try:
+                recovery = CampaignStore(campaign).scan()
+            except (OSError, ValueError) as exc:
+                raise CampaignRetentionError(
+                    f"Simulation Campaign is invalid and cannot be pruned: {exc}"
+                ) from exc
+            if recovery.pending or recovery.interrupted:
+                raise CampaignRetentionError(
+                    "Incomplete Simulation Campaigns cannot be pruned"
+                )
 
 
 def _validate_completed_targets(

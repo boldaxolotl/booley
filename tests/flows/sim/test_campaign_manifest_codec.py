@@ -2,22 +2,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.campaign import serial_execution
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_simulation_campaign_manifest,
     encode_simulation_campaign_manifest,
 )
+from booley.flows.sim.campaign.coordinator import (
+    CampaignPolicy,
+    WorkExecutionRequest,
+    _new_store,
+)
 from booley.flows.sim.campaign.model import (
     SimulationCampaignManifest,
     SimulationCampaignPlan,
     create_simulation_campaign_plan,
 )
+from booley.flows.sim.campaign.planning import finalize_manifest
+from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
+from booley.flows.sim.campaign.store import CampaignStore
+from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
 
 
 def _sha(value: object) -> str:
@@ -171,6 +185,203 @@ def test_campaign_plan_rejects_an_unvalidated_manifest_value() -> None:
         create_simulation_campaign_plan(SimulationCampaignManifest({}))
 
 
+def test_cycle_baseline_campaign_has_a_noncolliding_store_path(tmp_path: Path) -> None:
+    candidate = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    baseline_document = _manifest()
+    baseline_document.pop("fingerprints")
+    baseline_document["target"]["role"] = "cycle_count_baseline"  # type: ignore[index]
+    item = baseline_document["work_items"][0]  # type: ignore[index]
+    item["role"] = "cycle_count_baseline"
+    item["target"]["role"] = "cycle_count_baseline"
+    identity = {
+        key: value
+        for key, value in item.items()
+        if key not in {"fingerprint_sha256", "work_item_id"}
+    }
+    fingerprint = _sha(identity)
+    item["fingerprint_sha256"] = fingerprint
+    item["work_item_id"] = "item:0000:" + fingerprint.removeprefix("sha256:")[:16]
+    baseline = finalize_manifest(baseline_document)
+    invocation = tmp_path / "000001"
+
+    candidate_store = _new_store(
+        SimpleNamespace(
+            plan=create_simulation_campaign_plan(candidate),
+            invocation_directory=invocation,
+        )
+    )
+    baseline_store = _new_store(
+        SimpleNamespace(
+            plan=create_simulation_campaign_plan(baseline),
+            invocation_directory=invocation,
+        )
+    )
+
+    assert candidate_store.root != baseline_store.root
+    assert baseline_store.root.name == "campaign"
+    assert baseline_store.root.parent.name == "sim%40baseline-abc123"
+
+
+def test_recovery_retries_a_crash_after_attempt_directory_allocation(
+    tmp_path: Path,
+) -> None:
+    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
+
+    ordinal, _directory = store.allocate_attempt_directory(
+        work_item_id, "550e8400-e29b-41d4-a716-446655440001"
+    )
+    assert ordinal == 1
+    assert store.scan().interrupted == (work_item_id,)
+
+    retry_ordinal, _retry = store.allocate_attempt_directory(
+        work_item_id, "550e8400-e29b-41d4-a716-446655440002"
+    )
+    assert retry_ordinal == 2
+    recovery = store.scan()
+    assert recovery.interrupted == (work_item_id,)
+    assert recovery.items[0].attempt_count == 2
+
+
+@pytest.mark.parametrize("nondeterministic", [False, True])
+def test_serial_executor_authenticates_planned_generator_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nondeterministic: bool
+) -> None:
+    document = _manifest()
+    document.pop("fingerprints")
+    disclosure = {
+        "planner": "fusesoc_setup",
+        "scratch_inputs": [],
+        "generated_files": [
+            {
+                "path": "generated.sv",
+                "bytes": 1,
+                "sha256": "sha256:" + hashlib.sha256(b"a").hexdigest(),
+                "kind": "generated_input",
+            }
+        ],
+        "tool_provenance": {
+            "kind": "fusesoc",
+            "version": "1",
+            "contract_version": "1",
+        },
+        "cleanup": {"removed": True},
+    }
+    document["planning_disclosures"] = [disclosure]
+    manifest = finalize_manifest(document)
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    item = manifest.document["work_items"][0]  # type: ignore[index]
+    attempt_id = "550e8400-e29b-41d4-a716-446655440001"
+    ordinal, attempt_directory = store.allocate_attempt_directory(
+        item["work_item_id"],
+        attempt_id,  # type: ignore[index]
+    )
+    build_root = tmp_path / "engine-build"
+    build_root.mkdir()
+    (tmp_path / "run").mkdir()
+    (build_root / "simv").write_bytes(b"image")
+    (build_root / ".booley-build-manifest.json").write_text(
+        json.dumps({"artifacts": {"simv": "digest"}}), encoding="utf-8"
+    )
+    run_log = build_root / "run.log"
+    run_log.write_text("PASS\n", encoding="utf-8")
+
+    class FakeCatalog:
+        def select(self, token: str, *, for_flow: str):
+            assert (token, for_flow) == ("sim", "sim")
+            return SimpleNamespace(
+                identity="acme:lib:dut:1#sim",
+                project_root=tmp_path,
+                selector="sim",
+                eda_tool="icarus",
+            )
+
+    class FakeGroup:
+        def __init__(self):
+            self.artifact_paths = (build_root / "simv",)
+
+        @property
+        def build_root(self):
+            return build_root
+
+        def compile(self):
+            return SimpleNamespace(passed=True)
+
+        def planning_disclosure(self):
+            if not nondeterministic:
+                return disclosure
+            changed = json.loads(json.dumps(disclosure))
+            changed["generated_files"][0]["sha256"] = (  # type: ignore[index]
+                "sha256:" + hashlib.sha256(b"b").hexdigest()
+            )
+            return changed
+
+        def launch_snapshot(self, snapshot_root, run_cwd):
+            assert snapshot_root.is_dir()
+            assert run_cwd == tmp_path / "run"
+            test = SimulationTestOutcome(
+                name="sim", verdict="pass", passed=True, run_log_path=str(run_log)
+            )
+            return SimulationTargetOutcome(
+                target="sim",
+                target_identity="acme:lib:dut:1#sim",
+                toplevel="tb",
+                eda_tool="icarus",
+                passed=True,
+                verdict="pass",
+                elapsed_s=0.1,
+                tests=(test,),
+            )
+
+    class FakeExecution:
+        @contextmanager
+        def ordinary_group(self, handle, names):
+            del handle
+            assert names == ()
+            yield FakeGroup()
+
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: FakeCatalog(),
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: FakeExecution(),  # type: ignore[arg-type,return-value]
+    )
+    request = WorkExecutionRequest(
+            store=store,
+            manifest=manifest,
+            work_item=item,  # type: ignore[arg-type]
+            attempt_id=attempt_id,
+            attempt_ordinal=ordinal,
+            attempt_directory=attempt_directory,
+            producer_invocation_id=1,
+            policy=CampaignPolicy(),
+            admission=AdmissionContext(
+                "unmanaged", None, None, 1, "interactive", "", None, lambda: False
+            ),
+            project_root=tmp_path,
+        )
+    if nondeterministic:
+        with pytest.raises(
+            SimulationCampaignIntegrityError,
+            match="generator source closure disagrees",
+        ):
+            executor.execute(request)
+        assert store.scan().interrupted == (item["work_item_id"],)  # type: ignore[index]
+        return
+    result = executor.execute(request)
+    store.verify_result_evidence(attempt_directory, result)
+    store.publish_result(item["work_item_id"], result)  # type: ignore[index]
+    recovery = store.scan()
+    assert recovery.complete == (item["work_item_id"],)  # type: ignore[index]
+    assert result.document["grade"] == "pass"
+    assert result.document["build_result"]["sharing"] == "private_work_item"  # type: ignore[index]
+
+
 @given(st.sampled_from(["workload_sha256", "target_recipe_sha256", "work_items_sha256"]))
 def test_manifest_digest_mutations_are_rejected(field: str) -> None:
     manifest = _manifest()
@@ -270,6 +481,21 @@ def test_run_cwd_rejects_non_string_placeholder_items_as_campaign_errors() -> No
     }
     with pytest.raises(SimulationCampaignIntegrityError):
         decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
+
+
+def test_serial_result_classifies_simulator_crash_as_design_failure() -> None:
+    test = SimulationTestOutcome(
+        name="smoke",
+        verdict="crash",
+        passed=False,
+        crashed=True,
+        reason="terminated by signal 11",
+    )
+    observation = serial_execution._observation(test)
+    assert serial_execution._result_state((test,)) == "crash"
+    assert observation["execution"] == "crash"
+    assert observation["failure_class"] == "design"
+    assert observation["functional"] == "not_observed"
 
 
 @pytest.mark.parametrize(

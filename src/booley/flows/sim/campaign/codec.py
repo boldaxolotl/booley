@@ -11,6 +11,7 @@ import json
 import re
 import uuid
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from string import Formatter
 from typing import TypeAlias, TypeVar, cast
 
@@ -74,7 +75,7 @@ class SimulationCampaignIntegrityError(ValueError):
 def _thaw(value: FrozenJson) -> object:
     if isinstance(value, Mapping):
         return {key: _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
+    if isinstance(value, tuple | list):
         return [_thaw(item) for item in value]
     return value
 
@@ -417,7 +418,9 @@ def _validate_common(value: Mapping[str, object]) -> None:
             try:
                 parsed_timestamp = parse_timestamp(parsed_value)
             except (TypeError, ValueError) as exc:
-                raise SimulationCampaignIntegrityError(f"{key} must be canonical UTC RFC3339") from exc
+                raise SimulationCampaignIntegrityError(
+                    f"{key} must be canonical UTC RFC3339"
+                ) from exc
             if "." in parsed_value or not parsed_value.endswith("Z"):
                 raise SimulationCampaignIntegrityError(f"{key} must be canonical UTC RFC3339")
             del parsed_timestamp
@@ -454,10 +457,8 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
         run_directory["configured"], "run_directory.configured", allow_empty=True
     )
     _validate_configured_run_kind(configured, cast(str, run_directory["kind"]))
-    validate_relative_path(_bounded_string(run_directory["resolved"], "run_directory.resolved"))
-    validate_relative_path(
-        _bounded_string(run_directory["collision_key"], "run_directory.collision_key")
-    )
+    _validate_run_directory_path(run_directory["resolved"], "run_directory.resolved")
+    _validate_run_directory_path(run_directory["collision_key"], "run_directory.collision_key")
     require_bool_value(run_directory["owned"], field="run_directory.owned")
     policy = _exact_object(value["policy"], {"timeout_seconds", "no_kill", "diagnostic"}, "policy")
     if policy["timeout_seconds"] is not None:
@@ -470,7 +471,9 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
 def _validate_child_identity(value: Mapping[str, object]) -> None:
     child_id, child_digest = value["child_execution_id"], value["child_entry_sha256"]
     if (child_id is None) != (child_digest is None):
-        raise SimulationCampaignIntegrityError("child execution fields must both be null or present")
+        raise SimulationCampaignIntegrityError(
+            "child execution fields must both be null or present"
+        )
     if child_id is not None:
         parsed_child_id = _bounded_string(child_id, "child_execution_id")
         if not _EXECUTION_ID_RE.fullmatch(parsed_child_id):
@@ -651,7 +654,9 @@ def _validate_simulation_build_ref(value: object) -> Mapping[str, object]:
     if reference["state"] not in {"ready", "design_failure"}:
         raise SimulationCampaignIntegrityError("simulation result references invalid build state")
     if reference["sharing"] not in {"shared_variant", "private_work_item"}:
-        raise SimulationCampaignIntegrityError("simulation result references invalid sharing scope")
+        raise SimulationCampaignIntegrityError(
+            "simulation result references invalid sharing scope"
+        )
     _require_uuid(reference["build_attempt_id"], "build_attempt_id")
     if reference["owner"] != reference["build_attempt_id"]:
         raise SimulationCampaignIntegrityError("build_result owner disagrees with identity")
@@ -724,7 +729,9 @@ def _validate_result_state(
         if build_result["state"] != "design_failure":
             raise SimulationCampaignIntegrityError("blocked result requires design-failure build")
         if value["bundle_id"] is not None or value["executable_snapshot"] is not None:
-            raise SimulationCampaignIntegrityError("blocked result cannot bind a bundle or snapshot")
+            raise SimulationCampaignIntegrityError(
+                "blocked result cannot bind a bundle or snapshot"
+            )
         return
     if build_result["state"] != "ready":
         raise SimulationCampaignIntegrityError("non-blocked result requires ready build")
@@ -749,10 +756,7 @@ def _validate_executable_snapshot(value: object, attempt_id: object) -> None:
         "executable_snapshot",
     )
     manifest = _validate_evidence_ref(snapshot["manifest"], "executable_snapshot.manifest")
-    if (
-        manifest["kind"] != "executable_snapshot_manifest"
-        or manifest["owner"] != attempt_id
-    ):
+    if manifest["kind"] != "executable_snapshot_manifest" or manifest["owner"] != attempt_id:
         raise SimulationCampaignIntegrityError("executable snapshot manifest identity disagrees")
     for key in ("bundle_manifest_sha256", "pre_launch_sha256", "post_exit_sha256"):
         _require_digest(snapshot[key], f"executable_snapshot.{key}")
@@ -813,7 +817,9 @@ def _validate_observations(value: object, state: str) -> list[Mapping[str, objec
         tests.append(observation["test"])
         decoded.append(observation)
         if state == "completed" and observation["execution"] != "completed":
-            raise SimulationCampaignIntegrityError("completed result requires completed observations")
+            raise SimulationCampaignIntegrityError(
+                "completed result requires completed observations"
+            )
         if state == "blocked_by_build" and observation["execution"] != "blocked_by_build":
             raise SimulationCampaignIntegrityError("blocked result requires blocked observations")
         if state == "setup_error" and observation["execution"] != "setup_error":
@@ -919,20 +925,18 @@ def _validate_diagnostics(value: object) -> None:
         if diagnostic["severity"] not in {"warning", "error"}:
             raise SimulationCampaignIntegrityError("diagnostic severity is invalid")
         _bounded_string(diagnostic["code"], f"diagnostics[{index}].code")
-        _bounded_string(
-            diagnostic["pointer"], f"diagnostics[{index}].pointer", allow_empty=True
-        )
+        _bounded_string(diagnostic["pointer"], f"diagnostics[{index}].pointer", allow_empty=True)
         _bounded_string(diagnostic["message"], f"diagnostics[{index}].message")
 
 
 def _validate_manifest(value: Mapping[str, object]) -> None:
     origin = _exact_object(value["origin"], {"execution_id", "invocation_id"}, "origin")
     execution_id = origin["execution_id"]
-    parsed_execution_id = _bounded_string(
-        execution_id, "origin.execution_id", allow_empty=True
-    )
+    parsed_execution_id = _bounded_string(execution_id, "origin.execution_id", allow_empty=True)
     if parsed_execution_id and not _EXECUTION_ID_RE.fullmatch(parsed_execution_id):
-        raise SimulationCampaignIntegrityError("origin.execution_id must be empty or 32 lowercase hex")
+        raise SimulationCampaignIntegrityError(
+            "origin.execution_id must be empty or 32 lowercase hex"
+        )
     _require_positive_int(origin["invocation_id"], "origin.invocation_id")
     target = _validate_target(value["target"], "target")
     workload = _validate_workload(value["workload"])
@@ -1021,13 +1025,17 @@ def _validate_run_cwd(value: object) -> None:
     configured = _bounded_string(run_cwd["configured"], "run_cwd.configured", allow_empty=True)
     parsed = _validate_configured_run_kind(configured, cast(str, run_cwd["kind"]))
     if placeholders != parsed:
-        raise SimulationCampaignIntegrityError("run_cwd placeholders/kind disagree with configured value")
+        raise SimulationCampaignIntegrityError(
+            "run_cwd placeholders/kind disagree with configured value"
+        )
 
 
 def _validate_configured_run_kind(configured: str, kind: str) -> list[str]:
     placeholders = _parse_run_placeholders(configured)
     if (kind == "literal") != (not placeholders):
-        raise SimulationCampaignIntegrityError("run-directory kind disagrees with configured value")
+        raise SimulationCampaignIntegrityError(
+            "run-directory kind disagrees with configured value"
+        )
     return placeholders
 
 
@@ -1145,7 +1153,9 @@ def _validate_required_suite(value: object) -> Mapping[str, object]:
     require_bool_value(suite["default_invocation"], field="default_invocation")
     _require_nonnegative_int(suite["source_bytes"], "required_suite.source_bytes")
     _require_digest(suite["source_sha256"], "required_suite.source_sha256")
-    source_path = _bounded_string(suite["source_path"], "required_suite.source_path", allow_empty=True)
+    source_path = _bounded_string(
+        suite["source_path"], "required_suite.source_path", allow_empty=True
+    )
     if source_path:
         validate_relative_path(source_path)
     elif not suite["default_invocation"]:
@@ -1157,7 +1167,9 @@ def _validate_required_suite(value: object) -> Mapping[str, object]:
         or suite["source_bytes"] != 0
         or suite["source_sha256"] != _digest_bytes(b"")
     ):
-        raise SimulationCampaignIntegrityError("default required suite must authenticate empty source")
+        raise SimulationCampaignIntegrityError(
+            "default required suite must authenticate empty source"
+        )
     return suite
 
 
@@ -1259,7 +1271,9 @@ def _validate_prerequisites(value: object) -> list[Mapping[str, object]]:
             raise SimulationCampaignIntegrityError("prerequisite manifest reference is invalid")
         _validate_evidence_members(manifest, "prerequisite.manifest")
         if not cast(str, manifest["path"]).startswith("targets/"):
-            raise SimulationCampaignIntegrityError("prerequisite manifest must start beneath targets/")
+            raise SimulationCampaignIntegrityError(
+                "prerequisite manifest must start beneath targets/"
+            )
         if manifest["owner"] != prerequisite["campaign_id"]:
             raise SimulationCampaignIntegrityError("prerequisite manifest owner disagrees")
         identities.append(
@@ -1382,11 +1396,19 @@ def _validate_work_item_run_directory(value: object) -> None:
         run_directory["configured"], "work item run_directory.configured", allow_empty=True
     )
     _validate_configured_run_kind(configured, cast(str, run_directory["kind"]))
-    validate_relative_path(
-        _bounded_string(
-            run_directory["collision_template"], "work item run_directory.collision_template"
-        )
+    _validate_run_directory_path(
+        run_directory["collision_template"],
+        "work item run_directory.collision_template",
     )
+
+
+def _validate_run_directory_path(value: object, field: str) -> str:
+    """Validate an absolute or Project-relative run cwd/collision identity."""
+    text = _bounded_string(value, field)
+    path = Path(text)
+    if "\0" in text or any(part == ".." for part in path.parts):
+        raise SimulationCampaignIntegrityError(f"{field} is invalid")
+    return text
 
 
 def _validate_manifest_fingerprints(
@@ -1626,7 +1648,9 @@ def encode_simulation_campaign_document(value: SimulationCampaignDocument) -> by
     """Validate and canonically encode any Phase-1 campaign document value."""
     value_type = type(value)
     if value_type not in _DOCUMENT_SPECS:
-        raise SimulationCampaignIntegrityError(f"unsupported campaign value {type(value).__name__}")
+        raise SimulationCampaignIntegrityError(
+            f"unsupported campaign value {type(value).__name__}"
+        )
     return _encode_checked(value, value_type)
 
 

@@ -357,6 +357,13 @@ def record_acceptance(
     if prepared.non_persisting_dry_run:
         endpoint._pending_criteria_set = ()
         return
+    campaign_outcomes = getattr(endpoint, "_simulation_campaign_outcomes", ())
+    if campaign_outcomes:
+        handler = getattr(getattr(endpoint, "flow", None), "record_campaign_acceptance", None)
+        if not callable(handler):
+            raise RuntimeError("campaign outcomes have no Flow-owned acceptance handler")
+        handler(campaign_outcomes)
+        return
     result = endpoint._adapt_outcome(outcome)
     if endpoint._state is not None and endpoint._state._file_path is not None:
         endpoint.state.work_dir = str(Path(endpoint.args.work_dir).resolve())

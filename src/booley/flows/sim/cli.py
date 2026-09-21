@@ -40,6 +40,13 @@ class SimArguments(BuiltinArguments):
             default=None,
             help="Read exact test names from PATH, one per line; blanks and # comments ignored",
         )
+        parser.add_argument(
+            "--resume-from",
+            type=Path,
+            default=None,
+            metavar="MANIFEST",
+            help="Resume one exact Simulation Campaign manifest.json",
+        )
         SimArguments._add_run_control_args(parser)
 
     @staticmethod
@@ -88,8 +95,14 @@ class SimArguments(BuiltinArguments):
             args.mode = SimulationMode.ELAB_ONLY
         if args.test and args.tests_file is not None:
             parser.error("--test and --tests-file are mutually exclusive")
+        if args.resume_from is not None:
+            conflicts = SimArguments._resume_conflicts(args)
+            if conflicts:
+                parser.error("--resume-from cannot be combined with " + ", ".join(conflicts))
+            args.target = ""
         if args.tests_file is not None:
             args.test = SimArguments._read_tests_file(args.tests_file, parser)
+            args.tests_file = None
         duplicates = sorted(
             {name for name in (args.test or []) if args.test.count(name) > 1}
         )
@@ -97,9 +110,23 @@ class SimArguments(BuiltinArguments):
             parser.error("duplicate exact test name(s): " + ", ".join(duplicates))
         if args.test is not None:
             args.test = tuple(args.test)
-        del args.tests_file
         vars(args).pop("_legacy_elab_only")
         vars(args).pop("_legacy_standalone")
+
+    @staticmethod
+    def _resume_conflicts(args: argparse.Namespace) -> list[str]:
+        return [
+            option
+            for present, option in (
+                (bool(args.target), "--target"),
+                (args.test is not None, "--test"),
+                (args.tests_file is not None, "--tests-file"),
+                (args.mode is not None, "--mode"),
+                (args.coverage, "--coverage"),
+                (args.trace, "--trace"),
+            )
+            if present
+        ]
 
     @staticmethod
     def _read_tests_file(path: Path, parser: argparse.ArgumentParser) -> list[str]:

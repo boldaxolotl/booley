@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,33 @@ class TicketAcceptanceRecorder:
                 ),
                 ticket_identity=self._validated_ticket_identity(),
                 transaction_id=transaction_id,
+            )
+        except acceptance_ledger.AcceptanceLedgerError as exc:
+            from booley.flows.execution_persistence import AcceptanceRecordingError
+
+            raise AcceptanceRecordingError(str(exc)) from exc
+
+    def record_or_verify_transaction(
+        self,
+        state: DevelopmentState,
+        changes: list[CriterionChange],
+        *,
+        acceptance_facts: Mapping[str, Any],
+        ticket_identity: Mapping[str, Any],
+    ) -> acceptance_ledger.AcceptanceTransaction | None:
+        log_dir = self._log_dir
+        if log_dir is None:
+            raw = os.environ.get("BOOLEY_LOGS_DIR", "")
+            log_dir = Path(raw) if raw else None
+        if log_dir is None:
+            return None
+        try:
+            return acceptance_ledger.record_or_verify_transaction(
+                log_dir,
+                state,
+                changes,
+                acceptance_facts=acceptance_facts,
+                ticket_identity=ticket_identity or self._validated_ticket_identity(),
             )
         except acceptance_ledger.AcceptanceLedgerError as exc:
             from booley.flows.execution_persistence import AcceptanceRecordingError

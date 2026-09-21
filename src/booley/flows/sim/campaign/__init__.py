@@ -1,8 +1,4 @@
-"""Durable Simulation Campaign domain values.
-
-Phase 1 exposes only immutable values and codecs.  Execution and persistence
-are intentionally introduced by later phases.
-"""
+"""Public seam for durable Simulation Campaign execution and resume."""
 
 from .codec import (
     SimulationCampaignIntegrityError,
@@ -22,6 +18,26 @@ from .codec import (
     encode_simulation_result,
     encode_simulator_bundle,
 )
+from .coordinator import (
+    CampaignOutcome,
+    CampaignPolicy,
+    CampaignPreview,
+    CampaignPreviewRequest,
+    CampaignRunRequest,
+    NewCampaignPreview,
+    NewCampaignPreviewRequest,
+    NewCampaignRunRequest,
+    ResumeCampaignPreview,
+    ResumeCampaignPreviewRequest,
+    ResumeCampaignRunRequest,
+    SimulationCampaign,
+)
+from .facts import (
+    AcceptanceFacts,
+    acceptance_facts_sha256,
+    decode_acceptance_facts,
+    encode_acceptance_facts,
+)
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
@@ -33,18 +49,35 @@ from .model import (
     SimulatorBundle,
     create_simulation_campaign_plan,
 )
+from .resume import ValidatedResumeManifest, validate_resume_manifest
 
 __all__ = [
+    "AcceptanceFacts",
     "BundleBuildAttempt",
     "BundleBuildResult",
+    "CampaignOutcome",
+    "CampaignPolicy",
+    "CampaignPreview",
+    "CampaignPreviewRequest",
+    "CampaignRunRequest",
     "ExecutableSnapshot",
+    "NewCampaignPreview",
+    "NewCampaignPreviewRequest",
+    "NewCampaignRunRequest",
+    "ResumeCampaignPreview",
+    "ResumeCampaignPreviewRequest",
+    "ResumeCampaignRunRequest",
     "SimulationAttempt",
+    "SimulationCampaign",
     "SimulationCampaignIntegrityError",
     "SimulationCampaignManifest",
     "SimulationCampaignPlan",
     "SimulationResult",
     "SimulatorBundle",
+    "ValidatedResumeManifest",
+    "acceptance_facts_sha256",
     "create_simulation_campaign_plan",
+    "decode_acceptance_facts",
     "decode_bundle_build_attempt",
     "decode_bundle_build_result",
     "decode_executable_snapshot",
@@ -52,6 +85,7 @@ __all__ = [
     "decode_simulation_campaign_manifest",
     "decode_simulation_result",
     "decode_simulator_bundle",
+    "encode_acceptance_facts",
     "encode_bundle_build_attempt",
     "encode_bundle_build_result",
     "encode_executable_snapshot",
@@ -60,4 +94,5 @@ __all__ = [
     "encode_simulation_campaign_manifest",
     "encode_simulation_result",
     "encode_simulator_bundle",
+    "validate_resume_manifest",
 ]

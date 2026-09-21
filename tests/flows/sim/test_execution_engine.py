@@ -29,7 +29,11 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
-from booley.flows.sim.build_session import SimulationBuildSlotError, simulation_build_slot
+from booley.flows.sim.build_session import (
+    SimulationBuildSession,
+    SimulationBuildSlotError,
+    simulation_build_slot,
+)
 from booley.flows.sim.execution import (
     DefaultSelection,
     NamedTests,
@@ -1963,3 +1967,106 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
         second = execution.run(handle, NamedTests(("smoke",)))
 
     _assert_attempt_config_freezing(first, second, run)
+
+
+@pytest.mark.parametrize(
+    ("eda_tool", "artifact_names", "adapter_flag"),
+    [
+        ("icarus", ("demo.scr", "demo"), "--build-dir"),
+        ("verilator", ("Vtb_demo",), "--bin-dir"),
+    ],
+)
+def test_ordinary_group_builds_before_launching_supplied_snapshot(
+    tmp_path: Path,
+    eda_tool: str,
+    artifact_names: tuple[str, ...],
+    adapter_flag: str,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    prepared = replace(
+        prepared,
+        eda_tool=eda_tool,
+        resolved=replace(prepared.resolved, eda_tool=eda_tool),
+    )
+    artifacts = tuple(prepared.build_root / name for name in artifact_names)
+    for artifact in artifacts:
+        artifact.write_bytes(b"simulator image")
+    snapshot = tmp_path / "attempt" / "snapshot"
+    snapshot.mkdir(parents=True)
+    for artifact in artifacts:
+        (snapshot / artifact.name).write_bytes(artifact.read_bytes())
+    run_cwd = tmp_path / "run"
+    run_cwd.mkdir()
+    commands: list[list[str]] = []
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        commands.append(command)
+        if "BOOLEY_BUILD_STAGE" in command[-1]:
+            return SubprocessResult(
+                returncode=0,
+                stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+            )
+        identity = AdapterTransportIdentity(
+            eda_tool,
+            "abc123",
+            handle.identity,
+            ("smoke",),
+            snapshot.parent / "execution-evidence" / "adapter-abc123.json",
+        )
+        write_adapter_result(
+            identity,
+            AdapterResult(
+                True,
+                False,
+                0,
+                ("smoke",),
+                test_results=(AdapterTestResult("smoke", "pass"),),
+            ),
+        )
+        return SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n")
+
+    execution = SimulationExecution(
+        invoke=invoke, options=SimulationOptions(timeout_ms=5000)
+    )
+    with (
+        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
+        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
+        patch.object(SimulationBuildSession, "capture_inputs", return_value={}),
+        patch.object(
+            SimulationBuildSession,
+            "authorize_fresh_image",
+            return_value=artifacts,
+        ),
+    ):
+        with execution.ordinary_group(handle, ("smoke",)) as group:
+            build = group.compile()
+            assert build.passed
+            assert group.artifact_paths == artifacts
+            assert len(commands) == 1
+        outcome = group.launch_snapshot(snapshot, run_cwd)
+
+    assert outcome.passed
+    assert len(commands) == 2
+    launch = commands[1][-1]
+    assert adapter_flag in launch
+    assert str(snapshot) in launch
+    assert str(run_cwd) in launch
+    assert f"--work-dir {snapshot.parent / 'execution-evidence'}" in launch
+    assert str(prepared.build_root) not in launch
+
+
+def test_ordinary_group_refuses_snapshot_launch_until_lease_released(
+    tmp_path: Path,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+    with (
+        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
+        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
+        execution.ordinary_group(handle, ("smoke",)) as group,
+        pytest.raises(SimulationBuildSlotError, match="leave ordinary_group"),
+    ):
+        group.launch_snapshot(tmp_path / "snapshot", tmp_path / "run")

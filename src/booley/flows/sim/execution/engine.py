@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import os
 import re
 import shlex
 import shutil
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -142,6 +145,290 @@ class SimulationArtifactPersistenceError(RuntimeError):
     """A completed attempt could not preserve its required run evidence."""
 
 
+class PreparedOrdinaryGroup:
+    """One ordinary-HDL build split from its later attempt-local launch.
+
+    Instances are yielded by :meth:`SimulationExecution.ordinary_group`.  The
+    caller may inspect ``build_root`` and run a legacy build-aware hook before
+    :meth:`compile`.  Compilation must happen while the context is active so
+    the Target build lease protects preparation and authentication.  Snapshot
+    creation and :meth:`launch_snapshot` happen after leaving the context; the
+    simulator therefore never needs the broad Target lease.
+    """
+
+    def __init__(
+        self,
+        execution: SimulationExecution,
+        handle: TargetHandle,
+        attempt: _Attempt,
+        session: SimulationBuildSession,
+        started: float,
+        sources_before: Mapping[str, str],
+        prepared_surface: Mapping[str, str],
+        prepared_inputs: Mapping[str, str],
+    ) -> None:
+        self._execution = execution
+        self._handle = handle
+        self._attempt = attempt
+        self._session = session
+        self._started = started
+        self._sources_before = sources_before
+        self._prepared_surface = prepared_surface
+        self._prepared_inputs = prepared_inputs
+        self._lease_active = True
+        self._build_process: SubprocessResult | None = None
+        self._build: BuildOutcome | None = None
+        self._artifact_paths: tuple[Path, ...] = ()
+
+    @property
+    def build_root(self) -> Path:
+        """Private generated build root available to a legacy pre-build hook."""
+        return self._attempt.prepared.build_root
+
+    @property
+    def work(self) -> PreparedSimulationWork:
+        """Resolved adapter facts, including declared runtime inputs."""
+        return self._attempt.work
+
+    @property
+    def artifact_paths(self) -> tuple[Path, ...]:
+        """Authenticated simulator artifacts after a successful compile."""
+        return self._artifact_paths
+
+    @property
+    def build(self) -> BuildOutcome | None:
+        """Normalized build outcome after :meth:`compile`."""
+        return self._build
+
+    def prepared_source_entries(self) -> tuple[dict[str, object], ...]:
+        """Return the canonical staged source closure produced by setup."""
+        entries: list[dict[str, object]] = []
+        root = self._attempt.prepared.build_root.resolve()
+        for item in self._attempt.prepared.resolved.files:
+            source = item.absolute(root)
+            try:
+                if source.is_symlink() or not source.is_file() or not source.is_relative_to(root):
+                    raise SimulationBuildSlotError(
+                        f"unsafe prepared Simulation source: {item.name}"
+                    )
+                raw = source.read_bytes()
+            except OSError as exc:
+                raise SimulationBuildSlotError(
+                    f"cannot authenticate prepared Simulation source: {item.name}: {exc}"
+                ) from exc
+            relative = Path(item.name)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise SimulationBuildSlotError(
+                    f"prepared Simulation source has unsafe name: {item.name}"
+                )
+            entries.append(
+                {
+                    "path": relative.as_posix(),
+                    "bytes": len(raw),
+                    "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                    "kind": "generated_input",
+                }
+            )
+        return tuple(sorted(entries, key=lambda entry: str(entry["path"])))
+
+    def discard_prepared_generation(self) -> None:
+        """Delete a preparation-only generation while its lease is held."""
+        if self._build is not None:
+            raise SimulationBuildSlotError("compiled generation cannot be planning scratch")
+        self._session.discard_candidate(self._attempt.prepared.work_root)
+
+    def planning_disclosure(self) -> dict[str, object]:
+        """Describe this preparation using the campaign planning contract."""
+        return _planning_disclosure(self.prepared_source_entries())
+
+    def compile(self) -> BuildOutcome:
+        """Compile and authenticate this group while its build lease is held."""
+        if not self._lease_active:
+            raise SimulationBuildSlotError("ordinary Simulation build lease has ended")
+        if self._build is not None:
+            raise SimulationBuildSlotError("ordinary Simulation group was already compiled")
+        attempt = self._attempt
+        verify_existing_build_inputs(attempt.prepared, self._prepared_inputs)
+        if project_compile_surface(self._handle.project_root) != self._sources_before:
+            raise SimulationBuildSlotError(
+                "Project compile inputs changed during setup or Pre-Sim Commands; rerun the attempt"
+            )
+        if (
+            project_compile_surface(
+                self._handle.project_root, include_generated_isolated_cores=True
+            )
+            != self._prepared_surface
+        ):
+            raise SimulationBuildSlotError("Project compile inputs changed during Pre-Sim Commands")
+        attempt = _with_workload_inputs(self._handle, attempt)
+        inputs = self._session.capture_inputs(attempt.prepared)
+        script = build_stage_script(
+            attempt.prepared.make_argv,
+            attempt.identity.attempt_token,
+            environment=dict(attempt.simulator_environment),
+        )
+        process = self._execution._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
+        build = classify_build_outcome(process, attempt.identity.attempt_token)
+        self._attempt = attempt
+        self._build_process = process
+        self._build = build
+        if build.passed and process.returncode == 0 and not process.timed_out:
+            self._artifact_paths = self._session.authorize_fresh_image(
+                attempt.prepared, inputs, None
+            )
+        return build
+
+    def finish_build_failure(self) -> SimulationTargetOutcome:
+        """Normalize a failed build without launching a simulator."""
+        process, build = self._compiled()
+        if build.passed:
+            raise SimulationBuildSlotError("successful build requires a snapshot launch")
+        executed = AdapterAttemptOutcome(process, None, None)
+        early = _adapter_failure_outcome(
+            self._handle, self._attempt, executed, build, None, self._started
+        )
+        if early is not None:
+            return early
+        trace_policy, compatibility_policy = _artifact_policies(
+            self._handle, self._attempt
+        )
+        return self._execution._completed_group(
+            self._handle,
+            self._attempt,
+            process,
+            build,
+            None,
+            None,
+            trace_policy,
+            compatibility_policy,
+            time.monotonic(),
+            self._started,
+        )
+
+    def launch_snapshot(
+        self,
+        snapshot_root: Path,
+        run_cwd: Path,
+        *,
+        materialize_runtime_inputs: bool = False,
+    ) -> SimulationTargetOutcome:
+        """Launch only the supplied snapshot and normalize the resulting evidence."""
+        if self._lease_active:
+            raise SimulationBuildSlotError(
+                "leave ordinary_group before launching its executable snapshot"
+            )
+        build_process, build = self._compiled()
+        if not build.passed:
+            raise SimulationBuildSlotError("cannot launch a failed Simulation build")
+        attempt = self._snapshot_attempt(snapshot_root, run_cwd)
+        trace_policy, compatibility_policy = _artifact_policies(self._handle, attempt)
+        try:
+            executed = self._launch(attempt, materialize_runtime_inputs)
+        except RuntimeInputError as exc:
+            return _runtime_input_failure(
+                self._handle, attempt, None, str(exc), self._started
+            )
+        process = replace(
+            executed.process,
+            stdout=build_process.stdout + "\n" + executed.process.stdout,
+            stderr=build_process.stderr + "\n" + executed.process.stderr,
+            duration_s=build_process.duration_s + executed.process.duration_s,
+        )
+        executed = replace(executed, process=process)
+        early = _adapter_failure_outcome(
+            self._handle, attempt, executed, build, None, self._started
+        )
+        if early is not None:
+            return early
+        adapter = None if build.design_failed else executed.result
+        try:
+            return self._execution._completed_group(
+                self._handle,
+                attempt,
+                process,
+                build,
+                adapter,
+                None,
+                trace_policy,
+                compatibility_policy,
+                time.monotonic(),
+                self._started,
+            )
+        except SimulationArtifactPersistenceError as exc:
+            return _artifact_failure(
+                self._handle, attempt, build, None, str(exc), self._started
+            )
+
+    def _compiled(self) -> tuple[SubprocessResult, BuildOutcome]:
+        if self._build_process is None or self._build is None:
+            raise SimulationBuildSlotError("ordinary Simulation group is not compiled")
+        return self._build_process, self._build
+
+    def _snapshot_attempt(self, snapshot_root: Path, run_cwd: Path) -> _Attempt:
+        if not snapshot_root.is_absolute() or not run_cwd.is_absolute():
+            raise SimulationBuildSlotError("snapshot and run cwd must be absolute paths")
+        evidence_root = snapshot_root.parent / "execution-evidence"
+        evidence_root.mkdir(mode=0o700, exist_ok=True)
+        identity = replace(
+            self._attempt.identity,
+            result_path=evidence_root / f"adapter-{self._attempt.identity.attempt_token}.json",
+        )
+        work = replace(
+            self._attempt.work,
+            build_dir=str(snapshot_root),
+            run_cwd=str(run_cwd),
+            work_dir=str(evidence_root),
+            adapter_result_path=str(identity.result_path),
+        )
+        prepared = replace(self._attempt.prepared, build_root=evidence_root)
+        return replace(
+            self._attempt,
+            prepared=prepared,
+            identity=identity,
+            work=work,
+            command=_adapter_shell_command(replace(self._attempt, work=work, identity=identity)),
+        )
+
+    def _launch(
+        self, attempt: _Attempt, should_materialize_runtime_inputs: bool
+    ) -> AdapterAttemptOutcome:
+        request = AdapterAttemptRequest(
+            attempt.command,
+            attempt.wrapper_timeout_s,
+            attempt.identity,
+            attempt.identity.result_path.parent,
+        )
+        if not should_materialize_runtime_inputs:
+            return execute_adapter_attempt(self._execution._invoke, request)
+        with materialize_runtime_inputs(
+            Path(attempt.work.build_dir), Path(attempt.work.run_cwd), attempt.work.runtime_inputs
+        ):
+            return execute_adapter_attempt(self._execution._invoke, request)
+
+    def _release_lease(self) -> None:
+        self._lease_active = False
+
+
+def _planning_disclosure(
+    entries: tuple[dict[str, object], ...]
+) -> dict[str, object]:
+    try:
+        version = importlib.metadata.version("fusesoc")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unavailable"
+    return {
+        "planner": "fusesoc_setup",
+        "scratch_inputs": [],
+        "generated_files": list(entries),
+        "tool_provenance": {
+            "kind": "fusesoc",
+            "version": version,
+            "contract_version": "1",
+        },
+        "cleanup": {"removed": True},
+    }
+
+
 class SimulationExecution:
     """Resolve, preview, and execute one Target behind a two-method interface."""
 
@@ -158,6 +445,52 @@ class SimulationExecution:
         self._reset_build_roots: set[Path] = set()
         self._build_session: SimulationBuildSession | None = None
         self._fresh_generation: Path | None = None
+
+    @contextmanager
+    def ordinary_group(
+        self, handle: TargetHandle, test_names: tuple[str, ...]
+    ) -> Iterator[PreparedOrdinaryGroup]:
+        """Prepare one ordinary-HDL group for separately controlled build and launch.
+
+        The yielded group owns a freshly allocated private generation.  Its
+        ``compile()`` method must be called before this context exits.  Exiting
+        releases the Target build lease; only then may ``launch_snapshot()``
+        run a caller-supplied attempt-local copy of the authenticated artifacts.
+        Project Pre-Sim policy intentionally remains with the caller.
+        """
+        if self._build_session is not None:
+            raise SimulationBuildSlotError("Simulation execution already owns a build lease")
+        started = time.monotonic()
+        sources_before = project_compile_surface(handle.project_root)
+        policy = _build_policy(self._options.trace)
+        with SimulationBuildSession(handle, policy.variant) as session:
+            self._build_session = session
+            group: PreparedOrdinaryGroup | None = None
+            try:
+                attempt = self._prepare_attempt(handle, test_names)
+                if attempt.adapter == "cocotb":
+                    raise SimulationBuildPreparationError(
+                        "ordinary_group does not support Cocotb batch Targets"
+                    )
+                begin_run_log(attempt.prepared.build_root, flow="sim", target=handle.selector)
+                group = PreparedOrdinaryGroup(
+                    self,
+                    handle,
+                    attempt,
+                    session,
+                    started,
+                    sources_before,
+                    project_compile_surface(
+                        handle.project_root, include_generated_isolated_cores=True
+                    ),
+                    snapshot_build_inputs(attempt.prepared),
+                )
+                yield group
+            finally:
+                if group is not None:
+                    group._release_lease()
+                self._build_session = None
+                self._fresh_generation = None
 
     def run(
         self,
@@ -251,6 +584,15 @@ class SimulationExecution:
             parameters=getattr(inspection, "parameters", {}),
             flow_options=inspection.flow_options,
         )
+
+    def plan_ordinary_group(
+        self, handle: TargetHandle, test_names: tuple[str, ...]
+    ) -> dict[str, object]:
+        """Prepare disposable scratch and disclose its exact staged source closure."""
+        with self.ordinary_group(handle, test_names) as group:
+            disclosure = group.planning_disclosure()
+            group.discard_prepared_generation()
+        return disclosure
 
     def _run_group(
         self,
@@ -680,7 +1022,7 @@ def _adapter_attempt_error(attempt: AdapterAttemptOutcome, build: BuildOutcome) 
     if result is None:
         return (
             None
-            if attempt.process.timed_out
+            if attempt.process.timed_out or attempt.process.returncode < 0
             else "adapter completed without authenticated terminal result"
         )
     if result.passed and (attempt.process.returncode != 0 or not build.passed):
@@ -1165,7 +1507,13 @@ def _test_outcomes(
     for index, name in enumerate(names):
         item = by_name.get(name)
         verdict = (
-            item.verdict if item else "timeout" if process.timed_out else _adapter_verdict(adapter)
+            item.verdict
+            if item
+            else "timeout"
+            if process.timed_out
+            else "crash"
+            if process.returncode < 0
+            else _adapter_verdict(adapter)
         )
         cycle_status, cycles = _cycle_observation(output, name, attempt.cycle_sentinels)
         results.append(
@@ -1227,6 +1575,8 @@ def _test_outcome(
     reason = detail
     if verdict == "timeout" and not reason:
         reason = f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
+    if verdict == "crash" and not reason:
+        reason = f"simulator process terminated by signal {-process.returncode}"
     if inconclusive and not reason:
         reason = _NO_WAVEFORM if attempt.trace_requested and trace is None else _NO_SENTINEL
     return SimulationTestOutcome(
@@ -1241,6 +1591,7 @@ def _test_outcome(
         sva_errors=sva_errors,
         error_tail="" if passed else reason or _output_tail(process, build.design_failed),
         timed_out=verdict == "timeout",
+        crashed=verdict == "crash",
         build=build,
         artifacts=tuple(item for item in (log, trace) if item is not None),
         run_log_path=log.path if log is not None else "",
@@ -1486,4 +1837,4 @@ def _output_tail(process: SubprocessResult, build_failed: bool) -> str:
     return "\n".join(source.strip().splitlines()[-50:])
 
 
-__all__ = ["SimulationExecution"]
+__all__ = ["PreparedOrdinaryGroup", "SimulationExecution"]

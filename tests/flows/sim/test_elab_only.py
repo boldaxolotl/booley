@@ -137,7 +137,6 @@ def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
             "Execution mode: run tests, elaborate only, or elaborate then "
             "perform the standalone module sweep"
         ),
-        "default": "simulate",
     }
     assert "_legacy_elab_only" not in schema["properties"]
     assert "_legacy_standalone" not in schema["properties"]

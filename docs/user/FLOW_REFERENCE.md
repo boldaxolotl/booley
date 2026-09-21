@@ -143,6 +143,26 @@ Useful controls:
   artifacts are retained in either mode.
 - `--no-kill` skips the pre-run zombie-process cleanup; this is a diagnostic
   escape hatch, not a normal simulation control.
+- `--resume-from <manifest.json>` validates and resumes that exact durable
+  Simulation Campaign. It cannot be combined with Target, test, mode, coverage,
+  or trace selection: those values are reconstructed from the immutable
+  manifest. Timeout and presentation controls may change. `--dry-run` reports
+  completed, interrupted, and pending work without admission or mutation.
+
+Ordinary HDL executions publish their resume authority at
+`<report-root>/sim/<N>/targets/<encoded-target>/campaign/manifest.json`, with
+append-only attempts/results beneath it and an atomically regenerated
+`summary.json`. When no report root is supplied, Simulation Campaigns use
+`<project>/flow-reports`. A resume creates a new compatibility invocation but
+keeps authoritative campaign writes beside the original manifest.
+
+Each campaign freezes the Target's Required Simulation Suite in its immutable
+manifest. A target-level `sim_pass_<target>` Criterion is eligible to pass only
+when every member of that frozen suite has a durable passing result; selecting
+and passing a subset does not satisfy the target-level Criterion. A registered
+Target with no named suite instead requires its one default-selection work item
+to pass. Changing the suite or its source fingerprint makes an old manifest
+ineligible for resume rather than applying historical results to the new suite.
 
 HDL testbenches report their outcome through configured pass/fail sentinels;
 cocotb Targets use cocotb's result file, with assertion output still able to

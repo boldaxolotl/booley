@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from booley.flows.sim.build import BuildOutcome
 
-SimulationVerdict = Literal["pass", "fail", "elab_error", "timeout", "inconclusive"]
+SimulationVerdict = Literal["pass", "fail", "elab_error", "timeout", "crash", "inconclusive"]
 PreSimStatus = Literal["passed", "failed", "timed_out", "spawn_error"]
 
 
@@ -108,6 +108,7 @@ class SimulationTestOutcome:
     sva_errors: int = 0
     error_tail: str = ""
     timed_out: bool = False
+    crashed: bool = False
     elab_failed: bool = False
     test_validated: bool = True
     build: BuildOutcome | None = None

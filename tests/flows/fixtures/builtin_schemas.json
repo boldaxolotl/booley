@@ -69,8 +69,7 @@
           "elab_only",
           "elab_only_standalone"
         ],
-        "description": "Execution mode: run tests, elaborate only, or elaborate then perform the standalone module sweep",
-        "default": "simulate"
+        "description": "Execution mode: run tests, elaborate only, or elaborate then perform the standalone module sweep"
       },
       "test": {
         "type": "array",
@@ -101,15 +100,16 @@
         "default": false,
         "description": "Skip zombie process cleanup"
       },
+      "resume_from": {
+        "type": "string",
+        "description": "Resume one exact Simulation Campaign manifest.json"
+      },
       "coverage": {
         "type": "boolean",
         "default": false,
         "description": "Collect a native Verilator Coverage Campaign for each selected Target"
       }
     },
-    "required": [
-      "target"
-    ],
     "additionalProperties": false
   },
   "synth": {

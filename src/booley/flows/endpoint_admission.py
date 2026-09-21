@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from booley.config.jobs import parse_caps
@@ -25,14 +26,108 @@ from booley.runtime.job_records import _proc_cmdline
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
+    from booley.targets.domain import TargetHandle
 
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class AdmissionContext:
+    """Borrowed outer heavy-admission facts for one Simulation invocation."""
+
+    mode: str
+    slot_store: job_slots.SlotStore | None
+    outer_token: object | None
+    max_heavy: int
+    role: str
+    execution_id: str
+    timeout_seconds: float | None
+    cancellation: Callable[[], bool]
+
+
+class AdmissionGate:
+    """Lazy admission entered once after Simulation Target authorization."""
+
+    def __init__(self, endpoint: EndpointState) -> None:
+        self._endpoint = endpoint
+        self._entered = False
+
+    @contextmanager
+    def enter(self) -> Iterator[AdmissionContext]:
+        if self._entered:
+            raise RuntimeError("AdmissionGate may be entered exactly once")
+        self._entered = True
+        store: job_slots.SlotStore | None = None
+        token: object | None = None
+        try:
+            store, token = self._endpoint._acquire_job_slot()
+            role = (
+                job_slots.ROLE_TICKET
+                if os.environ.get("BOOLEY_AGENT_ROLE") == "ticket"
+                else job_slots.ROLE_INTERACTIVE
+            )
+            timeout = _slot_timeout_seconds()
+            max_heavy = store.caps.max_heavy if store is not None else 1
+            yield AdmissionContext(
+                mode="managed" if store is not None else "unmanaged",
+                slot_store=store,
+                outer_token=token,
+                max_heavy=max_heavy,
+                role=role,
+                execution_id=self._endpoint._invocation_id,
+                timeout_seconds=timeout,
+                cancellation=lambda: False,
+            )
+        finally:
+            if store is not None and token is not None:
+                store.release(token)
+
+
+def authorize_simulation_targets(
+    endpoint: EndpointState,
+    targets: tuple[TargetHandle, ...],
+) -> EndpointOutcome | None:
+    """Authorize the complete ordered Target tuple without acquiring admission."""
+    if (
+        not endpoint.state.strict_criteria
+        or getattr(endpoint.args, "diagnostic", False)
+    ):
+        return None
+    missing = [
+        target.selector
+        for target in targets
+        if not endpoint._bound_criterion_keys(target.selector)
+    ]
+    if not missing:
+        return None
+    return EndpointOutcome(
+        exit_code=EXIT_ERROR,
+        report_text=(
+            "sim: strict Ticket has no authorized Criterion binding for Target(s): "
+            + ", ".join(missing)
+        ),
+    )
+
+
+def _slot_timeout_seconds() -> float | None:
+    raw = os.environ.get("BOOLEY_SLOT_TIMEOUT_S", "")
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 @contextmanager
 def admission(endpoint: EndpointState, prepared: PreparedExecution) -> Iterator[None]:
     """Validate the Target, then hold admission through final reporting."""
+    if endpoint.name == "sim" and hasattr(endpoint, "_simulation_prepared"):
+        with _simulation_admission(endpoint, prepared):
+            yield
+        return
     slot_store: job_slots.SlotStore | None = None
     slot_token = None
     try:
@@ -70,6 +165,31 @@ def admission(endpoint: EndpointState, prepared: PreparedExecution) -> Iterator[
     finally:
         if slot_store is not None and slot_token is not None:
             slot_store.release(slot_token)
+
+
+@contextmanager
+def _simulation_admission(
+    endpoint: EndpointState, prepared: PreparedExecution
+) -> Iterator[None]:
+    if prepared.non_persisting_dry_run:
+        yield
+        return
+    gate = AdmissionGate(endpoint)
+    try:
+        with gate.enter() as borrowed:
+            endpoint._simulation_admission_context = borrowed
+            try:
+                endpoint._pre_run_head = endpoint._get_head_sha()
+                yield
+            finally:
+                endpoint._simulation_admission_context = None
+    except job_slots.QueueFullError as exc:
+        raise EndpointRejectedError(
+            EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"BLOCKED: {exc}. Retry when queued work drains.",
+            )
+        ) from exc
 
 
 def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | None, object | None]:

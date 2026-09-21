@@ -14,13 +14,14 @@ from .contract import (
     SimulationTestOutcome,
     SimulationVerdict,
 )
-from .engine import SimulationExecution
+from .engine import PreparedOrdinaryGroup, SimulationExecution
 
 __all__ = [
     "DefaultSelection",
     "InvalidSimulationRequestError",
     "NamedTests",
     "PreSimEvidence",
+    "PreparedOrdinaryGroup",
     "SimulationArtifactEvidence",
     "SimulationExecution",
     "SimulationInfrastructureFailure",

@@ -29,6 +29,8 @@ def run_pre_sim_commands(
     simulator_environment: Mapping[str, str] | None = None,
     commands: tuple[str, ...] | None = None,
     run_cwd: str | None = None,
+    working_directory: Path | None = None,
+    expose_build_root: bool = True,
 ) -> PreSimEvidence | None:
     """Run the hook once for a native test or once for a Cocotb batch."""
     root = handle.project_root
@@ -42,8 +44,15 @@ def run_pre_sim_commands(
         eda_tool=eda_tool,
         simulator_environment=simulator_environment,
         run_cwd=run_cwd,
+        expose_build_root=expose_build_root,
     )
-    return _invoke_pre_sim(resolved_commands, test_names, root, environment, timeout_s)
+    return _invoke_pre_sim(
+        resolved_commands,
+        test_names,
+        working_directory or root,
+        environment,
+        timeout_s,
+    )
 
 
 def _pre_sim_environment(
@@ -54,6 +63,7 @@ def _pre_sim_environment(
     eda_tool: str,
     simulator_environment: Mapping[str, str] | None,
     run_cwd: str | None,
+    expose_build_root: bool,
 ) -> dict[str, str]:
     """Build the Project-scoped environment for one hook firing."""
     root = handle.project_root
@@ -66,10 +76,13 @@ def _pre_sim_environment(
             "BOOLEY_TEST_NAMES": " ".join(test_names),
             "BOOLEY_PROJECT_ROOT": str(root),
             "BOOLEY_RUN_CWD": str(resolved_run_cwd),
-            "BOOLEY_BUILD_ROOT": str(build_root),
             "BOOLEY_SIM_EDA_TOOL": eda_tool,
         }
     )
+    if expose_build_root:
+        environment["BOOLEY_BUILD_ROOT"] = str(build_root)
+    else:
+        environment.pop("BOOLEY_BUILD_ROOT", None)
     with suppress(FileNotFoundError):
         environment["BOOLEY_PROJECT_DIR"] = str(resolve_project_dir(root))
     if len(test_names) == 1:

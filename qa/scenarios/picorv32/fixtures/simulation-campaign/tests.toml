@@ -1,0 +1,3 @@
+[sim_campaign]
+tests = ["quick", "slow", "tail"]
+select = "+test={name}"

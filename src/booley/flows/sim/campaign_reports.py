@@ -4,7 +4,7 @@ import json
 import os
 import stat
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -28,8 +28,40 @@ def write_campaign_json(path: Path, document: dict[str, object]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         Path(temporary).replace(path)
+        _fsync_directory(path.parent)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def write_compatibility_projection(
+    path: Path,
+    document: dict[str, object],
+    *,
+    acceptance_committed: bool,
+    publication_checkpoint: Callable[[str], None] | None = None,
+) -> None:
+    """Atomically publish a ``simulation.json`` acceptance projection.
+
+    Callers publish ``complete=False`` while Campaign evidence is terminal but
+    acceptance is pending, then replace it with ``complete=True`` only after
+    the Acceptance Journal transaction and mutable state selection are durable.
+    """
+    projection = dict(document)
+    projection["complete"] = acceptance_committed
+    checkpoint = publication_checkpoint or (lambda _boundary: None)
+    checkpoint("before:compatibility_projection")
+    write_campaign_json(path, projection)
+    checkpoint("after:compatibility_projection")
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 @contextmanager
