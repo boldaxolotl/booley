@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -397,6 +398,329 @@ def test_incremental_adapter_build_inputs_cover_each_image_role(
             "parent",
         )
         is None
+    )
+
+
+def _incremental_node(
+    tmp_path: Path,
+    role: lifecycle.ImageRole,
+    *,
+    source: str | None = None,
+    policy: lifecycle.ArtifactPolicy = lifecycle.ArtifactPolicy.LOCAL_ONLY,
+) -> lifecycle.ImageNode:
+    return lifecycle.ImageNode(
+        role.value,
+        tmp_path / f"{role.value}.Dockerfile",
+        lifecycle.PayloadProvenance("3", "0.2.6", "payload"),
+        lifecycle.BuildProvenance("recipe", None),
+        role=role,
+        effective_inputs="inputs",
+        wheel_source_fingerprint=source,
+        acquisition_policy=policy,
+    )
+
+
+def test_incremental_adapter_prepare_rejects_missing_parent_and_missing_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docker = FakeDocker({})
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
+
+    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="prepared parent"):
+        adapter.prepare(node, candidate_reference="candidate", parent_reference="parent")
+
+    monkeypatch.setattr(adapter, "_build_role", lambda *_args: None)
+    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="produced no image"):
+        adapter.prepare(node, candidate_reference="candidate", parent_reference=None)
+
+
+def test_incremental_adapter_prepare_handles_release_and_build_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docker = FakeDocker({})
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
+    release = _incremental_node(
+        tmp_path,
+        lifecycle.ImageRole.WHEEL_OVERLAY,
+        source="wheel",
+        policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+    monkeypatch.setattr(adapter, "_pull_complete_release", lambda _node: "remote:image")
+    assert adapter.prepare(release, candidate_reference="candidate", parent_reference=None) == (
+        "remote:image"
+    )
+
+    def fail_build(context, *_args) -> None:
+        context.record("docker_image", "err", "build failed")
+
+    monkeypatch.setattr(adapter, "_build_role", fail_build)
+    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="build failed"):
+        adapter.prepare(
+            _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE),
+            candidate_reference="candidate",
+            parent_reference=None,
+        )
+
+
+def test_incremental_adapter_build_role_records_result_and_wheel_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image
+
+    docker = FakeDocker({"parent": ("sha256:" + "a" * 64, {})})
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="wheel")
+    adapter._wheel_sha256 = "f" * 64
+    captured: list[object] = []
+
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "docker_data_dir",
+        lambda: tmp_path / "repo" / "src" / "booley" / "data" / "docker",
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_role_build_inputs",
+        lambda *_args: (tmp_path, (("booley-substrate", "docker-image://parent"),), ()),
+    )
+    monkeypatch.setattr(
+        docker_image,
+        "_docker_build_image",
+        lambda _context, spec: captured.append(spec) or 1,
+    )
+
+    class Context:
+        def __init__(self) -> None:
+            self.results: list[SimpleNamespace] = []
+
+        def record(self, *args: str) -> None:
+            self.results.append(SimpleNamespace(status=args[1], detail=args[2]))
+
+    context = Context()
+    adapter._build_role(context, node, "candidate", "parent", docker.image_id("parent"))
+
+    assert context.results[-1].detail == "wheel-overlay build failed"
+    spec = captured[0]
+    assert (harness_lifecycle.runtime_lifecycle.LABEL_WHEEL_SHA256, "f" * 64) in spec.labels
+
+
+@pytest.mark.parametrize("wheel_count", [0, 2])
+def test_incremental_adapter_rejects_ambiguous_wheel_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wheel_count: int
+) -> None:
+    from booley.harness.setup import docker_image
+
+    root = tmp_path / "build"
+    (root / "dist").mkdir(parents=True)
+    for index in range(wheel_count):
+        (root / "dist" / f"booley_rtl-0.2.{index}.whl").write_bytes(b"wheel")
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="wheel")
+    monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args: True)
+    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="exactly one wheel"):
+        adapter._role_build_inputs(SimpleNamespace(), node, root, "parent")
+
+
+def test_incremental_adapter_rejects_wheel_source_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image
+
+    root = tmp_path / "build"
+    (root / "dist").mkdir(parents=True)
+    (root / "dist" / "booley_rtl-0.2.6.whl").write_bytes(b"wheel")
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="expected")
+    monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args: True)
+    monkeypatch.setattr(
+        harness_lifecycle, "wheel_embedded_source_fingerprint", lambda _wheel: "actual"
+    )
+    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="source fingerprint"):
+        adapter._role_build_inputs(SimpleNamespace(), node, root, "parent")
+
+
+def test_runtime_graph_rejects_missing_wheel_and_user_owned_project_recipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: None)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="wheel-source fingerprint"):
+        lifecycle._source_graph(root, lifecycle.BASE_IMAGE)
+
+    project_docker = root / ".booley_project" / "docker"
+    project_docker.mkdir()
+    (project_docker / "Dockerfile").write_text("FROM custom:image\n", encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    with pytest.raises(lifecycle.ImageLifecycleError, match="user-owned Project Docker"):
+        lifecycle._source_graph_project(
+            root,
+            lifecycle.project_image.project_image_name(root),
+            _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE),
+        )
+
+
+def test_runtime_plan_rejects_wrong_scope_and_external_image(tmp_path: Path) -> None:
+    docker = FakeDocker({})
+    with pytest.raises(TypeError, match="ProjectImageScope"):
+        lifecycle.plan(lifecycle.HostImageScope(), docker=docker)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="externally managed"):
+        lifecycle.plan(
+            lifecycle.ProjectImageScope(_project(tmp_path, "acme/custom")), docker=docker
+        )
+
+
+def test_runtime_provenance_and_prepared_candidate_validation(tmp_path: Path) -> None:
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="wheel")
+    labels = dict(node.expected_labels)
+    labels.update(
+        {
+            lifecycle.LABEL_BUILD_ORIGIN: "local",
+            lifecycle.LABEL_WHEEL_SHA256: "f" * 64,
+        }
+    )
+    docker = FakeDocker(
+        {
+            node.reference: ("sha256:" + "a" * 64, labels),
+            "candidate": ("sha256:" + "a" * 64, labels),
+        }
+    )
+    assert lifecycle._node_provenance_reason(node, docker) is None
+    docker.images["candidate"][1][lifecycle.LABEL_RECIPE_FINGERPRINT] = "changed"
+    assert lifecycle._node_provenance_reason(node, docker).code == "recipe-changed"
+    docker.images["candidate"][1][lifecycle.LABEL_RECIPE_FINGERPRINT] = (
+        node.build.recipe_fingerprint
+    )
+    docker.images["candidate"][1].pop(lifecycle.LABEL_WHEEL_SHA256)
+    assert lifecycle._node_provenance_reason(node, docker).code == "inputs-changed"
+    with pytest.raises(lifecycle.ImageLifecycleError, match="no wheel SHA"):
+        lifecycle._verify_prepared_image(node, "candidate", None, docker)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="disappeared"):
+        lifecycle._verify_prepared_image(node, "missing", None, docker)
+
+
+def test_runtime_release_parent_validation_and_adapter_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node = _incremental_node(
+        tmp_path,
+        lifecycle.ImageRole.WHEEL_OVERLAY,
+        source="wheel",
+        policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+    docker = FakeDocker({"release": ("sha256:" + "a" * 64, {})})
+    with pytest.raises(lifecycle.ImageLifecycleError, match="registry ancestry"):
+        lifecycle._verify_prepared_image(node, "release", None, docker)
+    with pytest.raises(TypeError, match="build adapter"):
+        lifecycle._build_adapter(tmp_path, docker, verbose=False)
+    with pytest.raises(TypeError, match="transaction build adapter"):
+        lifecycle._transaction_build_adapter(tmp_path, docker, verbose=False)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: None)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="wheel-source fingerprint"):
+        lifecycle._complete_release_node(lifecycle.BASE_IMAGE)
+
+
+def test_incremental_adapter_release_pull_and_project_recipe_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image
+
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
+    release = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="wheel")
+    release = replace(release, reference=lifecycle.BASE_IMAGE)
+    monkeypatch.setattr(docker_image, "_try_pull_image", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        docker_image, "remote_tag", lambda image, version: f"remote:{image}:{version}"
+    )
+    assert adapter._pull_complete_release(release).startswith("remote:booley-sandbox")
+    monkeypatch.setattr(docker_image, "_try_pull_image", lambda *_args, **_kwargs: False)
+    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="could not pull"):
+        adapter._pull_complete_release(release)
+    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="no complete"):
+        adapter._pull_complete_release(
+            _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
+        )
+
+    project = _incremental_node(tmp_path, lifecycle.ImageRole.PROJECT_SUBSTRATE)
+    monkeypatch.setattr(harness_lifecycle, "resolve_checkout_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle, "_project_requirements_body", lambda _root: "req"
+    )
+    written: list[tuple[Path, str]] = []
+    monkeypatch.setattr(
+        harness_lifecycle.project_image,
+        "write_project_image_files",
+        lambda path, body, **_kwargs: written.append((path, body)),
+    )
+    adapter._materialize_managed_project_recipe(project)
+    assert written == [(tmp_path / "docker", "req")]
+
+
+def test_incremental_adapter_handles_noop_build_and_unsupported_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
+    context = SimpleNamespace(record=lambda *_args: None)
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
+    monkeypatch.setattr(adapter, "_role_build_inputs", lambda *_args: None)
+    adapter._build_role(context, node, "candidate", None, None)
+    monkeypatch.setattr(adapter, "_role_build_inputs", lambda *_args: (tmp_path, (), ()))
+    from booley.harness.setup import docker_image
+
+    monkeypatch.setattr(docker_image, "_docker_build_image", lambda *_args: None)
+    adapter._build_role(context, node, "candidate", None, None)
+    unsupported = SimpleNamespace(role="unsupported")
+    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="unsupported image role"):
+        harness_lifecycle._IncrementalBuildAdapter._role_build_inputs(
+            adapter, context, unsupported, tmp_path, None
+        )
+
+
+def test_harness_image_lifecycle_wrappers_and_distribution_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import booley
+    from booley.runtime.version_attribution import VersionOrigin
+
+    docker = FakeDocker({})
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(
+        harness_lifecycle, "_transaction_build_adapter", lambda *args, **kwargs: "builder"
+    )
+    expected = SimpleNamespace(project_root=tmp_path)
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle, "plan", lambda *args, **kwargs: expected
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle, "prepare", lambda *args, **kwargs: expected
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle, "commit", lambda *args, **kwargs: expected
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle, "validate", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(harness_lifecycle.runtime_lifecycle, "abort", lambda *args, **kwargs: None)
+    scope = lifecycle.ProjectImageScope(tmp_path)
+    assert harness_lifecycle.plan(scope) is expected
+    assert harness_lifecycle.prepare(expected) is expected
+    assert harness_lifecycle.commit(expected) is expected
+    harness_lifecycle.validate(expected)
+    harness_lifecycle.abort(expected)
+
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        SimpleNamespace(origin=VersionOrigin.DISTRIBUTION),
+    )
+    monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: True)
+    assert harness_lifecycle._artifact_policy() is lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY
+    monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: False)
+    assert harness_lifecycle._artifact_policy() is lifecycle.ArtifactPolicy.LOCAL_ONLY
+    monkeypatch.setattr(harness_lifecycle, "_uses_managed_riscv_project", lambda _root: True)
+    assert (
+        harness_lifecycle._artifact_policy(tmp_path)
+        is lifecycle.ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL
     )
 
 

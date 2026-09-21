@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -381,3 +382,138 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         ("commit", prepared),
         ("reissue", tmp_path, "sha256:fresh", True),
     ]
+
+
+def test_harness_runtime_images_requires_prepared_candidates() -> None:
+    images = harness_refresh._RuntimeImages()
+    with pytest.raises(sr.SessionError, match="were not prepared"):
+        images.commit()
+    with pytest.raises(sr.SessionError, match="were not prepared"):
+        images.validate(_result())
+
+
+def test_harness_runtime_images_rejects_commit_without_selected_id(monkeypatch) -> None:
+    images = harness_refresh._RuntimeImages()
+    prepared = Mock()
+    prepared.plan.nodes = (Mock(wheel_source_fingerprint="wheel"),)
+    prepared.plan.steps = (Mock(action=object()),)
+    prepared.candidates = (
+        Mock(reference="booley-sandbox", candidate_reference="candidate", image_id="id"),
+    )
+    prepared.prior_tags = ()
+    images._prepared = prepared
+    monkeypatch.setattr(
+        harness_refresh.init_cmd,
+        "commit_runtime_image",
+        lambda _prepared: LifecycleResult("booley-sandbox", None, Status.CHANGED),
+    )
+    with pytest.raises(sr.SessionError, match="immutable Sandbox Image ID"):
+        images.commit()
+
+
+def test_harness_runtime_image_wrappers_delegate(monkeypatch, tmp_path: Path) -> None:
+    plan = Mock()
+    prepared = Mock()
+    result = LifecycleResult("booley-sandbox", "sha256:id", Status.CURRENT)
+    monkeypatch.setattr(
+        harness_refresh.init_cmd, "inspect_refreshable_runtime_image", lambda *a, **k: result
+    )
+    monkeypatch.setattr(
+        harness_refresh.init_cmd, "prepare_runtime_image", lambda *a, **k: prepared
+    )
+    prepared.plan.selected_reference = "booley-sandbox"
+    prepared.plan.nodes = (Mock(wheel_source_fingerprint="wheel"),)
+    prepared.plan.steps = (Mock(action=object()),)
+    prepared.candidates = (
+        Mock(
+            reference="booley-sandbox",
+            candidate_reference="candidate",
+            image_id="sha256:id",
+            wheel_sha256=None,
+        ),
+    )
+    prepared.prior_tags = ()
+    monkeypatch.setattr(harness_refresh.init_cmd, "commit_runtime_image", lambda value: value)
+    monkeypatch.setattr(harness_refresh.init_cmd, "validate_runtime_image", lambda value: plan)
+    monkeypatch.setattr(harness_refresh.init_cmd, "abort_runtime_image", lambda value: plan)
+    images = harness_refresh._RuntimeImages()
+    assert images.inspect(tmp_path, verbose=True) is None
+    assert images.prepare(tmp_path, verbose=False).selected_id == "sha256:id"
+    images.validate(_result())
+    images.abort()
+
+
+def test_init_runtime_image_inspection_reports_stale_steps(monkeypatch, tmp_path: Path) -> None:
+    from booley.harness import init_cmd
+    from booley.runtime.image_lifecycle import PlanAction
+
+    plan = SimpleNamespace(
+        selected_reference="booley-sandbox",
+        nodes=(SimpleNamespace(wheel_source_fingerprint="wheel"),),
+        steps=(
+            SimpleNamespace(action=PlanAction.REUSE, reason=SimpleNamespace(code="current")),
+            SimpleNamespace(
+                action=PlanAction.BUILD,
+                role=SimpleNamespace(value="wheel-overlay"),
+                reason=SimpleNamespace(code="inputs-changed"),
+                reference="booley-sandbox",
+            ),
+        ),
+    )
+    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "_docker_adapter",
+        lambda: SimpleNamespace(image_id=lambda _reference: "sha256:id"),
+    )
+    result = init_cmd.inspect_refreshable_runtime_image(tmp_path)
+    assert result.status is Status.STALE
+    assert result.diagnostics == (plan.steps[1].reason,)
+    assert result.wheel_source_fingerprint == "wheel"
+
+
+def test_init_runtime_image_inspection_translates_plan_errors(monkeypatch, tmp_path: Path) -> None:
+    from booley.harness import init_cmd
+    from booley.runtime.image_lifecycle import ImageLifecycleError
+
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "plan",
+        lambda *_args: (_ for _ in ()).throw(ImageLifecycleError("user-managed")),
+    )
+    with pytest.raises(RuntimeError, match="cannot use managed refresh"):
+        init_cmd.inspect_refreshable_runtime_image(tmp_path)
+
+
+def test_init_runtime_image_prepare_commit_validate_and_abort_wrappers(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from booley.harness import init_cmd
+
+    plan = SimpleNamespace(
+        project_root=tmp_path,
+        steps=(),
+        nodes=(),
+    )
+    prepared = object()
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
+    monkeypatch.setattr(init_cmd.image_lifecycle, "prepare", lambda *args, **kwargs: prepared)
+    monkeypatch.setattr(init_cmd.image_lifecycle, "commit", lambda value, **kwargs: value)
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "validate",
+        lambda value, **kwargs: calls.append(("validate", value)),
+    )
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "abort",
+        lambda value, **kwargs: calls.append(("abort", value)),
+    )
+    monkeypatch.setattr(init_cmd, "info", lambda message: calls.append(("info", message)))
+
+    assert init_cmd.prepare_runtime_image(tmp_path) is prepared
+    assert init_cmd.commit_runtime_image(prepared) is prepared
+    init_cmd.validate_runtime_image(prepared)
+    init_cmd.abort_runtime_image(prepared)
+    assert calls[-2:] == [("validate", prepared), ("abort", prepared)]

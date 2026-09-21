@@ -414,6 +414,11 @@ def commit(prepared: PreparedConvergence) -> LifecycleResult:
     return runtime_lifecycle.commit(prepared, docker=_docker_adapter())
 
 
+def validate(prepared: PreparedConvergence) -> None:
+    """Revalidate prepared image inputs before a refresh parks the Session."""
+    runtime_lifecycle.validate(prepared, docker=_docker_adapter())
+
+
 def abort(prepared: PreparedConvergence) -> None:
     """Discard one previously prepared convergence."""
     runtime_lifecycle.abort(prepared, docker=_docker_adapter())

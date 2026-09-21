@@ -135,6 +135,46 @@ class TestWriteBuildStamp:
 
         assert wheel_embedded_source_fingerprint(wheel) == "a" * 64
 
+    def test_wheel_source_fingerprint_skips_missing_generated_and_excluded_inputs(
+        self, tmp_path: Path
+    ):
+        root = tmp_path / "empty"
+        root.mkdir()
+        assert resolve_wheel_source_fingerprint(root) is None
+        source = root / "src" / "booley"
+        source.mkdir(parents=True)
+        (source / "real.py").write_text("value = 1\n", encoding="utf-8")
+        (source / "__pycache__").mkdir()
+        (source / "__pycache__" / "cached.pyc").write_bytes(b"cached")
+        (source / "_build_commit.py").write_text("COMMIT = 'generated'\n", encoding="utf-8")
+        (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        (root / "VERSION").write_text("0.2.6\n", encoding="utf-8")
+        assert resolve_wheel_source_fingerprint(root)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "not a zip",
+            "__invalid__ = True\n",
+            "WHEEL_SOURCE_FINGERPRINT = 'short'\n",
+            "WHEEL_SOURCE_FINGERPRINT = 1\n",
+            "WHEEL_SOURCE_FINGERPRINT = 'a' * 64\n",
+        ],
+    )
+    def test_rejects_invalid_wheel_source_provenance(self, tmp_path: Path, body: str):
+        wheel = tmp_path / "invalid.whl"
+        if body == "not a zip":
+            wheel.write_bytes(body.encode())
+        else:
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("booley/_build_commit.py", body)
+        with pytest.raises(ValueError):
+            wheel_embedded_source_fingerprint(wheel)
+
+    def test_embedded_wheel_source_fingerprint_fails_closed(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "booley._build_commit", types.ModuleType("stamp"))
+        assert build_stamp_module.embedded_wheel_source_fingerprint() is None
+
     def test_marks_an_official_release_build_explicitly(self, repo: Path):
         context = development_context_path(repo)
         context.parent.mkdir(parents=True, exist_ok=True)

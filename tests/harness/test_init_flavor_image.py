@@ -77,6 +77,18 @@ def _stub_flavor_env(
 
 
 class TestFlavorDispatch:
+    def test_riscv_flavor_with_project_requirements_is_handled_as_project_image(
+        self, flavor_repo, monkeypatch
+    ):
+        sandbox = {"image": FLAVOR, "pip_requirements": ["requirements.txt"]}
+        monkeypatch.setattr(
+            init_cmd, "ensure_flavor_image", lambda *_args: pytest.fail("flavor path")
+        )
+
+        assert not init_cmd._selected_image_handled(
+            InitContext(project_root=flavor_repo), sandbox, "project-booley-sandbox"
+        )
+
     def test_missing_flavor_pulls_published_image_before_build(self, flavor_repo, monkeypatch):
         built = _stub_flavor_env(monkeypatch, exists=False, stale=False)
         pulled: list[str] = []
