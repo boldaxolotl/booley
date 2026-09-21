@@ -47,8 +47,6 @@ def test_cleanup_cli_runs_prepare_record_preview_and_apply(
             "doctor",
             "--class",
             "capture",
-            "--process-group",
-            "417",
             "--job-record",
             "job.json",
         ]
