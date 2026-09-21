@@ -609,6 +609,10 @@ class TestDockerBuildCommand:
 
         captured: dict = {}
         real_popen = subprocess.Popen
+        monkeypatch.setattr(
+            "booley.runtime.docker_build.ensure_docker_build_capacity",
+            lambda *_args, **_kwargs: None,
+        )
 
         def fake_popen(_cmd, **kwargs):
             captured["cmd"] = list(_cmd)
@@ -728,6 +732,15 @@ def test_build_sh_removes_stale_staging_tree() -> None:
     """Deleted packages must not survive in setuptools' incremental build/lib."""
     text = _BUILD_SH.read_text(encoding="utf-8")
     assert 'rm -rf "$BOOLEY_ROOT/build"' in text
+
+
+def test_manual_image_build_scripts_run_shared_capacity_preflight() -> None:
+    """Every shipped manual Sandbox Image build must use the shared guard."""
+    scripts = (_BUILD_SH, _BUILD_SH.with_name("build-riscv.sh"))
+    for script in scripts:
+        text = script.read_text(encoding="utf-8")
+        assert "booley.runtime.docker_capacity" in text
+        assert "run_docker_build " in text
 
 
 # ---------------------------------------------------------------------------

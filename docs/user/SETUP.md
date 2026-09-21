@@ -87,6 +87,24 @@ complete RISC-V demo stack, plus Project artifacts and temporary upgrade/build
 data. On the measured containerd store, the current Linux/AMD64 images occupy
 1.58/2.02 GB and expose 2.82/4.48 GB filesystems; shared layers are not additive.
 
+Local image builds also need temporary Docker headroom. Immediately before each
+Docker build, Booley checks the filesystem containing Docker's reported storage
+root. A cold build requires 30 GiB of temporary headroom plus a 5 GiB safety
+reserve. When the target image and Docker build cache both exist, they provide
+concrete cache evidence and the temporary allowance falls to 10 GiB plus the
+same reserve.
+BuildKit cannot predict the size of uncached output before executing a recipe,
+so these are conservative fixed bounds rather than an unreliable exact estimate.
+The check also reports Docker's total and reclaimable build-cache usage.
+
+When space is insufficient, Booley stops before starting the build and suggests
+`docker builder prune`, which interactively removes unused build cache. It never
+automatically removes images, volumes, Project artifacts, or user data. For a
+Docker installation whose real storage is external to the filesystem Docker
+reports, set `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1` for that one command. Any other
+value leaves the check enabled. This expert bypass does not change Docker's own
+failure behavior if the external storage fills.
+
 ## Initialize the Project · host
 
 Run Project Initialization on the host before the skill takes over. The host versus

@@ -46,7 +46,15 @@ RECIPE_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "${FP_PY:-python3}" -c \
   "$SCRIPT_DIR/Dockerfile.riscv")"
 LABEL_ARGS+=(--label "io.booley.build.recipe-fingerprint=$RECIPE_FINGERPRINT")
 
+run_docker_build() {
+  local image="$1"
+  shift
+  PYTHONPATH="$BOOLEY_ROOT/src" "${FP_PY:-python3}" -P -m booley.runtime.docker_capacity \
+    --image "$image" -- "$@"
+  "$@"
+}
+
 echo ">>> Building booley-sandbox-riscv Docker image..."
-docker build "${LABEL_ARGS[@]}" "$@" -t booley-sandbox-riscv \
+run_docker_build booley-sandbox-riscv docker build "${LABEL_ARGS[@]}" "$@" -t booley-sandbox-riscv \
     -f "$SCRIPT_DIR/Dockerfile.riscv" "$BOOLEY_ROOT"
 echo "✓ booley-sandbox-riscv image built successfully"
