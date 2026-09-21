@@ -392,7 +392,6 @@ def test_setup_requires_explicit_memory_dispositions_and_synth_only_surrogates()
         "Memory implementation",
         "exported_boundary",
         "timing_surrogate",
-        "standard_cell_storage",
         "An enabled synth Target with any unclassified candidate cannot be approved",
         "RTL elaboration alone never makes this row Green",
     ):

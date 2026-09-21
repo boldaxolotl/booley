@@ -591,12 +591,11 @@ separate columns (see "How a row resolves"). The standard checklist:
     implementation-selection defines/wrappers, and exported memory ports.
     Record each candidate's source evidence, logical size, interface and clock
     domains, synchronous/asynchronous read kind, visible latency, replacement
-    seam, one disposition (`exported_boundary`, `timing_surrogate`,
-    `standard_cell_storage`, or `blocked`), and confidence.
+    seam, one disposition (`exported_boundary`, `timing_surrogate`, or
+    `blocked`), and confidence.
 
-    An exported boundary retains Target-authored SDC I/O intent. A deliberately
-    small inferred memory needs an explicit standard-cell bit budget. An
-    internal memory may use a timing surrogate only when its project-owned
+    An exported boundary retains Target-authored SDC I/O intent. An internal
+    memory may use a timing surrogate only when its project-owned
     replacement seam and timing shape are understood; scale alone never
     decides the disposition.
     Unsupported asynchronous reads, ambiguous collision-visible behavior,
