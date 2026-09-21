@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import runpy
 import shlex
+import subprocess
 import sys
 import threading
 import time
@@ -13,7 +15,7 @@ from queue import Queue
 
 import pytest
 
-from booley.runtime import docker_build
+from booley.runtime import docker_build, docker_capacity
 from booley.runtime.docker_build import run_docker_build
 
 
@@ -457,6 +459,97 @@ def test_capacity_probe_failure_stops_build_before_starting(tmp_path: Path, monk
         )
 
     assert not marker.exists()
+
+
+def test_capacity_probe_process_failure_is_fail_closed(monkeypatch) -> None:
+    def fail(*_args, **_kwargs):
+        raise OSError("probe unavailable")
+
+    monkeypatch.setattr(docker_capacity.subprocess, "run", fail)
+
+    with pytest.raises(
+        docker_capacity.DockerCapacityError, match="could not run Docker capacity probe"
+    ):
+        docker_capacity._run_docker_probe(["docker", "info"])
+
+
+def test_capacity_probe_rejects_invalid_storage_root(monkeypatch) -> None:
+    result = subprocess.CompletedProcess(["docker"], 0, stdout="relative", stderr="")
+    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: result)
+
+    with pytest.raises(docker_capacity.DockerCapacityError, match="invalid storage root"):
+        docker_capacity._docker_storage("docker")
+
+
+def test_capacity_probe_rejects_unexpected_image_inspection_failure(monkeypatch) -> None:
+    result = subprocess.CompletedProcess(["docker"], 1, stdout="", stderr="permission denied")
+    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: result)
+
+    with pytest.raises(docker_capacity.DockerCapacityError, match="could not inspect target"):
+        docker_capacity._target_is_cached("docker", "booley-sandbox")
+
+
+def test_capacity_probe_rejects_malformed_external_sizes() -> None:
+    with pytest.raises(docker_capacity.DockerCapacityError, match="invalid size"):
+        docker_capacity._size_bytes("unknown")
+
+
+def test_capacity_probe_rejects_cache_query_failures(monkeypatch) -> None:
+    failed = subprocess.CompletedProcess(["docker"], 1, stdout="", stderr="daemon down")
+    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: failed)
+
+    with pytest.raises(
+        docker_capacity.DockerCapacityError, match="could not query Docker build cache"
+    ):
+        docker_capacity._build_cache("docker")
+
+
+def test_capacity_probe_rejects_missing_cache_report(monkeypatch) -> None:
+    result = subprocess.CompletedProcess(["docker"], 0, stdout="Images\t1GB\t0B", stderr="")
+    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: result)
+
+    with pytest.raises(docker_capacity.DockerCapacityError, match="did not report build-cache"):
+        docker_capacity._build_cache("docker")
+
+
+def test_capacity_probe_reports_storage_usage_failure(monkeypatch) -> None:
+    monkeypatch.delenv(docker_capacity.SKIP_PREFLIGHT_ENV, raising=False)
+    monkeypatch.setattr(docker_capacity, "_docker_storage", lambda _docker: Path("/storage"))
+    monkeypatch.setattr(
+        docker_capacity.shutil,
+        "disk_usage",
+        lambda _path: (_ for _ in ()).throw(OSError("usage unavailable")),
+    )
+
+    with pytest.raises(
+        docker_capacity.DockerCapacityError, match="could not inspect Docker storage"
+    ):
+        docker_capacity.ensure_docker_build_capacity(["docker", "build"], image="image")
+
+
+def test_capacity_cli_handles_success_and_failure(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        docker_capacity, "ensure_docker_build_capacity", lambda *_args, **_kwargs: None
+    )
+    assert docker_capacity.main(["--image", "image", "--", "docker", "build"]) == 0
+
+    def fail(*_args, **_kwargs):
+        raise docker_capacity.DockerCapacityError("not enough space")
+
+    monkeypatch.setattr(docker_capacity, "ensure_docker_build_capacity", fail)
+    assert docker_capacity.main(["--image", "image", "--", "docker", "build"]) == 1
+    assert "Docker image-build preflight failed: not enough space" in capsys.readouterr().err
+
+
+def test_capacity_cli_requires_a_build_command() -> None:
+    with pytest.raises(SystemExit):
+        docker_capacity.main(["--image", "image"])
+
+
+def test_capacity_module_entrypoint_runs(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["docker_capacity.py", "--image", "image", "--", "echo"])
+    with pytest.raises(SystemExit, match="0"):
+        runpy.run_path(docker_capacity.__file__, run_name="__main__")
 
 
 def test_closed_progress_sink_does_not_fail_a_healthy_build() -> None:
