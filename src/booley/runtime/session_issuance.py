@@ -1295,7 +1295,7 @@ def _pin_initialize_command(project: Path, spec: dict[str, Any]) -> None:
     if executable is None:
         raise RuntimeSpecError(
             "cannot resolve the trusted host Booley executable; reinstall Booley with "
-            "pipx or add its Python scripts directory to PATH"
+            "the canonical base Python or add its scripts directory to PATH"
         )
     spec["initializeCommand"] = initialize_command(str(executable))
 

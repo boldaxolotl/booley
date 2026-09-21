@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,7 @@ def _wire_current(
 ) -> list[str]:
     calls: list[str] = []
     monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     monkeypatch.setattr(
         bootstrap,
         "_prerequisite_findings",
@@ -100,6 +102,27 @@ def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.Monke
     assert result.exit_status == 0
 
 
+def test_noncanonical_install_stops_before_host_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(
+        bootstrap,
+        "host_install_error",
+        lambda _source: "temporary QA wheel cannot manage the host",
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_prerequisite_findings",
+        lambda: (_ for _ in ()).throw(AssertionError("must not probe or mutate")),
+    )
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert result.exit_status == 2
+    assert [finding.resource for finding in result.findings] == ["host-config", "host-install"]
+
+
 def test_invalid_config_stops_before_any_other_probe(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -135,6 +158,124 @@ def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) 
         == 0
     )
     assert seen == [Intent.REFRESH]
+
+
+def test_public_adapter_adopts_before_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    identity = SimpleNamespace(version="1.2.3", payload_fingerprint="f" * 64)
+    monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "adopt_host_installation",
+        lambda _source, *, replace: events.append(f"adopt:{replace}") or identity,
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
+        ),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            adopt_installation=True,
+        )
+    )
+
+    assert status == 0
+    assert events == ["adopt:False", "reconcile"]
+
+
+def test_public_adapter_explicitly_replaces_during_upgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    identity = SimpleNamespace(version="2.0.0", payload_fingerprint="a" * 64)
+    monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "adopt_host_installation",
+        lambda _source, *, replace: events.append(f"adopt:{replace}") or identity,
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
+        ),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            adopt_installation=False,
+            upgrade_installation=True,
+        )
+    )
+
+    assert status == 0
+    assert events == ["adopt:True", "reconcile"]
+
+
+def test_public_adapter_rejects_adoption_in_check_only(capsys):
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=True,
+            verbose=False,
+            adopt_installation=True,
+            upgrade_installation=False,
+        )
+    )
+
+    assert status == 2
+    assert "check-only" in capsys.readouterr().out
+
+
+def test_public_adapter_reports_adoption_failure(monkeypatch, capsys):
+    monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "adopt_host_installation",
+        lambda _source, *, replace: (_ for _ in ()).throw(
+            bootstrap_cli.HostInstallationError("adoption failed")
+        ),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            adopt_installation=True,
+            upgrade_installation=False,
+        )
+    )
+
+    assert status == 2
+    assert "adoption failed" in capsys.readouterr().out
+
+
+def test_skill_reconciliation_rejects_noncanonical_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "skills"
+    source.mkdir()
+    monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: "not canonical")
+
+    finding = bootstrap._reconcile_skills(Intent.CHECK)
+
+    assert finding.state is bootstrap.BootstrapState.ERROR
+    assert finding.detail == "not canonical"
 
 
 def test_vscode_requires_an_executable_or_installed_application(
@@ -655,6 +796,7 @@ def test_skill_reconciliation_reports_missing_pending_changed_and_errors(
     source = tmp_path / "skills"
     source.mkdir()
     monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     changed_event = SimpleNamespace(changed=True, failed=False, detail="", name="linked")
     report = SimpleNamespace(events=(changed_event,), diagnostics=(), fatal=None)
     target = tmp_path / ".agents" / "skills"
