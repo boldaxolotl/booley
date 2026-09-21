@@ -124,15 +124,21 @@ def test_doctor_shadow_rejects_symlinked_parent(tmp_path: Path) -> None:
     outside.mkdir()
     (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(selftest_overlay.SelftestOverlayError, match="generation parent is a symlink"):
-        selftest_overlay.doctor_runtime_view_path(tmp_path, tmp_path / "linked" / "generation", "a" * 32)
+    with pytest.raises(
+        selftest_overlay.SelftestOverlayError, match="generation parent is a symlink"
+    ):
+        selftest_overlay.doctor_runtime_view_path(
+            tmp_path, tmp_path / "linked" / "generation", "a" * 32
+        )
 
 
 def test_doctor_shadow_rejects_build_outside_project(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     with pytest.raises(selftest_overlay.SelftestOverlayError, match="outside the Project"):
-        selftest_overlay.doctor_runtime_view_path(project, tmp_path / "outside" / "generation", "a" * 32)
+        selftest_overlay.doctor_runtime_view_path(
+            project, tmp_path / "outside" / "generation", "a" * 32
+        )
 
 
 @pytest.mark.skipif(
@@ -141,7 +147,9 @@ def test_doctor_shadow_rejects_build_outside_project(tmp_path: Path) -> None:
 def test_doctor_shadow_rejects_symlinked_generation(tmp_path: Path) -> None:
     generation = tmp_path / "generation"
     generation.symlink_to(tmp_path / "outside", target_is_directory=True)
-    with pytest.raises(selftest_overlay.SelftestOverlayError, match="generation parent is a symlink"):
+    with pytest.raises(
+        selftest_overlay.SelftestOverlayError, match="generation parent is a symlink"
+    ):
         selftest_overlay.doctor_runtime_view_path(tmp_path, generation, "a" * 32)
 
 
@@ -467,5 +475,7 @@ def test_managed_runtime_view_validates_slot_against_checkout_root(tmp_path: Pat
 
 
 def test_doctor_runtime_view_rejects_invalid_attempt_token(tmp_path: Path) -> None:
-    with pytest.raises(selftest_overlay.SelftestOverlayError, match="invalid Doctor attempt token"):
+    with pytest.raises(
+        selftest_overlay.SelftestOverlayError, match="invalid Doctor attempt token"
+    ):
         selftest_overlay.doctor_runtime_view_path(tmp_path, tmp_path / "slot", "not-a-token")

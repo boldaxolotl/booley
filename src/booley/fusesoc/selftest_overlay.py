@@ -21,9 +21,7 @@ BAD_KIND = "bad"
 _BAD_OVERLAY_DIR = "bad-overlay"
 BAD_RUN_CWD_DIR = ".booley-doctor-run-cwd"
 _ATTEMPT_TOKEN_RE = re.compile(r"[0-9a-f]{32}")
-_OWNED_VIEW_RE = re.compile(
-    rf"{re.escape(BAD_RUN_CWD_DIR)}-(?:[0-9a-f]{{16}}|a-[0-9a-f]{{32}})"
-)
+_OWNED_VIEW_RE = re.compile(rf"{re.escape(BAD_RUN_CWD_DIR)}-(?:[0-9a-f]{{16}}|a-[0-9a-f]{{32}})")
 
 
 class SelftestOverlayError(RuntimeError):

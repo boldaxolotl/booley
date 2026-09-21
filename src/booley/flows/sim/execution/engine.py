@@ -826,9 +826,11 @@ def _simulation_run_cwd(
     if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND:
         if attempt_token is None:
             return "<attempt>"
-        return selftest_overlay.doctor_runtime_view_path(
-            root, work_root.parent, attempt_token
-        ).relative_to(root).as_posix()
+        return (
+            selftest_overlay.doctor_runtime_view_path(root, work_root.parent, attempt_token)
+            .relative_to(root)
+            .as_posix()
+        )
     if configured_run_cwd is None:
         return resolve_run_cwd(root)
     try:

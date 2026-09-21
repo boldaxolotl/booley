@@ -493,9 +493,7 @@ def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) ->
         generation = session.new_generation()
         build_input = generation / "input.sv"
         build_input.write_text("module demo; endmodule\n", encoding="utf-8")
-        shadow = selftest_overlay.doctor_runtime_view_path(
-            tmp_path, generation.parent, "a" * 32
-        )
+        shadow = selftest_overlay.doctor_runtime_view_path(tmp_path, generation.parent, "a" * 32)
         selftest_overlay.stage_bad_run_overlay(
             tmp_path / ".booley_project", "sim", tmp_path, shadow
         )
