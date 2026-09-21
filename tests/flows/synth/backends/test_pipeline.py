@@ -302,7 +302,7 @@ def _fresh(_path: Path) -> bool:
 
 
 class TestBoundaryOutput:
-    def test_collects_warning_summary_and_final_structural_evidence(self, tmp_path: Path):
+    def test_collects_warning_summary_and_preserves_early_loop_evidence(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         (plan.build_dir / "yosys.log").write_text(
             "Warning: found logic loop in module dut:\n    wire \\feedback\n",
@@ -324,7 +324,7 @@ class TestBoundaryOutput:
 
         assert outcome.diagnostics.warnings.total_warnings == 3
         assert outcome.diagnostics.structural.complete is True
-        assert outcome.diagnostics.structural.comb_loops == 0
+        assert outcome.diagnostics.structural.comb_loops == 1
         assert outcome.diagnostics.structural.multi_driven == 1
         assert "--- check_dut.txt ---" in outcome.text
 
