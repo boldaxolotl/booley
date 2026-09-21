@@ -68,7 +68,11 @@ implicit all-tests selection. Retain the complete request, response bytes, byte
 count, displayed text card, exit code, and the pointed-to Manifest, summary,
 simulation compatibility report, results, and Cocotb XML/JSON. Require the
 bounded structured response to contain nonempty manifest, summary, and simulation
-pointers plus every observation's independent execution, functional, assertion,
-assertion-count, and detail fields. The human-readable text card must preserve
-the same exit code. Validate the retained response with `validate_phase5.py` and
-the product's declared MCP output bound.
+pointers, aggregate counts, and a preview of at most 32 observations. Every
+preview entry retains exactly its test, execution, functional, assertions,
+assertion count, and bounded detail fields. Require `observation_total` and
+`observations_truncated` to distinguish a complete preview from a bounded prefix;
+the authoritative Manifest/result pointers remain available when the preview is
+truncated. The human-readable text card must preserve the same exit code.
+Validate the retained response with `validate_phase5.py` and the product's
+declared MCP output bound.

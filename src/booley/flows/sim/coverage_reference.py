@@ -19,7 +19,7 @@ from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V3,
     MAX_MANIFEST_BYTES,
     LoadedCoverageCampaign,
-    load_coverage_campaign,
+    load_coverage_campaign_bytes,
 )
 from booley.runtime.regular_file import open_regular_nofollow
 
@@ -126,7 +126,7 @@ def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
     )
     if len(campaign_raw) != nested["bytes"] or _digest_bytes(campaign_raw) != nested["sha256"]:
         raise CoverageCampaignReferenceError("nested Coverage Campaign bytes disagree with reference")
-    loaded = load_coverage_campaign(campaign_path)
+    loaded = load_coverage_campaign_bytes(campaign_path, campaign_raw)
     campaign = loaded.campaign
     target = cast(Mapping[str, str], document["target"])
     if (
@@ -175,7 +175,7 @@ def build_coverage_campaign_reference(
     raw = _read_regular(
         coverage_campaign_path, "nested Coverage Campaign", MAX_MANIFEST_BYTES
     )
-    loaded = load_coverage_campaign(coverage_campaign_path)
+    loaded = load_coverage_campaign_bytes(coverage_campaign_path, raw)
     relative = coverage_campaign_path.relative_to(origin_target_directory).as_posix()
     return CoverageCampaignReference(
         {

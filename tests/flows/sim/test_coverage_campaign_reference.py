@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.sim import coverage_reference
+from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.coverage_campaign import (
     DurableTargetIdentity,
     decode_coverage_campaign,
@@ -76,6 +79,66 @@ def _rewrite_reference(
         json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         + b"\n"
     )
+
+
+def _facts_with_reference(value: CoverageCampaignReference) -> dict[str, object]:
+    raw = encode_coverage_campaign_reference(value)
+    return {
+        "$schema": "booley.simulation-acceptance-facts/v1",
+        "campaign_id": _SIMULATION_CAMPAIGN_ID,
+        "manifest_sha256": _MANIFEST_SHA256,
+        "origin": {"execution_id": "", "invocation_id": _ORIGIN_INVOCATION_ID},
+        "target": {
+            "vlnv": "acme:demo:counter:1.0", "name": _TARGET_SELECTOR,
+            "selector": _TARGET_SELECTOR, "project_identity": "project",
+            "revision": "abc", "role": "candidate", "display_name": _TARGET_SELECTOR,
+        },
+        "required_suite": {
+            "names": ["reset"], "default_invocation": False,
+            "source_sha256": "sha256:" + "b" * 64,
+        },
+        "prerequisites": [], "consumed_results": [], "observations": [],
+        "coverage_reference": {
+            "reference": {
+                "path_base": "origin_invocation",
+                "path": f"targets/{_TARGET_SELECTOR}/coverage.json",
+                "bytes": len(raw), "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "kind": "coverage_campaign_reference", "owner": _SIMULATION_CAMPAIGN_ID,
+            },
+            "document": json.loads(raw),
+        },
+    }
+
+
+def test_acceptance_facts_reject_public_coverage_reference_substitution(tmp_path: Path) -> None:
+    target = tmp_path / "targets" / _TARGET_SELECTOR
+    facts = _facts_with_reference(_reference(target, _nested_campaign(target)))
+    coverage = facts["coverage_reference"]
+    assert isinstance(coverage, dict)
+    document = coverage["document"]
+    assert isinstance(document, dict)
+    document["simulation_manifest_sha256"] = "sha256:" + "c" * 64
+    raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    evidence = coverage["reference"]
+    assert isinstance(evidence, dict)
+    evidence["bytes"] = len(raw)
+    evidence["sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
+        AcceptanceFacts(facts)
+
+
+def test_acceptance_facts_reject_enclosing_reference_owner_substitution(tmp_path: Path) -> None:
+    target = tmp_path / "targets" / _TARGET_SELECTOR
+    facts = _facts_with_reference(_reference(target, _nested_campaign(target)))
+    coverage = facts["coverage_reference"]
+    assert isinstance(coverage, dict)
+    reference = coverage["reference"]
+    assert isinstance(reference, dict)
+    reference["owner"] = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
+        AcceptanceFacts(facts)
 
 
 def test_reference_codec_round_trips_exact_canonical_immutable_document(tmp_path: Path) -> None:
@@ -181,6 +244,31 @@ def test_resolver_authenticates_real_nested_campaign_at_exact_attempt_path(
     assert resolved.campaign_path == nested
     assert resolved.loaded.campaign.campaign_id == _valid_document()["campaign_id"]
     assert resolved.loaded.campaign.target.identity == _TARGET_IDENTITY
+
+
+def test_resolver_decodes_authenticated_reference_bytes_during_path_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "targets" / _TARGET_SELECTOR
+    nested = _nested_campaign(target)
+    value = _reference(target, nested)
+    honest = encode_coverage_campaign_reference(value)
+    substitute = _rewrite_reference(value, ("producer_invocation_id",), 20)
+    path = target / "coverage.json"
+    path.write_bytes(honest)
+    original = coverage_reference.decode_coverage_campaign_reference
+
+    def swap_after_authenticated_read(raw: bytes) -> CoverageCampaignReference:
+        path.write_bytes(substitute)
+        return original(raw)
+
+    monkeypatch.setattr(
+        coverage_reference, "decode_coverage_campaign_reference", swap_after_authenticated_read
+    )
+    resolved = coverage_reference.resolve_coverage_campaign_reference(path)
+
+    assert resolved.reference.document["producer_invocation_id"] == 19
+    assert path.read_bytes() == substitute
 
 
 def test_resolver_rejects_nested_byte_digest_substitution(tmp_path: Path) -> None:

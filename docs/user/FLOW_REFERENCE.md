@@ -135,6 +135,10 @@ Useful controls:
   blanks and `#` comments are ignored. It cannot be combined with `--test`.
 - Duplicate, unknown, empty, or catalog-less named selections fail before
   simulation. Every explicit name must exist in every selected Target.
+- A plain unfiltered run applies configured `skip` entries. Repeatable `--test`
+  or `--tests-file` is an exact explicit suite and therefore overrides those
+  entries. A plain Target whose complete registered suite is configured skipped
+  fails preflight instead of passing vacuously.
 - `--trace` captures a waveform artifact.
 - `--coverage` (permanent alias `--cov`) explicitly collects a native Verilator
   Coverage Campaign. MCP uses boolean `coverage: true`; the default is false.
@@ -149,12 +153,25 @@ Useful controls:
   manifest. Timeout and presentation controls may change. `--dry-run` reports
   completed, interrupted, and pending work without admission or mutation.
 
-Ordinary HDL executions publish their resume authority at
+Ordinary HDL, Cocotb-batch, and native-coverage-aggregate executions publish
+their resume authority at
 `<report-root>/sim/<N>/targets/<encoded-target>/campaign/manifest.json`, with
 append-only attempts/results beneath it and an atomically regenerated
 `summary.json`. When no report root is supplied, Simulation Campaigns use
 `<project>/flow-reports`. A resume creates a new compatibility invocation but
 keeps authoritative Simulation Campaign writes beside the original manifest.
+Cocotb interruption retries its whole batch as one new Simulation Attempt while
+retaining independent XML-derived observations. Native coverage interruption
+retries its whole serial collection/merge aggregate as one new Simulation
+Attempt and creates a distinct nested Coverage Campaign; it never continues or
+overwrites an interrupted native database.
+
+Structured campaign output keeps bounded authority pointers in `manifest`,
+`summary`, `simulation`, and nullable `coverage`. It reports `grade`, `complete`,
+aggregate `observation_counts`, and a maximum-32 `observations` preview. Every
+preview entry retains `test`, `execution`, `functional`, `assertions`,
+`assertion_count`, and bounded `detail`; `observation_total` and
+`observations_truncated` disclose whether the preview is complete.
 
 Each Simulation Campaign freezes the Target's Required Simulation Suite in its immutable
 manifest. A target-level `sim_pass_<target>` Criterion is eligible to pass only

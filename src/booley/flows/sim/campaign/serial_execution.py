@@ -18,6 +18,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
+from booley.flows.sim.backends.cocotb_results import (
+    COCOTB_RESULTS_PREFIX,
+    parse_results_line,
+    reconcile,
+)
 from booley.flows.sim.build_session import project_compile_surface
 from booley.flows.sim.campaign.bundle import (
     authenticate_executable_snapshot,
@@ -1398,10 +1403,10 @@ def _observation(
 
 
 def _result_state(tests: tuple[SimulationTestOutcome, ...]) -> str:
-    if any(test.timed_out for test in tests):
-        return "timeout"
     if any(test.crashed for test in tests):
         return "crash"
+    if any(test.timed_out for test in tests):
+        return "timeout"
     return "completed"
 
 
@@ -1463,8 +1468,20 @@ def _capture_outcome_evidence(
             continue
         seen.add(source)
         destination = evidence_root / f"{len(references) + 1:04d}-{source.name}"
-        durable_copy(source, destination)
-        raw = destination.read_bytes()
+        source_raw = source.read_bytes()
+        if artifact.kind == "cocotb_results_json":
+            source_observations = _decode_cocotb_source(source_raw, artifact.test_names)
+            raw = canonical_json_bytes({
+                "$schema": "booley.cocotb-campaign-transport/v1",
+                "source_bytes": len(source_raw),
+                "source_sha256": _sha_evidence_bytes(source_raw),
+                "source_observations": source_observations,
+                "observations": [_observation(test) for test in outcome.tests],
+            })
+            _create_immutable(destination, raw)
+        else:
+            durable_copy(source, destination)
+            raw = destination.read_bytes()
         references.append(
             _record_ref(
                 destination,
@@ -1477,6 +1494,23 @@ def _capture_outcome_evidence(
             )
         )
     return references
+
+
+def _decode_cocotb_source(
+    raw: bytes, selected: tuple[str, ...]
+) -> list[dict[str, str]]:
+    try:
+        encoded = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SimulationCampaignIntegrityError("Cocotb transport is not UTF-8") from exc
+    decoded = parse_results_line(COCOTB_RESULTS_PREFIX + encoded)
+    if decoded is None:
+        raise SimulationCampaignIntegrityError("Cocotb transport is invalid")
+    names = selected or tuple(test.name for test in decoded.tests if test.name)
+    return [
+        {"test": name, "verdict": verdict, "detail": detail}
+        for name, verdict, detail in reconcile(list(names), decoded)
+    ]
 
 
 def _build_result_ref(

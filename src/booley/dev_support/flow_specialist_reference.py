@@ -54,7 +54,11 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
     "sim": (
         "`--mode elab-only` compiles, elaborates, and links without running tests; "
         "`--mode elab-only-standalone` adds the stronger module sweep. "
-        "repeat `--test <name>` for exact tests or use `--tests-file <path>`, "
+        "Repeat `--test <name>` for exact registered names or use `--tests-file <path>`; "
+        "configured skips apply only to unfiltered selection. Resume one exact durable "
+        "Simulation Campaign with `--resume-from <exact-manifest.json>` (optionally with "
+        "`--dry-run`): Cocotb retries the whole batch and coverage retries the whole "
+        "aggregate into a distinct nested Coverage Campaign. "
         "`--coverage` / `--cov` collects a native Coverage Campaign, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "

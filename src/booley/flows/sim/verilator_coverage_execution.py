@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import cast
@@ -87,12 +88,16 @@ class VerilatorCoverageExecution:
         self._artifact_paths: tuple[Path, ...] = ()
         self._build_variant: str | None = None
         self._trace_mode = "vcd_fifo"
+        self._attempt_run_cwd: Path | None = None
+        self._snapshot_bound = False
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         """Prepare and compile the collector-selected isolated build variant."""
         self._prepared = None
         self._artifact_paths = ()
         self._build_variant = None
+        self._attempt_run_cwd = None
+        self._snapshot_bound = False
         if request.target.identity != self._handle.identity:
             return SimulationBuildResult(False, "coverage Target identity does not match handle")
         identity, version_output = self._collector_identity()
@@ -193,6 +198,8 @@ class VerilatorCoverageExecution:
         if request.target.identity != self._handle.identity:
             return SimulationRunResult("inconclusive", "coverage Target identity mismatch")
         try:
+            if self._snapshot_bound:
+                return self._run_prepared(request, prepared)
             with SimulationBuildSession(self._handle, variant) as session:
                 session.verify_fresh_image(prepared)
                 return self._run_prepared(request, prepared)
@@ -224,6 +231,8 @@ class VerilatorCoverageExecution:
             trace_mode=self._trace_mode,
             plusargs_suffix=request.argv_suffix,
         )
+        if self._attempt_run_cwd is not None:
+            work = replace(work, run_cwd=str(self._attempt_run_cwd))
         invocation = prepare_adapter_invocation(work)
         environment = {**simulation_target_environment(self._handle), **request.environment}
         script = _environment_script(environment, invocation)
@@ -254,6 +263,28 @@ class VerilatorCoverageExecution:
         if not self._artifact_paths:
             raise SimulationBuildSlotError("coverage simulator image has no artifacts")
         return prepared.work_root, self._artifact_paths
+
+    def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
+        """Execute only from the campaign-owned snapshot and claimed run directory."""
+        prepared = self._prepared
+        if prepared is None:
+            raise SimulationBuildSlotError("coverage simulator image is not authorized")
+        try:
+            relative_build = prepared.build_root.relative_to(prepared.work_root)
+            rebound_paths = tuple(
+                snapshot_root / path.relative_to(prepared.work_root)
+                for path in self._artifact_paths
+            )
+        except ValueError as exc:
+            raise SimulationBuildSlotError("coverage image escapes its authorized root") from exc
+        self._prepared = replace(
+            prepared,
+            work_root=snapshot_root,
+            build_root=snapshot_root / relative_build,
+        )
+        self._artifact_paths = rebound_paths
+        self._attempt_run_cwd = run_cwd
+        self._snapshot_bound = True
 
     def _collector_identity(self) -> tuple[VerilatorCollectorIdentity | None, str]:
         version = self._invoke(["verilator", "--version"], timeout=30)

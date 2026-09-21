@@ -54,6 +54,10 @@ class NativeExecution:
     def authenticated_image(self):
         return self.build_root, (self.executable,)
 
+    def bind_authenticated_attempt(self, snapshot_root, run_cwd):
+        self.executable = snapshot_root / self.executable.name
+        self.run_cwd = run_cwd
+
 
 class Progress:
     def __init__(self):

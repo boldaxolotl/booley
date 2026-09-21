@@ -1352,7 +1352,8 @@ a **getopt argument** (`-…` / `--…`), forwarded verbatim to the sim binary's
 `booley flow sim --target <target>`
 run so each doesn't burn the full per-test wall-clock budget. Naming a skipped
 test explicitly with repeatable exact `--test <name>` still runs it (an explicit override), and an
-all-skip target ignores the list rather than passing with zero tests. For a
+all-skip target fails preflight rather than passing with zero tests or silently
+running configured-skipped work. For a
 different explicit suite, use repeated `--test` options or `--tests-file`; there
 is no per-invocation `--skip` option.
 

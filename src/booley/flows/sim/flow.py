@@ -414,9 +414,41 @@ def _campaign_structured_details(
             "grade": outcome.aggregate_grade,
             "complete": outcome.complete,
             "observation_counts": _campaign_observation_counts(outcome.observations),
+            **_campaign_observation_preview(outcome.observations),
         }
         for outcome in outcomes
     }
+
+
+def _campaign_observation_preview(
+    observations: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    limit = 32
+    preview = [
+        {
+            "test": item["test"],
+            "execution": item["execution"],
+            "functional": item["functional"],
+            "assertions": item["assertions"],
+            "assertion_count": item["assertion_count"],
+            "detail": _structured_json(item["detail"]),
+        }
+        for item in observations[:limit]
+    ]
+    total = len(observations)
+    return {
+        "observations": preview,
+        "observation_total": total,
+        "observations_truncated": total > limit,
+    }
+
+
+def _structured_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _structured_json(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_structured_json(item) for item in value]
+    return value
 
 
 def _coverage_compatibility_targets(

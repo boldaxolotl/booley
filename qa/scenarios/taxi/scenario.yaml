@@ -9358,7 +9358,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 0d3cdc5ab323fbdbd90a2d7d23521a92cd062eecadee0fd646220aa09a080270
+    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
   - path: fixtures/simulation-campaign/campaign.core
     audience: scenario-operator
     sha256: e70d4846204ac4c46a16cda2ee83f385024dae74e4fe1dded35898a7d1501ae0
@@ -9393,7 +9393,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 0d3cdc5ab323fbdbd90a2d7d23521a92cd062eecadee0fd646220aa09a080270
+    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
   - path: fixtures/simulation-campaign/parallel.toml
     audience: scenario-operator
     sha256: 384f99c8ffcb6dcaee4649b7328477df5f68ddaaf26e7fdc3ef30fc08e829ee2
@@ -9418,7 +9418,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 0d3cdc5ab323fbdbd90a2d7d23521a92cd062eecadee0fd646220aa09a080270
+    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
     sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
@@ -9440,7 +9440,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 0d3cdc5ab323fbdbd90a2d7d23521a92cd062eecadee0fd646220aa09a080270
+    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
     sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
@@ -9463,10 +9463,10 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 0d3cdc5ab323fbdbd90a2d7d23521a92cd062eecadee0fd646220aa09a080270
+    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
   - path: fixtures/simulation-campaign/validate_phase5.py
     audience: independent evaluator
-    sha256: 5e5b4a6e3e051789a4e4983593611c6bd0f2cb201266c5beed247fc0e8f6b087
+    sha256: 01677704e173914972699179ea5e7c5b136431dba09076d97cf1e2db8d95a66b
 - id: campaign.mcp-structured-pointers
   phase: ticket2
   action: Exercise exact array selection through MCP and authenticate its bounded pointers and observations.
@@ -9475,9 +9475,9 @@ steps:
     capabilities:
     - SIMULATION-CAMPAIGN
     stimulus: Invoke the Taxi Cocotb Simulation Campaign over MCP with an exact ordered test array, preserving the full request and bounded response bytes alongside every referenced product artifact.
-    expected: Structured output retains nonempty Manifest, summary, and simulation pointers plus independent execution, functional, assertion, assertion-count, and detail fields for every observation; the text card retains the same exit code and the response stays within its declared bound.
+    expected: Structured output retains nonempty Manifest, summary, and simulation pointers, aggregate counts, and a maximum-32 observation preview whose entries preserve independent test, execution, functional, assertion, assertion-count, and bounded detail fields; total/truncated metadata is exact, the text card retains the same exit code, and the response stays within its declared bound.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/MCP.md
-    evidence: Exact MCP request and response bytes/count, displayed text card and exit code, Configured Scenario and Target identities, immutable Simulation Campaign Manifest and summary, simulation compatibility report, Cocotb XML/JSON, terminal result bytes/digests, observation fields, and resolved pointer hashes.
+    evidence: Exact MCP request and response bytes/count, displayed text card and exit code, Configured Scenario and Target identities, immutable Simulation Campaign Manifest and summary, simulation compatibility report, Cocotb XML/JSON, terminal result bytes/digests, preview entries, aggregate counts, total/truncated metadata, and resolved pointer hashes.
     capture: evidence/taxi-10g-mac-port-evolution.campaign.mcp-structured-pointers
   requires:
   - campaign.cocotb-batch-resume
@@ -9485,10 +9485,10 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 0d3cdc5ab323fbdbd90a2d7d23521a92cd062eecadee0fd646220aa09a080270
+    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
   - path: fixtures/simulation-campaign/validate_phase5.py
     audience: independent evaluator
-    sha256: 5e5b4a6e3e051789a4e4983593611c6bd0f2cb201266c5beed247fc0e8f6b087
+    sha256: 01677704e173914972699179ea5e7c5b136431dba09076d97cf1e2db8d95a66b
 - id: final.doctor-plain
   phase: final
   action: Rerun plain Doctor warning-free.

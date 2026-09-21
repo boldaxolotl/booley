@@ -743,3 +743,33 @@ def load_coverage_campaign(
         raise CoverageCampaignStoreError(
             "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
         ) from exc
+
+
+def load_coverage_campaign_bytes(
+    path: Path,
+    raw: bytes,
+    expected_target: DurableTargetIdentity | None = None,
+) -> LoadedCoverageCampaign:
+    """Deep-load a V3 Campaign from the exact manifest bytes already authenticated."""
+    try:
+        if not raw or len(raw) > MAX_MANIFEST_BYTES:
+            raise CoverageCampaignStoreError(
+                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds V3 limit"
+            )
+        document = dict(require_dict(json.loads(raw)))
+        if document.get("$schema") != CAMPAIGN_SCHEMA_V3:
+            raise CoverageCampaignStoreError(
+                "COV_SCHEMA_VERSION_UNSUPPORTED",
+                "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
+            )
+        if expected_target is None:
+            target = require_dict(document.get("target"), field="target")
+            expected_target = DurableTargetIdentity(require_str(target, "identity"))
+        digest = f"{_SHA256_PREFIX}{hashlib.sha256(raw).hexdigest()}"
+        return _load_v3(path, document, expected_target, digest)
+    except (CoverageCampaignValidationError, CoverageCampaignStoreError):
+        raise
+    except (json.JSONDecodeError, UnicodeError, BoundaryError) as exc:
+        raise CoverageCampaignStoreError(
+            "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
+        ) from exc

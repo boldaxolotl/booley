@@ -230,6 +230,10 @@ class SimulationExecutionPort(Protocol):
         """Return the exact authorized simulator image used by subsequent runs."""
         ...
 
+    def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
+        """Bind subsequent runs to one authenticated snapshot and run directory."""
+        ...
+
 
 @dataclass(frozen=True)
 class CoverageBuildEvidence:

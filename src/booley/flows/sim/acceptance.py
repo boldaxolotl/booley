@@ -29,6 +29,7 @@ from booley.flows.sim.campaign_reports import (
 )
 from booley.flows.sim.coverage_reference import (
     ResolvedCoverageCampaign,
+    authenticate_coverage_campaign_owner,
     encode_coverage_campaign_reference,
     resolve_coverage_campaign_reference,
 )
@@ -82,14 +83,8 @@ class SimulationAcceptanceCoordinator:
         )
         transaction_id = getattr(transaction, "transaction_id", None)
         if transaction is None and isinstance(context.recorder, NoAcceptanceRecorder):
-            for change in changes:
-                context.state.set_criterion(
-                    change.key,
-                    change.met,
-                    detail=change.detail,
-                )
-            context.state.save()
-        elif transaction is None:
+            return AcceptanceOutcome(False, None, tuple(changes), "no_recorder")
+        if transaction is None:
             raise AcceptanceRecordingError(
                 "campaign Criteria require a durable acceptance transaction store"
             )
@@ -211,7 +206,7 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
     }
     if outcome.coverage_reference is not None:
         public = outcome.manifest_path.parents[1] / "coverage.json"
-        coverage = resolve_coverage_campaign_reference(public).loaded.campaign
+        coverage = _resolve_facts_coverage(outcome, public).loaded.campaign
         projection.update(
             coverage_campaign="coverage.json",
             coverage_campaign_base="origin_target",
@@ -230,7 +225,7 @@ def _coverage_changes(
     if outcome.coverage_reference is None:
         return []
     public_path = outcome.manifest_path.parents[1] / "coverage.json"
-    resolved = resolve_coverage_campaign_reference(public_path)
+    resolved = _resolve_facts_coverage(outcome, public_path)
     campaign = resolved.loaded.campaign
     name = str(target["name"])
     identity = f"{target['vlnv']}#{name}"
@@ -260,6 +255,36 @@ def _coverage_changes(
             )
         )
     return changes
+
+
+def _resolve_facts_coverage(
+    outcome: CampaignOutcome, public_path: Path
+) -> ResolvedCoverageCampaign:
+    facts = outcome.acceptance_facts.document
+    bound = facts["coverage_reference"]
+    if not isinstance(bound, Mapping) or not isinstance(outcome.coverage_reference, Mapping):
+        raise AcceptanceRecordingError("coverage acceptance facts omit their public reference")
+    document = bound["document"]
+    evidence = bound["reference"]
+    if not isinstance(document, Mapping) or not isinstance(evidence, Mapping):
+        raise AcceptanceRecordingError("coverage acceptance reference is malformed")
+    resolved = resolve_coverage_campaign_reference(public_path)
+    raw = encode_coverage_campaign_reference(resolved.reference)
+    invocation = outcome.manifest_path.parents[3]
+    expected_path = public_path.relative_to(invocation).as_posix()
+    if (
+        resolved.reference.document != document
+        or outcome.coverage_reference != document
+        or evidence["path"] != expected_path
+        or evidence["bytes"] != len(raw)
+        or evidence["sha256"] != "sha256:" + hashlib.sha256(raw).hexdigest()
+        or evidence["owner"] != facts["campaign_id"]
+    ):
+        raise AcceptanceRecordingError(
+            "public Coverage Campaign reference disagrees with Acceptance Facts"
+        )
+    authenticate_coverage_campaign_owner(resolved)
+    return resolved
 
 
 def _coverage_detail(

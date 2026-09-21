@@ -158,7 +158,7 @@ def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch)
     assert set(tmp_path.rglob("*")) == before
 
 
-def test_ticket_with_only_coverage_criterion_is_admitted_and_records_evidence(
+def test_interactive_coverage_criterion_does_not_mutate_or_save_state(
     tmp_path, monkeypatch
 ):
     from booley.criteria.state import CriterionEntry, DevelopmentState
@@ -176,13 +176,22 @@ def test_ticket_with_only_coverage_criterion_is_admitted_and_records_evidence(
         )
     }
     state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(tmp_path / "state.json"))
+    state_path = tmp_path / "state.json"
+    before_bytes = state_path.read_bytes()
+    before_mtime = state_path.stat().st_mtime_ns
+    save_calls: list[Path | None] = []
+    monkeypatch.setattr(
+        DevelopmentState, "save", lambda current: save_calls.append(current._file_path)
+    )
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
     result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
         SimRequest(target="sim_0", work_dir=tmp_path, coverage=True)
     )
     assert result.exit_code == 0, result.outcome
-    assert DevelopmentState.load(tmp_path / "state.json").criteria["coverage_sim_0"].met is True
+    assert save_calls == []
+    assert state_path.read_bytes() == before_bytes
+    assert state_path.stat().st_mtime_ns == before_mtime
 
 
 def test_public_cli_aliases_select_same_request():
@@ -245,9 +254,7 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
     assert "coverage_campaign" not in target
 
 
-def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import prune_invocation
-
+def _interrupt_coverage_invocation(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     revision = "a" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
@@ -268,6 +275,13 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
     with pytest.raises(KeyboardInterrupt):
         SimulateFlow(coverage_execution=lambda handle, options: Interrupted()).execute(request)
+    return reports, request
+
+
+def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import prune_invocation
+
+    reports, request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
     original_path = next(
         (reports / "sim/1/targets/sim_0/campaign").glob(
             "work-items/*/attempts/*/coverage-campaign/native/raw/001-reset.dat"
@@ -307,20 +321,7 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     prune_invocation(reports, 1)
 
 
-@pytest.mark.parametrize(
-    ("boundary", "published", "reruns"),
-    [
-        ("before:coverage_campaign", False, True),
-        ("after:coverage_campaign", False, True),
-        ("before:coverage_reference", False, False),
-        ("after:coverage_reference", True, False),
-    ],
-)
-def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
-    tmp_path, monkeypatch, boundary, published, reruns
-):
-    from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
-
+def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     revision = "b" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
@@ -339,6 +340,9 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
             runs.append(request.test)
             return super().run(request)
 
+    def execution_factory(_handle, _options):
+        return CountedExecution()
+
     armed = True
 
     def checkpoint(actual):
@@ -351,17 +355,37 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
         target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports
     )
     interrupted = SimulateFlow(
-        coverage_execution=lambda handle, options: CountedExecution(),
+        coverage_execution=execution_factory,
         campaign_publication_checkpoint=checkpoint,
     ).execute(request)
     assert interrupted.exit_code == 2
     public = reports / "sim/1/targets/sim_0/coverage.json"
+    return reports, runs, public, execution_factory
+
+
+@pytest.mark.parametrize(
+    ("boundary", "published", "reruns"),
+    [
+        ("before:coverage_campaign", False, True),
+        ("after:coverage_campaign", False, True),
+        ("before:coverage_reference", False, False),
+        ("after:coverage_reference", True, False),
+    ],
+)
+def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
+    tmp_path, monkeypatch, boundary, published, reruns
+):
+    from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
+
+    reports, runs, public, execution_factory = _crash_coverage_publication(
+        tmp_path, monkeypatch, boundary
+    )
     assert public.exists() is published
     completed_runs = tuple(runs)
     manifest = public.parent / "campaign/manifest.json"
 
     resumed = SimulateFlow(
-        coverage_execution=lambda handle, options: CountedExecution()
+        coverage_execution=execution_factory
     ).execute(
         SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
     )
@@ -491,7 +515,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
         ("pass", 2, True, "blocked", 2),
     ],
 )
-def test_ticket_public_collection_keeps_durable_coverage_and_simulation_independent(
+def test_interactive_collection_keeps_criteria_unchanged_across_verdicts(
     tmp_path, monkeypatch, verdict, hits, missing, evaluation, exit_code
 ):
     from booley.criteria.state import CriterionEntry, DevelopmentState
@@ -511,6 +535,7 @@ def test_ticket_public_collection_keeps_durable_coverage_and_simulation_independ
         "sim_pass_sim_0": CriterionEntry(params={"target": "sim_0"}),
     }
     state.save()
+    before = state_path.read_bytes()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
     result = SimulateFlow(
@@ -519,14 +544,10 @@ def test_ticket_public_collection_keeps_durable_coverage_and_simulation_independ
         )
     ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))
     assert result.exit_code == exit_code
-    saved = DevelopmentState.load(state_path)
-    coverage = saved.criteria["coverage_sim_0"]
-    relative = Path(coverage.detail["coverage_campaign"])
-    assert not relative.is_absolute()
-    assert coverage.detail["coverage_campaign_reference"]["path"] == relative.as_posix()
-    document = resolve_coverage_campaign_reference(
-        tmp_path / "flow-reports" / relative
-    ).loaded.campaign
+    campaign_path = Path(result.outcome.detail["campaigns"]["sim_0"]["coverage"])
+    document = resolve_coverage_campaign_reference(campaign_path).loaded.campaign
     assert document.evaluation["status"] == evaluation
-    assert coverage.met is (evaluation == "pass")
-    assert saved.criteria["sim_pass_sim_0"].met is (verdict == "pass")
+    assert state_path.read_bytes() == before
+    saved = DevelopmentState.load(state_path)
+    assert saved.criteria["coverage_sim_0"].met is False
+    assert saved.criteria["sim_pass_sim_0"].met is False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -101,6 +102,19 @@ def _mcp_response(tmp_path: Path) -> Path:
                                     "coverage": None,
                                     "grade": "pass",
                                     "complete": True,
+                                    "observations": [
+                                        {
+                                            "test": name,
+                                            "execution": "completed",
+                                            "functional": "pass",
+                                            "assertions": "clean",
+                                            "assertion_count": 0,
+                                            "detail": {"text": name},
+                                        }
+                                        for name in ("alpha", "beta")
+                                    ],
+                                    "observation_total": 2,
+                                    "observations_truncated": False,
                                     "observation_counts": {
                                         "execution": {"completed": 2},
                                         "functional": {"pass": 2},
@@ -126,6 +140,45 @@ def test_taxi_phase5_validator_checks_batch_retry_and_mcp_bound(tmp_path: Path) 
     module.validate_mcp_response(response, response.stat().st_size)
     with pytest.raises(ValueError, match="declared bound"):
         module.validate_mcp_response(response, response.stat().st_size - 1)
+    document = json.loads(response.read_text())
+    campaign = document["structuredContent"]["reports"][0]["detail"]["campaigns"]["taxi"]
+    campaign["observations"] *= 17
+    campaign["observation_total"] = 34
+    campaign["observations_truncated"] = True
+    for counts in campaign["observation_counts"].values():
+        next_value = next(iter(counts))
+        counts[next_value] = 34
+    _write(response, document)
+    with pytest.raises(ValueError, match="preview length"):
+        module.validate_mcp_response(response, response.stat().st_size)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda campaign: campaign.update(observation_total=3), "preview length"),
+        (lambda campaign: campaign.update(observations_truncated=True), "truncation flag"),
+        (lambda campaign: campaign["observations"][0].pop("detail"), "fields differ"),
+        (
+            lambda campaign: campaign["observation_counts"]["functional"].update(fail=1),
+            "counts differ from preview",
+        ),
+    ],
+)
+def test_taxi_mcp_validator_rejects_inconsistent_observation_preview(
+    tmp_path: Path, mutation: Callable[[dict[str, object]], object], message: str
+) -> None:
+    module = _module(
+        ROOT / "qa/scenarios/taxi/fixtures/simulation-campaign/validate_phase5.py",
+        "taxi_phase5_mutation",
+    )
+    response = _mcp_response(tmp_path)
+    document = json.loads(response.read_text())
+    campaign = document["structuredContent"]["reports"][0]["detail"]["campaigns"]["taxi"]
+    mutation(campaign)
+    _write(response, document)
+    with pytest.raises(ValueError, match=message):
+        module.validate_mcp_response(response, response.stat().st_size)
 
 
 def _coverage_attempt_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:

@@ -591,7 +591,7 @@ class CampaignStore:
                 attempts,
                 decoded_attempts,
             )
-            _validate_result_selection(work_item, result)
+            _validate_result_selection(work_item, result, attempts[-1])
             return WorkItemRecovery(work_item_id, "complete", len(attempts), result)
         state = "interrupted" if attempts else "pending"
         return WorkItemRecovery(work_item_id, state, len(attempts), None)
@@ -717,7 +717,7 @@ def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
 
 
 def _validate_result_selection(
-    work_item: Mapping[str, object], result: SimulationResult
+    work_item: Mapping[str, object], result: SimulationResult, attempt_directory: Path
 ) -> None:
     """Bind terminal observation order and transport evidence to the manifest."""
     selection = cast(Mapping[str, object], work_item["selection"])
@@ -754,6 +754,78 @@ def _validate_result_selection(
             raise SimulationCampaignIntegrityError(
                 f"{kind} result lacks exact authenticated transport evidence"
             )
+        if kind == "cocotb_batch":
+            _validate_cocotb_transport(attempt_directory, matching[0], observations)
+
+
+def _validate_cocotb_transport(
+    attempt_directory: Path,
+    reference: Mapping[str, object],
+    observations: tuple[Mapping[str, object], ...],
+) -> None:
+    path = attempt_directory / cast(str, reference["path"])
+    raw = _read_regular(path, limit=RECORD_MAX_BYTES)
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SimulationCampaignIntegrityError("Cocotb transport is invalid JSON") from exc
+    if canonical_json_bytes(document) != raw or not isinstance(document, dict):
+        raise SimulationCampaignIntegrityError("Cocotb transport is not canonical JSON")
+    if set(document) != {
+        "$schema",
+        "source_bytes",
+        "source_sha256",
+        "source_observations",
+        "observations",
+    }:
+        raise SimulationCampaignIntegrityError("Cocotb transport fields are invalid")
+    transported = document["observations"]
+    if (
+        document["$schema"] != "booley.cocotb-campaign-transport/v1"
+        or not isinstance(document["source_bytes"], int)
+        or document["source_bytes"] < 1
+        or not isinstance(document["source_sha256"], str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", document["source_sha256"])
+        or transported != [dict(item) for item in observations]
+    ):
+        raise SimulationCampaignIntegrityError(
+            "Cocotb transport observations disagree with Simulation Result"
+        )
+    _validate_cocotb_source(document["source_observations"], observations)
+
+
+def _validate_cocotb_source(
+    source: object, observations: tuple[Mapping[str, object], ...]
+) -> None:
+    if not isinstance(source, list) or len(source) != len(observations):
+        raise SimulationCampaignIntegrityError("Cocotb source transport count disagrees")
+    for transported, observed in zip(source, observations, strict=True):
+        if not isinstance(transported, dict) or set(transported) != {
+            "test", "verdict", "detail"
+        }:
+            raise SimulationCampaignIntegrityError("Cocotb source transport is invalid")
+        verdict_matches = _cocotb_source_verdict_matches(transported, observed)
+        detail = cast(Mapping[str, object], observed["detail"])["reason"]
+        if (
+            transported["test"] != observed["test"]
+            or not verdict_matches
+            or (transported["detail"] and transported["detail"] != detail)
+        ):
+            raise SimulationCampaignIntegrityError("Cocotb source transport disagrees")
+
+
+def _cocotb_source_verdict_matches(
+    transported: Mapping[str, object], observed: Mapping[str, object]
+) -> bool:
+    verdict = transported["verdict"]
+    functional = observed["functional"]
+    if verdict == functional:
+        return True
+    if observed["execution"] == "timeout":
+        return verdict == "fail"
+    if verdict != "pass":
+        return False
+    return observed["assertions"] == "dirty" or functional == "inconclusive"
 
 
 def _stream_identity(path: Path) -> tuple[int, str]:
