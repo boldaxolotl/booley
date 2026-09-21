@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from booley.flows.sim.build_session import project_compile_surface
 from booley.flows.sim.campaign.bundle import (
@@ -87,7 +87,21 @@ class _SharedReady:
     directory: Path
     result: BundleBuildResult
     bundle: SimulatorBundle
-    compiled_group: object | None
+    build_execution: Mapping[str, object]
+    compiled_group: _OrdinaryGroup | None
+
+
+class _OrdinaryGroup(Protocol):
+    build_root: Path
+    artifact_paths: tuple[Path, ...]
+
+    def planning_disclosure(self) -> dict[str, object]: ...
+    def compile(self) -> object: ...
+    def finish_build_failure(self) -> SimulationTargetOutcome: ...
+    def build_recovery_document(self) -> dict[str, object]: ...
+    def reuse_compilation_from(self, source: object) -> None: ...
+    def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None: ...
+    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome: ...
 
 
 class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
@@ -144,24 +158,15 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         failed = self._shared_failure.get(key)
         if failed is not None:
             directory, result, outcome = failed
-            return _blocked_result(
-                request, directory, result, outcome, time.monotonic() - started
-            )
-        ready = self._recover_shared(request, key)
-        if ready is None:
-            recovered_failure = request.store.shared_design_failure(key[1], key[2])
-            if recovered_failure is not None:
-                directory, result = recovered_failure
-                outcome = _recovered_build_failure(handle, names, result)
-                self._shared_failure[key] = (directory, result, outcome)
-                return _blocked_result(
-                    request, directory, result, outcome, time.monotonic() - started
-                )
+            return _blocked_result(request, directory, result, outcome, time.monotonic() - started)
+        ready = self._recover_shared(request, key, handle, names)
+        recovered_failure = self._shared_failure.get(key)
+        if recovered_failure is not None:
+            directory, result, outcome = recovered_failure
+            return _blocked_result(request, directory, result, outcome, time.monotonic() - started)
         built_now = False
         if ready is None:
-            built = self._build_shared(
-                request, key, handle, names, execution, workload, started
-            )
+            built = self._build_shared(request, key, handle, names, execution, workload, started)
             if isinstance(built, SimulationResult):
                 return built
             ready = built
@@ -189,15 +194,25 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                 ),
             )
 
-    def _recover_shared(self, request, key) -> _SharedReady | None:
+    def _recover_shared(self, request, key, handle, names) -> _SharedReady | None:
         ready = self._shared_ready.get(key)
         if ready is not None:
             return ready
-        recovered = request.store.ready_shared_build(key[1], key[2])
+        recovered = request.store.recover_shared_build(key[1], key[2])
         if recovered is None:
             return None
-        directory, result, bundle = recovered
-        ready = _SharedReady(directory, result, bundle, None)
+        if recovered.result.document["state"] == "design_failure":
+            outcome = _recovered_build_failure(handle, names, recovered.result)
+            self._shared_failure[key] = (recovered.directory, recovered.result, outcome)
+            return None
+        assert recovered.bundle is not None and recovered.build_execution is not None
+        ready = _SharedReady(
+            recovered.directory,
+            recovered.result,
+            recovered.bundle,
+            recovered.build_execution,
+            None,
+        )
         self._shared_ready[key] = ready
         return ready
 
@@ -214,9 +229,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             _authenticate_planning_disclosure(request, group)
             build = group.compile()
             if not build.passed:
-                return self._shared_build_failure(
-                    request, key, directory, attempt, group, started
-                )
+                return self._shared_build_failure(request, key, directory, attempt, group, started)
+            build_execution = group.build_recovery_document()
+            execution_ref = _capture_build_execution(directory, build_id, build_execution)
             self._publication_checkpoint("before:bundle_evidence")
             artifacts = _capture_private_image(
                 group.artifact_paths,
@@ -227,10 +242,15 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             self._publication_checkpoint("after:bundle_evidence")
         self._publication_checkpoint("before:build_result")
         result, bundle = _publish_ready_shared_build_result(
-            request, directory, attempt, artifacts, time.monotonic() - started
+            request,
+            directory,
+            attempt,
+            artifacts,
+            execution_ref,
+            time.monotonic() - started,
         )
         self._publication_checkpoint("after:build_result")
-        ready = _SharedReady(directory, result, bundle, group)
+        ready = _SharedReady(directory, result, bundle, build_execution, group)
         self._shared_ready[key] = ready
         return ready
 
@@ -253,23 +273,16 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                 outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
             )
         self._shared_failure[key] = (directory, result, outcome)
-        return _blocked_result(
-            request, directory, result, outcome, time.monotonic() - started
-        )
+        return _blocked_result(request, directory, result, outcome, time.monotonic() - started)
 
     @staticmethod
     def _prepare_shared_launch(request, ready, execution, handle, names):
         with execution.ordinary_group(handle, names) as group:
             _authenticate_planning_disclosure(request, group)
             if ready.compiled_group is None:
-                bind = getattr(group, "bind_authenticated_bundle", None)
-                if bind is not None:
-                    bind()
+                group.bind_authenticated_bundle(ready.build_execution)
             else:
-                reuse = getattr(group, "reuse_compilation_from", None)
-                if reuse is None:
-                    return ready.compiled_group
-                reuse(ready.compiled_group)
+                group.reuse_compilation_from(ready.compiled_group)
         return group
 
     def _execute_group(
@@ -535,9 +548,7 @@ def _authenticate_planning_disclosure(request: WorkExecutionRequest, group: obje
 
 def _sharing_eligible(request: WorkExecutionRequest) -> bool:
     variant_id = request.work_item["build_variant_id"]
-    variants = cast(
-        tuple[Mapping[str, object], ...], request.manifest.document["build_variants"]
-    )
+    variants = cast(tuple[Mapping[str, object], ...], request.manifest.document["build_variants"])
     variant = next(item for item in variants if item["build_variant_id"] == variant_id)
     return cast(bool, variant["sharing_eligible"])
 
@@ -883,43 +894,71 @@ def _publish_ready_shared_build_result(
     build_directory: Path,
     build_attempt: BundleBuildAttempt,
     artifacts: list[dict[str, object]],
+    execution_ref: dict[str, object],
     elapsed: float,
 ) -> tuple[BundleBuildResult, SimulatorBundle]:
     build_id = cast(str, build_attempt.document["build_attempt_id"])
     bundle_id = str(uuid.uuid4())
-    inventory = _sha_value(artifacts)
-    snapshot_inventory = _sha_value(
-        [item for item in artifacts if item["kind"] != "runtime_input"]
-    )
-    bundle = decode_simulator_bundle(
-        canonical_json_bytes(
-            {
-                "$schema": "booley.simulator-bundle/v1",
-                **_common(request, include_work_item=False),
-                "build_variant_id": request.work_item["build_variant_id"],
-                "build_attempt_id": build_id,
-                "bundle_id": bundle_id,
-                "sharing": "shared_variant",
-                "owner": {"work_item_id": None, "simulation_attempt_id": None},
-                "tool_provenance": build_attempt.document["tool_provenance"],
-                "created_at": _now(),
-                "artifacts": artifacts,
-                "inventory_sha256": inventory,
-                "snapshot_inventory_sha256": snapshot_inventory,
-            }
-        )
-    )
+    bundle = _shared_bundle(request, build_attempt, build_id, bundle_id, artifacts)
     bundle_path = build_directory / "evidence" / "bundle.json"
     _create_immutable(bundle_path, encode_simulator_bundle(bundle))
     bundle_raw = encode_simulator_bundle(bundle)
+    document = _shared_ready_result_document(
+        request,
+        build_directory,
+        build_attempt,
+        bundle_path,
+        bundle_raw,
+        bundle_id,
+        artifacts,
+        execution_ref,
+        elapsed,
+    )
+    result = decode_bundle_build_result(canonical_json_bytes(document))
+    request.store.publish_build_result(build_directory, result)
+    return result, bundle
+
+
+def _shared_bundle(request, attempt, build_id, bundle_id, artifacts) -> SimulatorBundle:
     document = {
+        "$schema": "booley.simulator-bundle/v1",
+        **_common(request, include_work_item=False),
+        "build_variant_id": request.work_item["build_variant_id"],
+        "build_attempt_id": build_id,
+        "bundle_id": bundle_id,
+        "sharing": "shared_variant",
+        "owner": {"work_item_id": None, "simulation_attempt_id": None},
+        "tool_provenance": attempt.document["tool_provenance"],
+        "created_at": _now(),
+        "artifacts": artifacts,
+        "inventory_sha256": _sha_value(artifacts),
+        "snapshot_inventory_sha256": _sha_value(
+            [item for item in artifacts if item["kind"] != "runtime_input"]
+        ),
+    }
+    return decode_simulator_bundle(canonical_json_bytes(document))
+
+
+def _shared_ready_result_document(
+    request,
+    directory,
+    attempt,
+    bundle_path,
+    bundle_raw,
+    bundle_id,
+    artifacts,
+    execution_ref,
+    elapsed,
+):
+    build_id = attempt.document["build_attempt_id"]
+    return {
         "$schema": "booley.bundle-build-result/v1",
         **_common(request, include_work_item=False),
         "build_variant_id": request.work_item["build_variant_id"],
         "build_attempt": _record_ref(
-            build_directory / "build-attempt.json",
-            build_directory,
-            encode_bundle_build_attempt(build_attempt),
+            directory / "build-attempt.json",
+            directory,
+            encode_bundle_build_attempt(attempt),
             "bundle_build_attempt",
             build_id,
         )
@@ -930,18 +969,30 @@ def _publish_ready_shared_build_result(
         "elapsed_seconds": elapsed,
         "bundle": {
             "bundle_id": bundle_id,
-            "manifest_path": bundle_path.relative_to(build_directory).as_posix(),
+            "manifest_path": bundle_path.relative_to(directory).as_posix(),
             "manifest_bytes": len(bundle_raw),
             "manifest_sha256": _sha_evidence_bytes(bundle_raw),
             "sharing": "shared_variant",
             "artifacts": artifacts,
         },
         "observation": None,
-        "evidence": [],
+        "evidence": [execution_ref],
     }
-    result = decode_bundle_build_result(canonical_json_bytes(document))
-    request.store.publish_build_result(build_directory, result)
-    return result, bundle
+
+
+def _capture_build_execution(
+    directory: Path, build_attempt_id: str, document: Mapping[str, object]
+) -> dict[str, object]:
+    raw = canonical_json_bytes(document)
+    path = directory / "evidence" / "build-execution.json"
+    _create_immutable(path, raw)
+    return _record_ref(
+        path,
+        directory,
+        raw,
+        "simulation_build_execution",
+        build_attempt_id,
+    )
 
 
 def _ready_build_result(

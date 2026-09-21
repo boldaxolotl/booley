@@ -5849,9 +5849,9 @@ steps:
     - SIMULATION-CAMPAIGN
     - SIMULATION-FLOW
     stimulus: Run `sim_campaign` with exact repeated selection `--test tail --test quick` and an explicit run-owned report root.
-    expected: The immutable manifest, work-item directories, terminal results, summary observations, and compatibility report preserve `tail`, then `quick`; catalog order never replaces request order.
+    expected: The immutable Simulation Campaign Manifest, work-item directories, terminal results, summary observations, and compatibility report preserve `tail`, then `quick`; catalog order never replaces request order.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
-    evidence: Exact argv and exit, fixture/Target/source/test identities and digests, printed manifest path, manifest and result bytes/digests, ordered attempt listing, summary, `simulation.json`, and raw Icarus logs.
+    evidence: Exact argv and exit, fixture/Target/source/test identities and digests, printed Simulation Campaign Manifest path, manifest and result bytes/digests, ordered attempt listing, summary, `simulation.json`, and raw Icarus logs.
     capture: evidence/picorv32-published-demo-continuity.campaign.exact-selection
   requires:
   - inputs.project-pin
@@ -5860,7 +5860,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 75e17841e4dcca4bf86cdb03fb83b7679b4a4d8f8e6ccf32e6d93709dc6387a4
+    sha256: 995d0f608d1efc32f3f8b4429d893ecabe0734b274ae477f486de04822d1971a
   - path: fixtures/simulation-campaign/campaign.core
     audience: scenario-operator
     sha256: 7e590fca197a0bd6261bc9c5eba509bbb16333bce57625c32749ef7c3da92f42
@@ -5875,7 +5875,7 @@ steps:
     sha256: 651b0706648c23a47167adfeb3b78750ec004b4c3b32730f3a237fd287aa1f7b
   - path: fixtures/simulation-campaign/validate_campaign.py
     audience: independent evaluator
-    sha256: 4d6472646a882fab64d5927843c51e2c9626c6cb09ad91f888f7f3b2f77118b5
+    sha256: 7101485d8be2f351535ce8865ff9819e54e55e241735c8e63028e3105926b525
 - id: campaign.tests-file-normalization
   phase: ticket2
   action: Select the same exact tests through the owned comments-and-blanks file.
@@ -5883,7 +5883,7 @@ steps:
   - id: campaign.tests-file-normalization
     capabilities:
     - SIMULATION-CAMPAIGN
-    stimulus: Run a new `sim_campaign` with `--tests-file` naming the owned `reverse-tests.txt` and compare it with the repeated-`--test` campaign.
+    stimulus: Run a new `sim_campaign` Simulation Campaign with `--tests-file` naming the owned `reverse-tests.txt` and compare it with the repeated-`--test` Simulation Campaign.
     expected: Comments and blank lines disappear; the normalized selection and ordered work-item test names are exactly `tail`, then `quick`.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
     evidence: Tests-file bytes/digest, exact argv and exit, both manifest paths/digests, decoded ordered selections, work-item/result listings, summaries, compatibility reports, and Icarus logs.
@@ -5893,7 +5893,7 @@ steps:
   timeout_minutes: 10
 - id: campaign.duplicate-selection-rejection
   phase: ticket2
-  action: Prove duplicate exact names fail before durable campaign creation or EDA execution.
+  action: Prove duplicate exact names fail before durable Simulation Campaign creation or EDA execution.
   checks:
   - id: campaign.duplicate-selection-rejection
     capabilities:
@@ -5908,13 +5908,13 @@ steps:
   timeout_minutes: 5
 - id: campaign.manifest-authority
   phase: ticket2
-  action: Inspect the manifest as immutable authority and authenticate its projections.
+  action: Inspect the Simulation Campaign Manifest as immutable authority and authenticate its projections.
   checks:
   - id: campaign.manifest-authority
     capabilities:
     - SIMULATION-CAMPAIGN
-    stimulus: Preserve manifest bytes before the first work item completes and after campaign completion; decode its strict identity, suite, workload, and ordered work items and run the read-only validator.
-    expected: Manifest bytes never change; schema, exact Target, Required Simulation Suite, workload fingerprint and ordered items are complete; `summary.json` and `simulation.json` authenticate and point to that same manifest.
+    stimulus: Preserve Simulation Campaign Manifest bytes before the first work item completes and after Simulation Campaign completion; decode its strict identity, suite, workload, and ordered work items and run the read-only validator.
+    expected: Simulation Campaign Manifest bytes never change; schema, exact Target, Required Simulation Suite, workload fingerprint and ordered items are complete; `summary.json` and `simulation.json` authenticate and point to that same manifest.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
     evidence: Before/after manifest bytes/digests, validator output, strict decoded fields, evidence-reference digest checks, summary and compatibility projection with exact manifest backlinks.
     capture: evidence/picorv32-published-demo-continuity.campaign.manifest-authority
@@ -5929,7 +5929,7 @@ steps:
     capabilities:
     - SIMULATION-CAMPAIGN
     stimulus: Run `quick`, `slow`, `tail`; after `quick/result.json` commits and the `slow` attempt starts, externally terminate the owning Booley process, prove process-tree death, then invoke only `--resume-from` with the printed exact manifest path.
-    expected: The completed `quick` result bytes and attempt count remain unchanged; the interrupted `slow` item receives a new attempt, pending `tail` runs afterward, and the resumed campaign completes in original manifest order.
+    expected: The completed `quick` result bytes and attempt count remain unchanged; the interrupted `slow` item receives a new attempt, pending `tail` runs afterward, and the resumed Simulation Campaign completes in original manifest order.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
     evidence: Exact initial/resume argv and exits, termination/recovery timeline, process evidence, manifest/result digests, before/after attempt-directory listings, regenerated summary, both compatibility reports, and raw Icarus logs.
     capture: evidence/picorv32-published-demo-continuity.campaign.interrupted-resume
@@ -5938,12 +5938,12 @@ steps:
   timeout_minutes: 15
 - id: campaign.workload-mismatch
   phase: ticket2
-  action: Refuse source and Required Simulation Suite drift before resuming an interrupted campaign.
+  action: Refuse source and Required Simulation Suite drift before resuming an interrupted Simulation Campaign.
   checks:
   - id: campaign.workload-mismatch
     capabilities:
     - SIMULATION-CAMPAIGN
-    stimulus: Against a preserved interrupted campaign, separately change one owned `campaign_tb.sv` byte and one copied `tests.toml` declaration; attempt exact resume after each change, then restore exact bytes and resume.
+    stimulus: Against a preserved interrupted Simulation Campaign, separately change one owned `campaign_tb.sv` byte and one copied `tests.toml` declaration; attempt exact resume after each change, then restore exact bytes and resume.
     expected: Each drift exits 2 with the precise named mismatch and creates no attempt; byte-exact restoration makes the same manifest resumable and it completes successfully.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
     evidence: Before/mutated/restored source and catalog bytes/digests, exact resume argv/exits/diagnostics, attempt listings proving no mutation on rejection, final results/summary and compatibility report.

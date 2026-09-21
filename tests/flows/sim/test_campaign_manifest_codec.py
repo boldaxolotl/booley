@@ -47,6 +47,36 @@ def _sha(value: object) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def _build_execution() -> dict[str, object]:
+    return {
+        "$schema": "booley.simulation-build-execution/v1",
+        "process": {
+            "returncode": 0,
+            "stdout": "build\n",
+            "stderr": "",
+            "timed_out": False,
+            "duration_s": 0.1,
+            "dispatched_unix": 1.0,
+            "peak_rss_mb": None,
+            "oom_kill_delta": 0,
+        },
+        "build": {
+            "ran": True,
+            "verdict": "pass",
+            "failure_kind": None,
+            "elapsed_s": 0.1,
+            "output": "build\n",
+            "returncode": 0,
+            "timed_out": False,
+            "peak_rss_mb": None,
+            "oom_kill_delta": 0,
+            "terminal_record": True,
+            "reason": "",
+            "cache_decision": "",
+        },
+    }
+
+
 def _manifest() -> dict[str, object]:
     target = {
         "vlnv": "acme:lib:dut:1",
@@ -525,6 +555,15 @@ def test_serial_executor_authenticates_planned_generator_closure(
                 "sha256:" + hashlib.sha256(b"b").hexdigest()
             )
             return changed
+
+        def build_recovery_document(self):
+            return _build_execution()
+
+        def reuse_compilation_from(self, _source):
+            return None
+
+        def bind_authenticated_bundle(self, evidence):
+            assert evidence == _build_execution()
 
         def launch_snapshot(self, snapshot_root, run_cwd):
             assert snapshot_root.is_dir()

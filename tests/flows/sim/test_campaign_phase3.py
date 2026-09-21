@@ -29,6 +29,36 @@ def _admission() -> AdmissionContext:
     return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
 
 
+def _build_execution() -> dict[str, object]:
+    return {
+        "$schema": "booley.simulation-build-execution/v1",
+        "process": {
+            "returncode": 0,
+            "stdout": "compile\n",
+            "stderr": "",
+            "timed_out": False,
+            "duration_s": 0.1,
+            "dispatched_unix": 1.0,
+            "peak_rss_mb": None,
+            "oom_kill_delta": 0,
+        },
+        "build": {
+            "ran": True,
+            "verdict": "pass",
+            "failure_kind": None,
+            "elapsed_s": 0.1,
+            "output": "compile\n",
+            "returncode": 0,
+            "timed_out": False,
+            "peak_rss_mb": None,
+            "oom_kill_delta": 0,
+            "terminal_record": True,
+            "reason": "",
+            "cache_decision": "",
+        },
+    }
+
+
 def _two_item_manifest() -> object:
     document = _manifest()
     document.pop("fingerprints")
@@ -44,13 +74,11 @@ def _two_item_manifest() -> object:
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
         {
             "declaration_id": "sha256:"
-            + hashlib.sha256(
-                canonical_json_bytes(runtime_identity).rstrip(b"\n")
-            ).hexdigest(),
+            + hashlib.sha256(canonical_json_bytes(runtime_identity).rstrip(b"\n")).hexdigest(),
             **runtime_identity,
         }
     ]
-    suite_raw = b'[test.alpha]\n[test.beta]\n'
+    suite_raw = b"[test.alpha]\n[test.beta]\n"
     document["required_suite"] = {
         "names": ["alpha", "beta"],
         "default_invocation": False,
@@ -80,8 +108,7 @@ def _two_item_manifest() -> object:
         fingerprint = _sha(identity)
         items.append(
             {
-                "work_item_id": f"item:{ordinal:04d}:"
-                + fingerprint.removeprefix("sha256:")[:16],
+                "work_item_id": f"item:{ordinal:04d}:" + fingerprint.removeprefix("sha256:")[:16],
                 **identity,
                 "fingerprint_sha256": fingerprint,
             }
@@ -135,6 +162,12 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
         def reuse_compilation_from(self, source) -> None:
             assert source.names == ("alpha",)
             self.reused = True
+
+        def build_recovery_document(self):
+            return _build_execution()
+
+        def bind_authenticated_bundle(self, evidence) -> None:
+            assert evidence == _build_execution()
 
         def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
             name = self.names[0]
@@ -194,6 +227,4 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
     assert {item["build_result"]["sha256"] for item in result_documents} == {
         "sha256:" + hashlib.sha256(build_results[0].read_bytes()).hexdigest()
     }
-    assert {item["build_result"]["sharing"] for item in result_documents} == {
-        "shared_variant"
-    }
+    assert {item["build_result"]["sharing"] for item in result_documents} == {"shared_variant"}

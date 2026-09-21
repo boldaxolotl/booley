@@ -54,7 +54,10 @@ def validate_backlinks(
     summary, _summary_raw = _load(summary_path)
     projection, _projection_raw = _load(projection_path)
     digest = _manifest_digest(manifest_raw)
-    _need(summary.get("campaign_id") == manifest.get("campaign_id"), "summary campaign differs")
+    _need(
+        summary.get("campaign_id") == manifest.get("campaign_id"),
+        "summary identifies a different Simulation Campaign",
+    )
     _need(summary.get("manifest_sha256") == digest, "summary manifest digest differs")
     _need(
         Path(str(projection.get("campaign_manifest", ""))).resolve()
@@ -155,7 +158,7 @@ def main() -> None:
     try:
         result = validate(args.manifest, args.expected_test)
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        parser.exit(2, f"campaign evidence invalid: {error}\n")
+        parser.exit(2, f"Simulation Campaign evidence invalid: {error}\n")
     print(json.dumps(result, sort_keys=True))
 
 

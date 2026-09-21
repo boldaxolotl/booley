@@ -74,8 +74,7 @@ def _manifest_for(names: tuple[str, ...], *, access: str = "immutable"):
         fingerprint = _sha(identity)
         items.append(
             {
-                "work_item_id": f"item:{ordinal:04d}:"
-                + fingerprint.removeprefix("sha256:")[:16],
+                "work_item_id": f"item:{ordinal:04d}:" + fingerprint.removeprefix("sha256:")[:16],
                 **identity,
                 "fingerprint_sha256": fingerprint,
             }
@@ -120,7 +119,11 @@ class _Group:
     def reuse_compilation_from(self, _source: object) -> None:
         self._counters["memory_reuse"] += 1
 
-    def bind_authenticated_bundle(self) -> None:
+    def build_recovery_document(self):
+        return _build_execution()
+
+    def bind_authenticated_bundle(self, evidence) -> None:
+        assert evidence == _build_execution()
         self._counters["durable_reuse"] += 1
 
     def launch_snapshot(self, snapshot_root: Path, _run_cwd: Path):
@@ -141,6 +144,36 @@ class _Group:
             elapsed_s=0.01,
             tests=(test,),
         )
+
+
+def _build_execution() -> dict[str, object]:
+    return {
+        "$schema": "booley.simulation-build-execution/v1",
+        "process": {
+            "returncode": 0,
+            "stdout": "compile\n",
+            "stderr": "",
+            "timed_out": False,
+            "duration_s": 0.1,
+            "dispatched_unix": 1.0,
+            "peak_rss_mb": None,
+            "oom_kill_delta": 0,
+        },
+        "build": {
+            "ran": True,
+            "verdict": "pass",
+            "failure_kind": None,
+            "elapsed_s": 0.1,
+            "output": "compile\n",
+            "returncode": 0,
+            "timed_out": False,
+            "peak_rss_mb": None,
+            "oom_kill_delta": 0,
+            "terminal_record": True,
+            "reason": "",
+            "cache_decision": "",
+        },
+    }
 
 
 class _Execution:
@@ -298,9 +331,7 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     )
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(
-        _executor(build_root, counters, disclosures=disclosures)
-    ).run(
+    outcome = SimulationCampaign(_executor(build_root, counters, disclosures=disclosures)).run(
         NewCampaignRunRequest(
             plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
@@ -309,7 +340,7 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     assert outcome.complete is True
     assert counters["compile"] == 2
     assert counters["memory_reuse"] == counters["durable_reuse"] == 0
-    assert hooks == [(('alpha',), True, None), (('beta',), True, None)]
+    assert hooks == [(("alpha",), True, None), (("beta",), True, None)]
     store = CampaignStore(invocation / "targets/sim/campaign")
     private_results = tuple(
         store.root.glob("work-items/*/attempts/*/private-build/build-result.json")
@@ -317,9 +348,9 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     assert len(private_results) == 2
     assert not tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))
     assert {
-        json.loads((store.work_item_directory(item) / "result.json").read_text())[
-            "build_result"
-        ]["sharing"]
+        json.loads((store.work_item_directory(item) / "result.json").read_text())["build_result"][
+            "sharing"
+        ]
         for item in store.scan().complete
     } == {"private_work_item"}
 

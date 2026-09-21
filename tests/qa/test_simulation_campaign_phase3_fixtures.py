@@ -5,12 +5,17 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+
+from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.request import SimRequest
 
 ROOT = Path(__file__).resolve().parents[2]
 TAXI = ROOT / "qa/scenarios/taxi/fixtures/simulation-campaign"
@@ -51,10 +56,167 @@ def _require_tools(*names: str) -> None:
         pytest.skip("missing required executable prerequisites: " + ", ".join(missing))
 
 
+def _require_python_modules(*names: str) -> None:
+    missing = [name for name in names if importlib.util.find_spec(name) is None]
+    if missing:
+        pytest.skip("missing required Python module prerequisites: " + ", ".join(missing))
+
+
+def _owned_project(tmp_path: Path, fixture: Path) -> Path:
+    project = tmp_path / "project"
+    shutil.copytree(fixture, project)
+    project_config = project / ".booley_project"
+    project_config.mkdir()
+    shutil.copyfile(project / "tests.toml", project_config / "tests.toml")
+    return project
+
+
+def _instrument_compiler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    compiler: str,
+) -> Path:
+    executable = shutil.which(compiler)
+    assert executable is not None
+    wrappers = tmp_path / "compiler-wrappers"
+    wrappers.mkdir()
+    log = tmp_path / f"{compiler}-calls.txt"
+    wrapper = wrappers / compiler
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' {shlex.quote(compiler)} >> \"$BOOLEY_QA_COMPILER_LOG\"\n"
+        f"exec {shlex.quote(executable)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{wrappers}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("BOOLEY_QA_COMPILER_LOG", str(log))
+    return log
+
+
+def _run_owned_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fixture: Path,
+    target: str,
+    tests: tuple[str, ...],
+    compiler: str,
+) -> tuple[Path, Path]:
+    project = _owned_project(tmp_path, fixture)
+    report_root = tmp_path / "reports"
+    compiler_log = _instrument_compiler(tmp_path, monkeypatch, compiler)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    result = SimulateFlow().execute(
+        SimRequest(
+            target=target,
+            work_dir=project,
+            report_dir=report_root,
+            test=tests,
+            timeout_ms=120_000,
+        )
+    )
+    assert result.exit_code == 0, result.outcome.report_text
+    campaigns = tuple(report_root.glob(f"sim/*/targets/{target}/campaign"))
+    assert len(campaigns) == 1
+    return campaigns[0], compiler_log
+
+
+def _assert_shared_campaign(
+    campaign: Path,
+    compiler_log: Path,
+    *,
+    compiler: str,
+    tests: tuple[str, ...],
+) -> None:
+    assert compiler_log.read_text(encoding="utf-8").splitlines() == [compiler]
+    manifest_path = campaign / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_sha256 = "sha256:" + hashlib.sha256(
+        manifest_path.read_bytes().rstrip(b"\n")
+    ).hexdigest()
+    assert [item["selection"]["names"] for item in manifest["work_items"]] == [
+        [name] for name in tests
+    ]
+
+    build_results = tuple(campaign.glob("build-variants/*/attempts/*/build-result.json"))
+    build_attempts = tuple(campaign.glob("build-variants/*/attempts/*/build-attempt.json"))
+    assert len(build_results) == len(build_attempts) == 1
+    build_path = build_results[0]
+    build = json.loads(build_path.read_text(encoding="utf-8"))
+    build_sha256 = "sha256:" + hashlib.sha256(build_path.read_bytes()).hexdigest()
+    bundle_path = build_path.parent / build["bundle"]["manifest_path"]
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    assert build["state"] == "ready"
+    assert build["manifest_sha256"] == bundle["manifest_sha256"] == manifest_sha256
+    assert build["bundle"]["sharing"] == bundle["sharing"] == "shared_variant"
+    assert build["bundle"]["bundle_id"] == bundle["bundle_id"]
+
+    results = tuple(campaign.glob("work-items/*/result.json"))
+    attempts = tuple(campaign.glob("work-items/*/attempts/*/attempt.json"))
+    assert len(results) == len(attempts) == len(tests)
+    documents = [json.loads(path.read_text(encoding="utf-8")) for path in results]
+    assert {item["manifest_sha256"] for item in documents} == {manifest_sha256}
+    assert {item["build_result"]["sha256"] for item in documents} == {build_sha256}
+    assert {item["build_result"]["sharing"] for item in documents} == {"shared_variant"}
+    assert {item["bundle_id"] for item in documents} == {bundle["bundle_id"]}
+    assert len({item["attempt_id"] for item in documents}) == len(tests)
+
+
+def test_taxi_fixture_runs_real_verilator_simulation_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _require_tools("verilator", "make", "g++")
+    _require_python_modules("fusesoc", "edalize")
+    campaign, compiler_log = _run_owned_campaign(
+        tmp_path,
+        monkeypatch,
+        fixture=TAXI,
+        target="sim_campaign_verilator",
+        tests=("first", "second"),
+        compiler="verilator",
+    )
+    _assert_shared_campaign(
+        campaign,
+        compiler_log,
+        compiler="verilator",
+        tests=("first", "second"),
+    )
+
+
+def test_uart_fixture_runs_real_icarus_simulation_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _require_tools("iverilog", "vvp", "make")
+    _require_python_modules("fusesoc", "edalize")
+    campaign, compiler_log = _run_owned_campaign(
+        tmp_path,
+        monkeypatch,
+        fixture=UART,
+        target="sim_campaign_uart",
+        tests=("alpha", "beta"),
+        compiler="iverilog",
+    )
+    _assert_shared_campaign(
+        campaign,
+        compiler_log,
+        compiler="iverilog",
+        tests=("alpha", "beta"),
+    )
+
+
 def test_owned_targets_and_policy_fragments_are_explicit() -> None:
     taxi_core = yaml.safe_load((TAXI / "campaign.core").read_text().split("\n", 1)[1])
     taxi_target = taxi_core["targets"]["sim_campaign_verilator"]
+    assert taxi_core["filesets"]["tb"]["files"] == [
+        "campaign_tb.sv",
+        {"campaign_main.cpp": {"file_type": "cppSource"}},
+    ]
     assert taxi_target["default_tool"] == "verilator"
+    assert taxi_target["flow_options"] == {
+        "tool": "verilator",
+        "verilator_options": ["--timing"],
+    }
     assert taxi_target["toplevel"] == "campaign_tb"
     assert '[sim_campaign_verilator]\ntests = ["first", "second"]' in (
         TAXI / "tests.toml"
@@ -246,7 +408,7 @@ def test_campaign_checks_are_isolated_to_representative_configurations() -> None
         assert selected == expected_selected
 
 
-def test_taxi_fixture_compiles_once_with_real_verilator(tmp_path: Path) -> None:
+def test_taxi_direct_verilator_smoke_is_supplementary(tmp_path: Path) -> None:
     _require_tools("verilator", "make", "g++")
     build = tmp_path / "build"
     compile_calls = [
@@ -273,7 +435,7 @@ def test_taxi_fixture_compiles_once_with_real_verilator(tmp_path: Path) -> None:
     assert hashlib.sha256(binary.read_bytes()).hexdigest() == before
 
 
-def test_uart_fixture_compiles_once_with_real_icarus(tmp_path: Path) -> None:
+def test_uart_direct_icarus_smoke_is_supplementary(tmp_path: Path) -> None:
     _require_tools("iverilog", "vvp")
     image = tmp_path / "campaign.vvp"
     compile_calls = [

@@ -51,8 +51,8 @@ result bytes and attempt-directory listing, then resume only with
 `--resume-from <exact-manifest.json>`. The `quick` result and attempt count must
 not change; `slow` is retried and `tail` is admitted afterward.
 
-Keep an interrupted copy for mismatch checks. First change one owned
-`campaign_tb.sv` byte and attempt exact resume. Require exit 2 with a named
+Keep an interrupted Simulation Campaign copy for mismatch checks. First change
+one owned `campaign_tb.sv` byte and attempt exact resume. Require exit 2 with a named
 source mismatch and no new attempt. Restore the byte exactly, then append one
 owned catalog test to the copied `tests.toml`, repeat the rejection, restore the
 catalog exactly, and finish the resume successfully. Hash before every mutation

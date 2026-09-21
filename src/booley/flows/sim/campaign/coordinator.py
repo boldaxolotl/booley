@@ -21,6 +21,7 @@ from .facts import AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
 from .planning import WorkloadMismatch, compare_manifests, manifest_digest
 from .resume import ValidatedResumeManifest
+from .run_directory import cleanup_interrupted_run_directory, restore_run_directory
 from .store import CampaignRecovery, CampaignStore
 
 
@@ -264,6 +265,13 @@ class SimulationCampaign:
         recovery: CampaignRecovery,
         request: CampaignRunRequest,
     ) -> None:
+        binding = (
+            request.validated.binding_for(manifest)
+            if isinstance(request, ResumeCampaignRunRequest)
+            else None
+        )
+        project_root = binding.project_root if binding is not None else request.project_root
+        self._cleanup_interrupted_runs(store, recovery, project_root)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         by_id = {cast(str, item["work_item_id"]): item for item in items}
         try:
@@ -284,6 +292,30 @@ class SimulationCampaign:
                 recovered.work_item_id,
                 invocation,
                 request,
+            )
+
+    @staticmethod
+    def _cleanup_interrupted_runs(
+        store: CampaignStore, recovery: CampaignRecovery, project_root: Path
+    ) -> None:
+        for recovered in recovery.items:
+            if recovered.state != "interrupted":
+                continue
+            attempt = store.latest_attempt(recovered.work_item_id)
+            if attempt is None:
+                continue
+            document = attempt.document
+            run = restore_run_directory(
+                cast(Mapping[str, object], document["run_directory"]),
+                project_root=project_root,
+            )
+            cleanup_interrupted_run_directory(
+                run,
+                identity={
+                    "campaign_id": cast(str, document["campaign_id"]),
+                    "work_item_id": recovered.work_item_id,
+                    "attempt_id": cast(str, document["attempt_id"]),
+                },
             )
 
     def _execute_recovered(

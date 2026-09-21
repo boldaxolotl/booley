@@ -1,4 +1,4 @@
-"""Read-only validator for retained Taxi shared-bundle campaign evidence."""
+"""Validate retained Taxi shared Simulator Bundle Simulation Campaign evidence."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def validate(
     )
     _need(build.get("state") == "ready", "shared build is not ready")
     bundle = build.get("bundle")
-    _need(isinstance(bundle, dict), "shared build has no bundle")
+    _need(isinstance(bundle, dict), "shared build has no Simulator Bundle")
     _need(bundle.get("sharing") == "shared_variant", "build is not shared_variant")
     items = manifest.get("work_items")
     _need(isinstance(items, list), "manifest work_items are missing")

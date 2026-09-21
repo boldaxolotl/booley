@@ -5959,9 +5959,9 @@ steps:
     capabilities:
     - SIMULATION-CAMPAIGN
     stimulus: Stage the owned `alpha` and `beta` runtime inputs through `BOOLEY_RUN_CWD` and execute both exact tests in one immutable-mode Simulation Campaign.
-    expected: Each attempt authenticates its selected vector in a distinct owned run directory, cleans only owned materialization after publication, and binds the same unchanged shared Bundle/build manifest.
+    expected: Each attempt authenticates its selected vector in a distinct owned run directory, cleans only owned materialization after publication, and binds the same unchanged shared Simulator Bundle/build manifest.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
-    evidence: Rendered config and exact argv, Pre-Sim environment, Target/source/vector identities and hashes, manifest and bundle/build/result digests, attempt-owned input copies, canonical cwd identities, logs, compatibility reports, and cleanup proof.
+    evidence: Rendered config and exact argv, Pre-Sim environment, Target/source/vector identities and hashes, Simulation Campaign Manifest and Simulator Bundle/build/result digests, attempt-owned input copies, canonical cwd identities, logs, compatibility reports, and cleanup proof.
     capture: evidence/opentitan-uart-clean-room-greenfield.campaign.runtime-input-isolation
   requires:
   - published-release
@@ -5969,7 +5969,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 8c6939f76af43b6e80b3d8d8145ccb176fabf29ab2e368c39c8571f43df2161f
+    sha256: 2f0e41d19a734c5cef580806a98ab13d1a22d0448b6bb3ebb834e6e78ff0787f
   - path: fixtures/simulation-campaign/campaign.core
     audience: scenario-operator
     sha256: 2b2064bf76a4cf5cc3a188cb0930a58c4b7435eabcbdffc695315e1c73267b9b
@@ -5984,7 +5984,7 @@ steps:
     sha256: 83adb055d9c1d8f2deff9dcccd9e07c2706504850635c8b090de08320ff247a6
   - path: fixtures/simulation-campaign/validate_campaign.py
     audience: independent evaluator
-    sha256: 642d36fdf6a9a87d2a0f79c9f614c581f4c7661816517235feb5f96f4c1172c7
+    sha256: 0fdc205edbc45f515092a6b61fd5f09f0a7d1ee5b0fcb40dfed90c960e89ca28
   - path: fixtures/simulation-campaign/vectors/alpha.hex
     audience: scenario-operator
     sha256: 320540cafa300cbdcf98656bcc20b316f40c712dc750b0002afc97fb43c23b7d
@@ -5999,9 +5999,9 @@ steps:
     capabilities:
     - SIMULATION-CAMPAIGN
     stimulus: Apply the owned immutable-mode hook, capture its environment, and make it fail after proving no `BOOLEY_BUILD_ROOT` was disclosed.
-    expected: The attempt is an attributed setup failure with no passing observation or accepted Criteria evidence; source, bundle, executable snapshot, and build-manifest hashes remain unchanged.
+    expected: The attempt is an attributed setup failure with no passing observation or accepted Criteria evidence; source, Simulator Bundle, executable snapshot, and build-manifest hashes remain unchanged.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands
-    evidence: Rendered config, redacted Pre-Sim environment and stderr, exact argv/exit, before/after source/bundle/snapshot hashes, failed result, compatibility report, Criteria state, and process-tree death proof.
+    evidence: Rendered config, redacted Pre-Sim environment and stderr, exact argv/exit, before/after source/Simulator Bundle/snapshot hashes, failed result, compatibility report, Criteria state, and process-tree death proof.
     capture: evidence/opentitan-uart-clean-room-greenfield.campaign.presim-immutable
   requires:
   - campaign.runtime-input-isolation
@@ -6021,9 +6021,9 @@ steps:
     capabilities:
     - SIMULATION-CAMPAIGN
     stimulus: Apply the owned `legacy-per-test` hook and run exact tests `alpha` and `beta`, retaining each disclosed generation and hook marker.
-    expected: The manifest and attempts disclose `legacy-per-test`; each test gets a distinct authenticated private Bundle Build Attempt/Result and no result makes a shared-bundle claim.
+    expected: The Simulation Campaign Manifest and attempts disclose `legacy-per-test`; each test gets a distinct authenticated private Simulator Bundle Build Attempt/Result and no result makes a shared Simulator Bundle claim.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands
-    evidence: Rendered config, redacted per-test Pre-Sim environments, exact compile/run argv, private generation markers, manifest/build/bundle/result bytes and digests, attempt listings, logs, and compatibility reports.
+    evidence: Rendered config, redacted per-test Pre-Sim environments, exact compile/run argv, private generation markers, Simulation Campaign Manifest/build/Simulator Bundle/result bytes and digests, attempt listings, logs, and compatibility reports.
     capture: evidence/opentitan-uart-clean-room-greenfield.campaign.presim-legacy-build
   requires:
   - campaign.presim-immutable

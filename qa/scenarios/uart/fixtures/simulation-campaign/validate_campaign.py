@@ -1,4 +1,4 @@
-"""Read-only structural checks for retained UART campaign evidence."""
+"""Read-only structural checks for retained UART Simulation Campaign evidence."""
 
 from __future__ import annotations
 
@@ -45,7 +45,10 @@ def validate_runtime_isolation(
         attempt_id = result.get("attempt_id")
         reference = result.get("build_result")
         _need(isinstance(reference, dict), "result build reference is missing")
-        _need(reference.get("sharing") == "shared_variant", "result does not use shared bundle")
+        _need(
+            reference.get("sharing") == "shared_variant",
+            "result does not use a shared Simulator Bundle",
+        )
         build_digests.add(reference.get("sha256"))
         inputs = result.get("runtime_inputs")
         _need(isinstance(inputs, list) and inputs, "result runtime inputs are missing")
@@ -98,7 +101,7 @@ def validate_legacy_builds(
         _need(isinstance(reference, dict), "legacy result build reference is missing")
         _need(
             reference.get("sharing") == "private_work_item",
-            "legacy result makes a shared-bundle claim",
+            "legacy result makes a shared Simulator Bundle claim",
         )
         references.append((reference.get("build_attempt_id"), reference.get("sha256")))
     _need(len(set(references)) == 2, "legacy tests did not receive distinct private builds")

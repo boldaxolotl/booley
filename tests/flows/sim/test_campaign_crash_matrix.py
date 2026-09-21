@@ -51,6 +51,36 @@ _CRASH_POINTS = (
 )
 
 
+def _build_execution() -> dict[str, object]:
+    return {
+        "$schema": "booley.simulation-build-execution/v1",
+        "process": {
+            "returncode": 0,
+            "stdout": "build\n",
+            "stderr": "",
+            "timed_out": False,
+            "duration_s": 0.1,
+            "dispatched_unix": 1.0,
+            "peak_rss_mb": None,
+            "oom_kill_delta": 0,
+        },
+        "build": {
+            "ran": True,
+            "verdict": "pass",
+            "failure_kind": None,
+            "elapsed_s": 0.1,
+            "output": "build\n",
+            "returncode": 0,
+            "timed_out": False,
+            "peak_rss_mb": None,
+            "oom_kill_delta": 0,
+            "terminal_record": True,
+            "reason": "",
+            "cache_decision": "",
+        },
+    }
+
+
 class _InjectedProcessDeath(BaseException):
     pass
 
@@ -128,6 +158,15 @@ def test_serial_publication_boundary_resume_matrix(  # noqa: PLR0915 -- matrix h
 
         def planning_disclosure(self):
             return {}
+
+        def build_recovery_document(self):
+            return _build_execution()
+
+        def reuse_compilation_from(self, _source):
+            return None
+
+        def bind_authenticated_bundle(self, evidence):
+            assert evidence == _build_execution()
 
         def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
             launches.append(1)
@@ -476,8 +515,8 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
     crash = _CrashOnce(boundary)
     executor, request, invocation = _failed_build_case(tmp_path, monkeypatch, failure_path, crash)
 
-    infrastructure_stops_before_simulation = (
-        failure_path == "compile_spawn" and boundary.endswith("simulation_result")
+    infrastructure_stops_before_simulation = failure_path == "compile_spawn" and boundary.endswith(
+        "simulation_result"
     )
     expected_error = (
         SimulationCampaignIntegrityError
@@ -489,7 +528,9 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
 
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     recovery = store.scan()
-    committed = boundary == "after:simulation_result" and not infrastructure_stops_before_simulation
+    committed = (
+        boundary == "after:simulation_result" and not infrastructure_stops_before_simulation
+    )
     assert bool(recovery.complete) is committed
     attempts = sorted(store.root.glob("work-items/*/attempts/*"))
     assert len(attempts) == 1
@@ -498,7 +539,9 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
     assert result is None or result["state"] == expected_state
     if infrastructure_stops_before_simulation:
         assert recovery.interrupted
-        assert not (store.work_item_directory(recovery.items[0].work_item_id) / "result.json").exists()
+        assert not (
+            store.work_item_directory(recovery.items[0].work_item_id) / "result.json"
+        ).exists()
     elif boundary.startswith("before:simulation"):
         outcome = SimulationCampaign(executor).run(request)
         assert outcome.acceptance_ready is False

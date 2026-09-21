@@ -259,7 +259,9 @@ class PreparedOrdinaryGroup:
             )
             != self._prepared_surface
         ):
-            raise SimulationBuildSlotError("Project compile inputs changed during Pre-Sim Commands")
+            raise SimulationBuildSlotError(
+                "Project compile inputs changed during Pre-Sim Commands"
+            )
         attempt = _with_workload_inputs(self._handle, attempt)
         inputs = self._session.capture_inputs(attempt.prepared)
         script = build_stage_script(
@@ -289,9 +291,7 @@ class PreparedOrdinaryGroup:
         )
         if early is not None:
             return early
-        trace_policy, compatibility_policy = _artifact_policies(
-            self._handle, self._attempt
-        )
+        trace_policy, compatibility_policy = _artifact_policies(self._handle, self._attempt)
         return self._execution._completed_group(
             self._handle,
             self._attempt,
@@ -322,7 +322,38 @@ class PreparedOrdinaryGroup:
         self._build_process = process
         self._build = build
 
-    def bind_authenticated_bundle(self) -> None:
+    def build_recovery_document(self) -> dict[str, object]:
+        """Return the exact compiler process and normalized build for durability."""
+        process, build = self._compiled()
+        return {
+            "$schema": "booley.simulation-build-execution/v1",
+            "process": {
+                "returncode": process.returncode,
+                "stdout": process.stdout,
+                "stderr": process.stderr,
+                "timed_out": process.timed_out,
+                "duration_s": process.duration_s,
+                "dispatched_unix": process.dispatched_unix,
+                "peak_rss_mb": process.peak_rss_mb,
+                "oom_kill_delta": process.oom_kill_delta,
+            },
+            "build": {
+                "ran": build.ran,
+                "verdict": build.verdict,
+                "failure_kind": build.failure_kind,
+                "elapsed_s": build.elapsed_s,
+                "output": build.output,
+                "returncode": build.returncode,
+                "timed_out": build.timed_out,
+                "peak_rss_mb": build.peak_rss_mb,
+                "oom_kill_delta": build.oom_kill_delta,
+                "terminal_record": build.terminal_record,
+                "reason": build.reason,
+                "cache_decision": build.cache_decision,
+            },
+        }
+
+    def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None:
         """Mark preparation ready to launch a campaign-authenticated bundle.
 
         This is the process-recovery counterpart of ``reuse_compilation_from``:
@@ -333,8 +364,13 @@ class PreparedOrdinaryGroup:
             raise SimulationBuildSlotError("ordinary Simulation build lease has ended")
         if self._build is not None:
             raise SimulationBuildSlotError("ordinary Simulation group already has a build")
-        self._build_process = SubprocessResult(returncode=0)
-        self._build = BuildOutcome(True, "pass", None, returncode=0, terminal_record=True)
+        process = evidence["process"]
+        build = evidence["build"]
+        assert isinstance(process, Mapping) and isinstance(build, Mapping)
+        self._build_process = SubprocessResult(**process)  # type: ignore[arg-type]
+        self._build = BuildOutcome(**build)  # type: ignore[arg-type]
+        if not self._build.passed or self._build_process.returncode != 0:
+            raise SimulationBuildSlotError("recovered bundle evidence is not successful")
 
     def launch_snapshot(
         self,
@@ -356,9 +392,7 @@ class PreparedOrdinaryGroup:
         try:
             executed = self._launch(attempt, materialize_runtime_inputs)
         except RuntimeInputError as exc:
-            return _runtime_input_failure(
-                self._handle, attempt, None, str(exc), self._started
-            )
+            return _runtime_input_failure(self._handle, attempt, None, str(exc), self._started)
         process = replace(
             executed.process,
             stdout=build_process.stdout + "\n" + executed.process.stdout,
@@ -386,9 +420,7 @@ class PreparedOrdinaryGroup:
                 self._started,
             )
         except SimulationArtifactPersistenceError as exc:
-            return _artifact_failure(
-                self._handle, attempt, build, None, str(exc), self._started
-            )
+            return _artifact_failure(self._handle, attempt, build, None, str(exc), self._started)
 
     def _compiled(self) -> tuple[SubprocessResult, BuildOutcome]:
         if self._build_process is None or self._build is None:
@@ -440,9 +472,7 @@ class PreparedOrdinaryGroup:
         self._lease_active = False
 
 
-def _planning_disclosure(
-    entries: tuple[dict[str, object], ...]
-) -> dict[str, object]:
+def _planning_disclosure(entries: tuple[dict[str, object], ...]) -> dict[str, object]:
     try:
         version = importlib.metadata.version("fusesoc")
     except importlib.metadata.PackageNotFoundError:
@@ -545,38 +575,12 @@ class SimulationExecution:
         try:
             results = self._run_groups_with_session(handle, groups)
         except SimulationBuildSlotError as exc:
-            failure = SimulationInfrastructureFailure(
-                "build", "Simulation build provenance failed", detail=str(exc)
-            )
-            return _setup_infrastructure_failure(handle, failure, started)
+            return _build_slot_failure(handle, exc, started)
         except _BuildRootResetError as exc:
-            failure = SimulationInfrastructureFailure(
-                "build",
-                "Simulation build root could not be reset",
-                detail=str(exc),
-            )
-            return _setup_infrastructure_failure(handle, failure, started)
+            return _build_root_failure(handle, exc, started)
         except SimulationBuildPreparationError as exc:
             return _setup_failure(handle, str(exc), started)
-        failure = next(
-            (result.infrastructure_failure for result in results if result.infrastructure_failure),
-            None,
-        )
-        tests = tuple(test for result in results for test in result.tests)
-        builds = tuple(build for result in results for build in result.builds)
-        pre_sim_runs = tuple(item for result in results for item in result.pre_sim_runs)
-        artifacts = tuple(item for result in results for item in result.artifacts)
-        return _aggregate(
-            handle,
-            inspection.toplevel,
-            results,
-            tests,
-            builds,
-            pre_sim_runs,
-            artifacts,
-            failure,
-            started,
-        )
+        return _aggregate_group_results(handle, inspection.toplevel, results, started)
 
     def _run_groups_with_session(
         self, handle: TargetHandle, groups: tuple[tuple[str, ...], ...]
@@ -847,18 +851,12 @@ class SimulationExecution:
             else self._prepare_build(handle)
         )
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
-        token = new_attempt_token()
-        result_name = (
-            f".a-{token[:24]}.json"
-            if self._build_session is not None
-            else f".booley-adapter-{token}.json"
-        )
-        identity = AdapterTransportIdentity(
-            adapter=adapter,
-            attempt_token=token,
-            target_identity=handle.identity,
-            selected_tests=test_names,
-            result_path=prepared.build_root / result_name,
+        identity = _adapter_identity(
+            handle,
+            prepared,
+            test_names,
+            adapter,
+            campaign_build=self._build_session is not None,
         )
         work = prepare_simulation_work(
             handle,
@@ -870,20 +868,10 @@ class SimulationExecution:
         )
         pre_sim_commands = tuple(resolve_pre_sim_commands(handle.project_root))
         simulator_environment = tuple(simulation_target_environment(handle).items())
-        try:
-            invocation = prepare_adapter_invocation(work)
-        except UnsupportedSimulationAdapterError as exc:
-            raise SimulationBuildPreparationError(str(exc)) from exc
-        script = build_stage_script(
-            prepared.make_argv,
-            token,
-            run_line=shlex.join(invocation),
-            environment=dict(simulator_environment),
-        )
         return _Attempt(
             prepared=prepared,
             identity=identity,
-            command=("sh", "-c", script),
+            command=_adapter_command(prepared, identity, work, simulator_environment),
             test_names=test_names,
             adapter=adapter,
             trace_requested=self._options.trace,
@@ -1388,6 +1376,91 @@ def _error_outcome(
         builds=(build,) if build is not None else (),
         pre_sim_runs=(pre_sim,) if pre_sim is not None else (),
         infrastructure_failure=failure,
+    )
+
+
+def _adapter_identity(
+    handle: TargetHandle,
+    prepared: PreparedSimulationBuild,
+    test_names: tuple[str, ...],
+    adapter: str,
+    *,
+    campaign_build: bool,
+) -> AdapterTransportIdentity:
+    token = new_attempt_token()
+    result_name = f".a-{token[:24]}.json" if campaign_build else f".booley-adapter-{token}.json"
+    return AdapterTransportIdentity(
+        adapter=adapter,
+        attempt_token=token,
+        target_identity=handle.identity,
+        selected_tests=test_names,
+        result_path=prepared.build_root / result_name,
+    )
+
+
+def _adapter_command(
+    prepared: PreparedSimulationBuild,
+    identity: AdapterTransportIdentity,
+    work: PreparedSimulationWork,
+    environment: tuple[tuple[str, str], ...],
+) -> tuple[str, ...]:
+    try:
+        invocation = prepare_adapter_invocation(work)
+    except UnsupportedSimulationAdapterError as exc:
+        raise SimulationBuildPreparationError(str(exc)) from exc
+    script = build_stage_script(
+        prepared.make_argv,
+        identity.attempt_token,
+        run_line=shlex.join(invocation),
+        environment=dict(environment),
+    )
+    return ("sh", "-c", script)
+
+
+def _build_slot_failure(
+    handle: TargetHandle, exc: SimulationBuildSlotError, started: float
+) -> SimulationTargetOutcome:
+    failure = SimulationInfrastructureFailure(
+        "build", "Simulation build provenance failed", detail=str(exc)
+    )
+    return _setup_infrastructure_failure(handle, failure, started)
+
+
+def _build_root_failure(
+    handle: TargetHandle, exc: _BuildRootResetError, started: float
+) -> SimulationTargetOutcome:
+    failure = SimulationInfrastructureFailure(
+        "build",
+        "Simulation build root could not be reset",
+        detail=str(exc),
+    )
+    return _setup_infrastructure_failure(handle, failure, started)
+
+
+def _aggregate_group_results(
+    handle: TargetHandle,
+    toplevel: str,
+    results: list[SimulationTargetOutcome],
+    started: float,
+) -> SimulationTargetOutcome:
+    failure = next(
+        (result.infrastructure_failure for result in results if result.infrastructure_failure),
+        None,
+    )
+    tests = tuple(test for result in results for test in result.tests)
+    builds = tuple(build for result in results for build in result.builds)
+    pre_sim_runs = tuple(item for result in results for item in result.pre_sim_runs)
+    artifacts = tuple(item for result in results for item in result.artifacts)
+    return _aggregate(
+        handle,
+        toplevel,
+        results,
+        tests,
+        builds,
+        pre_sim_runs,
+        artifacts,
+        failure,
+        started,
     )
 
 
