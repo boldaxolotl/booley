@@ -14,12 +14,16 @@ import os
 import stat
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar, cast
 
-from booley.flows.sim.campaign_durability import durable_directory
+from booley.flows.sim.campaign_durability import (
+    durable_create,
+    durable_directory,
+    fsync_directory,
+)
 from booley.runtime.file_lock import nonblocking_file_lock
 
 from .codec import (
@@ -104,31 +108,8 @@ def _require_safe_parents(path: Path, root: Path) -> None:
             raise SimulationCampaignIntegrityError(f"campaign path contains a link: {current}")
 
 
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def _create_immutable(path: Path, raw: bytes) -> None:
-    durable_directory(path.parent)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        with suppress(OSError):
-            path.unlink()
-        raise
-    finally:
-        os.close(descriptor)
-    _fsync_directory(path.parent)
+    durable_create(path, raw)
 
 
 def _replace_projection(path: Path, raw: bytes) -> None:
@@ -141,7 +122,7 @@ def _replace_projection(path: Path, raw: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
-        _fsync_directory(path.parent)
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -231,7 +212,7 @@ class CampaignStore:
             raise SimulationCampaignIntegrityError("work-item attempt ceiling exceeded")
         path = attempts / f"{ordinal:04d}-{attempt_id}"
         path.mkdir(mode=0o700)
-        _fsync_directory(attempts)
+        fsync_directory(attempts)
         return ordinal, path
 
     def publish_attempt(self, directory: Path, attempt: SimulationAttempt) -> Path:

@@ -8,7 +8,6 @@ cycle count extraction, and structured JSON reporting.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -31,6 +30,7 @@ from booley.core.build_paths import work_root_for
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.display import format_flow_display_label
+from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -116,6 +116,7 @@ from .campaign.coordinator import (
 )
 from .campaign.flow_planning import plan_ordinary_hdl_campaign
 from .campaign.model import SimulationCampaignManifest, SimulationCampaignPlan
+from .campaign.planning import manifest_digest
 from .campaign.resume import ValidatedResumeManifest, validate_resume_manifest
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
 from .campaign.store import CampaignStore
@@ -1224,7 +1225,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         record_campaign_acceptance(self.context, outcomes)
 
-    def prepare_simulation_endpoint(self) -> EndpointOutcome | None:
+    def prepare_simulation_endpoint(
+        self,
+    ) -> PreparedSimulationEndpoint | EndpointOutcome | None:
         """Resolve and authorize every Target before reservation or admission."""
         # Contract tests and embedding adapters may replace the complete Flow
         # implementation at the instance boundary.  Such an endpoint has no
@@ -1247,17 +1250,51 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 exit_code=EXIT_ERROR,
                 report_text=f"sim campaign preflight failed: {exc}",
             )
-        if rejection is None:
-            self.context._simulation_prepared = PreparedSimulationEndpoint(targets, resume)
-        return rejection
+        if rejection is not None:
+            return rejection
+        return PreparedSimulationEndpoint(targets, resume)
+
+    def run_prepared_simulation(
+        self,
+        prepared: PreparedSimulationEndpoint,
+        admission: object | None,
+    ) -> EndpointOutcome:
+        """Run one immutable preflight with its explicitly borrowed admission."""
+        if prepared.resume is not None:
+            return self._run_campaign_resume(prepared.resume, admission)
+        result = (
+            self._run_coverage()
+            if getattr(self.args, "coverage", False)
+            else self._run_selected_mode(prepared=prepared, admission=admission)
+        )
+        result.detail["mode"] = self._mode.value
+        return result
 
     def _prepare_campaign_targets(
         self,
     ) -> tuple[tuple[TargetHandle, ...], ValidatedResumeManifest | None] | EndpointOutcome:
         if self.args.resume_from is not None:
+            roots: dict[str, Path] = {}
+
+            def revision_root(target: Mapping[str, str]) -> Path:
+                if target["role"] == "candidate":
+                    return Path(self.args.work_dir)
+                revision = target["revision"]
+                if revision not in roots:
+                    resources = self.context.publication_resources
+                    roots[revision] = resources.enter_context(
+                        baseline_worktree(
+                            Path(self.args.work_dir),
+                            revision,
+                            paired_project=self._paired_project_baseline,
+                        )
+                    )
+                return roots[revision]
+
             resume = validate_resume_manifest(
                 self.args.resume_from,
                 project_root=Path(self.args.work_dir),
+                revision_root=revision_root,
             )
             return resume.target_handles, resume
         requested = self._resolve_requested_targets()
@@ -1443,6 +1480,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
+        *,
+        campaign_prepared: bool = False,
     ) -> EndpointOutcome | None:
         """Handle validation + the dry-run path; ``None`` means "continue".
 
@@ -1473,8 +1512,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         if self.args.dry_run:
             ordinary = [target for target in targets if not self.is_cocotb_target(target)]
-            prepared = getattr(self.context, "_simulation_prepared", None)
-            if prepared is not None and ordinary and len(ordinary) == len(targets):
+            if campaign_prepared and ordinary and len(ordinary) == len(targets):
                 return self._preview_ordinary_campaigns(targets, test_names_map)
             return self._handle_dry_run(targets, test_names_map)
 
@@ -1633,9 +1671,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _run(self) -> EndpointOutcome:
         """Run the selected shape and stamp its canonical mode on every result."""
-        prepared = getattr(self.context, "_simulation_prepared", None)
-        if prepared is not None and prepared.resume is not None:
-            return self._run_campaign_resume(prepared.resume)
         result = (
             self._run_coverage()
             if getattr(self.args, "coverage", False)
@@ -1644,7 +1679,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         result.detail["mode"] = self._mode.value
         return result
 
-    def _run_campaign_resume(self, validated: ValidatedResumeManifest) -> EndpointOutcome:
+    def _run_campaign_resume(
+        self, validated: ValidatedResumeManifest, admission: object | None
+    ) -> EndpointOutcome:
         """Validate and report one exact durable campaign resume."""
         try:
             store = CampaignStore(validated.path.parent)
@@ -1654,7 +1691,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign integrity failure: {exc}",
             )
-        status = {
+        status: dict[str, object] = {
             "manifest": str(validated.path),
             "manifest_sha256": validated.sha256,
             "completed": list(recovery.complete),
@@ -1662,53 +1699,59 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "pending": list(recovery.pending),
         }
         if self.args.dry_run:
-            try:
-                current_plan = self._resume_campaign_plan(
-                    validated,
-                    cast(
-                        int,
-                        cast(
-                            Mapping[str, object],
-                            validated.manifest.document["origin"],
-                        )["invocation_id"],
-                    ),
-                )
-                preview = SimulationCampaign().preview(
-                    ResumeCampaignPreviewRequest(
-                        validated,
-                        current_plan,
-                        Path(self.args.work_dir),
-                        self.args.report_dir,
-                        self._campaign_policy(),
-                    )
-                )
-            except (OSError, ValueError, RuntimeError) as exc:
-                return EndpointOutcome(
-                    exit_code=EXIT_ERROR,
-                    report_text=f"Simulation Campaign resume preview failed: {exc}",
-                    detail=status,
-                )
-            assert isinstance(preview, ResumeCampaignPreview)
-            status["mismatches"] = [item.message for item in preview.mismatches]
-            status["required_bundle_variants"] = list(preview.required_bundle_variants)
-            lines = [
-                f"manifest: {validated.path}",
-                f"completed: {len(preview.completed)}",
-                f"interrupted: {len(preview.interrupted)}",
-                f"pending: {len(preview.pending)}",
-                f"mismatches: {len(preview.mismatches)}",
-            ]
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR if preview.mismatches else EXIT_SUCCESS,
-                detail=status,
-                report_text="\n".join(lines),
+            return self._preview_campaign_resume(validated, status)
+        return self._execute_campaign_resume(validated, admission, status)
+
+    def _preview_campaign_resume(
+        self, validated: ValidatedResumeManifest, status: dict[str, object]
+    ) -> EndpointOutcome:
+        origin = cast(Mapping[str, object], validated.manifest.document["origin"])
+        try:
+            current_plan = self._resume_campaign_plan(
+                validated, cast(int, origin["invocation_id"])
             )
+            preview = SimulationCampaign().preview(
+                ResumeCampaignPreviewRequest(
+                    validated,
+                    current_plan,
+                    Path(self.args.work_dir),
+                    self.args.report_dir,
+                    self._campaign_policy(),
+                )
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign resume preview failed: {exc}",
+                detail=status,
+            )
+        assert isinstance(preview, ResumeCampaignPreview)
+        status["mismatches"] = [item.message for item in preview.mismatches]
+        status["required_bundle_variants"] = list(preview.required_bundle_variants)
+        lines = [
+            f"manifest: {validated.path}",
+            f"completed: {len(preview.completed)}",
+            f"interrupted: {len(preview.interrupted)}",
+            f"pending: {len(preview.pending)}",
+            f"mismatches: {len(preview.mismatches)}",
+        ]
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR if preview.mismatches else EXIT_SUCCESS,
+            detail=status,
+            report_text="\n".join(lines),
+        )
+
+    def _execute_campaign_resume(
+        self,
+        validated: ValidatedResumeManifest,
+        admission: object | None,
+        status: dict[str, object],
+    ) -> EndpointOutcome:
         if self.args.report_dir is None:
             self.args.report_dir = Path(self.args.work_dir) / "flow-reports"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
-        admission = getattr(self.context, "_simulation_admission_context", None)
-        if admission is None:
+        if not isinstance(admission, AdmissionContext):
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text="sim: no admission context")
         try:
             plan = self._resume_campaign_plan(validated, int(invocation.name))
@@ -1736,7 +1779,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _resume_campaign_plan(self, validated: ValidatedResumeManifest, invocation_id: int):
         """Recompute current workload identity for exact resume comparison."""
         manifest = validated.manifest
-        handle = validated.target_handles[0]
+        binding = validated.binding_for(manifest)
+        handle = binding.handle if binding is not None else validated.target_handles[0]
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         groups = tuple(
@@ -1746,9 +1790,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         names = tuple(name for group in groups for name in group)
         execution = self._simulation_execution()
         preview = execution.preview(handle, NamedTests(names) if names else DefaultSelection())
-        disclosures = tuple(
-            execution.plan_ordinary_group(handle, group) for group in groups
-        )
+        disclosures = tuple(execution.plan_ordinary_group(handle, group) for group in groups)
         suite = cast(Mapping[str, object], manifest.document["required_suite"])
         target = cast(Mapping[str, str], manifest.document["target"])
         return plan_ordinary_hdl_campaign(
@@ -1950,7 +1992,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             report_text="\n".join(lines),
         )
 
-    def _run_selected_mode(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
+    def _run_selected_mode(  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
+        self,
+        *,
+        prepared: PreparedSimulationEndpoint | None = None,
+        admission: object | None = None,
+    ) -> EndpointOutcome:
         """Execute simulation across configs and tests."""
         mode_error = self._validate_mode_args()
         if mode_error is not None:
@@ -1965,7 +2012,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets, test_names_map = resolved
         resolution_s = time.monotonic() - resolution_started
 
-        special_result = self._maybe_dispatch_special_run(targets, test_names_map)
+        special_result = self._maybe_dispatch_special_run(
+            targets, test_names_map, campaign_prepared=prepared is not None
+        )
         if special_result is not None:
             return special_result
         if self.args.report_dir is None:
@@ -1980,8 +2029,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     "invocations; no Target was executed"
                 ),
             )
-        if ordinary and getattr(self.context, "_simulation_prepared", None) is not None:
-            return self._run_ordinary_campaigns(targets, test_names_map)
+        if ordinary and prepared is not None:
+            return self._run_ordinary_campaigns(targets, test_names_map, admission)
 
         all_results: list[TargetResult] = []
         output_lines: list[str] = []
@@ -2103,51 +2152,33 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
 
     def _run_ordinary_campaigns(
-        self, targets: list[str], test_names_map: dict[str, list[str]]
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+        admission: object | None,
     ) -> EndpointOutcome:
         """Run every ordinary Target through manifest-first serial authority."""
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
-        admission = getattr(self.context, "_simulation_admission_context", None)
-        if admission is None:
+        if not isinstance(admission, AdmissionContext):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim: Simulation Campaign has no borrowed admission context",
             )
         campaign = SimulationCampaign(OrdinaryHdlSerialExecutor(invoke=self._execute_boundary))
-        outcomes: list[CampaignOutcome] = []
         try:
-            prerequisites = self._run_campaign_baselines(
-                campaign,
+            baseline_requests, prerequisites = self._plan_campaign_baselines(
                 invocation,
                 admission,
                 targets,
                 test_names_map,
             )
-            for target in targets:
-                plan = self._ordinary_campaign_plan(
-                    target,
-                    test_names_map,
-                    invocation_id=int(invocation.name),
-                    execution_id=(
-                        admission.execution_id
-                        if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
-                        else ""
-                    ),
-                    prerequisite_documents=prerequisites.get(target, ()),
-                )
-                outcomes.append(
-                    campaign.run(
-                        NewCampaignRunRequest(
-                            plan,
-                            Path(self.args.work_dir),
-                            self.args.report_dir,
-                            self._campaign_policy(),
-                            invocation,
-                            admission,
-                        )
-                    )
-                )
+            candidate_requests = self._candidate_campaign_requests(
+                targets, test_names_map, prerequisites, invocation, admission
+            )
+            outcomes = self._publish_and_run_campaign_requests(
+                campaign, baseline_requests, candidate_requests
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -2155,93 +2186,160 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         return self._campaign_endpoint_outcome(outcomes)
 
-    def _run_campaign_baselines(
+    def _candidate_campaign_requests(
         self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+        prerequisites: Mapping[str, Sequence[Mapping[str, object]]],
+        invocation: Path,
+        admission: AdmissionContext,
+    ) -> list[NewCampaignRunRequest]:
+        execution_id = (
+            admission.execution_id
+            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
+            else ""
+        )
+        requests = []
+        for target in targets:
+            plan = self._ordinary_campaign_plan(
+                target,
+                test_names_map,
+                invocation_id=int(invocation.name),
+                execution_id=execution_id,
+                prerequisite_documents=prerequisites.get(target, ()),
+            )
+            requests.append(
+                NewCampaignRunRequest(
+                    plan,
+                    Path(self.args.work_dir),
+                    self.args.report_dir,
+                    self._campaign_policy(),
+                    invocation,
+                    admission,
+                )
+            )
+        return requests
+
+    @staticmethod
+    def _publish_and_run_campaign_requests(
         campaign: SimulationCampaign,
+        baselines: Sequence[NewCampaignRunRequest],
+        candidates: Sequence[NewCampaignRunRequest],
+    ) -> list[CampaignOutcome]:
+        for request in (*baselines, *candidates):
+            campaign.publish_new(request)
+        for request in baselines:
+            campaign.run(request)
+        return [campaign.run(request) for request in candidates]
+
+    def _plan_campaign_baselines(
+        self,
         invocation: Path,
         admission: Any,
         targets: list[str],
         test_names_map: dict[str, list[str]],
-    ) -> dict[str, list[Mapping[str, object]]]:
-        """Publish and finish linked Cycle Count campaigns before candidates."""
+    ) -> tuple[list[NewCampaignRunRequest], dict[str, list[Mapping[str, object]]]]:
+        """Plan linked baselines without starting any campaign work."""
         baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
         if error is not None:
             raise BaselineWorktreeError(error)
         if baseline_ref is None:
-            return {}
+            return [], {}
         project_root = Path(self.args.work_dir)
         requirements = self._campaign_baseline_requirements(targets)
-        expected = {
-            target: self._target_handle(target).identity for target in baseline_targets
+        expected = {target: self._target_handle(target).identity for target in baseline_targets}
+        prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
+        resources = self.context.publication_resources
+        worktree = resources.enter_context(
+            baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            )
+        )
+        requests: list[NewCampaignRunRequest] = []
+        self.args.work_dir = worktree
+        try:
+            for target in baseline_targets:
+                request, by_test = self._planned_baseline_request(
+                    target,
+                    expected[target],
+                    baseline_ref,
+                    requirements,
+                    test_names_map,
+                    worktree,
+                    invocation,
+                    admission,
+                )
+                requests.append(request)
+                for candidate, baseline, test in requirements:
+                    if baseline == target:
+                        prerequisites[candidate].append(by_test[test])
+        finally:
+            self.args.work_dir = project_root
+        return requests, prerequisites
+
+    def _planned_baseline_request(
+        self,
+        target: str,
+        expected_identity: str,
+        baseline_ref: str,
+        requirements: tuple[tuple[str, str, str], ...],
+        test_names_map: dict[str, list[str]],
+        worktree: Path,
+        invocation: Path,
+        admission: Any,
+    ) -> tuple[NewCampaignRunRequest, dict[str, Mapping[str, object]]]:
+        handle = self._target_handle(target)
+        if handle.identity != expected_identity:
+            raise BaselineWorktreeError(
+                f"Cycle Count baseline selector {target!r} resolves to "
+                f"{handle.identity!r}, expected {expected_identity!r}"
+            )
+        plan = self._ordinary_campaign_plan(
+            target,
+            test_names_map,
+            invocation_id=int(invocation.name),
+            execution_id=admission.execution_id
+            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
+            else "",
+            role="cycle_count_baseline",
+            revision=baseline_ref,
+            selected_override=tuple(
+                dict.fromkeys(
+                    test for _candidate, baseline, test in requirements if baseline == target
+                )
+            ),
+        )
+        request = NewCampaignRunRequest(
+            plan,
+            worktree,
+            self.args.report_dir,
+            self._campaign_policy(),
+            invocation,
+            admission,
+        )
+        return request, self._baseline_prerequisites_by_test(target, plan)
+
+    def _baseline_prerequisites_by_test(
+        self, target: str, plan: SimulationCampaignPlan
+    ) -> dict[str, Mapping[str, object]]:
+        target_document = cast(Mapping[str, str], plan.manifest.document["target"])
+        relative = (
+            target_report_directory(
+                Path(), f"{target}@baseline-{target_document['revision'][:12]}"
+            )
+            / "campaign"
+            / "manifest.json"
+        )
+        documents = self._campaign_prerequisite_documents(plan, relative)
+        items = cast(tuple[Mapping[str, object], ...], plan.manifest.document["work_items"])
+        return {
+            cast(tuple[str, ...], cast(Mapping[str, object], item["selection"])["names"])[
+                0
+            ]: document
+            for item, document in zip(items, documents, strict=True)
         }
-        prerequisites: dict[str, list[Mapping[str, object]]] = {
-            target: [] for target in targets
-        }
-        with baseline_worktree(
-            project_root,
-            baseline_ref,
-            paired_project=self._paired_project_baseline,
-        ) as worktree:
-            self.args.work_dir = worktree
-            try:
-                for target in baseline_targets:
-                    handle = self._target_handle(target)
-                    if handle.identity != expected[target]:
-                        raise BaselineWorktreeError(
-                            f"Cycle Count baseline selector {target!r} resolves to "
-                            f"{handle.identity!r}, expected {expected[target]!r}"
-                        )
-                    plan = self._ordinary_campaign_plan(
-                        target,
-                        test_names_map,
-                        invocation_id=int(invocation.name),
-                        execution_id=(
-                            admission.execution_id
-                            if re.fullmatch(
-                                r"[0-9a-f]{32}", admission.execution_id or ""
-                            )
-                            else ""
-                        ),
-                        role="cycle_count_baseline",
-                        revision=baseline_ref,
-                        selected_override=tuple(
-                            dict.fromkeys(
-                                test
-                                for _candidate, baseline, test in requirements
-                                if baseline == target
-                            )
-                        ),
-                    )
-                    outcome = campaign.run(
-                        NewCampaignRunRequest(
-                            plan,
-                            worktree,
-                            self.args.report_dir,
-                            self._campaign_policy(),
-                            invocation,
-                            admission,
-                        )
-                    )
-                    documents = self._campaign_prerequisite_documents(
-                        plan, outcome.manifest_path.relative_to(invocation)
-                    )
-                    by_test = {
-                        cast(tuple[str, ...], item["selection"]["names"])[0]: document
-                        for item, document in zip(
-                            cast(
-                                tuple[Mapping[str, object], ...],
-                                plan.manifest.document["work_items"],
-                            ),
-                            documents,
-                            strict=True,
-                        )
-                    }
-                    for candidate, baseline, test in requirements:
-                        if baseline == target:
-                            prerequisites[candidate].append(by_test[test])
-            finally:
-                self.args.work_dir = project_root
-        return prerequisites
 
     def _campaign_baseline_requirements(
         self, targets: Sequence[str]
@@ -2275,13 +2373,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "path_base": "origin_invocation",
             "path": manifest_path.as_posix(),
             "bytes": len(raw),
-            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "sha256": manifest_digest(plan.manifest),
             "kind": "simulation_campaign_manifest",
             "owner": plan.manifest.document["campaign_id"],
         }
-        baseline_target = dict(
-            cast(Mapping[str, object], plan.manifest.document["target"])
-        )
+        baseline_target = dict(cast(Mapping[str, object], plan.manifest.document["target"]))
         return [
             {
                 "role": "cycle_count_baseline",
@@ -2359,9 +2455,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return {}, []
         project_root = Path(self.args.work_dir)
         requirements = self._campaign_baseline_requirements(targets)
-        prerequisites: dict[str, list[Mapping[str, object]]] = {
-            target: [] for target in targets
-        }
+        prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
         previews: list[dict[str, object]] = []
         with baseline_worktree(
             project_root,
@@ -2371,61 +2465,60 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self.args.work_dir = worktree
             try:
                 for target in baseline_targets:
-                    plan = self._ordinary_campaign_plan(
+                    preview, by_test = self._preview_one_campaign_baseline(
+                        campaign,
                         target,
+                        baseline_ref,
+                        requirements,
                         test_names_map,
-                        invocation_id=1,
-                        execution_id="",
-                        role="cycle_count_baseline",
-                        revision=baseline_ref,
-                        selected_override=tuple(
-                            dict.fromkeys(
-                                test
-                                for _candidate, baseline, test in requirements
-                                if baseline == target
-                            )
-                        ),
+                        worktree,
                     )
-                    preview = campaign.preview(
-                        NewCampaignPreviewRequest(
-                            plan,
-                            worktree,
-                            self.args.report_dir,
-                            self._campaign_policy(),
-                        )
-                    )
-                    previews.append(
-                        {
-                            "target": dict(preview.target),
-                            "work_items": len(preview.work_items),
-                            "build_variants": len(preview.build_variants),
-                            "prerequisites": 0,
-                        }
-                    )
-                    target_document = cast(
-                        Mapping[str, str], plan.manifest.document["target"]
-                    )
-                    path = target_report_directory(
-                        Path(),
-                        f"{target}@baseline-{target_document['revision'][:12]}",
-                    ) / "campaign" / "manifest.json"
-                    documents = self._campaign_prerequisite_documents(plan, path)
-                    items = cast(
-                        tuple[Mapping[str, object], ...],
-                        plan.manifest.document["work_items"],
-                    )
-                    by_test = {}
-                    for item, document in zip(items, documents, strict=True):
-                        selection = cast(Mapping[str, object], item["selection"])
-                        names = cast(tuple[str, ...], selection["names"])
-                        if names:
-                            by_test[names[0]] = document
+                    previews.append(preview)
                     for candidate, baseline, test in requirements:
                         if baseline == target:
                             prerequisites[candidate].append(by_test[test])
             finally:
                 self.args.work_dir = project_root
         return prerequisites, previews
+
+    def _preview_one_campaign_baseline(
+        self,
+        campaign: SimulationCampaign,
+        target: str,
+        baseline_ref: str,
+        requirements: tuple[tuple[str, str, str], ...],
+        test_names_map: dict[str, list[str]],
+        worktree: Path,
+    ) -> tuple[dict[str, object], dict[str, Mapping[str, object]]]:
+        selected = tuple(
+            dict.fromkeys(
+                test for _candidate, baseline, test in requirements if baseline == target
+            )
+        )
+        plan = self._ordinary_campaign_plan(
+            target,
+            test_names_map,
+            invocation_id=1,
+            execution_id="",
+            role="cycle_count_baseline",
+            revision=baseline_ref,
+            selected_override=selected,
+        )
+        preview = campaign.preview(
+            NewCampaignPreviewRequest(
+                plan,
+                worktree,
+                self.args.report_dir,
+                self._campaign_policy(),
+            )
+        )
+        summary = {
+            "target": dict(preview.target),
+            "work_items": len(preview.work_items),
+            "build_variants": len(preview.build_variants),
+            "prerequisites": 0,
+        }
+        return summary, self._baseline_prerequisites_by_test(target, plan)
 
     def _ordinary_campaign_plan(
         self,
@@ -2464,9 +2557,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             preview=preview,
             groups=preview.groups,
             required_suite=required,
-            revision=revision
-            or git_full_sha("HEAD", Path(self.args.work_dir))
-            or "unversioned",
+            revision=revision or git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
             invocation_id=invocation_id,
             execution_id=execution_id,
             trace=self.args.trace,

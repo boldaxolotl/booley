@@ -360,3 +360,109 @@ def test_invalid_committed_result_fails_closed_before_executor_entry(
         SimulationCampaign(MustNotExecute()).run(request)  # type: ignore[arg-type]
 
     assert entered == []
+
+
+@pytest.mark.parametrize("boundary", ["before:build_result", "after:build_result"])
+@pytest.mark.parametrize(
+    ("failure_path", "expected_state"),
+    [
+        ("legacy_design", "design_failure"),
+        ("legacy_spawn", "infrastructure_error"),
+        ("compile_design", "design_failure"),
+        ("compile_spawn", "infrastructure_error"),
+    ],
+)
+def test_failed_build_result_publication_is_retryable_and_never_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    failure_path: str,
+    expected_state: str,
+) -> None:
+    document = _manifest()
+    document.pop("fingerprints")
+    document["workload"]["pre_sim_build_access"] = (  # type: ignore[index]
+        "legacy-per-test" if failure_path.startswith("legacy") else "immutable"
+    )
+    manifest = finalize_manifest(document)
+    plan = create_simulation_campaign_plan(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run").mkdir()
+    engine_root = tmp_path / "build"
+    engine_root.mkdir()
+    infrastructure = expected_state == "infrastructure_error"
+
+    class FakeCatalog:
+        def select(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                identity="acme:lib:dut:1#sim", project_root=project,
+                selector="sim", eda_tool="icarus",
+            )
+
+    class FakeGroup:
+        build_root = engine_root
+        artifact_paths: tuple[Path, ...] = ()
+
+        def planning_disclosure(self):
+            return {}
+
+        def compile(self):
+            return SimpleNamespace(passed=False)
+
+        def finish_build_failure(self):
+            failure = (
+                SimpleNamespace(kind="spawn", message="could not spawn", detail="missing")
+                if infrastructure else None
+            )
+            test = SimulationTestOutcome(
+                name="sim", verdict="elab_error", passed=False,
+                elab_failed=True, error_tail="compile failed",
+            )
+            return SimulationTargetOutcome(
+                target="sim", target_identity="acme:lib:dut:1#sim",
+                toplevel="tb", eda_tool="icarus", passed=False,
+                verdict="error" if infrastructure else "fail", elapsed_s=0.1,
+                tests=(test,), infrastructure_failure=failure,
+            )
+
+    class FakeExecution:
+        @contextmanager
+        def ordinary_group(self, *_args):
+            yield FakeGroup()
+
+    if failure_path.startswith("legacy"):
+        status = "spawn_error" if infrastructure else "failed"
+        monkeypatch.setattr(
+            "booley.flows.sim.campaign.serial_execution._run_hook",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                status=status, detail="hook failed", elapsed_s=0.1
+            ),
+        )
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: FakeCatalog(),
+    )
+    crash = _CrashOnce(boundary)
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: FakeExecution(),  # type: ignore[arg-type,return-value]
+        publication_checkpoint=crash,
+    )
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    request = NewCampaignRunRequest(
+        plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    )
+
+    with pytest.raises(_InjectedProcessDeath, match=boundary):
+        SimulationCampaign(executor).run(request)
+
+    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    recovery = store.scan()
+    assert recovery.complete == ()
+    attempts = sorted(store.root.glob("work-items/*/attempts/*"))
+    assert len(attempts) == 1
+    result_path = attempts[0] / "private-build" / "build-result.json"
+    result = json.loads(result_path.read_text()) if result_path.exists() else None
+    assert result is None or result["state"] == expected_state

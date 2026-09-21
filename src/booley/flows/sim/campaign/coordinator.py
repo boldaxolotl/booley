@@ -10,8 +10,13 @@ from typing import Protocol, cast
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
+from booley.targets.domain import TargetHandle
 
-from .codec import SimulationCampaignIntegrityError, encode_simulation_result
+from .codec import (
+    SimulationCampaignIntegrityError,
+    encode_simulation_campaign_manifest,
+    encode_simulation_result,
+)
 from .facts import AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
 from .planning import WorkloadMismatch, compare_manifests, manifest_digest
@@ -108,6 +113,7 @@ class WorkExecutionRequest:
     policy: CampaignPolicy
     admission: AdmissionContext
     project_root: Path
+    target_handle: TargetHandle | None = None
 
 
 class SerialWorkExecutor(Protocol):
@@ -148,9 +154,7 @@ class SimulationCampaign:
         if isinstance(request, NewCampaignPreviewRequest):
             return _new_preview(request)
         store = CampaignStore(request.validated.path.parent)
-        mismatches = compare_manifests(
-            request.validated.manifest, request.current_plan.manifest
-        )
+        mismatches = compare_manifests(request.validated.manifest, request.current_plan.manifest)
         recovery = store.scan()
         needed = _required_variants(request.validated.manifest, recovery)
         return ResumeCampaignPreview(
@@ -169,9 +173,12 @@ class SimulationCampaign:
             raise RuntimeError("SimulationCampaign requires a serial work executor")
         if isinstance(request, NewCampaignRunRequest):
             store = _new_store(request)
-            self._publication_checkpoint("before:manifest_commit")
-            store.publish_manifest(request.plan.manifest)
-            self._publication_checkpoint("after:manifest_commit")
+            if not store.manifest_path.exists():
+                self._publish_manifest(store, request.plan.manifest)
+            elif store.load_manifest() != request.plan.manifest:
+                raise SimulationCampaignIntegrityError(
+                    "campaign path already contains another manifest"
+                )
             manifest = request.plan.manifest
         else:
             store = CampaignStore(request.validated.path.parent)
@@ -180,9 +187,7 @@ class SimulationCampaign:
             )
             if mismatches:
                 detail = "; ".join(item.message for item in mismatches)
-                raise SimulationCampaignIntegrityError(
-                    f"campaign workload mismatch: {detail}"
-                )
+                raise SimulationCampaignIntegrityError(f"campaign workload mismatch: {detail}")
             manifest = request.validated.manifest
         with store.mutation_lock():
             self._run_prerequisites(store, manifest, request, set())
@@ -192,6 +197,25 @@ class SimulationCampaign:
             summary = store.regenerate_summary()
             self._publication_checkpoint("after:summary_replace")
             return _outcome(store, manifest, summary)
+
+    def publish_new(self, request: NewCampaignRunRequest) -> Path:
+        """Atomically publish one planned manifest without starting work."""
+        store = _new_store(request)
+        if store.manifest_path.exists():
+            if store.load_manifest() != request.plan.manifest:
+                raise SimulationCampaignIntegrityError(
+                    "campaign path already contains another manifest"
+                )
+            return store.manifest_path
+        self._publish_manifest(store, request.plan.manifest)
+        return store.manifest_path
+
+    def _publish_manifest(
+        self, store: CampaignStore, manifest: SimulationCampaignManifest
+    ) -> None:
+        self._publication_checkpoint("before:manifest_commit")
+        store.publish_manifest(manifest)
+        self._publication_checkpoint("after:manifest_commit")
 
     def _run_prerequisites(
         self,
@@ -208,26 +232,24 @@ class SimulationCampaign:
                 raise SimulationCampaignIntegrityError("cyclic prerequisite campaign")
             visited.add(campaign_id)
             reference = cast(Mapping[str, object], entry["manifest"])
-            prerequisite_store = CampaignStore(
-                (invocation / cast(str, reference["path"])).parent
+            node = (
+                request.validated.prerequisite_for(reference)
+                if isinstance(request, ResumeCampaignRunRequest)
+                else None
             )
-            prerequisite = prerequisite_store.load_manifest()
+            path = node.path if node is not None else invocation / cast(str, reference["path"])
+            prerequisite_store = CampaignStore(path.parent)
+            prerequisite = (
+                node.manifest if node is not None else prerequisite_store.load_manifest()
+            )
             with prerequisite_store.mutation_lock():
-                self._run_prerequisites(
-                    prerequisite_store, prerequisite, request, visited
-                )
+                self._run_prerequisites(prerequisite_store, prerequisite, request, visited)
                 recovery = prerequisite_store.scan()
-                self._run_pending(
-                    prerequisite_store, prerequisite, recovery, request
-                )
+                self._run_pending(prerequisite_store, prerequisite, recovery, request)
                 prerequisite_store.regenerate_summary()
             selected = prerequisite_store.scan()
             match = next(
-                (
-                    item
-                    for item in selected.items
-                    if item.work_item_id == entry["work_item_id"]
-                ),
+                (item for item in selected.items if item.work_item_id == entry["work_item_id"]),
                 None,
             )
             if match is None or match.result is None:
@@ -255,41 +277,64 @@ class SimulationCampaign:
                 continue
             if request.admission.cancellation():
                 break
-            attempt_id = _new_uuid()
-            ordinal, directory = store.allocate_attempt_directory(
-                recovered.work_item_id, attempt_id
+            self._execute_recovered(
+                store,
+                manifest,
+                by_id[recovered.work_item_id],
+                recovered.work_item_id,
+                invocation,
+                request,
             )
-            result = self._executor.execute(
-                WorkExecutionRequest(
-                    store,
-                    manifest,
-                    by_id[recovered.work_item_id],
-                    attempt_id,
-                    ordinal,
-                    directory,
-                    invocation,
-                    request.policy,
-                    request.admission,
-                    request.project_root,
-                )
+
+    def _execute_recovered(
+        self,
+        store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        work_item: Mapping[str, object],
+        work_item_id: str,
+        invocation: int,
+        request: CampaignRunRequest,
+    ) -> None:
+        attempt_id = _new_uuid()
+        ordinal, directory = store.allocate_attempt_directory(work_item_id, attempt_id)
+        binding = (
+            request.validated.binding_for(manifest)
+            if isinstance(request, ResumeCampaignRunRequest)
+            else None
+        )
+        assert self._executor is not None
+        result = self._executor.execute(
+            WorkExecutionRequest(
+                store,
+                manifest,
+                work_item,
+                attempt_id,
+                ordinal,
+                directory,
+                invocation,
+                request.policy,
+                request.admission,
+                binding.project_root if binding is not None else request.project_root,
+                binding.handle if binding is not None else None,
             )
-            document = result.document
-            if (
-                document["attempt_id"] != attempt_id
-                or document["attempt_ordinal"] != ordinal
-                or document["work_item_id"] != recovered.work_item_id
-            ):
-                raise SimulationCampaignIntegrityError(
-                    "serial executor returned a result for another attempt"
-                )
-            store.scan()
-            store.verify_result_evidence(directory, result)
-            self._publication_checkpoint("before:simulation_result")
-            store.publish_result(recovered.work_item_id, result)
-            self._publication_checkpoint("after:simulation_result")
-            self._publication_checkpoint("before:summary_replace")
-            store.regenerate_summary()
-            self._publication_checkpoint("after:summary_replace")
+        )
+        document = result.document
+        if (document["attempt_id"], document["attempt_ordinal"], document["work_item_id"]) != (
+            attempt_id,
+            ordinal,
+            work_item_id,
+        ):
+            raise SimulationCampaignIntegrityError(
+                "serial executor returned a result for another attempt"
+            )
+        store.scan()
+        store.verify_result_evidence(directory, result)
+        self._publication_checkpoint("before:simulation_result")
+        store.publish_result(work_item_id, result)
+        self._publication_checkpoint("after:simulation_result")
+        self._publication_checkpoint("before:summary_replace")
+        store.regenerate_summary()
+        self._publication_checkpoint("after:summary_replace")
 
 
 def _new_preview(request: NewCampaignPreviewRequest) -> NewCampaignPreview:
@@ -311,9 +356,7 @@ def _new_store(request: NewCampaignRunRequest) -> CampaignStore:
     selector = target["selector"]
     if target["role"] == "cycle_count_baseline":
         selector = f"{selector}@baseline-{target['revision'][:12]}"
-    directory = target_report_directory(
-        request.invocation_directory, selector
-    ) / "campaign"
+    directory = target_report_directory(request.invocation_directory, selector) / "campaign"
     return CampaignStore(directory)
 
 
@@ -322,7 +365,11 @@ def _required_variants(
 ) -> tuple[str, ...]:
     pending = set(recovery.pending) | set(recovery.interrupted)
     items = cast(tuple[Mapping[str, str], ...], manifest.document["work_items"])
-    return tuple(dict.fromkeys(item["build_variant_id"] for item in items if item["work_item_id"] in pending))
+    return tuple(
+        dict.fromkeys(
+            item["build_variant_id"] for item in items if item["work_item_id"] in pending
+        )
+    )
 
 
 def _outcome(
@@ -375,6 +422,34 @@ def _acceptance_facts(
 ) -> tuple[AcceptanceFacts, tuple[Mapping[str, object], ...]]:
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     by_id = {item["work_item_id"]: item for item in items}
+    consumed, observations = _collected_result_facts(store, recovery, by_id)
+    suite = cast(Mapping[str, object], manifest.document["required_suite"])
+    facts = AcceptanceFacts(
+        {
+            "$schema": "booley.simulation-acceptance-facts/v1",
+            "campaign_id": manifest.document["campaign_id"],
+            "manifest_sha256": manifest_digest(manifest),
+            "origin": manifest.document["origin"],
+            "target": manifest.document["target"],
+            "required_suite": {
+                "names": suite["names"],
+                "default_invocation": suite["default_invocation"],
+                "source_sha256": suite["source_sha256"],
+            },
+            "prerequisites": _prerequisite_facts(store, manifest),
+            "consumed_results": consumed,
+            "observations": observations,
+            "coverage_reference": None,
+        }
+    )
+    return facts, tuple(observations)
+
+
+def _collected_result_facts(
+    store: CampaignStore,
+    recovery: CampaignRecovery,
+    by_id: Mapping[object, Mapping[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     consumed: list[dict[str, object]] = []
     observations: list[dict[str, object]] = []
     for recovered in recovery.items:
@@ -417,27 +492,7 @@ def _acceptance_facts(
                     **dict(observation),
                 }
             )
-    suite = cast(Mapping[str, object], manifest.document["required_suite"])
-    prerequisite_facts = _prerequisite_facts(store, manifest)
-    facts = AcceptanceFacts(
-        {
-            "$schema": "booley.simulation-acceptance-facts/v1",
-            "campaign_id": manifest.document["campaign_id"],
-            "manifest_sha256": manifest_digest(manifest),
-            "origin": manifest.document["origin"],
-            "target": manifest.document["target"],
-            "required_suite": {
-                "names": suite["names"],
-                "default_invocation": suite["default_invocation"],
-                "source_sha256": suite["source_sha256"],
-            },
-            "prerequisites": prerequisite_facts,
-            "consumed_results": consumed,
-            "observations": observations,
-            "coverage_reference": None,
-        }
-    )
-    return facts, tuple(observations)
+    return consumed, observations
 
 
 def _prerequisite_facts(
@@ -449,21 +504,11 @@ def _prerequisite_facts(
     invocation = owner_store.root.parents[2]
     for entry in entries:
         manifest_reference = cast(Mapping[str, object], entry["manifest"])
-        store = CampaignStore(
-            (invocation / cast(str, manifest_reference["path"])).parent
+        store = CampaignStore((invocation / cast(str, manifest_reference["path"])).parent)
+        _linked, expected_test = _authenticate_prerequisite_manifest(
+            store, entry, manifest_reference
         )
-        selected = next(
-            (
-                item
-                for item in store.scan().items
-                if item.work_item_id == entry["work_item_id"]
-            ),
-            None,
-        )
-        if selected is None or selected.result is None:
-            raise SimulationCampaignIntegrityError(
-                "Cycle Count prerequisite result is unavailable"
-            )
+        selected = _selected_prerequisite_result(store, entry)
         raw = encode_simulation_result(selected.result)
         digest = "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
         result_path = store.work_item_directory(selected.work_item_id) / "result.json"
@@ -475,20 +520,7 @@ def _prerequisite_facts(
             "kind": "simulation_result",
             "owner": selected.result.document["attempt_id"],
         }
-        observation = next(
-            (
-                item
-                for item in cast(
-                    tuple[Mapping[str, object], ...],
-                    selected.result.document["observations"],
-                )
-                if item["cycle_count"] is not None
-                and item["execution"] == "completed"
-                and item["functional"] == "pass"
-                and item["assertions"] != "dirty"
-            ),
-            None,
-        )
+        observation = _healthy_cycle_observation(selected.result, expected_test)
         if observation is None:
             raise SimulationCampaignIntegrityError(
                 "Cycle Count prerequisite has no cycle observation"
@@ -509,6 +541,67 @@ def _prerequisite_facts(
             }
         )
     return facts
+
+
+def _authenticate_prerequisite_manifest(
+    store: CampaignStore,
+    entry: Mapping[str, object],
+    reference: Mapping[str, object],
+) -> tuple[SimulationCampaignManifest, str]:
+    linked = store.load_manifest()
+    raw = encode_simulation_campaign_manifest(linked)
+    if len(raw) != reference["bytes"] or manifest_digest(linked) != reference["sha256"]:
+        raise SimulationCampaignIntegrityError(
+            "Cycle Count prerequisite manifest reference is unauthenticated"
+        )
+    if (
+        linked.document["campaign_id"] != entry["campaign_id"]
+        or linked.document["target"] != entry["target"]
+    ):
+        raise SimulationCampaignIntegrityError("Cycle Count prerequisite identity is mismatched")
+    items = cast(tuple[Mapping[str, object], ...], linked.document["work_items"])
+    selected = next(
+        (item for item in items if item["work_item_id"] == entry["work_item_id"]), None
+    )
+    if selected is None or selected["role"] != "cycle_count_baseline":
+        raise SimulationCampaignIntegrityError(
+            "Cycle Count prerequisite work-item binding is mismatched"
+        )
+    selection = cast(Mapping[str, object], selected["selection"])
+    names = cast(tuple[str, ...], selection["names"])
+    if len(names) != 1:
+        raise SimulationCampaignIntegrityError(
+            "Cycle Count prerequisite must select exactly one test"
+        )
+    return linked, names[0]
+
+
+def _selected_prerequisite_result(store: CampaignStore, entry: Mapping[str, object]):
+    selected = next(
+        (item for item in store.scan().items if item.work_item_id == entry["work_item_id"]),
+        None,
+    )
+    if selected is None or selected.result is None:
+        raise SimulationCampaignIntegrityError("Cycle Count prerequisite result is unavailable")
+    return selected
+
+
+def _healthy_cycle_observation(
+    result: SimulationResult, expected_test: str
+) -> Mapping[str, object] | None:
+    observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
+    return next(
+        (
+            item
+            for item in observations
+            if item["test"] == expected_test
+            and item["cycle_count"] is not None
+            and item["execution"] == "completed"
+            and item["functional"] == "pass"
+            and item["assertions"] == "clean"
+        ),
+        None,
+    )
 
 
 def _new_uuid() -> str:

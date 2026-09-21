@@ -5860,7 +5860,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: caed3f121020fcb245b767304730c8c91926c75b53cec44301fd0a465cbd76c9
+    sha256: 75e17841e4dcca4bf86cdb03fb83b7679b4a4d8f8e6ccf32e6d93709dc6387a4
   - path: fixtures/simulation-campaign/campaign.core
     audience: scenario-operator
     sha256: 7e590fca197a0bd6261bc9c5eba509bbb16333bce57625c32749ef7c3da92f42
@@ -5875,7 +5875,7 @@ steps:
     sha256: 651b0706648c23a47167adfeb3b78750ec004b4c3b32730f3a237fd287aa1f7b
   - path: fixtures/simulation-campaign/validate_campaign.py
     audience: independent evaluator
-    sha256: e2121bb727784c1bef1d58e0fc6850456b4688429b89a5c10cdac621a6780d55
+    sha256: 4d6472646a882fab64d5927843c51e2c9626c6cb09ad91f888f7f3b2f77118b5
 - id: campaign.tests-file-normalization
   phase: ticket2
   action: Select the same exact tests through the owned comments-and-blanks file.

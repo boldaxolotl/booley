@@ -8,7 +8,6 @@ and captures the engine-authorized private image as attempt-owned evidence.
 from __future__ import annotations
 
 import hashlib
-import os
 import stat
 import time
 import uuid
@@ -24,8 +23,8 @@ from booley.flows.sim.campaign.bundle import (
 )
 from booley.flows.sim.campaign_durability import (
     durable_copy,
+    durable_create,
     durable_directory,
-    fsync_directory,
 )
 from booley.flows.sim.execution.contract import (
     SimulationInfrastructureFailure,
@@ -108,7 +107,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         self._publication_checkpoint("after:build_attempt")
         return self._execute_group(request, build_directory, build_attempt, run_directory)
 
-    def _execute_group(  # noqa: PLR0915 -- ordered build/snapshot transaction
+    def _execute_group(
         self,
         request: WorkExecutionRequest,
         build_directory: Path,
@@ -116,99 +115,15 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         run_directory: RunDirectory,
     ) -> SimulationResult:
         started = time.monotonic()
-        target = cast(Mapping[str, str], request.manifest.document["target"])
-        catalog = TargetCatalog.build(request.project_root)
-        handle = catalog.select(target["selector"], for_flow="sim")
-        if handle.identity != f"{target['vlnv']}#{target['name']}":
-            raise SimulationCampaignIntegrityError(
-                "current Target identity disagrees with campaign manifest"
-            )
-        selection_document = cast(Mapping[str, object], request.work_item["selection"])
-        names = cast(tuple[str, ...], selection_document["names"])
-        options = SimulationOptions(
-            trace=cast(bool, request.manifest.document["workload"]["trace"]),
-            timeout_ms=(
-                round(request.policy.timeout_seconds * 1000)
-                if request.policy.timeout_seconds is not None
-                else None
-            ),
-            result_verbosity=request.policy.result_verbosity,
-        )
-        execution = (
-            self._execution_factory(options)
-            if self._execution_factory is not None
-            else SimulationExecution(invoke=self._invoke, options=options)
-        )
-        workload = cast(Mapping[str, object], request.manifest.document["workload"])
-        access = cast(str, workload["pre_sim_build_access"])
+        handle, names, options, execution, workload, access = self._group_inputs(request)
         with execution.ordinary_group(handle, names) as group:
-            disclosures = cast(
-                tuple[Mapping[str, object], ...],
-                request.manifest.document["planning_disclosures"],
+            prepared = self._prepare_bundle_artifacts(
+                request, build_directory, build_attempt, handle, group, names,
+                options, workload, access, started,
             )
-            ordinal = cast(int, request.work_item["ordinal"])
-            if disclosures and (
-                ordinal >= len(disclosures)
-                or canonical_json_bytes(group.planning_disclosure())
-                != canonical_json_bytes(disclosures[ordinal])
-            ):
-                raise SimulationCampaignIntegrityError(
-                    "prepared generator source closure disagrees with campaign plan"
-                )
-            if access == "legacy-per-test":
-                pre_sim = _run_hook(handle, group.build_root, names, options, None, True)
-                if pre_sim is not None and pre_sim.status != "passed":
-                    outcome = _hook_failure_outcome(handle.selector, names, pre_sim)
-                    if pre_sim.status == "spawn_error":
-                        outcome = _hook_infrastructure_outcome(outcome, pre_sim.detail)
-                        _publish_infrastructure_build_result(
-                            request,
-                            build_directory,
-                            build_attempt,
-                            outcome,
-                            time.monotonic() - started,
-                        )
-                        raise SimulationCampaignIntegrityError(
-                            pre_sim.detail or "Pre-Sim Commands could not start"
-                        )
-                    result = _publish_design_build_result(
-                        request,
-                        build_directory,
-                        build_attempt,
-                        outcome,
-                        time.monotonic() - started,
-                    )
-                    return _blocked_result(
-                        request,
-                        build_directory,
-                        result,
-                        outcome,
-                        time.monotonic() - started,
-                    )
-            build = group.compile()
-            if not build.passed:
-                outcome = group.finish_build_failure()
-                elapsed = time.monotonic() - started
-                if outcome.infrastructure_failure is not None:
-                    _publish_infrastructure_build_result(
-                        request, build_directory, build_attempt, outcome, elapsed
-                    )
-                    raise SimulationCampaignIntegrityError(
-                        outcome.infrastructure_failure.detail
-                        or outcome.infrastructure_failure.message
-                    )
-                result = _publish_design_build_result(
-                    request, build_directory, build_attempt, outcome, elapsed
-                )
-                return _blocked_result(request, build_directory, result, outcome, elapsed)
-            self._publication_checkpoint("before:bundle_evidence")
-            bundle_artifacts = _capture_private_image(
-                group.artifact_paths,
-                group.build_root,
-                build_directory,
-                cast(tuple[Mapping[str, str], ...], workload["runtime_inputs"]),
-            )
-            self._publication_checkpoint("after:bundle_evidence")
+            if isinstance(prepared, SimulationResult):
+                return prepared
+            bundle_artifacts = prepared
         elapsed = time.monotonic() - started
         self._publication_checkpoint("before:build_result")
         build_result, bundle = _publish_ready_build_result(
@@ -221,56 +136,211 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             "attempt_id": request.attempt_id,
         }
         with claimed_run_directory(run_directory, identity=identity) as run_cwd:
-            declarations = cast(tuple[dict[str, str], ...], workload["runtime_inputs"])
-            self._publication_checkpoint("before:runtime_inputs")
-            with materialize_campaign_runtime_inputs(
-                bundle_root=build_directory,
-                attempt_root=request.attempt_directory,
-                run_cwd=run_cwd,
-                declarations=declarations,
-                owned_run_directory=run_directory.owned,
-            ) as bindings:
-                self._publication_checkpoint("after:runtime_inputs")
-                if access == "immutable":
-                    surface = project_compile_surface(request.project_root)
-                    pre_sim = _run_hook(
-                        handle,
-                        group.build_root,
-                        names,
-                        options,
-                        run_cwd,
-                        False,
-                    )
-                    if project_compile_surface(request.project_root) != surface:
-                        raise SimulationCampaignIntegrityError(
-                            "Project compile inputs changed during immutable Pre-Sim Commands"
-                        )
-                    if pre_sim is not None and pre_sim.status != "passed":
-                        if pre_sim.status == "spawn_error":
-                            raise SimulationCampaignIntegrityError(
-                                pre_sim.detail or "Pre-Sim Commands could not start"
-                            )
-                        return _setup_result(
-                            request,
-                            build_directory,
-                            build_result,
-                            bundle,
-                            names,
-                            bindings,
-                            pre_sim.detail,
-                            time.monotonic() - started,
-                        )
-                return _launch_snapshot(
-                    request,
-                    build_directory,
-                    build_result,
-                    bundle,
-                    group,
-                    run_cwd,
-                    bindings,
-                    started,
-                    self._publication_checkpoint,
-                )
+            return self._run_ready_group(
+                request,
+                build_directory,
+                build_result,
+                bundle,
+                group,
+                handle,
+                names,
+                options,
+                workload,
+                access,
+                run_directory,
+                run_cwd,
+                started,
+            )
+
+    def _prepare_bundle_artifacts(
+        self, request, build_directory, build_attempt, handle, group, names,
+        options, workload, access, started,
+    ) -> list[dict[str, object]] | SimulationResult:
+        _authenticate_planning_disclosure(request, group)
+        if access == "legacy-per-test":
+            failure = self._legacy_hook_failure(
+                request, build_directory, build_attempt, handle, group,
+                names, options, started,
+            )
+            if failure is not None:
+                return failure
+        build = group.compile()
+        if not build.passed:
+            return self._compile_failure(
+                request, build_directory, build_attempt, group, started
+            )
+        self._publication_checkpoint("before:bundle_evidence")
+        artifacts = _capture_private_image(
+            group.artifact_paths, group.build_root, build_directory,
+            cast(tuple[Mapping[str, str], ...], workload["runtime_inputs"]),
+        )
+        self._publication_checkpoint("after:bundle_evidence")
+        return artifacts
+
+    def _group_inputs(self, request: WorkExecutionRequest):
+        target = cast(Mapping[str, str], request.manifest.document["target"])
+        handle = request.target_handle or TargetCatalog.build(request.project_root).select(
+            target["selector"], for_flow="sim"
+        )
+        if handle.identity != f"{target['vlnv']}#{target['name']}":
+            raise SimulationCampaignIntegrityError(
+                "current Target identity disagrees with campaign manifest"
+            )
+        selection = cast(Mapping[str, object], request.work_item["selection"])
+        names = cast(tuple[str, ...], selection["names"])
+        workload = cast(Mapping[str, object], request.manifest.document["workload"])
+        options = SimulationOptions(
+            trace=cast(bool, workload["trace"]),
+            timeout_ms=round(request.policy.timeout_seconds * 1000)
+            if request.policy.timeout_seconds is not None
+            else None,
+            result_verbosity=request.policy.result_verbosity,
+        )
+        execution = (
+            self._execution_factory(options)
+            if self._execution_factory
+            else (SimulationExecution(invoke=self._invoke, options=options))
+        )
+        return (
+            handle,
+            names,
+            options,
+            execution,
+            workload,
+            cast(str, workload["pre_sim_build_access"]),
+        )
+
+    def _legacy_hook_failure(
+        self,
+        request,
+        build_directory,
+        build_attempt,
+        handle,
+        group,
+        names,
+        options,
+        started,
+    ) -> SimulationResult | None:
+        pre_sim = _run_hook(handle, group.build_root, names, options, None, True)
+        if pre_sim is None or pre_sim.status == "passed":
+            return None
+        outcome = _hook_failure_outcome(handle.selector, names, pre_sim)
+        elapsed = time.monotonic() - started
+        if pre_sim.status == "spawn_error":
+            outcome = _hook_infrastructure_outcome(outcome, pre_sim.detail)
+            _publish_failed_build_result(
+                request,
+                build_directory,
+                build_attempt,
+                outcome,
+                elapsed,
+                infrastructure=True,
+                checkpoint=self._publication_checkpoint,
+            )
+            raise SimulationCampaignIntegrityError(
+                pre_sim.detail or "Pre-Sim Commands could not start"
+            )
+        result = _publish_failed_build_result(
+            request,
+            build_directory,
+            build_attempt,
+            outcome,
+            elapsed,
+            infrastructure=False,
+            checkpoint=self._publication_checkpoint,
+        )
+        return _blocked_result(request, build_directory, result, outcome, elapsed)
+
+    def _compile_failure(
+        self,
+        request,
+        build_directory,
+        build_attempt,
+        group,
+        started,
+    ) -> SimulationResult:
+        outcome = group.finish_build_failure()
+        elapsed = time.monotonic() - started
+        infrastructure = outcome.infrastructure_failure is not None
+        result = _publish_failed_build_result(
+            request,
+            build_directory,
+            build_attempt,
+            outcome,
+            elapsed,
+            infrastructure=infrastructure,
+            checkpoint=self._publication_checkpoint,
+        )
+        if outcome.infrastructure_failure is not None:
+            raise SimulationCampaignIntegrityError(
+                outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
+            )
+        return _blocked_result(request, build_directory, result, outcome, elapsed)
+
+    def _run_ready_group(
+        self, request, build_directory, build_result, bundle, group, handle,
+        names, options, workload, access, run_directory, run_cwd, started,
+    ) -> SimulationResult:
+        declarations = cast(tuple[dict[str, str], ...], workload["runtime_inputs"])
+        self._publication_checkpoint("before:runtime_inputs")
+        with materialize_campaign_runtime_inputs(
+            bundle_root=build_directory,
+            attempt_root=request.attempt_directory,
+            run_cwd=run_cwd,
+            declarations=declarations,
+            owned_run_directory=run_directory.owned,
+        ) as bindings:
+            self._publication_checkpoint("after:runtime_inputs")
+            failure = _immutable_hook_failure(
+                request, build_directory, build_result, bundle, handle, group,
+                names, options, run_cwd, bindings, access, started,
+            )
+            if failure is not None:
+                return failure
+            return _launch_snapshot(
+                request, build_directory, build_result, bundle, group, run_cwd,
+                bindings, started, self._publication_checkpoint,
+            )
+
+
+def _authenticate_planning_disclosure(request: WorkExecutionRequest, group: object) -> None:
+    disclosures = cast(
+        tuple[Mapping[str, object], ...],
+        request.manifest.document["planning_disclosures"],
+    )
+    ordinal = cast(int, request.work_item["ordinal"])
+    if disclosures and (
+        ordinal >= len(disclosures)
+        or canonical_json_bytes(group.planning_disclosure())  # type: ignore[attr-defined]
+        != canonical_json_bytes(disclosures[ordinal])
+    ):
+        raise SimulationCampaignIntegrityError(
+            "prepared generator source closure disagrees with campaign plan"
+        )
+
+
+def _immutable_hook_failure(
+    request, build_directory, build_result, bundle, handle, group,
+    names, options, run_cwd, bindings, access, started,
+) -> SimulationResult | None:
+    if access != "immutable":
+        return None
+    surface = project_compile_surface(request.project_root)
+    pre_sim = _run_hook(handle, group.build_root, names, options, run_cwd, False)
+    if project_compile_surface(request.project_root) != surface:
+        raise SimulationCampaignIntegrityError(
+            "Project compile inputs changed during immutable Pre-Sim Commands"
+        )
+    if pre_sim is None or pre_sim.status == "passed":
+        return None
+    if pre_sim.status == "spawn_error":
+        raise SimulationCampaignIntegrityError(
+            pre_sim.detail or "Pre-Sim Commands could not start"
+        )
+    return _setup_result(
+        request, build_directory, build_result, bundle, names, bindings,
+        pre_sim.detail, time.monotonic() - started,
+    )
 
 
 def _attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt, RunDirectory]:
@@ -554,31 +624,28 @@ def _ready_build_result(
     return decode_bundle_build_result(canonical_json_bytes(document))
 
 
-def _publish_design_build_result(
+def _publish_failed_build_result(
     request: WorkExecutionRequest,
     build_directory: Path,
     build_attempt: BundleBuildAttempt,
     outcome: SimulationTargetOutcome,
     elapsed: float,
+    *,
+    infrastructure: bool,
+    checkpoint: Callable[[str], None],
 ) -> BundleBuildResult:
+    checkpoint("before:build_result")
     result = _failed_build_result(
-        request, build_directory, build_attempt, outcome, elapsed, infrastructure=False
+        request,
+        build_directory,
+        build_attempt,
+        outcome,
+        elapsed,
+        infrastructure=infrastructure,
     )
     request.store.publish_build_result(build_directory, result)
+    checkpoint("after:build_result")
     return result
-
-
-def _publish_infrastructure_build_result(
-    request: WorkExecutionRequest,
-    build_directory: Path,
-    build_attempt: BundleBuildAttempt,
-    outcome: SimulationTargetOutcome,
-    elapsed: float,
-) -> None:
-    result = _failed_build_result(
-        request, build_directory, build_attempt, outcome, elapsed, infrastructure=True
-    )
-    request.store.publish_build_result(build_directory, result)
 
 
 def _failed_build_result(
@@ -657,23 +724,9 @@ def _launch_snapshot(
     started: float,
     publication_checkpoint: Callable[[str], None],
 ) -> SimulationResult:
-    build_ref = _build_result_ref(request, build_directory, build_result)
     snapshot_root = request.attempt_directory / "snapshot"
     publication_checkpoint("before:snapshot_manifest")
-    snapshot = create_executable_snapshot(
-        bundle=bundle,
-        bundle_root=build_directory,
-        snapshot_root=snapshot_root,
-        campaign_id=cast(str, request.manifest.document["campaign_id"]),
-        manifest_sha256=manifest_digest(request.manifest),
-        workload_sha256=cast(Mapping[str, str], request.manifest.document["fingerprints"])[
-            "workload_sha256"
-        ],
-        work_item_id=cast(str, request.work_item["work_item_id"]),
-        attempt_id=request.attempt_id,
-        build_result=build_ref,
-        created_at=_now(),
-    )
+    snapshot = _create_snapshot(request, build_directory, build_result, bundle, snapshot_root)
     publication_checkpoint("after:snapshot_manifest")
     pre_launch = authenticate_executable_snapshot(snapshot, snapshot_root)
     publication_checkpoint("integrity:prelaunch_authentication")
@@ -684,6 +737,16 @@ def _launch_snapshot(
         raise SimulationCampaignIntegrityError(
             outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
         )
+    return _snapshot_result(
+        request, build_directory, build_result, bundle, snapshot, snapshot_root,
+        pre_launch, post_exit, outcome, bindings, started, publication_checkpoint,
+    )
+
+
+def _snapshot_result(
+    request, build_directory, build_result, bundle, snapshot, snapshot_root,
+    pre_launch, post_exit, outcome, bindings, started, publication_checkpoint,
+) -> SimulationResult:
     snapshot_raw = encode_executable_snapshot(snapshot)
     snapshot_ref = _record_ref(
         snapshot_root / "snapshot.json",
@@ -716,6 +779,28 @@ def _launch_snapshot(
         elapsed=time.monotonic() - started,
         evidence=evidence,
         runtime_inputs=_runtime_documents(request, bindings),
+    )
+
+
+def _create_snapshot(
+    request: WorkExecutionRequest,
+    build_directory: Path,
+    build_result: BundleBuildResult,
+    bundle: SimulatorBundle,
+    snapshot_root: Path,
+):
+    fingerprints = cast(Mapping[str, str], request.manifest.document["fingerprints"])
+    return create_executable_snapshot(
+        bundle=bundle,
+        bundle_root=build_directory,
+        snapshot_root=snapshot_root,
+        campaign_id=cast(str, request.manifest.document["campaign_id"]),
+        manifest_sha256=manifest_digest(request.manifest),
+        workload_sha256=fingerprints["workload_sha256"],
+        work_item_id=cast(str, request.work_item["work_item_id"]),
+        attempt_id=request.attempt_id,
+        build_result=_build_result_ref(request, build_directory, build_result),
+        created_at=_now(),
     )
 
 
@@ -934,18 +1019,7 @@ def _regular_child(root: Path, relative: str) -> Path:
 
 
 def _create_immutable(path: Path, raw: bytes) -> None:
-    durable_directory(path.parent)
-    descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
-    try:
-        os.write(descriptor, raw)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    fsync_directory(path.parent)
+    durable_create(path, raw)
 
 
 def _sha_bytes(raw: bytes) -> str:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import stat
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,8 +10,8 @@ from typing import cast
 
 from booley.flows.sim.campaign_durability import (
     durable_copy,
+    durable_create,
     durable_directory,
-    fsync_directory,
 )
 
 from .codec import (
@@ -142,17 +141,7 @@ def _digest(value: object) -> str:
 
 
 def _create_file(path: Path, raw: bytes) -> None:
-    descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o400,
-    )
-    try:
-        os.write(descriptor, raw)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    fsync_directory(path.parent)
+    durable_create(path, raw, mode=0o400)
 
 
 __all__ = [

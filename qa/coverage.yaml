@@ -281,7 +281,7 @@ capabilities:
     `campaign.exact-selection`: repeat exact names in reverse catalog order → immutable manifest, work-item, result and summary order matches the request. `campaign.tests-file-normalization`: select the same names from comments/blanks file → identical normalized selection. `campaign.duplicate-selection-rejection`: repeat a name → exit 2 before manifest creation or EDA execution. `campaign.manifest-authority`: inspect strict immutable manifest and its summary/compatibility backlinks → one authenticated authority. `campaign.interrupted-resume`: stop after one terminal result and resume its exact manifest → completed work remains byte-identical and only interrupted/pending work gets attempts. `campaign.workload-mismatch`: mutate owned source or suite declaration → named exit-2 mismatch and no attempt; exact restoration resumes. `campaign.criteria-scope`: passing subset → no generic simulation Criterion; complete Required Simulation Suite → Criteria publication only from durable campaign evidence.
     Exact argv, Target/source/test identities, manifest/result digests, attempt listings, compatibility reports, process timeline, and before/after Criteria plus Acceptance Journal state. This phase makes no bundle-sharing, parallelism, Cocotb, coverage, or cross-campaign-cache claim.
   applicability: |-
-    Durable serial ordinary-HDL campaigns on an explicitly selected supported Configured Scenario. Later campaign execution models receive no credit from these Checks.
+    Durable serial ordinary-HDL Simulation Campaigns on an explicitly selected supported Configured Scenario. Later Simulation Campaign execution models receive no credit from these Checks.
 - id: LINT-FLOW
   title: Lint Flow
   sources:

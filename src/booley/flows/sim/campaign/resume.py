@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -34,12 +34,22 @@ class ValidatedManifestNode:
 
 
 @dataclass(frozen=True, slots=True)
+class ValidatedTargetBinding:
+    """One manifest node bound to the catalog snapshot for its exact revision."""
+
+    node: ValidatedManifestNode
+    project_root: Path
+    handle: TargetHandle
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedResumeManifest:
     """Bounded read-only value passed unchanged from authorization to campaign."""
 
     candidate: ValidatedManifestNode
     prerequisites: tuple[ValidatedManifestNode, ...]
     target_handles: tuple[TargetHandle, ...]
+    bindings: tuple[ValidatedTargetBinding, ...] = ()
 
     @property
     def path(self) -> Path:
@@ -53,11 +63,33 @@ class ValidatedResumeManifest:
     def sha256(self) -> str:
         return self.candidate.sha256
 
+    def binding_for(self, manifest: SimulationCampaignManifest) -> ValidatedTargetBinding | None:
+        """Return the authorization-time binding for one exact manifest value."""
+        digest = manifest_digest(manifest)
+        return next((item for item in self.bindings if item.node.sha256 == digest), None)
+
+    def prerequisite_for(self, reference: Mapping[str, object]) -> ValidatedManifestNode:
+        """Select the already-authenticated prerequisite named by *reference*."""
+        expected = cast(str, reference["sha256"])
+        invocation = _origin_invocation(self.candidate.path)
+        expected_path = (invocation / cast(str, reference["path"])).absolute()
+        matches = tuple(
+            node
+            for node in self.prerequisites
+            if node.sha256 == expected and node.path == expected_path
+        )
+        if len(matches) != 1:
+            raise SimulationCampaignIntegrityError(
+                "resume prerequisite does not select one authenticated manifest"
+            )
+        return matches[0]
+
 
 def validate_resume_manifest(
     manifest_path: Path,
     *,
     project_root: Path,
+    revision_root: Callable[[Mapping[str, str]], Path] | None = None,
 ) -> ValidatedResumeManifest:
     """Decode one manifest exactly once and traverse only authenticated links."""
     canonical = manifest_path.absolute()
@@ -72,12 +104,14 @@ def validate_resume_manifest(
     _walk_prerequisites(candidate, invocation, visited, prerequisites)
     if len(prerequisites) > _MAX_PREREQUISITES:
         raise SimulationCampaignIntegrityError("manifest prerequisite limit exceeded")
-    catalog = TargetCatalog.build(project_root)
+    root_for = revision_root or (lambda _target: project_root)
     handles: list[TargetHandle] = []
+    bindings: list[ValidatedTargetBinding] = []
     seen: set[tuple[str, str]] = set()
     for node in (candidate, *prerequisites):
         target = cast(Mapping[str, str], node.manifest.document["target"])
-        handle = catalog.select(target["selector"])
+        root = Path(root_for(target)).resolve()
+        handle = TargetCatalog.build(root).select(target["selector"], for_flow="sim")
         if handle.identity != target["vlnv"] + "#" + target["name"]:
             raise SimulationCampaignIntegrityError(
                 f"resolved Target identity disagrees with manifest: {target['selector']}"
@@ -86,7 +120,10 @@ def validate_resume_manifest(
         if identity not in seen:
             handles.append(handle)
             seen.add(identity)
-    return ValidatedResumeManifest(candidate, tuple(prerequisites), tuple(handles))
+        bindings.append(ValidatedTargetBinding(node, root, handle))
+    return ValidatedResumeManifest(
+        candidate, tuple(prerequisites), tuple(handles), tuple(bindings)
+    )
 
 
 def _walk_prerequisites(
@@ -102,7 +139,9 @@ def _walk_prerequisites(
         try:
             linked.relative_to(invocation)
         except ValueError as exc:
-            raise SimulationCampaignIntegrityError("prerequisite manifest escapes invocation") from exc
+            raise SimulationCampaignIntegrityError(
+                "prerequisite manifest escapes invocation"
+            ) from exc
         if linked in visited:
             raise SimulationCampaignIntegrityError("duplicate or cyclic prerequisite manifest")
         visited.add(linked)
@@ -140,7 +179,9 @@ def _read_regular(path: Path) -> bytes:
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
-        raise SimulationCampaignIntegrityError(f"cannot read resume manifest {path}: {exc}") from exc
+        raise SimulationCampaignIntegrityError(
+            f"cannot read resume manifest {path}: {exc}"
+        ) from exc
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_size > MANIFEST_MAX_BYTES:
@@ -156,5 +197,6 @@ def _read_regular(path: Path) -> bytes:
 __all__ = [
     "ValidatedManifestNode",
     "ValidatedResumeManifest",
+    "ValidatedTargetBinding",
     "validate_resume_manifest",
 ]

@@ -52,94 +52,104 @@ def plan_ordinary_hdl_campaign(
         raise SimulationCampaignIntegrityError("campaign revision is required")
     root = handle.project_root.resolve()
     sources = _source_entries(root, inspection.inputs)
+    if len(groups) != len(preview.commands):
+        raise SimulationCampaignIntegrityError("planned groups and commands disagree")
+    workload, configured_cwd, run_kind, sources = _workload_document(
+        handle, inspection, sources, trace
+    )
+    target = _target_document(handle, root, revision, role)
+    suite = _required_suite(root, required_suite)
+    variant = _variant_document(workload, sources, trace)
+    work_items = _work_items(groups, target, variant, configured_cwd, run_kind)
+    manifest = _manifest_document(
+        invocation_id, execution_id, target, workload, suite, variant,
+        planning_disclosures, prerequisite_documents, work_items,
+    )
+    return create_simulation_campaign_plan(manifest)
+
+
+def _manifest_document(
+    invocation_id, execution_id, target, workload, suite, variant,
+    planning_disclosures, prerequisite_documents, work_items,
+):
+    return finalize_manifest({
+        "$schema": "booley.simulation-campaign-manifest/v1",
+        "campaign_id": str(uuid.uuid4()),
+        "created_at": utc_now_rfc3339(),
+        "origin": {"execution_id": execution_id, "invocation_id": invocation_id},
+        "target": target, "workload": workload, "required_suite": suite,
+        "build_variants": [variant],
+        "planning_disclosures": list(planning_disclosures),
+        "prerequisites": list(prerequisite_documents), "work_items": work_items,
+    })
+
+
+def _workload_document(
+    handle: TargetHandle,
+    inspection: TargetInspection,
+    sources: list[dict[str, object]],
+    trace: bool,
+) -> tuple[dict[str, object], str, str, list[dict[str, object]]]:
+    root = handle.project_root.resolve()
+    parameters = [
+        {"name": name, "value": value}
+        for name, value in sorted(inspection.parameters.items())
+    ]
     source_recipe = {
         "sources": sources,
-        "parameters": [
-            {"name": name, "value": value} for name, value in sorted(inspection.parameters.items())
-        ],
+        "parameters": parameters,
         "defines": _defines(inspection.flow_options),
         "pre_sim_commands": list(resolve_pre_sim_commands(root)),
     }
-    if len(groups) != len(preview.commands):
-        raise SimulationCampaignIntegrityError("planned groups and commands disagree")
     command_model = {
-        "target_identity": handle.identity,
-        "toplevel": inspection.toplevel,
-        "eda_tool": inspection.eda_tool or "",
-        "parameters": source_recipe["parameters"],
-        "flow_options": dict(inspection.flow_options),
-        "trace": trace,
+        "target_identity": handle.identity, "toplevel": inspection.toplevel,
+        "eda_tool": inspection.eda_tool or "", "parameters": parameters,
+        "flow_options": dict(inspection.flow_options), "trace": trace,
     }
     build_recipe = {
-        "backend": inspection.eda_tool or "",
-        "toplevel": inspection.toplevel,
-        "arguments": [],
-        "command_model_sha256": canonical_sha256(command_model),
+        "backend": inspection.eda_tool or "", "toplevel": inspection.toplevel,
+        "arguments": [], "command_model_sha256": canonical_sha256(command_model),
     }
     configured_cwd = resolve_run_cwd(root)
     placeholders = parse_run_cwd_template(configured_cwd)
     run_kind = "templated" if placeholders else "literal"
-    workload = {
-        "mode": "simulate",
-        "trace": trace,
-        "coverage": False,
+    return {
+        "mode": "simulate", "trace": trace, "coverage": False,
         "eda": {"kind": inspection.eda_tool or "", "version": _eda_identity(inspection.eda_tool)},
-        "planner_contract_version": "1",
-        "adapter_contract_version": "1",
+        "planner_contract_version": "1", "adapter_contract_version": "1",
         "pre_sim_build_access": resolve_pre_sim_build_access(root),
-        "run_cwd": {
-            "configured": configured_cwd,
-            "kind": run_kind,
-            "placeholders": list(placeholders),
-        },
+        "run_cwd": {"configured": configured_cwd, "kind": run_kind,
+                    "placeholders": list(placeholders)},
         "runtime_inputs": list(derive_runtime_input_declarations(inspection.inputs)),
-        "source_recipe": source_recipe,
-        "build_recipe": build_recipe,
+        "source_recipe": source_recipe, "build_recipe": build_recipe,
+    }, configured_cwd, run_kind, sources
+
+
+def _target_document(
+    handle: TargetHandle, root: Path, revision: str, role: str
+) -> dict[str, object]:
+    return {
+        "vlnv": handle.vlnv, "name": handle.name, "selector": handle.selector,
+        "project_identity": canonical_sha256(str(root)), "revision": revision,
+        "role": role, "display_name": handle.selector,
     }
-    target = {
-        "vlnv": handle.vlnv,
-        "name": handle.name,
-        "selector": handle.selector,
-        "project_identity": canonical_sha256(str(root)),
-        "revision": revision,
-        "role": role,
-        "display_name": handle.selector,
+
+
+def _variant_document(
+    workload: Mapping[str, object], sources: list[dict[str, object]], trace: bool
+) -> dict[str, object]:
+    recipe = {
+        "kind": "trace" if trace else "candidate", "source_closure": sources,
+        "source_recipe": workload["source_recipe"],
+        "build_recipe": workload["build_recipe"], "eda": workload["eda"],
+        "trace": trace, "coverage": False,
     }
-    suite = _required_suite(root, required_suite)
-    variant_recipe = {
-        "kind": "trace" if trace else "candidate",
-        "source_closure": sources,
-        "source_recipe": source_recipe,
-        "build_recipe": build_recipe,
-        "eda": workload["eda"],
-        "trace": trace,
-        "coverage": False,
+    digest = canonical_sha256(recipe)
+    return {
+        "build_variant_id": "variant:" + digest.removeprefix("sha256:"),
+        "kind": recipe["kind"], "sharing_eligible": True,
+        "source_closure": sources, "recipe_sha256": digest,
     }
-    variant_digest = canonical_sha256(variant_recipe)
-    variant = {
-        "build_variant_id": "variant:" + variant_digest.removeprefix("sha256:"),
-        "kind": variant_recipe["kind"],
-        "sharing_eligible": True,
-        "source_closure": sources,
-        "recipe_sha256": variant_digest,
-    }
-    work_items = _work_items(groups, target, variant, configured_cwd, run_kind)
-    manifest = finalize_manifest(
-        {
-            "$schema": "booley.simulation-campaign-manifest/v1",
-            "campaign_id": str(uuid.uuid4()),
-            "created_at": utc_now_rfc3339(),
-            "origin": {"execution_id": execution_id, "invocation_id": invocation_id},
-            "target": target,
-            "workload": workload,
-            "required_suite": suite,
-            "build_variants": [variant],
-            "planning_disclosures": list(planning_disclosures),
-            "prerequisites": list(prerequisite_documents),
-            "work_items": work_items,
-        }
-    )
-    return create_simulation_campaign_plan(manifest)
 
 
 def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str, object]]:

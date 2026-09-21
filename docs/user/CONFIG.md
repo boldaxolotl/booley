@@ -241,7 +241,7 @@ those relative paths are authored against — usually the testbench dir:
 run_cwd = "tests/work"   # relative to the repo root; unset = run from project root
 ```
 
-Durable ordinary-HDL campaigns also accept `{campaign}`, `{target}`, `{test}`,
+Durable ordinary-HDL Simulation Campaigns also accept `{campaign}`, `{target}`, `{test}`,
 and `{attempt}` placeholders. A templated directory is Booley-owned, carries an
 attempt ownership marker, and is removed after terminal evidence is committed;
 a literal directory keeps legacy pre-existing-directory semantics. Unknown
@@ -251,7 +251,7 @@ rejected.
 `[flows.sim].pre_sim_build_access` selects the Pre-Sim Commands contract:
 `"immutable"` (default) runs hooks after authenticating the bundle and exposes
 no build path, while `"legacy-per-test"` preserves pre-compile hooks against a
-fresh private generation. The selected value is part of campaign workload
+fresh private generation. The selected value is part of Simulation Campaign workload
 identity and cannot change on resume.
 
 Every Simulation adapter honors this as its literal cwd. Its resolved value is

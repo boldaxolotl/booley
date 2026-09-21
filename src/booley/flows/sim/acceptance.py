@@ -5,9 +5,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from booley.criteria.state import CriterionChange, DevelopmentState
+from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.criteria.thresholds import (
+    CYCLE_COUNT_PARAMS,
+    evaluate_cycle_threshold,
+    has_relative_threshold,
+)
+from booley.evidence.fields import BASELINE_REF_PARAM
 from booley.flows.execution_persistence import AcceptanceRecorder
 from booley.flows.sim.campaign import CampaignOutcome
 from booley.flows.sim.campaign_reports import (
@@ -86,11 +93,7 @@ class SimulationAcceptanceCoordinator:
         observations = facts["observations"]
         if not isinstance(suite, Mapping) or not isinstance(observations, tuple):
             raise TypeError("campaign acceptance suite is malformed")
-        observed_names = {
-            item["test"]
-            for item in observations
-            if isinstance(item, Mapping)
-        }
+        observed_names = {item["test"] for item in observations if isinstance(item, Mapping)}
         required_names = set(suite["names"])
         has_required_scope = (
             len(observations) == 1 and None in observed_names
@@ -152,9 +155,7 @@ def record_campaign_acceptance(
                 / "simulation.json"
             )
             if current != origin:
-                write_compatibility_projection(
-                    current, projection, acceptance_committed=complete
-                )
+                write_compatibility_projection(current, projection, acceptance_committed=complete)
     endpoint._simulation_acceptance_outcomes = tuple(acceptances)
     endpoint._pending_criteria_set = tuple(keys)
 
@@ -193,17 +194,13 @@ def _cycle_changes(
 ) -> list[CriterionChange]:
     identity = f"{target['vlnv']}#{target['name']}"
     selector = str(target["selector"])
-    observations = {
-        item["test"]: item
-        for item in outcome.acceptance_facts.document["observations"]  # type: ignore[union-attr]
-        if isinstance(item, Mapping) and item["test"] is not None
-    }
-    baselines = {
-        item["cycle_observation"]["test"]: item["cycle_observation"]
-        for item in outcome.acceptance_facts.document["prerequisites"]  # type: ignore[union-attr]
+    facts = outcome.acceptance_facts.document
+    observations = _candidate_cycle_observations(facts, target)
+    prerequisites = tuple(
+        item
+        for item in facts["prerequisites"]  # type: ignore[union-attr]
         if isinstance(item, Mapping)
-        and isinstance(item["cycle_observation"], Mapping)
-    }
+    )
     changes: list[CriterionChange] = []
     for key, entry in shadow.criteria.items():
         params = entry.params or {}
@@ -213,29 +210,118 @@ def _cycle_changes(
             continue
         test = params.get("test")
         current = observations.get(test)
-        baseline = baselines.get(test)
-        met = bool(
-            current
-            and current["execution"] == "completed"
-            and current["functional"] == "pass"
-            and current["assertions"] != "dirty"
-            and current["cycle_count"] is not None
+        baseline, baseline_state = _bound_baseline(prerequisites, params, test)
+        current_cycles = _healthy_cycles(current)
+        baseline_cycles = baseline["cycle_count"] if baseline is not None else None
+        checks = _cycle_threshold_checks(params, current_cycles, baseline_cycles)
+        met = current_cycles is not None and all(check["pass"] for check in checks)
+        detail = _cycle_detail(
+            selector,
+            identity,
+            test,
+            current_cycles,
+            baseline_cycles,
+            baseline_state,
+            checks,
         )
-        detail = {
-            "mode": "simulate",
-            "target": selector,
-            "target_identity": identity,
-            "test": test,
-            "cycles": current["cycle_count"] if current else None,
-            "baseline_cycles": baseline["cycle_count"] if baseline else None,
-            "cycle_observation": "observed" if met else "missing",
-            "baseline_observation": "observed" if baseline else "not_required",
-            "evaluation": {
-                "cycles": current["cycle_count"] if current else None,
-            },
-        }
         changes.extend(shadow.set_criterion(key, met, detail=detail))
     return changes
+
+
+def _candidate_cycle_observations(
+    facts: Mapping[str, object], target: Mapping[str, object]
+) -> dict[object, Mapping[str, object]]:
+    return {
+        item["test"]: item
+        for item in facts["observations"]  # type: ignore[union-attr]
+        if isinstance(item, Mapping)
+        and item["test"] is not None
+        and item["role"] == "candidate"
+        and item["revision"] == target["revision"]
+        and item["target"] == target
+    }
+
+
+def _healthy_cycles(observation: Mapping[str, object] | None) -> int | None:
+    if not observation:
+        return None
+    cycles = observation["cycle_count"]
+    healthy = (
+        observation["execution"] == "completed"
+        and observation["functional"] == "pass"
+        and observation["assertions"] == "clean"
+        and type(cycles) is int
+    )
+    return cast(int, cycles) if healthy else None
+
+
+def _bound_baseline(
+    prerequisites: tuple[Mapping[str, object], ...],
+    params: Mapping[str, object],
+    test: object,
+) -> tuple[Mapping[str, object] | None, str]:
+    if not has_relative_threshold(dict(params)):
+        return None, "not_required"
+    selector = params.get(BASELINE_TARGET_PARAM)
+    revision = params.get(BASELINE_REF_PARAM)
+    for item in prerequisites:
+        target = item.get("target")
+        cycle = item.get("cycle_observation")
+        if not isinstance(target, Mapping) or not isinstance(cycle, Mapping):
+            continue
+        manifest = item.get("manifest")
+        result = item.get("result")
+        bound = (
+            item.get("role") == "cycle_count_baseline"
+            and target.get("role") == "cycle_count_baseline"
+            and target.get("selector") == selector
+            and (revision is None or target.get("revision") == revision)
+            and cycle.get("test") == test
+            and isinstance(manifest, Mapping)
+            and manifest.get("owner") == item.get("campaign_id")
+            and isinstance(result, Mapping)
+            and isinstance(item.get("work_item_id"), str)
+        )
+        if bound:
+            return cycle, "observed"
+    return None, "mismatched"
+
+
+def _cycle_threshold_checks(
+    params: Mapping[str, object], current: int | None, baseline: object
+) -> list[dict[str, Any]]:
+    return [
+        evaluate_cycle_threshold(
+            name,
+            cast(int | float, params[name]),
+            current=current,
+            baseline=cast(int | None, baseline),
+        )
+        for name in sorted(CYCLE_COUNT_PARAMS)
+        if name in params
+    ]
+
+
+def _cycle_detail(
+    selector: str,
+    identity: str,
+    test: object,
+    current: int | None,
+    baseline: object,
+    baseline_state: str,
+    checks: list[dict[str, Any]],
+) -> dict[str, object]:
+    return {
+        "mode": "simulate",
+        "target": selector,
+        "target_identity": identity,
+        "test": test,
+        "cycles": current,
+        "baseline_cycles": baseline,
+        "cycle_observation": "observed" if current is not None else "missing",
+        "baseline_observation": baseline_state,
+        "evaluation": {"cycles": current, "checks": checks},
+    }
 
 
 __all__ = [

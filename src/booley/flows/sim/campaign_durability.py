@@ -33,6 +33,26 @@ def durable_copy(source: Path, destination: Path, *, mode: int = 0o600) -> None:
     fsync_directory(destination.parent)
 
 
+def durable_create(destination: Path, raw: bytes, *, mode: int = 0o600) -> None:
+    """Create one immutable byte record and durably publish its name."""
+    durable_directory(destination.parent)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(destination, flags, mode)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as writer:
+            writer.write(raw)
+            writer.flush()
+            os.fchmod(descriptor, mode)
+            os.fsync(descriptor)
+    except BaseException:
+        with suppress(OSError):
+            destination.unlink()
+        raise
+    finally:
+        os.close(descriptor)
+    fsync_directory(destination.parent)
+
+
 def fsync_directory(directory: Path) -> None:
     """Persist directory metadata after a create-only publication."""
     if os.name == "nt":
@@ -56,4 +76,4 @@ def durable_directory(directory: Path) -> None:
         fsync_directory(path.parent)
 
 
-__all__ = ["durable_copy", "durable_directory", "fsync_directory"]
+__all__ = ["durable_copy", "durable_create", "durable_directory", "fsync_directory"]

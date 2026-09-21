@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from booley.config.jobs import parse_caps
+from booley.core.boundary import as_float
 from booley.flows.endpoint_events import (
     _endpoint_progress_event,
     _write_display_event,
@@ -111,22 +112,16 @@ def authorize_simulation_targets(
 
 
 def _slot_timeout_seconds() -> float | None:
-    raw = os.environ.get("BOOLEY_SLOT_TIMEOUT_S", "")
-    if not raw:
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        return None
-    return value if value > 0 else None
+    value = as_float(os.environ.get("BOOLEY_SLOT_TIMEOUT_S"))
+    return value if value is not None and value > 0 else None
 
 
 @contextmanager
-def admission(endpoint: EndpointState, prepared: PreparedExecution) -> Iterator[None]:
+def admission(endpoint: EndpointState, prepared: PreparedExecution) -> Iterator[object | None]:
     """Validate the Target, then hold admission through final reporting."""
-    if endpoint.name == "sim" and hasattr(endpoint, "_simulation_prepared"):
-        with _simulation_admission(endpoint, prepared):
-            yield
+    if endpoint.name == "sim" and prepared.simulation is not None:
+        with _simulation_admission(endpoint, prepared) as borrowed:
+            yield borrowed
         return
     slot_store: job_slots.SlotStore | None = None
     slot_token = None
@@ -137,7 +132,7 @@ def admission(endpoint: EndpointState, prepared: PreparedExecution) -> Iterator[
                 print(rejection.report_text, file=sys.stderr, flush=True)
             raise EndpointRejectedError(rejection)
         if prepared.non_persisting_dry_run:
-            yield
+            yield None
             return
         try:
             slot_store, slot_token = endpoint._acquire_job_slot()
@@ -161,7 +156,7 @@ def admission(endpoint: EndpointState, prepared: PreparedExecution) -> Iterator[
                 )
             ) from exc
         endpoint._pre_run_head = endpoint._get_head_sha()
-        yield
+        yield None
     finally:
         if slot_store is not None and slot_token is not None:
             slot_store.release(slot_token)
@@ -170,19 +165,15 @@ def admission(endpoint: EndpointState, prepared: PreparedExecution) -> Iterator[
 @contextmanager
 def _simulation_admission(
     endpoint: EndpointState, prepared: PreparedExecution
-) -> Iterator[None]:
+) -> Iterator[AdmissionContext | None]:
     if prepared.non_persisting_dry_run:
-        yield
+        yield None
         return
     gate = AdmissionGate(endpoint)
     try:
         with gate.enter() as borrowed:
-            endpoint._simulation_admission_context = borrowed
-            try:
-                endpoint._pre_run_head = endpoint._get_head_sha()
-                yield
-            finally:
-                endpoint._simulation_admission_context = None
+            endpoint._pre_run_head = endpoint._get_head_sha()
+            yield borrowed
     except job_slots.QueueFullError as exc:
         raise EndpointRejectedError(
             EndpointOutcome(

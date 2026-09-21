@@ -154,9 +154,9 @@ Ordinary HDL executions publish their resume authority at
 append-only attempts/results beneath it and an atomically regenerated
 `summary.json`. When no report root is supplied, Simulation Campaigns use
 `<project>/flow-reports`. A resume creates a new compatibility invocation but
-keeps authoritative campaign writes beside the original manifest.
+keeps authoritative Simulation Campaign writes beside the original manifest.
 
-Each campaign freezes the Target's Required Simulation Suite in its immutable
+Each Simulation Campaign freezes the Target's Required Simulation Suite in its immutable
 manifest. A target-level `sim_pass_<target>` Criterion is eligible to pass only
 when every member of that frozen suite has a durable passing result; selecting
 and passing a subset does not satisfy the target-level Criterion. A registered

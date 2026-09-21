@@ -224,7 +224,7 @@ def materialize_runtime_inputs(
 
 
 @contextmanager
-def materialize_campaign_runtime_inputs(  # noqa: PLR0912,PLR0915 -- ordered integrity transaction
+def materialize_campaign_runtime_inputs(
     *,
     bundle_root: Path,
     attempt_root: Path,
@@ -247,60 +247,13 @@ def materialize_campaign_runtime_inputs(  # noqa: PLR0912,PLR0915 -- ordered int
     owned_directories: list[Path] = []
     try:
         for declaration in declarations:
-            required = {"declaration_id", "source_artifact_path", "destination"}
-            if set(declaration) != required:
-                raise RuntimeInputError(
-                    "runtime input declaration has unexpected fields"
-                )
-            source_relative = _safe_relative(declaration["source_artifact_path"])
-            destination_relative = _safe_relative(declaration["destination"])
-            source = bundle_root / source_relative
-            if source.is_symlink() or not source.is_file():
-                raise RuntimeInputError(f"declared runtime input is missing: {source_relative}")
-            authoritative = copies_root / destination_relative
-            authoritative.parent.mkdir(parents=True, exist_ok=True)
-            durable_copy(source, authoritative)
-            size, digest = _runtime_identity(authoritative)
-            destination = run_cwd / destination_relative
-            _prepare_destination_parent(
-                run_cwd,
-                destination_relative,
-                owned_directories,
+            binding, destination = _materialize_campaign_input(
+                declaration, bundle_root, copies_root, run_cwd,
+                owned_run_directory, owned_directories,
             )
-            method = "copy"
-            owned = False
-            if owned_run_directory and destination.resolve(strict=False) == authoritative.resolve():
-                method = "copy"
-                owned = True
-            elif destination.exists() or destination.is_symlink():
-                if destination.is_file() and filecmp.cmp(
-                    authoritative, destination, shallow=False
-                ):
-                    method = "identical_existing"
-                else:
-                    raise RuntimeInputError(
-                        f"run input conflicts with an existing path: {destination_relative}"
-                    )
-            else:
-                shutil.copyfile(authoritative, destination, follow_symlinks=False)
+            if binding.owned and binding.method == "copy" and destination != binding.authoritative_copy:
                 owned_destinations.append(destination)
-                owned = True
-            exposed_size, exposed_digest = _runtime_identity(destination)
-            if (exposed_size, exposed_digest) != (size, digest):
-                raise RuntimeInputError(
-                    f"runtime input authentication failed: {destination_relative}"
-                )
-            bindings.append(
-                RuntimeInputBinding(
-                    declaration["declaration_id"],
-                    authoritative,
-                    destination_relative.as_posix(),
-                    method,
-                    size,
-                    digest,
-                    owned,
-                )
-            )
+            bindings.append(binding)
         yield tuple(bindings)
     finally:
         for destination in reversed(owned_destinations):
@@ -315,6 +268,59 @@ def materialize_campaign_runtime_inputs(  # noqa: PLR0912,PLR0915 -- ordered int
                 # A consumer-created sibling is not owned by this attempt.
                 # Never recurse through a literal Project directory to remove it.
                 pass
+
+
+def _materialize_campaign_input(
+    declaration: dict[str, str],
+    bundle_root: Path,
+    copies_root: Path,
+    run_cwd: Path,
+    owned_run_directory: bool,
+    owned_directories: list[Path],
+) -> tuple[RuntimeInputBinding, Path]:
+    required = {"declaration_id", "source_artifact_path", "destination"}
+    if set(declaration) != required:
+        raise RuntimeInputError("runtime input declaration has unexpected fields")
+    source_relative = _safe_relative(declaration["source_artifact_path"])
+    destination_relative = _safe_relative(declaration["destination"])
+    source = bundle_root / source_relative
+    if source.is_symlink() or not source.is_file():
+        raise RuntimeInputError(f"declared runtime input is missing: {source_relative}")
+    authoritative = copies_root / destination_relative
+    authoritative.parent.mkdir(parents=True, exist_ok=True)
+    durable_copy(source, authoritative)
+    size, digest = _runtime_identity(authoritative)
+    destination = run_cwd / destination_relative
+    _prepare_destination_parent(run_cwd, destination_relative, owned_directories)
+    method, owned = _expose_campaign_input(
+        authoritative, destination, destination_relative, owned_run_directory
+    )
+    if _runtime_identity(destination) != (size, digest):
+        raise RuntimeInputError(
+            f"runtime input authentication failed: {destination_relative}"
+        )
+    return RuntimeInputBinding(
+        declaration["declaration_id"], authoritative,
+        destination_relative.as_posix(), method, size, digest, owned,
+    ), destination
+
+
+def _expose_campaign_input(
+    authoritative: Path,
+    destination: Path,
+    relative: Path,
+    owned_run_directory: bool,
+) -> tuple[str, bool]:
+    if owned_run_directory and destination.resolve(strict=False) == authoritative.resolve():
+        return "copy", True
+    if destination.exists() or destination.is_symlink():
+        if destination.is_file() and filecmp.cmp(
+            authoritative, destination, shallow=False
+        ):
+            return "identical_existing", False
+        raise RuntimeInputError(f"run input conflicts with an existing path: {relative}")
+    shutil.copyfile(authoritative, destination, follow_symlinks=False)
+    return "copy", True
 
 
 def _prepare_destination_parent(

@@ -28,10 +28,16 @@ from booley.flows.sim.campaign.model import (
     SimulationCampaignPlan,
     create_simulation_campaign_plan,
 )
-from booley.flows.sim.campaign.planning import finalize_manifest
+from booley.flows.sim.campaign.planning import (
+    compare_manifests,
+    finalize_manifest,
+    manifest_digest,
+)
+from booley.flows.sim.campaign.resume import validate_resume_manifest
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
+from booley.targets.catalog import TargetCatalog
 
 
 def _sha(value: object) -> str:
@@ -162,6 +168,66 @@ def _manifest() -> dict[str, object]:
     return manifest
 
 
+def _baseline_manifest():
+    document = _manifest()
+    document.pop("fingerprints")
+    document["campaign_id"] = "550e8400-e29b-41d4-a716-446655440000"
+    target = document["target"]
+    target.update(  # type: ignore[union-attr]
+        {
+            "name": "base",
+            "selector": "base",
+            "revision": "base-rev",
+            "role": "cycle_count_baseline",
+        }
+    )
+    item = document["work_items"][0]  # type: ignore[index]
+    item.update(  # type: ignore[union-attr]
+        {"role": "cycle_count_baseline", "revision": "base-rev", "target": target}
+    )
+    identity = {
+        key: value
+        for key, value in item.items()  # type: ignore[union-attr]
+        if key not in {"fingerprint_sha256", "work_item_id"}
+    }
+    fingerprint = _sha(identity)
+    item["fingerprint_sha256"] = fingerprint  # type: ignore[index]
+    item["work_item_id"] = "item:0000:" + fingerprint[7:23]  # type: ignore[index]
+    return finalize_manifest(document)
+
+
+def _linked_campaign_stores(tmp_path: Path):
+    baseline = _baseline_manifest()
+    invocation = tmp_path / "reports" / "000001"
+    baseline_store = CampaignStore(invocation / "targets" / "base-revision" / "campaign")
+    baseline_store.publish_manifest(baseline)
+    raw = encode_simulation_campaign_manifest(baseline)
+    baseline_json = json.loads(raw)
+    candidate_document = _manifest()
+    candidate_document.pop("fingerprints")
+    candidate_document["prerequisites"] = [
+        {
+            "role": "cycle_count_baseline",
+            "manifest": {
+                "path_base": "origin_invocation",
+                "path": baseline_store.manifest_path.relative_to(invocation).as_posix(),
+                "bytes": len(raw),
+                "sha256": manifest_digest(baseline),
+                "kind": "simulation_campaign_manifest",
+                "owner": baseline_json["campaign_id"],
+            },
+            "campaign_id": baseline_json["campaign_id"],
+            "target": baseline_json["target"],
+            "required_observation": "cycle_count",
+            "work_item_id": baseline_json["work_items"][0]["work_item_id"],
+        }
+    ]
+    candidate = finalize_manifest(candidate_document)
+    candidate_store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    candidate_store.publish_manifest(candidate)
+    return candidate, candidate_store, baseline, baseline_store
+
+
 def test_manifest_exact_codec_recomputes_all_component_digests() -> None:
     raw = canonical_json_bytes(_manifest())
     value = decode_simulation_campaign_manifest(raw)
@@ -183,6 +249,36 @@ def test_campaign_plan_is_derived_only_from_a_validated_manifest() -> None:
 def test_campaign_plan_rejects_an_unvalidated_manifest_value() -> None:
     with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         create_simulation_campaign_plan(SimulationCampaignManifest({}))
+
+
+def test_resume_preview_reports_all_workload_mismatches() -> None:
+    expected_document = _manifest()
+    expected_document.pop("fingerprints")
+    expected = finalize_manifest(expected_document)
+    current_document = _manifest()
+    current_document.pop("fingerprints")
+    current_document["target"]["revision"] = "changed"  # type: ignore[index]
+    item = current_document["work_items"][0]  # type: ignore[index]
+    item["revision"] = "changed"
+    item["target"]["revision"] = "changed"
+    identity = {
+        key: value
+        for key, value in item.items()
+        if key not in {"fingerprint_sha256", "work_item_id"}
+    }
+    fingerprint = _sha(identity)
+    item["fingerprint_sha256"] = fingerprint
+    item["work_item_id"] = "item:0000:" + fingerprint.removeprefix("sha256:")[:16]
+    current = finalize_manifest(current_document)
+
+    mismatches = compare_manifests(expected, current)
+
+    assert len(mismatches) >= 3
+    assert {item.pointer for item in mismatches} >= {
+        "/target/revision",
+        "/work_items/0/revision",
+        "/work_items/0/target/revision",
+    }
 
 
 def test_cycle_baseline_campaign_has_a_noncolliding_store_path(tmp_path: Path) -> None:
@@ -220,6 +316,46 @@ def test_cycle_baseline_campaign_has_a_noncolliding_store_path(tmp_path: Path) -
     assert candidate_store.root != baseline_store.root
     assert baseline_store.root.name == "campaign"
     assert baseline_store.root.parent.name == "sim%40baseline-abc123"
+
+
+def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate, candidate_store, baseline, baseline_store = _linked_campaign_stores(tmp_path)
+    candidate_root = tmp_path / "candidate-source"
+    baseline_root = tmp_path / "baseline-source"
+    candidate_root.mkdir()
+    baseline_root.mkdir()
+
+    class Catalog:
+        def __init__(self, root: Path) -> None:
+            self.root = root
+
+        def select(self, selector: str, *, for_flow: str):
+            assert for_flow == "sim"
+            target = (
+                candidate.document["target"] if selector == "sim" else baseline.document["target"]
+            )
+            return SimpleNamespace(
+                identity=f"{target['vlnv']}#{target['name']}",
+                selector=selector,
+                project_root=self.root,
+            )
+
+    monkeypatch.setattr(TargetCatalog, "build", lambda root: Catalog(Path(root)))
+    roots = {"candidate": candidate_root, "cycle_count_baseline": baseline_root}
+    validated = validate_resume_manifest(
+        candidate_store.manifest_path,
+        project_root=candidate_root,
+        revision_root=lambda target: roots[target["role"]],
+    )
+
+    assert [binding.project_root for binding in validated.bindings] == [
+        candidate_root,
+        baseline_root,
+    ]
+    reference = candidate.document["prerequisites"][0]["manifest"]  # type: ignore[index]
+    assert validated.prerequisite_for(reference).path == baseline_store.manifest_path
 
 
 def test_recovery_retries_a_crash_after_attempt_directory_allocation(
@@ -352,19 +488,19 @@ def test_serial_executor_authenticates_planned_generator_closure(
         execution_factory=lambda _options: FakeExecution(),  # type: ignore[arg-type,return-value]
     )
     request = WorkExecutionRequest(
-            store=store,
-            manifest=manifest,
-            work_item=item,  # type: ignore[arg-type]
-            attempt_id=attempt_id,
-            attempt_ordinal=ordinal,
-            attempt_directory=attempt_directory,
-            producer_invocation_id=1,
-            policy=CampaignPolicy(),
-            admission=AdmissionContext(
-                "unmanaged", None, None, 1, "interactive", "", None, lambda: False
-            ),
-            project_root=tmp_path,
-        )
+        store=store,
+        manifest=manifest,
+        work_item=item,  # type: ignore[arg-type]
+        attempt_id=attempt_id,
+        attempt_ordinal=ordinal,
+        attempt_directory=attempt_directory,
+        producer_invocation_id=1,
+        policy=CampaignPolicy(),
+        admission=AdmissionContext(
+            "unmanaged", None, None, 1, "interactive", "", None, lambda: False
+        ),
+        project_root=tmp_path,
+    )
     if nondeterministic:
         with pytest.raises(
             SimulationCampaignIntegrityError,

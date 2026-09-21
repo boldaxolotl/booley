@@ -1,5 +1,10 @@
 # PicoRV32 Simulation Campaign QA fixture
 
+These Checks are registered but remain pending until a separately authorized
+Configured Scenario Run captures their product evidence. Automated regressions
+and this fixture's validator protect the public contracts; they are not a
+substitute for a Scenario Run and do not mark Checks 1–7 complete.
+
 Use this owned Icarus fixture only inside a run-owned copy of the PicoRV32
 Project. Do not edit the pinned upstream source. Copy `campaign.core` and
 `campaign_tb.sv` into one declared core root and merge the `sim_campaign`
@@ -9,14 +14,16 @@ resulting paths and SHA-256 digests before running any Check.
 All commands below must use an explicit run-owned report root. Preserve exact
 argv, stdout/stderr, exit status, the printed manifest path, directory listings,
 and copies plus SHA-256 digests of every referenced JSON document. The
-`validate_campaign.py` helper is a read-only structural cross-check; the
-Scenario Check remains the authority.
+`validate_campaign.py` helper is a read-only structural cross-check for exact
+selection, manifest/summary/compatibility backlinks, interrupted resume,
+fail-closed rejection, and Criteria journal scope; the Scenario Check remains
+the authority.
 
 ## Exact selection and tests-file normalization
 
 Run `sim_campaign` with `--test tail --test quick`. The manifest selection,
 work-item order, summary observations, and terminal results must remain
-`tail, quick`, not catalog order. Then run a new campaign with
+`tail, quick`, not catalog order. Then run a new Simulation Campaign with
 `--tests-file reverse-tests.txt`; comments and blank lines must disappear and
 the same normalized selection must remain.
 
@@ -27,7 +34,7 @@ test.
 
 ## Manifest authority
 
-For a successful fixture campaign, save `manifest.json` bytes before the first
+For a successful fixture Simulation Campaign, save `manifest.json` bytes before the first
 work item completes and again after completion. They must be identical. Inspect
 the strict schema, exact Target identity, Required Simulation Suite, workload
 fingerprint, and ordered work items. Authenticate every consumed result and
@@ -56,10 +63,10 @@ and after every restoration.
 Use a run-owned Ticket whose mandatory Criterion is
 `sim_pass_sim_campaign`. Capture the Criteria state and Acceptance Journal
 before and after each invocation. A passing strict subset (`quick`) must leave
-the Criterion unmet. A new campaign containing the complete Required
+the Criterion unmet. A new Simulation Campaign containing the complete Required
 Simulation Suite (`quick`, `slow`, `tail`) must publish it only after all three
 durable results commit. If an extra registered test is temporarily added and
-explicitly selected, its failure must still make the campaign grade strict;
+explicitly selected, its failure must still make the Simulation Campaign grade strict;
 restore the catalog and fixture before cleanup.
 
 ## Cleanup
