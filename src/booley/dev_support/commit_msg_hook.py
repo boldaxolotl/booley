@@ -7,8 +7,8 @@
    body in place so authored rationale survives.
 3. Validate via validate_commit_msg.validate_message().
 
-Project Initialization vendors this module for the Project hook; Ticket
-worktrees receive the same source through harness/setup/workspace.py.
+Project Initialization packages this module into the standalone Project Git-hook
+bundle; Ticket worktrees receive the same source through harness/setup/workspace.py.
 
 **Bodies are kept.** They used to be truncated away on every non-merge commit
 ("single-line messages only"), which quietly destroyed authored work: a long

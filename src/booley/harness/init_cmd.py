@@ -217,10 +217,9 @@ def _ticket_creation_skeleton() -> str:
 # etc.) are deliberately NOT listed — they vary per project and often live
 # outside ``.booley_project/``.
 #
-# ``__pycache__/`` + ``*.pyc``: init vendors the commit-msg/pre-push hook
-# scripts into ``.booley_project/hooks/``, and running them writes bytecode
-# right next to the sources — which the inner ``.booley_project`` repo then
-# tracked (fpu F-29). Nothing under this dir is ever an intentional .pyc.
+# ``__pycache__/`` + ``*.pyc``: Project-authored Python lifecycle hooks may
+# still run in ``.booley_project/hooks/``. The managed Git policy bundle is
+# isolated under ``.booley_project/.managed/`` and runs from its zip archive.
 PROJECT_GITIGNORE_PATTERNS = (
     "tmp/",
     "tickets/logs/",

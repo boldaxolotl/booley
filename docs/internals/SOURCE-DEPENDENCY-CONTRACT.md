@@ -149,6 +149,11 @@ and type-only imports and have no waiver or composition exception.
   Runtime retains filesystem glob expansion, dirty-status/new-file policy and
   Git staging. Harness retains forbidden-path policy. The standalone pre-commit
   hook remains self-contained and keeps its distinct behavior.
+- Project Git policy is published as one deterministic zip application at
+  `.booley_project/.managed/project-git-hooks.pyz`. Its explicit flat source
+  inventory is generated from the canonical wheel modules, and the adapters
+  execute it with `python -I -S`; Git operations therefore do not import the
+  installed Booley package or depend on the initializer's environment.
 - Core provenance classification is unchanged. Out-of-Scope matching is not proof
   of a read-only mount, and the existing imperative-script checks do not impose
   blanket rejection on all external paths. EDAM file confinement remains with
@@ -311,6 +316,7 @@ proofs define that limit:
 | Owner | Mechanism and scope | Existing named proof |
 | --- | --- | --- |
 | `booley.dev_support.validate_commit_msg` | Imports packaged `core.run_command` or a flat vendored `run_command`; the packaged case is the dynamic equivalent of `booley.dev_support.validate_commit_msg -> booley.core.run_command`. | `tests/dev_support/test_validate_commit_msg.py` proves packaged, vendored, and stale-hook resolution. |
+| `booley.harness.setup.project_git_hook_bundle` | Builds the explicit seven-module flat source inventory and a zip-root launcher for the standalone Project Git-hook bundle. | `tests/harness/setup/test_project_git_hook_bundle.py` proves deterministic bytes, normalized sources, isolated execution, and command dispatch. |
 | `booley.mcp.server` | Imports discovered built-in `booley.mcp.*` endpoint modules and Project-local MCP files. | MCP server and registry discovery tests prove built-in and custom endpoint loading. |
 | `booley.harness.booley` | Imports a registry-selected built-in `booley.*` MCP tool class or a Project-local MCP file for diagnostic commands. | `tests/harness/test_booley.py` proves built-in and Project-local loading. |
 | `booley.ticket_board.flow_runner` | Loads a named Project-local `BooleyFlow` from an explicit file and supplies Ticket Board execution composition. | `tests/flows/test_transport_contract.py` proves Project-local Flow loading and Ticket adapter composition. |

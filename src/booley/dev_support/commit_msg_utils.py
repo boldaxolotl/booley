@@ -98,7 +98,7 @@ def _stealth_section(project_root: Path | None = None) -> dict:
 def source_checkout_policy_owner(project_root: Path | None) -> bool:
     """Return whether an explicit policy owner lies inside Booley source.
 
-    Project hooks are deliberately runnable as self-contained vendored scripts,
+    Project Git-hook modules are deliberately runnable as self-contained bundle members,
     where importing :mod:`booley` is impossible. Those installations vendor the
     same runtime classifier flat beside this module, keeping one implementation
     of the tracked-marker and legacy-layout contract.

@@ -143,8 +143,9 @@ leaves all of this on a blank slate:
 
 - `.booley_project/booley.toml` and `tests.toml` — **comment-only placeholders
   with zero keys**;
-- `.booley_project/.gitignore`, a `FUSESOC_IGNORE` marker, `hooks/` holding
-  five vendored scripts, and empty `tickets/{board/*,logs,locks}/` dirs;
+- `.booley_project/.gitignore`, a `FUSESOC_IGNORE` marker, a managed
+  `.managed/project-git-hooks.pyz` bundle, Project-authored `hooks/`, and empty
+  `tickets/{board/*,logs,locks}/` dirs;
 - an **inner git repo** at `.booley_project/.git`, with no commit in it — but
   only when `[stealth] enabled` is on (the runtime fallback before setup makes
   its explicit choice); with the scrub explicitly off, init skips it and the

@@ -9,7 +9,11 @@ GENERATED_DIRECTORY_NAMES = frozenset({".runtime", "_build", "build"})
 PROJECT_CONTROL_FILES = frozenset(
     {"booley.toml", ".booley_project/tests.toml", ".booley_project/booley.toml"}
 )
-PROJECT_CONTROL_PREFIXES = (".booley_project/hooks/", ".booley_project/generators/")
+PROJECT_CONTROL_PREFIXES = (
+    ".booley_project/hooks/",
+    ".booley_project/.managed/",
+    ".booley_project/generators/",
+)
 
 
 def normalize_acceptance_path(path: str) -> str:
