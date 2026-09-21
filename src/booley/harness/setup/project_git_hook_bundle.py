@@ -61,8 +61,7 @@ def _read_source_members() -> dict[str, bytes]:
 
 def _launcher() -> bytes:
     """Return the zip application's command dispatcher."""
-    return (
-        b"""from __future__ import annotations
+    return b"""from __future__ import annotations
 
 import importlib
 import os
@@ -100,7 +99,6 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 """
-    )
 
 
 def _manifest(source_members: dict[str, bytes]) -> bytes:
@@ -122,13 +120,17 @@ def _zip_bytes(members: dict[str, bytes]) -> bytes:
     if len(members) != len(set(members)):
         raise ValueError("project Git-hook bundle contains duplicate archive members")
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    with zipfile.ZipFile(
+        output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as archive:
         for name in sorted(members):
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             info.create_system = 3
             info.external_attr = (0o100644 & 0o777) << 16
             info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, members[name], compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+            archive.writestr(
+                info, members[name], compress_type=zipfile.ZIP_DEFLATED, compresslevel=9
+            )
     return output.getvalue()
 
 

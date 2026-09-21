@@ -435,6 +435,97 @@ class TestInstalledPrePushGuard:
 
 
 class TestProjectGitHookMigration:
+    def test_reconciliation_transaction_restores_files_directories_and_missing_paths(
+        self, tmp_path: Path
+    ) -> None:
+        from booley.harness.setup.project_git_hook_reconcile import (
+            _ReconciliationTransaction,
+        )
+
+        existing = tmp_path / "existing.txt"
+        existing.write_bytes(b"before")
+        directory = tmp_path / "directory"
+        directory.mkdir()
+        missing = tmp_path / "missing.txt"
+        transaction = _ReconciliationTransaction()
+        transaction.watch(existing)
+        transaction.watch(directory)
+        transaction.watch(missing)
+        transaction.watch(existing)
+
+        existing.write_bytes(b"after")
+        directory.rmdir()
+        missing.write_bytes(b"created during reconciliation")
+        transaction.rollback()
+
+        assert existing.read_bytes() == b"before"
+        assert directory.is_dir()
+        assert not missing.exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlink privileges are unavailable on CI")
+    def test_reconciliation_transaction_restores_symlinks(self, tmp_path: Path) -> None:
+        from booley.harness.setup.project_git_hook_reconcile import (
+            _ReconciliationTransaction,
+        )
+
+        target = tmp_path / "target"
+        target.write_text("target", encoding="utf-8")
+        link = tmp_path / "link"
+        link.symlink_to(target)
+        transaction = _ReconciliationTransaction()
+        transaction.watch(link)
+        link.unlink()
+        transaction.rollback()
+
+        assert link.is_symlink()
+        assert link.resolve() == target
+
+    def test_non_git_project_skips_project_hook_reconciliation(self, tmp_path: Path) -> None:
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+
+        ctx = _ctx(tmp_path)
+        _step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "skip"
+        assert ctx.results[-1].detail == "not a git repo"
+
+    def test_git_hook_path_timeout_skips_reconciliation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.setup import project_git_hook_reconcile as reconcile
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+
+        def timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(kwargs.get("args", args[0]), 10)
+
+        monkeypatch.setattr(reconcile.subprocess, "run", timeout)
+        ctx = _ctx(tmp_path)
+        _step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "skip"
+        assert "timed out" in ctx.results[-1].detail
+
+    def test_previous_bundle_hashes_ignore_non_mapping_hashes(self, tmp_path: Path) -> None:
+        from booley.harness.setup.project_git_hook_reconcile import _previous_bundle_hashes
+
+        bundle = tmp_path / "bundle.pyz"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr(
+                "manifest.json",
+                json.dumps({"schema": 1, "source_sha256": ["not", "a", "mapping"]}),
+            )
+
+        assert _previous_bundle_hashes(bundle) == {}
+
+    def test_shell_bundle_resolution_supports_external_bundle(self, tmp_path: Path) -> None:
+        from booley.harness.setup.project_git_hook_reconcile import _shell_bundle_resolution
+
+        result = _shell_bundle_resolution(
+            tmp_path / "project", tmp_path / "managed" / "bundle.pyz"
+        )
+
+        assert result == f"BUNDLE={tmp_path / 'managed' / 'bundle.pyz'}\n"
+
     def test_crlf_only_legacy_sources_are_not_backed_up(self, tmp_path: Path) -> None:
         from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.harness.setup.project_git_hook_reconcile import _current_source_bytes
@@ -614,12 +705,15 @@ class TestHookInSecondaryWorktree:
 
         assert result.returncode == 0, result.stderr
         # It did not merely skip: the bundle was found via the shared git dir.
-        assert "from-worktree" in subprocess.run(
-            ["git", "-C", str(wt), "log", "-1", "--format=%s"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
+        assert (
+            "from-worktree"
+            in subprocess.run(
+                ["git", "-C", str(wt), "log", "-1", "--format=%s"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
 
     def test_missing_script_skips_instead_of_blocking_the_commit(self, tmp_path: Path):
         main = tmp_path / "main"
@@ -636,12 +730,15 @@ class TestHookInSecondaryWorktree:
         self._install(main)
 
         assert self._commit(main, "from-main").returncode == 0
-        assert "from-main" in subprocess.run(
-            ["git", "-C", str(main), "log", "-1", "--format=%s"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
+        assert (
+            "from-main"
+            in subprocess.run(
+                ["git", "-C", str(main), "log", "-1", "--format=%s"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
 
 
 class TestPrePushFailsClosed:

@@ -123,7 +123,9 @@ def _restore_path(path: Path, state: _PathState) -> None:
     elif state.kind == "file":
         temporary: Path | None = None
         try:
-            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+            with tempfile.NamedTemporaryFile(
+                dir=path.parent, prefix=f".{path.name}.", delete=False
+            ) as handle:
                 temporary = Path(handle.name)
                 handle.write(state.data or b"")
                 handle.flush()
@@ -169,11 +171,12 @@ def _build_hook_delegator_body(
     owner_marker = "commit_msg_hook.py" if bundle_command == "commit-msg" else "pre_push_hook.py"
     missing_exit = 0 if fail_open else 1
     missing = (
-        f"    echo 'booley {BUNDLE_NAME} {bundle_command}: bundle not found at'"
-        ' "$BUNDLE" >&2\n'
+        f"    echo 'booley {BUNDLE_NAME} {bundle_command}: bundle not found at' \"$BUNDLE\" >&2\n"
     )
     if fail_open:
-        missing += "    echo 'Skipping this local commit; run `booley init` to restore the bundle.' >&2\n"
+        missing += (
+            "    echo 'Skipping this local commit; run `booley init` to restore the bundle.' >&2\n"
+        )
     else:
         missing += "    echo 'This guard cannot approve a push it could not check; the push is REFUSED.' >&2\n"
         missing += "    echo 'Restore it with `booley init`.' >&2\n"
@@ -304,7 +307,9 @@ def _publish_bundle(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{BUNDLE_NAME}.", delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{BUNDLE_NAME}.", delete=False
+        ) as handle:
             temporary = Path(handle.name)
             handle.write(content)
             handle.flush()
@@ -324,8 +329,7 @@ def _verify_adapters(adapters: list[_Adapter]) -> None:
         invocation = f'"$BUNDLE" {adapter.command} "$@"'
         if BUNDLE_NAME not in body or invocation not in body:
             raise RuntimeError(
-                f"installed {adapter.name} adapter does not invoke "
-                f"{BUNDLE_NAME} {adapter.command}"
+                f"installed {adapter.name} adapter does not invoke {BUNDLE_NAME} {adapter.command}"
             )
 
 
@@ -350,7 +354,9 @@ def _previous_bundle_hashes(path: Path) -> dict[str, str]:
         return {}
 
 
-def _legacy_matches(path: Path, name: str, current: dict[str, bytes], previous: dict[str, str]) -> bool:
+def _legacy_matches(
+    path: Path, name: str, current: dict[str, bytes], previous: dict[str, str]
+) -> bool:
     """Return whether a legacy source matches current or previous managed code."""
     data = path.read_bytes()
     if data == current[name]:
@@ -381,7 +387,9 @@ def _publish_backup(path: Path, data: bytes, mode: int, *, target: Path | None =
         return target
     temporary: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{target.name}.", delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{target.name}.", delete=False
+        ) as handle:
             temporary = Path(handle.name)
             handle.write(data)
             handle.flush()
@@ -407,7 +415,9 @@ def _managed_bytecode(cache_dir: Path) -> list[Path]:
     )
 
 
-def _legacy_detail(legacy_dir: Path, current: dict[str, bytes], previous: dict[str, str]) -> list[str]:
+def _legacy_detail(
+    legacy_dir: Path, current: dict[str, bytes], previous: dict[str, str]
+) -> list[str]:
     """Describe legacy sources and bytecode that cleanup would remove."""
     details: list[str] = []
     for name in _LEGACY_MANAGED_HOOKS:
@@ -541,9 +551,7 @@ def step_project_git_hooks(ctx: InitContext) -> None:
         _publish_bundle(locations.bundle_path, bundle.content)
         _apply_adapters(adapters, transaction)
         _verify_adapters(adapters)
-        errors = _cleanup_legacy(
-            locations.project_dir / "hooks", current, previous, transaction
-        )
+        errors = _cleanup_legacy(locations.project_dir / "hooks", current, previous, transaction)
         if errors:
             raise RuntimeError("; ".join(errors))
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
@@ -553,5 +561,7 @@ def step_project_git_hooks(ctx: InitContext) -> None:
         err(f"Project Git-hook reconciliation failed: {exc}")
         ctx.record("project_git_hooks", "err", str(exc))
         return
-    ok(f"Project Git policy installed in {BUNDLE_NAME}; Project-authored lifecycle hooks preserved")
+    ok(
+        f"Project Git policy installed in {BUNDLE_NAME}; Project-authored lifecycle hooks preserved"
+    )
     ctx.record("project_git_hooks", "ok", "installed")

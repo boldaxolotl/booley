@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import subprocess
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -48,6 +50,57 @@ def test_normalized_source_bytes_are_identical_for_lf_and_crlf(tmp_path: Path) -
     source.write_bytes(b"one\ntwo\nthree\n")
 
     assert first == bundle_module._normalized_source(source)
+
+
+def test_normalized_source_rejects_nonregular_paths(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="not a regular file"):
+        bundle_module._normalized_source(tmp_path)
+
+
+def test_source_inventory_rejects_duplicate_members(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bundle_module,
+        "_SOURCE_INVENTORY",
+        (("duplicate.py", Path("one.py")), ("duplicate.py", Path("two.py"))),
+    )
+
+    with pytest.raises(ValueError, match="duplicate source members"):
+        bundle_module._read_source_members()
+
+
+def test_archive_validation_rejects_duplicate_members() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("__main__.py", "pass")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            archive.writestr("__main__.py", "pass")
+
+    with pytest.raises(ValueError, match="duplicate archive members"):
+        bundle_module._validate_archive(buffer.getvalue(), {"hook.py": b"pass"})
+
+
+@pytest.mark.parametrize(
+    ("manifest", "expected_error"),
+    [
+        (
+            {"schema": 999, "members": ["__main__.py", "hook.py", "manifest.json"]},
+            "unsupported schema",
+        ),
+        ({"schema": 1, "members": ["__main__.py", "hook.py"]}, "does not match"),
+    ],
+)
+def test_archive_validation_rejects_invalid_manifest(
+    manifest: dict[str, object], expected_error: str
+) -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("__main__.py", "pass")
+        archive.writestr("hook.py", "pass")
+        archive.writestr("manifest.json", json.dumps(manifest))
+
+    with pytest.raises(ValueError, match=expected_error):
+        bundle_module._validate_archive(buffer.getvalue(), {"hook.py": b"pass"})
 
 
 def test_bundle_runs_without_ambient_booley_package(tmp_path: Path) -> None:
@@ -99,7 +152,9 @@ def test_launcher_rejects_missing_or_unknown_commands(tmp_path: Path, argv: list
     assert "expected commit-msg or pre-push" in result.stderr
 
 
-def test_missing_canonical_source_aborts_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_missing_canonical_source_aborts_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(bundle_module, "_source_package_root", lambda: tmp_path)
 
     with pytest.raises(FileNotFoundError, match="canonical hook source"):
