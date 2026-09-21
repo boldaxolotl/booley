@@ -16,7 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.audit.contracts import CommandRunner
-from booley.runtime.host_probes import ProbeState, probe_docker
+from booley.core.host_probes import ProbeState, probe_docker
 
 CLOCK_SKEW_WARN_SECONDS = 120
 CLOCK_REFERENCE_URLS = ("https://www.google.com", "https://one.one.one.one")

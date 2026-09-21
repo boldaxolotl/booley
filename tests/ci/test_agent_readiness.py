@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.host_probes import ProbeState, probe_docker, probe_github
 from booley.dev_support import agent_readiness as readiness
-from booley.runtime.host_probes import ProbeState, probe_docker, probe_github
 
 
 def _bootstrap_module():

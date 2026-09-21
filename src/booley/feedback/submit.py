@@ -51,8 +51,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from booley.core.host_probes import ProbeState, probe_github
 from booley.harness import colors
-from booley.runtime.host_probes import ProbeState, probe_github
 
 logger = logging.getLogger(__name__)
 

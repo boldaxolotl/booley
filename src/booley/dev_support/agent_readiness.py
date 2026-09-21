@@ -23,7 +23,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from booley.runtime.host_probes import ProbeState, probe_docker, probe_github
+from booley.core.host_probes import ProbeState, probe_docker, probe_github
 
 SCHEMA_VERSION = 1
 MIN_PYTHON = (3, 11)
