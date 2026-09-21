@@ -143,7 +143,9 @@ def load_host_installation(path: Path | None = None) -> HostInstallationIdentity
             "`booley bootstrap --adopt-installation` from the intended installed wheel"
         ) from exc
     except (BoundaryError, json.JSONDecodeError, OSError, UnicodeError) as exc:
-        raise HostInstallationError(f"cannot read host installation identity {source}: {exc}") from exc
+        raise HostInstallationError(
+            f"cannot read host installation identity {source}: {exc}"
+        ) from exc
 
 
 def _write_identity(identity: HostInstallationIdentity, path: Path) -> None:
@@ -190,9 +192,7 @@ def host_install_error(
     path: Path | None = None,
 ) -> str | None:
     """Explain why this process cannot mutate Booley host-owned state."""
-    if error := _eligibility_error(
-        package_resource, prefix=prefix, base_prefix=base_prefix
-    ):
+    if error := _eligibility_error(package_resource, prefix=prefix, base_prefix=base_prefix):
         return error + "; run the canonical host `booley bootstrap`"
     try:
         expected = load_host_installation(path)

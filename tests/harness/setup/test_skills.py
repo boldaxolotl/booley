@@ -137,6 +137,21 @@ def test_skill_deployment_adapter_reports_missing_source(tmp_path: Path, monkeyp
     assert ctx.results[-1].detail == "skills dir missing"
 
 
+def test_skill_deployment_adapter_rejects_noncanonical_install(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "packaged"
+    source.mkdir()
+    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: source)
+    monkeypatch.setattr(init_skills, "host_install_error", lambda _source: "not canonical")
+    ctx = InitContext(project_root=tmp_path, show_step_banners=False)
+
+    init_skills._deploy_skills(ctx)
+
+    assert ctx.results[-1].status == "err"
+    assert ctx.results[-1].detail == "not canonical"
+
+
 @pytest.mark.parametrize(
     ("check_only", "status", "detail"),
     [

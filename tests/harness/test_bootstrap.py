@@ -174,8 +174,9 @@ def test_public_adapter_adopts_before_reconciliation(
     monkeypatch.setattr(
         bootstrap_cli,
         "reconcile_bootstrap",
-        lambda intent, **_kwargs: events.append("reconcile")
-        or bootstrap.BootstrapResult(intent, ()),
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
+        ),
     )
 
     status = bootstrap_cli.run_bootstrap(
@@ -205,8 +206,9 @@ def test_public_adapter_explicitly_replaces_during_upgrade(
     monkeypatch.setattr(
         bootstrap_cli,
         "reconcile_bootstrap",
-        lambda intent, **_kwargs: events.append("reconcile")
-        or bootstrap.BootstrapResult(intent, ()),
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
+        ),
     )
 
     status = bootstrap_cli.run_bootstrap(
@@ -221,6 +223,59 @@ def test_public_adapter_explicitly_replaces_during_upgrade(
 
     assert status == 0
     assert events == ["adopt:True", "reconcile"]
+
+
+def test_public_adapter_rejects_adoption_in_check_only(capsys):
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=True,
+            verbose=False,
+            adopt_installation=True,
+            upgrade_installation=False,
+        )
+    )
+
+    assert status == 2
+    assert "check-only" in capsys.readouterr().out
+
+
+def test_public_adapter_reports_adoption_failure(monkeypatch, capsys):
+    monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "adopt_host_installation",
+        lambda _source, *, replace: (_ for _ in ()).throw(
+            bootstrap_cli.HostInstallationError("adoption failed")
+        ),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            adopt_installation=True,
+            upgrade_installation=False,
+        )
+    )
+
+    assert status == 2
+    assert "adoption failed" in capsys.readouterr().out
+
+
+def test_skill_reconciliation_rejects_noncanonical_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "skills"
+    source.mkdir()
+    monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: "not canonical")
+
+    finding = bootstrap._reconcile_skills(Intent.CHECK)
+
+    assert finding.state is bootstrap.BootstrapState.ERROR
+    assert finding.detail == "not canonical"
 
 
 def test_vscode_requires_an_executable_or_installed_application(

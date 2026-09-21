@@ -189,9 +189,7 @@ def test_bare_booley_defaults_to_chat():
 
 
 def test_bootstrap_parser_exposes_only_host_reconciliation_flags():
-    args = tlr._build_parser().parse_args(
-        ["bootstrap", "--upgrade-installation", "--verbose"]
-    )
+    args = tlr._build_parser().parse_args(["bootstrap", "--upgrade-installation", "--verbose"])
     assert args.command == "bootstrap"
     assert args.upgrade_installation is True
     assert args.verbose is True
@@ -243,6 +241,23 @@ def test_noncanonical_host_command_stops_before_dispatch(monkeypatch, capsys):
         tlr,
         "_host_install_authority_error",
         lambda _command: "not the canonical host installation",
+    )
+
+    assert tlr.main() == 2
+    assert "not the canonical" in capsys.readouterr().err
+
+
+def test_host_authority_guard_resolves_packaged_skills(monkeypatch, capsys):
+    from booley.runtime import host_install, paths
+
+    args = tlr._build_parser().parse_args(["projects", "--json"])
+    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    monkeypatch.setattr(paths, "skills_dir", lambda: Path("/installed/skills"))
+    monkeypatch.setattr(
+        host_install,
+        "host_install_error",
+        lambda _source: "not the canonical host installation",
     )
 
     assert tlr.main() == 2

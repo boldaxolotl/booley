@@ -118,6 +118,21 @@ def test_host_diagnosis_rejects_mismatched_current_installation(monkeypatch):
     assert "--upgrade-installation" in finding.fix
 
 
+def test_host_diagnosis_reports_missing_current_installation(monkeypatch):
+    report = host_diagnostics.Findings()
+    monkeypatch.setattr(
+        host_diagnostics,
+        "load_host_installation",
+        lambda: (_ for _ in ()).throw(host_diagnostics.HostInstallationError("not installed")),
+    )
+
+    host_diagnostics._inspect_host_installation(report)
+
+    finding = report.report().findings[0]
+    assert finding.severity is Severity.FAIL
+    assert "not installed" in finding.message
+
+
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 @pytest.mark.parametrize(
     "directory, executable", [(False, None), (True, None), (False, "/bin/agent")]
