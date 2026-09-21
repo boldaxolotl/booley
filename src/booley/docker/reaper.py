@@ -10,9 +10,9 @@ are idle past a timeout or exceed the concurrency cap.
 Self-contained (stdlib only) so it runs in a minimal ``docker:cli`` + python
 image, mirroring ``proxy_entry.py``. It shells out to the ``docker`` CLI.
 
-Idle signal: the in-container MCP server writes an epoch timestamp to
+Idle signal: protected Sandbox activity writes an epoch timestamp to
 :data:`HEARTBEAT_PATH`; the reaper reads it via ``docker exec``. When no
-heartbeat is available (older session, MCP not started) it falls back to the
+heartbeat is available (older session, activity not started) it falls back to the
 container's start time, so the timeout degrades to a max-lifetime cap. The
 heartbeat is also clamped to that start time: it persists across stop→start in
 the writable layer, so a stale one must never make a just-booted container look
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -44,7 +45,7 @@ PROJECT_LABEL = "booley.project-id"
 LICENSE_LABEL = "booley.license-profile"
 RELAY_LABEL = "booley.role=license-relay"
 _PROJECT_ID_RE = re.compile(r"^[0-9a-f]{64}$")
-# Where the in-container MCP server records its last-activity epoch (WS4).
+# Where the Sandbox records its last protected-activity epoch.
 HEARTBEAT_PATH = "/tmp/booley_mcp_heartbeat"
 
 DEFAULT_IDLE_TIMEOUT_S = 7200
@@ -70,6 +71,19 @@ class LicenseOwnership:
     project_id: str | None
 
 
+@dataclass(frozen=True)
+class _HeartbeatReading:
+    value: float | None
+    status: str
+
+
+_HEARTBEAT_MISSING = "__BOOLEY_HEARTBEAT_MISSING__"
+_HEARTBEAT_READ_SCRIPT = (
+    f"if [ -f {HEARTBEAT_PATH} ]; then cat {HEARTBEAT_PATH}; "
+    f"else printf '%s\\n' {_HEARTBEAT_MISSING!r}; fi"
+)
+
+
 # ---------------------------------------------------------------------------
 # Pure policy
 # ---------------------------------------------------------------------------
@@ -89,15 +103,41 @@ def select_reap(
       * over-cap — among the non-idle survivors, the oldest beyond
         *max_sessions* (by ``started_at``, then ``id`` for determinism).
     """
+    reasons = _reap_reasons(
+        containers,
+        now=now,
+        idle_timeout=idle_timeout,
+        max_sessions=max_sessions,
+    )
+    return _ordered_reap_ids(containers, reasons)
+
+
+def _ordered_reap_ids(
+    containers: list[SessionContainer], reasons: dict[str, frozenset[str]]
+) -> list[str]:
+    """Return selected IDs in deterministic start-time order."""
+    return [
+        c.id for c in sorted(containers, key=lambda c: (c.started_at, c.id)) if c.id in reasons
+    ]
+
+
+def _reap_reasons(
+    containers: list[SessionContainer],
+    *,
+    now: float,
+    idle_timeout: float,
+    max_sessions: int,
+) -> dict[str, frozenset[str]]:
     idle = {c.id for c in containers if now - c.last_activity > idle_timeout}
     survivors = sorted(
         (c for c in containers if c.id not in idle),
         key=lambda c: (c.started_at, c.id),
     )
     over_cap = survivors[: max(0, len(survivors) - max_sessions)]
-    reap = idle | {c.id for c in over_cap}
-    # Deterministic, stable order for callers/tests.
-    return [c.id for c in sorted(containers, key=lambda c: (c.started_at, c.id)) if c.id in reap]
+    reasons: dict[str, set[str]] = {cid: {"idle"} for cid in idle}
+    for container in over_cap:
+        reasons.setdefault(container.id, set()).add("cap")
+    return {cid: frozenset(values) for cid, values in reasons.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -182,14 +222,41 @@ def _started_at(cid: str, run=_run) -> float | None:
 
 
 def _heartbeat(cid: str, run=_run) -> float | None:
-    """Read the MCP heartbeat epoch from inside *cid*, or None if unavailable."""
-    result = run(["exec", cid, "cat", HEARTBEAT_PATH])
+    """Read the protected-activity epoch from inside *cid*, or None if unavailable."""
+    return _read_heartbeat(cid, run).value
+
+
+def _read_heartbeat(cid: str, run=_run) -> _HeartbeatReading:
+    """Read the heartbeat while distinguishing absence from an execution error."""
+    result = run(["exec", cid, "sh", "-c", _HEARTBEAT_READ_SCRIPT])
     if result.returncode != 0:
-        return None
+        return _HeartbeatReading(None, "error")
+    raw = result.stdout.strip()
+    if raw == _HEARTBEAT_MISSING:
+        return _HeartbeatReading(None, "missing")
     try:
-        return float(result.stdout.strip())
+        value = float(raw)
     except (TypeError, ValueError):
-        return None
+        return _HeartbeatReading(None, "invalid")
+    return _HeartbeatReading(value, "valid" if math.isfinite(value) else "invalid")
+
+
+def _idle_after_revalidation(
+    container: SessionContainer,
+    *,
+    now: float,
+    idle_timeout: float,
+    run: Callable[..., subprocess.CompletedProcess],
+) -> bool:
+    reading = _read_heartbeat(container.id, run)
+    if reading.status in {"error", "invalid"}:
+        return False
+    last_activity = (
+        max(reading.value, container.started_at)
+        if reading.value is not None
+        else container.started_at
+    )
+    return now - last_activity > idle_timeout
 
 
 def collect(run: Callable[..., subprocess.CompletedProcess] = _run) -> list[SessionContainer]:
@@ -343,17 +410,27 @@ def reap_once(
 ) -> list[str]:
     """One reap pass: collect, select, stop. Returns the stopped IDs."""
     containers = collect(run)
-    to_reap = select_reap(
+    reasons = _reap_reasons(
         containers,
         now=now,
         idle_timeout=idle_timeout,
         max_sessions=max_sessions,
     )
+    by_id = {container.id: container for container in containers}
+    to_reap = _ordered_reap_ids(containers, reasons)
     stopped = []
     for cid in to_reap:
         ownership = license_ownership(cid, run)
         if not ownership.inspected:
             logger.warning("not stopping %s until its license ownership can be inspected", cid)
+            continue
+        if reasons[cid] == frozenset({"idle"}) and not _idle_after_revalidation(
+            by_id[cid],
+            now=now,
+            idle_timeout=idle_timeout,
+            run=run,
+        ):
+            logger.info("skipping %s; it became active before the idle stop decision", cid)
             continue
         if not stop_container(cid, run):
             continue
