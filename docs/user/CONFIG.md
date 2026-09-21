@@ -469,6 +469,14 @@ filesets:
   timing_constraints:
     files:
       - util/syn/sdc/block.sdc: {file_type: SDC}
+  synth_memory:
+    files:
+      - synth/top_ram_timing_surrogate.sv: {file_type: systemVerilogSource}
+parameters:
+  SYNTH_MEMORY_SURROGATE:
+    datatype: bool
+    paramtype: vlogdefine
+    default: true
 targets:
   synth:
     flow_options:
@@ -485,7 +493,8 @@ targets:
       advanced_settings_openroad:
         utilization_pct: 50
         placement_density: 0.75
-    filesets: [rtl, timing_constraints]
+    filesets: [rtl, timing_constraints, synth_memory]
+    parameters: [SYNTH_MEMORY_SURROGATE]
     toplevel: top
 ```
 
@@ -495,6 +504,14 @@ estimation, and its embedded STA. Its `area_um2` is post-optimization area and
 Target's SDC fileset. A physical Target without SDC is rejected before EDA
 execution, and OpenROAD rejects an SDC that creates no clocks. Booley loads the
 authored files in Target order and adds no generated timing constraints.
+
+A memory timing surrogate is an ordinary Verilog/SystemVerilog source. Put it
+in a synthesis-only fileset and let the project's RTL select it through a typed
+`vlogdefine` owned by the synthesis Target, as above. Simulation and lint
+Targets keep the functional memory RTL by omitting both that fileset and that
+define. No manifest or custom FuseSoC file type is involved. The surrogate is a
+timing-boundary approximation: synthesis results exclude the memory's real
+capacity, contents, macro area, power, placement, and internal timing arcs.
 
 `logical` runs only Yosys mapping. It is much faster and gives a useful mapped
 area estimate plus `estimated_fmax_mhz`, calculated from ABC's longest mapped

@@ -585,6 +585,30 @@ separate columns (see "How a row resolves"). The standard checklist:
 10. **Constraints** — physical ASIC synth needs an SDC per synth Target that
     creates at least one clock (hard error without one); FPGA needs an XDC
     fileset. Does the repo ship them, or must they be authored?
+10a. **Memory implementation** — for every enabled ASIC synthesis Target,
+    scan its reachable RTL and native synthesis scripts for instantiated
+    SRAM/RAM/register-file modules, large unpacked arrays,
+    implementation-selection defines/wrappers, and exported memory ports.
+    Record each candidate's source evidence, logical size, interface and clock
+    domains, synchronous/asynchronous read kind, visible latency, replacement
+    seam, one disposition (`exported_boundary`, `timing_surrogate`,
+    `standard_cell_storage`, or `blocked`), and confidence.
+
+    An exported boundary retains Target-authored SDC I/O intent. A deliberately
+    small inferred memory needs an explicit standard-cell bit budget. An
+    internal memory may use a timing surrogate only when its project-owned
+    replacement seam and timing shape are understood; scale alone never
+    decides the disposition.
+    Unsupported asynchronous reads, ambiguous collision-visible behavior,
+    unsupported independently clocked/multiported topology, or no source-level
+    replacement seam are `blocked` rather than guessed.
+
+    Use a safe read-only Yosys warning/statistics probe when one already exists,
+    but do not run a synthesis that can expand a substantial unclassified
+    memory. The synth verdict is Yellow while an adapter or timing semantics
+    still need authoring/confirmation, and Red for that Target when no safe seam
+    exists. RTL elaboration alone never makes this row Green. An enabled synth
+    Target with any unclassified candidate cannot be approved.
 11. **Style lint** — offer Verible style lint as a second lint Target only if
     the user wants it (offer, never impose). "Never impose" means
     never inflict a *foreign* style on a repo — it does not mean ignoring the

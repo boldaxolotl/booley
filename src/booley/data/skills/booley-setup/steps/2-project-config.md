@@ -248,6 +248,29 @@ Authoring rules:
   `.core`: a single `file_type: veribleLintRules` rules-config file and/or
   `file_type: veribleLintWaiver` waiver files in the Target's fileset
   (analogous to Verilator's `.vlt`). Never change existing Target shapes.
+- **Memory timing surrogates.** Implement every approved plan row 10a
+  disposition in the ASIC synthesis Target only. Prefer an existing
+  project-owned replacement seam: an implementation-selection define, wrapper,
+  or module hook; do not edit vendored/upstream RTL unless the approved plan
+  explicitly authorizes it. A timing surrogate is a project-owned module with
+  the original data, address,
+  enable, byte-enable, clock, and reset ports. Preserve clock domains,
+  synchronous/asynchronous read behavior, visible latency, registered output
+  stages, write endpoints, and read startpoints—not contents, capacity,
+  collision semantics, macro area/power/placement, or internal timing arcs.
+  Use independent retained scalar/packed state for write endpoints and read
+  startpoints; never create a universal write-to-read data path or an unpacked
+  depth-by-width array. Unsupported shapes remain blocked.
+
+  Write the surrogate as an ordinary Verilog/SystemVerilog source in a
+  synthesis-only fileset. Select it through a Target-owned
+  `paramtype: vlogdefine` implementation switch used by the project's RTL;
+  include neither the fileset nor the define in simulation, lint, or FPGA
+  Targets. Do not introduce a manifest or custom file type. Immediately run a
+  focused elaboration/Yosys statistics check proving that the intended module
+  was selected, the surrogate contributes zero inferred-memory cells, and its
+  mapped storage cost does not scale with the original memory depth. A mismatch
+  invalidates the plan instead of inviting a guessed model.
 - **`fpga` Targets:** `flow: generic`, `flow_options: {tool: vivado, …}`;
   `xdc` is a typed fileset, `top` is `toplevel`, and the board `part` plus
   `out_of_context` live in Target `flow_options`. **No `hooks:`** (decision 21,
