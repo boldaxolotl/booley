@@ -672,6 +672,8 @@ jobs:
         run: pip install pytest==9.1.1 pytest-asyncio==1.4.0
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          driver: docker
 
       - name: Build and audit sidecar candidates without cache
         shell: bash
@@ -837,10 +839,10 @@ jobs:
       - name: Build standard wheel overlay
         shell: bash
         run: |
-          sed 's/^FROM booley-substrate$/FROM booley-standard-substrate:ci/' \
-            src/booley/data/docker/Dockerfile.wheel \
-            > "${RUNNER_TEMP}/Dockerfile.wheel"
-          docker build --file "${RUNNER_TEMP}/Dockerfile.wheel" --tag booley-test .
+          docker buildx build --builder default --load \
+            --file src/booley/data/docker/Dockerfile.wheel \
+            --tag booley-test \
+            --build-context booley-substrate=docker-image://booley-standard-substrate:ci .
 
       - name: Capture Docker cache and layer evidence
         shell: bash
@@ -956,17 +958,15 @@ jobs:
             run: |
               mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
               set -o pipefail
-              sed 's/^FROM booley-standard-substrate$/FROM booley-standard-substrate:ci/' \
-                src/booley/data/docker/Dockerfile.riscv \
-                > "${RUNNER_TEMP}/Dockerfile.riscv"
-              docker build --file "${RUNNER_TEMP}/Dockerfile.riscv" \
-                --tag booley-riscv-substrate:ci . \
+              docker buildx build --builder default --load \
+                --file src/booley/data/docker/Dockerfile.riscv \
+                --tag booley-riscv-substrate:ci \
+                --build-context booley-standard-substrate=docker-image://booley-standard-substrate:ci . \
                 2>&1 | tee "${RUNNER_TEMP}/riscv-image-evidence/build.log"
-              sed 's/^FROM booley-substrate$/FROM booley-riscv-substrate:ci/' \
-                src/booley/data/docker/Dockerfile.wheel \
-                > "${RUNNER_TEMP}/Dockerfile.riscv-wheel"
-              docker build --file "${RUNNER_TEMP}/Dockerfile.riscv-wheel" \
-                --tag booley-riscv-test . \
+              docker buildx build --builder default --load \
+                --file src/booley/data/docker/Dockerfile.wheel \
+                --tag booley-riscv-test \
+                --build-context booley-substrate=docker-image://booley-riscv-substrate:ci . \
                 2>&1 | tee "${RUNNER_TEMP}/riscv-image-evidence/build.log"
               PYTHONPATH=src python .github/scripts/image_contract.py \
                 --image booley-riscv-test \
