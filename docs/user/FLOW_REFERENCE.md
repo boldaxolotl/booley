@@ -130,10 +130,11 @@ Useful controls:
   then adds the stronger reusable-module sweep.
 - `--elab-only`, `--build-only`, and their combination with `--standalone`
   remain deprecated CLI-only aliases for one compatibility window.
-- `--test <substring>` selects every registered test whose name contains the
-  substring. For a Target with no registered test list, the value is passed
-  through as the test name.
-- `--skip <name,...>` excludes exact registered test names.
+- `--test <name>` selects one registered test by exact name and may be repeated.
+- `--tests-file <path>` selects exact names from a UTF-8 file, one per line;
+  blanks and `#` comments are ignored. It cannot be combined with `--test`.
+- Duplicate, unknown, empty, or catalog-less named selections fail before
+  simulation. Every explicit name must exist in every selected Target.
 - `--trace` captures a waveform artifact.
 - `--coverage` (permanent alias `--cov`) explicitly collects a native Verilator
   Coverage Campaign. MCP uses boolean `coverage: true`; the default is false.
@@ -158,7 +159,7 @@ unchanged.
 
 Elaboration Check mode skips Pre-Sim Commands, test selection, Cocotb Python,
 run guards, sentinels, and tracing. Run-only arguments such as `--test`,
-`--skip`, `--trace`, `--result-verbosity full`, and `--no-kill` are rejected in
+`--tests-file`, `--trace`, `--result-verbosity full`, and `--no-kill` are rejected in
 this mode. Only Simulation Targets are eligible. A compiler diagnostic that
 proves the RTL was rejected is exit `1`; setup, missing-tool, timeout, OOM,
 signal/crash, filesystem, and ambiguous nonzero failures are exit `2` and do

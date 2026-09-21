@@ -525,8 +525,8 @@ class TestCocotbBatching:
         command = result.detail["work_units"][0]["commands"][0]["argv"]
         assert "--expected-trace-scope counter" in command[-1]
 
-    def test_substr_filter_prunes_the_selected_set(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "count"])
+    def test_exact_filter_prunes_the_selected_set(self, tmp_path: Path):
+        flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "test_count"])
         calls: list[list[str]] = []
 
         def _capture(self, cmd):
@@ -559,9 +559,9 @@ class TestCocotbBatching:
         assert "--test=test_count" in script
         assert "test_reset" not in script
 
-    def test_skip_prunes_but_never_empties(self, tmp_path: Path):
-        """G4: `skip` works unchanged on a Cocotb Target."""
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--skip", "test_fail_assert"])
+    def test_configured_skip_prunes_but_never_empties(self, tmp_path: Path):
+        """Project-configured skip works unchanged on a Cocotb Target."""
+        flow = _make_cocotb_flow(tmp_path)
         calls: list[list[str]] = []
 
         def _capture(self, cmd):
@@ -591,6 +591,10 @@ class TestCocotbBatching:
             patch(
                 "booley.flows.sim.flow._get_test_names",
                 return_value=dict(_TESTS),
+            ),
+            patch(
+                "booley.flows.sim.flow._get_test_skips",
+                return_value={"ccfg": ["test_fail_assert"]},
             ),
         ):
             result = flow._run()

@@ -54,7 +54,7 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
     "sim": (
         "`--mode elab-only` compiles, elaborates, and links without running tests; "
         "`--mode elab-only-standalone` adds the stronger module sweep. "
-        "`--test <name>` selects a test, `--skip <name,...>` excludes tests, "
+        "repeat `--test <name>` for exact tests or use `--tests-file <path>`, "
         "`--coverage` / `--cov` collects a native Coverage Campaign, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "

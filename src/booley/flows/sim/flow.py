@@ -15,7 +15,7 @@ import re
 import shlex
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -669,16 +669,18 @@ def _get_test_selects(work_dir: Path | str | None = None) -> dict[str, str]:
         return {}
 
 
-def _filter_tests(tests: list[str], substring: str) -> list[str]:
-    """Filter test names by substring match."""
-    return [t for t in tests if substring in t]
+def _filter_tests(tests: list[str], exact_names: str | Sequence[str]) -> list[str]:
+    """Select registered tests by exact name while preserving request order."""
+    requested = (exact_names,) if isinstance(exact_names, str) else tuple(exact_names)
+    available = set(tests)
+    return [name for name in requested if name in available]
 
 
 def _selected_test_work_units(
     target: str,
     test_names: Mapping[str, list[str]],
     configured_skips: Mapping[str, list[str]],
-    test_selector: str | None,
+    test_selector: Sequence[str] | str | None,
     skip_arg: str | None,
 ) -> int:
     """Simulator processes a non-cocotb Target will launch, at least one."""
@@ -701,7 +703,7 @@ def _selected_test_work_units(
 def _resolve_sim_campaign_work_units(
     work_dir: Path,
     target_arg: str,
-    test_selector: str | None = None,
+    test_selector: Sequence[str] | str | None = None,
     skip_arg: str | None = None,
     mode: SimulationMode | str = SimulationMode.SIMULATE,
 ) -> int:
@@ -1206,18 +1208,27 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     # long enough for the child sim timeout plus one non-FIFO trace retry.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
 
+    @property
+    def _mode(self) -> SimulationMode:
+        """Effective mode without erasing whether the caller supplied it."""
+        return self.args.mode or SimulationMode.SIMULATE
+
     def _resolve_display_label(self) -> str | None:
         """Describe the requested Target/test scope without validating it."""
         targets = self._requested_targets()
-        if self.args.mode.elaborates_only:
+        if self._mode.elaborates_only:
             return format_flow_display_label(targets, mode="elaboration")
         try:
             test_names = _get_test_names(self.args.work_dir)
-            selected = [
-                test
-                for target in targets
-                for test in self._resolve_tests_to_run(target, test_names)
-            ]
+            selected = (
+                [name for _target in targets for name in self.args.test]
+                if self.args.test
+                else [
+                    test
+                    for target in targets
+                    for test in self._resolve_tests_to_run(target, test_names)
+                ]
+            )
         except Exception:  # display metadata must not block a Flow run
             logger.debug("could not resolve simulation display scope", exc_info=True)
             return format_flow_display_label(targets, tests=None)
@@ -1380,7 +1391,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
-                detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
+                detail={"mode": self._mode.value, "plan": plan.as_dict()},
             )
 
         return None
@@ -1404,7 +1415,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         return FlowPlan(
             flow="sim",
-            mode=self.args.mode.value,
+            mode=self._mode.value,
             work_units=(*baseline_units, *candidate_units),
             aggregate_errors=(*baseline_errors, *candidate_errors),
         )
@@ -1457,7 +1468,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         recipe = {
             "environment_fingerprint": plan_value_fingerprint(environment),
             "flow_options": preview.flow_options,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "result_verbosity": self.args.result_verbosity,
             "toplevel": preview.toplevel,
             "trace": self.args.trace,
@@ -1543,7 +1554,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if getattr(self.args, "coverage", False)
             else self._run_selected_mode()
         )
-        result.detail["mode"] = self.args.mode.value
+        result.detail["mode"] = self._mode.value
         return result
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
@@ -1560,7 +1571,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             prepare_coverage_invocation,
         )
 
-        if self.args.mode.elaborates_only:
+        if self._mode.elaborates_only:
             return EndpointOutcome(exit_code=2, report_text="Coverage requires simulation mode")
         if not self._flow_enabled():
             return EndpointOutcome(exit_code=2, report_text="sim is disabled")
@@ -1576,11 +1587,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             prepared = prepare_coverage_invocation(
                 CoverageInvocationRequest(
                     tuple(self._requested_targets()),
+                    tests=self.args.test or None,
                     trace=self.args.trace,
-                    test_filter=self.args.test,
-                    skip=tuple(
-                        part.strip() for part in (self.args.skip or "").split(",") if part.strip()
-                    ),
                 ),
                 context,
             )
@@ -1705,7 +1713,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         mode_error = self._validate_mode_args()
         if mode_error is not None:
             return mode_error
-        if self.args.mode.elaborates_only:
+        if self._mode.elaborates_only:
             return self._run_elab_only()
         total_start = time.monotonic()
         resolution_started = total_start
@@ -1773,7 +1781,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets_passed = sum(1 for r in all_results if r.passed)
         any_elab_failed = any(r.elab_failed for r in all_results)
         detail: dict[str, Any] = {
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "targets": len(all_results),
             "targets_passed": targets_passed,
             "elapsed_s": round(total_elapsed, 1),
@@ -1847,11 +1855,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     "sim: --standalone alone is invalid; use --mode elab-only-standalone"
                 ),
             )
-        if not self.args.mode.elaborates_only:
+        if not self._mode.elaborates_only:
             return None
         conflicts = (
-            ("--test", self.args.test is not None),
-            ("--skip", self.args.skip is not None),
+            ("--test", bool(self.args.test)),
             ("--trace", self.args.trace),
             ("--result-verbosity full", self.args.result_verbosity == "full"),
             ("--no-kill", self.args.no_kill),
@@ -1861,7 +1868,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: {argument} conflicts with --mode {self.args.mode.value}; "
+                        f"sim: {argument} conflicts with --mode {self._mode.value}; "
                         f"remove {argument} or use --mode simulate."
                     ),
                 )
@@ -1878,7 +1885,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if missing is not None:
             target, exc = missing
             result = self._missing_executable_result(exc, target)
-            result.detail["mode"] = self.args.mode.value
+            result.detail["mode"] = self._mode.value
             result.detail["targets"] = [
                 self._elab_only_detail(target_result) for target_result in results
             ]
@@ -1916,16 +1923,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim is disabled ([flows.sim].enabled = false).",
-                detail={"mode": self.args.mode.value},
+                detail={"mode": self._mode.value},
             )
         targets_or_error = self._resolve_requested_targets()
         if isinstance(targets_or_error, EndpointOutcome):
-            targets_or_error.detail["mode"] = self.args.mode.value
+            targets_or_error.detail["mode"] = self._mode.value
             return targets_or_error
         targets = targets_or_error
         target_error = self._validate_interactive_args(targets)
         if target_error is not None:
-            target_error.detail["mode"] = self.args.mode.value
+            target_error.detail["mode"] = self._mode.value
             return target_error
         plan = self._plan_elaboration(targets)
         self._flow_plan = plan
@@ -1935,7 +1942,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
-                detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
+                detail={"mode": self._mode.value, "plan": plan.as_dict()},
             )
         return targets
 
@@ -1956,7 +1963,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         return FlowPlan(
             flow="sim",
-            mode=self.args.mode.value,
+            mode=self._mode.value,
             work_units=tuple(units),
             aggregate_errors=tuple(errors),
         )
@@ -1973,7 +1980,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         recipe = {
             "environment_fingerprint": plan_value_fingerprint(self._target_sim_env(target)),
             "flow_options": inspection.flow_options,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "toplevel": inspection.toplevel,
         }
         return WorkUnitPlan(
@@ -2041,7 +2048,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             parameters={},
             recipe={
                 "frontend": standalone.frontend,
-                "mode": self.args.mode.value,
+                "mode": self._mode.value,
                 "module_sources": [
                     {"module": module, "source": source} for module, source in standalone.modules
                 ],
@@ -2125,7 +2132,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if eda_tools:
             self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
         detail: dict[str, Any] = {
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "targets": [self._elab_only_detail(result) for result in results],
         }
         artifacts = {
@@ -2275,7 +2282,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             result.outcome.passed,
             source_target=result.target,
             detail={
-                "mode": self.args.mode.value,
+                "mode": self._mode.value,
                 "target": result.target,
                 "elapsed_s": round(result.outcome.elapsed_s, 3),
                 "error_gist": (
@@ -2331,7 +2338,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return
         report = {
             "flow": "sim",
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "timestamp": utc_now_rfc3339(),
             **self._elab_only_detail(result),
         }
@@ -2356,7 +2363,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         completed = [result.target for result in results]
         payload = {
             "flow": self.name,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
             "timestamp": utc_now_rfc3339(),
             "phase": phase,
@@ -2696,7 +2703,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             target_result.passed,
             source_target=target_result.target,
             detail={
-                "mode": self.args.mode.value,
+                "mode": self._mode.value,
                 "tests_passed": sum(1 for t in target_result.tests if t.passed),
                 "tests_total": len(target_result.tests),
                 "test_selector": self.args.test or ("all" if complete_suite else "partial"),
@@ -2732,7 +2739,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if met and relative:
                 met, reason = _admissible_cycle_evidence(baseline, "baseline")
             detail = {
-                "mode": self.args.mode.value,
+                "mode": self._mode.value,
                 "target": target_result.target,
                 "target_identity": target_result.target_identity,
                 "test": test_name,
@@ -3212,16 +3219,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         ]
 
     def _effective_skips(self, target: str) -> set[str]:
-        """Test names to exclude for *target*: tests.toml ``skip`` union ``--skip``.
-
-        The config list (``TEST_SKIP``) carries a project's durable known-hangs;
-        the ``--skip`` arg adds ad-hoc ones for a single call. Both match test
-        names exactly (unlike ``--test``'s substring include-filter).
-        """
-        skips = set(lookup_target_section(_get_test_skips(self.args.work_dir), target) or [])
-        if self.args.skip:
-            skips.update(s.strip() for s in self.args.skip.split(",") if s.strip())
-        return skips
+        """Return Project-configured exact names excluded by default."""
+        return set(lookup_target_section(_get_test_skips(self.args.work_dir), target) or [])
 
     def _validate_test_selector(
         self,
@@ -3242,20 +3241,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         unknown). Returns an ``EXIT_ERROR`` EndpointOutcome on the first offending
         target, else ``None``.
         """
-        selector = self.args.test
-        if not selector:
+        selectors = self.args.test
+        if not selectors:
             return None
         for target in targets:
             available = lookup_target_section(test_names_map, target) or []
-            if available and not _filter_tests(available, selector):
+            if not available:
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: --test {selector!r} matched no test for "
-                        f"target {target!r}. Declared tests: "
-                        f"{', '.join(available)}. (Running it would silently "
-                        "execute the testbench's default test and report a "
-                        "false PASS.)"
+                        f"sim: exact named selection requires target {target!r} "
+                        "to have a registered test catalog"
+                    ),
+                )
+            unknown = [name for name in selectors if name not in available]
+            if unknown:
+                return EndpointOutcome(
+                    exit_code=EXIT_ERROR,
+                    report_text=(
+                        f"sim: unknown exact test(s) for target {target!r}: "
+                        f"{', '.join(unknown)}. Declared tests: {', '.join(available)}."
                     ),
                 )
         return None
@@ -3308,9 +3313,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: {exc}. Tests are excluded by tests.toml `skip` or "
-                        "--skip. Remove a skip "
-                        "or explicitly select one test with --test."
+                        f"sim: {exc}. Tests are excluded by tests.toml `skip`. "
+                        "Remove a configured skip or explicitly select a test "
+                        "with --test."
                     ),
                 )
         return None
@@ -3322,7 +3327,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> list[str | None]:
         """Resolve the list of tests to run for a target, minus skip list.
 
-        Skips (tests.toml ``skip`` + ``--skip``) prune known-hanging tests so
+        Project-configured skips prune known-hanging tests so
         they don't each burn the full per-test wall-clock budget. An explicit
         ``--test`` selector that matches *only* skipped tests still runs them —
         naming a test by hand is a clear override of the skip list. When every
@@ -3331,24 +3336,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """
         if self.args.test:
             available_tests = lookup_target_section(test_names_map, target) or []
-            skips = self._effective_skips(target)
             matched = _filter_tests(available_tests, self.args.test)
-            # No match: a declared-but-unmatched name is rejected up front by
-            # _validate_test_selector, so this branch is only reached when the
-            # target declares no test list — a raw passthrough the TB owns.
-            if not matched:
-                return [self.args.test]
-            kept: list[str | None] = [t for t in matched if t not in skips]
-            # Explicit --test naming only skipped tests overrides the skip list.
-            return kept or cast(list[str | None], matched)
-        if self.args.skip:
-            available_tests = lookup_target_section(test_names_map, target) or []
-            if not available_tests:
-                return [None]
-            kept: list[str | None] = [
-                test for test in available_tests if test not in self._effective_skips(target)
-            ]
-            return kept
+            return cast(list[str | None], matched)
         suite = resolve_target_test_suite(
             target,
             test_names=test_names_map,
@@ -3367,11 +3356,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         report what was skipped — silent truncation reads as "ran everything".
         Empty when nothing was skipped or when ``--test`` overrode the skip list.
         """
-        if self.args.test or self.args.skip:
-            run = set(self._resolve_tests_to_run(target, test_names_map))
-            skips = self._effective_skips(target)
-            available = lookup_target_section(test_names_map, target) or []
-            return [t for t in available if t in skips and t not in run]
+        if self.args.test:
+            return []
         return list(
             resolve_target_test_suite(
                 target,
@@ -3411,7 +3397,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Compose best-effort build context around one Target verdict."""
         report: dict[str, Any] = {
             "flow": self.name,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "target": result.target,
             "target_identity": result.target_identity,
             "tb_top": result.tb_top,
@@ -3458,7 +3444,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         completed = [result.target for result in results]
         payload: dict[str, Any] = {
             "flow": self.name,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
             "timestamp": utc_now_rfc3339(),
             "phase": phase,
@@ -3508,7 +3494,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             f"elab_pass_{result.target}",
             met,
             source_target=result.target,
-            detail={"mode": self.args.mode.value, "target": result.target, "attempts": attempts},
+            detail={"mode": self._mode.value, "target": result.target, "attempts": attempts},
         )
 
 

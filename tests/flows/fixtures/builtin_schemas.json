@@ -73,12 +73,12 @@
         "default": "simulate"
       },
       "test": {
-        "type": "string",
-        "description": "Run specific test by name (substring match)"
-      },
-      "skip": {
-        "type": "string",
-        "description": "Comma-separated test names to exclude (exact match). Adds to any [flows.sim] / tests.toml 'skip' list. Use to dodge known-hanging tests that burn the full wall-clock budget."
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Run one exact registered test (repeat for multiple tests)",
+        "default": []
       },
       "trace": {
         "type": "boolean",

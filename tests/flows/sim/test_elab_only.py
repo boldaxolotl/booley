@@ -150,7 +150,6 @@ def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
     ("extra", "argument"),
     [
         (["--test", "smoke"], "--test"),
-        (["--skip", "slow"], "--skip"),
         (["--trace"], "--trace"),
         (["--result-verbosity", "full"], "--result-verbosity full"),
         (["--no-kill"], "--no-kill"),

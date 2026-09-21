@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 from typing import Any
 
 from booley.flows.cli_arguments import BuiltinArguments
@@ -28,15 +29,16 @@ class SimArguments(BuiltinArguments):
         SimArguments._add_elaboration_args(parser)
         parser.add_argument(
             "--test",
-            default=None,
-            help="Run specific test by name (substring match)",
+            action="append",
+            default=[],
+            metavar="NAME",
+            help="Run one exact registered test (repeat for multiple tests)",
         )
         parser.add_argument(
-            "--skip",
+            "--tests-file",
+            type=Path,
             default=None,
-            help="Comma-separated test names to exclude (exact match). Adds to "
-            "any [flows.sim] / tests.toml 'skip' list. Use to dodge "
-            "known-hanging tests that burn the full wall-clock budget.",
+            help="Read exact test names from PATH, one per line; blanks and # comments ignored",
         )
         SimArguments._add_run_control_args(parser)
 
@@ -84,10 +86,32 @@ class SimArguments(BuiltinArguments):
             args.mode = SimulationMode.ELAB_ONLY_STANDALONE
         elif args._legacy_elab_only:
             args.mode = SimulationMode.ELAB_ONLY
-        elif args.mode is None:
-            args.mode = SimulationMode.SIMULATE
+        if args.test and args.tests_file is not None:
+            parser.error("--test and --tests-file are mutually exclusive")
+        if args.tests_file is not None:
+            args.test = SimArguments._read_tests_file(args.tests_file, parser)
+        duplicates = sorted({name for name in args.test if args.test.count(name) > 1})
+        if duplicates:
+            parser.error("duplicate exact test name(s): " + ", ".join(duplicates))
+        args.test = tuple(args.test)
+        del args.tests_file
         vars(args).pop("_legacy_elab_only")
         vars(args).pop("_legacy_standalone")
+
+    @staticmethod
+    def _read_tests_file(path: Path, parser: argparse.ArgumentParser) -> list[str]:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            parser.error(f"cannot read --tests-file {path}: {exc}")
+        names = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not names:
+            parser.error("--tests-file contains no test names")
+        return names
 
     @staticmethod
     def _add_run_control_args(parser: Any) -> None:

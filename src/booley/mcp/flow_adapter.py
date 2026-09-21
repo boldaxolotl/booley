@@ -21,4 +21,6 @@ def flow_schema(endpoint: Any) -> dict[str, Any]:
         properties.pop("_legacy_elab_only", None)
         properties.pop("_legacy_standalone", None)
         properties["mode"]["default"] = "simulate"
+        # A local file selector is CLI-only. MCP sends exact names directly.
+        properties.pop("tests_file", None)
     return schema

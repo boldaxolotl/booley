@@ -186,8 +186,8 @@ def test_display_label_names_one_requested_test(tmp_path: Path):
     assert label == "target sim_mul · test smoke"
 
 
-def test_display_label_counts_distinct_matching_tests(tmp_path: Path):
-    flow = _display_flow(tmp_path, "sim_mul", "--test", "mul")
+def test_display_label_counts_distinct_exact_tests(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_mul", "--test", "mul_base", "--test", "mul_edge")
 
     with (
         patch(
@@ -201,15 +201,15 @@ def test_display_label_counts_distinct_matching_tests(tmp_path: Path):
     assert label == "target sim_mul · 2 tests"
 
 
-def test_display_label_applies_skips_before_naming_test(tmp_path: Path):
-    flow = _display_flow(tmp_path, "sim_mul", "--skip", "edge")
+def test_display_label_applies_configured_skips_before_naming_test(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_mul")
 
     with (
         patch(
             "booley.flows.sim.flow._get_test_names",
             return_value={"sim_mul": ["smoke", "edge"]},
         ),
-        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+        patch("booley.flows.sim.flow._get_test_skips", return_value={"sim_mul": ["edge"]}),
     ):
         label = flow._resolve_display_label()
 
@@ -869,13 +869,16 @@ class TestSvaErrorParsing:
 
 
 class TestFilterTests:
-    def test_substring_match(self):
+    def test_partial_name_does_not_match(self):
         tests = ["lite_smoke", "lite_stress", "lite_boot"]
-        assert _filter_tests(tests, "stress") == ["lite_stress"]
+        assert _filter_tests(tests, "stress") == []
 
-    def test_multiple_matches(self):
+    def test_multiple_exact_names_preserve_request_order(self):
         tests = ["lite_smoke", "lite_stress", "lite_boot"]
-        assert _filter_tests(tests, "lite_") == tests
+        assert _filter_tests(tests, ("lite_boot", "lite_smoke")) == [
+            "lite_boot",
+            "lite_smoke",
+        ]
 
     def test_no_match(self):
         tests = ["lite_smoke", "lite_stress"]
@@ -907,24 +910,17 @@ class TestSkipList:
             ]
             assert flow._skipped_tests("lite", self._NAMES) == ["lite_stress"]
 
-    def test_cli_skip_adds_to_config_skip(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--skip", "lite_boot"])
+    def test_multiple_config_skips(self, tmp_path: Path):
+        flow = _make_flow(tmp_path, config="lite")
         with patch(
-            "booley.flows.sim.flow._get_test_skips", return_value={"lite": ["lite_stress"]}
+            "booley.flows.sim.flow._get_test_skips",
+            return_value={"lite": ["lite_stress", "lite_boot"]},
         ):
             assert flow._resolve_tests_to_run("lite", self._NAMES) == ["lite_smoke"]
             assert sorted(flow._skipped_tests("lite", self._NAMES)) == [
                 "lite_boot",
                 "lite_stress",
             ]
-
-    def test_cli_skip_comma_separated(self, tmp_path: Path):
-        flow = _make_flow(
-            tmp_path,
-            config="lite",
-            extra_args=["--skip", "lite_stress, lite_boot"],
-        )
-        assert flow._resolve_tests_to_run("lite", self._NAMES) == ["lite_smoke"]
 
     def test_explicit_test_overrides_skip(self, tmp_path: Path):
         # Naming a skipped test by hand is a clear override of the skip list.
@@ -983,21 +979,17 @@ class TestUnknownTestSelector:
         # The declared tests are listed so the fix (a typo) is one hop away.
         assert "lite_smoke" in result.report_text
 
-    def test_valid_substring_passes(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "stress"])
+    def test_valid_exact_name_passes(self, tmp_path: Path):
+        flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "lite_stress"])
         assert flow._validate_test_selector(["lite"], self._NAMES) is None
 
     def test_no_selector_is_noop(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         assert flow._validate_test_selector(["lite"], self._NAMES) is None
 
-    def test_no_declared_list_passes_through(self, tmp_path: Path):
-        # A target that declares no test list keeps the raw-passthrough contract
-        # (the TB owns the plusarg) — matching resolve_target_selection's skip
-        # while the Target list is unknown. No false-green here: with no declared
-        # list there is no "known-good" name a typo could be measured against.
+    def test_no_declared_list_rejects_named_selection(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "anything"])
-        assert flow._validate_test_selector(["lite"], {}) is None
+        assert flow._validate_test_selector(["lite"], {}) is not None
 
     def test_unknown_for_one_of_many_targets_errors(self, tmp_path: Path):
         # Valid for one target, absent from another → still an error: the target

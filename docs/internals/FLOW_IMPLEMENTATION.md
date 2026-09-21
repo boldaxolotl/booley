@@ -270,7 +270,7 @@ owns the exact simulation keys and defaults, while its
 [design-description section](../user/CONFIG.md#design-description-core-and-tests-teststoml)
 owns the `tests.toml` schema.
 
-The CLI selectors `--test` (substring include-filter), `--skip`, `--trace`
+The CLI selectors `--test` (repeatable exact include), `--tests-file`, `--trace`
 (debug-only; never a pass/fail source), `--timeout-ms`, and `--dry-run` resolve
 against those config entries rather than acting as raw command fragments.
 
@@ -387,7 +387,7 @@ a later full simulation can reuse the retained image.
 
 Only Simulation Targets are eligible. `--mode elab-only-standalone` is a
 cumulative stronger module sweep. Both elaboration modes reject run-only
-arguments such as `--test`, `--skip`, `--trace`, `--result-verbosity full`, and
+arguments such as `--test`, `--tests-file`, `--trace`, `--result-verbosity full`, and
 `--no-kill`.
 
 A compiler diagnostic that proves the design was rejected is a design FAIL

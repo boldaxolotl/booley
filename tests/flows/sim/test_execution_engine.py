@@ -903,6 +903,7 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
     pytest.importorskip("edalize")
     project = tmp_path / "project"
     state = _write_runtime_input_project(project)
+    (state / "tests.toml").write_text('[sim]\ntests = ["dhry"]\n', encoding="utf-8")
     fake_bin = _write_fake_icarus_tools(tmp_path)
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
@@ -930,6 +931,7 @@ def test_projected_core_bad_overlay_reaches_design_failure(
     pytest.importorskip("edalize")
     project = tmp_path / "project"
     state = _write_runtime_input_project(project)
+    (state / "tests.toml").write_text('[sim]\ntests = ["dhry"]\n', encoding="utf-8")
     (project / ".booley-projected-demo.core").write_text(
         "CAPI=2:\nname: acme:lib:projected:1\n", encoding="utf-8"
     )
