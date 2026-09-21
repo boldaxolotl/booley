@@ -397,11 +397,11 @@ def _build_yosys_script(
         abc_delay_ps=abc_delay_ps,
     )
 
-    # Step 6: run one authoritative structural check on the final mapped
-    # netlist. ``synth`` runs CHECK internally more than once, so its log can
-    # contain repeated or transient loop/driver warnings.  Keeping this pass
-    # quiet and in its own artifact gives result interpretation one exact
-    # source of truth without duplicating it in yosys.log.
+    # Step 6: run one structural check on the final mapped netlist. ``synth``
+    # runs CHECK internally more than once, so its log can contain repeated
+    # loop/driver warnings. Keeping this pass quiet and in its own artifact
+    # gives result interpretation an exact final count without duplicating it
+    # in yosys.log. Any earlier loop warning remains fatal even if absent here.
     check_out = q(out_dir + "/check_" + design_name + ".txt")
     final_check = f"tee -q -o {check_out} check"
 

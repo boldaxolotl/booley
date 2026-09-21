@@ -38,7 +38,7 @@ _BENIGN_STA_0503_RE = re.compile(
 
 @dataclass(frozen=True)
 class StructuralConditions:
-    """Final mapped-netlist structural counts and evidence completeness."""
+    """Structural counts and final-check evidence completeness."""
 
     complete: bool = False
     comb_loops: int = 0
@@ -309,15 +309,22 @@ def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
     if _YOSYS_CHECK_COMPLETE_RE.search(final_check) is None:
         return StructuralConditions()
     records = _yosys_records(final_check)
+    final_comb_loops = sum(item.category == "combinational_loop" for item in records)
+    earlier_comb_loop = any(
+        item.category == "combinational_loop" for item in _yosys_records(sources.get("yosys", ""))
+    )
     return StructuralConditions(
         complete=True,
-        comb_loops=sum(item.category == "combinational_loop" for item in records),
+        # The final check provides an exact count. Earlier synth checks can
+        # repeat the same diagnostic, so retain their presence as a
+        # conservative lower bound instead of summing their occurrences.
+        comb_loops=final_comb_loops or int(earlier_comb_loop),
         multi_driven=sum(item.category == "multi_driver" for item in records),
     )
 
 
 def parse_synth_diagnostics(sources: Mapping[str, str]) -> SynthDiagnostics:
-    """Parse fresh stage text into bounded warnings and final conditions."""
+    """Parse fresh stage text into bounded warnings and structural conditions."""
     return SynthDiagnostics(
         warnings=_warning_summary(_records(sources)),
         structural=_structural_conditions(sources),
