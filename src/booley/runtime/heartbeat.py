@@ -1,17 +1,21 @@
 """Shared heartbeat timer for long-running subprocesses.
 
 Used by simulator run-halves and the harness to print periodic progress updates
-so the terminal does not appear stuck. Each tick also refreshes the Session
-Runtime idle-reaper timestamp, so interactive long-running Booley Flows count as
-activity just like ticket-driven runs.
+so the terminal does not appear stuck. Each tick also refreshes the Sandbox
+activity heartbeat, so interactive long-running Booley Flows count as activity
+just like ticket-driven runs.
 """
 
 from __future__ import annotations
 
+import fcntl
+import math
 import os
+import tempfile
 import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 HeartbeatRenderer = Callable[[str, str, str], None]
@@ -23,14 +27,13 @@ HeartbeatRenderer = Callable[[str, str, str], None]
 
 # Epoch-seconds file the idle reaper (booley.docker.reaper) reads via
 # ``docker exec`` to decide whether the Sandbox container is idle.
-# Touched by every MCP server (HTTP and stdio) on endpoint activity and by the
-# ``booley run`` loop while a ticket is active, so active tickets never read
-# as idle even without MCP traffic.
+# Touched by MCP servers, the ``booley run`` loop, and supervised Sandbox
+# Attachments while protected work is active.
 REAPER_HEARTBEAT_PATH = "/tmp/booley_mcp_heartbeat"
 
 
 def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
-    """Best-effort write of wall-clock epoch seconds for the idle reaper.
+    """Best-effort atomic publication of wall-clock epoch seconds.
 
     The heartbeat is advisory: any OSError is swallowed so a full disk or a
     read-only ``/tmp`` never breaks the caller (MCP server, ticket runner).
@@ -38,11 +41,39 @@ def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
     """
     if not path:
         return
+    heartbeat = Path(path)
+    temporary: str | None = None
     try:
-        with Path(path).open("w", encoding="utf-8") as fh:
-            fh.write(f"{time.time():.0f}\n")
+        lock_path = heartbeat.with_name(f".{heartbeat.name}.lock")
+        with lock_path.open("a+", encoding="ascii") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            previous = _read_valid_epoch(heartbeat)
+            candidate = time.time()
+            if previous is not None:
+                candidate = max(candidate, previous)
+            fd, temporary = tempfile.mkstemp(
+                dir=heartbeat.parent,
+                prefix=f".{heartbeat.name}.",
+                suffix=".tmp",
+                text=True,
+            )
+            with os.fdopen(fd, "w", encoding="ascii") as fh:
+                fh.write(f"{candidate:.0f}\n")
+            Path(temporary).replace(heartbeat)
+            temporary = None
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except OSError:
-        pass
+        if temporary is not None:
+            with suppress(OSError):
+                Path(temporary).unlink()
+
+
+def _read_valid_epoch(path: Path) -> float | None:
+    try:
+        value = float(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def fmt_elapsed(secs: float) -> str:

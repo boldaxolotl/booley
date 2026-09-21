@@ -168,6 +168,51 @@ class TestCollectAndReap:
         assert stopped == []
         assert not run.ran("stop", "abc")
 
+    def test_fresh_revalidation_prevents_idle_stop(self):
+        heartbeat_reads = iter(["10.0\n", "999.0\n"])
+
+        def run(args, *, timeout=30):
+            del timeout
+            if args[0] == "ps":
+                return _cp(0, stdout="abc\tname\n")
+            if args[0] == "inspect" and "StartedAt" in args[-1]:
+                return _cp(0, stdout="1970-01-01T00:00:10Z")
+            if args[0] == "exec":
+                return _cp(0, stdout=next(heartbeat_reads))
+            return _cp(0, stdout="{}")
+
+        assert reaper.reap_once(now=1000, idle_timeout=100, max_sessions=4, run=run) == []
+
+    def test_stale_revalidation_still_stops_idle_container(self):
+        run = FakeRun(
+            [
+                (lambda a: a[0] == "ps", _cp(0, stdout="abc\tname\n")),
+                (
+                    lambda a: a[0] == "inspect" and "StartedAt" in a[-1],
+                    _cp(0, stdout="1970-01-01T00:00:10Z"),
+                ),
+                (lambda a: a[0] == "exec", _cp(0, stdout="10.0\n")),
+            ]
+        )
+        assert reaper.reap_once(now=1000, idle_timeout=100, max_sessions=4, run=run) == ["abc"]
+        assert run.ran("stop", "abc")
+
+    def test_fresh_revalidation_does_not_exempt_session_cap(self):
+        heartbeat_reads = {"old": iter(["900.0\n", "999.0\n"]), "new": iter(["900.0\n"])}
+
+        def run(args, *, timeout=30):
+            del timeout
+            if args[0] == "ps":
+                return _cp(0, stdout="old\told\nnew\tnew\n")
+            if args[0] == "inspect" and "StartedAt" in args[-1]:
+                started = "1970-01-01T00:00:10Z" if "old" in args else "1970-01-01T00:00:20Z"
+                return _cp(0, stdout=started)
+            if args[0] == "exec":
+                return _cp(0, stdout=next(heartbeat_reads[args[1]]))
+            return _cp(0, stdout="{}")
+
+        assert reaper.reap_once(now=1000, idle_timeout=100, max_sessions=1, run=run) == ["old"]
+
     def test_collect_falls_back_to_started_at(self):
         run = FakeRun(
             [

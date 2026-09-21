@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -175,6 +176,107 @@ class TestTouchReaperHeartbeat:
         # Heartbeat is advisory: an unwritable path (here: a directory)
         # must never break the caller.
         touch_reaper_heartbeat(str(tmp_path))  # must not raise
+
+    def test_publication_never_exposes_truncated_payload(self, tmp_path, monkeypatch):
+        hb = tmp_path / "hb"
+        hb.write_text("100\n", encoding="ascii")
+        monkeypatch.setattr(time, "time", lambda: 200.0)
+        ready = threading.Event()
+        release = threading.Event()
+        real_open = Path.open
+        real_replace = os.replace
+
+        class PausedFile:
+            def __init__(self, file):
+                self._file = file
+
+            def __enter__(self):
+                ready.set()
+                assert release.wait(timeout=1)
+                return self._file.__enter__()
+
+            def __exit__(self, *exc):
+                return self._file.__exit__(*exc)
+
+            def __getattr__(self, name):
+                return getattr(self._file, name)
+
+        def delayed_open(path, *args, **kwargs):
+            file = real_open(path, *args, **kwargs)
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if path == hb and mode == "w":
+                return PausedFile(file)
+            return file
+
+        def delayed_replace(source, destination):
+            if Path(destination) == hb:
+                ready.set()
+                assert release.wait(timeout=1)
+            real_replace(source, destination)
+
+        monkeypatch.setattr(Path, "open", delayed_open)
+        monkeypatch.setattr(os, "replace", delayed_replace)
+        errors = []
+
+        def publish():
+            try:
+                touch_reaper_heartbeat(str(hb))
+            except (AssertionError, OSError) as exc:  # pragma: no cover - diagnostic capture
+                errors.append(exc)
+
+        writer = threading.Thread(target=publish)
+        writer.start()
+        assert ready.wait(timeout=1)
+        observed = hb.read_text(encoding="ascii")
+        release.set()
+        writer.join(timeout=1)
+
+        assert not writer.is_alive()
+        assert not errors
+        assert observed in {"100\n", "200\n"}
+        assert hb.read_text(encoding="ascii") == "200\n"
+
+    def test_delayed_older_writer_does_not_regress_timestamp(self, tmp_path, monkeypatch):
+        hb = tmp_path / "hb"
+        hb.write_text("150\n", encoding="ascii")
+        newer_sampled = threading.Event()
+        older_sampled = threading.Event()
+        allow_newer = threading.Event()
+        allow_older = threading.Event()
+
+        def delayed_time():
+            if threading.current_thread().name == "newer":
+                newer_sampled.set()
+                assert allow_newer.wait(timeout=1)
+                return 200.0
+            older_sampled.set()
+            assert allow_older.wait(timeout=1)
+            return 100.0
+
+        monkeypatch.setattr(time, "time", delayed_time)
+        errors = []
+
+        def publish():
+            try:
+                touch_reaper_heartbeat(str(hb))
+            except (AssertionError, OSError) as exc:  # pragma: no cover - diagnostic capture
+                errors.append(exc)
+
+        newer = threading.Thread(target=publish, name="newer")
+        older = threading.Thread(target=publish, name="older")
+        newer.start()
+        assert newer_sampled.wait(timeout=1)
+        older.start()
+        older_sampled.wait(timeout=0.2)
+        allow_newer.set()
+        newer.join(timeout=1)
+        allow_older.set()
+        older.join(timeout=1)
+
+        assert not newer.is_alive()
+        assert not older.is_alive()
+        assert not errors
+        assert float(hb.read_text(encoding="ascii")) == 200.0
 
     def test_default_path_is_the_reaper_rendezvous(self):
         # The reaper (booley.docker.reaper, stdlib-only image) hardcodes the
