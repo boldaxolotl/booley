@@ -382,6 +382,40 @@ def test_setup_preserves_upstream_verdict_sources_when_adapter_is_sufficient():
     assert "Modify an upstream source only when the approved plan" in project_config
 
 
+def test_setup_requires_explicit_memory_dispositions_and_synth_only_surrogates():
+    plan = " ".join(_skill_text("booley-setup", "steps/0-plan.md").split())
+    project_config = " ".join(_skill_text("booley-setup", "steps/2-project-config.md").split())
+    template = _skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
+    core = _skill_text("booley-setup", "CORE_TEMPLATE.yaml")
+
+    for required in (
+        "Memory implementation",
+        "exported_boundary",
+        "timing_surrogate",
+        "An enabled synth Target with any unclassified candidate cannot be approved",
+        "RTL elaboration alone never makes this row Green",
+    ):
+        assert required in plan
+    for required in (
+        "project-owned replacement seam",
+        "never create a universal write-to-read data path",
+        "ordinary Verilog/SystemVerilog source",
+        "paramtype: vlogdefine",
+        "Do not introduce a manifest or custom file type",
+        "surrogate contributes zero inferred-memory cells",
+        "does not scale with the original memory depth",
+    ):
+        assert required in project_config
+    assert "Memory implementation" in template
+    assert "synth_memory" in core
+    assert "file_type: systemVerilogSource" in core
+    assert "paramtype: vlogdefine" in core
+    assert "never attach this fileset or its selection define" in " ".join(core.split())
+    combined = " ".join((plan, project_config, template, core))
+    assert "booleyMemoryContract" not in combined
+    assert "flow_options.memory_contract" not in combined
+
+
 def test_heal_has_bounded_doctor_repair_and_verification_loop():
     skill = _skill_text("booley-heal")
 
