@@ -469,6 +469,14 @@ def test_setup_plans_one_project_wide_tech_cell_replacement():
     assert "| 22 | Tech Cell Replacement" in template
     assert "continue numbering from 23" in template
     assert "evidence-forced: not applicable" in template
+    assert (
+        "Synthesis-disabled Projects resolve row 22 as evidence-forced: not applicable "
+        "and omit this subsection"
+    ) in template
+    assert (
+        "When synthesis is disabled, resolve this row as `evidence-forced: not applicable` "
+        "and omit the replacement subsection"
+    ) in plan
     assert "### Tech Cell Replacement" in template
     assert "Caliptra" not in plan
     assert "Nangate" not in plan
