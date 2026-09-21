@@ -151,6 +151,12 @@ the base Sandbox Image, and global sidecars. Project Initialization walks throug
 6. Writing and issuing the Interactive Mode devcontainer specification
 7. Post-setup advisories
 
+Machine-global integrations are owned by the one canonical host-installed
+Booley wheel. A source checkout, worktree, QA runtime, or virtual environment
+may exercise candidate code in isolation, but it cannot deploy or retarget the
+global skills under `~/.agents` or `~/.claude`. Run the `booley` installed for
+the base host interpreter when Host Bootstrap reports this policy violation.
+
 The commit-msg hook installed in step 5 has one behavior worth knowing about
 later; it doesn't affect the happy-path install, so it's spelled out under
 [Notes](#notes) at the end.

@@ -21,6 +21,7 @@ def _wire_current(
 ) -> list[str]:
     calls: list[str] = []
     monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     monkeypatch.setattr(
         bootstrap,
         "_prerequisite_findings",
@@ -98,6 +99,27 @@ def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.Monke
     ]
     assert result.ready
     assert result.exit_status == 0
+
+
+def test_noncanonical_install_stops_before_host_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(
+        bootstrap,
+        "host_install_error",
+        lambda _source: "temporary QA wheel cannot manage the host",
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_prerequisite_findings",
+        lambda: (_ for _ in ()).throw(AssertionError("must not probe or mutate")),
+    )
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert result.exit_status == 2
+    assert [finding.resource for finding in result.findings] == ["host-config", "host-install"]
 
 
 def test_invalid_config_stops_before_any_other_probe(
@@ -655,6 +677,7 @@ def test_skill_reconciliation_reports_missing_pending_changed_and_errors(
     source = tmp_path / "skills"
     source.mkdir()
     monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     changed_event = SimpleNamespace(changed=True, failed=False, detail="", name="linked")
     report = SimpleNamespace(events=(changed_event,), diagnostics=(), fatal=None)
     target = tmp_path / ".agents" / "skills"

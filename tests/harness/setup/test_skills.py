@@ -112,6 +112,7 @@ def test_skill_deployment_adapter_records_reconciliation_failures(
     event = SkillLinkEvent("booley-setup", "error", "packaged", target)
     report = SkillLinkReport(events=(event,), diagnostics=("manifest failed",))
     monkeypatch.setattr(runtime_paths, "skills_dir", lambda: source)
+    monkeypatch.setattr(init_skills, "host_install_error", lambda _source: None)
     monkeypatch.setattr(
         init_skills,
         "reconcile_host_skills",
@@ -127,6 +128,7 @@ def test_skill_deployment_adapter_records_reconciliation_failures(
 
 def test_skill_deployment_adapter_reports_missing_source(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(runtime_paths, "skills_dir", lambda: tmp_path / "missing")
+    monkeypatch.setattr(init_skills, "host_install_error", lambda _source: None)
     ctx = InitContext(project_root=tmp_path, show_step_banners=False)
 
     init_skills._deploy_skills(ctx)
@@ -152,6 +154,7 @@ def test_skill_deployment_adapter_records_success_modes(
     source = tmp_path / "packaged"
     source.mkdir()
     monkeypatch.setattr(runtime_paths, "skills_dir", lambda: source)
+    monkeypatch.setattr(init_skills, "host_install_error", lambda _source: None)
     monkeypatch.setattr(init_skills, "reconcile_host_skills", lambda *_args, **_kwargs: ())
     ctx = InitContext(
         project_root=tmp_path,
