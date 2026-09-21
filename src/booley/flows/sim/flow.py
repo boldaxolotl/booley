@@ -103,7 +103,7 @@ from .build_session import (
     preview_generation_root,
     project_compile_surface,
 )
-from .campaign.codec import encode_simulation_campaign_manifest
+from .campaign.codec import SimulationCampaignIntegrityError, encode_simulation_campaign_manifest
 from .campaign.coordinator import (
     CampaignOutcome,
     CampaignPolicy,
@@ -1303,11 +1303,27 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if (missing := self._validate_interactive_args(requested)) is not None:
             return missing
         selected = [self._target_handle(target) for target in requested]
-        _baseline_ref, baseline_targets, baseline_error = self._cycle_baseline_selection(requested)
+        baseline_ref, baseline_targets, baseline_error = self._cycle_baseline_selection(requested)
         if baseline_error is not None:
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=baseline_error)
-        selected.extend(self._target_handle(target) for target in baseline_targets)
-        return tuple(dict.fromkeys(selected)), None
+        baselines = self._campaign_authorization_baselines(baseline_ref, baseline_targets)
+        return (*selected, *baselines), None
+
+    def _campaign_authorization_baselines(
+        self, revision: str | None, selectors: Sequence[str]
+    ) -> tuple[TargetHandle, ...]:
+        """Resolve Criterion baselines from their historical checkout."""
+        if revision is None or not selectors:
+            return ()
+        root = self.context.publication_resources.enter_context(
+            baseline_worktree(
+                Path(self.args.work_dir),
+                revision,
+                paired_project=self._paired_project_baseline,
+            )
+        )
+        catalog = TargetCatalog.build(root)
+        return tuple(catalog.select(selector, for_flow="sim") for selector in selectors)
 
     satisfies: ClassVar[list[str]] = [
         "elab_pass",
@@ -1793,13 +1809,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         disclosures = tuple(execution.plan_ordinary_group(handle, group) for group in groups)
         suite = cast(Mapping[str, object], manifest.document["required_suite"])
         target = cast(Mapping[str, str], manifest.document["target"])
+        revision = git_full_sha("HEAD", handle.project_root)
+        if revision is None:
+            raise SimulationCampaignIntegrityError(
+                f"cannot verify resume Target revision at {handle.project_root}"
+            )
         return plan_ordinary_hdl_campaign(
             handle=handle,
             inspection=inspection,
             preview=preview,
             groups=groups,
             required_suite=cast(tuple[str, ...], suite["names"]),
-            revision=target["revision"],
+            revision=revision,
             invocation_id=invocation_id,
             execution_id="",
             trace=cast(bool, manifest.document["workload"]["trace"]),

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from booley.flows.baseline_worktree import git_full_sha
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -111,6 +112,7 @@ def validate_resume_manifest(
     for node in (candidate, *prerequisites):
         target = cast(Mapping[str, str], node.manifest.document["target"])
         root = Path(root_for(target)).resolve()
+        _verify_revision(root, target)
         handle = TargetCatalog.build(root).select(target["selector"], for_flow="sim")
         if handle.identity != target["vlnv"] + "#" + target["name"]:
             raise SimulationCampaignIntegrityError(
@@ -124,6 +126,19 @@ def validate_resume_manifest(
     return ValidatedResumeManifest(
         candidate, tuple(prerequisites), tuple(handles), tuple(bindings)
     )
+
+
+def _verify_revision(root: Path, target: Mapping[str, str]) -> None:
+    actual = git_full_sha("HEAD", root)
+    if actual is None:
+        raise SimulationCampaignIntegrityError(
+            f"cannot verify resume Target revision at {root}"
+        )
+    if actual != target["revision"]:
+        raise SimulationCampaignIntegrityError(
+            "resume Target checkout revision disagrees with manifest: "
+            f"{target['selector']} expected {target['revision']}, got {actual}"
+        )
 
 
 def _walk_prerequisites(

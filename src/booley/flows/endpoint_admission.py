@@ -98,7 +98,7 @@ def authorize_simulation_targets(
     missing = [
         target.selector
         for target in targets
-        if not endpoint._bound_criterion_keys(target.selector)
+        if not endpoint._bound_criterion_keys_for_target(target)
     ]
     if not missing:
         return None

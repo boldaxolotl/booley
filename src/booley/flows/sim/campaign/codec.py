@@ -651,7 +651,7 @@ def _validate_simulation_build_ref(value: object) -> Mapping[str, object]:
     if reference["kind"] != "bundle_build_result":
         raise SimulationCampaignIntegrityError("build_result reference has wrong kind")
     _validate_evidence_members(reference, "build_result")
-    if reference["state"] not in {"ready", "design_failure"}:
+    if reference["state"] not in {"ready", "design_failure", "infrastructure_error"}:
         raise SimulationCampaignIntegrityError("simulation result references invalid build state")
     if reference["sharing"] not in {"shared_variant", "private_work_item"}:
         raise SimulationCampaignIntegrityError(
@@ -726,8 +726,8 @@ def _validate_result_state(
 ) -> None:
     state = value["state"]
     if state == "blocked_by_build":
-        if build_result["state"] != "design_failure":
-            raise SimulationCampaignIntegrityError("blocked result requires design-failure build")
+        if build_result["state"] not in {"design_failure", "infrastructure_error"}:
+            raise SimulationCampaignIntegrityError("blocked result requires terminal failed build")
         if value["bundle_id"] is not None or value["executable_snapshot"] is not None:
             raise SimulationCampaignIntegrityError(
                 "blocked result cannot bind a bundle or snapshot"
@@ -908,7 +908,7 @@ def _validate_observation(value: object, index: int) -> Mapping[str, object]:
 
 def _validate_observation_matrix(observation: Mapping[str, object]) -> None:
     if observation["execution"] in {"setup_error", "blocked_by_build"} and (
-        observation["failure_class"] != "design"
+        observation["failure_class"] not in {"design", "infrastructure"}
         or observation["functional"] != "not_observed"
         or observation["assertions"] != "not_observed"
         or observation["cycle_count"] is not None

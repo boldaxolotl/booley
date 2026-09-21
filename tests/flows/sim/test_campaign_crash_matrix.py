@@ -45,11 +45,7 @@ _DURABLE_BOUNDARIES = (
     "summary_replace",
 )
 _CRASH_POINTS = (
-    *(
-        f"{side}:{boundary}"
-        for boundary in _DURABLE_BOUNDARIES
-        for side in ("before", "after")
-    ),
+    *(f"{side}:{boundary}" for boundary in _DURABLE_BOUNDARIES for side in ("before", "after")),
     "integrity:prelaunch_authentication",
     "integrity:post_exit_authentication",
 )
@@ -73,9 +69,7 @@ class _CrashOnce:
 
 
 def _admission() -> AdmissionContext:
-    return AdmissionContext(
-        "unmanaged", None, None, 1, "interactive", "", None, lambda: False
-    )
+    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
 
 
 @pytest.mark.parametrize("crash_point", _CRASH_POINTS)
@@ -91,9 +85,10 @@ def test_serial_publication_boundary_resume_matrix(  # noqa: PLR0915 -- matrix h
         "source_artifact_path": "input.bin",
         "destination": "inputs/input.bin",
     }
-    declaration_id = "sha256:" + hashlib.sha256(
-        canonical_json_bytes(declaration_identity).rstrip(b"\n")
-    ).hexdigest()
+    declaration_id = (
+        "sha256:"
+        + hashlib.sha256(canonical_json_bytes(declaration_identity).rstrip(b"\n")).hexdigest()
+    )
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
         {
             "declaration_id": declaration_id,
@@ -243,7 +238,11 @@ def test_fault_matrix_has_no_distinct_partial_fsync_state() -> None:
     a durable recovery classification.
     """
     assert set(_CRASH_POINTS) == {
-        *(f"{side}:{boundary}" for boundary in _DURABLE_BOUNDARIES for side in ("before", "after")),
+        *(
+            f"{side}:{boundary}"
+            for boundary in _DURABLE_BOUNDARIES
+            for side in ("before", "after")
+        ),
         "integrity:prelaunch_authentication",
         "integrity:post_exit_authentication",
     }
@@ -362,7 +361,102 @@ def test_invalid_committed_result_fails_closed_before_executor_entry(
     assert entered == []
 
 
-@pytest.mark.parametrize("boundary", ["before:build_result", "after:build_result"])
+class _FailedBuildGroup:
+    artifact_paths: tuple[Path, ...] = ()
+
+    def __init__(self, root: Path, infrastructure: bool) -> None:
+        self.build_root = root
+        self.infrastructure = infrastructure
+
+    def planning_disclosure(self):
+        return {}
+
+    def compile(self):
+        return SimpleNamespace(passed=False)
+
+    def finish_build_failure(self):
+        failure = (
+            SimpleNamespace(kind="spawn", message="could not spawn", detail="missing")
+            if self.infrastructure
+            else None
+        )
+        test = SimulationTestOutcome(
+            name="sim",
+            verdict="elab_error",
+            passed=False,
+            elab_failed=True,
+            error_tail="compile failed",
+        )
+        return SimulationTargetOutcome(
+            target="sim",
+            target_identity="acme:lib:dut:1#sim",
+            toplevel="tb",
+            eda_tool="icarus",
+            passed=False,
+            verdict="error" if self.infrastructure else "fail",
+            elapsed_s=0.1,
+            tests=(test,),
+            infrastructure_failure=failure,
+        )
+
+
+def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
+    document = _manifest()
+    document.pop("fingerprints")
+    document["workload"]["pre_sim_build_access"] = (  # type: ignore[index]
+        "legacy-per-test" if failure_path.startswith("legacy") else "immutable"
+    )
+    plan = create_simulation_campaign_plan(finalize_manifest(document))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run").mkdir()
+    engine_root = tmp_path / "build"
+    engine_root.mkdir()
+    infrastructure = failure_path.endswith("spawn")
+    handle = SimpleNamespace(
+        identity="acme:lib:dut:1#sim",
+        project_root=project,
+        selector="sim",
+        eda_tool="icarus",
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
+    )
+    if failure_path.startswith("legacy"):
+        status = "spawn_error" if infrastructure else "failed"
+        monkeypatch.setattr(
+            "booley.flows.sim.campaign.serial_execution._run_hook",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                status=status, detail="hook failed", elapsed_s=0.1
+            ),
+        )
+    group = _FailedBuildGroup(engine_root, infrastructure)
+    execution = SimpleNamespace(
+        ordinary_group=lambda *_args: contextmanager(lambda: (yield group))()
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: execution,  # type: ignore[arg-type,return-value]
+        publication_checkpoint=crash,
+    )
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    request = NewCampaignRunRequest(
+        plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    )
+    return executor, request, invocation
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "before:build_result",
+        "after:build_result",
+        "before:simulation_result",
+        "after:simulation_result",
+    ],
+)
 @pytest.mark.parametrize(
     ("failure_path", "expected_state"),
     [
@@ -379,90 +473,44 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
     failure_path: str,
     expected_state: str,
 ) -> None:
-    document = _manifest()
-    document.pop("fingerprints")
-    document["workload"]["pre_sim_build_access"] = (  # type: ignore[index]
-        "legacy-per-test" if failure_path.startswith("legacy") else "immutable"
-    )
-    manifest = finalize_manifest(document)
-    plan = create_simulation_campaign_plan(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "run").mkdir()
-    engine_root = tmp_path / "build"
-    engine_root.mkdir()
-    infrastructure = expected_state == "infrastructure_error"
-
-    class FakeCatalog:
-        def select(self, *_args, **_kwargs):
-            return SimpleNamespace(
-                identity="acme:lib:dut:1#sim", project_root=project,
-                selector="sim", eda_tool="icarus",
-            )
-
-    class FakeGroup:
-        build_root = engine_root
-        artifact_paths: tuple[Path, ...] = ()
-
-        def planning_disclosure(self):
-            return {}
-
-        def compile(self):
-            return SimpleNamespace(passed=False)
-
-        def finish_build_failure(self):
-            failure = (
-                SimpleNamespace(kind="spawn", message="could not spawn", detail="missing")
-                if infrastructure else None
-            )
-            test = SimulationTestOutcome(
-                name="sim", verdict="elab_error", passed=False,
-                elab_failed=True, error_tail="compile failed",
-            )
-            return SimulationTargetOutcome(
-                target="sim", target_identity="acme:lib:dut:1#sim",
-                toplevel="tb", eda_tool="icarus", passed=False,
-                verdict="error" if infrastructure else "fail", elapsed_s=0.1,
-                tests=(test,), infrastructure_failure=failure,
-            )
-
-    class FakeExecution:
-        @contextmanager
-        def ordinary_group(self, *_args):
-            yield FakeGroup()
-
-    if failure_path.startswith("legacy"):
-        status = "spawn_error" if infrastructure else "failed"
-        monkeypatch.setattr(
-            "booley.flows.sim.campaign.serial_execution._run_hook",
-            lambda *_args, **_kwargs: SimpleNamespace(
-                status=status, detail="hook failed", elapsed_s=0.1
-            ),
-        )
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
-        lambda _root: FakeCatalog(),
-    )
     crash = _CrashOnce(boundary)
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: FakeExecution(),  # type: ignore[arg-type,return-value]
-        publication_checkpoint=crash,
-    )
-    invocation = tmp_path / "reports" / "000001"
-    invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
-    )
+    executor, request, invocation = _failed_build_case(tmp_path, monkeypatch, failure_path, crash)
 
     with pytest.raises(_InjectedProcessDeath, match=boundary):
-        SimulationCampaign(executor).run(request)
+        SimulationCampaign(executor, publication_checkpoint=crash).run(request)
 
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     recovery = store.scan()
-    assert recovery.complete == ()
+    committed = boundary == "after:simulation_result"
+    assert bool(recovery.complete) is committed
     attempts = sorted(store.root.glob("work-items/*/attempts/*"))
     assert len(attempts) == 1
     result_path = attempts[0] / "private-build" / "build-result.json"
     result = json.loads(result_path.read_text()) if result_path.exists() else None
     assert result is None or result["state"] == expected_state
+    if boundary.startswith("before:simulation"):
+        outcome = SimulationCampaign(executor).run(request)
+        assert outcome.acceptance_ready is False
+        assert store.scan().items[0].attempt_count == 2
+    elif boundary.startswith("after:simulation"):
+        outcome = SimulationCampaign(executor).run(request)
+        assert outcome.acceptance_ready is False
+        assert store.scan().items[0].attempt_count == 1
+
+
+@pytest.mark.parametrize("failure_path", ["compile_design", "compile_spawn"])
+def test_failed_build_partial_terminal_result_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_path: str
+) -> None:
+    checkpoint = _CrashOnce("never")
+    executor, request, invocation = _failed_build_case(
+        tmp_path, monkeypatch, failure_path, checkpoint
+    )
+    SimulationCampaign(executor).run(request)
+    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    recovered = store.scan().items[0]
+    result_path = store.work_item_directory(recovered.work_item_id) / "result.json"
+    result_path.write_bytes(b'{"partial":')
+
+    with pytest.raises(SimulationCampaignIntegrityError):
+        SimulationCampaign(executor).run(request)

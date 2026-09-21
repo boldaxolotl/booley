@@ -12,6 +12,7 @@ import stat
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -74,6 +75,13 @@ from .planning import manifest_digest
 from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
 
 
+@dataclass(frozen=True, slots=True)
+class _ReadyLaunch:
+    build: tuple[BundleBuildResult, SimulatorBundle, object]
+    simulation: tuple[object, tuple[str, ...], SimulationOptions]
+    policy: tuple[Mapping[str, object], str, RunDirectory, float]
+
+
 class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     """Execute one ordinary-HDL item through :class:`SimulationExecution`."""
 
@@ -118,8 +126,16 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         handle, names, options, execution, workload, access = self._group_inputs(request)
         with execution.ordinary_group(handle, names) as group:
             prepared = self._prepare_bundle_artifacts(
-                request, build_directory, build_attempt, handle, group, names,
-                options, workload, access, started,
+                request,
+                build_directory,
+                build_attempt,
+                handle,
+                group,
+                names,
+                options,
+                workload,
+                access,
+                started,
             )
             if isinstance(prepared, SimulationResult):
                 return prepared
@@ -139,39 +155,49 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             return self._run_ready_group(
                 request,
                 build_directory,
-                build_result,
-                bundle,
-                group,
-                handle,
-                names,
-                options,
-                workload,
-                access,
-                run_directory,
                 run_cwd,
-                started,
+                _ReadyLaunch(
+                    (build_result, bundle, group),
+                    (handle, names, options),
+                    (workload, access, run_directory, started),
+                ),
             )
 
     def _prepare_bundle_artifacts(
-        self, request, build_directory, build_attempt, handle, group, names,
-        options, workload, access, started,
+        self,
+        request,
+        build_directory,
+        build_attempt,
+        handle,
+        group,
+        names,
+        options,
+        workload,
+        access,
+        started,
     ) -> list[dict[str, object]] | SimulationResult:
         _authenticate_planning_disclosure(request, group)
         if access == "legacy-per-test":
             failure = self._legacy_hook_failure(
-                request, build_directory, build_attempt, handle, group,
-                names, options, started,
+                request,
+                build_directory,
+                build_attempt,
+                handle,
+                group,
+                names,
+                options,
+                started,
             )
             if failure is not None:
                 return failure
         build = group.compile()
         if not build.passed:
-            return self._compile_failure(
-                request, build_directory, build_attempt, group, started
-            )
+            return self._compile_failure(request, build_directory, build_attempt, group, started)
         self._publication_checkpoint("before:bundle_evidence")
         artifacts = _capture_private_image(
-            group.artifact_paths, group.build_root, build_directory,
+            group.artifact_paths,
+            group.build_root,
+            build_directory,
             cast(tuple[Mapping[str, str], ...], workload["runtime_inputs"]),
         )
         self._publication_checkpoint("after:bundle_evidence")
@@ -228,7 +254,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         elapsed = time.monotonic() - started
         if pre_sim.status == "spawn_error":
             outcome = _hook_infrastructure_outcome(outcome, pre_sim.detail)
-            _publish_failed_build_result(
+            result = _publish_failed_build_result(
                 request,
                 build_directory,
                 build_attempt,
@@ -237,8 +263,13 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                 infrastructure=True,
                 checkpoint=self._publication_checkpoint,
             )
-            raise SimulationCampaignIntegrityError(
-                pre_sim.detail or "Pre-Sim Commands could not start"
+            return _blocked_result(
+                request,
+                build_directory,
+                result,
+                outcome,
+                elapsed,
+                infrastructure=True,
             )
         result = _publish_failed_build_result(
             request,
@@ -271,16 +302,25 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             infrastructure=infrastructure,
             checkpoint=self._publication_checkpoint,
         )
-        if outcome.infrastructure_failure is not None:
-            raise SimulationCampaignIntegrityError(
-                outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
-            )
-        return _blocked_result(request, build_directory, result, outcome, elapsed)
+        return _blocked_result(
+            request,
+            build_directory,
+            result,
+            outcome,
+            elapsed,
+            infrastructure=infrastructure,
+        )
 
     def _run_ready_group(
-        self, request, build_directory, build_result, bundle, group, handle,
-        names, options, workload, access, run_directory, run_cwd, started,
+        self,
+        request,
+        build_directory,
+        run_cwd,
+        ready: _ReadyLaunch,
     ) -> SimulationResult:
+        build_result, bundle, group = ready.build
+        handle, names, options = ready.simulation
+        workload, access, run_directory, started = ready.policy
         declarations = cast(tuple[dict[str, str], ...], workload["runtime_inputs"])
         self._publication_checkpoint("before:runtime_inputs")
         with materialize_campaign_runtime_inputs(
@@ -292,14 +332,31 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         ) as bindings:
             self._publication_checkpoint("after:runtime_inputs")
             failure = _immutable_hook_failure(
-                request, build_directory, build_result, bundle, handle, group,
-                names, options, run_cwd, bindings, access, started,
+                request,
+                build_directory,
+                build_result,
+                bundle,
+                handle,
+                group,
+                names,
+                options,
+                run_cwd,
+                bindings,
+                access,
+                started,
             )
             if failure is not None:
                 return failure
             return _launch_snapshot(
-                request, build_directory, build_result, bundle, group, run_cwd,
-                bindings, started, self._publication_checkpoint,
+                request,
+                build_directory,
+                build_result,
+                bundle,
+                group,
+                run_cwd,
+                bindings,
+                started,
+                self._publication_checkpoint,
             )
 
 
@@ -320,8 +377,18 @@ def _authenticate_planning_disclosure(request: WorkExecutionRequest, group: obje
 
 
 def _immutable_hook_failure(
-    request, build_directory, build_result, bundle, handle, group,
-    names, options, run_cwd, bindings, access, started,
+    request,
+    build_directory,
+    build_result,
+    bundle,
+    handle,
+    group,
+    names,
+    options,
+    run_cwd,
+    bindings,
+    access,
+    started,
 ) -> SimulationResult | None:
     if access != "immutable":
         return None
@@ -338,8 +405,14 @@ def _immutable_hook_failure(
             pre_sim.detail or "Pre-Sim Commands could not start"
         )
     return _setup_result(
-        request, build_directory, build_result, bundle, names, bindings,
-        pre_sim.detail, time.monotonic() - started,
+        request,
+        build_directory,
+        build_result,
+        bundle,
+        names,
+        bindings,
+        pre_sim.detail,
+        time.monotonic() - started,
     )
 
 
@@ -698,8 +771,13 @@ def _blocked_result(
     build_result: BundleBuildResult,
     outcome: SimulationTargetOutcome,
     elapsed: float,
+    *,
+    infrastructure: bool = False,
 ) -> SimulationResult:
     observations = [_observation(test, execution="blocked_by_build") for test in outcome.tests]
+    if infrastructure:
+        for observation in observations:
+            observation["failure_class"] = "infrastructure"
     return _result(
         request,
         build_directory,
@@ -738,14 +816,34 @@ def _launch_snapshot(
             outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
         )
     return _snapshot_result(
-        request, build_directory, build_result, bundle, snapshot, snapshot_root,
-        pre_launch, post_exit, outcome, bindings, started, publication_checkpoint,
+        request,
+        build_directory,
+        build_result,
+        bundle,
+        snapshot,
+        snapshot_root,
+        pre_launch,
+        post_exit,
+        outcome,
+        bindings,
+        started,
+        publication_checkpoint,
     )
 
 
 def _snapshot_result(
-    request, build_directory, build_result, bundle, snapshot, snapshot_root,
-    pre_launch, post_exit, outcome, bindings, started, publication_checkpoint,
+    request,
+    build_directory,
+    build_result,
+    bundle,
+    snapshot,
+    snapshot_root,
+    pre_launch,
+    post_exit,
+    outcome,
+    bindings,
+    started,
+    publication_checkpoint,
 ) -> SimulationResult:
     snapshot_raw = encode_executable_snapshot(snapshot)
     snapshot_ref = _record_ref(

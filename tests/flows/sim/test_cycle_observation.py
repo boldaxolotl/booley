@@ -188,6 +188,14 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     return flow, next(iter(state.criteria))
 
 
+def test_relative_cycle_campaign_defaults_omitted_baseline_to_candidate_target() -> None:
+    flow, _key = _criterion_flow(relative=True)
+
+    assert flow._campaign_baseline_requirements(["sim_core"]) == (
+        ("sim_core", "sim_core", "coremark"),
+    )
+
+
 def _ticket_baseline() -> TicketBaseline:
     return TicketBaseline(
         bindings=(

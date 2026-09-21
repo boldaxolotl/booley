@@ -97,41 +97,7 @@ def _cycle_outcome(
     observation["cycle_count"] = current
     document["observations"] = [observation]
     document["prerequisites"] = [
-        {
-            "role": "cycle_count_baseline",
-            "manifest": {
-                "path_base": "origin_invocation",
-                "path": "targets/sim_base/campaign/manifest.json",
-                "bytes": 10,
-                "sha256": "sha256:" + "4" * 64,
-                "kind": "simulation_campaign_manifest",
-                "owner": manifest_owner,
-            },
-            "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
-            "target": {
-                "vlnv": "acme:lib:dut:1",
-                "name": baseline_selector,
-                "selector": baseline_selector,
-                "project_identity": "project",
-                "revision": "base-revision",
-                "role": "cycle_count_baseline",
-                "display_name": baseline_selector,
-            },
-            "work_item_id": "item:0000:fedcba9876543210",
-            "result": {
-                "path_base": "origin_invocation",
-                "path": "targets/sim_base/campaign/work-items/item/result.json",
-                "bytes": 10,
-                "sha256": "sha256:" + "5" * 64,
-                "kind": "simulation_result",
-                "owner": "550e8400-e29b-41d4-a716-446655440001",
-            },
-            "cycle_observation": {
-                "test": baseline_test,
-                "cycle_count": baseline,
-                "unit": "cycles",
-            },
-        }
+        _cycle_prerequisite(baseline, baseline_selector, baseline_test, manifest_owner)
     ]
     facts = AcceptanceFacts(document)
     return CampaignOutcome(
@@ -147,11 +113,53 @@ def _cycle_outcome(
     )
 
 
+def _cycle_prerequisite(
+    baseline: int, selector: str, test: str, manifest_owner: str
+) -> dict[str, object]:
+    campaign_id = "550e8400-e29b-41d4-a716-446655440000"
+    return {
+        "role": "cycle_count_baseline",
+        "manifest": {
+            "path_base": "origin_invocation",
+            "path": "targets/sim_base/campaign/manifest.json",
+            "bytes": 10,
+            "sha256": "sha256:" + "4" * 64,
+            "kind": "simulation_campaign_manifest",
+            "owner": manifest_owner,
+        },
+        "campaign_id": campaign_id,
+        "target": {
+            "vlnv": "acme:lib:dut:1",
+            "name": selector,
+            "selector": selector,
+            "project_identity": "project",
+            "revision": "base-revision",
+            "role": "cycle_count_baseline",
+            "display_name": selector,
+        },
+        "work_item_id": "item:0000:fedcba9876543210",
+        "result": {
+            "path_base": "origin_invocation",
+            "path": "targets/sim_base/campaign/work-items/item/result.json",
+            "bytes": 10,
+            "sha256": "sha256:" + "5" * 64,
+            "kind": "simulation_result",
+            "owner": "550e8400-e29b-41d4-a716-446655440001",
+        },
+        "cycle_observation": {
+            "test": test,
+            "cycle_count": baseline,
+            "unit": "cycles",
+        },
+    }
+
+
 def _cycle_reconciliation(
     tmp_path: Path,
     *,
     threshold: dict[str, object],
     outcome: CampaignOutcome,
+    explicit_baseline: bool = True,
 ):
     class Recorder:
         def __init__(self) -> None:
@@ -168,7 +176,7 @@ def _cycle_reconciliation(
         "test": "smoke",
         **threshold,
     }
-    if any("increase_" in name or "reduce_" in name for name in threshold):
+    if explicit_baseline and any("increase_" in name or "reduce_" in name for name in threshold):
         params[BASELINE_TARGET_PARAM] = "sim_base"
     state = DevelopmentState.load(tmp_path / "state.json")
     state.init_criteria({key: True}, criterion_params={key: params}, strict=True)
@@ -446,6 +454,20 @@ def test_absolute_cycle_acceptance_does_not_require_baseline(tmp_path: Path) -> 
 
     assert changes[0].met is True
     assert changes[0].detail["baseline_observation"] == "not_required"
+
+
+def test_same_target_relative_cycle_acceptance_uses_implicit_candidate_baseline(
+    tmp_path: Path,
+) -> None:
+    _result, changes = _cycle_reconciliation(
+        tmp_path,
+        threshold={"cycle_count_reduce_at_least": 10},
+        outcome=_cycle_outcome(tmp_path, current=90, baseline_selector="sim"),
+        explicit_baseline=False,
+    )
+
+    assert changes[0].met is True
+    assert changes[0].detail["baseline_observation"] == "observed"
 
 
 @pytest.mark.parametrize(

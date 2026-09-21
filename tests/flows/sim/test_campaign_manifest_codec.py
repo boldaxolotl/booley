@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,7 @@ from booley.flows.sim.campaign.resume import validate_resume_manifest
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
+from booley.flows.sim.flow import SimulateFlow
 from booley.targets.catalog import TargetCatalog
 
 
@@ -344,6 +346,11 @@ def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
 
     monkeypatch.setattr(TargetCatalog, "build", lambda root: Catalog(Path(root)))
     roots = {"candidate": candidate_root, "cycle_count_baseline": baseline_root}
+    revisions = {candidate_root.resolve(): "abc123", baseline_root.resolve(): "base-rev"}
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.resume.git_full_sha",
+        lambda _ref, root: revisions[Path(root).resolve()],
+    )
     validated = validate_resume_manifest(
         candidate_store.manifest_path,
         project_root=candidate_root,
@@ -356,6 +363,70 @@ def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
     ]
     reference = candidate.document["prerequisites"][0]["manifest"]  # type: ignore[index]
     assert validated.prerequisite_for(reference).path == baseline_store.manifest_path
+
+
+def _source_equal_revision_drift(tmp_path: Path) -> tuple[Path, str]:
+    root = tmp_path / "source"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+    (root / "source.sv").write_text("module source; endmodule\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.sv"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=root, check=True)
+    original = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "commit", "--allow-empty", "-qm", "drift"], cwd=root, check=True)
+    return root, original
+
+
+def _publish_stale_candidate_manifest(tmp_path: Path, revision: str) -> CampaignStore:
+    document = _manifest()
+    target = dict(document["target"])  # type: ignore[arg-type]
+    target["revision"] = revision
+    document["target"] = target
+    items = [dict(item) for item in document["work_items"]]  # type: ignore[arg-type]
+    items[0]["target"] = target
+    items[0]["revision"] = revision
+    identity = {
+        key: value
+        for key, value in items[0].items()
+        if key not in {"fingerprint_sha256", "work_item_id"}
+    }
+    item_digest = _sha(identity)
+    items[0]["fingerprint_sha256"] = item_digest
+    items[0]["work_item_id"] = "item:0000:" + item_digest.removeprefix("sha256:")[:16]
+    document["work_items"] = items
+    document.pop("fingerprints")
+    manifest = finalize_manifest(document)
+    store = CampaignStore(tmp_path / "000001" / "targets" / "sim" / "campaign")
+    store.publish_manifest(manifest)
+    return store
+
+
+def test_resume_rejects_stale_candidate_revision_with_source_equal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, original = _source_equal_revision_drift(tmp_path)
+    store = _publish_stale_candidate_manifest(tmp_path, original)
+
+    class Catalog:
+        def select(self, selector: str, *, for_flow: str):
+            assert (selector, for_flow) == ("sim", "sim")
+            return SimpleNamespace(
+                identity="acme:lib:dut:1#sim",
+                selector=selector,
+                project_root=root,
+            )
+
+    monkeypatch.setattr(TargetCatalog, "build", lambda _root: Catalog())
+
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(resume_from=store.manifest_path, work_dir=root)
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="revision"):
+        flow._prepare_campaign_targets()
 
 
 def test_recovery_retries_a_crash_after_attempt_directory_allocation(

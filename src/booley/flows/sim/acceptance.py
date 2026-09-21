@@ -262,7 +262,7 @@ def _bound_baseline(
 ) -> tuple[Mapping[str, object] | None, str]:
     if not has_relative_threshold(dict(params)):
         return None, "not_required"
-    selector = params.get(BASELINE_TARGET_PARAM)
+    selector = params.get(BASELINE_TARGET_PARAM, params.get("_target_selector"))
     revision = params.get(BASELINE_REF_PARAM)
     for item in prerequisites:
         target = item.get("target")
