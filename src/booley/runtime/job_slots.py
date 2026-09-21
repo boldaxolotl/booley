@@ -370,6 +370,8 @@ class SlotStore:
         self._n = 0  # per-store counter: distinct entries from one process
         self._auto_renew = now is time.time and sleep is time.sleep
         self._renewals: dict[str, tuple[threading.Event, threading.Thread]] = {}
+        self._deferred_releases: dict[str, threading.Event] = {}
+        self._deferred_gate = threading.Lock()
 
     # ---------------------------------------------------------------- submit
 
@@ -675,6 +677,7 @@ class SlotStore:
         should_abort: Callable[[], bool] | None = None,
         narrate_interval_s: float = NARRATE_INTERVAL_SECONDS,
         execution_id: str | ExecutionId | None = None,
+        on_submitted: Callable[[SlotToken], None] | None = None,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
 
@@ -689,6 +692,8 @@ class SlotStore:
             timeout_s=timeout_s,
             execution_id=execution_id,
         )
+        if on_submitted is not None:
+            on_submitted(token)
         try:
             return self._wait_for_promotion(
                 token,
@@ -737,6 +742,12 @@ class SlotStore:
 
     def release(self, token: SlotToken) -> None:
         """Release a slot or withdraw a queued entry. Idempotent, never raises."""
+        with self._deferred_gate:
+            deferred = self._deferred_releases.get(token.lease_id)
+            if deferred is not None and not deferred.is_set():
+                return
+            if deferred is not None:
+                self._deferred_releases.pop(token.lease_id, None)
         renewal = self._renewals.pop(token.lease_id, None)
         if renewal is not None:
             stop, thread = renewal
@@ -758,6 +769,27 @@ class SlotStore:
             ):
                 return
             self._unlink_entry(token.path)
+
+    def defer_release_until(self, token: SlotToken, terminal: threading.Event) -> None:
+        """Keep one holder unavailable until its escaped owner actually exits."""
+        with self._deferred_gate:
+            current = self._deferred_releases.get(token.lease_id)
+            if current is not None and current is not terminal:
+                raise RuntimeError("slot token already has another deferred release")
+            self._deferred_releases[token.lease_id] = terminal
+        monitor = threading.Thread(
+            target=self._finish_deferred_release,
+            args=(token, terminal),
+            name=f"booley-deferred-slot-{token.lease_id[:8]}",
+            daemon=True,
+        )
+        monitor.start()
+
+    def _finish_deferred_release(
+        self, token: SlotToken, terminal: threading.Event
+    ) -> None:
+        terminal.wait()
+        self.release(token)
 
     def renew(self, token: SlotToken) -> bool:
         """Extend one active holder lease; refuse after recovery has claimed it."""

@@ -65,23 +65,20 @@ _CGROUP_MEMORY_EVENT_PATHS = (Path("/sys/fs/cgroup/memory.events"),)
 
 
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
+    from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
     from booley.runtime.supervised_execution import (
         current_supervised_execution,
-        wrap_supervised_command,
     )
 
     scope = current_supervised_execution()
-    if scope is None:
-        return cmd, None
-    wrapped, overrides, heartbeat = wrap_supervised_command(cmd, scope)
-    env.update(overrides)
-    heartbeat.start()
-    return wrapped, heartbeat
+    if scope is not None and scope.execution_id is not None:
+        env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
+    return cmd, scope
 
 
-def _stop_supervised_heartbeat(heartbeat) -> None:
-    if heartbeat is not None:
-        heartbeat.stop()
+def _finish_supervised_process(scope, proc) -> None:
+    if scope is not None and proc is not None:
+        scope.processes.unregister(proc)
 
 
 def _cgroup_oom_kill_count() -> int | None:
@@ -114,9 +111,11 @@ def _popen_kwargs_with_lease() -> dict[str, Any]:
     return kwargs
 
 
-def _start_local_process(cmd, cwd, env, heartbeat):
+def _start_local_process(cmd, cwd, env, scope):
+    if scope is not None and scope.cancelled():
+        return None
     try:
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             cwd=cwd,
             stdout=subprocess.PIPE,
@@ -125,12 +124,13 @@ def _start_local_process(cmd, cwd, env, heartbeat):
             env=env,
             **_popen_kwargs_with_lease(),
         )
+        if scope is not None:
+            scope.processes.register(proc)
+        return proc
     except FileNotFoundError:
-        _stop_supervised_heartbeat(heartbeat)
         logger.error("Command not found: %s", cmd[0])
         return None
     except BaseException:
-        _stop_supervised_heartbeat(heartbeat)
         raise
 
 
@@ -298,17 +298,17 @@ class FlowMechanics:
         cwd = self._get_cwd()
         env = os.environ.copy()
         env.update(self._extra_subprocess_env())
-        cmd, heartbeat = _prepare_supervised_command(cmd, env)
+        cmd, scope = _prepare_supervised_command(cmd, env)
         start = time.monotonic()
         oom_before = _cgroup_oom_kill_count()
-        proc = _start_local_process(cmd, cwd, env, heartbeat)
+        proc = _start_local_process(cmd, cwd, env, scope)
         if proc is None:
             return SubprocessResult(returncode=-1)
         memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
         memory_monitor.start()
 
         def resource_evidence() -> tuple[float | None, int]:
-            _stop_supervised_heartbeat(heartbeat)
+            _finish_supervised_process(scope, proc)
             peak_rss_mb = memory_monitor.finish()
             oom_after = _cgroup_oom_kill_count()
             oom_delta = (
@@ -347,7 +347,7 @@ class FlowMechanics:
                 logger.warning("Interrupted; killing the process tree of: %s", " ".join(cmd))
                 kill_process_tree(proc)
                 memory_monitor.finish()
-                _stop_supervised_heartbeat(heartbeat)
+                _finish_supervised_process(scope, proc)
                 raise
             elapsed = time.monotonic() - start
             peak_rss_mb, oom_kill_delta = resource_evidence()

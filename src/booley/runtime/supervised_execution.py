@@ -2,27 +2,101 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.runtime.execution_records import (
+    PROTOCOL_VERSION,
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
+    atomic_write_json,
     execution_paths,
+    read_json,
     write_attachment_heartbeat,
 )
+from booley.runtime.pid import capture_process_identity
+from booley.runtime.platform_paths import kill_process_tree
+from booley.runtime.timefmt import utc_now_rfc3339
+
+
+class SupervisedProcessSet:
+    """Track every command in one whole work item and cancel it as a unit."""
+
+    def __init__(
+        self,
+        execution_id: ExecutionId | None,
+        project_data: Path,
+        cancelled: Callable[[], bool],
+    ) -> None:
+        self._execution_id = execution_id
+        self._project_data = project_data
+        self._processes: set[subprocess.Popen] = set()
+        self._gate = threading.Lock()
+        self._cancelled = cancelled
+
+    def register(self, process: subprocess.Popen) -> None:
+        with self._gate:
+            self._processes.add(process)
+            cancelled = self._cancelled()
+            if cancelled:
+                kill_process_tree(process)
+        if self._execution_id is not None and not cancelled and not self._cancelled():
+            identity = capture_process_identity(process.pid)
+            self._write_record("running", identity, tree_terminal=False)
+
+    def unregister(self, process: subprocess.Popen) -> None:
+        with self._gate:
+            self._processes.discard(process)
+            active = bool(self._processes)
+        if self._execution_id is not None and not active:
+            paths = execution_paths(self._execution_id, project_dir=self._project_data)
+            current = read_json(paths.record)
+            if current is not None and current.get("state") == "running":
+                self._write_record("waiting", None, tree_terminal=False)
+
+    def terminate_all(self) -> None:
+        with self._gate:
+            processes = tuple(self._processes)
+        for process in processes:
+            kill_process_tree(process)
+
+    def _write_record(self, state: str, leader, *, tree_terminal: bool) -> None:
+        paths = execution_paths(self._execution_id, project_dir=self._project_data)
+        atomic_write_json(
+            paths.record,
+            {
+                "schema_version": PROTOCOL_VERSION,
+                "state": state,
+                "runtime_identity": None,
+                "supervisor": None,
+                "leader": leader.to_payload() if leader is not None else None,
+                "exit_code": None,
+                "tree_terminal": tree_terminal,
+                "terminal_cause": None,
+                "updated_at": utc_now_rfc3339(),
+            },
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class SupervisedExecutionScope:
-    execution_id: ExecutionId
+    execution_id: ExecutionId | None
     project_data: Path
     cancelled: Callable[[], bool]
+    processes: SupervisedProcessSet = field(init=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "processes",
+            SupervisedProcessSet(self.execution_id, self.project_data, self.cancelled),
+        )
 
 
 _SCOPE: ContextVar[SupervisedExecutionScope | None] = ContextVar(
@@ -35,10 +109,30 @@ def supervised_execution_scope(
     scope: SupervisedExecutionScope,
 ) -> Iterator[None]:
     token: Token = _SCOPE.set(scope)
+    stop = threading.Event()
+    watcher = threading.Thread(
+        target=_watch_scope_cancellation,
+        args=(scope, stop),
+        name="booley-campaign-process-cancellation",
+        daemon=True,
+    )
+    watcher.start()
     try:
         yield
     finally:
+        stop.set()
+        watcher.join(timeout=1)
+        if scope.cancelled():
+            scope.processes.terminate_all()
         _SCOPE.reset(token)
+
+
+def _watch_scope_cancellation(
+    scope: SupervisedExecutionScope, stop: threading.Event
+) -> None:
+    while not stop.wait(0.01):
+        if scope.cancelled():
+            scope.processes.terminate_all()
 
 
 def current_supervised_execution() -> SupervisedExecutionScope | None:

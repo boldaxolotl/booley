@@ -89,7 +89,7 @@ class AdmissionGate:
                 role=role,
                 execution_id=self._endpoint._invocation_id,
                 timeout_seconds=timeout,
-                cancellation=lambda: False,
+                cancellation=_admission_cancellation(store, token),
             )
         finally:
             if store is not None and token is not None:
@@ -125,6 +125,15 @@ def authorize_simulation_targets(
 def _slot_timeout_seconds() -> float | None:
     value = as_float(os.environ.get("BOOLEY_SLOT_TIMEOUT_S"))
     return value if value is not None and value > 0 else None
+
+
+def _admission_cancellation(
+    store: job_slots.SlotStore | None, token: object | None
+) -> Callable[[], bool]:
+    """Observe withdrawal or renewal loss of the borrowed outer claim."""
+    if store is None or not isinstance(token, job_slots.SlotToken):
+        return lambda: False
+    return lambda: token.lease_health.lost.is_set() or store.token_absent(token)
 
 
 @contextmanager

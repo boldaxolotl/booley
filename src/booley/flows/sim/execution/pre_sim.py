@@ -11,8 +11,14 @@ from pathlib import Path
 
 from booley.core.file_lock import active_child_lease_fd
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
-from booley.runtime.platform_paths import bash_bin
+from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
+from booley.runtime.platform_paths import (
+    bash_bin,
+    kill_process_tree,
+    popen_new_group_kwargs,
+)
 from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
 from .contract import PreSimEvidence
@@ -104,14 +110,12 @@ def _invoke_pre_sim(
         child_kwargs = (
             {"pass_fds": (lease_fd,)} if os.name != "nt" and lease_fd is not None else {}
         )
-        result = subprocess.run(
-            [bash_bin(), "-c", "\n".join(("set -e", *commands))],
+        command = [bash_bin(), "-c", "\n".join(("set -e", *commands))]
+        result = _run_pre_sim_process(
+            command,
             cwd=root,
             env=environment,
-            capture_output=True,
-            text=True,
             timeout=timeout_s,
-            check=False,
             **child_kwargs,
         )
     except subprocess.TimeoutExpired as exc:
@@ -139,6 +143,46 @@ def _invoke_pre_sim(
         else "failed"
     )
     return PreSimEvidence(commands, test_names, status, time.monotonic() - started, detail)
+
+
+def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
+    scope = current_supervised_execution()
+    if scope is None:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            **child_kwargs,
+        )
+    if scope.cancelled():
+        return subprocess.CompletedProcess(command, 125, "", "campaign cancelled")
+    supervised_env = dict(env)
+    if scope.execution_id is not None:
+        supervised_env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=supervised_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **popen_new_group_kwargs(),
+        **child_kwargs,
+    )
+    scope.processes.register(process)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except BaseException:
+        kill_process_tree(process)
+        process.communicate()
+        raise
+    finally:
+        scope.processes.unregister(process)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 __all__ = ["run_pre_sim_commands"]

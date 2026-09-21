@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -12,6 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 TAXI = ROOT / "qa/scenarios/taxi/fixtures/simulation-campaign"
 UART = ROOT / "qa/scenarios/uart/fixtures/simulation-campaign"
+SHA = "sha256:" + "a" * 64
 
 
 def _module(name: str, path: Path):
@@ -26,6 +28,22 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _artifact_evidence(root: Path, attempt_id: str, token: str) -> dict[str, object]:
+    evidence = {}
+    for kind in ("output", "log", "trace", "runtime_input"):
+        relative = Path("attempts") / attempt_id / f"{kind}.dat"
+        retained = root / relative
+        retained.parent.mkdir(parents=True, exist_ok=True)
+        raw = (token + "\n").encode()
+        retained.write_bytes(raw)
+        evidence[kind] = {
+            "path": relative.as_posix(),
+            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "token": token,
+        }
+    return evidence
+
+
 def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
     tmp_path: Path,
 ) -> None:
@@ -36,8 +54,28 @@ def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
         {
             "outer_execution_id": "outer",
             "slot_samples": [
-                {"at_ns": 1, "heavy_holders": ["outer", "child-a", "child-b"]},
-                {"at_ns": 5, "heavy_holders": ["outer", "child-c"]},
+                {
+                    "at_ns": 2,
+                    "heavy_holders": ["outer", "child-a", "child-b"],
+                    "heavy_waiters": ["child-c"],
+                },
+                {
+                    "at_ns": 5,
+                    "heavy_holders": ["outer", "child-b", "child-c"],
+                    "heavy_waiters": [],
+                },
+            ],
+            "final_slot_state": {"heavy_holders": [], "heavy_waiters": []},
+            "claim_transitions": [
+                {"at_ns": 0, "child_execution_id": "child-a", "state": "submitted"},
+                {"at_ns": 1, "child_execution_id": "child-a", "state": "promoted"},
+                {"at_ns": 1, "child_execution_id": "child-b", "state": "submitted"},
+                {"at_ns": 2, "child_execution_id": "child-b", "state": "promoted"},
+                {"at_ns": 2, "child_execution_id": "child-c", "state": "submitted"},
+                {"at_ns": 5, "child_execution_id": "child-c", "state": "promoted"},
+                {"at_ns": 5, "child_execution_id": "child-a", "state": "released"},
+                {"at_ns": 6, "child_execution_id": "child-b", "state": "released"},
+                {"at_ns": 9, "child_execution_id": "child-c", "state": "released"},
             ],
             "intervals": [
                 {
@@ -48,6 +86,10 @@ def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
                     "relative_output": "qa-shared-name.txt",
                     "token": "slow-first",
                     "output_text": "slow-first",
+                    "attempt_id": "attempt-a",
+                    "child_execution_id": "child-a",
+                    "work_item_id": "item-0",
+                    **_artifact_evidence(tmp_path, "attempt-a", "slow-first"),
                 },
                 {
                     "test": "slow-fail",
@@ -57,6 +99,10 @@ def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
                     "relative_output": "qa-shared-name.txt",
                     "token": "slow-fail",
                     "output_text": "slow-fail",
+                    "attempt_id": "attempt-b",
+                    "child_execution_id": "child-b",
+                    "work_item_id": "item-1",
+                    **_artifact_evidence(tmp_path, "attempt-b", "slow-fail"),
                 },
                 {
                     "test": "slow-last",
@@ -66,6 +112,10 @@ def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
                     "relative_output": "qa-shared-name.txt",
                     "token": "slow-last",
                     "output_text": "slow-last",
+                    "attempt_id": "attempt-c",
+                    "child_execution_id": "child-c",
+                    "work_item_id": "item-2",
+                    **_artifact_evidence(tmp_path, "attempt-c", "slow-last"),
                 },
             ],
         },
@@ -76,20 +126,65 @@ def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
     }
     validator.validate_attempt_isolation(timeline)
 
+    retained_output = tmp_path / "attempts/attempt-a/output.dat"
+    original_output = retained_output.read_bytes()
+    retained_output.write_text("forged\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="retained digest differs"):
+        validator.validate_attempt_isolation(timeline)
+    retained_output.write_bytes(original_output)
+
     manifest = tmp_path / "manifest.json"
     summary = tmp_path / "summary.json"
     results = [tmp_path / f"result-{index}.json" for index in range(3)]
     tests = ["slow-first", "slow-fail", "slow-last"]
     _write_json(
         manifest,
-        {"work_items": [{"selection": {"names": [name]}} for name in tests]},
+        {
+            "manifest_sha256": SHA,
+            "work_items": [
+                {"work_item_id": f"item-{index}", "selection": {"names": [name]}}
+                for index, name in enumerate(tests)
+            ],
+        },
     )
-    _write_json(summary, {"ordered_tests": tests, "strict_grade": "fail"})
-    for path, name, grade in zip(results, tests, ["pass", "fail", "pass"], strict=True):
-        _write_json(path, {"test": name, "grade": grade})
+    _write_json(
+        summary,
+        {
+            "ordered_tests": tests,
+            "strict_grade": "fail",
+            "manifest_sha256": SHA,
+            "completed": ["item-0", "item-1", "item-2"],
+        },
+    )
+    for index, (path, name, grade) in enumerate(
+        zip(results, tests, ["pass", "fail", "pass"], strict=True)
+    ):
+        _write_json(
+            path,
+            {
+                "test": name,
+                "grade": grade,
+                "manifest_sha256": SHA,
+                "work_item_id": f"item-{index}",
+                "attempt_id": f"attempt-{index}",
+                "result_sha256": SHA,
+            },
+        )
     validator.validate_continue_after_failure(manifest, summary, results)
 
     document = json.loads(timeline.read_text())
+    complete_transitions = list(document["claim_transitions"])
+    document["claim_transitions"] = [
+        item
+        for item in complete_transitions
+        if not (
+            item["child_execution_id"] == "child-b" and item["state"] == "promoted"
+        )
+    ]
+    _write_json(timeline, document)
+    with pytest.raises(ValueError, match="exact release"):
+        validator.validate_heavy_cap(timeline, 3)
+    document["claim_transitions"] = complete_transitions
     document["slot_samples"][0]["heavy_holders"].append("child-over-cap")
     _write_json(timeline, document)
     with pytest.raises(ValueError, match="exceed max_heavy"):

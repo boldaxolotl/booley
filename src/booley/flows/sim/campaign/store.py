@@ -575,6 +575,7 @@ class CampaignStore:
                 raise SimulationCampaignIntegrityError(
                     f"attempt identity disagrees for {work_item_id} ordinal {ordinal}"
                 )
+            self._validate_child_attempt_binding(attempt_directory, document)
             decoded_attempts.append(attempt)
         result_path = directory / "result.json"
         if result_path.exists() or _is_link(result_path):
@@ -589,6 +590,40 @@ class CampaignStore:
             return WorkItemRecovery(work_item_id, "complete", len(attempts), result)
         state = "interrupted" if attempts else "pending"
         return WorkItemRecovery(work_item_id, state, len(attempts), None)
+
+    def _validate_child_attempt_binding(
+        self, attempt_directory: Path, attempt: Mapping[str, object]
+    ) -> None:
+        child_id = attempt["child_execution_id"]
+        if child_id is None:
+            return
+        path = self.root / "child-executions" / "entries" / f"{child_id}.json"
+        raw = _read_regular(path, limit=RECORD_MAX_BYTES)
+        if _raw_digest(raw) != attempt["child_entry_sha256"]:
+            raise SimulationCampaignIntegrityError(
+                "Simulation Attempt child entry digest disagrees"
+            )
+        try:
+            entry = json.loads(raw)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SimulationCampaignIntegrityError(
+                "Simulation Attempt child entry is invalid JSON"
+            ) from exc
+        expected = {
+            "child_execution_id": child_id,
+            "campaign_id": attempt["campaign_id"],
+            "manifest_sha256": attempt["manifest_sha256"],
+            "work_item_id": attempt["work_item_id"],
+            "attempt_id": attempt["attempt_id"],
+            "attempt_ordinal": attempt["attempt_ordinal"],
+            "attempt_relative_path": attempt_directory.relative_to(self.root).as_posix(),
+        }
+        if not isinstance(entry, dict) or any(
+            entry.get(field) != value for field, value in expected.items()
+        ):
+            raise SimulationCampaignIntegrityError(
+                "Simulation Attempt disagrees with its exact child entry"
+            )
 
     def _scan_result(
         self,

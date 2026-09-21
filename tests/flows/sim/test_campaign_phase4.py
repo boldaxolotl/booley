@@ -29,11 +29,20 @@ from booley.flows.sim.campaign.coordinator import (
 )
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest
-from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, ScheduledAttempt
+from booley.flows.sim.campaign.scheduler import (
+    BoundedCampaignScheduler,
+    CampaignSchedulingError,
+    ScheduledAttempt,
+)
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
-from booley.runtime.execution_records import ExecutionId, execution_paths, read_json
+from booley.runtime.execution_records import (
+    ExecutionId,
+    child_context_matches,
+    execution_paths,
+    read_json,
+)
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
     HOLDING,
@@ -44,6 +53,7 @@ from booley.runtime.job_slots import (
 )
 from booley.runtime.supervised_execution import (
     SupervisedExecutionScope,
+    SupervisedProcessSet,
     supervised_execution_scope,
 )
 from tests.flows.sim.test_campaign_manifest_codec import _sha
@@ -117,7 +127,7 @@ def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     child_id = ExecutionId("e" * 32)
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
-    registry.prepare(
+    prepared = registry.prepare(
         child_id,
         work_item_id=str(item["work_item_id"]),
         attempt_id=attempt_id,
@@ -127,29 +137,73 @@ def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     flow = FlowMechanics()
     flow.args = SimpleNamespace(work_dir=project)
-    return project_data, child_id, registry, flow
+    return project_data, child_id, registry, prepared, flow
 
 
-def test_child_scope_runs_real_command_under_exact_execution_id(
+def test_child_scope_keeps_whole_work_item_nonterminal_between_commands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project_data, child_id, _registry, flow = _prepared_child(tmp_path, monkeypatch)
+    project_data, child_id, registry, prepared, flow = _prepared_child(tmp_path, monkeypatch)
     scope = SupervisedExecutionScope(child_id, project_data, lambda: False)
     with supervised_execution_scope(scope):
-        result = flow._execute_local([sys.executable, "-c", "print('child-ok')"], timeout=5)
+        first = flow._execute_local([sys.executable, "-c", "print('first')"], timeout=5)
+        between = read_json(execution_paths(child_id, project_dir=project_data).record)
+        second = flow._execute_local([sys.executable, "-c", "print('second')"], timeout=5)
     record = read_json(execution_paths(child_id, project_dir=project_data).record)
-    assert result.returncode == 0
-    assert result.stdout.strip() == "child-ok"
+    assert first.returncode == second.returncode == 0
+    assert first.stdout.strip() == "first"
+    assert second.stdout.strip() == "second"
+    assert between is not None and between["state"] == "waiting"
     assert record is not None
-    assert record["state"] == "terminal"
-    assert record["tree_terminal"] is True
+    assert record["state"] == "waiting"
+    assert record["tree_terminal"] is False
+    registry.mark_terminal(prepared, "completed")
+    terminal = read_json(execution_paths(child_id, project_dir=project_data).record)
+    assert terminal is not None and terminal["tree_terminal"] is True
+
+
+def test_cancelled_scope_rejects_a_later_command_between_processes(
+    tmp_path: Path,
+) -> None:
+    cancelled = threading.Event()
+    scope = SupervisedExecutionScope(None, tmp_path, cancelled.is_set)
+    flow = FlowMechanics()
+    flow.args = SimpleNamespace(work_dir=tmp_path)
+    marker = tmp_path / "must-not-run"
+    with supervised_execution_scope(scope):
+        first = flow._execute_local([sys.executable, "-c", "print('first')"], timeout=5)
+        cancelled.set()
+        second = flow._execute_local(
+            [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+            timeout=5,
+        )
+    assert first.returncode == 0
+    assert second.returncode == -1
+    assert not marker.exists()
+
+
+def test_process_registration_closes_constructor_cancellation_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cancelled = threading.Event()
+    cancelled.set()  # cancellation raced after the caller's pre-spawn check
+    killed: list[object] = []
+    monkeypatch.setattr(
+        "booley.runtime.supervised_execution.kill_process_tree", killed.append
+    )
+    process = object()
+    processes = SupervisedProcessSet(None, tmp_path, cancelled.is_set)
+    processes.register(process)  # type: ignore[arg-type]
+    assert killed == [process]
 
 
 def test_real_child_process_is_terminated_immediately_on_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
-    project_data, child_id, registry, flow = _prepared_child(tmp_path, monkeypatch)
+    project_data, child_id, registry, _prepared, flow = _prepared_child(
+        tmp_path, monkeypatch
+    )
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     capacity = HeavyCapacity(
@@ -339,6 +393,36 @@ def test_capacity_exception_recovers_then_releases_exact_child(tmp_path: Path) -
         store.release(outer)
 
 
+def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
+    tmp_path: Path,
+) -> None:
+    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
+    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    terminal: set[ExecutionId] = set()
+    capacity = HeavyCapacity(
+        _managed(store, outer),
+        terminal_proof=terminal.__contains__,
+        recover_child=lambda execution_id: terminal.add(execution_id) is None,
+    )
+    first = ExecutionId("b" * 32)
+    competitor = None
+    try:
+        with capacity.outer_permit(), capacity.child_permit("first", first):
+            competitor = store.submit(
+                CLASS_HEAVY,
+                pid=os.getpid(),
+                role=ROLE_INTERACTIVE,
+                execution_id=ExecutionId("c" * 32),
+            )
+            assert store.refresh(competitor).state == QUEUED
+        assert store.refresh(competitor).state == HOLDING
+    finally:
+        if competitor is not None:
+            store.release(competitor)
+        store.release(outer)
+    assert store.snapshot(CLASS_HEAVY) == ([], [])
+
+
 def test_real_slot_store_reports_token_scoped_renewal_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -423,6 +507,59 @@ def test_resume_rejects_retirement_with_wrong_terminal_digest(tmp_path: Path) ->
         registry.recover_unretired(slot_store)
 
 
+@pytest.mark.parametrize(
+    "boundary",
+    ["campaign-entry", "context", "record", "waiter", "terminal", "campaign-retirement"],
+)
+def test_child_protocol_crash_prefixes_recover_exactly(
+    tmp_path: Path, boundary: str
+) -> None:
+    manifest = _two_item_manifest()
+    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    item = manifest.document["work_items"][0]
+    work_item_id = str(item["work_item_id"])
+    attempt_id = "f" * 32
+    ordinal, attempt = campaign_store.allocate_attempt_directory(work_item_id, attempt_id)
+    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    execution_id = ExecutionId("e" * 32)
+    prepared = registry.prepare(
+        execution_id,
+        work_item_id=work_item_id,
+        attempt_id=attempt_id,
+        attempt_ordinal=ordinal,
+        attempt_directory=attempt,
+        parent_execution_id="a" * 32,
+    )
+    slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
+    paths = execution_paths(execution_id, project_dir=registry.project_data)
+    if boundary == "campaign-entry":
+        prepared.campaign_entry.unlink()
+    elif boundary == "context":
+        paths.context.unlink()
+    elif boundary == "record":
+        paths.record.unlink()
+    elif boundary == "waiter":
+        slot_store.submit(CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id)
+    elif boundary == "terminal":
+        registry.mark_terminal(prepared, "completed")
+        slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id)
+    elif boundary == "campaign-retirement":
+        registry.recover_unretired(slot_store)
+        (campaign_store.root / "child-executions/retired" / f"{execution_id}.json").unlink()
+    registry.recover_unretired(slot_store)
+    assert registry.is_terminal(execution_id)
+    assert prepared.campaign_entry.is_file()
+    assert paths.context.is_file()
+    assert slot_store.snapshot(CLASS_HEAVY) == ([], [])
+    assert (
+        campaign_store.root / "child-executions/retired" / f"{execution_id}.json"
+    ).is_file()
+
+
 def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "campaign")
@@ -471,9 +608,178 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
     assert slot_store.snapshot(CLASS_HEAVY) == ([], [])
 
 
+def test_child_context_fails_closed_when_project_entry_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_data, child_id, _registry, _prepared, _flow = _prepared_child(
+        tmp_path, monkeypatch
+    )
+    paths = execution_paths(child_id, project_dir=project_data)
+    paths.context.unlink()
+    assert child_context_matches(paths, child_id) is False
+
+
+def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) -> None:
+    manifest = _two_item_manifest()
+    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    admission = AdmissionContext(
+        "unmanaged", None, None, 1, "interactive", "a" * 32, 0.01, lambda: False
+    )
+    capacity = HeavyCapacity(
+        admission, terminal_proof=registry.is_terminal, recover_child=registry.cancel
+    )
+
+    def allocate(item) -> ScheduledAttempt:
+        attempt_id = os.urandom(16).hex()
+        ordinal, directory = campaign_store.allocate_attempt_directory(
+            str(item["work_item_id"]), attempt_id
+        )
+        return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
+
+    started = time.monotonic()
+    BoundedCampaignScheduler(
+        capacity,
+        registry,
+        allocate=allocate,
+        execute=lambda *_args: time.sleep(0.04),
+    ).run(manifest.document["work_items"])
+    assert time.monotonic() - started >= 0.07
+
+
+def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
+    tmp_path: Path,
+) -> None:
+    manifest = _two_item_manifest()
+    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
+    outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    cancelled = threading.Event()
+    release_worker = threading.Event()
+    entered = threading.Event()
+    admission = AdmissionContext(
+        "managed", slots, outer, 1, "interactive", "a" * 32, 0.05, cancelled.is_set
+    )
+    capacity = HeavyCapacity(
+        admission, terminal_proof=registry.is_terminal, recover_child=registry.cancel
+    )
+
+    def execute(*_args) -> None:
+        entered.set()
+        release_worker.wait()
+
+    scheduler = BoundedCampaignScheduler(
+        capacity,
+        registry,
+        allocate=lambda item: _scheduled_attempt(campaign_store, item),
+        execute=execute,
+    )
+    trigger = threading.Thread(target=lambda: (entered.wait(), cancelled.set()))
+    trigger.start()
+    started = time.monotonic()
+    with pytest.raises(CampaignSchedulingError, match="bounded shutdown"):
+        scheduler.run(manifest.document["work_items"][:1])
+    assert time.monotonic() - started < 0.5
+    slots.release(outer)  # endpoint AdmissionGate finally must be deferred
+    assert [token.lease_id for token in slots.snapshot(CLASS_HEAVY)[0]] == [outer.lease_id]
+    assert campaign_store.scan().interrupted == (
+        str(manifest.document["work_items"][0]["work_item_id"]),
+    )
+    release_worker.set()
+    _wait_until(lambda: slots.token_absent(outer))
+    trigger.join(timeout=1)
+
+
+def _scheduled_attempt(store: CampaignStore, item) -> ScheduledAttempt:
+    attempt_id = os.urandom(16).hex()
+    ordinal, directory = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
+    return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
+
+
+def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_it(
+    tmp_path: Path,
+) -> None:
+    manifest = _two_item_manifest()
+    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
+    outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    cancelled = threading.Event()
+    admission = AdmissionContext(
+        "managed", slots, outer, 2, "interactive", "a" * 32, 1.0, cancelled.is_set
+    )
+    capacity = HeavyCapacity(
+        admission, terminal_proof=registry.is_terminal, recover_child=registry.cancel
+    )
+    attempts: list[Path] = []
+
+    def allocate(item) -> ScheduledAttempt:
+        attempt_id = os.urandom(16).hex()
+        ordinal, directory = campaign_store.allocate_attempt_directory(
+            str(item["work_item_id"]), attempt_id
+        )
+        return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
+
+    def prepare(attempt, child_id, digest) -> None:
+        attempts.append(attempt.directory / "attempt.json")
+        (attempt.directory / "attempt.json").write_text(
+            json.dumps({"child_execution_id": child_id, "child_entry_sha256": digest})
+        )
+
+    errors: list[BaseException] = []
+    scheduler = BoundedCampaignScheduler(
+        capacity,
+        registry,
+        allocate=allocate,
+        prepare_child=prepare,
+        execute=lambda *_args: _wait_until(cancelled.is_set),
+    )
+    worker = threading.Thread(
+        target=lambda: _capture_error(errors, scheduler.run, manifest.document["work_items"])
+    )
+    worker.start()
+    try:
+        _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[1]) == 1)
+        assert attempts and attempts[0].is_file()
+        assert tuple((campaign_store.root / "child-executions/entries").glob("*.json"))
+        cancelled.set()
+        worker.join(timeout=4)
+        assert not worker.is_alive()
+        entries = tuple((campaign_store.root / "child-executions/entries").glob("*.json"))
+        retired = tuple((campaign_store.root / "child-executions/retired").glob("*.json"))
+        assert len(entries) == len(retired) == 1
+        assert slots.snapshot(CLASS_HEAVY)[1] == []
+    finally:
+        slots.release(outer)
+
+
+def _capture_error(errors: list[BaseException], call, *args) -> None:
+    try:
+        call(*args)
+    except BaseException as exc:  # noqa: BLE001 -- thread ferry for assertion
+        errors.append(exc)
+
+
 @pytest.mark.parametrize("first_finisher", ["alpha", "beta"])
+@pytest.mark.parametrize("schedule_seed", range(5))
 def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(  # noqa: PLR0915 -- stable end-to-end seam keeps setup and assertions visible
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_finisher: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_finisher: str,
+    schedule_seed: int,
 ) -> None:
     manifest = _three_item_manifest()
     plan = create_simulation_campaign_plan(manifest)
@@ -532,6 +838,7 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(  #
             started = time.monotonic()
             if name in {"alpha", "beta"}:
                 barrier.wait()
+                time.sleep(0.001 * schedule_seed)
                 if name == first_finisher:
                     first_finished.set()
                 else:
@@ -607,3 +914,12 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(  #
     assert child_entries
     assert len(child_retirements) == len(child_entries)
     assert slot_store.snapshot(CLASS_HEAVY) == ([], [])
+    child_entry = child_entries[0]
+    transplanted = json.loads(child_entry.read_text())
+    transplanted["attempt_id"] = "0" * 32
+    child_entry.chmod(0o600)
+    child_entry.write_bytes(canonical_json_bytes(transplanted))
+    with pytest.raises(
+        SimulationCampaignIntegrityError, match="child entry digest disagrees"
+    ):
+        store.scan()

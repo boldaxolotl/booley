@@ -100,17 +100,7 @@ class HeavyCapacity:
             raise HeavyCapacityError("unmanaged campaigns cannot acquire child permits")
         if self._cancelled():
             raise ClaimAbortedError("campaign shutdown requested")
-        token = store.acquire(
-            CLASS_HEAVY,
-            pid=os.getpid(),
-            argv=list(sys.argv),
-            role=self._admission.role,
-            timeout_s=self._admission.timeout_seconds,
-            should_abort=self._cancelled,
-            execution_id=child_execution_id,
-        )
-        with self._gate:
-            self._waiting[token.lease_id] = token
+        token = self._acquire_child(store, child_execution_id)
         permit = ChildHeavyPermit(
             work_item_id, child_execution_id, token, token.lease_health
         )
@@ -137,6 +127,32 @@ class HeavyCapacity:
                 self._waiting.pop(token.lease_id, None)
             self._release_after_terminal(store, permit)
 
+    def _acquire_child(self, store, child_execution_id: ExecutionId) -> SlotToken:
+        submitted: list[SlotToken] = []
+
+        def register(token: SlotToken) -> None:
+            with self._gate:
+                self._waiting[token.lease_id] = token
+            submitted.append(token)
+
+        try:
+            token = store.acquire(
+                CLASS_HEAVY,
+                pid=os.getpid(),
+                argv=list(sys.argv),
+                role=self._admission.role,
+                timeout_s=self._admission.timeout_seconds,
+                should_abort=self._cancelled,
+                execution_id=child_execution_id,
+                on_submitted=register,
+            )
+        except BaseException:
+            with self._gate:
+                for queued in submitted:
+                    self._waiting.pop(queued.lease_id, None)
+            raise
+        return token
+
     def cancel_waiters(self) -> None:
         """Stop admission and withdraw only this campaign's queued claims."""
         self._shutdown.set()
@@ -155,6 +171,40 @@ class HeavyCapacity:
     def token_absent(self, token: SlotToken) -> bool:
         store = self._admission.slot_store
         return store is not None and store.token_absent(token)
+
+    def execution_token_absent(self, execution_id: ExecutionId) -> bool:
+        """Prove that no holder or waiter remains for one exact child."""
+        store = self._admission.slot_store
+        if store is None:
+            return True
+        holders, waiters = store.snapshot(CLASS_HEAVY)
+        return all(
+            token.execution_id != execution_id for token in (*holders, *waiters)
+        )
+
+    def retain_outer_until(self, workers: tuple[threading.Thread, ...]) -> None:
+        """Transfer outer release to a terminal monitor for escaped workers."""
+        store = self._admission.slot_store
+        token = self._admission.outer_token
+        if store is None or not isinstance(token, SlotToken):
+            return
+        terminal = threading.Event()
+        store.defer_release_until(token, terminal)
+        monitor = threading.Thread(
+            target=self._wait_for_workers,
+            args=(workers, terminal),
+            name="booley-campaign-deferred-outer",
+            daemon=True,
+        )
+        monitor.start()
+
+    @staticmethod
+    def _wait_for_workers(
+        workers: tuple[threading.Thread, ...], terminal: threading.Event
+    ) -> None:
+        for worker in workers:
+            worker.join()
+        terminal.set()
 
     def _cancelled(self) -> bool:
         return self._shutdown.is_set() or self._admission.cancellation()

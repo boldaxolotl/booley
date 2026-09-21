@@ -52,11 +52,13 @@ class BoundedCampaignScheduler:
         *,
         allocate: Callable[[Mapping[str, object]], ScheduledAttempt],
         execute: Callable[[ScheduledAttempt, str | None, str | None], None],
+        prepare_child: Callable[[ScheduledAttempt, str, str], None] | None = None,
     ) -> None:
         self._capacity = capacity
         self._registry = registry
         self._allocate = allocate
         self._execute = execute
+        self._prepare_child = prepare_child or (lambda _attempt, _child, _digest: None)
         self._stop = threading.Event()
         self._errors: queue.SimpleQueue[BaseException] = queue.SimpleQueue()
         self._allocation_gate = threading.Lock()
@@ -69,27 +71,21 @@ class BoundedCampaignScheduler:
         ready: queue.Queue[Mapping[str, object]] = queue.Queue()
         for item in items:
             ready.put(item)
-        child_count = max(0, self._capacity.max_lanes - 1) if self._capacity.managed else 0
+        child_count = (
+            min(len(items) - 1, max(0, self._capacity.max_lanes - 1))
+            if self._capacity.managed
+            else 0
+        )
         with self._capacity.outer_permit():
             if child_count == 0:
-                self._run_serial(ready)
-                return
-            first = ready.get_nowait()
-            workers = [
-                threading.Thread(
-                    target=self._outer_worker,
-                    args=(first, ready),
-                    name="booley-campaign-outer",
+                workers = [self._thread(self._worker, (ready, True), "outer")]
+            else:
+                first = ready.get_nowait()
+                workers = [self._thread(self._outer_worker, (first, ready), "outer")]
+                workers.extend(
+                    self._thread(self._worker, (ready, False), f"child-{index + 1}")
+                    for index in range(child_count)
                 )
-            ]
-            workers.extend(
-                threading.Thread(
-                    target=self._worker,
-                    args=(ready, False),
-                    name=f"booley-campaign-child-{index + 1}",
-                )
-                for index in range(child_count)
-            )
             for worker in workers:
                 worker.start()
             monitor = threading.Thread(target=self._monitor_cancellation, daemon=True)
@@ -100,35 +96,41 @@ class BoundedCampaignScheduler:
         if not self._errors.empty():
             raise self._errors.get()
 
-    def _run_serial(self, ready: queue.Queue[Mapping[str, object]]) -> None:
-        while (
-            not ready.empty()
-            and not self._stop.is_set()
-            and not self._capacity.shutdown_requested
-        ):
-            item = ready.get_nowait()
-            try:
-                self._run_item(item, True)
-            finally:
-                ready.task_done()
+    @staticmethod
+    def _thread(target, args, suffix: str) -> threading.Thread:
+        return threading.Thread(
+            target=target,
+            args=args,
+            name=f"booley-campaign-{suffix}",
+            daemon=True,
+        )
 
     def _monitor_cancellation(self) -> None:
         while not self._stop.wait(0.02):
             if self._capacity.shutdown_requested:
                 self._capacity.cancel_waiters()
+                self._stop.set()
                 return
 
     def _join_workers(self, workers: list[threading.Thread]) -> None:
-        deadline = time.monotonic() + self._capacity.shutdown_timeout_seconds
-        for worker in workers:
-            worker.join(timeout=max(0.0, deadline - time.monotonic()))
-        alive = [worker.name for worker in workers if worker.is_alive()]
-        if alive:
-            self._capacity.cancel_waiters()
-            self._stop.set()
-            raise CampaignSchedulingError(
-                "campaign workers exceeded bounded shutdown: " + ", ".join(alive)
-            )
+        deadline: float | None = None
+        while any(worker.is_alive() for worker in workers):
+            if deadline is None and (
+                self._stop.is_set() or self._capacity.shutdown_requested
+            ):
+                self._stop.set()
+                self._capacity.cancel_waiters()
+                deadline = time.monotonic() + self._capacity.shutdown_timeout_seconds
+            for worker in workers:
+                worker.join(timeout=0.02)
+            if deadline is not None and time.monotonic() >= deadline:
+                self._capacity.cancel_waiters()
+                alive = tuple(worker for worker in workers if worker.is_alive())
+                self._capacity.retain_outer_until(alive)
+                raise CampaignSchedulingError(
+                    "campaign workers exceeded bounded shutdown: "
+                    + ", ".join(worker.name for worker in alive)
+                )
 
     def _worker(self, ready: queue.Queue[Mapping[str, object]], outer: bool) -> None:
         while not self._stop.is_set() and not self._capacity.shutdown_requested:
@@ -165,7 +167,13 @@ class BoundedCampaignScheduler:
             attempt = self._allocate(item)
         with self._collision_permit(attempt.collision_key):
             if outer:
-                self._execute(attempt, None, None)
+                scope = SupervisedExecutionScope(
+                    None,
+                    self._registry.project_data,
+                    lambda: self._stop.is_set() or self._capacity.shutdown_requested,
+                )
+                with supervised_execution_scope(scope):
+                    self._execute(attempt, None, None)
                 return
             self._run_child(item, attempt)
 
@@ -198,18 +206,20 @@ class BoundedCampaignScheduler:
         )
         state = _ChildRunState()
         try:
+            self._prepare_child(attempt, str(child_id), prepared.entry_sha256)
             self._execute_child(item, attempt, child_id, prepared, state)
-        except Exception:
+        except BaseException:
             if state.terminal_cause == "completed":
                 state.terminal_cause = "campaign_error"
             self._registry.mark_terminal(prepared, state.terminal_cause)
             raise
         finally:
-            if (
-                self._registry.is_terminal(child_id)
-                and state.token is not None
-                and self._capacity.token_absent(state.token)
-            ):
+            token_absent = (
+                self._capacity.token_absent(state.token)
+                if state.token is not None
+                else self._capacity.execution_token_absent(child_id)
+            )
+            if self._registry.is_terminal(child_id) and token_absent:
                 self._registry.retire(
                     prepared,
                     lease_id=state.lease_id,

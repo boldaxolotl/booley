@@ -135,6 +135,10 @@ class SerialWorkExecutor(Protocol):
         """Return a validated result after publishing ``attempt.json`` and evidence."""
         ...
 
+    def prepare_attempt(self, request: WorkExecutionRequest) -> None:
+        """Publish one exact child-bound attempt before queue submission."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class CampaignOutcome:
@@ -301,7 +305,14 @@ class SimulationCampaign:
             terminal_proof=registry.is_terminal,
             recover_child=registry.cancel,
         )
-        scheduler = BoundedCampaignScheduler(
+        self._scheduler(
+            capacity, registry, store, manifest, project_root, invocation, request
+        ).run(pending)
+
+    def _scheduler(
+        self, capacity, registry, store, manifest, project_root, invocation, request
+    ) -> BoundedCampaignScheduler:
+        return BoundedCampaignScheduler(
             capacity,
             registry,
             allocate=lambda item: self._allocate_scheduled(
@@ -316,8 +327,37 @@ class SimulationCampaign:
                 child_id,
                 child_digest,
             ),
+            prepare_child=lambda attempt, child_id, child_digest: self._prepare_child(
+                store, manifest, attempt, invocation, request, child_id, child_digest
+            ),
         )
-        scheduler.run(pending)
+
+    def _prepare_child(
+        self,
+        store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        attempt: ScheduledAttempt,
+        invocation: int,
+        request: CampaignRunRequest,
+        child_execution_id: str,
+        child_entry_sha256: str,
+    ) -> None:
+        executor = self._executor
+        if executor is None or not hasattr(executor, "prepare_attempt"):
+            raise SimulationCampaignIntegrityError(
+                "campaign executor cannot publish a child attempt before admission"
+            )
+        executor.prepare_attempt(
+            self._work_execution_request(
+                store,
+                manifest,
+                attempt,
+                invocation,
+                request,
+                child_execution_id,
+                child_entry_sha256,
+            )
+        )
 
     @staticmethod
     def _cleanup_interrupted_runs(
@@ -370,25 +410,14 @@ class SimulationCampaign:
     ) -> None:
         work_item = attempt.item
         work_item_id = cast(str, work_item["work_item_id"])
-        binding = (
-            request.validated.binding_for(manifest)
-            if isinstance(request, ResumeCampaignRunRequest)
-            else None
-        )
         assert self._executor is not None
         result = self._executor.execute(
-            WorkExecutionRequest(
+            self._work_execution_request(
                 store,
                 manifest,
-                work_item,
-                attempt.attempt_id,
-                attempt.ordinal,
-                attempt.directory,
+                attempt,
                 invocation,
-                request.policy,
-                request.admission,
-                binding.project_root if binding is not None else request.project_root,
-                binding.handle if binding is not None else None,
+                request,
                 child_execution_id,
                 child_entry_sha256,
             )
@@ -400,6 +429,37 @@ class SimulationCampaign:
             )
         _validate_scheduled_result(result, attempt, work_item_id)
         self._publish_scheduled_result(store, attempt, work_item_id, result)
+
+    @staticmethod
+    def _work_execution_request(
+        store,
+        manifest,
+        attempt,
+        invocation,
+        request,
+        child_execution_id,
+        child_entry_sha256,
+    ) -> WorkExecutionRequest:
+        binding = (
+            request.validated.binding_for(manifest)
+            if isinstance(request, ResumeCampaignRunRequest)
+            else None
+        )
+        return WorkExecutionRequest(
+            store,
+            manifest,
+            attempt.item,
+            attempt.attempt_id,
+            attempt.ordinal,
+            attempt.directory,
+            invocation,
+            request.policy,
+            request.admission,
+            binding.project_root if binding is not None else request.project_root,
+            binding.handle if binding is not None else None,
+            child_execution_id,
+            child_entry_sha256,
+        )
 
     def _publish_scheduled_result(
         self,

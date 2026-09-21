@@ -86,7 +86,15 @@ def read_json(path: Path) -> dict[str, Any] | None:
 def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
     """Authenticate an optional immutable campaign-child context sidecar."""
     if not paths.context.exists():
-        return True
+        project_data = paths.root.parents[2]
+        entry = (
+            project_data
+            / ".runtime"
+            / "campaign-child-executions"
+            / "entries"
+            / f"{execution_id}.json"
+        )
+        return not entry.exists()
     payload = read_json(paths.context)
     expected = {
         "$schema",
@@ -127,7 +135,7 @@ def _child_entry_matches(
         raw = paths.context.read_bytes()
     except OSError:
         return False
-    digest = "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
     linked = (
         "parent_execution_id",
         "campaign_id",

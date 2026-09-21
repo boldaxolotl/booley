@@ -134,6 +134,17 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         ] = {}
         self._shared_locks: dict[tuple[Path, str, int], threading.Lock] = {}
         self._shared_locks_gate = threading.Lock()
+        self._prepared_attempts: dict[Path, RunDirectory] = {}
+        self._prepared_attempts_gate = threading.Lock()
+
+    def prepare_attempt(self, request: WorkExecutionRequest) -> None:
+        """Publish the child-bound attempt before its slot waiter becomes visible."""
+        attempt, run_directory = _attempt(request)
+        self._publication_checkpoint("before:simulation_attempt")
+        request.store.publish_attempt(request.attempt_directory, attempt)
+        self._publication_checkpoint("after:simulation_attempt")
+        with self._prepared_attempts_gate:
+            self._prepared_attempts[request.attempt_directory] = run_directory
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
         item = request.work_item
@@ -141,10 +152,12 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             raise SimulationCampaignIntegrityError(
                 "Phase-2 serial execution supports only ordinary HDL work items"
             )
-        attempt, run_directory = _attempt(request)
-        self._publication_checkpoint("before:simulation_attempt")
-        request.store.publish_attempt(request.attempt_directory, attempt)
-        self._publication_checkpoint("after:simulation_attempt")
+        with self._prepared_attempts_gate:
+            run_directory = self._prepared_attempts.pop(request.attempt_directory, None)
+        if run_directory is None:
+            self.prepare_attempt(request)
+            with self._prepared_attempts_gate:
+                run_directory = self._prepared_attempts.pop(request.attempt_directory)
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         if workload["pre_sim_build_access"] == "immutable" and _sharing_eligible(request):
             return self._execute_shared(request, run_directory)

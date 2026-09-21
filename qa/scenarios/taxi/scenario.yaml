@@ -9397,7 +9397,7 @@ steps:
     sha256: 384f99c8ffcb6dcaee4649b7328477df5f68ddaaf26e7fdc3ef30fc08e829ee2
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
-    sha256: 68cd2e947f9fced639997261c688b3405302104631a2abf94cd0da764a9cd3ef
+    sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
 - id: campaign.attempt-isolation
   phase: ticket2
   action: Authenticate identical relative outputs from concurrent owned attempts.
@@ -9419,7 +9419,7 @@ steps:
     sha256: d738fe9193fde55cd71344ea4c7d71b135b461e77068ba2cb144559372b181a2
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
-    sha256: 68cd2e947f9fced639997261c688b3405302104631a2abf94cd0da764a9cd3ef
+    sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
 - id: campaign.continue-after-failure
   phase: ticket2
   action: Prove concurrent strict failure does not omit later manifest work.
@@ -9441,7 +9441,7 @@ steps:
     sha256: d738fe9193fde55cd71344ea4c7d71b135b461e77068ba2cb144559372b181a2
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
-    sha256: 68cd2e947f9fced639997261c688b3405302104631a2abf94cd0da764a9cd3ef
+    sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
 - id: final.doctor-plain
   phase: final
   action: Rerun plain Doctor warning-free.

@@ -21,7 +21,11 @@ from booley.runtime.execution_recovery import recover_execution
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
-from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
+from .codec import (
+    SimulationCampaignIntegrityError,
+    canonical_json_bytes,
+    decode_simulation_attempt,
+)
 from .model import SimulationCampaignManifest
 from .planning import manifest_digest
 from .store import CampaignStore
@@ -221,7 +225,7 @@ class ChildExecutionRegistry:
                 or entry.get("manifest_sha256") != expected_digest
             ):
                 continue
-            self._validate_entry_identity(entry)
+            self._validate_entry_identity(entry, _sha(raw))
             self._recover_entry(path, raw, entry, slot_store)
             recovered_ids.add(path.name)
         self._verify_campaign_entries(recovered_ids, expected_manifest, expected_digest)
@@ -245,7 +249,7 @@ class ChildExecutionRegistry:
                     "campaign child entry has no Project-local authority"
                 )
 
-    def _validate_entry_identity(self, entry: dict) -> None:
+    def _validate_entry_identity(self, entry: dict, entry_sha256: str) -> None:
         if entry["campaign_id"] != self._manifest.document["campaign_id"]:
             raise SimulationCampaignIntegrityError("child entry campaign identity is invalid")
         try:
@@ -264,6 +268,34 @@ class ChildExecutionRegistry:
         if self._store.root / relative != expected:
             raise SimulationCampaignIntegrityError(
                 "child entry attempt path disagrees with its work-item identity"
+            )
+        attempt_path = expected / "attempt.json"
+        if attempt_path.exists() or attempt_path.is_symlink():
+            self._validate_bound_attempt(attempt_path, entry, entry_sha256)
+
+    @staticmethod
+    def _validate_bound_attempt(
+        path: Path, entry: dict, entry_sha256: str
+    ) -> None:
+        if path.is_symlink() or not path.is_file():
+            raise SimulationCampaignIntegrityError("child-bound attempt is not regular")
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise SimulationCampaignIntegrityError("child-bound attempt is unreadable") from exc
+        attempt = decode_simulation_attempt(raw).document
+        expected = {
+            "child_execution_id": entry["child_execution_id"],
+            "child_entry_sha256": entry_sha256,
+            "campaign_id": entry["campaign_id"],
+            "manifest_sha256": entry["manifest_sha256"],
+            "work_item_id": entry["work_item_id"],
+            "attempt_id": entry["attempt_id"],
+            "attempt_ordinal": entry["attempt_ordinal"],
+        }
+        if any(attempt.get(field) != value for field, value in expected.items()):
+            raise SimulationCampaignIntegrityError(
+                "child entry disagrees with its exact Simulation Attempt"
             )
 
     def _recover_entry(self, path, raw, entry, slot_store) -> None:
@@ -425,7 +457,7 @@ def _terminal_record(cause: str) -> dict[str, object]:
 
 
 def _sha(raw: bytes) -> str:
-    return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
 def _validate_entry(path: Path, entry: dict) -> None:
