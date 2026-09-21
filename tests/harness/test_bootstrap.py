@@ -169,7 +169,7 @@ def test_public_adapter_adopts_before_reconciliation(
     monkeypatch.setattr(
         bootstrap_cli,
         "adopt_host_installation",
-        lambda _source: events.append("adopt") or identity,
+        lambda _source, *, replace: events.append(f"adopt:{replace}") or identity,
     )
     monkeypatch.setattr(
         bootstrap_cli,
@@ -188,7 +188,39 @@ def test_public_adapter_adopts_before_reconciliation(
     )
 
     assert status == 0
-    assert events == ["adopt", "reconcile"]
+    assert events == ["adopt:False", "reconcile"]
+
+
+def test_public_adapter_explicitly_replaces_during_upgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    identity = SimpleNamespace(version="2.0.0", payload_fingerprint="a" * 64)
+    monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "adopt_host_installation",
+        lambda _source, *, replace: events.append(f"adopt:{replace}") or identity,
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: events.append("reconcile")
+        or bootstrap.BootstrapResult(intent, ()),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            adopt_installation=False,
+            upgrade_installation=True,
+        )
+    )
+
+    assert status == 0
+    assert events == ["adopt:True", "reconcile"]
 
 
 def test_vscode_requires_an_executable_or_installed_application(

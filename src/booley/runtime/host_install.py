@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -64,6 +65,14 @@ def current_host_installation(package_resource: Path) -> HostInstallationIdentit
     import booley
 
     package_root = Path(booley.__file__).resolve().parent
+    resolved_resource = package_resource.resolve()
+    try:
+        resolved_resource.relative_to(package_root)
+    except ValueError as exc:
+        raise HostInstallationError(
+            f"package resource is not owned by the imported Booley distribution: "
+            f"{resolved_resource}"
+        ) from exc
     metadata = current_build_metadata()
     fingerprint = metadata.payload_fingerprint or _tree_fingerprint(package_root)
     return HostInstallationIdentity(
@@ -91,6 +100,12 @@ def _eligibility_error(
             "may only be managed by the canonical host-installed wheel"
         )
     resolved = package_resource.resolve()
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    if resolved == temporary_root or resolved.is_relative_to(temporary_root):
+        return (
+            f"Booley package resource is inside temporary filesystem state: {resolved}; "
+            "temporary QA installations cannot manage machine-global resources"
+        )
     if not any(part in _INSTALLED_PACKAGE_DIRS for part in resolved.parts):
         return f"Booley package resource is not from an installed wheel: {resolved}"
     if _EPHEMERAL_PARTS.intersection(resolved.parts):
@@ -188,6 +203,6 @@ def host_install_error(
         return (
             "this Booley process does not match the canonical host installation "
             f"({actual.distribution_root} != {expected.distribution_root}); run the canonical "
-            "host `booley bootstrap`"
+            "host `booley bootstrap --upgrade-installation` if this upgrade is intentional"
         )
     return None

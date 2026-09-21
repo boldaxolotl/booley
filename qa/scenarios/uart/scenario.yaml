@@ -786,13 +786,13 @@ steps:
 - id: inventory.PRODUCT-ARTIFACT-INSTALLATION.booley-rtl
   phase: prepare
   action: |-
-    Exercise `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell.
+    Exercise `install`: install the exact declared `booley-rtl` artifact with the documented base-interpreter user-install route and launch from a new shell.
   checks:
   - id: inventory.PRODUCT-ARTIFACT-INSTALLATION.booley-rtl
     capabilities:
     - PRODUCT-ARTIFACT-INSTALLATION
     stimulus: |-
-      Exercise `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell.
+      Exercise `install`: install the exact declared `booley-rtl` artifact with the documented base-interpreter user-install route and launch from a new shell.
     expected: |-
       Metadata, executable, package provenance, source identity and version agree.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
@@ -804,13 +804,13 @@ steps:
 - id: inventory.PRODUCT-ARTIFACT-INSTALLATION.install
   phase: prepare
   action: |-
-    Exercise `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell.
+    Exercise `install`: install the exact declared `booley-rtl` artifact with the documented base-interpreter user-install route and launch from a new shell.
   checks:
   - id: inventory.PRODUCT-ARTIFACT-INSTALLATION.install
     capabilities:
     - PRODUCT-ARTIFACT-INSTALLATION
     stimulus: |-
-      Exercise `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell.
+      Exercise `install`: install the exact declared `booley-rtl` artifact with the documented base-interpreter user-install route and launch from a new shell.
     expected: |-
       Metadata, executable, package provenance, source identity and version agree.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation

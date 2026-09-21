@@ -27,7 +27,22 @@ def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
         "load_host_installation",
         lambda: SimpleNamespace(
             version="0.2.15",
+            revision="",
             payload_fingerprint="b" * 64,
+            executable="/usr/local/bin/booley",
+            interpreter="/usr/local/bin/python3",
+            distribution_root="/opt/booley",
+        ),
+    )
+    monkeypatch.setattr(
+        host_diagnostics,
+        "current_host_installation",
+        lambda _source: SimpleNamespace(
+            version="0.2.15",
+            revision="",
+            payload_fingerprint="b" * 64,
+            executable="/usr/local/bin/booley",
+            interpreter="/usr/local/bin/python3",
             distribution_root="/opt/booley",
         ),
     )

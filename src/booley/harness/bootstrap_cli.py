@@ -12,8 +12,10 @@ from booley.runtime.paths import skills_dir
 
 def run_bootstrap(args: object) -> int:
     """Run Host Bootstrap and render its typed findings."""
-    if getattr(args, "adopt_installation", False) and getattr(args, "check_only", False):
-        print(red("--adopt-installation cannot be combined with --check-only"))
+    adopt = getattr(args, "adopt_installation", False)
+    upgrade = getattr(args, "upgrade_installation", False)
+    if (adopt or upgrade) and getattr(args, "check_only", False):
+        print(red("installation adoption cannot be combined with --check-only"))
         return 2
     intent = (
         Intent.CHECK
@@ -33,9 +35,9 @@ def run_bootstrap(args: object) -> int:
         from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         with host_lifecycle_lock("host bootstrap"):
-            if getattr(args, "adopt_installation", False):
+            if adopt or upgrade:
                 try:
-                    identity = adopt_host_installation(skills_dir())
+                    identity = adopt_host_installation(skills_dir(), replace=upgrade)
                 except HostInstallationError as exc:
                     print(red(f"Cannot adopt host installation: {exc}"))
                     return 2

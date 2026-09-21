@@ -50,6 +50,9 @@ again after Booley upgrades:
 ```bash
 booley bootstrap --adopt-installation
 booley bootstrap
+# after upgrading Booley:
+booley bootstrap --upgrade-installation
+booley bootstrap
 ```
 
 It validates Git, Docker, and VS Code; installs or verifies VS Code's Dev

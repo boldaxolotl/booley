@@ -69,6 +69,23 @@ def test_rejects_qa_runtime_even_when_it_contains_site_packages() -> None:
     assert "ephemeral workspace state" in error
 
 
+def test_rejects_arbitrary_temporary_qa_path(monkeypatch) -> None:
+    monkeypatch.setattr(host_install.tempfile, "gettempdir", lambda: "/tmp/booley-qa")
+    source = Path("/tmp/booley-qa/run/lib/python3.14/site-packages/booley/data/skills")
+    error = host_install.host_install_error(
+        source, prefix=Path("/usr"), base_prefix=Path("/usr")
+    )
+    assert error is not None
+    assert "temporary filesystem state" in error
+
+
+def test_rejects_resource_outside_imported_distribution() -> None:
+    with pytest.raises(HostInstallationError, match="not owned"):
+        host_install.current_host_installation(
+            Path("/opt/other/lib/python3.14/site-packages/booley/data/skills")
+        )
+
+
 def test_unrecorded_installed_wheel_requires_explicit_adoption(tmp_path: Path) -> None:
     source = Path("/opt/python/lib/python3.14/site-packages/booley/data/skills")
     error = host_install.host_install_error(
@@ -116,3 +133,8 @@ def test_adoption_is_atomic_and_refuses_implicit_replacement(
     with pytest.raises(HostInstallationError, match="different canonical"):
         host_install.adopt_host_installation(Path("/skills"), path=state)
     assert host_install.load_host_installation(state) == candidate
+
+    assert host_install.adopt_host_installation(
+        Path("/skills"), replace=True, path=state
+    ) == replacement
+    assert host_install.load_host_installation(state) == replacement

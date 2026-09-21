@@ -66,6 +66,9 @@ Then verify the installed version and prepare the host resources:
 booley --version
 booley bootstrap --adopt-installation # first installation only
 booley bootstrap
+# after upgrading Booley:
+booley bootstrap --upgrade-installation
+booley bootstrap
 ```
 
 Use a dedicated base Python installation when the operating system marks its

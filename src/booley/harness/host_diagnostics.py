@@ -11,7 +11,12 @@ from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.harness import bootstrap
 from booley.harness.image_lifecycle import Intent
 from booley.runtime import runtime_context
-from booley.runtime.host_install import HostInstallationError, load_host_installation
+from booley.runtime.host_install import (
+    HostInstallationError,
+    current_host_installation,
+    load_host_installation,
+)
+from booley.runtime.paths import skills_dir
 
 MIN_PY = (3, 11)
 
@@ -59,13 +64,23 @@ def inspect_host() -> HostDiagnosticResult:
 def _inspect_host_installation(report: Findings) -> None:
     try:
         identity = load_host_installation()
+        actual = current_host_installation(skills_dir())
     except HostInstallationError as exc:
         report.fail(str(exc), "booley bootstrap --adopt-installation")
         return
+    if actual != identity:
+        report.fail(
+            "current Booley process does not match the canonical host installation "
+            f"({actual.distribution_root} != {identity.distribution_root})",
+            "booley bootstrap --upgrade-installation",
+        )
+        return
     report.pass_(
         "canonical Booley host installation "
-        f"v{identity.version} ({identity.payload_fingerprint[:12]}) at "
-        f"{identity.distribution_root}"
+        f"v{identity.version} revision={identity.revision or 'unknown'} "
+        f"fingerprint={identity.payload_fingerprint[:12]} "
+        f"executable={identity.executable} interpreter={identity.interpreter} "
+        f"root={identity.distribution_root}"
     )
 
 
