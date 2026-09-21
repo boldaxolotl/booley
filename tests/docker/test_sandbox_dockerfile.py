@@ -192,7 +192,7 @@ def test_published_runtime_images_include_sbom_attestations() -> None:
     release = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
     base_release = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
 
-    assert release.count("sbom: true") == 2
+    assert release.count("sbom: true") == 4
     assert base_release.count("sbom: true") == 1
 
 
@@ -201,7 +201,7 @@ def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
     verifier = Path(".github/scripts/verify_picorv32_demo.sh").read_text(encoding="utf-8")
 
     assert "--image booley-riscv-test" in workflow
-    assert "--base-image booley-test" in workflow
+    assert "--base-image booley-standard-substrate:ci" in workflow
     assert "--flavor riscv" in workflow
     assert "--runtime-image riscv=booley-riscv-test" in workflow
     assert "verify_picorv32_demo.sh" in workflow
@@ -290,7 +290,12 @@ def test_shipped_external_base_images_are_digest_pinned() -> None:
             # The RISC-V flavor deliberately consumes a locally built named
             # context; the release workflow maps that name to the exact digest
             # emitted by the base-image job.
-            if image in {"${BOOLEY_BASE_IMAGE}", "booley-runtime-base"}:
+            if image in {
+                "${BOOLEY_BASE_IMAGE}",
+                "booley-runtime-base",
+                "booley-standard-substrate",
+                "booley-substrate",
+            }:
                 continue
             assert re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image), (
                 f"{path}: external base image is not digest-pinned: {image}"
@@ -484,10 +489,10 @@ def test_shared_candidate_cache_has_only_the_main_push_writer() -> None:
         if step.get("name") == "Build candidate from published stable base"
     )
 
-    assert candidate_build["with"]["cache-from"] == "type=gha,scope=sandbox"
+    assert candidate_build["with"]["cache-from"] == "type=gha,scope=sandbox-substrate"
     assert candidate_build["with"]["cache-to"] == (
         "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && "
-        "'type=gha,scope=sandbox,mode=max,ignore-error=true' || '' }}"
+        "'type=gha,scope=sandbox-substrate,mode=max,ignore-error=true' || '' }}"
     )
 
     release_workflow = yaml.safe_load(
@@ -499,7 +504,7 @@ def test_shared_candidate_cache_has_only_the_main_push_writer() -> None:
         if step.get("id") == "build"
     )
 
-    assert release_build["with"]["cache-from"] == "type=gha,scope=sandbox"
+    assert release_build["with"]["cache-from"] == "type=gha,scope=sandbox-wheel"
     assert "cache-to" not in release_build["with"]
 
 

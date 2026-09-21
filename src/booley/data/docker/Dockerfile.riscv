@@ -1,32 +1,16 @@
-# Booley RISC-V sandbox image — the base sandbox plus a full RISC-V software
-# toolchain, a reference ISS, and the ratified RISC-V International spec set
-# baked in for offline use. Purpose-built for RISC-V CPU-core projects
+# Booley RISC-V tool substrate — the standard wheel-free substrate plus a full
+# RISC-V software toolchain, a reference ISS, and the ratified RISC-V
+# International spec set baked in for offline use. The final wheel overlay is
+# applied separately. Purpose-built for RISC-V CPU-core projects
 # (ibex, picorv32, biriscv, …) whose flows compile firmware/tests with a
 # RISC-V cross-compiler before simulating the RTL.
 #
-# It extends `booley-sandbox`, so that image must exist first. Build both with:
-#   ./src/booley/data/docker/build-riscv.sh      (auto-builds the base + wheel)
-# or manually:
-#   ./src/booley/data/docker/build.sh                        # base
-#   docker build -t booley-sandbox-riscv \
-#       -f src/booley/data/docker/Dockerfile.riscv .         # this image
-#
-# Point a project at it in .booley_project/booley.toml:
-#   [sandbox]
-#   image = "booley-sandbox-riscv"
-# `booley init` recognises the name (init_docker_image.FLAVOR_IMAGES) and builds
-# or refreshes this image itself — it is Booley's, not a user-managed one.
-#
-# When the project ALSO has Python deps to bake (e.g. ibex), hand-author
-# .booley_project/docker/Dockerfile as `FROM booley-sandbox-riscv` + your pip
-# install, mark it `# booley:keep`, and point [sandbox].image at that image
-# instead (see docs/user/CONFIG.md).
-#
-# IMPORTANT: keep this file COPY-free. `booley init` builds it with data/docker/
-# as the context so a pip-installed Booley (no repo root) can build it too.
+# BuildKit maps `booley-standard-substrate` to a verified immutable local ID or
+# registry digest. Keep this file COPY-free: installed Booley distributions
+# always pull the complete published image, while source convergence may build
+# this substrate with data/docker/ as its otherwise-unused context.
 
-ARG BOOLEY_BASE_IMAGE=booley-sandbox
-FROM ${BOOLEY_BASE_IMAGE}
+FROM booley-standard-substrate
 
 # Everything below installs system-wide; drop back to the agent user at the end
 # to match the base image's runtime posture.

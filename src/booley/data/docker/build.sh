@@ -88,23 +88,17 @@ fi
 FRESH_WHEEL="${FRESH_WHEELS[0]}"
 echo ">>> Fresh wheel: $(basename "$FRESH_WHEEL")"
 
-# Stamp the same build-fingerprint label `booley init` uses, so an image built
-# here isn't later treated as stale (source-drift guard). Reuses the single
-# source-of-truth hash from init_cmd; empty on failure -> no label (harmless).
-FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -c \
-  'import sys; from pathlib import Path; from booley.harness.init_cmd import _image_build_fingerprint; print(_image_build_fingerprint(Path(sys.argv[1])) or "")' \
-  "$BOOLEY_ROOT" 2>/dev/null || true)"
-LABEL_ARGS=()
-[ -n "$FINGERPRINT" ] && LABEL_ARGS=(
-  --label "booley.build-fingerprint=$FINGERPRINT"
-  --label "io.booley.provenance.schema=1"
-  --label "io.booley.payload.fingerprint=$FINGERPRINT"
-  --label "io.booley.build.origin=local"
-)
-RECIPE_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -c \
-  'import sys; from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path(sys.argv[1]),)))' \
-  "$SCRIPT_DIR/Dockerfile")"
-LABEL_ARGS+=(--label "io.booley.build.recipe-fingerprint=$RECIPE_FINGERPRINT")
+WHEEL_SOURCE_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
+  'import sys; from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path(sys.argv[1])) or "")' \
+  "$BOOLEY_ROOT")"
+WHEEL_SHA256="$(sha256sum "$FRESH_WHEEL" | cut -d' ' -f1)"
+STANDARD_INPUTS="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
+  'import sys; from pathlib import Path; from booley.runtime.image_lifecycle import standard_substrate_fingerprint; print(standard_substrate_fingerprint(Path(sys.argv[1])))' \
+  "$BOOLEY_ROOT")"
+recipe_fingerprint() {
+  PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
+    'import sys; from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path(sys.argv[1]),)))' "$1"
+}
 SOURCE_UPDATED_AT="$(git -C "$BOOLEY_ROOT" log -1 --format=%cI HEAD 2>/dev/null || true)"
 IMAGE_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_METADATA_ARGS=(
@@ -112,7 +106,8 @@ BUILD_METADATA_ARGS=(
   --build-arg "BOOLEY_SOURCE_REVISION=${COMMIT:-unknown}"
   --build-arg "BOOLEY_SOURCE_UPDATED_AT=${SOURCE_UPDATED_AT:-unknown}"
   --build-arg "BOOLEY_IMAGE_BUILT_AT=$IMAGE_BUILT_AT"
-  --build-arg "BOOLEY_PAYLOAD_FINGERPRINT=${FINGERPRINT:-unknown}"
+  --build-arg "BOOLEY_PAYLOAD_FINGERPRINT=${WHEEL_SOURCE_FINGERPRINT:-unknown}"
+  --build-arg "BOOLEY_WHEEL_SHA256=$WHEEL_SHA256"
 )
 
 BASE_CONTRACT="$($PYBUILD "$BOOLEY_ROOT/.github/scripts/docker_base_contract.py" \
@@ -133,13 +128,39 @@ run_docker_build() {
 
 echo ">>> Building stable EDA/runtime base (cacheable across candidate changes)..."
 run_docker_build booley-runtime-base:local docker build "${BASE_METADATA_ARGS[@]}" "$@" \
+  --label "io.booley.provenance.schema=3" \
+  --label "io.booley.artifact.role=runtime-base" \
+  --label "io.booley.artifact.effective-inputs=$BASE_CONTRACT" \
+  --label "io.booley.build.recipe-fingerprint=$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.base")" \
+  --label "io.booley.build.origin=local" \
   -t booley-runtime-base:local -f "$SCRIPT_DIR/Dockerfile.base" "$BOOLEY_ROOT"
 RUNTIME_BASE_ID="$(docker image inspect booley-runtime-base:local --format '{{.Id}}')"
-LABEL_ARGS+=(--label "io.booley.build.parent-artifact=$RUNTIME_BASE_ID")
 
-echo ">>> Building booley-sandbox Docker image..."
-run_docker_build booley-sandbox docker build "${LABEL_ARGS[@]}" "${BUILD_METADATA_ARGS[@]}" "$@" \
-  --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=$RUNTIME_BASE_ID" \
+echo ">>> Building standard tool substrate..."
+run_docker_build booley-sandbox-standard-substrate:local docker build "$@" \
+  --label "io.booley.provenance.schema=3" \
+  --label "io.booley.artifact.role=standard-substrate" \
+  --label "io.booley.artifact.effective-inputs=$STANDARD_INPUTS" \
+  --label "io.booley.build.recipe-fingerprint=$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.substrate")" \
+  --label "io.booley.build.parent-artifact-kind=local-image-id" \
+  --label "io.booley.build.parent-artifact=$RUNTIME_BASE_ID" \
+  --label "io.booley.build.origin=local" \
   --build-context booley-runtime-base=docker-image://booley-runtime-base:local \
-  -t booley-sandbox -f "$SCRIPT_DIR/Dockerfile" "$BOOLEY_ROOT"
+  -t booley-sandbox-standard-substrate:local \
+  -f "$SCRIPT_DIR/Dockerfile.substrate" "$BOOLEY_ROOT"
+STANDARD_ID="$(docker image inspect booley-sandbox-standard-substrate:local --format '{{.Id}}')"
+
+echo ">>> Building booley-sandbox wheel overlay..."
+run_docker_build booley-sandbox docker build "${BUILD_METADATA_ARGS[@]}" "$@" \
+  --label "io.booley.provenance.schema=3" \
+  --label "io.booley.artifact.role=wheel-overlay" \
+  --label "io.booley.artifact.effective-inputs=$WHEEL_SOURCE_FINGERPRINT" \
+  --label "io.booley.wheel.source-fingerprint=$WHEEL_SOURCE_FINGERPRINT" \
+  --label "io.booley.wheel.sha256=$WHEEL_SHA256" \
+  --label "io.booley.build.recipe-fingerprint=$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.wheel")" \
+  --label "io.booley.build.parent-artifact-kind=local-image-id" \
+  --label "io.booley.build.parent-artifact=$STANDARD_ID" \
+  --label "io.booley.build.origin=local" \
+  --build-context booley-substrate=docker-image://booley-sandbox-standard-substrate:local \
+  -t booley-sandbox -f "$SCRIPT_DIR/Dockerfile.wheel" "$BOOLEY_ROOT"
 echo "✓ booley-sandbox image built successfully"

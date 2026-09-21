@@ -64,7 +64,7 @@ from booley.fusesoc.core_projection import (
 # existing importers (booley.harness.doctor, tests) and this module's own steps
 # keep resolving them by their original ``init_cmd`` names. F401 is suppressed
 # for this file (see pyproject) because a facade re-exports names it may not use.
-from booley.harness import doctor_stamp, nangate_pdk
+from booley.harness import doctor_stamp, image_lifecycle, nangate_pdk
 from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_bootstrap
 from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import (
@@ -832,6 +832,8 @@ def _selected_image_handled(ctx: InitContext, sandbox: dict, generated: str) -> 
         return False
     selected = configured.strip()
     if selected in FLAVOR_IMAGES:
+        if sandbox.get("pip_requirements"):
+            return False
         if ensure_flavor_image(ctx, selected):
             _warn_on_live_session_on_old_image(ctx, selected)
         return True
@@ -1031,7 +1033,12 @@ def _step_project_image(ctx: InitContext) -> None:
         return
 
     docker_dir = project_dir / "docker"
-    pi.write_project_image_files(docker_dir, body)
+    parent_image = (
+        image_lifecycle.RISCV_SUBSTRATE_IMAGE
+        if sandbox.get("image") == "booley-sandbox-riscv"
+        else pi.BASE_IMAGE
+    )
+    pi.write_project_image_files(docker_dir, body, parent_image=parent_image)
     _build_and_configure_image(ctx, docker_dir, generated)
 
 
@@ -1104,18 +1111,28 @@ def inspect_refreshable_runtime_image(
     project_root: Path, *, verbose: bool = False
 ) -> LifecycleResult:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
-    inspection = reconcile_images(
-        ProjectImageScope(project_root),
-        ImageLifecycleIntent.CHECK,
-        verbose=verbose,
-    )
-    if inspection.status is ImageLifecycleStatus.EXTERNAL:
+    del verbose
+    try:
+        lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
+    except ImageLifecycleError as exc:
         raise RuntimeError(
-            f"[sandbox].image={inspection.selected_reference!r} is user-managed, so Booley has no "
-            "build recipe to refresh. Rebuild that image yourself, then run "
-            "`booley session up --rebuild`."
-        )
-    return inspection
+            f"the selected Sandbox Image cannot use managed refresh: {exc}. "
+            "Rebuild it explicitly, then run `booley session up --rebuild`."
+        ) from exc
+    stale = tuple(
+        step
+        for step in lifecycle_plan.steps
+        if step.action is not image_lifecycle.PlanAction.REUSE
+    )
+    docker = image_lifecycle._docker_adapter()
+    return LifecycleResult(
+        lifecycle_plan.selected_reference,
+        docker.image_id(lifecycle_plan.selected_reference),
+        ImageLifecycleStatus.STALE if stale else ImageLifecycleStatus.CURRENT,
+        diagnostics=tuple(step.reason for step in stale),
+        payload_fingerprint=lifecycle_plan.nodes[-1].wheel_source_fingerprint,
+        wheel_source_fingerprint=lifecycle_plan.nodes[-1].wheel_source_fingerprint,
+    )
 
 
 def refresh_runtime_image(
@@ -1124,32 +1141,52 @@ def refresh_runtime_image(
     verbose: bool = False,
     inspection: LifecycleResult | None = None,
 ) -> LifecycleResult:
-    """Rebuild the configured Sandbox Image from current Booley sources.
+    """Converge the selected Sandbox Image without forcing compatible ancestors."""
+    del inspection
+    prepared = prepare_runtime_image(project_root, verbose=verbose)
+    try:
+        return commit_runtime_image(prepared)
+    except BaseException:
+        abort_runtime_image(prepared)
+        raise
 
-    This is the implementation behind ``booley session refresh``. It reuses
-    init's image builders with ``force=True`` but never rewrites booley.toml or
-    the devcontainer spec. Booley-owned base/flavor images and the generated
-    project image are reproducible here; an arbitrary explicit image remains
-    user-managed and is rejected with an actionable error.
-    """
-    if inspection is None:
-        inspect_refreshable_runtime_image(project_root, verbose=verbose)
-    bootstrap = reconcile_bootstrap(ImageLifecycleIntent.REFRESH, verbose=verbose)
-    base = _usable_bootstrap_base(bootstrap)
-    if not bootstrap.ready or base is None:
-        failures = "; ".join(
-            finding.detail
-            for finding in bootstrap.findings
-            if finding.state in {BootstrapState.ERROR, BootstrapState.PENDING}
+
+def prepare_runtime_image(
+    project_root: Path,
+    *,
+    verbose: bool = False,
+) -> image_lifecycle.PreparedConvergence:
+    """Build and verify refresh candidates without changing managed tags."""
+    lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
+    info("Refresh plan:")
+    for step in lifecycle_plan.steps:
+        identity = next(
+            node.effective_inputs or ""
+            for node in lifecycle_plan.nodes
+            if node.reference == step.reference
         )
-        raise RuntimeError(
-            f"Host Bootstrap refresh failed: {failures or 'base image unavailable'}"
-        )
-    return reconcile_images(
-        ProjectImageScope(project_root, base),
-        ImageLifecycleIntent.REFRESH,
-        verbose=verbose,
-    )
+        info(f"  {step.action.value:<5} {step.role.value:<20} {step.reason.code} {identity[:12]}")
+    info("  replace Sandbox after verification")
+    return image_lifecycle.prepare(lifecycle_plan, verbose=verbose)
+
+
+def commit_runtime_image(
+    prepared: image_lifecycle.PreparedConvergence,
+) -> LifecycleResult:
+    """Adopt prepared image candidates after refresh state is journaled."""
+    return image_lifecycle.commit(prepared)
+
+
+def validate_runtime_image(
+    prepared: image_lifecycle.PreparedConvergence,
+) -> None:
+    """Revalidate prepared image inputs before parking the live Sandbox."""
+    image_lifecycle.validate(prepared)
+
+
+def abort_runtime_image(prepared: image_lifecycle.PreparedConvergence) -> None:
+    """Discard prepared refresh candidates."""
+    image_lifecycle.abort(prepared)
 
 
 def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = False) -> None:

@@ -8,10 +8,15 @@ import stat
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-PROVENANCE_SCHEMA = "2"
+PROVENANCE_SCHEMA = "3"
+PREVIOUS_PROVENANCE_SCHEMA = "2"
 LEGACY_PROVENANCE_SCHEMA = "1"
 LABEL_SCHEMA = "io.booley.provenance.schema"
+LABEL_ARTIFACT_ROLE = "io.booley.artifact.role"
+LABEL_EFFECTIVE_INPUTS = "io.booley.artifact.effective-inputs"
 LABEL_PAYLOAD_FINGERPRINT = "io.booley.payload.fingerprint"
+LABEL_WHEEL_SOURCE_FINGERPRINT = "io.booley.wheel.source-fingerprint"
+LABEL_WHEEL_SHA256 = "io.booley.wheel.sha256"
 LABEL_RECIPE_FINGERPRINT = "io.booley.build.recipe-fingerprint"
 LABEL_PARENT_ARTIFACT = "io.booley.build.parent-artifact"
 LABEL_PARENT_ARTIFACT_KIND = "io.booley.build.parent-artifact-kind"

@@ -11,7 +11,8 @@ from typing import Any
 import yaml
 
 _BASE_DOCKERFILE = "src/booley/data/docker/Dockerfile.base"
-_CANDIDATE_DOCKERFILE = "src/booley/data/docker/Dockerfile"
+_SUBSTRATE_DOCKERFILE = "src/booley/data/docker/Dockerfile.substrate"
+_OVERLAY_DOCKERFILE = "src/booley/data/docker/Dockerfile.wheel"
 _RISCV_DOCKERFILE = "src/booley/data/docker/Dockerfile.riscv"
 _BUILD_ACTION = "docker/build-push-action@"
 _VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)+")
@@ -54,6 +55,7 @@ class Build:
 class ContractSources:
     base_dockerfile: str
     candidate_dockerfile: str
+    overlay_dockerfile: str
     riscv_dockerfile: str
     test_workflow: dict[str, Any]
     release_workflow: dict[str, Any]
@@ -89,7 +91,8 @@ def load_sources(repo: Path) -> ContractSources:
     docker_dir = repo / "src/booley/data/docker"
     return ContractSources(
         base_dockerfile=(docker_dir / "Dockerfile.base").read_text(encoding="utf-8"),
-        candidate_dockerfile=(docker_dir / "Dockerfile").read_text(encoding="utf-8"),
+        candidate_dockerfile=(docker_dir / "Dockerfile.substrate").read_text(encoding="utf-8"),
+        overlay_dockerfile=(docker_dir / "Dockerfile.wheel").read_text(encoding="utf-8"),
         riscv_dockerfile=(docker_dir / "Dockerfile.riscv").read_text(encoding="utf-8"),
         test_workflow=_load_yaml(repo / ".github/workflows/test.yml"),
         release_workflow=_load_yaml(repo / ".github/workflows/docker-publish.yml"),
@@ -292,8 +295,9 @@ def validate_sources(sources: ContractSources) -> tuple[str, ...]:
 def _dockerfile_errors(sources: ContractSources) -> list[str]:
     errors: list[str] = []
     for role, contents, expected in (
-        ("candidate", sources.candidate_dockerfile, "booley-runtime-base"),
-        ("riscv", sources.riscv_dockerfile, "booley-sandbox"),
+        ("standard substrate", sources.candidate_dockerfile, "booley-runtime-base"),
+        ("riscv substrate", sources.riscv_dockerfile, "booley-standard-substrate"),
+        ("wheel overlay", sources.overlay_dockerfile, "booley-substrate"),
     ):
         try:
             parents = dockerfile_parents(contents)
@@ -374,11 +378,10 @@ def _test_build_shape_errors(local: Build, remote: Build, riscv: Build) -> list[
         _build_shape_errors(
             "local-base candidate",
             local,
-            _CANDIDATE_DOCKERFILE,
+            _SUBSTRATE_DOCKERFILE,
             {"booley-runtime-base": "docker-image://booley-runtime-base:ci"},
-            ("booley-test",),
+            ("booley-standard-substrate:ci",),
             load=True,
-            build_arg=("BOOLEY_RUNTIME_BASE_IMAGE", "booley-runtime-base:ci"),
         )
     )
     remote_parent = "docker-image://${{ steps.runtime-base.outputs.image }}"
@@ -386,11 +389,10 @@ def _test_build_shape_errors(local: Build, remote: Build, riscv: Build) -> list[
         _build_shape_errors(
             "published-base test candidate",
             remote,
-            _CANDIDATE_DOCKERFILE,
+            _SUBSTRATE_DOCKERFILE,
             {"booley-runtime-base": remote_parent},
-            ("booley-test",),
+            ("booley-standard-substrate:ci",),
             load=True,
-            build_arg=("BOOLEY_RUNTIME_BASE_IMAGE", "${{ steps.runtime-base.outputs.image }}"),
         )
     )
     errors.extend(
@@ -398,8 +400,8 @@ def _test_build_shape_errors(local: Build, remote: Build, riscv: Build) -> list[
             "local RISC-V candidate",
             riscv,
             _RISCV_DOCKERFILE,
-            {"booley-sandbox": "docker-image://booley-test"},
-            ("booley-riscv-test",),
+            {"booley-standard-substrate": "docker-image://booley-standard-substrate:ci"},
+            ("booley-riscv-substrate:ci",),
             load=True,
         )
     )
@@ -446,29 +448,48 @@ def _release_graph_errors(workflow: dict[str, Any]) -> list[str]:
         candidate = parse_build(
             find_step("docker-publish.yml", workflow, "build-and-push", step_id="build")
         )
+        standard_substrate = parse_build(
+            find_step("docker-publish.yml", workflow, "build-and-push", step_id="substrate")
+        )
         riscv = parse_build(
             find_step("docker-publish.yml", workflow, "build-and-push-riscv", step_id="build")
+        )
+        riscv_substrate = parse_build(
+            find_step("docker-publish.yml", workflow, "build-and-push-riscv", step_id="substrate")
         )
     except ValueError as error:
         return [f"release image graph: {error}"]
     errors = _resolver_errors("release candidate", resolver, "${BASE_REF}")
-    errors.extend(_release_candidate_errors(workflow, candidate))
-    errors.extend(_release_riscv_errors(workflow, riscv))
+    errors.extend(_release_candidate_errors(workflow, standard_substrate, candidate))
+    errors.extend(_release_riscv_errors(workflow, riscv_substrate, riscv))
     return errors
 
 
-def _release_candidate_errors(workflow: dict[str, Any], build: Build) -> list[str]:
+def _release_candidate_errors(
+    workflow: dict[str, Any], substrate: Build, build: Build
+) -> list[str]:
     role = "release candidate"
-    parent = "${{ steps.runtime-base.outputs.image }}"
+    runtime_parent = "${{ steps.runtime-base.outputs.image }}"
     errors = _build_shape_errors(
-        role,
-        build,
-        _CANDIDATE_DOCKERFILE,
-        {"booley-runtime-base": f"docker-image://{parent}"},
+        "release standard substrate",
+        substrate,
+        _SUBSTRATE_DOCKERFILE,
+        {"booley-runtime-base": f"docker-image://{runtime_parent}"},
         (),
         push=True,
-        build_arg=("BOOLEY_RUNTIME_BASE_IMAGE", parent),
-        label=("io.booley.build.parent-artifact", parent),
+        label=("io.booley.build.parent-artifact", runtime_parent),
+    )
+    parent = "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}"
+    errors.extend(
+        _build_shape_errors(
+            role,
+            build,
+            _OVERLAY_DOCKERFILE,
+            {"booley-substrate": f"docker-image://{parent}"},
+            (),
+            push=True,
+            label=("io.booley.build.parent-artifact", parent),
+        )
     )
     if build.labels.get("io.booley.build.parent-artifact-kind") != "registry-digest":
         errors.append(f"{role}: parent artifact kind must be registry-digest")
@@ -488,20 +509,32 @@ def _release_candidate_errors(workflow: dict[str, Any], build: Build) -> list[st
     return errors
 
 
-def _release_riscv_errors(workflow: dict[str, Any], build: Build) -> list[str]:
+def _release_riscv_errors(workflow: dict[str, Any], substrate: Build, build: Build) -> list[str]:
     role = "release RISC-V image"
-    parent = (
-        "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@"
-        "${{ needs.build-and-push.outputs.image-digest }}"
+    standard_parent = (
+        "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
+        "${{ needs.build-and-push.outputs.substrate-digest }}"
     )
     errors = _build_shape_errors(
-        role,
-        build,
+        "release RISC-V substrate",
+        substrate,
         _RISCV_DOCKERFILE,
-        {"booley-sandbox": f"docker-image://{parent}"},
+        {"booley-standard-substrate": f"docker-image://{standard_parent}"},
         (),
         push=True,
-        label=("io.booley.build.parent-artifact", parent),
+        label=("io.booley.build.parent-artifact", standard_parent),
+    )
+    parent = "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}"
+    errors.extend(
+        _build_shape_errors(
+            role,
+            build,
+            _OVERLAY_DOCKERFILE,
+            {"booley-substrate": f"docker-image://{parent}"},
+            (),
+            push=True,
+            label=("io.booley.build.parent-artifact", parent),
+        )
     )
     if build.labels.get("io.booley.build.parent-artifact-kind") != "registry-digest":
         errors.append(f"{role}: parent artifact kind must be registry-digest")

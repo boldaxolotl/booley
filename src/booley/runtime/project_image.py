@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["project_image_name", "project_sandbox_image"]
 
 BASE_IMAGE = SANDBOX_IMAGE
+MANAGED_PROJECT_PARENT = "booley-project-parent"
 
 # Packages the base sandbox image pins and manages (ADR 0019). A project
 # requirements pin on any of these shadows the image's version at build time
@@ -329,7 +330,7 @@ def consolidated_requirements(
     return "\n".join(lines).rstrip("\n") + "\n", kept, skipped, dropped_managed
 
 
-def _dockerfile_body() -> str:
+def _dockerfile_body(parent_image: str = BASE_IMAGE) -> str:
     # Install as root into SYSTEM site-packages, not the agent's ~/.local — the
     # base image's booley-pip-local named volume shadows /home/agent/.local at
     # runtime (see data/docker/Dockerfile), which would hide a --user install.
@@ -337,11 +338,14 @@ def _dockerfile_body() -> str:
         f"{_GENERATED_HEADER}\n"
         "# Extends the base sandbox with this project's Python deps. Set\n"
         "# [sandbox].image to your own image to take over and stop regeneration.\n"
-        f"FROM {BASE_IMAGE}\n"
+        f"FROM {parent_image}\n"
         "USER root\n"
         "COPY requirements.txt /tmp/booley-project-requirements.txt\n"
         "RUN pip install --use-pep517 --no-cache-dir --break-system-packages "
-        "-r /tmp/booley-project-requirements.txt\n"
+        "-r /tmp/booley-project-requirements.txt "
+        "&& ! python3 -m pip show booley-rtl >/dev/null 2>&1 "
+        "&& python3 -c 'import importlib.util; "
+        'assert importlib.util.find_spec("booley") is None\'\n'
         "USER agent\n"
     )
 
@@ -384,10 +388,14 @@ def write_managed_dockerfile(docker_dir: Path) -> Path:
     return dockerfile
 
 
-def managed_project_image_files(requirements_body: str) -> tuple[str, str]:
+def managed_project_image_files(
+    requirements_body: str,
+    *,
+    parent_image: str = BASE_IMAGE,
+) -> tuple[str, str]:
     """Return the exact managed Dockerfile and requirements-file contents."""
     return (
-        _stamp_content_hash(_dockerfile_body()),
+        _stamp_content_hash(_dockerfile_body(parent_image)),
         _stamp_content_hash(requirements_body),
     )
 
@@ -395,6 +403,8 @@ def managed_project_image_files(requirements_body: str) -> tuple[str, str]:
 def write_project_image_files(
     docker_dir: Path,
     requirements_body: str,
+    *,
+    parent_image: str = BASE_IMAGE,
 ) -> tuple[Path, Path]:
     """Write the generated ``requirements.txt`` + ``Dockerfile`` into *docker_dir*.
 
@@ -403,7 +413,10 @@ def write_project_image_files(
     (user-owned, SETUP-6) — see :func:`is_managed_generated_file`.
     """
     docker_dir.mkdir(parents=True, exist_ok=True)
-    dockerfile_body, requirements_content = managed_project_image_files(requirements_body)
+    dockerfile_body, requirements_content = managed_project_image_files(
+        requirements_body,
+        parent_image=parent_image,
+    )
     dockerfile = docker_dir / "Dockerfile"
     requirements = docker_dir / "requirements.txt"
     dockerfile.write_text(dockerfile_body, encoding="utf-8")

@@ -146,6 +146,17 @@ def test_docker_build_command_reuses_local_parent_labels(tmp_path, monkeypatch):
     assert f"{init_docker_image.LABEL_BASE_IMAGE_ID}={parent_id}" in flavor_command
     assert f"{init_docker_image.LABEL_PARENT_ARTIFACT}={parent_id}" in flavor_command
 
+    labeled_spec = init_docker_image._DockerBuildSpec(
+        dockerfile=dockerfile,
+        context=tmp_path,
+        exists=False,
+        image="project-image",
+        labels=(("io.booley.wheel.sha256", "f" * 64),),
+    )
+    assert "io.booley.wheel.sha256=" + "f" * 64 in init_docker_image._docker_build_command(
+        labeled_spec
+    )
+
 
 def test_local_build_constructs_base_before_candidate_with_named_context(
     tmp_path, monkeypatch
@@ -273,6 +284,28 @@ class TestSourceFingerprintMismatch:
 
     def test_differing_label_is_stale(self, monkeypatch):
         self._patch(monkeypatch, fingerprint="abc", label="old")
+        assert init_docker_image.source_fingerprint_mismatch("img") is True
+
+    def test_schema_three_wheel_source_is_authoritative(self, monkeypatch):
+        expected = "a" * 64
+        monkeypatch.setattr(
+            init_docker_image,
+            "resolve_wheel_source_fingerprint",
+            lambda _root: expected,
+        )
+        monkeypatch.setattr(
+            init_docker_image,
+            "_image_label",
+            lambda _image, label: (
+                "b" * 64 if label == init_docker_image.LABEL_WHEEL_SOURCE_FINGERPRINT else None
+            ),
+        )
+        monkeypatch.setattr(
+            init_docker_image,
+            "_image_build_fingerprint",
+            lambda _root: (_ for _ in ()).throw(AssertionError("legacy probe must not run")),
+        )
+
         assert init_docker_image.source_fingerprint_mismatch("img") is True
 
 

@@ -33,7 +33,23 @@ def project_sandbox_image(project_root: Path) -> str:
     except (OSError, tomllib.TOMLDecodeError):
         return SANDBOX_IMAGE
     sandbox = as_dict(data.get("sandbox"), default={}) or {}
+    return _selected_from_config(project_root, project_dir, sandbox)
+
+
+def _selected_from_config(
+    project_root: Path,
+    project_dir: Path,
+    sandbox: dict[str, object],
+) -> str:
     raw = sandbox.get("image", "")
+    requirements = sandbox.get("pip_requirements")
+    if (
+        isinstance(raw, str)
+        and raw.strip() == "booley-sandbox-riscv"
+        and isinstance(requirements, list)
+        and bool(requirements)
+    ):
+        return project_image_name(project_root)
     if isinstance(raw, str) and raw.strip():
         return raw
     if (project_dir / "docker" / "Dockerfile").is_file():

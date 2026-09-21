@@ -19,6 +19,7 @@ Kept dependency-free (stdlib only, no imports from the rest of the harness) so
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import gzip
 import hashlib
@@ -26,6 +27,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import zipfile
 from collections.abc import Iterator
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -46,6 +48,13 @@ _PAYLOAD_FILES = (
     "crates/bwave/Cargo.lock",
 )
 _PAYLOAD_EXCLUDED = frozenset({STAMP_RELPATH, DEVELOPMENT_CONTEXT_RELPATH})
+
+# Inputs which determine the Python wheel.  Native B-Wave sources and image
+# recipes deliberately live in substrate fingerprints instead: changing either
+# must not make a Python-only overlay look incompatible, and changing Python
+# must not invalidate the EDA/toolchain substrates below it.
+_WHEEL_SOURCE_TREES = ("src/booley",)
+_WHEEL_SOURCE_FILES = ("pyproject.toml", "VERSION")
 
 # Keep every non-generated tree read by the B-Wave Cargo build. Cargo validates
 # declared bench paths while parsing the manifest, and the binary embeds docs
@@ -171,6 +180,61 @@ def resolve_payload_fingerprint(booley_root: Path) -> str | None:
     return digest.hexdigest()
 
 
+def iter_wheel_source_files(booley_root: Path) -> Iterator[Path]:
+    """Yield exactly the checkout inputs which determine the Booley wheel."""
+    for relative in _WHEEL_SOURCE_TREES:
+        root = booley_root / relative
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+                continue
+            if path.relative_to(booley_root).as_posix() in _PAYLOAD_EXCLUDED:
+                continue
+            yield path
+    for relative in _WHEEL_SOURCE_FILES:
+        path = booley_root / relative
+        if path.is_file():
+            yield path
+
+
+def resolve_wheel_source_fingerprint(booley_root: Path) -> str | None:
+    """Return the deterministic compatibility identity of a wheel's sources."""
+    files = sorted(set(iter_wheel_source_files(booley_root)))
+    if not files:
+        return None
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.relative_to(booley_root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def wheel_embedded_source_fingerprint(wheel: Path) -> str:
+    """Read the wheel-source identity from one built wheel without importing it."""
+    try:
+        with zipfile.ZipFile(wheel) as archive:
+            source = archive.read("booley/_build_commit.py").decode("utf-8")
+    except (OSError, KeyError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"could not read wheel build provenance from {wheel}: {exc}") from exc
+    try:
+        module = ast.parse(source)
+    except SyntaxError as exc:
+        raise ValueError(f"wheel build provenance is invalid in {wheel}") from exc
+    for statement in module.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if isinstance(target, ast.Name) and target.id == "WHEEL_SOURCE_FINGERPRINT":
+            value = ast.literal_eval(statement.value)
+            if isinstance(value, str) and len(value) == 64:
+                return value
+            break
+    raise ValueError(f"wheel build provenance has no valid wheel-source fingerprint: {wheel}")
+
+
 def embedded_payload_fingerprint() -> str | None:
     """Return the canonical fingerprint embedded in an installed wheel, if any."""
     try:
@@ -178,6 +242,15 @@ def embedded_payload_fingerprint() -> str | None:
     except (ImportError, AttributeError):
         return None
     return PAYLOAD_FINGERPRINT or None
+
+
+def embedded_wheel_source_fingerprint() -> str | None:
+    """Return the wheel-source identity embedded in an installed wheel."""
+    try:
+        from booley._build_commit import WHEEL_SOURCE_FINGERPRINT
+    except (ImportError, AttributeError):
+        return None
+    return WHEEL_SOURCE_FINGERPRINT or None
 
 
 def embedded_official_release() -> bool:
@@ -270,6 +343,7 @@ def write_build_stamp(
     context.unlink(missing_ok=True)
     commit = resolve_build_commit(booley_root)
     payload_fingerprint = resolve_payload_fingerprint(booley_root) or ""
+    wheel_source_fingerprint = resolve_wheel_source_fingerprint(booley_root) or ""
     official_release = profile is BuildProfile.OFFICIAL_RELEASE
     include_context = profile is BuildProfile.DEVELOPMENT_WHEEL
     completed = False
@@ -283,6 +357,7 @@ def write_build_stamp(
             "\n"
             f'COMMIT = "{commit}"\n'
             f'PAYLOAD_FINGERPRINT = "{payload_fingerprint}"\n'
+            f'WHEEL_SOURCE_FINGERPRINT = "{wheel_source_fingerprint}"\n'
             f"OFFICIAL_RELEASE = {official_release!r}\n"
             f'DEVELOPMENT_CONTEXT_SHA256 = "{context_sha256}"\n',
             encoding="utf-8",
