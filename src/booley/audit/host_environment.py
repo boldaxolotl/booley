@@ -16,6 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.audit.contracts import CommandRunner
+from booley.runtime.host_probes import ProbeState, probe_docker
 
 CLOCK_SKEW_WARN_SECONDS = 120
 CLOCK_REFERENCE_URLS = ("https://www.google.com", "https://one.one.one.one")
@@ -204,39 +205,33 @@ def probe_container_runtime(
 
 
 def _run_container_probe(executable: str, run: CommandRunner) -> ContainerRuntimeAudit:
-    try:
-        result = run(
-            [executable, "info"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+    observation = probe_docker(executable=executable, run=run)
+    if observation.state is ProbeState.TIMEOUT:
         finding = EnvironmentFinding(
             EnvironmentSeverity.FAIL,
-            f"container runtime probe failed: {exc}",
+            "container runtime probe timed out",
             "start the container runtime service",
         )
         return ContainerRuntimeAudit(None, finding)
-    if result.returncode == 0:
+    if observation.state is ProbeState.HEALTHY:
         finding = EnvironmentFinding(EnvironmentSeverity.PASS, "container runtime running")
         return ContainerRuntimeAudit(executable, finding)
-    return ContainerRuntimeAudit(None, _container_failure(result))
-
-
-def _container_failure(result: subprocess.CompletedProcess[str]) -> EnvironmentFinding:
-    combined = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
-    if "permission denied" in combined:
-        return EnvironmentFinding(
-            EnvironmentSeverity.FAIL,
-            "container runtime permission denied",
-            docker_permission_denied_fix(),
+    if observation.state is ProbeState.PERMISSION:
+        return ContainerRuntimeAudit(
+            None,
+            EnvironmentFinding(
+                EnvironmentSeverity.FAIL,
+                "container runtime permission denied",
+                docker_permission_denied_fix(),
+            ),
         )
-    return EnvironmentFinding(
-        EnvironmentSeverity.FAIL,
-        "container runtime not running",
-        "start the container runtime service",
+    return ContainerRuntimeAudit(
+        None,
+        EnvironmentFinding(
+            EnvironmentSeverity.FAIL,
+            "container runtime not running",
+            "start the container runtime service",
+        ),
     )
 
 
