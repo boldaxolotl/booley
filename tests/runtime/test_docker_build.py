@@ -125,7 +125,7 @@ def _install_fake_docker(
             encoding="utf-8",
         )
         docker.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("PATH", os.pathsep.join((str(tmp_path), os.environ["PATH"])))
     return marker
 
 
