@@ -180,8 +180,17 @@ class TestSingleProcess:
         assert store.refresh(a).state == HOLDING
         b = store.submit(CLASS_HEAVY, pid=100)
         assert store.refresh(b).state == QUEUED
+        holders, waiters = store.snapshot(CLASS_HEAVY)
+        assert [token.lease_id for token in holders] == [a.lease_id]
+        assert [token.lease_id for token in waiters] == [b.lease_id]
         store.release(a)
+        holders, waiters = store.snapshot(CLASS_HEAVY)
+        assert holders == []
+        assert [token.lease_id for token in waiters] == [b.lease_id]
         assert store.refresh(b).state == HOLDING
+        holders, waiters = store.snapshot(CLASS_HEAVY)
+        assert [token.lease_id for token in holders] == [b.lease_id]
+        assert waiters == []
 
     def test_release_is_idempotent(self, root, world):
         spawn(world, 100)
@@ -881,7 +890,8 @@ class TestAcquireWithdrawsOnFailure:
         aborts = iter([False, True])
         with pytest.raises(job_slots.ClaimAbortedError):
             store.acquire(CLASS_HEAVY, pid=200, should_abort=lambda: next(aborts))
-        _holders, waiters = store.snapshot(CLASS_HEAVY)
+        holders, waiters = store.snapshot(CLASS_HEAVY)
+        assert [token.lease_id for token in holders] == [holder.lease_id]
         assert waiters == []
 
     def test_unexpected_error_mid_wait_withdraws_entry(self, root, world):
@@ -899,7 +909,8 @@ class TestAcquireWithdrawsOnFailure:
 
         with pytest.raises(RuntimeError, match="narration boom"):
             store.acquire(CLASS_HEAVY, pid=200, on_queued=explode)
-        _holders, waiters = store.snapshot(CLASS_HEAVY)
+        holders, waiters = store.snapshot(CLASS_HEAVY)
+        assert [token.lease_id for token in holders] == [holder.lease_id]
         assert waiters == []
 
 

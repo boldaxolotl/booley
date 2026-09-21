@@ -61,6 +61,19 @@ def _assert_finished(
     assert json.loads(path.read_text(encoding="utf-8"))["state"] == "done"
 
 
+def _assert_crash_window_is_decodable(root: Path) -> None:
+    """A surviving journal is always a complete recovery authority."""
+    path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    if not path.exists():
+        return
+    journal = FileAcceptanceStore().load_persisted(path)
+    assert journal.ticket == "change-target"
+    assert journal.schema == 5
+    assert journal.roles == ("outer", "project")
+    assert set(journal.sources).issubset(journal.roles)
+    assert set(journal.candidates).issubset(journal.roles)
+
+
 @pytest.mark.parametrize(
     "fault_checkpoint",
     [
@@ -94,6 +107,7 @@ def test_retry_survives_every_semantic_checkpoint(
     _install_runner(monkeypatch, store=store)
     complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
     assert store.triggered is True
+    _assert_crash_window_is_decodable(root)
 
     _install_runner(monkeypatch)
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
@@ -137,6 +151,7 @@ def test_retry_survives_each_repository_boundary(
     _install_runner(monkeypatch, repositories=repositories)
     complete_review_ticket(tio, "change-target", _Policy(cleanup=cleanup))
     assert repositories.triggered is True
+    _assert_crash_window_is_decodable(root)
 
     _install_runner(monkeypatch)
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=cleanup)) is True
