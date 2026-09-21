@@ -87,7 +87,11 @@ def _install_fake_docker(
 ) -> Path:
     docker = tmp_path / "docker"
     marker = tmp_path / "build-started"
-    image_result = "printf 'sha256:cached\\n'" if cached else "exit 1"
+    image_result = (
+        "printf 'sha256:cached\\n'"
+        if cached
+        else "printf 'Error response from daemon: No such image\\n' >&2; exit 1"
+    )
     docker.write_text(
         "#!/bin/sh\n"
         "if [ \"$1\" = info ]; then\n"
@@ -408,6 +412,56 @@ def test_capacity_exhaustion_after_preflight_has_cleanup_guidance() -> None:
         "Docker storage filled during the build; free unused cache with "
         "`docker builder prune`, then retry."
     )
+
+
+def test_capacity_exhaustion_in_verbose_tty_has_cleanup_guidance() -> None:
+    output = _RecordingOutput(tty=True)
+    result = run_docker_build(
+        [
+            sys.executable,
+            "-c",
+            "print('ERROR: no space left on device'); raise SystemExit(1)",
+        ],
+        image="booley-sandbox",
+        verbose=True,
+        timeout=10,
+        output=output,
+    )
+
+    assert result.returncode == 1
+    assert result.diagnostics == (
+        "Docker storage filled during the build; free unused cache with "
+        "`docker builder prune`, then retry.",
+    )
+
+
+def test_capacity_probe_failure_stops_build_before_starting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    docker = tmp_path / "docker"
+    marker = tmp_path / "build-started"
+    docker.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = info ]; then\n"
+        "  printf 'Docker daemon unavailable\\n' >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        f"if [ \"$1\" = build ]; then touch {marker}; fi\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+
+    with pytest.raises(OSError, match="could not query Docker storage root"):
+        run_docker_build(
+            ["docker", "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    assert not marker.exists()
 
 
 def test_closed_progress_sink_does_not_fail_a_healthy_build() -> None:
