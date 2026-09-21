@@ -202,6 +202,22 @@ commit-message scrub.
 `*.core` file — the template ships as `.yaml` only so `.core` discovery does
 not pick it up).
 
+Prefer one core with shared filesets and separate sim/lint/synth/fpga Targets.
+When separate project-owned cores are justified by different ownership or
+generation lifecycles, extract every repeated design file list into one
+dependency core instead of copying it. The dependency core owns the reusable
+filesets and a `default` Target that selects them; each adapter core declares a
+fileset with `depend: [<dependency-vlnv>]` and adds only its flow-specific
+testbench, wrapper, constraint, or waiver files. Preserve the common files'
+compile order in the dependency core. A standalone YAML fragment is not a CAPI2
+composition mechanism, and YAML anchors do not cross files.
+
+Use this split only when there are at least two real adapters. For one core,
+local shared filesets keep the interface smaller. When refactoring an existing
+Project, preserve selectable Target VLNVs unless the plan explicitly accepts
+the identity change; Criteria and durable evidence bind to the declaring core's
+VLNV as well as the Target name.
+
 Authoring rules:
 
 - **Tag the testbench.** Every TB fileset (or TB file) carries `tags: [tb]`.
