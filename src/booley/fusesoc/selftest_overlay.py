@@ -9,34 +9,62 @@ copies that tree over the resolved build root.
 
 from __future__ import annotations
 
+import re
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 INTERNAL_KIND_ENV = "BOOLEY_INTERNAL_SELFTEST_KIND"
 BAD_KIND = "bad"
 _BAD_OVERLAY_DIR = "bad-overlay"
 BAD_RUN_CWD_DIR = ".booley-doctor-run-cwd"
+_ATTEMPT_TOKEN_RE = re.compile(r"[0-9a-f]{32}")
+_OWNED_VIEW_RE = re.compile(
+    rf"{re.escape(BAD_RUN_CWD_DIR)}-(?:[0-9a-f]{{16}}|a-[0-9a-f]{{32}})"
+)
 
 
 class SelftestOverlayError(RuntimeError):
     """A Doctor self-test overlay is unsafe or cannot be staged."""
 
 
-def doctor_shadow_path(project_root: Path, work_root: Path) -> Path:
-    """Locate this build's private runtime view outside its input generation."""
+def _validated_generation_parent(project_root: Path, generation_parent: Path) -> Path:
+    """Validate the leased generation parent without following its ancestors."""
     root = project_root.resolve()
+    parent = Path(generation_parent)
     try:
-        parent = work_root.parent.relative_to(root)
+        relative = parent.relative_to(root)
     except ValueError as exc:
-        raise SelftestOverlayError(f"Doctor build is outside the Project: {work_root}") from exc
+        raise SelftestOverlayError(
+            f"Doctor generation parent is outside the Project: {generation_parent}"
+        ) from exc
+    if ".." in relative.parts:
+        raise SelftestOverlayError(
+            f"Doctor generation parent is outside the Project: {generation_parent}"
+        )
     current = root
-    for part in parent.parts:
+    for part in relative.parts:
         current /= part
         if current.is_symlink():
-            raise SelftestOverlayError(f"Doctor shadow parent is a symlink: {current}")
-    if work_root.is_symlink():
-        raise SelftestOverlayError(f"Doctor build is a symlink: {work_root}")
-    return work_root.parent / f"{BAD_RUN_CWD_DIR}-{work_root.name}"
+            raise SelftestOverlayError(f"Doctor generation parent is a symlink: {current}")
+    if parent.is_symlink():
+        raise SelftestOverlayError(f"Doctor generation parent is a symlink: {parent}")
+    if not parent.resolve().is_relative_to(root):
+        raise SelftestOverlayError(
+            f"Doctor generation parent is outside the Project: {generation_parent}"
+        )
+    return parent
+
+
+def doctor_runtime_view_path(
+    project_root: Path, generation_parent: Path, attempt_token: str
+) -> Path:
+    """Return the attempt-owned runtime view beside a leased generation."""
+    if _ATTEMPT_TOKEN_RE.fullmatch(attempt_token) is None:
+        raise SelftestOverlayError(f"invalid Doctor attempt token: {attempt_token!r}")
+    parent = _validated_generation_parent(project_root, generation_parent)
+    return parent / f"{BAD_RUN_CWD_DIR}-a-{attempt_token}"
 
 
 def bad_overlay_dir(project_dir: Path, flow_name: str) -> Path:
@@ -92,9 +120,58 @@ def _remove_shadow(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def remove_doctor_shadow(project_root: Path, work_root: Path) -> None:
-    """Remove the runtime view belonging to one discarded build generation."""
-    _remove_shadow(doctor_shadow_path(project_root, work_root))
+def _remove_owned_views(generation_parent: Path) -> None:
+    """Remove exact legacy and attempt-owned views in one leased slot."""
+    for child in sorted(generation_parent.iterdir(), key=lambda path: path.name):
+        if _OWNED_VIEW_RE.fullmatch(child.name):
+            _remove_shadow(child)
+
+
+def _note_cleanup_failure(primary: BaseException, path: Path, error: OSError) -> None:
+    """Keep a body or staging error primary while recording cleanup failure."""
+    primary.add_note(f"could not remove Doctor runtime view {path}: {error}")
+
+
+@contextmanager
+def managed_runtime_view(
+    project_dir: Path,
+    flow_name: str,
+    run_cwd: Path,
+    generation_parent: Path,
+    attempt_token: str,
+) -> Iterator[Path]:
+    """Stage and remove one attempt-scoped Doctor runtime view."""
+    project_root = project_dir.parent.resolve()
+    parent = _validated_generation_parent(project_root, generation_parent)
+    view = doctor_runtime_view_path(project_root, parent, attempt_token)
+    try:
+        _remove_owned_views(parent)
+        copied = stage_bad_run_overlay(project_dir, flow_name, run_cwd, view)
+        if copied == 0:
+            raise SelftestOverlayError(
+                f"Doctor requested a bad simulation fixture, but "
+                f"{bad_overlay_dir(project_dir, flow_name)} is empty"
+            )
+    except BaseException as exc:
+        try:
+            _remove_shadow(view)
+        except OSError as cleanup_error:
+            _note_cleanup_failure(exc, view, cleanup_error)
+        if isinstance(exc, SelftestOverlayError):
+            raise
+        raise SelftestOverlayError(f"could not stage Doctor runtime view: {exc}") from exc
+    try:
+        yield view
+    except BaseException as exc:
+        try:
+            _remove_shadow(view)
+        except OSError as cleanup_error:
+            _note_cleanup_failure(exc, view, cleanup_error)
+        raise
+    try:
+        _remove_shadow(view)
+    except OSError as exc:
+        raise SelftestOverlayError(f"could not remove Doctor runtime view {view}: {exc}") from exc
 
 
 def _mirror_excluded_ancestor(

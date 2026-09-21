@@ -104,14 +104,16 @@ def test_doctor_shadow_keeps_projected_core_outside_generation(tmp_path: Path) -
     overlay.write_text("bad\n", encoding="utf-8")
     projected = tmp_path / ".booley-projected-demo.core"
     projected.write_text("generated core\n", encoding="utf-8")
-    work_root = project_dir / ".runtime" / "edalize" / "sim" / "slot" / "g" / "abcd"
-    work_root.mkdir(parents=True)
-    shadow = selftest_overlay.doctor_shadow_path(tmp_path, work_root)
+    generation_parent = project_dir / ".runtime" / "edalize" / "sim" / "slot" / "g"
+    generation_parent.mkdir(parents=True)
+    generation = generation_parent / "abcd"
+    generation.mkdir()
+    shadow = selftest_overlay.doctor_runtime_view_path(tmp_path, generation_parent, "a" * 32)
 
     selftest_overlay.stage_bad_run_overlay(project_dir, "sim", tmp_path, shadow)
 
     assert (shadow / projected.name).is_symlink()
-    assert not any(work_root.rglob("*.core"))
+    assert not any(generation.rglob("*.core"))
 
 
 @pytest.mark.skipif(
@@ -122,15 +124,15 @@ def test_doctor_shadow_rejects_symlinked_parent(tmp_path: Path) -> None:
     outside.mkdir()
     (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(selftest_overlay.SelftestOverlayError, match="shadow parent is a symlink"):
-        selftest_overlay.doctor_shadow_path(tmp_path, tmp_path / "linked" / "generation")
+    with pytest.raises(selftest_overlay.SelftestOverlayError, match="generation parent is a symlink"):
+        selftest_overlay.doctor_runtime_view_path(tmp_path, tmp_path / "linked" / "generation", "a" * 32)
 
 
 def test_doctor_shadow_rejects_build_outside_project(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     with pytest.raises(selftest_overlay.SelftestOverlayError, match="outside the Project"):
-        selftest_overlay.doctor_shadow_path(project, tmp_path / "outside" / "generation")
+        selftest_overlay.doctor_runtime_view_path(project, tmp_path / "outside" / "generation", "a" * 32)
 
 
 @pytest.mark.skipif(
@@ -139,8 +141,8 @@ def test_doctor_shadow_rejects_build_outside_project(tmp_path: Path) -> None:
 def test_doctor_shadow_rejects_symlinked_generation(tmp_path: Path) -> None:
     generation = tmp_path / "generation"
     generation.symlink_to(tmp_path / "outside", target_is_directory=True)
-    with pytest.raises(selftest_overlay.SelftestOverlayError, match="Doctor build is a symlink"):
-        selftest_overlay.doctor_shadow_path(tmp_path, generation)
+    with pytest.raises(selftest_overlay.SelftestOverlayError, match="generation parent is a symlink"):
+        selftest_overlay.doctor_runtime_view_path(tmp_path, generation, "a" * 32)
 
 
 @pytest.mark.skipif(
@@ -294,3 +296,154 @@ def test_stage_bad_run_overlay_handles_absent_fixture_and_runtime(tmp_path: Path
         selftest_overlay.stage_bad_run_overlay(
             project_dir, "sim", tmp_path / "missing-runtime", shadow
         )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_managed_runtime_view_removes_view_on_normal_and_exceptional_exit(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("bad\n", encoding="utf-8")
+    run_cwd = tmp_path / "runtime-assets"
+    run_cwd.mkdir()
+    generation_parent = tmp_path / ".booley_project" / ".runtime" / "g"
+    generation_parent.mkdir(parents=True)
+
+    with selftest_overlay.managed_runtime_view(
+        project_dir, "sim", run_cwd, generation_parent, "a" * 32
+    ) as view:
+        assert (view / "fixture.hex").read_text(encoding="utf-8") == "bad\n"
+        assert view.is_dir()
+    assert not view.exists()
+
+    with (
+        pytest.raises(ValueError, match="body failure"),
+        selftest_overlay.managed_runtime_view(
+            project_dir, "sim", run_cwd, generation_parent, "b" * 32
+        ) as view,
+    ):
+        assert view.is_dir()
+        raise ValueError("body failure")
+    assert not view.exists()
+
+
+def test_managed_runtime_view_removes_partial_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    generation_parent = tmp_path / "slot" / "g"
+    generation_parent.mkdir(parents=True)
+    view = generation_parent / f"{selftest_overlay.BAD_RUN_CWD_DIR}-a-{'a' * 32}"
+
+    def fail_after_partial(*args: object, **kwargs: object) -> int:
+        view.mkdir()
+        (view / "partial").write_text("partial\n", encoding="utf-8")
+        raise OSError("staging failed")
+
+    monkeypatch.setattr(selftest_overlay, "stage_bad_run_overlay", fail_after_partial)
+    with (
+        pytest.raises(selftest_overlay.SelftestOverlayError, match="staging failed"),
+        selftest_overlay.managed_runtime_view(
+            project_dir,
+            "sim",
+            tmp_path,
+            generation_parent,
+            "a" * 32,
+        ),
+    ):
+        raise AssertionError("staging should fail")
+    assert not view.exists()
+
+
+def test_managed_runtime_view_retries_cleanup_and_preserves_body_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("bad\n", encoding="utf-8")
+    run_cwd = tmp_path / "runtime-assets"
+    run_cwd.mkdir()
+    generation_parent = tmp_path / "slot" / "g"
+    generation_parent.mkdir(parents=True)
+    view = generation_parent / f"{selftest_overlay.BAD_RUN_CWD_DIR}-a-{'a' * 32}"
+    remove = selftest_overlay._remove_shadow
+    failed = False
+
+    def fail_once(path: Path) -> None:
+        nonlocal failed
+        if path == view and not failed:
+            failed = True
+            raise OSError("cleanup failed")
+        remove(path)
+
+    original_stage = selftest_overlay.stage_bad_run_overlay
+
+    def stage_then_fail(*args: object, **kwargs: object) -> int:
+        result = original_stage(*args, **kwargs)
+        monkeypatch.setattr(selftest_overlay, "_remove_shadow", fail_once)
+        return result
+
+    monkeypatch.setattr(selftest_overlay, "stage_bad_run_overlay", stage_then_fail)
+    with (
+        pytest.raises(ValueError, match="body failure") as error,
+        selftest_overlay.managed_runtime_view(
+            project_dir, "sim", run_cwd, generation_parent, "a" * 32
+        ),
+    ):
+        raise ValueError("body failure")
+    assert any("cleanup failed" in note for note in error.value.__notes__)
+    assert view.is_dir()
+    monkeypatch.setattr(selftest_overlay, "_remove_shadow", remove)
+    monkeypatch.setattr(selftest_overlay, "stage_bad_run_overlay", original_stage)
+
+    with selftest_overlay.managed_runtime_view(
+        project_dir, "sim", run_cwd, generation_parent, "b" * 32
+    ):
+        pass
+    assert not view.exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_managed_runtime_view_prunes_only_owned_siblings(tmp_path: Path) -> None:
+    project_dir = tmp_path / ".booley_project"
+    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("bad\n", encoding="utf-8")
+    run_cwd = tmp_path / "runtime-assets"
+    run_cwd.mkdir()
+    generation_parent = tmp_path / "slot" / "g"
+    generation_parent.mkdir(parents=True)
+    for name in (
+        f"{selftest_overlay.BAD_RUN_CWD_DIR}-0123456789abcdef",
+        f"{selftest_overlay.BAD_RUN_CWD_DIR}-a-{'a' * 32}",
+    ):
+        (generation_parent / name).mkdir()
+    unrelated = generation_parent / f"{selftest_overlay.BAD_RUN_CWD_DIR}-a-not-a-token"
+    unrelated.mkdir()
+    other_slot = tmp_path / "other" / "g"
+    other_slot.mkdir(parents=True)
+    (other_slot / f"{selftest_overlay.BAD_RUN_CWD_DIR}-0123456789abcdef").mkdir()
+
+    with selftest_overlay.managed_runtime_view(
+        project_dir, "sim", run_cwd, generation_parent, "b" * 32
+    ):
+        assert unrelated.is_dir()
+        assert (other_slot / f"{selftest_overlay.BAD_RUN_CWD_DIR}-0123456789abcdef").is_dir()
+    assert not any(
+        child.name.endswith("0123456789abcdef") or child.name.endswith(f"a-{'a' * 32}")
+        for child in generation_parent.iterdir()
+    )
+    assert unrelated.is_dir()
+
+
+def test_doctor_runtime_view_rejects_invalid_attempt_token(tmp_path: Path) -> None:
+    with pytest.raises(selftest_overlay.SelftestOverlayError, match="invalid Doctor attempt token"):
+        selftest_overlay.doctor_runtime_view_path(tmp_path, tmp_path / "slot", "not-a-token")

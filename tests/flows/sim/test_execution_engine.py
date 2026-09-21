@@ -39,6 +39,7 @@ from booley.flows.sim.execution import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
+from booley.flows.sim.execution.engine import _preview_work
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
 from booley.fusesoc import fusesoc_registry, selftest_overlay
@@ -873,6 +874,48 @@ def _run_real_icarus(project: Path, handle: TargetHandle) -> SimulationTargetOut
         return execution.run(handle, NamedTests(("dhry",)))
 
 
+def _run_real_icarus_twice(
+    project: Path, handle: TargetHandle
+) -> tuple[SimulationTargetOutcome, ...]:
+    real_resolve = fusesoc_registry.resolve_target_handle
+    fusesoc_cmd = (
+        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+        if shutil.which("fusesoc")
+        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+    )
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
+    )
+    with patch.object(
+        fusesoc_registry,
+        "resolve_target_handle",
+        side_effect=lambda *args, **kwargs: real_resolve(
+            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
+        ),
+    ):
+        return tuple(execution.run(handle, NamedTests(("dhry",))) for _ in range(2))
+
+
+def _doctor_view_paths(state: Path) -> tuple[Path, ...]:
+    return tuple(
+        path for path in state.rglob("*") if path.name.startswith(selftest_overlay.BAD_RUN_CWD_DIR)
+    )
+
+
+def _configure_non_root_doctor_runtime(project: Path, state: Path) -> tuple[Path, Path]:
+    (state / "booley.toml").write_text(
+        '[flows.sim]\nrun_cwd = "runtime-assets"\n', encoding="utf-8"
+    )
+    runtime = project / "runtime-assets"
+    runtime.mkdir()
+    runtime_file = runtime / "firmware.hex"
+    runtime_file.write_text("good\n", encoding="utf-8")
+    sibling = runtime / "vectors" / "input.hex"
+    sibling.parent.mkdir()
+    sibling.write_text("unchanged\n", encoding="utf-8")
+    return runtime_file, sibling
+
+
 def _run_sim_cli(project: Path) -> subprocess.CompletedProcess[str]:
     source = Path(__file__).resolve().parents[3] / "src"
     return subprocess.run(
@@ -930,6 +973,7 @@ def test_projected_core_bad_overlay_reaches_design_failure(
     pytest.importorskip("edalize")
     project = tmp_path / "project"
     state = _write_runtime_input_project(project)
+    runtime_file, sibling = _configure_non_root_doctor_runtime(project, state)
     (project / ".booley-projected-demo.core").write_text(
         "CAPI=2:\nname: acme:lib:projected:1\n", encoding="utf-8"
     )
@@ -952,13 +996,24 @@ def test_projected_core_bad_overlay_reaches_design_failure(
     reset_cache()
 
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    outcome = _run_real_icarus(project, handle)
-
-    assert outcome.verdict == "fail"
-    assert outcome.infrastructure_failure is None
-    assert any(test.verdict == "fail" for test in outcome.tests), outcome.tests
-    result = _run_sim_cli(project)
-    assert result.returncode == 1, result.stdout + result.stderr
+    previous_project_dir = os.environ.get("BOOLEY_PROJECT_DIR")
+    try:
+        for outcome in _run_real_icarus_twice(project, handle):
+            assert outcome.verdict == "fail"
+            assert outcome.infrastructure_failure is None
+            assert any(test.verdict == "fail" for test in outcome.tests), outcome.tests
+            assert runtime_file.read_text(encoding="utf-8") == "good\n"
+            assert sibling.read_text(encoding="utf-8") == "unchanged\n"
+            assert not _doctor_view_paths(state)
+        result = _run_sim_cli(project)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert not _doctor_view_paths(state)
+    finally:
+        if previous_project_dir is None:
+            monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        else:
+            monkeypatch.setenv("BOOLEY_PROJECT_DIR", previous_project_dir)
+        reset_cache()
 
 
 def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
@@ -1583,6 +1638,25 @@ def test_run_and_preview_share_the_same_work_grouping(
 
     assert [call.args[1] for call in execution._run_group.call_args_list] == expected
     assert [call.args[2] for call in execution._preview_group.call_args_list] == expected
+
+
+def test_doctor_bad_preview_uses_placeholder_without_filesystem_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    handle = _handle(tmp_path)
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+    work = _preview_work(
+        execution,
+        handle,
+        _inspection(cocotb=False),
+        (),
+        False,
+        ".booley_project/.runtime/edalize/sim/slot/g/<generation>/build",
+    )
+
+    assert work.run_cwd == "<attempt>"
+    assert not tuple(tmp_path.rglob(".booley-doctor-run-cwd-*"))
 
 
 def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) -> None:
