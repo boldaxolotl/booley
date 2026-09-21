@@ -25,7 +25,6 @@ from booley.flows.sim.build_session import (
 )
 from booley.fusesoc import selftest_overlay
 from booley.fusesoc.core_projection import isolated_core_path
-from booley.fusesoc.selftest_overlay import doctor_shadow_path
 from booley.targets.domain import TargetHandle
 
 
@@ -457,54 +456,28 @@ def test_lease_rejects_symlinked_lock_and_unsafe_cache_pointer(tmp_path: Path) -
             session.discard_candidate(tmp_path)
 
 
-def test_discard_candidate_removes_only_its_doctor_shadow(tmp_path: Path) -> None:
+def test_discard_candidate_removes_only_its_generation(tmp_path: Path) -> None:
     session = SimulationBuildSession(_handle(tmp_path))
     with session:
         discarded = session.new_generation()
         retained = session.new_generation()
-        discarded_shadow = doctor_shadow_path(tmp_path, discarded)
-        retained_shadow = doctor_shadow_path(tmp_path, retained)
-        discarded_shadow.mkdir()
-        retained_shadow.mkdir()
-        (discarded_shadow / "fixture.hex").write_text("bad\n", encoding="utf-8")
-        (retained_shadow / "fixture.hex").write_text("bad\n", encoding="utf-8")
+        abandoned = discarded.parent / f".booley-doctor-run-cwd-{discarded.name}"
+        abandoned.mkdir()
 
         session.discard_candidate(discarded)
 
         assert not discarded.exists()
-        assert not discarded_shadow.exists()
+        assert abandoned.is_dir()
         assert retained.is_dir()
-        assert retained_shadow.is_dir()
 
 
-def test_discard_candidate_retries_after_shadow_cleanup_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_discard_candidate_is_idempotent(tmp_path: Path) -> None:
     session = SimulationBuildSession(_handle(tmp_path))
     with session:
         candidate = session.new_generation()
-        shadow = doctor_shadow_path(tmp_path, candidate)
-        shadow.mkdir()
-        remove = selftest_overlay.remove_doctor_shadow
-        attempts = 0
-
-        def fail_once(project_root: Path, work_root: Path) -> None:
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise OSError("interrupted shadow cleanup")
-            remove(project_root, work_root)
-
-        monkeypatch.setattr(selftest_overlay, "remove_doctor_shadow", fail_once)
-        with pytest.raises(SimulationBuildSlotError, match="interrupted shadow cleanup"):
-            session.discard_candidate(candidate)
-        assert candidate.is_dir()
-        assert shadow.is_dir()
-
         session.discard_candidate(candidate)
         session.discard_candidate(candidate)
         assert not candidate.exists()
-        assert not shadow.exists()
 
 
 @pytest.mark.skipif(
@@ -520,7 +493,7 @@ def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) ->
         generation = session.new_generation()
         build_input = generation / "input.sv"
         build_input.write_text("module demo; endmodule\n", encoding="utf-8")
-        shadow = doctor_shadow_path(tmp_path, generation)
+        shadow = selftest_overlay.doctor_runtime_view_path(tmp_path, generation.parent, "a" * 32)
         selftest_overlay.stage_bad_run_overlay(
             tmp_path / ".booley_project", "sim", tmp_path, shadow
         )
