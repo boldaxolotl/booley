@@ -97,7 +97,7 @@
 
 | Entry | RTL intent | Library cell | Mechanism | Authoritative source location | Frontend definition | Semantic evidence | Required validation layers |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| <ID> | <intent> | <cell> | preserve direct instantiation \| technology-integration seam \| adapter module \| library-cell model/declaration \| existing post-inference mapping under migration | <path> | <exactly one compatible source> | <docs/RTL/model/Liberty/LEF or focused probe> | semantic; frontend; mapped-netlist; physical-link |
+| <ID> | <intent> | <cell> | preserve direct instantiation \| technology-integration seam \| adapter module \| library-cell model/declaration \| existing post-inference mapping under migration | <path> | <exactly one compatible source> | <docs/RTL/model/Liberty/LEF or focused probe> | semantic; frontend; mapped-netlist; physical-link; CDC/synchronizer (when applicable) |
 
 #### Approved Project-owned inputs
 
