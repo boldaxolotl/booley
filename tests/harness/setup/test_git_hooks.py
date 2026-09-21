@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import zipfile
 from pathlib import Path
@@ -524,7 +525,8 @@ class TestProjectGitHookMigration:
             tmp_path / "project", tmp_path / "managed" / "bundle.pyz"
         )
 
-        assert result == f"BUNDLE={tmp_path / 'managed' / 'bundle.pyz'}\n"
+        bundle = tmp_path / "managed" / "bundle.pyz"
+        assert result == f"BUNDLE={shlex.quote(str(bundle))}\n"
 
     def test_crlf_only_legacy_sources_are_not_backed_up(self, tmp_path: Path) -> None:
         from booley.harness.setup.git_hooks import _step_project_git_hooks
