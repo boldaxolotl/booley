@@ -162,6 +162,10 @@ def _read_regular(path: Path, *, limit: int) -> bytes:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise SimulationCampaignIntegrityError(f"authoritative path is not a file: {path}")
+        if info.st_nlink != 1:
+            raise SimulationCampaignIntegrityError(
+                f"authoritative file has multiple filesystem links: {path}"
+            )
         if info.st_size > limit:
             raise SimulationCampaignIntegrityError(
                 f"authoritative file exceeds size ceiling: {path}"
@@ -225,10 +229,14 @@ class CampaignStore:
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         for item in items:
             if item["work_item_id"] == work_item_id:
-                ordinal = cast(int, item["ordinal"]) + 1
-                digest = work_item_id.rsplit(":", 1)[-1]
-                return self.root / "work-items" / f"{ordinal:04d}-{digest}"
+                return self._work_item_directory(item)
         raise SimulationCampaignIntegrityError(f"unknown work item {work_item_id!r}")
+
+    def _work_item_directory(self, item: Mapping[str, object]) -> Path:
+        work_item_id = cast(str, item["work_item_id"])
+        ordinal = cast(int, item["ordinal"]) + 1
+        digest = work_item_id.rsplit(":", 1)[-1]
+        return self.root / "work-items" / f"{ordinal:04d}-{digest}"
 
     def allocate_attempt_directory(self, work_item_id: str, attempt_id: str) -> tuple[int, Path]:
         attempts = self.work_item_directory(work_item_id) / "attempts"
@@ -558,7 +566,9 @@ class CampaignStore:
         workload_sha256: str,
     ) -> WorkItemRecovery:
         work_item_id = cast(str, work_item["work_item_id"])
-        directory = self.work_item_directory(work_item_id)
+        # ``scan`` already decoded the complete manifest.  Re-loading and
+        # re-validating it once per item makes maximum-size campaigns quadratic.
+        directory = self._work_item_directory(work_item)
         attempts_root = directory / "attempts"
         attempts = self._attempt_directories(attempts_root)
         decoded_attempts: list[SimulationAttempt] = []

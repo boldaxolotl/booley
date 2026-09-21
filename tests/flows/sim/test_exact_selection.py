@@ -80,7 +80,7 @@ def test_mcp_schema_accepts_only_array_test_shape() -> None:
     assert schema["properties"]["test"] == {
         "type": "array",
         "items": {"type": "string", "minLength": 1},
-        "description": "Run one exact registered test (repeat for multiple tests)",
+        "description": "Run exact registered test names in caller order (CLI: repeat; MCP: array)",
         "minItems": 1,
         "uniqueItems": True,
     }

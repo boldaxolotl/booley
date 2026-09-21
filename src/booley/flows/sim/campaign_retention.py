@@ -176,14 +176,16 @@ def _validate_unpruned(directory: Path, campaign: CoverageCampaign) -> None:
             )
 
 
-def prune_invocation(reports_root: Path, invocation: int) -> None:
+def prune_invocation(
+    reports_root: Path, invocation: int, *, project_data: Path | None = None
+) -> None:
     """Remove exactly one invocation, retaining only an empty number tombstone."""
     root = _invocation(reports_root, invocation)
     with campaign_invocation_lock(root):
-        _prune_invocation(root)
+        _prune_invocation(root, project_data=project_data)
 
 
-def _prune_invocation(root: Path) -> None:
+def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
     _safe_tree(root)
     quarantine = root.with_name(f".pruned-{root.name}")
     _safe_tree(quarantine)
@@ -191,6 +193,7 @@ def _prune_invocation(root: Path) -> None:
         if quarantine.exists():
             raise CampaignRetentionError("Ambiguous invocation pruning state")
         _validate_invocation_targets(root)
+        _release_child_indexes(root, project_data)
         write_campaign_json(
             root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
         )
@@ -216,6 +219,32 @@ def _prune_invocation(root: Path) -> None:
     journal.unlink()
 
 
+def _release_child_indexes(root: Path, project_data: Path | None) -> None:
+    from booley.runtime.execution_records import release_retired_campaign_children
+
+    target_root = root / "targets"
+    campaign_children = tuple(target_root.glob("*/campaign/child-executions"))
+    if not campaign_children:
+        return
+    resolved = project_data or _infer_project_data(root)
+    if resolved is None:
+        raise CampaignRetentionError(
+            "Project data is required to release retained campaign child records"
+        )
+    try:
+        for children in campaign_children:
+            release_retired_campaign_children(resolved, children)
+    except (OSError, ValueError) as exc:
+        raise CampaignRetentionError(f"Campaign child retention is invalid: {exc}") from exc
+
+
+def _infer_project_data(root: Path) -> Path | None:
+    reports_root = root.parent.parent
+    if reports_root.name == "flow-reports" and reports_root.parent.name == ".runtime":
+        return reports_root.parent.parent
+    return None
+
+
 def _validate_invocation_targets(root: Path) -> None:
     progress = _read_object(root / "progress.json")
     targets = progress.get("targets")
@@ -239,18 +268,33 @@ def _validate_invocation_targets(root: Path) -> None:
             _target(root, selector, require_projection=False)
         campaign = directory / "campaign"
         if (campaign / "manifest.json").exists():
-            from .campaign.store import CampaignStore
+            _validate_simulation_campaign(directory, campaign)
 
-            try:
-                recovery = CampaignStore(campaign).scan()
-            except (OSError, ValueError) as exc:
-                raise CampaignRetentionError(
-                    f"Simulation Campaign is invalid and cannot be pruned: {exc}"
-                ) from exc
-            if recovery.pending or recovery.interrupted:
-                raise CampaignRetentionError(
-                    "Incomplete Simulation Campaigns cannot be pruned"
-                )
+
+def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
+    from .campaign.store import CampaignStore
+
+    try:
+        store = CampaignStore(campaign)
+        recovery = store.scan()
+        summary = _read_object(store.summary_path)
+        projection = _read_object(target / "simulation.json")
+    except (OSError, ValueError) as exc:
+        raise CampaignRetentionError(
+            f"Simulation Campaign is invalid and cannot be pruned: {exc}"
+        ) from exc
+    if recovery.pending or recovery.interrupted:
+        raise CampaignRetentionError("Incomplete Simulation Campaigns cannot be pruned")
+    if (
+        summary.get("complete") is not True
+        or summary.get("completed") != list(recovery.complete)
+        or projection.get("complete") is not True
+        or projection.get("campaign_manifest") != str(store.manifest_path)
+        or projection.get("campaign_summary") != str(store.summary_path)
+    ):
+        raise CampaignRetentionError(
+            "Simulation Campaign acceptance projections are incomplete"
+        )
 
 
 def _validate_completed_targets(
@@ -281,13 +325,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reports-root", required=True, type=Path)
     parser.add_argument("--invocation", required=True, type=int)
+    parser.add_argument(
+        "--project-data",
+        type=Path,
+        help="Project data root when reports are outside its standard .runtime tree",
+    )
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--native-target", help="Exact Target selector for native-only pruning")
     operation.add_argument("--full", action="store_true", help="Remove the full invocation")
     args = parser.parse_args()
     try:
         if args.full:
-            prune_invocation(args.reports_root, args.invocation)
+            prune_invocation(
+                args.reports_root, args.invocation, project_data=args.project_data
+            )
         else:
             prune_native_payload(args.reports_root, args.invocation, args.native_target)
     except (OSError, ValueError) as exc:

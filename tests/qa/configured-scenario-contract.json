@@ -160,7 +160,7 @@
     "coverage-lifecycle-ubuntu-codex-cli": {
       "required": true,
       "semantics": "c965bffab6c4cb1457a70f160d98153a280f6f70034ea405e584fe4b3ce9d88c",
-      "checks": "fbb7cc25f6e4979174208b5e715780c613834408d4a6a8ff81ef3293f2976a5b",
+      "checks": "d35e2e0f5cd411ce0e16a88ed3dcb1498af120a812996487c749ceb84f02f41f",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "coverage-lifecycle-ubuntu-claude-cli": {

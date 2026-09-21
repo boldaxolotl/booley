@@ -71,6 +71,13 @@ restore the catalog and fixture before cleanup.
 
 ## Cleanup
 
-Retain all Check evidence, then remove only the run-owned core/catalog entries,
-report roots, and processes. Prove the pinned upstream checkout is byte-for-byte
-unchanged and the Project catalog no longer exposes `sim_campaign`.
+Before the first mutation, ledger the run-owned fixture copy, core/catalog
+entries, report roots, Ticket state, process groups, and every source/catalog
+byte restored by a negative Check. Recovery always archives the observed
+failure first, restores only owned bytes, and executes the valid control in the
+same Scenario Run; it does not depend on the detection Check passing.
+
+Retain all Check evidence, reap owned processes, then remove only the run-owned
+core/catalog entries, report roots, and Ticket state. Prove the pinned upstream
+checkout is byte-for-byte unchanged, the Project catalog no longer exposes
+`sim_campaign`, and every ledgered resource has a cleanup disposition.

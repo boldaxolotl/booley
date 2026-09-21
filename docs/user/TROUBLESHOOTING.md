@@ -520,6 +520,46 @@ database. Legacy and elaboration-only invocations are not resumable. Empty
 `.pruned-N` directories reserve historical invocation numbers and should be
 retained.
 
+### A Simulation Campaign will not resume
+
+Always pass the exact printed `campaign/manifest.json` path. Do not pass a
+Target name, `simulation.json`, `summary.json`, `coverage.json`, an invocation
+directory, or a guessed `latest` path. Use a read-only preview first:
+
+```bash
+booley flow sim --resume-from /exact/path/to/campaign/manifest.json --dry-run
+```
+
+The preview reports completed, interrupted, and pending work plus named
+workload mismatches without acquiring a heavy slot, creating attempts, running
+Pre-Sim Commands, or changing Criteria. A real resume reuses completed results,
+creates a new attempt only for interrupted/pending work, and writes a new
+compatibility invocation pointing back to the original authority.
+
+An integrity error is intentionally fail-closed. Truncated, resized, linked,
+noncanonical, digest-mismatched, or identity-mismatched Campaign evidence must
+be restored byte-for-byte from the same Campaign; do not hand-edit hashes or
+copy evidence from another run. If source, `tests.toml`, Pre-Sim Commands,
+`run_cwd`, runtime inputs, build-access mode, or the resolved Target revision
+changed, start a new Campaign instead of weakening the mismatch check. An
+unsupported manifest version must be rerun with the current Booley version;
+Booley never rewrites an older immutable manifest in place.
+
+For a templated `run_cwd`, an interrupted attempt may leave its owned directory
+behind. Resume removes it only when the exact ownership marker matches. A
+missing/changed marker, symlink, reparse point, or foreign file tree requires
+human inspection; move that foreign data out of the configured path and retry.
+Never delete Project job-slot or child-execution records to force progress:
+their leases protect live EDA process trees, and normal recovery retires them
+only after terminal proof.
+
+Incomplete or invalid Simulation Campaigns are protected from retention. Once
+a Campaign is complete, use the exact retention command and invocation number
+documented in the Flow reference. For coverage collected inside a Simulation
+Campaign, the public Target-level `coverage.json` is an authenticated reference
+to the selected attempt's nested Coverage Campaign; keep the reference and
+enclosing Simulation Campaign together.
+
 ### Coverage Analyst input and model availability
 
 Pass `coverage_analyst --campaign <reports>/sim/<number>/targets/<target>/coverage.json`.

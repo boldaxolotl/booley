@@ -279,11 +279,13 @@ project-owned hook, and they do not loosen the contract. Shell lines run at the
 Sandbox immediately before each run (per test for an HDL Target, once per
 Cocotb batch), under a `BOOLEY_*` env contract that names the run
 (`BOOLEY_TEST_NAME` / `BOOLEY_TEST_NAMES`, `BOOLEY_TARGET`) and its authoritative
-directories (`BOOLEY_RUN_CWD`, `BOOLEY_BUILD_ROOT`). This is how a per-test
-non-RTL build step (e.g. cross-compiling the selected test's firmware) joins the
-Simulation Flow: a failing Pre-Sim Commands invocation is recorded as that test's failed result with
-an attributed tail. It can never manufacture a pass, and it never crashes the
-Flow.
+run directory (`BOOLEY_RUN_CWD`). The default immutable build-access contract
+withholds the authenticated Simulator Bundle path; `BOOLEY_BUILD_ROOT` exists
+only for an explicit `pre_sim_build_access = "legacy-per-test"` private build.
+This is how a per-test non-RTL build step (e.g. cross-compiling the selected
+test's firmware) joins the Simulation Flow: a failing Pre-Sim Commands
+invocation is recorded as that test's failed result with an attributed tail. It
+can never manufacture a pass, and it never crashes the Flow.
 
 ### Verdict semantics
 
@@ -353,9 +355,14 @@ claiming that RTL alone caused it.
 
 ### Reports and artifacts
 
-Every run writes a per-Target JSON report at
-`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` carrying the resolved identity (`target`,
-`tb_top`, `eda_tool`), timing, the target `passed` flag, and a `tests`
+Every simulation run first publishes an immutable per-Target Simulation
+Campaign manifest at
+`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/campaign/manifest.json`.
+Append-only attempts/results and the ordered `summary.json` remain beside that
+manifest across exact resume. The replaceable compatibility report at
+`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` carries
+the resolved identity (`target`, `tb_top`, `eda_tool`), timing, the target
+`passed` flag, and a `tests`
 list: one entry per test with its `name`, `verdict`, `sva_errors`, and an
 `error_tail`. Entries also carry `cycles`, a typed `cycle_observation` status,
 and a workload fingerprint when resolved inputs are available. For native HDL Targets, every entry also carries

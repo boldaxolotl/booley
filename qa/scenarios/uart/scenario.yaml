@@ -5970,7 +5970,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 50fa22ad2525a637aec4aae3b2bb8e8658d6f63e7717a6cd9a54a8b4b4e012d9
+    sha256: d1df06ea622246b291cebe6e7ab29e64fbbcc42992c293acfa2e4a57bca4d10a
   - path: fixtures/simulation-campaign/campaign.core
     audience: scenario-operator
     sha256: 2b2064bf76a4cf5cc3a188cb0930a58c4b7435eabcbdffc695315e1c73267b9b
@@ -6010,7 +6010,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 50fa22ad2525a637aec4aae3b2bb8e8658d6f63e7717a6cd9a54a8b4b4e012d9
+    sha256: d1df06ea622246b291cebe6e7ab29e64fbbcc42992c293acfa2e4a57bca4d10a
   - path: fixtures/simulation-campaign/literal-cwd.toml
     audience: scenario-operator
     sha256: 1d2e38e5203bfa4753b87207b7ee1a57f57180dbaabfc4b1bf25ef6a8a7160ff

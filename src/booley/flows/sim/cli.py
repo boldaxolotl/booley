@@ -32,7 +32,7 @@ class SimArguments(BuiltinArguments):
             action="append",
             default=None,
             metavar="NAME",
-            help="Run one exact registered test (repeat for multiple tests)",
+            help="Run exact registered test names in caller order (CLI: repeat; MCP: array)",
         )
         parser.add_argument(
             "--tests-file",

@@ -77,7 +77,7 @@
           "type": "string",
           "minLength": 1
         },
-        "description": "Run one exact registered test (repeat for multiple tests)",
+        "description": "Run exact registered test names in caller order (CLI: repeat; MCP: array)",
         "minItems": 1,
         "uniqueItems": true
       },

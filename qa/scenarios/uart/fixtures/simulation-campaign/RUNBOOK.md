@@ -41,5 +41,16 @@ logs, and directory-owner markers. Use
 `validate_literal_cwd_serialization()` from `validate_campaign.py` as a
 read-only cross-check.
 
-Restore the original UART configuration and remove only run-owned fixture
-files. Prove all pinned corpus and candidate source bytes are unchanged.
+## Recovery and cleanup
+
+Before the first mutation, ledger the run-owned fixture copy, configuration
+fragments, report roots, literal/templated directories, private build
+generations, process groups, and hook markers. Archive every failed attempt and
+its environment before restoration. Restore only the exact owned configuration
+or hook input, reap its owned process tree, and run a fresh valid control in the
+same Scenario Run; recovery never depends on the negative Check passing.
+
+Restore the original UART configuration, reap owned processes, and remove only
+run-owned fixture files, directories, and private generations. Prove all pinned
+corpus and candidate source bytes are unchanged and give every ledgered
+resource a cleanup disposition.

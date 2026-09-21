@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -224,6 +225,161 @@ def _referenced_execution_ids(project_dir: Path) -> set[str]:
         except ValueError:
             continue
     return references
+
+
+def release_retired_campaign_children(
+    project_dir: Path, campaign_children: Path
+) -> tuple[str, ...]:
+    """Release exact retired child index pairs after campaign retention.
+
+    The campaign mirror remains authoritative until its enclosing invocation is
+    removed.  Every Project-local byte that still exists must match that mirror
+    before any index entry is unlinked, making retries after partial cleanup
+    safe without accepting a substituted Project-local record.
+    """
+    campaign_entries = campaign_children / "entries"
+    campaign_retired = campaign_children / "retired"
+    if not campaign_entries.exists():
+        return ()
+    if campaign_entries.is_symlink() or not campaign_entries.is_dir():
+        raise ValueError("campaign child entries are not a regular directory")
+    project_root = project_dir / ".runtime" / "campaign-child-executions"
+    releases: list[tuple[ExecutionId, Path, Path]] = []
+    for mirror_entry in sorted(campaign_entries.glob("*.json")):
+        execution_id = ExecutionId(mirror_entry.stem)
+        mirror_retirement = campaign_retired / mirror_entry.name
+        entry_raw = _regular_bytes(mirror_entry)
+        retirement_raw = _regular_bytes(mirror_retirement)
+        _validate_retired_pair(execution_id, entry_raw, retirement_raw)
+        project_entry = project_root / "entries" / mirror_entry.name
+        project_retirement = project_root / "retired" / mirror_entry.name
+        marker = campaign_children / "released" / mirror_entry.name
+        marker_raw = _release_marker(execution_id, entry_raw, retirement_raw)
+        _require_matching_if_present(project_entry, entry_raw)
+        _require_matching_if_present(project_retirement, retirement_raw)
+        _require_child_token_absent(project_dir, execution_id)
+        if marker.exists() or marker.is_symlink():
+            if _regular_bytes(marker) != marker_raw:
+                raise ValueError("campaign child release marker is contradictory")
+        else:
+            if not project_entry.is_file() or not project_retirement.is_file():
+                raise ValueError("Project child retirement pair disappeared before release")
+            _require_retirement_terminal(project_dir, execution_id, retirement_raw)
+            _durable_create(marker, marker_raw)
+        releases.append((execution_id, project_entry, project_retirement))
+    for _execution_id, entry, retirement in releases:
+        retirement.unlink(missing_ok=True)
+        entry.unlink(missing_ok=True)
+    return tuple(str(item[0]) for item in releases)
+
+
+def _regular_bytes(path: Path) -> bytes:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"required child record is unavailable: {path}") from exc
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError(f"child record is not a regular file: {path}")
+    return path.read_bytes()
+
+
+def _require_matching_if_present(path: Path, expected: bytes) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if _regular_bytes(path) != expected:
+        raise ValueError(f"Project child record disagrees with campaign mirror: {path}")
+
+
+def _validate_retired_pair(
+    execution_id: ExecutionId, entry_raw: bytes, retirement_raw: bytes
+) -> None:
+    try:
+        entry = json.loads(entry_raw)
+        retirement = json.loads(retirement_raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("campaign child retirement pair is invalid JSON") from exc
+    entry_digest = "sha256:" + hashlib.sha256(entry_raw).hexdigest()
+    if (
+        not isinstance(entry, dict)
+        or entry.get("$schema") != "booley.simulation-campaign-child-entry/v1"
+        or entry.get("child_execution_id") != execution_id
+        or not isinstance(retirement, dict)
+        or retirement.get("$schema")
+        != "booley.simulation-campaign-child-retirement/v1"
+        or retirement.get("child_execution_id") != execution_id
+        or retirement.get("entry_sha256") != entry_digest
+        or retirement.get("token_absent") is not True
+    ):
+        raise ValueError("campaign child retirement pair has contradictory identity")
+
+
+def _release_marker(
+    execution_id: ExecutionId, entry_raw: bytes, retirement_raw: bytes
+) -> bytes:
+    document = {
+        "$schema": "booley.simulation-campaign-child-release/v1",
+        "child_execution_id": execution_id,
+        "entry_sha256": "sha256:" + hashlib.sha256(entry_raw).hexdigest(),
+        "retirement_sha256": "sha256:" + hashlib.sha256(retirement_raw).hexdigest(),
+    }
+    return (
+        json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _durable_create(path: Path, raw: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    parent = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+
+
+def _require_child_token_absent(project_dir: Path, execution_id: ExecutionId) -> None:
+    slots = project_dir / "runtime" / "jobs" / "slots"
+    for path in slots.glob("*/*.json"):
+        payload = read_json(path)
+        if payload is not None and payload.get("execution_id") == execution_id:
+            raise ValueError("retired campaign child still owns a Job Slot token")
+
+
+def _require_retirement_terminal(
+    project_dir: Path, execution_id: ExecutionId, retirement_raw: bytes
+) -> None:
+    retirement = json.loads(retirement_raw)
+    paths = execution_paths(execution_id, project_dir=project_dir)
+    terminal = read_json(paths.record)
+    if (
+        terminal is None
+        or terminal.get("state") != "terminal"
+        or terminal.get("tree_terminal") is not True
+    ):
+        raise ValueError("retired campaign child lacks tree-terminal proof")
+    canonical = (
+        json.dumps(
+            terminal,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+    if retirement.get("execution_terminal_sha256") != digest:
+        raise ValueError("campaign child retirement terminal digest is invalid")
 
 
 def _remove_terminal_record(root: Path, *, cutoff: float) -> bool:

@@ -9358,7 +9358,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
+    sha256: 769894df7e1f3b94b3a4e18d618ccdf967aae69171021a3d3ae535c8f526108e
   - path: fixtures/simulation-campaign/campaign.core
     audience: scenario-operator
     sha256: e70d4846204ac4c46a16cda2ee83f385024dae74e4fe1dded35898a7d1501ae0
@@ -9393,7 +9393,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
+    sha256: 769894df7e1f3b94b3a4e18d618ccdf967aae69171021a3d3ae535c8f526108e
   - path: fixtures/simulation-campaign/parallel.toml
     audience: scenario-operator
     sha256: 384f99c8ffcb6dcaee4649b7328477df5f68ddaaf26e7fdc3ef30fc08e829ee2
@@ -9418,7 +9418,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
+    sha256: 769894df7e1f3b94b3a4e18d618ccdf967aae69171021a3d3ae535c8f526108e
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
     sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
@@ -9440,7 +9440,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
+    sha256: 769894df7e1f3b94b3a4e18d618ccdf967aae69171021a3d3ae535c8f526108e
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
     sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
@@ -9463,7 +9463,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
+    sha256: 769894df7e1f3b94b3a4e18d618ccdf967aae69171021a3d3ae535c8f526108e
   - path: fixtures/simulation-campaign/validate_phase5.py
     audience: independent evaluator
     sha256: 01677704e173914972699179ea5e7c5b136431dba09076d97cf1e2db8d95a66b
@@ -9485,7 +9485,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 1ba18c96cac36dae8a9116073762e7f81ccdef69998d1f20d2a88c8ef0b4f102
+    sha256: 769894df7e1f3b94b3a4e18d618ccdf967aae69171021a3d3ae535c8f526108e
   - path: fixtures/simulation-campaign/validate_phase5.py
     audience: independent evaluator
     sha256: 01677704e173914972699179ea5e7c5b136431dba09076d97cf1e2db8d95a66b

@@ -46,9 +46,17 @@ then require the summary to render pass/fail/pass in manifest order with strict
 grade `fail`. Run `validate_parallel.py` over retained, independently assembled
 timeline evidence as a structural cross-check.
 
-After recording evidence, remove only the run-owned fixture registration and
-copied files. Prove the pinned Taxi checkout and all upstream source bytes are
-unchanged.
+Before the first mutation, ledger the run-owned fixture copy, catalog entry,
+report roots, literal and templated attempt directories, SlotStore child claims,
+process groups, and Cocotb transport. Archive any interrupted or failed state
+before recovery. Reap only owned producers, preserve the interrupted batch, and
+resume its exact Manifest; recovery never depends on the detection Check
+passing.
+
+After recording evidence, release child claims, reap owned processes, and
+remove only the run-owned fixture registration, copied files, and attempt
+directories. Prove the pinned Taxi checkout and all upstream source bytes are
+unchanged and give every ledgered resource a cleanup disposition.
 
 For `campaign.cocotb-batch-resume`, use the Scenario's existing Taxi Cocotb
 Target and select its exact multi-test suite in one Simulation Campaign. Record
