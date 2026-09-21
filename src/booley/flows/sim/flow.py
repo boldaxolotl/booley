@@ -114,12 +114,17 @@ from .campaign.coordinator import (
     ResumeCampaignRunRequest,
     SimulationCampaign,
 )
-from .campaign.flow_planning import plan_ordinary_hdl_campaign
+from .campaign.coverage_execution import CoverageAggregateExecutor
+from .campaign.flow_planning import (
+    plan_coarse_simulation_campaign,
+    plan_ordinary_hdl_campaign,
+)
 from .campaign.model import SimulationCampaignManifest, SimulationCampaignPlan
 from .campaign.planning import manifest_digest
 from .campaign.resume import ValidatedResumeManifest, validate_resume_manifest
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
 from .campaign.store import CampaignStore
+from .coverage_reference import resolve_coverage_campaign_reference
 from .execution import (
     DefaultSelection,
     NamedTests,
@@ -379,6 +384,107 @@ def _target_progress_detail(result: TargetResult) -> dict[str, Any]:
     if any(entry is not None for entry in build_stage):
         detail["build_stage"] = [entry for entry in build_stage if entry is not None]
     return detail
+
+
+def _campaign_observation_counts(
+    observations: Sequence[Mapping[str, object]],
+) -> dict[str, dict[str, int]]:
+    """Bounded structured summary preserving independent observation axes."""
+    axes = ("execution", "functional", "assertions")
+    return {
+        axis: dict(Counter(str(item[axis]) for item in observations))
+        for axis in axes
+    }
+
+
+def _campaign_structured_details(
+    outcomes: Sequence[CampaignOutcome],
+) -> dict[str, object]:
+    """Expose bounded durable pointers instead of embedding campaign records."""
+    return {
+        str(outcome.target["selector"]): {
+            "manifest": str(outcome.manifest_path),
+            "summary": str(outcome.summary_path),
+            "simulation": str(outcome.manifest_path.parents[1] / "simulation.json"),
+            "coverage": (
+                str(outcome.manifest_path.parents[1] / "coverage.json")
+                if outcome.coverage_reference is not None
+                else None
+            ),
+            "grade": outcome.aggregate_grade,
+            "complete": outcome.complete,
+            "observation_counts": _campaign_observation_counts(outcome.observations),
+        }
+        for outcome in outcomes
+    }
+
+
+def _coverage_compatibility_targets(
+    outcomes: Sequence[CampaignOutcome], project_root: Path
+) -> dict[str, object]:
+    """Preserve bounded coverage endpoint fields while authority stays referenced."""
+    targets: dict[str, object] = {}
+    for outcome in outcomes:
+        if outcome.coverage_reference is None:
+            continue
+        public = outcome.manifest_path.parents[1] / "coverage.json"
+        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+        selector = str(outcome.target["selector"])
+        targets[selector] = {
+            "target": selector,
+            "passed": outcome.aggregate_grade == "pass",
+            "simulation": _campaign_simulation_status(outcome),
+            "collection": campaign.collection["status"],
+            "evaluation": campaign.evaluation["status"],
+            "abort_remaining": False,
+            "coverage_campaign": posix_relpath(public, project_root),
+        }
+    return targets
+
+
+def _campaign_simulation_status(outcome: CampaignOutcome) -> str:
+    executions = {str(item["execution"]) for item in outcome.observations}
+    functional = {str(item["functional"]) for item in outcome.observations}
+    for state in ("crash", "timeout"):
+        if state in executions:
+            return state
+    for verdict in ("fail", "inconclusive", "pass"):
+        if verdict in functional:
+            return verdict
+    return "not_run"
+
+
+def _coverage_campaign_exit_code(outcomes: Sequence[CampaignOutcome]) -> int:
+    """Preserve native collection/evaluation exit policy for wrapped aggregates."""
+    saw_failure = False
+    for outcome in outcomes:
+        if outcome.coverage_reference is None:
+            continue
+        public = outcome.manifest_path.parents[1] / "coverage.json"
+        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+        if (
+            campaign.collection["status"] != "complete"
+            or campaign.evaluation["status"] == "blocked"
+        ):
+            return EXIT_ERROR
+        saw_failure |= campaign.evaluation["status"] == "fail"
+    return EXIT_FAILURE if saw_failure else 0
+
+
+def _checkpoint_coverage_campaign(
+    progress: CoverageProgress, outcome: CampaignOutcome
+) -> None:
+    public = outcome.manifest_path.parents[1] / "coverage.json"
+    campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+    progress.completed(
+        CoverageTargetOutcome(
+            str(outcome.target["selector"]),
+            _coverage_campaign_exit_code([outcome]),
+            public,
+            public.with_name("simulation.json"),
+            campaign.evaluation,
+        )
+    )
 
 
 def _build_outcome_entry(outcome: BuildOutcome | None) -> dict[str, Any] | None:
@@ -1194,9 +1300,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         *,
         coverage_execution: Callable[[TargetHandle, SimulationOptions], SimulationExecutionPort]
         | None = None,
+        campaign_publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
         self._coverage_execution_factory = coverage_execution
+        self._campaign_publication_checkpoint = campaign_publication_checkpoint
 
     request_type = SimRequest
     argument_adapter = SimArguments
@@ -1263,7 +1371,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if prepared.resume is not None:
             return self._run_campaign_resume(prepared.resume, admission)
         result = (
-            self._run_coverage()
+            self._run_coverage_campaigns(admission)
             if getattr(self.args, "coverage", False)
             else self._run_selected_mode(prepared=prepared, admission=admission)
         )
@@ -1527,8 +1635,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 detail={"mode": self._mode.value, "plan": plan.as_dict()},
             )
         if self.args.dry_run:
-            ordinary = [target for target in targets if not self.is_cocotb_target(target)]
-            if campaign_prepared and ordinary and len(ordinary) == len(targets):
+            if campaign_prepared:
                 return self._preview_ordinary_campaigns(targets, test_names_map)
             return self._handle_dry_run(targets, test_names_map)
 
@@ -1767,23 +1874,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self.args.report_dir = Path(self.args.work_dir) / "flow-reports"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
+        from .campaign_reports import campaign_invocation_lock
+
+        self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
         if not isinstance(admission, AdmissionContext):
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text="sim: no admission context")
         try:
-            plan = self._resume_campaign_plan(validated, int(invocation.name))
-            outcome = SimulationCampaign(
-                OrdinaryHdlSerialExecutor(invoke=self._execute_boundary)
-            ).run(
-                ResumeCampaignRunRequest(
-                    validated,
-                    plan,
-                    Path(self.args.work_dir),
-                    self.args.report_dir,
-                    self._campaign_policy(),
-                    invocation,
-                    admission,
-                )
-            )
+            outcome = self._execute_validated_resume(validated, invocation, admission)
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -1792,7 +1889,60 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         return self._campaign_endpoint_outcome([outcome])
 
-    def _resume_campaign_plan(self, validated: ValidatedResumeManifest, invocation_id: int):
+    def _execute_validated_resume(
+        self,
+        validated: ValidatedResumeManifest,
+        invocation: Path,
+        admission: AdmissionContext,
+    ) -> CampaignOutcome:
+        items = cast(
+            tuple[Mapping[str, object], ...], validated.manifest.document["work_items"]
+        )
+        coverage_plan = (
+            self._resume_coverage_target_plan(validated)
+            if items and items[0]["kind"] == "coverage_aggregate"
+            else None
+        )
+        progress = (
+            CoverageProgress(invocation, (coverage_plan.handle.selector,))
+            if coverage_plan is not None
+            else None
+        )
+        if progress is not None:
+            progress.checkpoint()
+        plan = self._resume_campaign_plan(
+            validated, int(invocation.name), coverage_plan=coverage_plan
+        )
+        executor = self._resume_campaign_executor(coverage_plan)
+        outcome = SimulationCampaign(
+            executor, publication_checkpoint=self._campaign_publication_checkpoint
+        ).run(
+            ResumeCampaignRunRequest(
+                validated, plan, Path(self.args.work_dir), self.args.report_dir,
+                self._campaign_policy(), invocation, admission,
+            )
+        )
+        if progress is not None:
+            _checkpoint_coverage_campaign(progress, outcome)
+            progress.checkpoint(complete=True)
+        return outcome
+
+    def _resume_campaign_executor(self, coverage_plan: CoverageTargetPlan | None):
+        if coverage_plan is None:
+            return OrdinaryHdlSerialExecutor(invoke=self._execute_boundary)
+        return CoverageAggregateExecutor(
+            plans={coverage_plan.handle.identity: coverage_plan},
+            execution_factory=self._coverage_campaign_execution,
+            publication_checkpoint=self._campaign_publication_checkpoint,
+        )
+
+    def _resume_campaign_plan(
+        self,
+        validated: ValidatedResumeManifest,
+        invocation_id: int,
+        *,
+        coverage_plan: CoverageTargetPlan | None = None,
+    ):
         """Recompute current workload identity for exact resume comparison."""
         manifest = validated.manifest
         binding = validated.binding_for(manifest)
@@ -1806,7 +1956,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         names = tuple(name for group in groups for name in group)
         execution = self._simulation_execution()
         preview = execution.preview(handle, NamedTests(names) if names else DefaultSelection())
-        disclosures = tuple(execution.plan_ordinary_group(handle, group) for group in groups)
+        if items and items[0]["kind"] == "coverage_aggregate":
+            preview = replace(preview, groups=(names,))
+        disclosures = (
+            ()
+            if items and items[0]["kind"] == "coverage_aggregate"
+            else tuple(execution.plan_campaign_group(handle, group) for group in groups)
+        )
         suite = cast(Mapping[str, object], manifest.document["required_suite"])
         target = cast(Mapping[str, str], manifest.document["target"])
         revision = git_full_sha("HEAD", handle.project_root)
@@ -1814,6 +1970,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             raise SimulationCampaignIntegrityError(
                 f"cannot verify resume Target revision at {handle.project_root}"
             )
+        if items and items[0]["kind"] in {"coverage_aggregate", "cocotb_batch"}:
+            kind = cast(str, items[0]["kind"])
+            if kind == "coverage_aggregate" and coverage_plan is None:
+                self._resume_coverage_target_plan(validated)
+            return plan_coarse_simulation_campaign(
+                handle=handle, inspection=inspection, preview=preview,
+                selected_tests=names, required_suite=cast(tuple[str, ...], suite["names"]),
+                revision=revision, invocation_id=invocation_id, execution_id="",
+                trace=cast(bool, manifest.document["workload"]["trace"]), kind=kind,
+                planning_disclosures=disclosures if kind == "cocotb_batch" else (),
+            )
+        return self._ordinary_resume_plan(
+            handle, inspection, preview, groups, suite, target, revision,
+            invocation_id, manifest, disclosures,
+        )
+
+    def _ordinary_resume_plan(
+        self, handle, inspection, preview, groups, suite, target, revision,
+        invocation_id, manifest, disclosures,
+    ) -> SimulationCampaignPlan:
         return plan_ordinary_hdl_campaign(
             handle=handle,
             inspection=inspection,
@@ -1861,6 +2037,44 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 if len(raw) != suite["source_bytes"] or digest != suite["source_sha256"]:
                     mismatches.append("/required_suite: required suite changed")
         return mismatches
+
+    def _resume_coverage_target_plan(
+        self, validated: ValidatedResumeManifest
+    ) -> CoverageTargetPlan:
+        """Reconstruct the exact native coverage plan bound by the manifest."""
+        from booley.criteria.state import DevelopmentState
+        from booley.flows.sim.coverage_flow_context import coverage_project_context
+        from booley.flows.sim.coverage_invocation import (
+            CoverageInvocationRequest,
+            prepare_coverage_invocation,
+        )
+
+        manifest = validated.manifest
+        target = cast(Mapping[str, str], manifest.document["target"])
+        items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+        names = cast(tuple[str, ...], cast(Mapping[str, object], items[0]["selection"])["names"])
+        workload = cast(Mapping[str, object], manifest.document["workload"])
+        context = coverage_project_context(
+            self.args.work_dir,
+            DevelopmentState.load(self.args.state_file)
+            if self.args.state_file
+            else DevelopmentState(),
+        )
+        prepared = prepare_coverage_invocation(
+            CoverageInvocationRequest(
+                (target["selector"],),
+                tests=names,
+                trace=cast(bool, workload["trace"]),
+            ),
+            context,
+        )
+        if prepared.plan is None or len(prepared.plan.targets) != 1:
+            detail = "; ".join(item.message for item in prepared.findings)
+            raise SimulationCampaignIntegrityError(
+                f"cannot reconstruct coverage aggregate: {detail}"
+            )
+        self._coverage_context = context
+        return prepared.plan.targets[0]
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         error = super()._pre_state_gate()
@@ -1934,6 +2148,166 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
         return self._run_coverage_invocation(invocation, prepared)
+
+    def _run_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
+        """Run each native coverage selection as one durable aggregate item."""
+        error = self._prepare_coverage()
+        if error is not None:
+            return error
+        if not isinstance(admission, AdmissionContext):
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text="sim: Coverage Campaign has no borrowed admission context",
+            )
+        try:
+            campaign, requests, progress = self._coverage_campaign_session(admission)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign coverage planning failed: {exc}",
+            )
+        return self._execute_coverage_campaign_requests(campaign, requests, progress)
+
+    def _coverage_campaign_session(
+        self, admission: AdmissionContext
+    ) -> tuple[
+        SimulationCampaign,
+        list[NewCampaignRunRequest],
+        CoverageProgress,
+    ]:
+        """Publish every immutable coverage manifest before admitting work."""
+        prepared = self._coverage_prepared
+        if self.args.report_dir is None:
+            self.args.report_dir = self._coverage_context.project_data_repository / "flow-reports"
+        invocation = self.reserve_invocation_dir()
+        assert invocation is not None
+        from .campaign_reports import campaign_invocation_lock
+
+        self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
+        progress = CoverageProgress(
+            invocation, tuple(plan.handle.selector for plan in prepared.targets)
+        )
+        progress.checkpoint()
+        plans = {plan.handle.identity: plan for plan in prepared.targets}
+        executor = CoverageAggregateExecutor(
+            plans=plans,
+            execution_factory=self._coverage_campaign_execution,
+            publication_checkpoint=self._campaign_publication_checkpoint,
+        )
+        campaign = SimulationCampaign(
+            executor,
+            publication_checkpoint=self._campaign_publication_checkpoint,
+        )
+        execution_id = (
+            admission.execution_id
+            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
+            else ""
+        )
+        requests = [
+            NewCampaignRunRequest(
+                self._coverage_campaign_plan(plan, int(invocation.name), execution_id),
+                Path(self.args.work_dir),
+                self.args.report_dir,
+                self._campaign_policy(),
+                invocation,
+                admission,
+            )
+            for plan in prepared.targets
+        ]
+        for request in requests:
+            campaign.publish_new(request)
+        return campaign, requests, progress
+
+    def _execute_coverage_campaign_requests(
+        self,
+        campaign: SimulationCampaign,
+        requests: list[NewCampaignRunRequest],
+        progress: CoverageProgress,
+    ) -> EndpointOutcome:
+        """Execute published coverage aggregates in deterministic Target order."""
+        outcomes: list[CampaignOutcome] = []
+        for index, request in enumerate(requests):
+            try:
+                outcome = campaign.run(request)
+                outcomes.append(outcome)
+                _checkpoint_coverage_campaign(progress, outcome)
+            except (OSError, ValueError, RuntimeError) as exc:
+                return self._coverage_campaign_failure(
+                    outcomes, requests, index, request, exc
+                )
+        progress.checkpoint(complete=True)
+        return self._campaign_endpoint_outcome(outcomes)
+
+    def _coverage_campaign_failure(
+        self,
+        outcomes: list[CampaignOutcome],
+        requests: list[NewCampaignRunRequest],
+        index: int,
+        request: NewCampaignRunRequest,
+        error: Exception,
+    ) -> EndpointOutcome:
+        """Report a fatal aggregate without inventing a terminal Simulation result."""
+        self.context._simulation_campaign_outcomes = tuple(outcomes)
+        targets = _coverage_compatibility_targets(outcomes, Path(self.args.work_dir))
+        failed = str(request.plan.manifest.document["target"]["selector"])
+        targets[failed] = {
+            "target": failed,
+            "passed": None,
+            "simulation": "not_run",
+            "collection": "infrastructure_error",
+            "evaluation": "blocked",
+            "error": str(error),
+            "abort_remaining": True,
+        }
+        pending = [
+            str(item.plan.manifest.document["target"]["selector"])
+            for item in requests[index + 1 :]
+        ]
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            detail={
+                "coverage": True,
+                "campaigns": _campaign_structured_details(outcomes),
+                "targets": targets,
+                "pending_targets": pending,
+            },
+            report_text=f"Simulation Campaign coverage execution failed: {error}",
+        )
+
+    def _coverage_campaign_execution(
+        self, plan: CoverageTargetPlan, options: SimulationOptions
+    ) -> SimulationExecutionPort:
+        from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
+
+        return (
+            self._coverage_execution_factory(plan.handle, options)
+            if self._coverage_execution_factory is not None
+            else VerilatorCoverageExecution(
+                plan.handle,
+                invoke=self._execute_boundary,
+                options=options,
+            )
+        )
+
+    def _coverage_campaign_plan(
+        self, plan: CoverageTargetPlan, invocation_id: int, execution_id: str
+    ) -> SimulationCampaignPlan:
+        inspection = TargetCatalog.build(plan.handle.project_root).inspect(plan.handle)
+        execution = self._simulation_execution()
+        preview = execution.preview(plan.handle, NamedTests(plan.selected_tests))
+        preview = replace(preview, groups=(plan.selected_tests,))
+        return plan_coarse_simulation_campaign(
+            handle=plan.handle,
+            inspection=inspection,
+            preview=preview,
+            selected_tests=plan.selected_tests,
+            required_suite=plan.declared_tests,
+            revision=git_full_sha("HEAD", plan.handle.project_root) or "unversioned",
+            invocation_id=invocation_id,
+            execution_id=execution_id,
+            trace=self.args.trace,
+            kind="coverage_aggregate",
+        )
 
     def _run_coverage_invocation(self, invocation, prepared) -> EndpointOutcome:
         progress = CoverageProgress(
@@ -2041,16 +2415,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if self.args.report_dir is None:
             self.args.report_dir = Path(self.args.work_dir) / "flow-reports"
 
-        ordinary = [target for target in targets if not self.is_cocotb_target(target)]
-        if ordinary and len(ordinary) != len(targets):
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "sim: mixed ordinary-HDL and Cocotb Targets require separate "
-                    "invocations; no Target was executed"
-                ),
-            )
-        if ordinary and prepared is not None:
+        if prepared is not None:
             return self._run_ordinary_campaigns(targets, test_names_map, admission)
 
         all_results: list[TargetResult] = []
@@ -2186,7 +2551,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 exit_code=EXIT_ERROR,
                 report_text="sim: Simulation Campaign has no borrowed admission context",
             )
-        campaign = SimulationCampaign(OrdinaryHdlSerialExecutor(invoke=self._execute_boundary))
+        campaign = SimulationCampaign(
+            OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
+            publication_checkpoint=self._campaign_publication_checkpoint,
+        )
         try:
             baseline_requests, prerequisites = self._plan_campaign_baselines(
                 invocation,
@@ -2564,7 +2932,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         execution = self._simulation_execution()
         preview = execution.preview(handle, self._execution_selection(selected))
         planning_disclosures = tuple(
-            execution.plan_ordinary_group(handle, group) for group in preview.groups
+            execution.plan_campaign_group(handle, group) for group in preview.groups
         )
         suite = resolve_target_test_suite(
             target,
@@ -2572,6 +2940,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             test_skips=_get_test_skips(self.args.work_dir),
         )
         required = tuple(name for name in suite.tests if name is not None)
+        if self.is_cocotb_target(target):
+            return self._cocotb_campaign_plan(
+                handle, inspection, preview, required, revision,
+                invocation_id, execution_id, planning_disclosures,
+            )
         return plan_ordinary_hdl_campaign(
             handle=handle,
             inspection=inspection,
@@ -2587,6 +2960,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             role=role,
         )
 
+    def _cocotb_campaign_plan(
+        self, handle, inspection, preview, required, revision,
+        invocation_id, execution_id, planning_disclosures,
+    ) -> SimulationCampaignPlan:
+        selected = tuple(name for group in preview.groups for name in group)
+        return plan_coarse_simulation_campaign(
+            handle=handle, inspection=inspection, preview=preview,
+            selected_tests=selected, required_suite=required,
+            revision=revision or git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
+            invocation_id=invocation_id, execution_id=execution_id,
+            trace=self.args.trace, kind="cocotb_batch",
+            planning_disclosures=planning_disclosures,
+        )
+
     def _campaign_policy(self) -> CampaignPolicy:
         return CampaignPolicy(
             timeout_seconds=self._effective_timeout_ms() / 1000,
@@ -2598,7 +2985,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _campaign_endpoint_outcome(self, outcomes: list[CampaignOutcome]) -> EndpointOutcome:
         self.context._simulation_campaign_outcomes = tuple(outcomes)
         grades = [outcome.aggregate_grade for outcome in outcomes]
-        exit_code = (
+        exit_code = _coverage_campaign_exit_code(outcomes) or (
             EXIT_ERROR
             if "error" in grades
             else EXIT_FAILURE
@@ -2610,20 +2997,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             f"({outcome.manifest_path})"
             for outcome in outcomes
         ]
+        campaigns = _campaign_structured_details(outcomes)
+        coverage_targets = _coverage_compatibility_targets(outcomes, Path(self.args.work_dir))
+        detail: dict[str, object] = {"campaigns": campaigns}
+        if coverage_targets:
+            detail.update(
+                coverage=True,
+                targets=coverage_targets,
+                pending_targets=[],
+            )
         return EndpointOutcome(
             exit_code=exit_code,
             criterion_met=exit_code == EXIT_SUCCESS,
-            detail={
-                "campaigns": [
-                    {
-                        "manifest": str(outcome.manifest_path),
-                        "summary": str(outcome.summary_path),
-                        "grade": outcome.aggregate_grade,
-                        "complete": outcome.complete,
-                    }
-                    for outcome in outcomes
-                ]
-            },
+            detail=detail,
             report_text="\n".join(lines),
         )
 

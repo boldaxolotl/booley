@@ -84,12 +84,14 @@ class VerilatorCoverageExecution:
         self._options = options
         self._provenance_path = provenance_path
         self._prepared: PreparedSimulationBuild | None = None
+        self._artifact_paths: tuple[Path, ...] = ()
         self._build_variant: str | None = None
         self._trace_mode = "vcd_fifo"
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         """Prepare and compile the collector-selected isolated build variant."""
         self._prepared = None
+        self._artifact_paths = ()
         self._build_variant = None
         if request.target.identity != self._handle.identity:
             return SimulationBuildResult(False, "coverage Target identity does not match handle")
@@ -114,7 +116,7 @@ class VerilatorCoverageExecution:
                 inputs = session.capture_inputs(prepared)
                 result = self._execute_build(prepared, identity)
                 if result.success:
-                    session.authorize_fresh_image(prepared, inputs)
+                    self._artifact_paths = session.authorize_fresh_image(prepared, inputs)
                     self._build_variant = request.variant.name
                 return result
         except SimulationBuildSlotError as exc:
@@ -243,6 +245,15 @@ class VerilatorCoverageExecution:
         script = f"cd {shlex.quote(str(request.cwd))}\nexec {shlex.join(request.argv)}"
         result = self._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
         return SimulationCommandResult(result.returncode, result.stdout, result.stderr)
+
+    def authenticated_image(self) -> tuple[Path, tuple[Path, ...]]:
+        """Expose only the exact leased image authorized by the successful build."""
+        prepared = self._prepared
+        if prepared is None:
+            raise SimulationBuildSlotError("coverage simulator image is not authorized")
+        if not self._artifact_paths:
+            raise SimulationBuildSlotError("coverage simulator image has no artifacts")
+        return prepared.work_root, self._artifact_paths
 
     def _collector_identity(self) -> tuple[VerilatorCollectorIdentity | None, str]:
         version = self._invoke(["verilator", "--version"], timeout=30)

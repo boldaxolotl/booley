@@ -546,14 +546,18 @@ class CampaignStore:
         ]
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         recovered = tuple(
-            self._scan_item(cast(str, item["work_item_id"]), expected_manifest, expected_workload)
+            self._scan_item(item, expected_manifest, expected_workload)
             for item in items
         )
         return CampaignRecovery(recovered)
 
     def _scan_item(
-        self, work_item_id: str, manifest_sha256: str, workload_sha256: str
+        self,
+        work_item: Mapping[str, object],
+        manifest_sha256: str,
+        workload_sha256: str,
     ) -> WorkItemRecovery:
+        work_item_id = cast(str, work_item["work_item_id"])
         directory = self.work_item_directory(work_item_id)
         attempts_root = directory / "attempts"
         attempts = self._attempt_directories(attempts_root)
@@ -587,6 +591,7 @@ class CampaignStore:
                 attempts,
                 decoded_attempts,
             )
+            _validate_result_selection(work_item, result)
             return WorkItemRecovery(work_item_id, "complete", len(attempts), result)
         state = "interrupted" if attempts else "pending"
         return WorkItemRecovery(work_item_id, state, len(attempts), None)
@@ -709,6 +714,46 @@ def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
     if not complete or "inconclusive" in grades:
         return "inconclusive"
     return "pass"
+
+
+def _validate_result_selection(
+    work_item: Mapping[str, object], result: SimulationResult
+) -> None:
+    """Bind terminal observation order and transport evidence to the manifest."""
+    selection = cast(Mapping[str, object], work_item["selection"])
+    names = cast(tuple[str, ...], selection["names"])
+    observations = cast(
+        tuple[Mapping[str, object], ...], result.document["observations"]
+    )
+    observed = tuple(item["test"] for item in observations)
+    kind = cast(str, work_item["kind"])
+    if selection["kind"] == "named" and observed != names:
+        raise SimulationCampaignIntegrityError(
+            "result observations disagree with named work-item selection"
+        )
+    if selection["kind"] == "unfiltered":
+        unnamed_failure = observed == (None,) and result.document["state"] in {
+            "blocked_by_build", "setup_error", "timeout", "crash"
+        }
+        discovered = bool(observed) and all(
+            isinstance(name, str) and name for name in observed
+        )
+        if not (unnamed_failure or discovered):
+            raise SimulationCampaignIntegrityError(
+                "unfiltered Cocotb result has invalid observation identity"
+            )
+    if result.document["state"] not in {"completed", "timeout", "crash"}:
+        return
+    evidence = cast(tuple[Mapping[str, object], ...], result.document["evidence"])
+    expected_kind = "coverage_campaign_manifest" if kind == "coverage_aggregate" else None
+    if kind == "cocotb_batch" and observed != (None,):
+        expected_kind = "cocotb_results"
+    if expected_kind is not None:
+        matching = [item for item in evidence if item["kind"] == expected_kind]
+        if len(matching) != 1 or matching[0]["owner"] != result.document["attempt_id"]:
+            raise SimulationCampaignIntegrityError(
+                f"{kind} result lacks exact authenticated transport evidence"
+            )
 
 
 def _stream_identity(path: Path) -> tuple[int, str]:

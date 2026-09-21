@@ -529,10 +529,6 @@ class SimulationExecution:
             group: PreparedOrdinaryGroup | None = None
             try:
                 attempt = self._prepare_attempt(handle, test_names)
-                if attempt.adapter == "cocotb":
-                    raise SimulationBuildPreparationError(
-                        "ordinary_group does not support Cocotb batch Targets"
-                    )
                 begin_run_log(attempt.prepared.build_root, flow="sim", target=handle.selector)
                 group = PreparedOrdinaryGroup(
                     self,
@@ -628,6 +624,12 @@ class SimulationExecution:
             disclosure = group.planning_disclosure()
             group.discard_prepared_generation()
         return disclosure
+
+    def plan_campaign_group(
+        self, handle: TargetHandle, test_names: tuple[str, ...]
+    ) -> dict[str, object]:
+        """Disclose one durable ordinary-HDL or Cocotb campaign build."""
+        return self.plan_ordinary_group(handle, test_names)
 
     def _run_group(
         self,
@@ -1647,7 +1649,8 @@ def _outcome_names(
 ) -> tuple[str, ...]:
     if adapter and adapter.test_results:
         return tuple(test.name for test in adapter.test_results)
-    return attempt.test_names or (handle.selector,)
+    fallback = "" if attempt.adapter == "cocotb" else handle.selector
+    return attempt.test_names or (fallback,)
 
 
 def _adapter_verdict(adapter: AdapterResult | None) -> str:

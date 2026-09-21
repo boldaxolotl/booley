@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from booley.criteria.state import CriterionChange, DevelopmentState
@@ -15,11 +17,20 @@ from booley.criteria.thresholds import (
     has_relative_threshold,
 )
 from booley.evidence.fields import BASELINE_REF_PARAM
-from booley.flows.execution_persistence import AcceptanceRecorder
+from booley.flows.execution_persistence import (
+    AcceptanceRecorder,
+    AcceptanceRecordingError,
+    NoAcceptanceRecorder,
+)
 from booley.flows.sim.campaign import CampaignOutcome
 from booley.flows.sim.campaign_reports import (
     target_report_directory,
     write_compatibility_projection,
+)
+from booley.flows.sim.coverage_reference import (
+    ResolvedCoverageCampaign,
+    encode_coverage_campaign_reference,
+    resolve_coverage_campaign_reference,
 )
 from booley.targets.domain import criterion_matches_target
 
@@ -70,6 +81,18 @@ class SimulationAcceptanceCoordinator:
             ticket_identity=context.ticket_identity,
         )
         transaction_id = getattr(transaction, "transaction_id", None)
+        if transaction is None and isinstance(context.recorder, NoAcceptanceRecorder):
+            for change in changes:
+                context.state.set_criterion(
+                    change.key,
+                    change.met,
+                    detail=change.detail,
+                )
+            context.state.save()
+        elif transaction is None:
+            raise AcceptanceRecordingError(
+                "campaign Criteria require a durable acceptance transaction store"
+            )
         return AcceptanceOutcome(True, transaction_id, tuple(changes), "committed")
 
     @staticmethod
@@ -84,6 +107,7 @@ class SimulationAcceptanceCoordinator:
         target_name = str(target["name"])
         shadow = deepcopy(state)
         changes = _cycle_changes(outcome, shadow, target)
+        changes.extend(_coverage_changes(outcome, shadow, target))
         key = f"sim_pass_{target_name}"
         if key not in state.criteria and "sim_pass" in state.criteria:
             key = "sim_pass"
@@ -174,7 +198,7 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
         }
         for observation in outcome.observations
     ]
-    return {
+    projection = {
         "flow": "sim",
         "mode": "simulate",
         "target": outcome.target["selector"],
@@ -185,6 +209,89 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
         "campaign_manifest": str(outcome.manifest_path),
         "campaign_summary": str(outcome.summary_path),
     }
+    if outcome.coverage_reference is not None:
+        public = outcome.manifest_path.parents[1] / "coverage.json"
+        coverage = resolve_coverage_campaign_reference(public).loaded.campaign
+        projection.update(
+            coverage_campaign="coverage.json",
+            coverage_campaign_base="origin_target",
+            collection=coverage.collection["status"],
+            evaluation=coverage.evaluation["status"],
+        )
+    return projection
+
+
+def _coverage_changes(
+    outcome: CampaignOutcome,
+    shadow: DevelopmentState,
+    target: Mapping[str, object],
+) -> list[CriterionChange]:
+    """Bind nested Coverage Campaign evaluation into the joint transaction."""
+    if outcome.coverage_reference is None:
+        return []
+    public_path = outcome.manifest_path.parents[1] / "coverage.json"
+    resolved = resolve_coverage_campaign_reference(public_path)
+    campaign = resolved.loaded.campaign
+    name = str(target["name"])
+    identity = f"{target['vlnv']}#{name}"
+    selector = str(target["selector"])
+    direct = f"coverage_{name}"
+    keys = [
+        key
+        for key, entry in shadow.criteria.items()
+        if key == direct
+        or (
+            key.startswith("coverage_")
+            and criterion_matches_target(
+                entry.params or {}, identity=identity, selector=selector
+            )
+        )
+    ]
+    if not keys:
+        return []
+    detail = _coverage_detail(outcome, resolved, public_path)
+    changes: list[CriterionChange] = []
+    for key in keys:
+        changes.extend(
+            shadow.set_criterion(
+                key,
+                campaign.evaluation["status"] == "pass",
+                detail=detail,
+            )
+        )
+    return changes
+
+
+def _coverage_detail(
+    outcome: CampaignOutcome,
+    resolved: ResolvedCoverageCampaign,
+    public_path: Path,
+) -> dict[str, object]:
+    campaign = resolved.loaded.campaign
+    raw = encode_coverage_campaign_reference(resolved.reference)
+    nested = outcome.coverage_reference["coverage_campaign"]
+    assert isinstance(nested, Mapping)
+    report_root = outcome.manifest_path.parents[5]
+    relative_public_path = public_path.relative_to(report_root).as_posix()
+    return {
+        "coverage_campaign": relative_public_path,
+        "coverage_campaign_reference": {
+            "path": relative_public_path,
+            "bytes": len(raw),
+            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "nested_campaign_sha256": nested["sha256"],
+        },
+        "evaluation": _plain_json(campaign.evaluation),
+        "criterion_fingerprint": campaign.evaluation.get("criterion_fingerprint"),
+    }
+
+
+def _plain_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_plain_json(item) for item in value]
+    return value
 
 
 def _cycle_changes(

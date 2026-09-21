@@ -148,9 +148,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
         item = request.work_item
-        if item["kind"] != "ordinary_hdl":
+        if item["kind"] not in {"ordinary_hdl", "cocotb_batch"}:
             raise SimulationCampaignIntegrityError(
-                "Phase-2 serial execution supports only ordinary HDL work items"
+                "HDL campaign executor supports only ordinary or Cocotb work items"
             )
         with self._prepared_attempts_gate:
             run_directory = self._prepared_attempts.pop(request.attempt_directory, None)
@@ -799,6 +799,12 @@ def _setup_result(
     detail: str,
     elapsed: float,
 ) -> SimulationResult:
+    selection = cast(Mapping[str, object], request.work_item["selection"])
+    fallback = (
+        ""
+        if selection["kind"] == "unfiltered"
+        else cast(str, request.manifest.document["target"]["selector"])
+    )
     tests = tuple(
         SimulationTestOutcome(
             name=name,
@@ -807,7 +813,7 @@ def _setup_result(
             elab_failed=True,
             error_tail=detail,
         )
-        for name in (names or (cast(str, request.manifest.document["target"]["selector"]),))
+        for name in (names or (fallback,))
     )
     return _result(
         request,
@@ -1166,6 +1172,10 @@ def _blocked_result(
     infrastructure: bool = False,
 ) -> SimulationResult:
     observations = [_observation(test, execution="blocked_by_build") for test in outcome.tests]
+    selection = cast(Mapping[str, object], request.work_item["selection"])
+    if selection["kind"] == "unfiltered":
+        observations = observations[:1]
+        observations[0]["test"] = None
     if infrastructure:
         for observation in observations:
             observation["failure_class"] = "infrastructure"
@@ -1374,7 +1384,7 @@ def _observation(
         else "clean"
     )
     return {
-        "test": test.name,
+        "test": test.name or None,
         "execution": observed_execution,
         "failure_class": (
             "design" if blocked or observed_execution == "timeout" or not test.passed else None
@@ -1460,7 +1470,9 @@ def _capture_outcome_evidence(
                 destination,
                 request.attempt_directory,
                 raw,
-                artifact.kind,
+                "cocotb_results"
+                if artifact.kind == "cocotb_results_json"
+                else artifact.kind,
                 request.attempt_id,
             )
         )

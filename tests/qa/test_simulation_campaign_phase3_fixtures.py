@@ -388,6 +388,8 @@ def test_campaign_checks_are_isolated_to_representative_configurations() -> None
                 "campaign.heavy-cap",
                 "campaign.attempt-isolation",
                 "campaign.continue-after-failure",
+                "campaign.cocotb-batch-resume",
+                "campaign.mcp-structured-pointers",
             ],
             ["taxi-ubuntu-codex-cli"],
         ),

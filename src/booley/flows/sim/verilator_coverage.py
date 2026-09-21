@@ -226,6 +226,10 @@ class SimulationExecutionPort(Protocol):
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult: ...
 
+    def authenticated_image(self) -> tuple[Path, tuple[Path, ...]]:
+        """Return the exact authorized simulator image used by subsequent runs."""
+        ...
+
 
 @dataclass(frozen=True)
 class CoverageBuildEvidence:

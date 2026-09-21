@@ -55,17 +55,79 @@ def plan_ordinary_hdl_campaign(
     if len(groups) != len(preview.commands):
         raise SimulationCampaignIntegrityError("planned groups and commands disagree")
     workload, configured_cwd, run_kind, sources = _workload_document(
-        handle, inspection, sources, trace
+        handle, inspection, sources, trace, coverage=False
     )
     target = _target_document(handle, root, revision, role)
     suite = _required_suite(root, required_suite)
     variant = _variant_document(workload, sources, trace)
-    work_items = _work_items(groups, target, variant, configured_cwd, run_kind)
+    work_items = _work_items(
+        groups, target, variant, configured_cwd, run_kind, kind="ordinary_hdl"
+    )
     manifest = _manifest_document(
         invocation_id, execution_id, target, workload, suite, variant,
         planning_disclosures, prerequisite_documents, work_items,
     )
     return create_simulation_campaign_plan(manifest)
+
+
+def plan_coarse_simulation_campaign(
+    *,
+    handle: TargetHandle,
+    inspection: TargetInspection,
+    preview: SimulationPreview,
+    selected_tests: Sequence[str],
+    required_suite: Sequence[str],
+    revision: str,
+    invocation_id: int,
+    execution_id: str,
+    trace: bool,
+    kind: str,
+    planning_disclosures: Sequence[Mapping[str, object]] = (),
+) -> SimulationCampaignPlan:
+    """Plan one honest coarse Cocotb batch or native coverage aggregate."""
+    names = _validate_coarse_inputs(handle, inspection, preview, selected_tests, kind)
+    root = handle.project_root.resolve()
+    sources = _source_entries(root, inspection.inputs)
+    workload, configured_cwd, run_kind, sources = _workload_document(
+        handle, inspection, sources, trace, coverage=kind == "coverage_aggregate"
+    )
+    target = _target_document(handle, root, revision, "candidate")
+    suite = _required_suite(root, required_suite)
+    variant = _variant_document(workload, sources, trace)
+    work_items = _work_items(
+        (names,), target, variant, configured_cwd, run_kind, kind=kind
+    )
+    manifest = _manifest_document(
+        invocation_id, execution_id, target, workload, suite, variant,
+        planning_disclosures, (), work_items,
+    )
+    return create_simulation_campaign_plan(manifest)
+
+
+def _validate_coarse_inputs(
+    handle: TargetHandle,
+    inspection: TargetInspection,
+    preview: SimulationPreview,
+    selected_tests: Sequence[str],
+    kind: str,
+) -> tuple[str, ...]:
+    if kind not in {"cocotb_batch", "coverage_aggregate"}:
+        raise SimulationCampaignIntegrityError("coarse campaign kind is invalid")
+    if inspection.handle != handle or preview.target_identity != handle.identity:
+        raise SimulationCampaignIntegrityError("campaign planning Target facts disagree")
+    is_cocotb = bool(inspection.flow_options.get("cocotb_module"))
+    if (kind == "cocotb_batch") != is_cocotb:
+        raise SimulationCampaignIntegrityError("coarse campaign kind disagrees with Target")
+    names = tuple(selected_tests)
+    if preview.groups != (names,):
+        raise SimulationCampaignIntegrityError(
+            "coarse campaign selection disagrees with execution preview"
+        )
+    if kind == "coverage_aggregate" and not names:
+        raise SimulationCampaignIntegrityError("coverage aggregate requires named tests")
+    if len(set(names)) != len(names):
+        raise SimulationCampaignIntegrityError("coarse campaign tests must be unique")
+    return names
 
 
 def _manifest_document(
@@ -89,6 +151,8 @@ def _workload_document(
     inspection: TargetInspection,
     sources: list[dict[str, object]],
     trace: bool,
+    *,
+    coverage: bool,
 ) -> tuple[dict[str, object], str, str, list[dict[str, object]]]:
     root = handle.project_root.resolve()
     parameters = [
@@ -114,7 +178,7 @@ def _workload_document(
     placeholders = parse_run_cwd_template(configured_cwd)
     run_kind = "templated" if placeholders else "literal"
     return {
-        "mode": "simulate", "trace": trace, "coverage": False,
+        "mode": "simulate", "trace": trace, "coverage": coverage,
         "eda": {"kind": inspection.eda_tool or "", "version": _eda_identity(inspection.eda_tool)},
         "planner_contract_version": "1", "adapter_contract_version": "1",
         "pre_sim_build_access": resolve_pre_sim_build_access(root),
@@ -142,7 +206,7 @@ def _variant_document(
         "kind": "trace" if trace else "candidate", "source_closure": sources,
         "source_recipe": workload["source_recipe"],
         "build_recipe": workload["build_recipe"], "eda": workload["eda"],
-        "trace": trace, "coverage": False,
+        "trace": trace, "coverage": workload["coverage"],
     }
     digest = canonical_sha256(recipe)
     return {
@@ -240,20 +304,25 @@ def _work_items(
     variant: Mapping[str, object],
     configured_cwd: str,
     run_kind: str,
+    *,
+    kind: str,
 ) -> list[dict[str, object]]:
     items = []
     collision = _collision_template(configured_cwd)
     for ordinal, names in enumerate(groups):
-        if len(names) > 1:
+        if kind == "ordinary_hdl" and len(names) > 1:
             raise SimulationCampaignIntegrityError("ordinary HDL work item has multiple tests")
+        selection_kind = "named" if names else "default"
+        if kind == "cocotb_batch" and not names:
+            selection_kind = "unfiltered"
         identity = {
             "ordinal": ordinal,
-            "kind": "ordinary_hdl",
+            "kind": kind,
             "role": target["role"],
             "revision": target["revision"],
             "target": target,
             "selection": {
-                "kind": "named" if names else "default",
+                "kind": selection_kind,
                 "names": list(names),
             },
             "arguments": list(names),
@@ -284,4 +353,4 @@ def _collision_template(configured: str) -> str:
     return str(Path(rendered).absolute()) if Path(rendered).is_absolute() else rendered
 
 
-__all__ = ["plan_ordinary_hdl_campaign"]
+__all__ = ["plan_coarse_simulation_campaign", "plan_ordinary_hdl_campaign"]

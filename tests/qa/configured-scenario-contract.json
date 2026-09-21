@@ -10,7 +10,7 @@
     "taxi-ubuntu-codex-cli": {
       "required": true,
       "semantics": "c0b85eebc93188aeea2317778bc5684f98be89cfbb279526a4c762d46fdd7380",
-      "checks": "0c95e0dfac079b120d445c96f9ebd069e9a7408798e4035c2eab8689c83ac5d3",
+      "checks": "336ecb54947e041d199214f35568099db28af0b3b9155d7edfe770e1a8e91cf0",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-ubuntu-codex-cli": {
@@ -160,7 +160,7 @@
     "coverage-lifecycle-ubuntu-codex-cli": {
       "required": true,
       "semantics": "c965bffab6c4cb1457a70f160d98153a280f6f70034ea405e584fe4b3ce9d88c",
-      "checks": "6e760a0b268d23726ffa3db4128dcfd718a7ef91148fe887562324fe23a08538",
+      "checks": "fbb7cc25f6e4979174208b5e715780c613834408d4a6a8ff81ef3293f2976a5b",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "coverage-lifecycle-ubuntu-claude-cli": {

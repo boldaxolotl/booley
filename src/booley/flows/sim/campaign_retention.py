@@ -18,6 +18,11 @@ from .campaign_reports import (
 )
 from .coverage_campaign import CoverageCampaign
 from .coverage_campaign_store import LoadedCoverageCampaign, load_coverage_campaign
+from .coverage_reference import (
+    REFERENCE_SCHEMA,
+    authenticate_coverage_campaign_owner,
+    resolve_coverage_campaign_reference,
+)
 
 
 class CampaignRetentionError(ValueError):
@@ -63,12 +68,21 @@ def _target(
     ):
         raise CampaignRetentionError("Target does not resolve exactly in this invocation")
     target = target_report_directory(root, selector)
-    loaded = load_coverage_campaign(target / "coverage.json")
+    public_path = target / "coverage.json"
+    public = _read_object(public_path)
+    if public.get("$schema") == REFERENCE_SCHEMA:
+        resolved = resolve_coverage_campaign_reference(public_path)
+        authenticate_coverage_campaign_owner(resolved)
+        loaded = resolved.loaded
+        storage = resolved.campaign_path.parent
+    else:
+        loaded = load_coverage_campaign(public_path)
+        storage = target
     campaign = loaded.campaign
     if campaign.target.selector != selector or campaign.invocation["id"] != int(root.name):
         raise CampaignRetentionError("Campaign identity disagrees with the exact selection")
     if not require_projection:
-        return target, loaded
+        return storage, loaded
     projection = _read_object(target / "simulation.json")
     if (
         projection.get("target_identity") != campaign.target.identity
@@ -77,7 +91,7 @@ def _target(
         raise CampaignRetentionError(
             "Simulation projection is missing or belongs to another Target"
         )
-    return target, loaded
+    return storage, loaded
 
 
 def _native_manifest(target: Path, campaign: CoverageCampaign) -> list[dict[str, object]]:

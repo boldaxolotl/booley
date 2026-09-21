@@ -113,8 +113,43 @@ def _validate_facts(value: Mapping[str, object]) -> None:
         _validate_observation(item, index)
     coverage = value["coverage_reference"]
     if coverage is not None:
-        exact = _exact(coverage, {"reference", "document"}, "coverage_reference")
-        _evidence(exact["reference"], "coverage_reference.reference")
+        _validate_coverage_reference(value, coverage)
+
+
+def _validate_coverage_reference(
+    facts: Mapping[str, object], value: object
+) -> None:
+    from booley.flows.sim.coverage_reference import decode_coverage_campaign_reference
+
+    exact = _exact(value, {"reference", "document"}, "coverage_reference")
+    reference = _exact(
+        exact["reference"],
+        {"path_base", "path", "bytes", "sha256", "kind", "owner"},
+        "coverage_reference.reference",
+    )
+    _evidence(reference, "coverage_reference.reference")
+    raw = canonical_json_bytes(exact["document"])
+    document = decode_coverage_campaign_reference(raw).document
+    target = facts["target"]
+    assert isinstance(target, Mapping)
+    origin = _exact(facts["origin"], {"execution_id", "invocation_id"}, "origin")
+    bound_target = document["target"]
+    assert isinstance(bound_target, Mapping)
+    if (
+        reference["bytes"] != len(raw)
+        or reference["sha256"] != "sha256:" + hashlib.sha256(raw).hexdigest()
+        or reference["kind"] != "coverage_campaign_reference"
+        or reference["owner"] != facts["campaign_id"]
+        or reference["path"] != f"targets/{target['selector']}/coverage.json"
+        or document["simulation_campaign_id"] != facts["campaign_id"]
+        or document["simulation_manifest_sha256"] != facts["manifest_sha256"]
+        or document["origin_invocation_id"] != origin["invocation_id"]
+        or bound_target["identity"] != f"{target['vlnv']}#{target['name']}"
+        or bound_target["selector"] != target["selector"]
+    ):
+        raise SimulationCampaignIntegrityError(
+            "coverage reference evidence disagrees with acceptance facts"
+        )
 
 
 def _validate_prerequisite(value: object, index: int) -> None:

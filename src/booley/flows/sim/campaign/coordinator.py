@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -11,6 +12,12 @@ from typing import Protocol, cast
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
+from booley.flows.sim.coverage_reference import (
+    CoverageCampaignReference,
+    build_coverage_campaign_reference,
+    encode_coverage_campaign_reference,
+    publish_coverage_campaign_reference,
+)
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
@@ -213,7 +220,53 @@ class SimulationCampaign:
             self._publication_checkpoint("before:summary_replace")
             summary = store.regenerate_summary()
             self._publication_checkpoint("after:summary_replace")
-            return _outcome(store, manifest, summary)
+            coverage_reference = self._publish_coverage_reference(store, manifest)
+            return _outcome(store, manifest, summary, coverage_reference)
+
+    def _publish_coverage_reference(
+        self, store: CampaignStore, manifest: SimulationCampaignManifest
+    ) -> CoverageCampaignReference | None:
+        workload = cast(Mapping[str, object], manifest.document["workload"])
+        if workload["coverage"] is not True:
+            return None
+        recovery = store.scan()
+        completed = [item for item in recovery.items if item.result is not None]
+        if len(completed) != 1:
+            raise SimulationCampaignIntegrityError(
+                "coverage aggregate must have one committed Simulation result"
+            )
+        result = completed[0].result
+        assert result is not None
+        result_document = result.document
+        attempt = store.latest_attempt(completed[0].work_item_id)
+        if attempt is None or attempt.document["attempt_id"] != result_document["attempt_id"]:
+            raise SimulationCampaignIntegrityError(
+                "coverage aggregate result has no matching Simulation Attempt"
+            )
+        attempt_directory = store.work_item_directory(completed[0].work_item_id) / "attempts" / (
+            f"{result_document['attempt_ordinal']:04d}-{result_document['attempt_id']}"
+        )
+        nested_path = attempt_directory / "coverage-campaign" / "coverage.json"
+        target = cast(Mapping[str, str], manifest.document["target"])
+        origin = cast(Mapping[str, object], manifest.document["origin"])
+        reference = build_coverage_campaign_reference(
+            simulation_campaign_id=cast(str, manifest.document["campaign_id"]),
+            simulation_manifest_sha256=manifest_digest(manifest),
+            target_identity=f"{target['vlnv']}#{target['name']}",
+            target_selector=target["selector"],
+            origin_invocation_id=cast(int, origin["invocation_id"]),
+            producer_invocation_id=cast(int, result_document["producer_invocation_id"]),
+            simulation_work_item_id=completed[0].work_item_id,
+            simulation_attempt_id=cast(str, result_document["attempt_id"]),
+            origin_target_directory=store.root.parent,
+            coverage_campaign_path=nested_path,
+        )
+        self._publication_checkpoint("before:coverage_reference")
+        published = publish_coverage_campaign_reference(
+            store.root.parent / "coverage.json", reference
+        )
+        self._publication_checkpoint("after:coverage_reference")
+        return published
 
     def publish_new(self, request: NewCampaignRunRequest) -> Path:
         """Atomically publish one planned manifest without starting work."""
@@ -564,9 +617,12 @@ def _outcome(
     store: CampaignStore,
     manifest: SimulationCampaignManifest,
     summary: Mapping[str, object],
+    coverage_reference: CoverageCampaignReference | None = None,
 ) -> CampaignOutcome:
     recovery = store.scan()
-    facts, observations = _acceptance_facts(store, manifest, recovery)
+    facts, observations = _acceptance_facts(
+        store, manifest, recovery, coverage_reference
+    )
     complete = cast(bool, summary["complete"])
     grade = cast(str, summary["aggregate_grade"])
     return CampaignOutcome(
@@ -576,7 +632,7 @@ def _outcome(
         observations,
         grade,
         complete,
-        None,
+        coverage_reference.document if coverage_reference is not None else None,
         facts,
         _acceptance_ready(manifest, observations, complete, grade),
     )
@@ -607,6 +663,7 @@ def _acceptance_facts(
     store: CampaignStore,
     manifest: SimulationCampaignManifest,
     recovery: CampaignRecovery,
+    coverage_reference: CoverageCampaignReference | None = None,
 ) -> tuple[AcceptanceFacts, tuple[Mapping[str, object], ...]]:
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     by_id = {item["work_item_id"]: item for item in items}
@@ -627,10 +684,35 @@ def _acceptance_facts(
             "prerequisites": _prerequisite_facts(store, manifest),
             "consumed_results": consumed,
             "observations": observations,
-            "coverage_reference": None,
+            "coverage_reference": _coverage_acceptance_reference(
+                store, manifest, coverage_reference
+            ),
         }
     )
     return facts, tuple(observations)
+
+
+def _coverage_acceptance_reference(
+    store: CampaignStore,
+    manifest: SimulationCampaignManifest,
+    reference: CoverageCampaignReference | None,
+) -> Mapping[str, object] | None:
+    if reference is None:
+        return None
+    raw = encode_coverage_campaign_reference(reference)
+    path = store.root.parent / "coverage.json"
+    invocation = store.root.parents[2]
+    return {
+        "reference": {
+            "path_base": "origin_invocation",
+            "path": path.relative_to(invocation).as_posix(),
+            "bytes": len(raw),
+            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "kind": "coverage_campaign_reference",
+            "owner": manifest.document["campaign_id"],
+        },
+        "document": json.loads(raw),
+    }
 
 
 def _collected_result_facts(

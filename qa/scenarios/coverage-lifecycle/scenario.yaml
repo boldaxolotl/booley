@@ -98,6 +98,9 @@ check_sets:
   - cleanup.git
   - cleanup.storage
   - cleanup.records
+- id: coverage-lifecycle-simulation-campaign
+  checks:
+  - campaign.coverage-aggregate-resume
 configured_scenarios:
 - id: coverage-lifecycle-ubuntu-codex-cli
   required: true
@@ -121,6 +124,7 @@ configured_scenarios:
     cannot be varied.
   check_sets:
   - coverage-lifecycle-core
+  - coverage-lifecycle-simulation-campaign
   exclusions: []
 - id: coverage-lifecycle-ubuntu-claude-cli
   required: true
@@ -3345,6 +3349,34 @@ steps:
   requires:
   - baseline.retention
   - retain.active.restore
+- id: campaign.coverage-aggregate-resume
+  phase: exercise
+  action: Interrupt native coverage after collection begins, then resume the exact Simulation Campaign aggregate work item from its immutable Manifest.
+  checks:
+  - id: campaign.coverage-aggregate-resume
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    - COVERAGE-CAMPAIGN-STORAGE
+    stimulus: Run the shared `sim_toggle` Target's exact `half` test through public `sim --coverage`, terminate and reap the owned producer after native collection starts but before terminal publication, preserve the interrupted attempt, then resume from the exact Simulation Campaign Manifest using a distinct compatibility report root.
+    expected: Resume creates a new Simulation Attempt and distinct nested Coverage Campaign, reruns serial collection and deterministic merge as one whole aggregate work item, passes the existing independent Coverage Campaign integrity checks, and publishes one canonical origin-invocation coverage reference that both origin and resumed projections resolve.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#native-coverage-campaigns
+    evidence: Exact argv, Target/test/source/tool identities, immutable Simulation Campaign Manifest, process interruption/reap timeline, interrupted and resumed Simulation Attempts, both attempt-scoped Coverage Campaign directories, raw native database and merge identities, nested coverage manifest bytes/digest, enclosing Simulation Result, canonical Target-level reference, Criteria transaction, publication ordering, origin and resumed compatibility projections, independent evaluator output, and cleanup proof.
+    capture: evidence/coverage-lifecycle.campaign.coverage-aggregate-resume
+  requires:
+  - baseline.native
+  - publish.interrupt.restore
+  timeout_minutes: 15
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 11892cfccb591e7061987f37100ec762dba898bec3253e92b895d71ed28c4367
+  - path: fixtures/simulation-campaign/validate_aggregate.py
+    audience: independent evaluator
+    sha256: 0375d3b780214ef6696d2f4ff6d5d55830604a4e9f369b5d8ddf21a4c1ffb844
+  - path: coverage/RUNBOOK.md
+    base: shared
+    audience: scenario-operator
+    sha256: 0339bce8f8ba6ac37e19f79fd960f91de557a261e1f3c8b3e4b9df67ca45810c
 - id: final.regression
   phase: final
   action: With all injections disabled rerun native numeric half and four-property half cases, current accepted

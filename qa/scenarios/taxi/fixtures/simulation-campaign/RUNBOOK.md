@@ -1,7 +1,8 @@
 # Taxi Simulation Campaign shared Simulator Bundle fixture
 
 This fixture supports `campaign.verilator-single-build`, `campaign.heavy-cap`,
-`campaign.attempt-isolation`, and `campaign.continue-after-failure`. It is
+`campaign.attempt-isolation`, `campaign.continue-after-failure`,
+`campaign.cocotb-batch-resume`, and `campaign.mcp-structured-pointers`. It is
 registered for Public QA but remains pending until an authorized Configured
 Scenario Run captures product evidence. Unit and real-tool fixture gates do not
 complete the Checks.
@@ -48,3 +49,26 @@ timeline evidence as a structural cross-check.
 After recording evidence, remove only the run-owned fixture registration and
 copied files. Prove the pinned Taxi checkout and all upstream source bytes are
 unchanged.
+
+For `campaign.cocotb-batch-resume`, use the Scenario's existing Taxi Cocotb
+Target and select its exact multi-test suite in one Simulation Campaign. Record
+the Cocotb version, module/package manifest, selector environment without
+secrets, and complete XML/JSON transport. Terminate and reap only the owned
+producer process group after the batch begins and before terminal publication.
+Preserve the interrupted attempt, then resume from the exact immutable Manifest.
+Require one new attempt for the same single `cocotb_batch` work item, a complete
+whole-batch rerun, and multiple XML-derived observations on that attempt. Do not
+infer or synthesize independent Simulation Attempt IDs for individual Cocotb
+tests. Run `validate_phase5.py` over retained copies as an independent structural
+cross-check.
+
+For `campaign.mcp-structured-pointers`, invoke the Simulation Flow over MCP with
+the exact ordered `test` array used above; do not use a comma-delimited scalar or
+implicit all-tests selection. Retain the complete request, response bytes, byte
+count, displayed text card, exit code, and the pointed-to Manifest, summary,
+simulation compatibility report, results, and Cocotb XML/JSON. Require the
+bounded structured response to contain nonempty manifest, summary, and simulation
+pointers plus every observation's independent execution, functional, assertion,
+assertion-count, and detail fields. The human-readable text card must preserve
+the same exit code. Validate the retained response with `validate_phase5.py` and
+the product's declared MCP output bound.
