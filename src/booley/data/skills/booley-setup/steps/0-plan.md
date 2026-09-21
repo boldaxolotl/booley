@@ -809,6 +809,16 @@ Fill `../SETUP_PLAN_TEMPLATE.md` and write it to
 - **§3 Approval & deviations** — the approval record; the deviation log starts
   empty and is appended by execution steps.
 
+The standard decision rows also include setup-artifact retention and Flow-cache
+disposition. `minimal` is the recommended default: preserve configuration,
+authored integrations, reports, Findings semantics, and structured evidence;
+remove only current-run manifest-owned scratch, duplicate captures, and
+reproducible products. `diagnostic` retains raw current-run evidence while
+still removing disposable probes. `preserve` is the recommended cache mode;
+`evict-setup-touched` is explicit cache eviction through the Flow owner and
+must disclose its rebuild cost. Unattended planning writes those defaults
+without a late approval gate.
+
 **Interactive:** show the user the complete plan and ask for exactly one
 action: `approve`, `edit`, or `cancel` (default `cancel` on ambiguity). On
 `approve`, set `status: approved` and continue to execution.
@@ -831,6 +841,13 @@ Before writing an unattended plan, self-audit three mechanical invariants:
 From here on, Steps 1–4 consume the plan under the deviation rule in
 `SKILL.md`: a plan-invalidating contradiction stops for the user; a minor one
 is fixed and logged in §3.
+
+Before execution begins, allocate one run-owned scratch root with
+`booley cleanup prepare`. Record its run ID, scratch root, and manifest path in
+the plan's §3 **Execution ledger**. Every setup-authored detached capture,
+exit-code sidecar, probe, and conversion belongs beneath that root and is
+registered with `booley cleanup record` before Step 7 can consider it. A
+legacy plan without the ledger remains readable but has no deletion authority.
 
 ## Appendix — worked example: a RISC-V CPU core's boot software
 

@@ -101,6 +101,10 @@ flow may explicitly tell this step to pass `--user-report-path SETUP-REPORT.md`
 for its throwaway clone. That writes the root report instead of an inner copy;
 on a real project, never pass the flag.
 
+When the report is complete, mark Step 6 complete in the §3 execution ledger.
+Do not delete a raw attachment here: Step 7 owns the materialization decision
+and must preserve Finding IDs, ordering, filed state, and semantic fields.
+
 ## 3. Walk the user through their report
 
 In the onboarding voice — they may still be new to all of this:
