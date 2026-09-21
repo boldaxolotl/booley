@@ -8,8 +8,6 @@ just like ticket-driven runs.
 
 from __future__ import annotations
 
-import fcntl
-import math
 import os
 import tempfile
 import threading
@@ -17,6 +15,9 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
+
+from booley.core.boundary import as_float
+from booley.core.file_lock import nonblocking_file_lock
 
 HeartbeatRenderer = Callable[[str, str, str], None]
 
@@ -45,8 +46,7 @@ def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
     temporary: str | None = None
     try:
         lock_path = heartbeat.with_name(f".{heartbeat.name}.lock")
-        with lock_path.open("a+", encoding="ascii") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        with lock_path.open("a+", encoding="ascii") as lock, nonblocking_file_lock(lock):
             previous = _read_valid_epoch(heartbeat)
             candidate = time.time()
             if previous is not None:
@@ -61,7 +61,6 @@ def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
                 fh.write(f"{candidate:.0f}\n")
             Path(temporary).replace(heartbeat)
             temporary = None
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except OSError:
         if temporary is not None:
             with suppress(OSError):
@@ -70,10 +69,9 @@ def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
 
 def _read_valid_epoch(path: Path) -> float | None:
     try:
-        value = float(path.read_text(encoding="ascii").strip())
+        return as_float(path.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
         return None
-    return value if math.isfinite(value) else None
 
 
 def fmt_elapsed(secs: float) -> str:

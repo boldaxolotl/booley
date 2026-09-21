@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -70,6 +71,19 @@ class LicenseOwnership:
     project_id: str | None
 
 
+@dataclass(frozen=True)
+class _HeartbeatReading:
+    value: float | None
+    status: str
+
+
+_HEARTBEAT_MISSING = "__BOOLEY_HEARTBEAT_MISSING__"
+_HEARTBEAT_READ_SCRIPT = (
+    f"if [ -f {HEARTBEAT_PATH} ]; then cat {HEARTBEAT_PATH}; "
+    f"else printf '%s\\n' {_HEARTBEAT_MISSING!r}; fi"
+)
+
+
 # ---------------------------------------------------------------------------
 # Pure policy
 # ---------------------------------------------------------------------------
@@ -95,7 +109,16 @@ def select_reap(
         idle_timeout=idle_timeout,
         max_sessions=max_sessions,
     )
-    return [c.id for c in sorted(containers, key=lambda c: (c.started_at, c.id)) if c.id in reasons]
+    return _ordered_reap_ids(containers, reasons)
+
+
+def _ordered_reap_ids(
+    containers: list[SessionContainer], reasons: dict[str, frozenset[str]]
+) -> list[str]:
+    """Return selected IDs in deterministic start-time order."""
+    return [
+        c.id for c in sorted(containers, key=lambda c: (c.started_at, c.id)) if c.id in reasons
+    ]
 
 
 def _reap_reasons(
@@ -200,13 +223,22 @@ def _started_at(cid: str, run=_run) -> float | None:
 
 def _heartbeat(cid: str, run=_run) -> float | None:
     """Read the protected-activity epoch from inside *cid*, or None if unavailable."""
-    result = run(["exec", cid, "cat", HEARTBEAT_PATH])
+    return _read_heartbeat(cid, run).value
+
+
+def _read_heartbeat(cid: str, run=_run) -> _HeartbeatReading:
+    """Read the heartbeat while distinguishing absence from an execution error."""
+    result = run(["exec", cid, "sh", "-c", _HEARTBEAT_READ_SCRIPT])
     if result.returncode != 0:
-        return None
+        return _HeartbeatReading(None, "error")
+    raw = result.stdout.strip()
+    if raw == _HEARTBEAT_MISSING:
+        return _HeartbeatReading(None, "missing")
     try:
-        return float(result.stdout.strip())
+        value = float(raw)
     except (TypeError, ValueError):
-        return None
+        return _HeartbeatReading(None, "invalid")
+    return _HeartbeatReading(value, "valid" if math.isfinite(value) else "invalid")
 
 
 def _idle_after_revalidation(
@@ -216,8 +248,14 @@ def _idle_after_revalidation(
     idle_timeout: float,
     run: Callable[..., subprocess.CompletedProcess],
 ) -> bool:
-    heartbeat = _heartbeat(container.id, run)
-    last_activity = max(heartbeat, container.started_at) if heartbeat is not None else container.started_at
+    reading = _read_heartbeat(container.id, run)
+    if reading.status in {"error", "invalid"}:
+        return False
+    last_activity = (
+        max(reading.value, container.started_at)
+        if reading.value is not None
+        else container.started_at
+    )
     return now - last_activity > idle_timeout
 
 
@@ -379,11 +417,7 @@ def reap_once(
         max_sessions=max_sessions,
     )
     by_id = {container.id: container for container in containers}
-    to_reap = [
-        container.id
-        for container in sorted(containers, key=lambda item: (item.started_at, item.id))
-        if container.id in reasons
-    ]
+    to_reap = _ordered_reap_ids(containers, reasons)
     stopped = []
     for cid in to_reap:
         ownership = license_ownership(cid, run)
