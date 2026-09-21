@@ -344,9 +344,7 @@ def _decode_journal(raw: object, expected_root: Path) -> _RefreshJournal:
         values, expected_root
     )
     try:
-        wheel_sha256 = (
-            require_opt_str(values, "target_wheel_sha256") if version == 2 else None
-        )
+        wheel_sha256 = require_opt_str(values, "target_wheel_sha256") if version == 2 else None
     except BoundaryError as exc:
         raise sr.SessionError(f"Session refresh journal wheel identity is invalid: {exc}") from exc
     replacement = values.get("replacement_issuance")
@@ -809,14 +807,10 @@ def _refresh_unlocked(
         issuance = _load_recovery_issuance(project, snapshot)
         parked = sr.plan_session_refresh(project, issuance)
         images.validate(prepared_result)
-        committed = _try_complete_noop(
-            project, prepared_result, issuance, parked, images
-        )
+        committed = _try_complete_noop(project, prepared_result, issuance, parked, images)
         if committed is not None:
             return committed
-        journal = _prepared_journal(
-            project, snapshot, issuance, parked, prepared_result
-        )
+        journal = _prepared_journal(project, snapshot, issuance, parked, prepared_result)
         result, journal = _reconcile_refresh_image(
             journal,
             prepared_result,

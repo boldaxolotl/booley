@@ -227,9 +227,7 @@ class _IncrementalBuildAdapter:
         from booley.harness.setup import docker_image
 
         root = docker_data_dir().parents[3]
-        inputs = self._role_build_inputs(
-            context, node, root, parent_reference
-        )
+        inputs = self._role_build_inputs(context, node, root, parent_reference)
         if inputs is None:
             return
         build_context, contexts, build_args = inputs
@@ -296,7 +294,9 @@ class _IncrementalBuildAdapter:
         if len(wheels) != 1:
             raise ImageLifecycleError("wheel preparation did not produce exactly one wheel")
         if wheel_embedded_source_fingerprint(wheels[0]) != node.wheel_source_fingerprint:
-            raise ImageLifecycleError("built wheel source fingerprint differs from the planned inputs")
+            raise ImageLifecycleError(
+                "built wheel source fingerprint differs from the planned inputs"
+            )
         self._wheel_sha256 = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
         return (
             root,

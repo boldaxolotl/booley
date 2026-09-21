@@ -345,7 +345,7 @@ def _dockerfile_body(parent_image: str = BASE_IMAGE) -> str:
         "-r /tmp/booley-project-requirements.txt "
         "&& ! python3 -m pip show booley-rtl >/dev/null 2>&1 "
         "&& python3 -c 'import importlib.util; "
-        "assert importlib.util.find_spec(\"booley\") is None'\n"
+        'assert importlib.util.find_spec("booley") is None\'\n'
         "USER agent\n"
     )
 

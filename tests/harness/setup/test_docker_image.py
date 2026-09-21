@@ -285,9 +285,9 @@ class TestSourceFingerprintMismatch:
         monkeypatch.setattr(
             init_docker_image,
             "_image_label",
-            lambda _image, label: "b" * 64
-            if label == init_docker_image.LABEL_WHEEL_SOURCE_FINGERPRINT
-            else None,
+            lambda _image, label: (
+                "b" * 64 if label == init_docker_image.LABEL_WHEEL_SOURCE_FINGERPRINT else None
+            ),
         )
         monkeypatch.setattr(
             init_docker_image,

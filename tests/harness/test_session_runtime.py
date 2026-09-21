@@ -3467,9 +3467,7 @@ class TestSessionRefresh:
 
         refresh.assert_called_once_with(tmp_path, verbose=False)
 
-    def test_refresh_prepares_then_commits_selected_graph(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_refresh_prepares_then_commits_selected_graph(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
         from booley.runtime.image_lifecycle import (
             LifecycleResult,
@@ -3487,18 +3485,16 @@ class TestSessionRefresh:
         monkeypatch.setattr(
             init_cmd,
             "prepare_runtime_image",
-            lambda root, *, verbose=False: (
-                calls.append(("prepare", root, verbose)) or prepared
-            ),
+            lambda root, *, verbose=False: calls.append(("prepare", root, verbose)) or prepared,
         )
         monkeypatch.setattr(
             init_cmd,
             "commit_runtime_image",
-            lambda value: (
-                calls.append(("commit", value)) or expected
-            ),
+            lambda value: calls.append(("commit", value)) or expected,
         )
-        monkeypatch.setattr(init_cmd, "abort_runtime_image", lambda value: calls.append(("abort", value)))
+        monkeypatch.setattr(
+            init_cmd, "abort_runtime_image", lambda value: calls.append(("abort", value))
+        )
 
         assert init_cmd.refresh_runtime_image(tmp_path, verbose=True) is expected
         assert calls == [
@@ -3515,7 +3511,9 @@ class TestSessionRefresh:
         aborted = []
         monkeypatch.setattr(init_cmd, "prepare_runtime_image", lambda *_args, **_kwargs: prepared)
         monkeypatch.setattr(
-            init_cmd, "commit_runtime_image", lambda _value: (_ for _ in ()).throw(RuntimeError("commit failed"))
+            init_cmd,
+            "commit_runtime_image",
+            lambda _value: (_ for _ in ()).throw(RuntimeError("commit failed")),
         )
         monkeypatch.setattr(init_cmd, "abort_runtime_image", aborted.append)
 
@@ -3525,6 +3523,7 @@ class TestSessionRefresh:
 
     def test_refresh_refuses_user_managed_image(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
+
         monkeypatch.setattr(
             init_cmd,
             "prepare_runtime_image",

@@ -1120,7 +1120,9 @@ def inspect_refreshable_runtime_image(
             "Rebuild it explicitly, then run `booley session up --rebuild`."
         ) from exc
     stale = tuple(
-        step for step in lifecycle_plan.steps if step.action is not image_lifecycle.PlanAction.REUSE
+        step
+        for step in lifecycle_plan.steps
+        if step.action is not image_lifecycle.PlanAction.REUSE
     )
     docker = image_lifecycle._docker_adapter()
     return LifecycleResult(
@@ -1163,10 +1165,7 @@ def prepare_runtime_image(
             for node in lifecycle_plan.nodes
             if node.reference == step.reference
         )
-        info(
-            f"  {step.action.value:<5} {step.role.value:<20} "
-            f"{step.reason.code} {identity[:12]}"
-        )
+        info(f"  {step.action.value:<5} {step.role.value:<20} {step.reason.code} {identity[:12]}")
     info("  replace Sandbox after verification")
     return image_lifecycle.prepare(lifecycle_plan, verbose=verbose)
 

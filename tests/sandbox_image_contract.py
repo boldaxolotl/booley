@@ -455,9 +455,7 @@ def _release_graph_errors(workflow: dict[str, Any]) -> list[str]:
             find_step("docker-publish.yml", workflow, "build-and-push-riscv", step_id="build")
         )
         riscv_substrate = parse_build(
-            find_step(
-                "docker-publish.yml", workflow, "build-and-push-riscv", step_id="substrate"
-            )
+            find_step("docker-publish.yml", workflow, "build-and-push-riscv", step_id="substrate")
         )
     except ValueError as error:
         return [f"release image graph: {error}"]
@@ -481,19 +479,18 @@ def _release_candidate_errors(
         push=True,
         label=("io.booley.build.parent-artifact", runtime_parent),
     )
-    parent = (
-        "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
-        "${{ steps.substrate.outputs.digest }}"
+    parent = "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}"
+    errors.extend(
+        _build_shape_errors(
+            role,
+            build,
+            _OVERLAY_DOCKERFILE,
+            {"booley-substrate": f"docker-image://{parent}"},
+            (),
+            push=True,
+            label=("io.booley.build.parent-artifact", parent),
+        )
     )
-    errors.extend(_build_shape_errors(
-        role,
-        build,
-        _OVERLAY_DOCKERFILE,
-        {"booley-substrate": f"docker-image://{parent}"},
-        (),
-        push=True,
-        label=("io.booley.build.parent-artifact", parent),
-    ))
     if build.labels.get("io.booley.build.parent-artifact-kind") != "registry-digest":
         errors.append(f"{role}: parent artifact kind must be registry-digest")
     job = workflow["jobs"]["build-and-push"]
@@ -512,9 +509,7 @@ def _release_candidate_errors(
     return errors
 
 
-def _release_riscv_errors(
-    workflow: dict[str, Any], substrate: Build, build: Build
-) -> list[str]:
+def _release_riscv_errors(workflow: dict[str, Any], substrate: Build, build: Build) -> list[str]:
     role = "release RISC-V image"
     standard_parent = (
         "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
@@ -529,19 +524,18 @@ def _release_riscv_errors(
         push=True,
         label=("io.booley.build.parent-artifact", standard_parent),
     )
-    parent = (
-        "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
-        "${{ steps.substrate.outputs.digest }}"
+    parent = "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}"
+    errors.extend(
+        _build_shape_errors(
+            role,
+            build,
+            _OVERLAY_DOCKERFILE,
+            {"booley-substrate": f"docker-image://{parent}"},
+            (),
+            push=True,
+            label=("io.booley.build.parent-artifact", parent),
+        )
     )
-    errors.extend(_build_shape_errors(
-        role,
-        build,
-        _OVERLAY_DOCKERFILE,
-        {"booley-substrate": f"docker-image://{parent}"},
-        (),
-        push=True,
-        label=("io.booley.build.parent-artifact", parent),
-    ))
     if build.labels.get("io.booley.build.parent-artifact-kind") != "registry-digest":
         errors.append(f"{role}: parent artifact kind must be registry-digest")
     job = workflow["jobs"]["build-and-push-riscv"]

@@ -98,9 +98,7 @@ def _install_planned_graph(docker: FakeDocker, nodes: tuple[lifecycle.ImageNode,
         labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
         if node.parent is not None:
             labels[lifecycle.LABEL_PARENT_ARTIFACT] = docker.image_id(node.parent) or ""
-            labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = (
-                lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
-            )
+            labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
         if node.role is lifecycle.ImageRole.WHEEL_OVERLAY:
             labels[lifecycle.LABEL_WHEEL_SHA256] = "f" * 64
         docker.images[node.reference] = (image_id, labels)
@@ -118,9 +116,7 @@ class TransactionBuilder:
         labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
         if parent_id is not None:
             labels[lifecycle.LABEL_PARENT_ARTIFACT] = parent_id
-            labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = (
-                lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
-            )
+            labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
         if node.role is lifecycle.ImageRole.WHEEL_OVERLAY:
             labels[lifecycle.LABEL_WHEEL_SHA256] = "e" * 64
         self.docker.images[candidate_reference] = (image_id, labels)
@@ -227,9 +223,11 @@ def test_incremental_plan_propagates_standard_change_only_to_descendants(
     monkeypatch.setattr(
         lifecycle,
         "_hash_paths",
-        lambda root, paths: "standard-new"
-        if any("bwave" in path.as_posix() for path in paths)
-        else original_hash(root, paths),
+        lambda root, paths: (
+            "standard-new"
+            if any("bwave" in path.as_posix() for path in paths)
+            else original_hash(root, paths)
+        ),
     )
 
     refreshed = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
@@ -334,7 +332,10 @@ def test_validate_rejects_candidates_changed_after_preparation(
     planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
     selected = prepared.candidates[-1]
-    docker.images[selected.candidate_reference] = ("sha256:changed", docker.images[selected.candidate_reference][1])
+    docker.images[selected.candidate_reference] = (
+        "sha256:changed",
+        docker.images[selected.candidate_reference][1],
+    )
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="changed before commit"):
         lifecycle.validate(prepared, docker=docker)
@@ -346,9 +347,7 @@ def test_incremental_adapter_build_inputs_cover_each_image_role(
     from booley.harness.setup import docker_image
 
     root = _project(tmp_path)
-    adapter = harness_lifecycle._IncrementalBuildAdapter(
-        root, FakeDocker({}), verbose=False
-    )
+    adapter = harness_lifecycle._IncrementalBuildAdapter(root, FakeDocker({}), verbose=False)
     build_root = tmp_path / "build"
     (build_root / "dist").mkdir(parents=True)
     wheel = build_root / "dist" / "booley_rtl-0.2.6.whl"
@@ -392,7 +391,10 @@ def test_incremental_adapter_build_inputs_cover_each_image_role(
     monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args: False)
     assert (
         adapter._role_build_inputs(
-            SimpleNamespace(), node(lifecycle.ImageRole.WHEEL_OVERLAY, "wheel"), build_root, "parent"
+            SimpleNamespace(),
+            node(lifecycle.ImageRole.WHEEL_OVERLAY, "wheel"),
+            build_root,
+            "parent",
         )
         is None
     )
@@ -410,9 +412,7 @@ def test_official_release_plan_observes_only_selected_complete_image(
     labels.update(
         {
             lifecycle.LABEL_BUILD_ORIGIN: "registry",
-            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (
-                lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST
-            ),
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST),
             lifecycle.LABEL_PARENT_ARTIFACT: (
                 "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "d" * 64
             ),

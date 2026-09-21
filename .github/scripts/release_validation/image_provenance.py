@@ -171,9 +171,7 @@ def _check_runtime_wheel(
         checks.append({"id": "provenance.runtime-wheel-source", "status": "pass"})
 
 
-def _check_sbom(
-    image: str, checks: list[dict[str, str]], errors: list[str]
-) -> dict[str, object]:
+def _check_sbom(image: str, checks: list[dict[str, str]], errors: list[str]) -> dict[str, object]:
     sbom = _sbom_summary(image)
     if not sbom["present"]:
         errors.append("image has no attached SBOM attestation")

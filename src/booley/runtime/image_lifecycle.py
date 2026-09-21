@@ -738,9 +738,7 @@ def _source_graph_riscv(standard: ImageNode, docker_dir: Path) -> ImageNode:
     )
 
 
-def _source_graph_project(
-    project_root: Path, selected: str, substrate: ImageNode
-) -> ImageNode:
+def _source_graph_project(project_root: Path, selected: str, substrate: ImageNode) -> ImageNode:
     requirements_body = _project_requirements_body(project_root)
     dockerfile = _direct_project_dir(project_root) / "docker" / "Dockerfile"
     if dockerfile.is_file() and not project_image.is_managed_generated_file(dockerfile):
@@ -844,9 +842,11 @@ def _node_ancestry_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | N
         expected_parent = docker.image_id(node.parent)
         if expected_parent is None:
             return Diagnostic("parent-changed", "reusable parent artifact is missing")
-        if docker.label(node.reference, LABEL_PARENT_ARTIFACT_KIND) != (
-            PARENT_ARTIFACT_LOCAL_IMAGE_ID
-        ) or docker.label(node.reference, LABEL_PARENT_ARTIFACT) != expected_parent:
+        if (
+            docker.label(node.reference, LABEL_PARENT_ARTIFACT_KIND)
+            != (PARENT_ARTIFACT_LOCAL_IMAGE_ID)
+            or docker.label(node.reference, LABEL_PARENT_ARTIFACT) != expected_parent
+        ):
             return Diagnostic("parent-changed", "recorded immutable parent differs")
     return None
 
@@ -863,7 +863,11 @@ def plan(
     resolved_docker = docker or _docker_adapter()
     root = scope.project_root.resolve()
     selected = _selected_reference(root)
-    if selected not in {BASE_IMAGE, "booley-sandbox-riscv", project_image.project_image_name(root)}:
+    if selected not in {
+        BASE_IMAGE,
+        "booley-sandbox-riscv",
+        project_image.project_image_name(root),
+    }:
         raise ImageLifecycleError(f"Sandbox Image {selected!r} is externally managed")
     nodes = (
         (_complete_release_node(selected),)
@@ -878,7 +882,14 @@ def plan(
     for node in nodes:
         reason = _planned_reason(node, resolved_docker, parent_invalid=invalid)
         if reason is None:
-            steps.append(PlanStep(node.reference, node.role, PlanAction.REUSE, Diagnostic("current", "verified compatible artifact")))
+            steps.append(
+                PlanStep(
+                    node.reference,
+                    node.role,
+                    PlanAction.REUSE,
+                    Diagnostic("current", "verified compatible artifact"),
+                )
+            )
             continue
         invalid = True
         action = (
@@ -913,8 +924,7 @@ def _verify_prepared_image(
     ]
     if mismatched:
         raise ImageLifecycleError(
-            f"prepared candidate {reference!r} has invalid provenance: "
-            + ", ".join(mismatched)
+            f"prepared candidate {reference!r} has invalid provenance: " + ", ".join(mismatched)
         )
     wheel_sha256 = docker.label(reference, LABEL_WHEEL_SHA256)
     if node.role is ImageRole.WHEEL_OVERLAY and not wheel_sha256:
@@ -922,9 +932,7 @@ def _verify_prepared_image(
     return PreparedImage(node.reference, reference, image_id, parent_artifact, wheel_sha256)
 
 
-def _prepared_provenance(
-    node: ImageNode, parent_artifact: str | None
-) -> dict[str, str]:
+def _prepared_provenance(node: ImageNode, parent_artifact: str | None) -> dict[str, str]:
     required = {
         LABEL_SCHEMA: PROVENANCE_SCHEMA,
         LABEL_ARTIFACT_ROLE: node.role.value if node.role else "",

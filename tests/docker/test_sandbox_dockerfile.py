@@ -201,7 +201,7 @@ def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
     verifier = Path(".github/scripts/verify_picorv32_demo.sh").read_text(encoding="utf-8")
 
     assert "--image booley-riscv-test" in workflow
-    assert "--base-image booley-test" in workflow
+    assert "--base-image booley-standard-substrate:ci" in workflow
     assert "--flavor riscv" in workflow
     assert "--runtime-image riscv=booley-riscv-test" in workflow
     assert "verify_picorv32_demo.sh" in workflow

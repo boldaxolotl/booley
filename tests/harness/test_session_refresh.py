@@ -348,9 +348,7 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         patch.object(
             harness_refresh.init_cmd,
             "commit_runtime_image",
-            side_effect=lambda value: (
-                events.append(("commit", value)) or refreshed
-            ),
+            side_effect=lambda value: events.append(("commit", value)) or refreshed,
         ),
         patch.object(
             harness_refresh.init_cmd,

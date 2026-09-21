@@ -38,8 +38,7 @@ class TestProjectSandboxImage:
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()
         (project_dir / "booley.toml").write_text(
-            '[sandbox]\nimage = "booley-sandbox-riscv"\n'
-            'pip_requirements = ["requirements.txt"]\n',
+            '[sandbox]\nimage = "booley-sandbox-riscv"\npip_requirements = ["requirements.txt"]\n',
             encoding="utf-8",
         )
 

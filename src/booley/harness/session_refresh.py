@@ -32,10 +32,7 @@ class _RuntimeImages:
             verbose=verbose,
         )
         final = self._prepared.candidates[-1]
-        changed = any(
-            step.action is not PlanAction.REUSE
-            for step in self._prepared.plan.steps
-        )
+        changed = any(step.action is not PlanAction.REUSE for step in self._prepared.plan.steps)
         return runtime_refresh.RefreshImage(
             self._prepared.plan.selected_reference,
             final.image_id,
@@ -65,8 +62,7 @@ class _RuntimeImages:
             raise SessionError("image refresh candidates were not prepared")
         prepared_images = self._prepared_image_state()
         graph_changed = any(
-            step.action is not PlanAction.REUSE
-            for step in self._prepared.plan.steps
+            step.action is not PlanAction.REUSE for step in self._prepared.plan.steps
         )
         result = init_cmd.commit_runtime_image(self._prepared)
         self._prepared = None

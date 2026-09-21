@@ -2220,7 +2220,9 @@ def _verify_payload_identity(name: str, expected: str) -> None:
     actual = result.stdout.strip()
     if result.returncode != 0 or actual != expected:
         detail = result.stderr.strip() or actual or "probe produced no output"
-        raise SessionError("refreshed Sandbox payload does not match the reconciled image: " + detail)
+        raise SessionError(
+            "refreshed Sandbox payload does not match the reconciled image: " + detail
+        )
 
 
 def _verify_wheel_identity(
@@ -2248,10 +2250,11 @@ def _verify_wheel_identity(
     wheel_sha256 = identity.get("sha256") if isinstance(identity, dict) else None
     package_version = identity.get("package_version") if isinstance(identity, dict) else None
     module_version = identity.get("module_version") if isinstance(identity, dict) else None
-    if result.returncode != 0 or (
-        expected_source is not None and source != expected_source
-    ) or (expected_sha256 is not None and wheel_sha256 != expected_sha256) or (
-        not package_version or package_version != module_version
+    if (
+        result.returncode != 0
+        or (expected_source is not None and source != expected_source)
+        or (expected_sha256 is not None and wheel_sha256 != expected_sha256)
+        or (not package_version or package_version != module_version)
     ):
         detail = result.stderr.strip() or result.stdout.strip() or "probe produced no output"
         raise SessionError("refreshed Sandbox wheel identity does not match: " + detail)
