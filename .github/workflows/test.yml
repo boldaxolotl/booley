@@ -1051,7 +1051,7 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp
-              booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
+              booley-test bash -c "pip install --break-system-packages pytest==9.1.1 pytest-asyncio==1.4.0 &&
               python -m pytest /work/tests/flows/sim/backends/test_bwave_fifo_pipeline.py
               -v -k 'not slow' -o cache_dir=/validation-tmp/pytest-cache"
 
@@ -1114,7 +1114,7 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp
-              booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
+              booley-test bash -c "pip install --break-system-packages pytest==9.1.1 pytest-asyncio==1.4.0 &&
               python -m pytest /work/crates/bwave/tests/simulator_ground_truth_test.py
               -q --tb=short -o cache_dir=/validation-tmp/pytest-cache"
 
@@ -1152,7 +1152,7 @@ jobs:
               --mount type=bind,src="${VALIDATION_TMP}/alias-project/.booley_project",dst=/booley-project
               -e TMPDIR=/validation-tmp -e BOOLEY_TICKET_MODE_SMOKE=1
               -e BOOLEY_ENQUEUE_ALIAS_PROJECT=/validation-tmp/alias-project
-              booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
+              booley-test bash -c "pip install --break-system-packages pytest==9.1.1 pytest-asyncio==1.4.0 &&
               python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
               -v --tb=short -o cache_dir=/validation-tmp/pytest-cache"
 

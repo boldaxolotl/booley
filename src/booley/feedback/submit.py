@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from booley.core.host_probes import ProbeState, probe_github
 from booley.harness import colors
 
 logger = logging.getLogger(__name__)
@@ -157,15 +158,16 @@ class GhStatus:
 
 def check_gh() -> GhStatus:
     """Probe for a usable ``gh`` CLI. Never raises; a missing executable is normal."""
-    if shutil.which("gh") is None:
+    observation = probe_github(probe_connectivity=False, which=shutil.which, run=subprocess.run)
+    if observation.executable is None:
         return GhStatus(False, False, "the GitHub CLI (`gh`) is not installed")
-    try:
-        proc = subprocess.run(
-            ["gh", "auth", "status"], capture_output=True, text=True, timeout=20, check=False
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        return GhStatus(True, False, f"`gh auth status` failed: {e}")
-    if proc.returncode != 0:
+    if observation.authentication is not ProbeState.HEALTHY:
+        if observation.authentication in {
+            ProbeState.FAILED,
+            ProbeState.PERMISSION,
+            ProbeState.TIMEOUT,
+        }:
+            return GhStatus(True, False, "`gh auth status` failed")
         return GhStatus(True, False, "`gh` is installed but not logged in (`gh auth login`)")
     return GhStatus(True, True)
 
