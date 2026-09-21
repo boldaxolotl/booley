@@ -7,7 +7,8 @@ import re
 import shlex
 import shutil
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,7 @@ from booley.flows.sim.runtime_inputs import (
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
 from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -112,6 +114,7 @@ class _Attempt:
     simulator_environment: tuple[tuple[str, str], ...]
     cycle_sentinels: tuple[str, ...]
     workload_inputs: tuple[Mapping[str, Any], ...]
+    configured_run_cwd: Path
     setup_s: float
     build_inputs: Mapping[str, str] = field(default_factory=dict)
     cache_key: str | None = None
@@ -261,6 +264,20 @@ class SimulationExecution:
         sources_before = project_compile_surface(handle.project_root)
         attempt = self._prepare_attempt(handle, test_names)
         try:
+            with self._runtime_view(handle, attempt):
+                return self._run_group_body(handle, attempt, sources_before, started)
+        except selftest_overlay.SelftestOverlayError as exc:
+            raise SimulationBuildSlotError(str(exc)) from exc
+
+    def _run_group_body(
+        self,
+        handle: TargetHandle,
+        attempt: _Attempt,
+        sources_before: Mapping[str, str],
+        started: float,
+    ) -> SimulationTargetOutcome:
+        """Run one prepared attempt while its Doctor view is owned."""
+        try:
             begin_run_log(attempt.prepared.build_root, flow="sim", target=handle.selector)
         except OSError as exc:
             detail = f"could not establish current run log: {exc}"
@@ -292,6 +309,22 @@ class SimulationExecution:
         attempt = self._select_generation_for_group(handle, attempt)
         attempt = _with_workload_inputs(handle, attempt)
         return self._run_authorized_group(handle, attempt, pre_sim, started)
+
+    @contextmanager
+    def _runtime_view(self, handle: TargetHandle, attempt: _Attempt) -> Iterator[None]:
+        """Own the Doctor runtime view for the complete attempt lifecycle."""
+        if not _doctor_bad_requested():
+            yield
+            return
+        project_dir = resolve_project_dir(handle.project_root)
+        with selftest_overlay.managed_runtime_view(
+            project_dir,
+            "sim",
+            attempt.configured_run_cwd,
+            attempt.prepared.work_root.parent,
+            attempt.identity.attempt_token,
+        ):
+            yield
 
     def _select_generation_for_group(self, handle: TargetHandle, attempt: _Attempt) -> _Attempt:
         """Resolve a post-hook cache decision without leaking candidate paths."""
@@ -474,6 +507,7 @@ class SimulationExecution:
             else self._prepare_build(handle)
         )
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
+        configured_run_cwd = _configured_run_cwd(handle.project_root)
         token = new_attempt_token()
         result_name = (
             f".a-{token[:24]}.json"
@@ -494,6 +528,7 @@ class SimulationExecution:
             self._options,
             trace=self._options.trace,
             trace_mode=trace_mode.value,
+            configured_run_cwd=configured_run_cwd,
         )
         pre_sim_commands = tuple(resolve_pre_sim_commands(handle.project_root))
         simulator_environment = tuple(simulation_target_environment(handle).items())
@@ -521,6 +556,7 @@ class SimulationExecution:
             simulator_environment=simulator_environment,
             cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
             workload_inputs=(),
+            configured_run_cwd=configured_run_cwd,
             setup_s=time.monotonic() - started,
         )
 
@@ -774,10 +810,30 @@ def _plusarg_key(value: str) -> str | None:
     return None if stripped.startswith("-") else stripped.partition("=")[0] or None
 
 
-def _simulation_run_cwd(root: Path, work_root: Path) -> str:
+def _configured_run_cwd(root: Path) -> Path:
+    """Freeze the configured source runtime directory for one attempt."""
+    return (root / resolve_run_cwd(root)).resolve()
+
+
+def _simulation_run_cwd(
+    root: Path,
+    work_root: Path,
+    *,
+    attempt_token: str | None = None,
+    configured_run_cwd: Path | None = None,
+) -> str:
     if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND:
-        return selftest_overlay.doctor_shadow_path(root, work_root).relative_to(root).as_posix()
-    return resolve_run_cwd(root)
+        if attempt_token is None:
+            return "<attempt>"
+        return selftest_overlay.doctor_runtime_view_path(
+            root, work_root.parent, attempt_token
+        ).relative_to(root).as_posix()
+    if configured_run_cwd is None:
+        return resolve_run_cwd(root)
+    try:
+        return configured_run_cwd.relative_to(root).as_posix() or "."
+    except ValueError:
+        return str(configured_run_cwd)
 
 
 def prepare_simulation_work(
@@ -788,6 +844,7 @@ def prepare_simulation_work(
     *,
     trace: bool,
     trace_mode: str,
+    configured_run_cwd: Path | None = None,
     plusargs_suffix: tuple[str, ...] = (),
 ) -> PreparedSimulationWork:
     """Shape one prepared build through the shared Simulation adapter contract."""
@@ -799,7 +856,12 @@ def prepare_simulation_work(
     return PreparedSimulationWork(
         adapter="cocotb" if cocotb else prepared.eda_tool,
         build_dir=rel,
-        run_cwd=_simulation_run_cwd(root, prepared.work_root),
+        run_cwd=_simulation_run_cwd(
+            root,
+            prepared.work_root,
+            attempt_token=identity.attempt_token,
+            configured_run_cwd=configured_run_cwd,
+        ),
         timeout_s=max(1, (options.timeout_ms or resolve_sim_timeout_ms(root)) // 1000),
         eda_tool=prepared.eda_tool,
         max_rundir_bytes=resolve_max_rundir_bytes(root),
