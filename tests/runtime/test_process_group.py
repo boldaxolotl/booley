@@ -34,6 +34,17 @@ def test_windows_spawn_uses_new_process_group(monkeypatch: pytest.MonkeyPatch) -
     assert process_group.new_group_kwargs(is_windows=True) == {"creationflags": 0x200}
 
 
+def test_process_group_liveness_delegates_to_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Platform:
+        def alive(self, group: process_group.ProcessGroup) -> bool:
+            return group.id == 417
+
+    monkeypatch.setattr(process_group, "_platform", lambda _is_windows=None: Platform())
+
+    assert process_group.is_process_group_alive(process_group.ProcessGroup(417))
+    assert not process_group.is_process_group_alive(process_group.ProcessGroup(418))
+
+
 @pytest.mark.parametrize("taskkill_returncode", [0, 1])
 def test_windows_termination_targets_tree_after_leader_exit_or_taskkill_failure(
     monkeypatch: pytest.MonkeyPatch,
