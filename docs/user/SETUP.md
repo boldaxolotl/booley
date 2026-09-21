@@ -170,7 +170,7 @@ the base Sandbox Image, and global sidecars. Project Initialization walks throug
 3. The tickets directory tree and selected-provider credential checks
 4. Reconciling the Project-selected or Project-derived Sandbox Image while
    verifying its immutable base ancestry
-5. Installing Git hooks (repo-level and Project commit-msg)
+5. Installing Git hooks (repo-level plus the managed Project Git-policy bundle)
 6. Writing and issuing the Interactive Mode devcontainer specification
 7. Post-setup advisories
 

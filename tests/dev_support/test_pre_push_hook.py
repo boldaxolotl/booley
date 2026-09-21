@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import io
 import subprocess
+import sys
+import types
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from booley.dev_support import pre_push_hook
 from booley.dev_support.pre_push_hook import _commit_facts, _commit_offenses, main
 
 _ZERO_SHA = "0" * 40
@@ -110,6 +113,23 @@ class TestCommitFacts:
         assert "first body line" in facts[4]
         assert "second body line" in facts[4]
         assert facts[0] == "Real Dev"  # identity fields unaffected by the body
+
+
+def test_project_dir_fallback_uses_hook_parent_when_runtime_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    monkeypatch.setattr(pre_push_hook, "__file__", str(hook_dir / "pre-push"))
+    runtime_module = types.ModuleType("booley.runtime.project_dir")
+
+    def unavailable(_repository_root: Path) -> Path:
+        raise FileNotFoundError
+
+    runtime_module.resolve_checkout_project_dir = unavailable
+    monkeypatch.setitem(sys.modules, "booley.runtime.project_dir", runtime_module)
+
+    assert pre_push_hook._guard_project_dir(tmp_path / "repo") == tmp_path
 
     def test_forged_author_is_reported_separately_from_committer(self, repo, monkeypatch):
         """`--author` changes only the author — the exact shape of the real case."""

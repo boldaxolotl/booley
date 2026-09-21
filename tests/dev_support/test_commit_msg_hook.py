@@ -425,7 +425,7 @@ class TestMain:
         assert written == "Upstream style summary\n\nrebuilt the redacted image\n"
 
     def test_standalone_hook_leaves_source_checkout_message_unchanged(self, tmp_path: Path):
-        """A vendored hook cannot depend on the installed ``booley`` package."""
+        """A standalone hook member cannot depend on installed ``booley``."""
         root = tmp_path / "source"
         hooks = root / "stale-hooks"
         hooks.mkdir(parents=True)
