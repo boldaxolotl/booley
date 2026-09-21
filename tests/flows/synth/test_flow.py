@@ -2017,9 +2017,7 @@ class TestFileBasedInterpretation:
         assert criterion.met is False
         assert criterion.detail["total_warnings"] == 2
 
-    def test_yosys_loop_fails_even_when_final_check_is_clean(
-        self, flow_and_state, tmp_path: Path
-    ):
+    def test_yosys_loop_fails_even_when_final_check_is_clean(self, flow_and_state, tmp_path: Path):
         flow, state_file = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
@@ -2032,9 +2030,7 @@ class TestFileBasedInterpretation:
                 "Number of cells: 100\n",
                 encoding="utf-8",
             )
-            (build_dir / "stat_dut.txt").write_text(
-                "Number of cells: 100\n", encoding="utf-8"
-            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )

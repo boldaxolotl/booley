@@ -311,8 +311,7 @@ def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
     records = _yosys_records(final_check)
     final_comb_loops = sum(item.category == "combinational_loop" for item in records)
     earlier_comb_loop = any(
-        item.category == "combinational_loop"
-        for item in _yosys_records(sources.get("yosys", ""))
+        item.category == "combinational_loop" for item in _yosys_records(sources.get("yosys", ""))
     )
     return StructuralConditions(
         complete=True,
