@@ -125,6 +125,7 @@ def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
         "booley.ticket_board.workspace_ops.validate_basis_refs",
         lambda *_args, **_kwargs: [],
     )
+    monkeypatch.setattr(intake, "_is_git_backed", lambda _root: False)
 
     original_load = TicketIO.load_document
 
@@ -414,6 +415,40 @@ async def test_automatic_intake_promotes_waiting_before_selection(
 
     assert await intake.run("", tmp_path) is expected
     assert calls == ["promote", "select"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_waiting_intake_validates_after_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import intake
+
+    tickets = tmp_path / ".booley/project/tickets"
+    waiting = tickets / "board/waiting/ticket.md"
+    queued = tickets / "board/queue/ticket.md"
+    waiting.parent.mkdir(parents=True)
+    queued.parent.mkdir(parents=True)
+    waiting.write_text("---\nsummary: Ticket\n---\n", encoding="utf-8")
+    monkeypatch.setattr(intake, "tickets_dir_from_project_root", lambda _root: tickets)
+    monkeypatch.setattr(intake, "_promote_waiting_for_intake", lambda *_args: queued)
+    validated: list[tuple[Path, Path, str]] = []
+    monkeypatch.setattr(
+        intake,
+        "_validate_intake_ticket",
+        lambda root, path, slug: validated.append((root, path, slug)),
+    )
+    monkeypatch.setattr(intake, "_load_progress", lambda *_args: {})
+    monkeypatch.setattr(intake, "requires_return_to_draft", lambda *_args: False)
+    monkeypatch.setattr(intake.TicketIO, "load_document", lambda *_args, **_kwargs: object())
+    expected = SimpleNamespace(ticket_baseline=None)
+    monkeypatch.setattr(intake, "_build_context", lambda *_args: expected)
+    monkeypatch.setattr(intake, "_check_dependencies", lambda *_args: None)
+    monkeypatch.setattr(intake, "_detect_and_apply_resume", lambda *_args: "fresh")
+    monkeypatch.setattr(intake, "_verify_ticket_baseline", lambda *_args: None)
+    monkeypatch.setattr(intake, "_init_criteria_state", lambda *_args: None)
+
+    assert await intake.run(str(waiting), tmp_path) is expected
+    assert validated == [(tmp_path, queued, "ticket")]
 
 
 def test_ticket_baseline_verifies_published_refs(tmp_path: Path) -> None:

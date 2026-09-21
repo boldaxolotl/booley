@@ -1,24 +1,31 @@
-"""Validate one Ticket against its authored Target view."""
+"""Validate authored Ticket contracts and prepared executable Ticket views."""
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 from . import workspace_ops
 from .acceptance_targets import deferable_rtl_or_tb_input
+from .acceptance_validation import prepare_acceptance_checkout
+from .io import TicketIO
 from .planned_dependencies import (
     PlannedDependencyError,
     target_surface_sha256,
     validate_planned_dependencies,
 )
+from .scanner import find_ticket_file
 from .ticket_baseline import (
     TicketBaseline,
     TicketBaselineError,
+    assert_live_inputs_unchanged,
     load_ticket_baseline_from_document,
+    materialize_current_ticket_checkout,
+    validate_ticket_view,
 )
 from .ticket_document import TicketDocument, convert_ticket_document, ticket_conversion_context
 from .validation import owned_draft_dirty_paths, validate_git_state, validate_ticket_spec
@@ -32,6 +39,73 @@ from .workspace_ops import (
 _EXECUTABLE_DIRS = frozenset(
     {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
 )
+
+_OPERATIONAL_STATUSES = frozenset({"queued", "queue", "running", "active", "blocked"})
+
+
+def is_operational_ticket_status(status: str | None) -> bool:
+    """Return whether a Ticket status can enter executable validation."""
+    return status in _OPERATIONAL_STATUSES
+
+
+def validate_executable_ticket(
+    project_root: Path,
+    slug: str,
+    *,
+    runtime_ticket_path: Path | None = None,
+) -> list[str]:
+    """Validate one executable Ticket in a prepared current-generation checkout."""
+    root = Path(project_root).resolve()
+    tickets_dir = resolve_checkout_project_dir(root) / "tickets"
+    ticket, status = find_ticket_file(tickets_dir, slug, project_root=root)
+    if ticket is None:
+        return [f"executable Ticket Board entry {slug!r} is unavailable"]
+    if not is_operational_ticket_status(status):
+        return [f"ticket {slug!r} is not operationally executable (status: {status})"]
+
+    try:
+        document = _convert_executable_ticket(root, ticket, slug)
+        basis = TicketIO(tickets_dir, project_root=root).load_basis(
+            slug,
+            runtime_ticket_path=runtime_ticket_path,
+        )
+        return _validate_prepared_checkout(root, ticket, slug, document, basis)
+    except (TicketBaselineError, PlannedDependencyError, FuseSocError, OSError, ValueError) as exc:
+        return [str(exc)]
+
+
+def _convert_executable_ticket(root: Path, ticket: Path, slug: str) -> TicketDocument:
+    with ticket_conversion_context(root, slug, "executable") as context:
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        details = "; ".join(
+            f"{item.line}:{item.column}: {item.message}" for item in converted.diagnostics
+        )
+        raise TicketBaselineError(details)
+    return converted.document
+
+
+def _validate_prepared_checkout(
+    root: Path,
+    ticket: Path,
+    slug: str,
+    document: TicketDocument,
+    basis: TicketBaseline,
+) -> list[str]:
+    with tempfile.TemporaryDirectory(prefix="booley-operational-basis-") as directory:
+        checkout = materialize_current_ticket_checkout(root, basis, Path(directory) / "checkout")
+        prepare_acceptance_checkout(root, checkout, slug=slug, ticket_path=ticket)
+        placeholders = _published_provider_placeholders(checkout, basis)
+        errors = validate_ticket_spec(
+            document.spec,
+            check_files=True,
+            check_git=False,
+            project_root=checkout,
+            provider_placeholders=placeholders,
+        )
+        errors.extend(validate_ticket_view(checkout, basis))
+        assert_live_inputs_unchanged(basis, root, checkout)
+        return errors
 
 
 def validate_ticket_document(
