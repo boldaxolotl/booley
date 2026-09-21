@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,21 +10,12 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
-from .acceptance_targets import resolve_commit
-from .acceptance_validation import prepare_acceptance_checkout
 from .scanner import find_ticket_file
-from .ticket_baseline import (
-    TicketBaseline,
-    TicketBaselineError,
-    assert_live_inputs_unchanged,
-    materialize_current_ticket_checkout,
-    validate_ticket_view,
-)
 from .ticket_document import (
-    TicketDocument,
     convert_ticket_document,
     ticket_conversion_context,
 )
+from .ticket_validation import is_operational_ticket_status, validate_executable_ticket
 from .validation import validate_ticket_spec
 
 
@@ -71,68 +61,6 @@ def _checkout_statuses(root: Path) -> tuple[str, ...]:
     return tuple(statuses)
 
 
-def _validate_checkout_basis(
-    root: Path,
-    tickets_dir: Path,
-    slug: str,
-    document: TicketDocument,
-) -> list[str]:
-    """Validate one executable Ticket in its current Basis composite."""
-    if not (root / ".git").exists():
-        return []
-    try:
-        from .io import TicketIO
-
-        basis = TicketIO(tickets_dir, project_root=root).load_basis(slug)
-        resolve_commit(root, basis.outer_sha)
-        if basis.project_sha:
-            project_repository = resolve_inner_project_repo(root)
-            if project_repository is None:
-                raise TicketBaselineError(
-                    "Ticket Baseline project participant repository is missing"
-                )
-            resolve_commit(project_repository, basis.project_sha)
-        ticket, _status = find_ticket_file(tickets_dir, slug)
-        if ticket is None:
-            raise TicketBaselineError(f"ticket {slug!r} is unavailable during readiness")
-        validation_errors = _validate_current_ticket_view(
-            root,
-            ticket,
-            slug,
-            basis,
-            document,
-        )
-    except (TicketBaselineError, OSError, ValueError) as exc:
-        return [str(exc)]
-    return validation_errors
-
-
-def _validate_current_ticket_view(
-    root: Path,
-    ticket: Path,
-    slug: str,
-    basis: TicketBaseline,
-    document: TicketDocument,
-) -> list[str]:
-    with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:
-        current = materialize_current_ticket_checkout(root, basis, Path(directory) / "checkout")
-        prepare_acceptance_checkout(
-            root,
-            current,
-            slug=slug,
-            ticket_path=ticket,
-        )
-        errors = validate_ticket_spec(
-            document.spec,
-            check_files=True,
-            check_git=False,
-            project_root=current,
-        )
-        errors.extend(validate_ticket_view(current, basis))
-        assert_live_inputs_unchanged(basis, root, current)
-        return errors
-
-
 def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
     """Prepare and validate one ticket without agents or board transitions."""
     root = Path(project_root).resolve()
@@ -142,11 +70,12 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
         return ReadinessResult(None, (f"ticket {slug!r} not found",))
 
     if (root / ".git").exists():
-        with ticket_conversion_context(root, slug, "executable") as context:
-            conversion = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
-        if conversion.document is None:
-            return ReadinessResult(ticket, _conversion_errors(conversion))
-        results = _validate_checkout_basis(root, tickets_dir, slug, conversion.document)
+        if not is_operational_ticket_status(_status):
+            return ReadinessResult(
+                ticket,
+                (f"ticket {slug!r} is not executable (status: {_status})",),
+            )
+        results = validate_executable_ticket(root, slug)
     else:
         from booley.flows.execution import flow_enabled
 
