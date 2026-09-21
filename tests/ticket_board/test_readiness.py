@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from booley.harness.setup import intake
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import readiness as readiness_module
 from booley.ticket_board import ticket_baseline as ticket_baseline_module
+from booley.ticket_board import ticket_validation as ticket_validation_module
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.ticket_baseline import TicketBaselineError
@@ -38,6 +41,15 @@ def _remove_ticket_worktree(root: Path) -> Path:
     [workspace] = [path for path in paths if path.resolve() != root.resolve()]
     _git(root, "worktree", "remove", "--force", str(workspace))
     return workspace
+
+
+def _assert_actual_intake(root: Path, project: Path, ticket: Path) -> None:
+    context = asyncio.run(intake.run(str(ticket), root))
+
+    assert context.slug == "demo"
+    assert (project / "tickets" / "board" / "active" / "demo.md").exists()
+    assert not (project / "tickets" / "board" / "queue" / "demo.md").exists()
+    assert not (root / "generated.hex").exists()
 
 
 def test_check_ticket_ready_prepares_generated_target_input(
@@ -132,6 +144,8 @@ targets:
     assert not (root / "generated.hex").exists()
     assert _git(root, "status", "--porcelain") == ""
 
+    _assert_actual_intake(root, project, ticket)
+
 
 def test_checkout_status_failure_is_loud(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "demo"
@@ -209,24 +223,33 @@ def test_worktree_discovery_failure_is_loud(
         ticket_baseline_module.worktree_for_ref(root, "refs/heads/main")
 
 
-def test_executable_readiness_uses_authoritative_basis_reader(
+def test_executable_validation_uses_authoritative_basis_reader(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "demo"
     (root / ".git").mkdir(parents=True)
     tickets = root / ".booley_project/tickets"
+    ticket = tickets / "board/queue/demo.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text("ticket\n", encoding="utf-8")
 
     def reject_missing_receipt(*_args: object, **_kwargs: object) -> None:
         from booley.ticket_board.ticket_baseline import TicketBaselineError
 
         raise TicketBaselineError("Ticket Baseline receipt mismatch")
 
-    monkeypatch.setattr(TicketIO, "load_basis", reject_missing_receipt)
-    errors = readiness_module._validate_checkout_basis(
-        root,
-        tickets,
-        "demo",
-        None,
+    monkeypatch.setattr(ticket_validation_module.TicketIO, "load_basis", reject_missing_receipt)
+    monkeypatch.setattr(
+        ticket_validation_module,
+        "resolve_checkout_project_dir",
+        lambda _root: root / ".booley_project",
     )
+    monkeypatch.setattr(
+        ticket_validation_module,
+        "find_ticket_file",
+        lambda *_args, **_kwargs: (ticket, "queued"),
+    )
+    monkeypatch.setattr(ticket_validation_module, "_convert_executable_ticket", lambda *_args: None)
+    errors = ticket_validation_module.validate_executable_ticket(root, "demo")
 
     assert errors == ["Ticket Baseline receipt mismatch"]

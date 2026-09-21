@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -33,6 +34,7 @@ from booley.ticket_board.ticket_baseline import (
     requires_return_to_draft,
 )
 from booley.ticket_board.ticket_document import TicketDocument
+from booley.ticket_board.ticket_validation import validate_executable_ticket
 
 from .. import ticket_cli
 from ..blocking import FatalError
@@ -84,14 +86,43 @@ def _resolve_and_validate(
     project_root: Path,
     ticket_path_or_slug: str,
 ) -> tuple[Path, str]:
-    """Resolve ticket path from slug/path and validate it."""
+    """Resolve and validate one non-waiting intake candidate."""
     ticket_path = _resolve_ticket_path(project_root, ticket_path_or_slug)
     slug = ticket_path.stem
-    validation = ticket_cli.validate_ticket(project_root, str(ticket_path), check_git=False)
-    if not validation.get("valid", False):
-        errors = validation.get("errors", ["unknown validation error"])
-        raise FatalError(f"Ticket validation failed: {'; '.join(errors)}", slug=slug)
+    _validate_intake_ticket(project_root, ticket_path, slug)
     return ticket_path, slug
+
+
+def _validate_intake_ticket(project_root: Path, ticket_path: Path, slug: str) -> None:
+    """Validate executable Tickets operationally and preserve review intake rules."""
+    if ticket_path.parent.name in {"queue", "active", "blocked"} and _is_git_backed(
+        project_root
+    ):
+        errors = validate_executable_ticket(
+            project_root,
+            slug,
+            runtime_ticket_path=ticket_path,
+        )
+    else:
+        validation = ticket_cli.validate_ticket(project_root, str(ticket_path), check_git=False)
+        errors = validation.get("errors", ["unknown validation error"])
+        if validation.get("valid", False):
+            errors = []
+    if errors:
+        raise FatalError(f"Ticket validation failed: {'; '.join(errors)}", slug=slug)
+
+
+def _is_git_backed(project_root: Path) -> bool:
+    """Return whether intake can inspect current Ticket-generation refs."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def _build_context(
@@ -342,8 +373,13 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
         _promote_waiting_before_auto_select(project_root)
         ticket_path_or_slug = _auto_select_ticket(project_root)
 
-    ticket_path, slug = _resolve_and_validate(project_root, ticket_path_or_slug)
-    ticket_path = _promote_waiting_for_intake(project_root, ticket_path, slug)
+    ticket_path = _resolve_ticket_path(project_root, ticket_path_or_slug)
+    slug = ticket_path.stem
+    if ticket_path.parent.name == "waiting":
+        ticket_path = _promote_waiting_for_intake(project_root, ticket_path, slug)
+        _validate_intake_ticket(project_root, ticket_path, slug)
+    else:
+        ticket_path, slug = _resolve_and_validate(project_root, ticket_path_or_slug)
 
     progress = _load_progress(project_root, slug)
     if requires_return_to_draft(progress):
@@ -398,10 +434,6 @@ def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str
             "Waiting Ticket could not be refreshed and promoted before intake",
             slug=slug,
         )
-    validation = ticket_cli.validate_ticket(project_root, str(promoted), check_git=False)
-    if not validation.get("valid", False):
-        errors = validation.get("errors", ["unknown validation error"])
-        raise FatalError(f"Ticket validation failed: {'; '.join(errors)}", slug=slug)
     return promoted
 
 

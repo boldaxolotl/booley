@@ -2,91 +2,32 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from booley.ticket_board import (
-    acceptance_validation,
-    readiness,
-)
-from booley.ticket_board.ticket_baseline import (
-    BasisParticipant,
-    TicketBaseline,
-)
+from booley.ticket_board import readiness
 
 
-def _participant(role: str = "outer") -> BasisParticipant:
-    return BasisParticipant(
-        role,
-        "a" * 40,
-        f"refs/heads/booley-generation/0123456789abcdef/{role}",
-        "refs/heads/main",
-        "b" * 40,
-    )
-
-
-def _git(repository: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    ).stdout.strip()
-
-
-def test_readiness_prepares_materialized_submodule_checkout(
+def test_readiness_delegates_prepared_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    dependency = tmp_path / "dependency"
-    dependency.mkdir()
-    _git(dependency, "init", "-b", "main")
-    _git(dependency, "config", "user.name", "Test")
-    _git(dependency, "config", "user.email", "test@example.invalid")
-    (dependency / "source.sv").write_text("module source; endmodule\n", encoding="utf-8")
-    _git(dependency, "add", "source.sv")
-    _git(dependency, "commit", "-m", "dependency")
-
     root = tmp_path / "project"
-    root.mkdir()
-    _git(root, "init", "-b", "main")
-    _git(root, "config", "user.name", "Test")
-    _git(root, "config", "user.email", "test@example.invalid")
-    _git(root, "-c", "protocol.file.allow=always", "submodule", "add", str(dependency), "ip")
-    _git(root, "commit", "-m", "project")
-    sha = _git(root, "rev-parse", "HEAD")
-    ticket_ref = "refs/heads/booley-generation/0123456789abcdef/outer"
-    _git(root, "branch", ticket_ref.removeprefix("refs/heads/"), sha)
     project_dir = root / ".booley_project"
-    project_dir.mkdir()
     ticket = project_dir / "tickets/board/queue/ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("ticket\n", encoding="utf-8")
-    basis = TicketBaseline((BasisParticipant("outer", sha, ticket_ref, "refs/heads/main", sha),))
-    monkeypatch.setenv("GIT_SSH", "/definitely/no/ssh")
-
-    def prepare(_root: Path, checkout: Path, **_kwargs: object) -> SimpleNamespace:
-        source = checkout / "ip/source.sv"
-        assert source.read_text(encoding="utf-8") == "module source; endmodule\n"
-        return SimpleNamespace(ok=True, error="")
-
-    monkeypatch.setattr(acceptance_validation, "prepare_project", prepare)
+    (root / ".git").mkdir()
+    calls: list[tuple[Path, str]] = []
     monkeypatch.setattr(
-        acceptance_validation,
-        "resolve_checkout_project_dir",
-        lambda checkout: checkout,
+        readiness,
+        "validate_executable_ticket",
+        lambda selected_root, slug: calls.append((selected_root, slug)) or [],
     )
-    monkeypatch.setattr(readiness, "validate_ticket_spec", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(readiness, "validate_ticket_view", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(readiness, "assert_live_inputs_unchanged", lambda *_args: None)
-    monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
 
-    document = SimpleNamespace(spec=SimpleNamespace())
-    assert readiness._validate_current_ticket_view(root, ticket, "ticket", basis, document) == []
+    assert readiness.check_ticket_ready(root, "ticket").ready
+    assert calls == [(root.resolve(), "ticket")]
 
 
 def test_readiness_checkout_boundary_and_preparation_failures(
@@ -102,36 +43,17 @@ def test_readiness_checkout_boundary_and_preparation_failures(
     )
     monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
     ticket.write_text("---\ntarget_contract: {}\n---\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(
+        readiness,
+        "validate_executable_ticket",
+        lambda *_args: ["missing required fields"],
+    )
     assert "missing required fields" in readiness.check_ticket_ready(root, "ticket").errors[0]
-    ticket.write_text(
-        "---\nsummary: Ticket\ntype: feature\nbranch: main\nscope: []\n"
-        "on_success: [review]\n"
-        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
-        "---\n\n## Description\n\nTest.\n",
-        encoding="utf-8",
-    )
-    assert "machine baseline metadata" in readiness.check_ticket_ready(root, "ticket").errors[0]
-    basis = TicketBaseline((_participant(),))
-    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
-    document = SimpleNamespace(spec=SimpleNamespace())
     monkeypatch.setattr(
         readiness,
-        "convert_ticket_document",
-        lambda *_args: SimpleNamespace(document=document, diagnostics=()),
+        "validate_executable_ticket",
+        lambda *_args: ["prepare failed"],
     )
-    monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: basis)
-    monkeypatch.setattr(readiness, "resolve_commit", lambda *_args: "a" * 40)
-    monkeypatch.setattr(
-        readiness,
-        "materialize_current_ticket_checkout",
-        lambda *_args: root,
-    )
-    monkeypatch.setattr(
-        acceptance_validation,
-        "prepare_project",
-        lambda *_args, **_kwargs: SimpleNamespace(ok=False, error="prepare failed"),
-    )
-    monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
     assert "prepare failed" in readiness.check_ticket_ready(root, "ticket").errors[0]
 
 
@@ -169,31 +91,18 @@ def test_checkout_readiness_reports_missing_project_repository_and_ticket(
     root = tmp_path / "root"
     tickets = root / ".booley_project/tickets"
     (root / ".git").mkdir(parents=True)
-    paired = TicketBaseline((_participant(), _participant("project")))
-    monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: paired)
-    monkeypatch.setattr(readiness, "resolve_commit", lambda *_args: "a" * 40)
-    monkeypatch.setattr(readiness, "resolve_inner_project_repo", lambda _root: None)
     ticket = tickets / "board/queue/ticket.md"
     ticket.parent.mkdir(parents=True)
-    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
-    monkeypatch.setattr(
-        readiness,
-        "convert_ticket_document",
-        lambda *_args: SimpleNamespace(
-            document=SimpleNamespace(spec=SimpleNamespace()), diagnostics=()
-        ),
-    )
+    ticket.write_text("ticket\n", encoding="utf-8")
     monkeypatch.setattr(
         readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
     monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
-    assert (
-        "project participant repository is missing"
-        in readiness.check_ticket_ready(root, "ticket").errors[0]
+    monkeypatch.setattr(
+        readiness,
+        "validate_executable_ticket",
+        lambda *_args: ["project participant repository is missing"],
     )
-
-    native = TicketBaseline((_participant(),))
-    monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: native)
-    found = iter(((ticket, "queue"), (None, None)))
-    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: next(found))
-    assert "unavailable during readiness" in readiness.check_ticket_ready(root, "ticket").errors[0]
+    assert "project participant repository is missing" in readiness.check_ticket_ready(
+        root, "ticket"
+    ).errors[0]
