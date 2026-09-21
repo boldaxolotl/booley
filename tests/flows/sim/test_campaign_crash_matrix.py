@@ -476,19 +476,30 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
     crash = _CrashOnce(boundary)
     executor, request, invocation = _failed_build_case(tmp_path, monkeypatch, failure_path, crash)
 
-    with pytest.raises(_InjectedProcessDeath, match=boundary):
+    infrastructure_stops_before_simulation = (
+        failure_path == "compile_spawn" and boundary.endswith("simulation_result")
+    )
+    expected_error = (
+        SimulationCampaignIntegrityError
+        if infrastructure_stops_before_simulation
+        else _InjectedProcessDeath
+    )
+    with pytest.raises(expected_error):
         SimulationCampaign(executor, publication_checkpoint=crash).run(request)
 
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     recovery = store.scan()
-    committed = boundary == "after:simulation_result"
+    committed = boundary == "after:simulation_result" and not infrastructure_stops_before_simulation
     assert bool(recovery.complete) is committed
     attempts = sorted(store.root.glob("work-items/*/attempts/*"))
     assert len(attempts) == 1
     result_path = attempts[0] / "private-build" / "build-result.json"
     result = json.loads(result_path.read_text()) if result_path.exists() else None
     assert result is None or result["state"] == expected_state
-    if boundary.startswith("before:simulation"):
+    if infrastructure_stops_before_simulation:
+        assert recovery.interrupted
+        assert not (store.work_item_directory(recovery.items[0].work_item_id) / "result.json").exists()
+    elif boundary.startswith("before:simulation"):
         outcome = SimulationCampaign(executor).run(request)
         assert outcome.acceptance_ready is False
         assert store.scan().items[0].attempt_count == 2
@@ -506,6 +517,12 @@ def test_failed_build_partial_terminal_result_fails_closed(
     executor, request, invocation = _failed_build_case(
         tmp_path, monkeypatch, failure_path, checkpoint
     )
+    if failure_path == "compile_spawn":
+        with pytest.raises(SimulationCampaignIntegrityError, match="missing"):
+            SimulationCampaign(executor).run(request)
+        store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+        assert store.scan().interrupted
+        return
     SimulationCampaign(executor).run(request)
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     recovered = store.scan().items[0]

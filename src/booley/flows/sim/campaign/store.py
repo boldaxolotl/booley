@@ -31,6 +31,7 @@ from .codec import (
     RECORD_MAX_BYTES,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
+    decode_bundle_build_attempt,
     decode_bundle_build_result,
     decode_executable_snapshot,
     decode_simulation_attempt,
@@ -50,6 +51,7 @@ from .model import (
     SimulationCampaignDocument,
     SimulationCampaignManifest,
     SimulationResult,
+    SimulatorBundle,
 )
 
 _T = TypeVar("_T", bound=SimulationCampaignDocument)
@@ -215,6 +217,24 @@ class CampaignStore:
         fsync_directory(attempts)
         return ordinal, path
 
+    def allocate_build_attempt_directory(
+        self, build_variant_id: str, build_attempt_id: str
+    ) -> tuple[int, Path]:
+        """Allocate one append-only campaign-owned shared build attempt."""
+        prefix, separator, digest = build_variant_id.partition(":")
+        if prefix != "variant" or separator != ":" or len(digest) != 64:
+            raise SimulationCampaignIntegrityError("invalid shared build variant identity")
+        attempts = self.root / "build-variants" / digest / "attempts"
+        durable_directory(attempts)
+        existing = self._attempt_directories(attempts)
+        ordinal = len(existing) + 1
+        if ordinal > 10_000:
+            raise SimulationCampaignIntegrityError("shared build attempt ceiling exceeded")
+        path = attempts / f"{ordinal:04d}-{build_attempt_id}"
+        path.mkdir(mode=0o700)
+        fsync_directory(attempts)
+        return ordinal, path
+
     def publish_attempt(self, directory: Path, attempt: SimulationAttempt) -> Path:
         return self._publish(directory / "attempt.json", attempt, encode_simulation_attempt)
 
@@ -230,6 +250,124 @@ class CampaignStore:
             directory / "build-result.json", result, encode_bundle_build_result
         )
 
+    def ready_shared_build(
+        self, build_variant_id: str, producer_invocation_id: int
+    ) -> tuple[Path, BundleBuildResult, SimulatorBundle] | None:
+        """Return the one authenticated ready build for this invocation/variant."""
+        digest = build_variant_id.removeprefix("variant:")
+        if build_variant_id != f"variant:{digest}" or len(digest) != 64:
+            raise SimulationCampaignIntegrityError("invalid shared build variant identity")
+        attempts_root = self.root / "build-variants" / digest / "attempts"
+        attempts = self._attempt_directories(attempts_root)
+        manifest = self.load_manifest()
+        expected_manifest = self.manifest_sha256()
+        expected_workload = cast(Mapping[str, str], manifest.document["fingerprints"])[
+            "workload_sha256"
+        ]
+        ready: list[tuple[Path, BundleBuildResult, SimulatorBundle]] = []
+        for ordinal, directory in enumerate(attempts, start=1):
+            attempt_path = directory / "build-attempt.json"
+            if not attempt_path.exists():
+                continue
+            attempt = decode_bundle_build_attempt(
+                _read_regular(attempt_path, limit=RECORD_MAX_BYTES)
+            )
+            attempt_document = attempt.document
+            if (
+                attempt_document["sharing"] != "shared_variant"
+                or attempt_document["build_variant_id"] != build_variant_id
+                or attempt_document["build_attempt_ordinal"] != ordinal
+                or attempt_document["manifest_sha256"] != expected_manifest
+                or attempt_document["workload_sha256"] != expected_workload
+            ):
+                raise SimulationCampaignIntegrityError("shared Build Attempt identity disagrees")
+            result_path = directory / "build-result.json"
+            if not result_path.exists():
+                continue
+            result = decode_bundle_build_result(
+                _read_regular(result_path, limit=RECORD_MAX_BYTES)
+            )
+            result_document = result.document
+            if (
+                result_document["build_variant_id"] != build_variant_id
+                or result_document["build_attempt"]["build_attempt_id"]
+                != attempt_document["build_attempt_id"]
+                or result_document["manifest_sha256"] != expected_manifest
+                or result_document["workload_sha256"] != expected_workload
+            ):
+                raise SimulationCampaignIntegrityError("shared Build Result identity disagrees")
+            self._authenticate_reference(
+                directory, cast(Mapping[str, object], result_document["build_attempt"])
+            )
+            if (
+                attempt_document["producer_invocation_id"] != producer_invocation_id
+                or result_document["state"] != "ready"
+            ):
+                continue
+            bundle_binding = cast(Mapping[str, object], result_document["bundle"])
+            bundle_path = directory / cast(str, bundle_binding["manifest_path"])
+            raw = _read_regular(bundle_path, limit=RECORD_MAX_BYTES)
+            if (
+                len(raw) != bundle_binding["manifest_bytes"]
+                or _raw_digest(raw) != bundle_binding["manifest_sha256"]
+            ):
+                raise SimulationCampaignIntegrityError(
+                    "shared Build Result does not authenticate its Simulator Bundle"
+                )
+            bundle = decode_simulator_bundle(raw)
+            if (
+                bundle.document["bundle_id"] != bundle_binding["bundle_id"]
+                or bundle.document["build_attempt_id"]
+                != attempt_document["build_attempt_id"]
+                or bundle.document["sharing"] != "shared_variant"
+                or bundle.document["artifacts"] != bundle_binding["artifacts"]
+            ):
+                raise SimulationCampaignIntegrityError(
+                    "shared Simulator Bundle disagrees with its Build Result"
+                )
+            for artifact in cast(
+                tuple[Mapping[str, object], ...], bundle.document["artifacts"]
+            ):
+                self._authenticate_reference(directory, artifact)
+            ready.append((directory, result, bundle))
+        if len(ready) > 1:
+            raise SimulationCampaignIntegrityError(
+                "multiple ready shared builds exist for one variant/invocation"
+            )
+        return ready[0] if ready else None
+
+    def shared_design_failure(
+        self, build_variant_id: str, producer_invocation_id: int
+    ) -> tuple[Path, BundleBuildResult] | None:
+        """Return a settled shared design failure after the common scan validates it."""
+        digest = build_variant_id.removeprefix("variant:")
+        attempts = self._attempt_directories(
+            self.root / "build-variants" / digest / "attempts"
+        )
+        matches: list[tuple[Path, BundleBuildResult]] = []
+        for directory in attempts:
+            attempt_path = directory / "build-attempt.json"
+            result_path = directory / "build-result.json"
+            if not attempt_path.exists() or not result_path.exists():
+                continue
+            attempt = decode_bundle_build_attempt(
+                _read_regular(attempt_path, limit=RECORD_MAX_BYTES)
+            )
+            result = decode_bundle_build_result(
+                _read_regular(result_path, limit=RECORD_MAX_BYTES)
+            )
+            if (
+                attempt.document["producer_invocation_id"] == producer_invocation_id
+                and attempt.document["build_variant_id"] == build_variant_id
+                and result.document["state"] == "design_failure"
+            ):
+                matches.append((directory, result))
+        if len(matches) > 1:
+            raise SimulationCampaignIntegrityError(
+                "multiple shared design failures exist for one variant/invocation"
+            )
+        return matches[0] if matches else None
+
     def publish_result(self, work_item_id: str, result: SimulationResult) -> Path:
         path = self.work_item_directory(work_item_id) / "result.json"
         return self._publish(path, result, encode_simulation_result)
@@ -237,12 +375,11 @@ class CampaignStore:
     def verify_result_evidence(
         self, attempt_directory: Path, result: SimulationResult
     ) -> None:
-        """Authenticate every Phase-2 private reference before result commit."""
+        """Authenticate private or shared build chains before result commit."""
         document = result.document
-        references: list[Mapping[str, object]] = [
-            cast(Mapping[str, object], document["build_result"]),
-            *cast(tuple[Mapping[str, object], ...], document["evidence"]),
-        ]
+        references: list[Mapping[str, object]] = list(
+            cast(tuple[Mapping[str, object], ...], document["evidence"])
+        )
         snapshot = document["executable_snapshot"]
         if isinstance(snapshot, Mapping):
             references.append(cast(Mapping[str, object], snapshot["manifest"]))
@@ -266,7 +403,15 @@ class CampaignStore:
         simulation: Mapping[str, object],
     ) -> tuple[Mapping[str, object], BundleBuildResult]:
         build_reference = cast(Mapping[str, object], simulation["build_result"])
-        build_path = attempt_directory / cast(str, build_reference["path"])
+        build_path = (
+            self.root / cast(str, build_reference["path"])
+            if build_reference["sharing"] == "shared_variant"
+            else attempt_directory / cast(str, build_reference["path"])
+        )
+        _require_safe_parents(
+            build_path,
+            self.root if build_reference["sharing"] == "shared_variant" else attempt_directory,
+        )
         build_result = decode_bundle_build_result(
             _read_regular(build_path, limit=RECORD_MAX_BYTES)
         )

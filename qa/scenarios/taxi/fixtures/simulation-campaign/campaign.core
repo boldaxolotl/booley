@@ -1,0 +1,15 @@
+CAPI=2:
+name: booley:qa:taxi_simulation_campaign:1
+filesets:
+  tb:
+    files:
+    - campaign_tb.sv
+    file_type: systemVerilogSource
+    tags:
+    - tb
+targets:
+  sim_campaign_verilator:
+    default_tool: verilator
+    filesets:
+    - tb
+    toplevel: campaign_tb

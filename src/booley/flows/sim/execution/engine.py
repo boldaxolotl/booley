@@ -305,6 +305,37 @@ class PreparedOrdinaryGroup:
             self._started,
         )
 
+    def reuse_compilation_from(self, source: PreparedOrdinaryGroup) -> None:
+        """Bind this test-specific launch to an authenticated successful build.
+
+        The caller still prepares this group's adapter command under the Target
+        lease, but no compiler is run.  The executable bytes are supplied later
+        from the campaign-owned authenticated Simulator Bundle snapshot.
+        """
+        if not self._lease_active:
+            raise SimulationBuildSlotError("ordinary Simulation build lease has ended")
+        if self._build is not None:
+            raise SimulationBuildSlotError("ordinary Simulation group already has a build")
+        process, build = source._compiled()
+        if not build.passed or process.returncode != 0 or process.timed_out:
+            raise SimulationBuildSlotError("shared Simulation build is not reusable")
+        self._build_process = process
+        self._build = build
+
+    def bind_authenticated_bundle(self) -> None:
+        """Mark preparation ready to launch a campaign-authenticated bundle.
+
+        This is the process-recovery counterpart of ``reuse_compilation_from``:
+        the durable Build Result has already authenticated the compiler outcome,
+        so only the test-specific adapter preparation is reconstructed.
+        """
+        if not self._lease_active:
+            raise SimulationBuildSlotError("ordinary Simulation build lease has ended")
+        if self._build is not None:
+            raise SimulationBuildSlotError("ordinary Simulation group already has a build")
+        self._build_process = SubprocessResult(returncode=0)
+        self._build = BuildOutcome(True, "pass", None, returncode=0, terminal_record=True)
+
     def launch_snapshot(
         self,
         snapshot_root: Path,

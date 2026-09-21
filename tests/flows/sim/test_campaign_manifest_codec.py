@@ -586,7 +586,7 @@ def test_serial_executor_authenticates_planned_generator_closure(
     recovery = store.scan()
     assert recovery.complete == (item["work_item_id"],)  # type: ignore[index]
     assert result.document["grade"] == "pass"
-    assert result.document["build_result"]["sharing"] == "private_work_item"  # type: ignore[index]
+    assert result.document["build_result"]["sharing"] == "shared_variant"  # type: ignore[index]
 
 
 @given(st.sampled_from(["workload_sha256", "target_recipe_sha256", "work_items_sha256"]))

@@ -476,6 +476,9 @@ check_sets:
   - cleanup.remotes
   - cleanup.verdict
   - physical.archive-cleanup
+- id: taxi-simulation-campaign
+  checks:
+  - campaign.verilator-single-build
 - id: taxi-gui
   checks:
   - viewer.scoped-state
@@ -512,6 +515,7 @@ configured_scenarios:
   - Declared authority and owned fixture roots
   check_sets:
   - taxi-core
+  - taxi-simulation-campaign
   exclusions: []
 - id: taxi-ubuntu-codex-vscode
   required: true
@@ -9330,6 +9334,38 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-EXECUTION-POLICY.timeout-wall
   requires:
   - inputs.pin
+- id: campaign.verilator-single-build
+  phase: ticket2
+  action: Run the owned two-test Verilator Target through one shared Simulator Bundle.
+  checks:
+  - id: campaign.verilator-single-build
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    - EDA-VERILATOR-SIMULATION
+    stimulus: Stage the owned ordinary-HDL fixture, select exact tests `first` and `second` in one Simulation Campaign, and preserve the build tree before and after both runs.
+    expected: Exactly one authenticated ready `shared_variant` Bundle Build Result serves two distinct Simulation Attempts; both terminal results bind its exact digest and bundle ID, and the bundle bytes remain unchanged.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
+    evidence: Verilator version and exact compile/run argv, fixture/Target/source/test identities, manifest and bundle/build/result bytes and digests, build-attempt listing, distinct Simulation Attempt IDs, compatibility reports, logs, and before/after bundle hashes.
+    capture: evidence/taxi-10g-mac-port-evolution.campaign.verilator-single-build
+  requires:
+  - inputs.pin
+  timeout_minutes: 10
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 7f2dc004df64f019d9c034b48dc83708fa95668c5b1e967ea24f99b7f26128c6
+  - path: fixtures/simulation-campaign/campaign.core
+    audience: scenario-operator
+    sha256: 9e32c7c2c3bac9b7277ccc3a894e8f81a2650bbb9f20d8133b64c254f7e541ff
+  - path: fixtures/simulation-campaign/campaign_tb.sv
+    audience: scenario-operator
+    sha256: 20f9085a9d51b3ca8248d2f3546908e0d7ceaaa09c3084f306bae8354ece1bf1
+  - path: fixtures/simulation-campaign/tests.toml
+    audience: scenario-operator
+    sha256: 7e04297adebc0736bdfb3f4ea2a835494b8745191cfa47e58a49dea772450573
+  - path: fixtures/simulation-campaign/validate_bundle.py
+    audience: independent evaluator
+    sha256: 06915ad7b65575b4a02532841567d3588428e3b6f8834c0aeb3c6ca5a2731f23
 - id: final.doctor-plain
   phase: final
   action: Rerun plain Doctor warning-free.

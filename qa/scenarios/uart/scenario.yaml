@@ -281,6 +281,11 @@ check_sets:
   - deadline
   - retry-policy
   - interruption
+- id: uart-simulation-campaign
+  checks:
+  - campaign.runtime-input-isolation
+  - campaign.presim-immutable
+  - campaign.presim-legacy-build
 - id: uart-windows
   checks:
   - inventory.PROJECT-INITIALIZATION.lf-auto
@@ -322,6 +327,7 @@ configured_scenarios:
   - Declared authority and owned fixture roots
   check_sets:
   - uart-core
+  - uart-simulation-campaign
   exclusions:
   - check: inventory.PROJECT-INITIALIZATION.lf-auto
     reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
@@ -5945,6 +5951,90 @@ steps:
   requires:
   - published-release
   - interactive-commit
+- id: campaign.runtime-input-isolation
+  phase: interactive
+  action: Run two exact tests with distinct owned vectors in attempt-local templated directories.
+  checks:
+  - id: campaign.runtime-input-isolation
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    stimulus: Stage the owned `alpha` and `beta` runtime inputs through `BOOLEY_RUN_CWD` and execute both exact tests in one immutable-mode Simulation Campaign.
+    expected: Each attempt authenticates its selected vector in a distinct owned run directory, cleans only owned materialization after publication, and binds the same unchanged shared Bundle/build manifest.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
+    evidence: Rendered config and exact argv, Pre-Sim environment, Target/source/vector identities and hashes, manifest and bundle/build/result digests, attempt-owned input copies, canonical cwd identities, logs, compatibility reports, and cleanup proof.
+    capture: evidence/opentitan-uart-clean-room-greenfield.campaign.runtime-input-isolation
+  requires:
+  - published-release
+  timeout_minutes: 10
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 8c6939f76af43b6e80b3d8d8145ccb176fabf29ab2e368c39c8571f43df2161f
+  - path: fixtures/simulation-campaign/campaign.core
+    audience: scenario-operator
+    sha256: 2b2064bf76a4cf5cc3a188cb0930a58c4b7435eabcbdffc695315e1c73267b9b
+  - path: fixtures/simulation-campaign/campaign_tb.sv
+    audience: scenario-operator
+    sha256: 20a8539c8fc487ea0f97c52e0109ca23bfc479431caadda5ec3b40dd302aa51e
+  - path: fixtures/simulation-campaign/runtime-inputs.toml
+    audience: scenario-operator
+    sha256: 384f99c8ffcb6dcaee4649b7328477df5f68ddaaf26e7fdc3ef30fc08e829ee2
+  - path: fixtures/simulation-campaign/tests.toml
+    audience: scenario-operator
+    sha256: 83adb055d9c1d8f2deff9dcccd9e07c2706504850635c8b090de08320ff247a6
+  - path: fixtures/simulation-campaign/validate_campaign.py
+    audience: independent evaluator
+    sha256: 642d36fdf6a9a87d2a0f79c9f614c581f4c7661816517235feb5f96f4c1172c7
+  - path: fixtures/simulation-campaign/vectors/alpha.hex
+    audience: scenario-operator
+    sha256: 320540cafa300cbdcf98656bcc20b316f40c712dc750b0002afc97fb43c23b7d
+  - path: fixtures/simulation-campaign/vectors/beta.hex
+    audience: scenario-operator
+    sha256: 557812f67e2b8b8d7e0b05bd712fc60919a4c163d2e428691a182cfb72e3b321
+- id: campaign.presim-immutable
+  phase: interactive
+  action: Attempt to mutate the selected image through default immutable Pre-Sim Commands.
+  checks:
+  - id: campaign.presim-immutable
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    stimulus: Apply the owned immutable-mode hook, capture its environment, and make it fail after proving no `BOOLEY_BUILD_ROOT` was disclosed.
+    expected: The attempt is an attributed setup failure with no passing observation or accepted Criteria evidence; source, bundle, executable snapshot, and build-manifest hashes remain unchanged.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands
+    evidence: Rendered config, redacted Pre-Sim environment and stderr, exact argv/exit, before/after source/bundle/snapshot hashes, failed result, compatibility report, Criteria state, and process-tree death proof.
+    capture: evidence/opentitan-uart-clean-room-greenfield.campaign.presim-immutable
+  requires:
+  - campaign.runtime-input-isolation
+  timeout_minutes: 5
+  assets:
+  - path: fixtures/simulation-campaign/immutable-presim.toml
+    audience: scenario-operator
+    sha256: 350d23dd2809cee53b94ed6d9deec41f2e2c743717812f6570185de6f85dba3f
+  - path: fixtures/simulation-campaign/reject_build_mutation.py
+    audience: scenario-operator
+    sha256: 06430724406413b4764fe1fc3a63c7803f2beda77517398d2a528483c13021fb
+- id: campaign.presim-legacy-build
+  phase: interactive
+  action: Run both tests with explicitly disclosed legacy per-test build access.
+  checks:
+  - id: campaign.presim-legacy-build
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    stimulus: Apply the owned `legacy-per-test` hook and run exact tests `alpha` and `beta`, retaining each disclosed generation and hook marker.
+    expected: The manifest and attempts disclose `legacy-per-test`; each test gets a distinct authenticated private Bundle Build Attempt/Result and no result makes a shared-bundle claim.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands
+    evidence: Rendered config, redacted per-test Pre-Sim environments, exact compile/run argv, private generation markers, manifest/build/bundle/result bytes and digests, attempt listings, logs, and compatibility reports.
+    capture: evidence/opentitan-uart-clean-room-greenfield.campaign.presim-legacy-build
+  requires:
+  - campaign.presim-immutable
+  timeout_minutes: 10
+  assets:
+  - path: fixtures/simulation-campaign/legacy-presim.toml
+    audience: scenario-operator
+    sha256: 844d0438c91079cee24d924212233dba26a2677e5990e9666b24cbcb96f68a6b
+  - path: fixtures/simulation-campaign/record_legacy_build.py
+    audience: scenario-operator
+    sha256: b7de08cc5cb0bbeca63034099a77d4e56491fa68f92e71b5b707772c9f79a42b
 - id: final-simulation
   phase: final
   action: Run complete Developer simulation on final accepted tree.
