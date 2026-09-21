@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,7 @@ _PROTOCOL_FILENAMES = {
     "cancel.json",
     "force-cancel",
     "attachment-heartbeat",
+    "context.json",
 }
 
 
@@ -44,6 +46,7 @@ class ExecutionPaths:
     cancel: Path
     force: Path
     heartbeat: Path
+    context: Path
 
 
 def execution_paths(
@@ -59,6 +62,7 @@ def execution_paths(
         cancel=root / "cancel.json",
         force=root / "force-cancel",
         heartbeat=root / "attachment-heartbeat",
+        context=root / "context.json",
     )
 
 
@@ -77,6 +81,67 @@ def read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
+    """Authenticate an optional immutable campaign-child context sidecar."""
+    if not paths.context.exists():
+        return True
+    payload = read_json(paths.context)
+    expected = {
+        "$schema",
+        "child_execution_id",
+        "parent_execution_id",
+        "campaign_id",
+        "manifest_sha256",
+        "work_item_id",
+        "attempt_id",
+        "attempt_ordinal",
+    }
+    context_valid = bool(
+        payload is not None
+        and set(payload) == expected
+        and payload.get("$schema") == "booley.supervised-child-context/v1"
+        and payload.get("child_execution_id") == execution_id
+    )
+    if not context_valid:
+        return False
+    return _child_entry_matches(paths, execution_id, payload)
+
+
+def _child_entry_matches(
+    paths: ExecutionPaths, execution_id: ExecutionId, context: dict[str, Any]
+) -> bool:
+    project_data = paths.root.parents[2]
+    entry_path = (
+        project_data
+        / ".runtime"
+        / "campaign-child-executions"
+        / "entries"
+        / f"{execution_id}.json"
+    )
+    entry = read_json(entry_path)
+    if entry is None:
+        return False
+    try:
+        raw = paths.context.read_bytes()
+    except OSError:
+        return False
+    digest = "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+    linked = (
+        "parent_execution_id",
+        "campaign_id",
+        "manifest_sha256",
+        "work_item_id",
+        "attempt_id",
+        "attempt_ordinal",
+    )
+    return bool(
+        entry.get("$schema") == "booley.simulation-campaign-child-entry/v1"
+        and entry.get("child_execution_id") == execution_id
+        and entry.get("runtime_context_sha256") == digest
+        and all(entry.get(field) == context.get(field) for field in linked)
+    )
 
 
 def write_attachment_heartbeat(paths: ExecutionPaths, *, generation: int) -> None:
@@ -139,6 +204,15 @@ def _referenced_execution_ids(project_dir: Path) -> set[str]:
         execution_id = payload.get("execution_id") if payload is not None else None
         try:
             references.add(ExecutionId(execution_id))
+        except ValueError:
+            continue
+    child_entries = project_dir / ".runtime" / "campaign-child-executions" / "entries"
+    child_retired = project_dir / ".runtime" / "campaign-child-executions" / "retired"
+    for path in child_entries.glob("*.json"):
+        if (child_retired / path.name).is_file():
+            continue
+        try:
+            references.add(ExecutionId(path.stem))
         except ValueError:
             continue
     return references

@@ -15,6 +15,7 @@ from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
     atomic_write_json,
+    child_context_matches,
     execution_paths,
     read_json,
     request_cancellation,
@@ -126,8 +127,10 @@ def _wait_for_empty(execution_id: ExecutionId, signum: int, timeout_s: float) ->
     return not processes.identities and processes.complete
 
 
-def _publish_recovered_terminal(execution_id: ExecutionId) -> None:
-    paths = execution_paths(execution_id)
+def _publish_recovered_terminal(
+    execution_id: ExecutionId, *, project_dir: Path | None = None
+) -> None:
+    paths = execution_paths(execution_id, project_dir=project_dir)
     current = read_json(paths.record) or {}
     exit_code = as_int(current.get("exit_code"), 125) or 125
     atomic_write_json(
@@ -144,10 +147,14 @@ def _publish_recovered_terminal(execution_id: ExecutionId) -> None:
     )
 
 
-def recover_execution(raw_execution_id: str | ExecutionId) -> bool:
+def recover_execution(
+    raw_execution_id: str | ExecutionId, *, project_dir: Path | None = None
+) -> bool:
     """Request cancellation and prove a failed supervisor's execution tree empty."""
     execution_id = ExecutionId(raw_execution_id)
-    paths = execution_paths(execution_id)
+    paths = execution_paths(execution_id, project_dir=project_dir)
+    if not child_context_matches(paths, execution_id):
+        return False
     record = read_json(paths.record)
     if record is not None and record.get("state") == "terminal":
         return record.get("tree_terminal") is True
@@ -161,7 +168,7 @@ def recover_execution(raw_execution_id: str | ExecutionId) -> bool:
         return False
     for signum, timeout_s in _RECOVERY_STAGES:
         if _wait_for_empty(execution_id, signum, timeout_s):
-            _publish_recovered_terminal(execution_id)
+            _publish_recovered_terminal(execution_id, project_dir=project_dir)
             return True
     return False
 

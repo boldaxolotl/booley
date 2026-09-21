@@ -1,0 +1,4 @@
+[flows.sim]
+run_cwd = ".booley-qa/campaign/literal-shared"
+pre_sim_build_access = "immutable"
+pre_run_commands = ["python3 qa-campaign/record_literal_cwd.py"]

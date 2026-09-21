@@ -284,6 +284,7 @@ check_sets:
 - id: uart-simulation-campaign
   checks:
   - campaign.runtime-input-isolation
+  - campaign.literal-cwd-serialization
   - campaign.presim-immutable
   - campaign.presim-legacy-build
 - id: uart-windows
@@ -5969,7 +5970,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 2f0e41d19a734c5cef580806a98ab13d1a22d0448b6bb3ebb834e6e78ff0787f
+    sha256: 50fa22ad2525a637aec4aae3b2bb8e8658d6f63e7717a6cd9a54a8b4b4e012d9
   - path: fixtures/simulation-campaign/campaign.core
     audience: scenario-operator
     sha256: 2b2064bf76a4cf5cc3a188cb0930a58c4b7435eabcbdffc695315e1c73267b9b
@@ -5984,13 +5985,41 @@ steps:
     sha256: 83adb055d9c1d8f2deff9dcccd9e07c2706504850635c8b090de08320ff247a6
   - path: fixtures/simulation-campaign/validate_campaign.py
     audience: independent evaluator
-    sha256: 0fdc205edbc45f515092a6b61fd5f09f0a7d1ee5b0fcb40dfed90c960e89ca28
+    sha256: cbf21708ea67ce9d1857d54fd5120467553b7eadf448b09f1ab2df815f8dd7a8
   - path: fixtures/simulation-campaign/vectors/alpha.hex
     audience: scenario-operator
     sha256: 320540cafa300cbdcf98656bcc20b316f40c712dc750b0002afc97fb43c23b7d
   - path: fixtures/simulation-campaign/vectors/beta.hex
     audience: scenario-operator
     sha256: 557812f67e2b8b8d7e0b05bd712fc60919a4c163d2e428691a182cfb72e3b321
+- id: campaign.literal-cwd-serialization
+  phase: interactive
+  action: Contend two tests on one literal run directory while unrelated work proceeds.
+  checks:
+  - id: campaign.literal-cwd-serialization
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    stimulus: Apply the owned literal-CWD hook to exact tests `alpha`, `beta` with max_heavy greater than one and start one separate owned templated campaign during the bounded contention window.
+    expected: The two attempts resolving to the same canonical existing directory have nonoverlapping process intervals, while an unrelated isolated attempt overlaps; serialization is collision-scoped rather than global.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#simulation-working-directory-flowssim
+    evidence: Rendered configuration, canonical cwd identities, monotonic hook/process intervals, owner-marker bytes, exact argv, SlotStore samples, Manifest/Attempt/Result records, logs, and cleanup proof for both owned campaigns.
+    capture: evidence/opentitan-uart-clean-room-greenfield.campaign.literal-cwd-serialization
+  requires:
+  - campaign.runtime-input-isolation
+  timeout_minutes: 10
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 50fa22ad2525a637aec4aae3b2bb8e8658d6f63e7717a6cd9a54a8b4b4e012d9
+  - path: fixtures/simulation-campaign/literal-cwd.toml
+    audience: scenario-operator
+    sha256: 1d2e38e5203bfa4753b87207b7ee1a57f57180dbaabfc4b1bf25ef6a8a7160ff
+  - path: fixtures/simulation-campaign/record_literal_cwd.py
+    audience: scenario-operator
+    sha256: d87d82f7d512e397bcf775902305054aa3f625626203832330bb3e4085b6120b
+  - path: fixtures/simulation-campaign/validate_campaign.py
+    audience: independent evaluator
+    sha256: cbf21708ea67ce9d1857d54fd5120467553b7eadf448b09f1ab2df815f8dd7a8
 - id: campaign.presim-immutable
   phase: interactive
   action: Attempt to mutate the selected image through default immutable Pre-Sim Commands.

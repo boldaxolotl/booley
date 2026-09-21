@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,8 +11,11 @@ from typing import Protocol, cast
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
+from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
+from .capacity import HeavyCapacity, HeavyCapacityError
+from .child_protocol import ChildExecutionRegistry
 from .codec import (
     SimulationCampaignIntegrityError,
     encode_simulation_campaign_manifest,
@@ -21,7 +25,12 @@ from .facts import AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
 from .planning import WorkloadMismatch, compare_manifests, manifest_digest
 from .resume import ValidatedResumeManifest
-from .run_directory import cleanup_interrupted_run_directory, restore_run_directory
+from .run_directory import (
+    cleanup_interrupted_run_directory,
+    expand_run_directory,
+    restore_run_directory,
+)
+from .scheduler import BoundedCampaignScheduler, ScheduledAttempt
 from .store import CampaignRecovery, CampaignStore
 
 
@@ -115,6 +124,8 @@ class WorkExecutionRequest:
     admission: AdmissionContext
     project_root: Path
     target_handle: TargetHandle | None = None
+    child_execution_id: str | None = None
+    child_entry_sha256: str | None = None
 
 
 class SerialWorkExecutor(Protocol):
@@ -150,6 +161,7 @@ class SimulationCampaign:
     ) -> None:
         self._executor = executor
         self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
+        self._publication_gate = threading.Lock()
 
     def preview(self, request: CampaignPreviewRequest) -> CampaignPreview:
         if isinstance(request, NewCampaignPreviewRequest):
@@ -271,28 +283,41 @@ class SimulationCampaign:
             else None
         )
         project_root = binding.project_root if binding is not None else request.project_root
+        registry = ChildExecutionRegistry(store, manifest, project_root)
+        registry.recover_unretired(request.admission.slot_store)
         self._cleanup_interrupted_runs(store, recovery, project_root)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         by_id = {cast(str, item["work_item_id"]): item for item in items}
-        try:
-            invocation = int(request.invocation_directory.name)
-        except ValueError as exc:
-            raise SimulationCampaignIntegrityError(
-                "campaign invocation directory must end in a numeric id"
-            ) from exc
-        for recovered in recovery.items:
-            if recovered.state == "complete":
-                continue
-            if request.admission.cancellation():
-                break
-            self._execute_recovered(
+        invocation = _invocation_number(request.invocation_directory)
+        pending = [
+            by_id[recovered.work_item_id]
+            for recovered in recovery.items
+            if recovered.state != "complete"
+        ]
+        if request.admission.cancellation():
+            return
+        capacity = HeavyCapacity(
+            request.admission,
+            terminal_proof=registry.is_terminal,
+            recover_child=registry.cancel,
+        )
+        scheduler = BoundedCampaignScheduler(
+            capacity,
+            registry,
+            allocate=lambda item: self._allocate_scheduled(
+                store, manifest, project_root, item
+            ),
+            execute=lambda attempt, child_id, child_digest: self._execute_scheduled(
                 store,
                 manifest,
-                by_id[recovered.work_item_id],
-                recovered.work_item_id,
+                attempt,
                 invocation,
                 request,
-            )
+                child_id,
+                child_digest,
+            ),
+        )
+        scheduler.run(pending)
 
     @staticmethod
     def _cleanup_interrupted_runs(
@@ -318,17 +343,33 @@ class SimulationCampaign:
                 },
             )
 
-    def _execute_recovered(
+    @staticmethod
+    def _allocate_scheduled(
+        store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        project_root: Path,
+        work_item: Mapping[str, object],
+    ) -> ScheduledAttempt:
+        work_item_id = cast(str, work_item["work_item_id"])
+        attempt_id = _new_uuid()
+        ordinal, directory = store.allocate_attempt_directory(work_item_id, attempt_id)
+        collision_key = _scheduled_collision_key(
+            store, manifest, project_root, work_item_id, attempt_id, ordinal
+        )
+        return ScheduledAttempt(work_item, attempt_id, ordinal, directory, collision_key)
+
+    def _execute_scheduled(
         self,
         store: CampaignStore,
         manifest: SimulationCampaignManifest,
-        work_item: Mapping[str, object],
-        work_item_id: str,
+        attempt: ScheduledAttempt,
         invocation: int,
         request: CampaignRunRequest,
+        child_execution_id: str | None,
+        child_entry_sha256: str | None,
     ) -> None:
-        attempt_id = _new_uuid()
-        ordinal, directory = store.allocate_attempt_directory(work_item_id, attempt_id)
+        work_item = attempt.item
+        work_item_id = cast(str, work_item["work_item_id"])
         binding = (
             request.validated.binding_for(manifest)
             if isinstance(request, ResumeCampaignRunRequest)
@@ -340,33 +381,88 @@ class SimulationCampaign:
                 store,
                 manifest,
                 work_item,
-                attempt_id,
-                ordinal,
-                directory,
+                attempt.attempt_id,
+                attempt.ordinal,
+                attempt.directory,
                 invocation,
                 request.policy,
                 request.admission,
                 binding.project_root if binding is not None else request.project_root,
                 binding.handle if binding is not None else None,
+                child_execution_id,
+                child_entry_sha256,
             )
         )
-        document = result.document
-        if (document["attempt_id"], document["attempt_ordinal"], document["work_item_id"]) != (
-            attempt_id,
-            ordinal,
-            work_item_id,
-        ):
-            raise SimulationCampaignIntegrityError(
-                "serial executor returned a result for another attempt"
+        scope = current_supervised_execution()
+        if scope is not None and scope.cancelled():
+            raise HeavyCapacityError(
+                f"child execution cancelled before result publication: {scope.execution_id}"
             )
-        store.scan()
-        store.verify_result_evidence(directory, result)
-        self._publication_checkpoint("before:simulation_result")
-        store.publish_result(work_item_id, result)
-        self._publication_checkpoint("after:simulation_result")
-        self._publication_checkpoint("before:summary_replace")
-        store.regenerate_summary()
-        self._publication_checkpoint("after:summary_replace")
+        _validate_scheduled_result(result, attempt, work_item_id)
+        self._publish_scheduled_result(store, attempt, work_item_id, result)
+
+    def _publish_scheduled_result(
+        self,
+        store: CampaignStore,
+        attempt: ScheduledAttempt,
+        work_item_id: str,
+        result: SimulationResult,
+    ) -> None:
+        with self._publication_gate:
+            store.scan()
+            store.verify_result_evidence(attempt.directory, result)
+            self._publication_checkpoint("before:simulation_result")
+            store.publish_result(work_item_id, result)
+            self._publication_checkpoint("after:simulation_result")
+            self._publication_checkpoint("before:summary_replace")
+            store.regenerate_summary()
+            self._publication_checkpoint("after:summary_replace")
+
+
+def _invocation_number(directory: Path) -> int:
+    try:
+        return int(directory.name)
+    except ValueError as exc:
+        raise SimulationCampaignIntegrityError(
+            "campaign invocation directory must end in a numeric id"
+        ) from exc
+
+
+def _scheduled_collision_key(
+    store: CampaignStore,
+    manifest: SimulationCampaignManifest,
+    project_root: Path,
+    work_item_id: str,
+    attempt_id: str,
+    ordinal: int,
+) -> str:
+    workload = cast(Mapping[str, object], manifest.document["workload"])
+    run_cwd = cast(Mapping[str, object], workload["run_cwd"])
+    target = cast(Mapping[str, str], manifest.document["target"])
+    run = expand_run_directory(
+        cast(str, run_cwd["configured"]),
+        project_root=project_root,
+        campaign_id=cast(str, manifest.document["campaign_id"]),
+        target_key=target["selector"].replace("/", "%2F"),
+        work_item_key=store.work_item_directory(work_item_id).name,
+        attempt_key=f"{ordinal:04d}-{attempt_id}",
+    )
+    return run.collision_key
+
+
+def _validate_scheduled_result(
+    result: SimulationResult, attempt: ScheduledAttempt, work_item_id: str
+) -> None:
+    document = result.document
+    identity = (
+        document["attempt_id"],
+        document["attempt_ordinal"],
+        document["work_item_id"],
+    )
+    if identity != (attempt.attempt_id, attempt.ordinal, work_item_id):
+        raise SimulationCampaignIntegrityError(
+            "serial executor returned a result for another attempt"
+        )
 
 
 def _new_preview(request: NewCampaignPreviewRequest) -> NewCampaignPreview:

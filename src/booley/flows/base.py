@@ -64,6 +64,26 @@ class SubprocessResult:
 _CGROUP_MEMORY_EVENT_PATHS = (Path("/sys/fs/cgroup/memory.events"),)
 
 
+def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
+    from booley.runtime.supervised_execution import (
+        current_supervised_execution,
+        wrap_supervised_command,
+    )
+
+    scope = current_supervised_execution()
+    if scope is None:
+        return cmd, None
+    wrapped, overrides, heartbeat = wrap_supervised_command(cmd, scope)
+    env.update(overrides)
+    heartbeat.start()
+    return wrapped, heartbeat
+
+
+def _stop_supervised_heartbeat(heartbeat) -> None:
+    if heartbeat is not None:
+        heartbeat.stop()
+
+
 def _cgroup_oom_kill_count() -> int | None:
     """Return this cgroup's cumulative OOM-kill count when available."""
     for path in _CGROUP_MEMORY_EVENT_PATHS:
@@ -92,6 +112,26 @@ def _popen_kwargs_with_lease() -> dict[str, Any]:
     if os.name != "nt" and lease_fd is not None:
         kwargs["pass_fds"] = (lease_fd,)
     return kwargs
+
+
+def _start_local_process(cmd, cwd, env, heartbeat):
+    try:
+        return subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            **_popen_kwargs_with_lease(),
+        )
+    except FileNotFoundError:
+        _stop_supervised_heartbeat(heartbeat)
+        logger.error("Command not found: %s", cmd[0])
+        return None
+    except BaseException:
+        _stop_supervised_heartbeat(heartbeat)
+        raise
 
 
 def _linux_process_tree_rss_bytes(root_pid: int) -> int | None:
@@ -258,25 +298,17 @@ class FlowMechanics:
         cwd = self._get_cwd()
         env = os.environ.copy()
         env.update(self._extra_subprocess_env())
+        cmd, heartbeat = _prepare_supervised_command(cmd, env)
         start = time.monotonic()
         oom_before = _cgroup_oom_kill_count()
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                **_popen_kwargs_with_lease(),
-            )
-        except FileNotFoundError:
-            logger.error("Command not found: %s", cmd[0])
+        proc = _start_local_process(cmd, cwd, env, heartbeat)
+        if proc is None:
             return SubprocessResult(returncode=-1)
         memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
         memory_monitor.start()
 
         def resource_evidence() -> tuple[float | None, int]:
+            _stop_supervised_heartbeat(heartbeat)
             peak_rss_mb = memory_monitor.finish()
             oom_after = _cgroup_oom_kill_count()
             oom_delta = (
@@ -315,6 +347,7 @@ class FlowMechanics:
                 logger.warning("Interrupted; killing the process tree of: %s", " ".join(cmd))
                 kill_process_tree(proc)
                 memory_monitor.finish()
+                _stop_supervised_heartbeat(heartbeat)
                 raise
             elapsed = time.monotonic() - start
             peak_rss_mb, oom_kill_delta = resource_evidence()

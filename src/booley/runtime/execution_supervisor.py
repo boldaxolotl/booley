@@ -24,8 +24,10 @@ from typing import Any
 from booley.core.boundary import BoundaryError, as_float, as_str, require_int
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
+    ExecutionId,
     ExecutionPaths,
     atomic_write_json,
+    child_context_matches,
     execution_paths,
     force_cancellation_requested,
     read_attachment_heartbeat,
@@ -454,7 +456,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    paths = execution_paths(args.execution_id)
+    execution_id = ExecutionId(args.execution_id)
+    paths = execution_paths(execution_id)
     if args.action == "cancel":
         request_cancellation(paths, force=args.force, signum=args.signal)
         return 0
@@ -463,6 +466,18 @@ def main(argv: list[str] | None = None) -> int:
         command = command[1:]
     if not command:
         raise SystemExit("run requires a command after --")
+    if not child_context_matches(paths, execution_id):
+        atomic_write_json(
+            paths.record,
+            _execution_record(
+                state="unrecoverable",
+                supervisor=capture_process_identity(os.getpid()),
+                leader=None,
+                exit_code=125,
+                terminal_cause="context_mismatch",
+            ),
+        )
+        return 125
     return supervise(
         paths,
         command,

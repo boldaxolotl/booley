@@ -46,6 +46,17 @@ class AdmissionContext:
     timeout_seconds: float | None
     cancellation: Callable[[], bool]
 
+    def __post_init__(self) -> None:
+        if self.mode not in {"managed", "unmanaged"}:
+            raise ValueError("admission mode must be managed or unmanaged")
+        if self.max_heavy < 1:
+            raise ValueError("admission max_heavy must be positive")
+        managed = self.mode == "managed"
+        if managed != (self.slot_store is not None and self.outer_token is not None):
+            raise ValueError("managed admission requires a store and outer token")
+        if not managed and self.max_heavy != 1:
+            raise ValueError("unmanaged admission has exactly one logical lane")
+
 
 class AdmissionGate:
     """Lazy admission entered once after Simulation Target authorization."""

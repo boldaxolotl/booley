@@ -218,9 +218,11 @@ def test_owned_targets_and_policy_fragments_are_explicit() -> None:
         "verilator_options": ["--timing"],
     }
     assert taxi_target["toplevel"] == "campaign_tb"
-    assert '[sim_campaign_verilator]\ntests = ["first", "second"]' in (
-        TAXI / "tests.toml"
-    ).read_text()
+    assert (
+        '[sim_campaign_verilator]\n'
+        'tests = ["first", "second", "slow-first", "slow-fail", "slow-last"]'
+        in (TAXI / "tests.toml").read_text()
+    )
 
     uart_core = yaml.safe_load((UART / "campaign.core").read_text().split("\n", 1)[1])
     uart_files = uart_core["filesets"]["tb"]["files"]
@@ -381,13 +383,19 @@ def test_campaign_checks_are_isolated_to_representative_configurations() -> None
     expectations = {
         "taxi": (
             "taxi-simulation-campaign",
-            ["campaign.verilator-single-build"],
+            [
+                "campaign.verilator-single-build",
+                "campaign.heavy-cap",
+                "campaign.attempt-isolation",
+                "campaign.continue-after-failure",
+            ],
             ["taxi-ubuntu-codex-cli"],
         ),
         "uart": (
             "uart-simulation-campaign",
             [
                 "campaign.runtime-input-isolation",
+                "campaign.literal-cwd-serialization",
                 "campaign.presim-immutable",
                 "campaign.presim-legacy-build",
             ],

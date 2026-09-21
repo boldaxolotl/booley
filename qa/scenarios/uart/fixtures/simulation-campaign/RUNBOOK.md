@@ -1,6 +1,6 @@
 # UART Simulation Campaign attempt-contract fixtures
 
-These fixtures support Checks 14, 16, and 17 only. They remain pending until
+These fixtures support Checks 14–17. They remain pending until
 an authorized `uart-ubuntu-codex-cli` Scenario Run captures product evidence;
 automated fixture gates do not complete Public QA Checks.
 
@@ -27,6 +27,19 @@ markers, and no `shared_variant` claim. Preserve exact Pre-Sim environments
 with secrets redacted, compile/run argv, logs, Simulation Campaign documents,
 compatibility reports, and hashes. Use `validate_campaign.py` only as a
 read-only structural cross-check.
+
+For `campaign.literal-cwd-serialization`, use `literal-cwd.toml` and run exact
+tests `alpha`, `beta` with `max_heavy > 1`. The owned hook holds the canonical
+literal directory for 250 ms and prints a monotonic interval plus owner token.
+Start one separate owned templated campaign during that bounded window to prove
+the collision lock is scoped to the canonical run directory rather than a
+global scheduler lock. Require the two literal-directory intervals to be
+nonoverlapping, their canonical directory identities to match, and at least one
+unrelated isolated interval to overlap. Preserve the rendered configuration,
+hook output, process timeline, SlotStore samples, manifest, attempts, results,
+logs, and directory-owner markers. Use
+`validate_literal_cwd_serialization()` from `validate_campaign.py` as a
+read-only cross-check.
 
 Restore the original UART configuration and remove only run-owned fixture
 files. Prove all pinned corpus and candidate source bytes are unchanged.

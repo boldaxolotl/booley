@@ -10,13 +10,13 @@
     "taxi-ubuntu-codex-cli": {
       "required": true,
       "semantics": "c0b85eebc93188aeea2317778bc5684f98be89cfbb279526a4c762d46fdd7380",
-      "checks": "96d8340da96b5d45d36215e65cb65b75443e7dc032a0be1c0737cf2a7f12777a",
+      "checks": "0c95e0dfac079b120d445c96f9ebd069e9a7408798e4035c2eab8689c83ac5d3",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-ubuntu-codex-cli": {
       "required": true,
       "semantics": "8d6dfeb02870aa3a0201c33cac498fd2f4fdc1683de921a2b8d997aa88e0d35a",
-      "checks": "fdcc07410593b8912ee002a7c03c4a903b20c8cedc5f81140315c1718990edba",
+      "checks": "c4fa59a74e04290a920c6f554f503865e093b09063e193ee02a4ff4ad5aa2e1f",
       "exclusions": "e99903eebfd639b392acd2c057974542a4f667c41b6e49def86a0539bbc9d46d"
     },
     "picorv32-ubuntu-codex-vscode": {

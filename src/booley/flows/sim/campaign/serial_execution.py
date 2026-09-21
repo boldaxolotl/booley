@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import stat
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -91,6 +92,16 @@ class _SharedReady:
     compiled_group: _OrdinaryGroup | None
 
 
+@dataclass(frozen=True, slots=True)
+class _GroupInputs:
+    handle: object
+    names: tuple[str, ...]
+    options: SimulationOptions
+    execution: SimulationExecution
+    workload: Mapping[str, object]
+    access: str
+
+
 class _OrdinaryGroup(Protocol):
     build_root: Path
     artifact_paths: tuple[Path, ...]
@@ -121,6 +132,8 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         self._shared_failure: dict[
             tuple[Path, str, int], tuple[Path, BundleBuildResult, SimulationTargetOutcome]
         ] = {}
+        self._shared_locks: dict[tuple[Path, str, int], threading.Lock] = {}
+        self._shared_locks_gate = threading.Lock()
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
         item = request.work_item
@@ -154,23 +167,44 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             request.producer_invocation_id,
         )
         started = time.monotonic()
-        handle, names, options, execution, workload, access = self._group_inputs(request)
-        failed = self._shared_failure.get(key)
-        if failed is not None:
-            directory, result, outcome = failed
-            return _blocked_result(request, directory, result, outcome, time.monotonic() - started)
-        ready = self._recover_shared(request, key, handle, names)
-        recovered_failure = self._shared_failure.get(key)
-        if recovered_failure is not None:
-            directory, result, outcome = recovered_failure
-            return _blocked_result(request, directory, result, outcome, time.monotonic() - started)
-        built_now = False
-        if ready is None:
-            built = self._build_shared(request, key, handle, names, execution, workload, started)
-            if isinstance(built, SimulationResult):
-                return built
-            ready = built
-            built_now = True
+        inputs = self._group_inputs(request)
+        handle, names = inputs.handle, inputs.names
+        execution, workload = inputs.execution, inputs.workload
+        with self._shared_lock(key):
+            failed = self._shared_failure.get(key)
+            if failed is not None:
+                directory, result, outcome = failed
+                return _blocked_result(
+                    request, directory, result, outcome, time.monotonic() - started
+                )
+            ready = self._recover_shared(request, key, handle, names)
+            recovered_failure = self._shared_failure.get(key)
+            if recovered_failure is not None:
+                directory, result, outcome = recovered_failure
+                return _blocked_result(
+                    request, directory, result, outcome, time.monotonic() - started
+                )
+            built_now = False
+            if ready is None:
+                built = self._build_shared(
+                    request, key, handle, names, execution, workload, started
+                )
+                if isinstance(built, SimulationResult):
+                    return built
+                ready = built
+                built_now = True
+        return self._launch_shared(
+            request,
+            run_directory,
+            ready,
+            built_now,
+            inputs,
+            started,
+        )
+
+    def _launch_shared(self, request, run_directory, ready, built_now, inputs, started):
+        handle, names = inputs.handle, inputs.names
+        execution = inputs.execution
         launch_group = (
             ready.compiled_group
             if built_now
@@ -189,10 +223,14 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                 run_cwd,
                 _ReadyLaunch(
                     (ready.result, ready.bundle, launch_group),
-                    (handle, names, options),
-                    (workload, access, run_directory, started),
+                    (handle, names, inputs.options),
+                    (inputs.workload, inputs.access, run_directory, started),
                 ),
             )
+
+    def _shared_lock(self, key: tuple[Path, str, int]) -> threading.Lock:
+        with self._shared_locks_gate:
+            return self._shared_locks.setdefault(key, threading.Lock())
 
     def _recover_shared(self, request, key, handle, names) -> _SharedReady | None:
         ready = self._shared_ready.get(key)
@@ -293,7 +331,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         run_directory: RunDirectory,
     ) -> SimulationResult:
         started = time.monotonic()
-        handle, names, options, execution, workload, access = self._group_inputs(request)
+        inputs = self._group_inputs(request)
+        handle, names, options = inputs.handle, inputs.names, inputs.options
+        execution, workload, access = inputs.execution, inputs.workload, inputs.access
         with execution.ordinary_group(handle, names) as group:
             prepared = self._prepare_bundle_artifacts(
                 request,
@@ -397,7 +437,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             if self._execution_factory
             else (SimulationExecution(invoke=self._invoke, options=options))
         )
-        return (
+        return _GroupInputs(
             handle,
             names,
             options,
@@ -622,8 +662,8 @@ def _attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt, RunDirec
             "collision_key": run.collision_key,
             "owned": run.owned,
         },
-        "child_execution_id": None,
-        "child_entry_sha256": None,
+        "child_execution_id": request.child_execution_id,
+        "child_entry_sha256": request.child_entry_sha256,
         "pre_sim_build_access": workload["pre_sim_build_access"],
         "policy": {
             "timeout_seconds": (

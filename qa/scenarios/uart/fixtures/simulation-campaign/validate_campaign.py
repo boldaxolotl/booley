@@ -105,3 +105,48 @@ def validate_legacy_builds(
         )
         references.append((reference.get("build_attempt_id"), reference.get("sha256")))
     _need(len(set(references)) == 2, "legacy tests did not receive distinct private builds")
+
+
+def validate_literal_cwd_serialization(
+    manifest_path: Path,
+    timeline_path: Path,
+) -> None:
+    """Require shared literal-CWD attempts to serialize without global serialization."""
+    manifest = _load(manifest_path)
+    workload = manifest.get("workload")
+    _need(isinstance(workload, dict), "manifest workload is missing")
+    run_cwd = workload.get("run_cwd")
+    _need(isinstance(run_cwd, dict), "manifest run_cwd is missing")
+    _need(run_cwd.get("kind") == "literal", "run_cwd is not literal")
+    timeline = _load(timeline_path)
+    shared = timeline.get("shared_intervals")
+    unrelated = timeline.get("unrelated_intervals")
+    _need(isinstance(shared, list) and len(shared) == 2, "expected two shared intervals")
+    _need(isinstance(unrelated, list) and unrelated, "unrelated interval is missing")
+    resolved = set()
+    for interval in shared:
+        _need(isinstance(interval, dict), "shared interval is invalid")
+        start = interval.get("start_ns")
+        end = interval.get("end_ns")
+        _need(
+            isinstance(start, int) and isinstance(end, int) and start < end,
+            "shared interval bounds are invalid",
+        )
+        resolved.add(interval.get("run_directory"))
+    _need(len(resolved) == 1, "shared attempts do not resolve to one literal directory")
+    ordered = sorted(shared, key=lambda item: item["start_ns"])
+    _need(ordered[0]["end_ns"] <= ordered[1]["start_ns"], "literal CWD attempts overlap")
+    overlaps = False
+    for other in unrelated:
+        _need(isinstance(other, dict), "unrelated interval is invalid")
+        start = other.get("start_ns")
+        end = other.get("end_ns")
+        _need(
+            isinstance(start, int) and isinstance(end, int) and start < end,
+            "unrelated interval bounds are invalid",
+        )
+        overlaps = overlaps or any(
+            start < interval["end_ns"] and interval["start_ns"] < end
+            for interval in shared
+        )
+    _need(overlaps, "evidence does not prove unrelated work can overlap")
