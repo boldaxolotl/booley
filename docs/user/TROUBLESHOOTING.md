@@ -265,6 +265,22 @@ experiment, not a setup requirement.
   the build timeout is overridable via `BOOLEY_IMAGE_BUILD_TIMEOUT` (seconds,
   default 7200).
 
+- **An image build is refused for insufficient disk capacity.** Booley checks
+  Docker's reported storage filesystem before starting a build and preserves a
+  post-build safety reserve. The error shows available and required space plus
+  current/reclaimable build-cache usage. Run `docker builder prune` to
+  interactively remove unused build cache, then retry. Booley never prunes
+  images, volumes, Project artifacts, or user data automatically. If Docker's
+  reported root is not the filesystem that actually stores its data, bypass
+  only that invocation with `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1`; any other
+  value keeps the check enabled.
+
+- **Docker reports `No space left on device` after the capacity preflight
+  passed.** An image recipe can grow beyond the conservative estimate. Booley
+  retains Docker's error and adds the same safe build-cache cleanup guidance;
+  free space and retry. A completed preflight is not permission to delete
+  images, volumes, or Project data.
+
 ## Lint or ASIC synth fails with an interface parameter mismatch
 
 If the module you point `lint` or `synth` at carries **SystemVerilog

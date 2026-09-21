@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from typing import TextIO
 
+from booley.runtime.docker_capacity import ensure_docker_build_capacity
+
 HEARTBEAT_INTERVAL_S = 60.0
 _QUEUE_SIZE = 256
 _EOF = object()
@@ -86,9 +88,16 @@ def _present_progress(output: TextIO, line: str, *, verbose: bool, last: str) ->
 
 def _diagnostics(tail: deque[tuple[int, str]], salient: deque[tuple[int, str]]) -> tuple[str, ...]:
     retained = dict((*salient, *tail))
-    return tuple(
+    diagnostics = tuple(
         retained[sequence] for sequence in sorted(retained) if ">>>" not in retained[sequence]
     )
+    if any("no space left on device" in line.lower() for line in diagnostics):
+        return (
+            *diagnostics,
+            "Docker storage filled during the build; free unused cache with "
+            "`docker builder prune`, then retry.",
+        )
+    return diagnostics
 
 
 @dataclass
@@ -209,6 +218,7 @@ def run_docker_build(
     output: TextIO | None = None,
 ) -> DockerBuildResult:
     """Run one Docker build while keeping useful progress observable."""
+    ensure_docker_build_capacity(command, image=image)
     sink = sys.stdout if output is None else output
     if verbose and sink.isatty():
         try:

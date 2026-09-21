@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
+from collections import namedtuple
 from pathlib import Path
 from queue import Queue
 
@@ -76,6 +78,41 @@ class _ExitedProcess:
         return self.returncode
 
 
+def _install_fake_docker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cached: bool,
+    build_cache: str = "20GB",
+) -> Path:
+    docker = tmp_path / "docker"
+    marker = tmp_path / "build-started"
+    image_result = "printf 'sha256:cached\\n'" if cached else "exit 1"
+    docker.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = info ]; then\n"
+        f"  printf '%s\\n' {tmp_path}\n"
+        "elif [ \"$1\" = image ]; then\n"
+        f"  {image_result}\n"
+        "elif [ \"$1\" = system ]; then\n"
+        f"  printf 'Build Cache\\t{build_cache}\\t18GB\\n'\n"
+        "elif [ \"$1\" = build ]; then\n"
+        f"  touch {marker}\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    return marker
+
+
+def _set_free_space(monkeypatch: pytest.MonkeyPatch, gib: int) -> None:
+    disk_usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(
+        "shutil.disk_usage", lambda _path: disk_usage(100, 88, gib * 2**30)
+    )
+
+
 def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -> None:
     release = tmp_path / "release"
     child = (
@@ -108,6 +145,124 @@ def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -
 
     assert not worker.is_alive()
     assert results[0].returncode == 0
+
+
+def test_docker_build_refuses_low_capacity_before_starting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    marker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    _set_free_space(monkeypatch, 12)
+
+    with pytest.raises(OSError) as raised:
+        run_docker_build(
+            ["docker", "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    message = str(raised.value)
+    assert "12.0 GiB available" in message
+    assert "35.0 GiB required" in message
+    assert "30.0 GiB cold-build headroom" in message
+    assert "5.0 GiB safety reserve" in message
+    assert "16.8 GiB reclaimable" in message
+    assert "docker builder prune" in message
+    assert "BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1" in message
+    assert not marker.exists()
+
+
+def test_cached_docker_build_uses_smaller_headroom(tmp_path: Path, monkeypatch) -> None:
+    marker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
+    _set_free_space(monkeypatch, 16)
+
+    result = run_docker_build(
+        ["docker", "build", "-t", "booley-sandbox", "."],
+        image="booley-sandbox",
+        verbose=False,
+        timeout=10,
+        output=_RecordingOutput(),
+    )
+
+    assert result.returncode == 0
+    assert marker.exists()
+
+
+def test_cached_docker_build_preserves_five_gib_safety_reserve(
+    tmp_path: Path, monkeypatch
+) -> None:
+    marker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
+    _set_free_space(monkeypatch, 14)
+
+    with pytest.raises(OSError, match=r"15\.0 GiB required") as raised:
+        run_docker_build(
+            ["docker", "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    assert "10.0 GiB cached-target headroom" in str(raised.value)
+    assert not marker.exists()
+
+
+def test_target_without_build_cache_uses_cold_build_headroom(
+    tmp_path: Path, monkeypatch
+) -> None:
+    marker = _install_fake_docker(
+        tmp_path, monkeypatch, cached=True, build_cache="0B"
+    )
+    _set_free_space(monkeypatch, 16)
+
+    with pytest.raises(OSError, match=r"35\.0 GiB required") as raised:
+        run_docker_build(
+            ["docker", "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    assert "30.0 GiB cold-build headroom" in str(raised.value)
+    assert not marker.exists()
+
+
+def test_disk_preflight_override_allows_expert_build(
+    tmp_path: Path, monkeypatch
+) -> None:
+    marker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    _set_free_space(monkeypatch, 1)
+    monkeypatch.setenv("BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT", "1")
+
+    result = run_docker_build(
+        ["docker", "build", "-t", "booley-sandbox", "."],
+        image="booley-sandbox",
+        verbose=False,
+        timeout=10,
+        output=_RecordingOutput(),
+    )
+
+    assert result.returncode == 0
+    assert marker.exists()
+
+
+def test_disk_preflight_override_accepts_only_one(tmp_path: Path, monkeypatch) -> None:
+    marker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    _set_free_space(monkeypatch, 1)
+    monkeypatch.setenv("BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT", "true")
+
+    with pytest.raises(OSError, match="Insufficient disk capacity"):
+        run_docker_build(
+            ["docker", "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    assert not marker.exists()
 
 
 def test_redirected_silent_build_emits_bounded_heartbeat(tmp_path: Path, monkeypatch) -> None:
@@ -207,7 +362,7 @@ def test_output_capture_failure_is_reported_with_build_context(monkeypatch) -> N
 
     with pytest.raises(OSError, match="booley-sandbox Docker build output capture failed"):
         run_docker_build(
-            ["docker", "build", "."],
+            [sys.executable, "-c", "pass"],
             image="booley-sandbox",
             verbose=False,
             timeout=10,
@@ -233,6 +388,26 @@ def test_failure_retains_early_error_despite_noisy_cleanup() -> None:
     assert result.returncode == 1
     assert "ERROR: package checksum mismatch" in result.diagnostics
     assert len(result.diagnostics) <= 120
+
+
+def test_capacity_exhaustion_after_preflight_has_cleanup_guidance() -> None:
+    result = run_docker_build(
+        [
+            sys.executable,
+            "-c",
+            "print('ERROR: no space left on device'); raise SystemExit(1)",
+        ],
+        image="booley-sandbox",
+        verbose=False,
+        timeout=10,
+        output=_RecordingOutput(),
+    )
+
+    assert result.returncode == 1
+    assert result.diagnostics[-1] == (
+        "Docker storage filled during the build; free unused cache with "
+        "`docker builder prune`, then retry."
+    )
 
 
 def test_closed_progress_sink_does_not_fail_a_healthy_build() -> None:
