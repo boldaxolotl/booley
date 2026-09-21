@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from booley.harness.bootstrap import BootstrapState, reconcile_bootstrap
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
+from booley.runtime.host_install import HostInstallationError, adopt_host_installation
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
+from booley.runtime.paths import skills_dir
 
 
 def run_bootstrap(args: object) -> int:
     """Run Host Bootstrap and render its typed findings."""
+    if getattr(args, "adopt_installation", False) and getattr(args, "check_only", False):
+        print(red("--adopt-installation cannot be combined with --check-only"))
+        return 2
     intent = (
         Intent.CHECK
         if getattr(args, "check_only", False)
@@ -28,6 +33,18 @@ def run_bootstrap(args: object) -> int:
         from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         with host_lifecycle_lock("host bootstrap"):
+            if getattr(args, "adopt_installation", False):
+                try:
+                    identity = adopt_host_installation(skills_dir())
+                except HostInstallationError as exc:
+                    print(red(f"Cannot adopt host installation: {exc}"))
+                    return 2
+                print(
+                    green(
+                        "Adopted canonical Booley host installation "
+                        f"{identity.version} ({identity.payload_fingerprint[:12]})."
+                    )
+                )
             if shared_recovery_blocks_command(read_only=False):
                 print(
                     yellow(

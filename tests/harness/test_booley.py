@@ -189,9 +189,11 @@ def test_bare_booley_defaults_to_chat():
 
 
 def test_bootstrap_parser_exposes_only_host_reconciliation_flags():
-    args = tlr._build_parser().parse_args(["bootstrap", "--check-only", "--verbose"])
+    args = tlr._build_parser().parse_args(
+        ["bootstrap", "--adopt-installation", "--verbose"]
+    )
     assert args.command == "bootstrap"
-    assert args.check_only is True
+    assert args.adopt_installation is True
     assert args.verbose is True
     assert not hasattr(args, "project_root")
 
@@ -222,6 +224,7 @@ def test_projects_dispatch_precedes_active_project_discovery(monkeypatch):
     args = tlr._build_parser().parse_args(["projects", "--json"])
     monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
     monkeypatch.setattr(project_inventory_cli, "run", lambda _args: 19)
     monkeypatch.setattr(
         tlr,
@@ -230,6 +233,20 @@ def test_projects_dispatch_precedes_active_project_discovery(monkeypatch):
     )
 
     assert tlr.main() == 19
+
+
+def test_noncanonical_host_command_stops_before_dispatch(monkeypatch, capsys):
+    args = tlr._build_parser().parse_args(["projects", "--json"])
+    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    monkeypatch.setattr(
+        tlr,
+        "_host_install_authority_error",
+        lambda _command: "not the canonical host installation",
+    )
+
+    assert tlr.main() == 2
+    assert "not the canonical" in capsys.readouterr().err
 
 
 def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):

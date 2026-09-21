@@ -11,6 +11,7 @@ from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.harness import bootstrap
 from booley.harness.image_lifecycle import Intent
 from booley.runtime import runtime_context
+from booley.runtime.host_install import HostInstallationError, load_host_installation
 
 MIN_PY = (3, 11)
 
@@ -43,6 +44,7 @@ def inspect_host() -> HostDiagnosticResult:
         _add_environment(runtime.finding, report)
         docker_exe = runtime.executable
     else:
+        _inspect_host_installation(report)
         result = bootstrap.reconcile_bootstrap(Intent.CHECK)
         _add_bootstrap(result, report)
         docker_ready = any(
@@ -52,6 +54,19 @@ def inspect_host() -> HostDiagnosticResult:
         docker_exe = shutil.which("docker") if docker_ready else None
         _add_environment(host_environment.probe_host_clock(), report)
     return HostDiagnosticResult(report.report(), docker_exe)
+
+
+def _inspect_host_installation(report: Findings) -> None:
+    try:
+        identity = load_host_installation()
+    except HostInstallationError as exc:
+        report.fail(str(exc), "booley bootstrap --adopt-installation")
+        return
+    report.pass_(
+        "canonical Booley host installation "
+        f"v{identity.version} ({identity.payload_fingerprint[:12]}) at "
+        f"{identity.distribution_root}"
+    )
 
 
 def _inspect_package(report: Findings) -> None:

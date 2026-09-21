@@ -1,6 +1,7 @@
 """Host diagnostics use Bootstrap observations without initiating preparation."""
 
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +59,25 @@ def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch):
     assert any(
         f.severity is Severity.SKIP and "inside" in f.message for f in result.report.findings
     )
+
+
+def test_host_diagnosis_reports_canonical_installation(monkeypatch):
+    report = host_diagnostics.Findings()
+    monkeypatch.setattr(
+        host_diagnostics,
+        "load_host_installation",
+        lambda: SimpleNamespace(
+            version="1.2.3",
+            payload_fingerprint="abcdef0123456789",
+            distribution_root="/opt/booley",
+        ),
+    )
+
+    host_diagnostics._inspect_host_installation(report)
+
+    finding = report.report().findings[0]
+    assert "v1.2.3 (abcdef012345)" in finding.message
+    assert "/opt/booley" in finding.message
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])

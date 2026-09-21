@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,15 @@ def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
     inspect_host = host_diagnostics.inspect_host
     _patch_environment(monkeypatch, tmp_path, project_dir)
     monkeypatch.setattr(host_diagnostics, "inspect_host", inspect_host)
+    monkeypatch.setattr(
+        host_diagnostics,
+        "load_host_installation",
+        lambda: SimpleNamespace(
+            version="0.2.15",
+            payload_fingerprint="b" * 64,
+            distribution_root="/opt/booley",
+        ),
+    )
     bootstrap = host_diagnostics.bootstrap
     result = bootstrap.BootstrapResult(
         host_diagnostics.Intent.CHECK,

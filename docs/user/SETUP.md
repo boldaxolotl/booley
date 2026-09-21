@@ -44,9 +44,11 @@ Their build systems have nothing in common (FuseSoC, bare Makefiles, a vendor te
 
 ## Host Bootstrap · host
 
-Run this once after installation and again after Booley upgrades:
+Adopt the installed wheel once, then run Host Bootstrap after installation and
+again after Booley upgrades:
 
 ```bash
+booley bootstrap --adopt-installation
 booley bootstrap
 ```
 
@@ -156,6 +158,9 @@ Booley wheel. A source checkout, worktree, QA runtime, or virtual environment
 may exercise candidate code in isolation, but it cannot deploy or retarget the
 global skills under `~/.agents` or `~/.claude`. Run the `booley` installed for
 the base host interpreter when Host Bootstrap reports this policy violation.
+The recorded identity is machine-maintained state in
+`~/.config/booley/host-installation.json`; it is intentionally separate from
+the user-authored host policy in `config.toml`.
 
 The commit-msg hook installed in step 5 has one behavior worth knowing about
 later; it doesn't affect the happy-path install, so it's spelled out under

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -157,6 +158,37 @@ def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) 
         == 0
     )
     assert seen == [Intent.REFRESH]
+
+
+def test_public_adapter_adopts_before_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    identity = SimpleNamespace(version="1.2.3", payload_fingerprint="f" * 64)
+    monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "adopt_host_installation",
+        lambda _source: events.append("adopt") or identity,
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: events.append("reconcile")
+        or bootstrap.BootstrapResult(intent, ()),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            adopt_installation=True,
+        )
+    )
+
+    assert status == 0
+    assert events == ["adopt", "reconcile"]
 
 
 def test_vscode_requires_an_executable_or_installed_application(

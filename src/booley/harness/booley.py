@@ -812,6 +812,11 @@ def _add_bootstrap_subparser(sub) -> None:
         help="Refresh Booley-managed host resources even when they are current",
     )
     parser.add_argument(
+        "--adopt-installation",
+        action="store_true",
+        help="Record this installed wheel as the canonical host installation",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show detailed reconciliation output"
     )
 
@@ -2459,6 +2464,16 @@ def _enforce_runtime_location(command: str | None) -> None:
         sys.exit(2)
 
 
+def _host_install_authority_error(command: str | None) -> str | None:
+    """Reject host lifecycle commands imported from a noncanonical installation."""
+    if command not in _HOST_ONLY_COMMANDS or command == "bootstrap":
+        return None
+    from booley.runtime.host_install import host_install_error
+    from booley.runtime.paths import skills_dir
+
+    return host_install_error(skills_dir())
+
+
 def main() -> int:  # noqa: PLR0911 -- CLI coordinator; returns preserve each command's exit code
     """Entry point: parse CLI, handle early exits, set up runtime, run ticket loop."""
     args = _parse_cli()
@@ -2467,6 +2482,9 @@ def main() -> int:  # noqa: PLR0911 -- CLI coordinator; returns preserve each co
     # Bootstrap has no Project and must not even discover one. Its host-only
     # venue guard still runs before configuration or reconciliation.
     _enforce_runtime_location(command)
+    if authority_error := _host_install_authority_error(command):
+        print(authority_error, file=sys.stderr)
+        return 2
     if command == "bootstrap":
         return run_bootstrap(args)
     if command == "projects":
