@@ -2738,3 +2738,51 @@ def test_mutation_reports_failed_rollback_with_recovery_tag(tmp_path: Path) -> N
             docker,
             FailingBuilder(docker),
         )
+
+
+def test_incremental_adapter_prepare_and_policy_helpers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docker = FakeDocker({"candidate": ("sha256:candidate", {})})
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
+    monkeypatch.setattr(adapter, "_materialize_managed_project_recipe", lambda _node: None)
+    monkeypatch.setattr(adapter, "_build_role", lambda *_args: None)
+
+    assert adapter.prepare(node, candidate_reference="candidate", parent_reference=None) == (
+        "candidate"
+    )
+    assert isinstance(
+        harness_lifecycle._transaction_build_adapter(tmp_path, docker, verbose=False),
+        harness_lifecycle._IncrementalBuildAdapter,
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "_configured_image",
+        lambda _root: "booley-sandbox-riscv",
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle, "_project_requirements_body", lambda _root: "req"
+    )
+    assert harness_lifecycle._uses_managed_riscv_project(tmp_path)
+
+
+def test_runtime_identity_and_ancestry_edge_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: root / "a" / "b" / "c" / "d")
+    monkeypatch.setattr(lifecycle, "resolve_wheel_source_fingerprint", lambda _root: "resolved")
+    assert lifecycle._expected_wheel_source_fingerprint() == "resolved"
+    assert lifecycle._hash_paths(root, (outside,))
+
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
+    labels = dict(node.expected_labels)
+    labels[lifecycle.LABEL_BUILD_ORIGIN] = "registry"
+    docker = FakeDocker({node.reference: ("sha256:" + "a" * 64, labels)})
+    assert lifecycle._node_provenance_reason(node, docker).code == "wrong-origin"
+    child = replace(node, parent="missing-parent")
+    assert lifecycle._node_ancestry_reason(child, docker).code == "parent-changed"

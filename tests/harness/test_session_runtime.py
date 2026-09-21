@@ -3689,6 +3689,35 @@ class TestSessionRefresh:
 
         assert run.call_count == 1
 
+    def test_runtime_probe_skips_optional_identity_checks_when_unrequested(
+        self, tmp_path: Path
+    ) -> None:
+        image_id = "sha256:" + "a" * 64
+        with (
+            patch.object(sr, "_docker_stdout", return_value=image_id),
+            patch.object(sr, "_run") as run,
+        ):
+            sr.verify_refreshed_session(tmp_path, image_id, None)
+        run.assert_not_called()
+
+    def test_runtime_probe_rejects_malformed_wheel_identity(self, tmp_path: Path):
+        image_id = "sha256:" + "a" * 64
+        with (
+            patch.object(sr, "_docker_stdout", return_value=image_id),
+            patch.object(
+                sr,
+                "_run",
+                return_value=subprocess.CompletedProcess([], 0, "not-json", "probe failed"),
+            ),
+            pytest.raises(sr.SessionError, match="wheel identity"),
+        ):
+            sr.verify_refreshed_session(
+                tmp_path,
+                image_id,
+                None,
+                expected_wheel_source_fingerprint="wheel-source",
+            )
+
     def test_runtime_probe_rejects_wheel_identity_mismatch(self, tmp_path: Path):
         image_id = "sha256:" + "a" * 64
         identity = json.dumps(

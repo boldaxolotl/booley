@@ -517,3 +517,28 @@ def test_init_runtime_image_prepare_commit_validate_and_abort_wrappers(
     init_cmd.validate_runtime_image(prepared)
     init_cmd.abort_runtime_image(prepared)
     assert calls[-2:] == [("validate", prepared), ("abort", prepared)]
+
+
+def test_prepare_runtime_image_reports_planned_step_identity(monkeypatch, tmp_path: Path) -> None:
+    from booley.harness import init_cmd
+    from booley.runtime.image_lifecycle import PlanAction
+
+    step = SimpleNamespace(
+        reference="booley-sandbox",
+        action=PlanAction.BUILD,
+        role=SimpleNamespace(value="wheel-overlay"),
+        reason=SimpleNamespace(code="inputs-changed"),
+    )
+    plan = SimpleNamespace(
+        project_root=tmp_path,
+        nodes=(SimpleNamespace(reference=step.reference, effective_inputs="inputs"),),
+        steps=(step,),
+    )
+    prepared = object()
+    messages: list[str] = []
+    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
+    monkeypatch.setattr(init_cmd.image_lifecycle, "prepare", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(init_cmd, "info", messages.append)
+
+    assert init_cmd.prepare_runtime_image(tmp_path) is prepared
+    assert any("inputs-changed inputs" in message for message in messages)
