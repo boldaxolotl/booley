@@ -289,8 +289,8 @@ def test_parse_args_rejects_invalid_phase_combinations(argv, message, capsys):
     assert message in capsys.readouterr().err
 
 
-def test_main_renders_usage_error_as_json(monkeypatch, capsys):
-    monkeypatch.chdir(Path("/tmp"))
+def test_main_renders_usage_error_as_json(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
 
     assert readiness.main(["--phase", "publish", "--json"]) == 1
     document = json.loads(capsys.readouterr().out)
