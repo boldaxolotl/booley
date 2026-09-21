@@ -12,18 +12,20 @@ import hashlib
 import json
 import os
 import secrets
-import shutil
 import stat
 import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
+from booley.core.boundary import require_dict, require_list
 from booley.feedback import materialize
+from booley.runtime.process_group import ProcessGroup, is_process_group_alive
+from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_checkout_project_dir
 
 MANIFEST_VERSION = 1
-SETUP_ROOT = Path(".booley_project")
+SETUP_ROOT = Path(PROJECT_DIR_NAME)
 LEGACY_GROUPS = (Path(".runtime"), Path("tmp"), Path("logs"))
 Category = Literal["preserve", "remove", "evict-cache", "unresolved"]
 
@@ -81,11 +83,29 @@ class ManifestEntry:
     identity: FileIdentity
     dependencies: tuple[str, ...] = ()
     active: bool = False
+    process_group_id: int | None = None
+    job_record: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> ManifestEntry:
-        identity = FileIdentity(**raw["identity"])
-        dependencies = tuple(str(item) for item in raw.get("dependencies", ()))
+        try:
+            identity = FileIdentity(**require_dict(raw.get("identity"), field="artifact identity"))
+        except (TypeError, ValueError, KeyError) as exc:
+            raise CleanupError(f"invalid artifact identity: {exc}") from exc
+        raw_dependencies = require_list(raw.get("dependencies", []), field="artifact dependencies")
+        if not all(isinstance(item, str) for item in raw_dependencies):
+            raise CleanupError("artifact dependencies must be strings")
+        dependencies = tuple(raw_dependencies)
+        process_group_id = raw.get("process_group_id")
+        if process_group_id is not None and (
+            isinstance(process_group_id, bool)
+            or not isinstance(process_group_id, int)
+            or process_group_id <= 0
+        ):
+            raise CleanupError("process_group_id must be a positive integer")
+        active = raw.get("active", False)
+        if not isinstance(active, bool):
+            raise CleanupError("active must be a boolean")
         return cls(
             path=str(raw["path"]),
             producer=str(raw.get("producer", "unknown")),
@@ -93,11 +113,15 @@ class ManifestEntry:
             disposition=str(raw.get("disposition", "remove")),
             identity=identity,
             dependencies=dependencies,
-            active=bool(raw.get("active", False)),
+            active=active,
+            process_group_id=process_group_id,
+            job_record=str(raw["job_record"]) if raw.get("job_record") else None,
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value["dependencies"] = list(self.dependencies)
+        return value
 
 
 @dataclass(frozen=True)
@@ -168,8 +192,11 @@ class CleanupResult:
 def _project_root(root: Path | None) -> Path:
     """Resolve and validate the checkout containing the Project directory."""
     resolved = (root or Path.cwd()).resolve()
-    project_dir = resolved / SETUP_ROOT
-    if not project_dir.is_dir():
+    try:
+        project_dir = resolve_checkout_project_dir(resolved)
+    except (OSError, ValueError) as exc:
+        raise CleanupError(f"cannot resolve the Project directory: {exc}") from exc
+    if project_dir != resolved / SETUP_ROOT or project_dir.is_symlink() or not project_dir.is_dir():
         raise CleanupError("no .booley_project directory was found")
     return resolved
 
@@ -187,7 +214,10 @@ def _safe_relative(root: Path, raw: str | Path) -> str:
         raise CleanupError(f"Git metadata is never a cleanup target: {raw}")
     absolute = root / normalized
     resolved = absolute.resolve(strict=False)
-    project_dir = (root / SETUP_ROOT).resolve()
+    project_dir = root / SETUP_ROOT
+    if project_dir.is_symlink():
+        raise CleanupError(f"the Project directory must not be a symlink: {project_dir}")
+    project_dir = project_dir.resolve()
     try:
         resolved.relative_to(project_dir)
     except ValueError as exc:
@@ -212,7 +242,12 @@ def _reject_shared_boundary(root: Path, absolute: Path, manifest_path: Path) -> 
 
 def _manifest_path(root: Path, run_id: str) -> Path:
     """Return the only supported manifest location for a setup run."""
-    if not run_id or Path(run_id).name != run_id or not run_id.isascii():
+    if (
+        not run_id
+        or run_id in {".", ".."}
+        or Path(run_id).name != run_id
+        or not run_id.isascii()
+    ):
         raise CleanupError("run_id must be one safe ASCII path component")
     return root / SETUP_ROOT / "tmp" / "setup" / run_id / "manifest.json"
 
@@ -247,8 +282,10 @@ def prepare_run(project_root: Path | None = None, run_id: str | None = None) -> 
 def _load_manifest(path: Path, root: Path) -> dict[str, Any]:
     """Load and validate one manifest before it can influence cleanup."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = require_dict(
+            json.loads(path.read_text(encoding="utf-8")), field="cleanup manifest"
+        )
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise CleanupError(f"cannot read cleanup manifest {path}: {exc}") from exc
     if payload.get("version") != MANIFEST_VERSION:
         raise CleanupError("unsupported cleanup manifest version")
@@ -259,14 +296,22 @@ def _load_manifest(path: Path, root: Path) -> dict[str, Any]:
     )
     if path.resolve() != expected.resolve() and not valid_quarantine:
         raise CleanupError("manifest is not beneath its recorded setup run root")
+    try:
+        raw_entries = require_list(payload.get("entries", []), field="manifest entries")
+        journal = require_dict(payload.get("journal", {}), field="manifest journal")
+    except (TypeError, ValueError) as exc:
+        raise CleanupError(f"invalid cleanup manifest structure: {exc}") from exc
     entries = []
-    for raw in payload.get("entries", []):
-        entry = ManifestEntry.from_dict(raw)
+    for raw in raw_entries:
+        try:
+            entry = ManifestEntry.from_dict(require_dict(raw, field="manifest entry"))
+        except (TypeError, ValueError, KeyError) as exc:
+            raise CleanupError(f"invalid manifest entry: {exc}") from exc
         relative = _safe_relative(root, entry.path)
         _reject_shared_boundary(root, _absolute(root, relative), path)
         entries.append(entry)
     payload["entries"] = [entry.as_dict() for entry in entries]
-    payload.setdefault("journal", {})
+    payload["journal"] = journal
     return payload
 
 
@@ -284,6 +329,28 @@ def _entry_path(root: Path, entry: ManifestEntry) -> Path:
     return path
 
 
+def _active_use_reason(entry: ManifestEntry) -> str | None:
+    """Return a live process or Job claim that blocks mutation."""
+    if entry.active:
+        return "active-use claim"
+    if entry.process_group_id is not None and is_process_group_alive(
+        ProcessGroup(entry.process_group_id)
+    ):
+        return f"process group {entry.process_group_id} is still alive"
+    if entry.job_record:
+        from booley.runtime import job_records
+        from booley.runtime.pid import is_pid_alive
+
+        record_path = Path(entry.job_record)
+        if record_path.is_file():
+            record = job_records.read_record(record_path.stem, record_path.parent)
+            if record is None:
+                return f"Job record is unreadable: {record_path}"
+            if job_records.is_active(record, is_pid_alive):
+                return f"Job record is still active: {record_path}"
+    return None
+
+
 def _descendants(root: Path, path: Path) -> Iterable[Path]:
     """Yield a bounded tree without following symlinks."""
     if not path.is_dir():
@@ -295,42 +362,39 @@ def _descendants(root: Path, path: Path) -> Iterable[Path]:
     return tuple(found)
 
 
-def record_artifact(
-    project_root: Path | None,
-    run_id: str,
-    path: Path | str,
+def _manifest_entries(payload: dict[str, Any]) -> list[ManifestEntry]:
+    """Decode the manifest entries after the document boundary was checked."""
+    return [ManifestEntry.from_dict(raw) for raw in payload["entries"]]
+
+
+def _bounded_entries(
+    root: Path,
+    absolute: Path,
     *,
     producer: str,
     artifact_class: str,
-    disposition: str = "remove",
-    dependencies: Iterable[Path | str] = (),
-    active: bool = False,
-) -> ManifestEntry:
-    """Record an existing setup-created path before it is eligible for removal."""
-    root = _project_root(project_root)
-    manifest_path = _manifest_path(root, run_id)
-    payload = _load_manifest(manifest_path, root)
-    relative = _safe_relative(root, path)
-    absolute = _absolute(root, relative)
-    _reject_shared_boundary(root, absolute, manifest_path)
-    if not absolute.exists() and not absolute.is_symlink():
-        raise CleanupError(f"cannot record missing artifact: {relative}")
+    disposition: str,
+    active: bool,
+    process_group_id: int | None,
+    job_record: str | None,
+) -> list[ManifestEntry]:
+    """Expand a recorded directory into its exact, no-discovery children."""
     identity = FileIdentity.from_path(absolute)
     if identity.kind == "symlink":
-        raise CleanupError(f"symlinks cannot be setup-owned artifacts: {relative}")
-    dep_paths = tuple(_safe_relative(root, item) for item in dependencies)
-    entry = ManifestEntry(
-        relative,
-        producer,
-        artifact_class,
-        disposition,
-        identity,
-        dep_paths,
-        active,
-    )
-    entries = [ManifestEntry.from_dict(raw) for raw in payload["entries"]]
-    entries = [old for old in entries if old.path != relative]
-    entries.append(entry)
+        raise CleanupError(f"symlinks cannot be setup-owned artifacts: {absolute}")
+    entries = [
+        ManifestEntry(
+            _safe_relative(root, absolute),
+            producer,
+            artifact_class,
+            disposition,
+            identity,
+            (),
+            active,
+            process_group_id,
+            job_record,
+        )
+    ]
     for child in _descendants(root, absolute):
         child_relative = _safe_relative(root, child)
         child_identity = FileIdentity.from_path(child)
@@ -345,12 +409,55 @@ def record_artifact(
                 child_identity,
                 (),
                 active,
+                process_group_id,
+                job_record,
             )
         )
+    return entries
+
+
+def record_artifact(
+    project_root: Path | None,
+    run_id: str,
+    path: Path | str,
+    *,
+    producer: str,
+    artifact_class: str,
+    disposition: str = "remove",
+    dependencies: Iterable[Path | str] = (),
+    active: bool = False,
+    process_group_id: int | None = None,
+    job_record: Path | str | None = None,
+) -> ManifestEntry:
+    """Record an existing setup-created path before it is eligible for removal."""
+    root = _project_root(project_root)
+    manifest_path = _manifest_path(root, run_id)
+    payload = _load_manifest(manifest_path, root)
+    relative = _safe_relative(root, path)
+    absolute = _absolute(root, relative)
+    _reject_shared_boundary(root, absolute, manifest_path)
+    if not absolute.exists() and not absolute.is_symlink():
+        raise CleanupError(f"cannot record missing artifact: {relative}")
+    dep_paths = tuple(_safe_relative(root, item) for item in dependencies)
+    job_path = str(job_record) if job_record is not None else None
+    new_entries = _bounded_entries(
+        root,
+        absolute,
+        producer=producer,
+        artifact_class=artifact_class,
+        disposition=disposition,
+        active=active,
+        process_group_id=process_group_id,
+        job_record=job_path,
+    )
+    new_entries[0] = replace(new_entries[0], dependencies=dep_paths)
+    entries = _manifest_entries(payload)
+    entries = [old for old in entries if old.path != relative]
+    entries.extend(new_entries)
     unique = {item.path: item for item in entries}
     payload["entries"] = [item.as_dict() for item in sorted(unique.values(), key=lambda item: item.path)]
     _atomic_write(manifest_path, payload)
-    return entry
+    return new_entries[0]
 
 
 def _read_plan_ledger(root: Path) -> dict[str, str]:
@@ -440,8 +547,9 @@ def _item_for_entry(
     except CleanupError as exc:
         return CleanupItem(entry.path, "unresolved", 0, str(exc), entry.identity)
     recorded_bytes = entry.identity.size
-    if entry.active:
-        return CleanupItem(entry.path, "unresolved", recorded_bytes, "active-use claim", entry.identity)
+    active_reason = _active_use_reason(entry)
+    if active_reason:
+        return CleanupItem(entry.path, "unresolved", recorded_bytes, active_reason, entry.identity)
     if entry.disposition == "preserve" or (
         retention_mode == "diagnostic" and entry.artifact_class == "raw-evidence"
     ):
@@ -531,15 +639,52 @@ def _quarantine_path(path: Path) -> Path:
     return path.with_name(f".booley-cleanup-{uuid.uuid4().hex}-{path.name}")
 
 
+def _open_parent_nofollow(path: Path) -> int:
+    """Open a candidate parent without following a boundary symlink."""
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory:
+        raise OSError("no-follow directory operations are unavailable")
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    return os.open(path, os.O_RDONLY | cloexec | directory | nofollow)
+
+
+def _rename_nofollow(path: Path, quarantine: Path) -> None:
+    """Rename within one opened parent directory without following parents."""
+    fd = _open_parent_nofollow(path.parent)
+    try:
+        os.rename(path.name, quarantine.name, src_dir_fd=fd, dst_dir_fd=fd)
+    finally:
+        os.close(fd)
+
+
 def _delete_quarantine(path: Path) -> None:
     """Delete only an already-quarantined, identity-checked path."""
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    elif path.exists() or path.is_symlink():
-        path.unlink()
+    fd = _open_parent_nofollow(path.parent)
+    try:
+        info = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            os.rmdir(path.name, dir_fd=fd)
+        else:
+            os.unlink(path.name, dir_fd=fd)
+    except FileNotFoundError:
+        return
+    finally:
+        os.close(fd)
 
 
-def _apply_entry(  # noqa: PLR0911 -- each fail-closed boundary has a distinct outcome
+def _delete_scratch_quarantine(path: Path) -> None:
+    """Delete a quarantined scratch root after removing its manifest."""
+    if not path.is_dir() or path.is_symlink():
+        raise OSError(f"scratch quarantine is not a directory: {path}")
+    contents = tuple(path.iterdir())
+    if len(contents) != 1 or contents[0].name != "manifest.json":
+        raise OSError(f"scratch quarantine contains unexpected data: {path}")
+    _delete_quarantine(contents[0])
+    _delete_quarantine(path)
+
+
+def _apply_entry(  # noqa: PLR0911, PLR0912 -- each fail-closed boundary is explicit
     root: Path,
     entry: ManifestEntry,
     journal: dict[str, Any],
@@ -549,17 +694,27 @@ def _apply_entry(  # noqa: PLR0911 -- each fail-closed boundary has a distinct o
     state = journal.get(entry.path, {})
     if state.get("status") == "done":
         return "removed", 0, None
+    quarantine = Path(state["quarantine"]) if state.get("quarantine") else None
+    if quarantine and (quarantine.exists() or quarantine.is_symlink()):
+        if not entry.identity.matches(quarantine):
+            return "unresolved", 0, "quarantine identity changed"
+        _delete_quarantine(quarantine)
+        journal[entry.path] = {"status": "done"}
+        return "removed", entry.identity.size, None
     path = _entry_path(root, entry)
     if not path.exists():
         journal[entry.path] = {"status": "absent"}
         return "absent", 0, None
+    active_reason = _active_use_reason(entry)
+    if active_reason:
+        return "unresolved", 0, active_reason
     if not entry.identity.matches(path) or entry.identity.kind in {"symlink", "special"}:
         return "unresolved", 0, "identity changed or unsupported file type"
     if entry.identity.kind == "directory" and any(path.iterdir()):
         return "unresolved", 0, "directory is not empty after bounded children were processed"
     if path.parent.stat().st_dev != path.stat().st_dev:
         return "unresolved", 0, "candidate is not on the same filesystem as its parent"
-    quarantine = Path(state["quarantine"]) if state.get("quarantine") else _quarantine_path(path)
+    quarantine = quarantine or _quarantine_path(path)
     journal[entry.path] = {"status": "quarantining", "quarantine": str(quarantine)}
     checkpoint()
     if quarantine.exists() or quarantine.is_symlink():
@@ -568,7 +723,7 @@ def _apply_entry(  # noqa: PLR0911 -- each fail-closed boundary has a distinct o
     else:
         if not entry.identity.matches(path):
             return "unresolved", 0, "candidate changed before quarantine"
-        path.rename(quarantine)
+        _rename_nofollow(path, quarantine)
     if not entry.identity.matches(quarantine):
         return "unresolved", 0, "quarantine identity changed after rename"
     size = entry.identity.size
@@ -579,13 +734,18 @@ def _apply_entry(  # noqa: PLR0911 -- each fail-closed boundary has a distinct o
 
 def _entry_map(payload: dict[str, Any]) -> dict[str, ManifestEntry]:
     """Build a validated path index for the apply transaction."""
-    entries = [ManifestEntry.from_dict(raw) for raw in payload["entries"]]
+    entries = _manifest_entries(payload)
     return {entry.path: entry for entry in entries}
 
 
 def _materialize_dependencies(root: Path, entries: Iterable[ManifestEntry]) -> set[Path]:
     """Snapshot structured Feedback attachments before their source is removed."""
-    sources = {_absolute(root, entry.path) for entry in entries}
+    entries = tuple(entries)
+    sources = {
+        _absolute(root, dependency)
+        for entry in entries
+        for dependency in (*entry.dependencies, entry.path)
+    }
     return set(materialize.materialize_attachments(root / SETUP_ROOT, sources))
 
 
@@ -598,9 +758,25 @@ def _materialize_for_candidates(
 ) -> list[str]:
     """Materialize Feedback evidence and isolate corrupt-log blockers."""
     dependency_entries = [entries[item.path] for item in candidates if item.path in entries]
+    explicit = {
+        _absolute(root, dependency)
+        for entry in dependency_entries
+        for dependency in entry.dependencies
+    }
+    selected = explicit | {
+        _absolute(root, item.path) for item in candidates if item.path in entries
+    }
     try:
-        _materialize_dependencies(root, dependency_entries)
-        unresolved: list[str] = []
+        referenced_before = materialize.referenced_sources(root / SETUP_ROOT, selected)
+        changed = _materialize_dependencies(root, dependency_entries)
+        candidate_paths = {
+            _absolute(root, candidate.path) for candidate in candidates if candidate.path in entries
+        }
+        unresolved = [
+            _safe_relative(root, path)
+            for path in (explicit | referenced_before) & candidate_paths
+            if path not in changed
+        ]
     except (
         CleanupError,
         OSError,
@@ -610,7 +786,7 @@ def _materialize_for_candidates(
     ) as exc:
         referenced = materialize.referenced_sources(
             root / SETUP_ROOT,
-            {_absolute(root, entry.path) for entry in dependency_entries},
+            selected,
         )
         unresolved = [_safe_relative(root, path) for path in referenced]
         payload["journal"]["attachments"] = {"status": "unresolved", "reason": str(exc)}
@@ -618,7 +794,7 @@ def _materialize_for_candidates(
     return unresolved
 
 
-def _apply_scratch_root(
+def _apply_scratch_root(  # noqa: PLR0911 -- each recovery boundary is explicit
     root: Path,
     item: CleanupItem,
     journal: dict[str, Any],
@@ -627,12 +803,14 @@ def _apply_scratch_root(
     """Remove a run root only when its exact contents are known and empty."""
     path = _absolute(root, item.path)
     state = journal.get(item.path, {})
-    if not path.exists():
-        quarantine = Path(state["quarantine"]) if state.get("quarantine") else None
-        if quarantine and quarantine.exists() and item.identity and item.identity.matches(quarantine):
-            _delete_quarantine(quarantine)
+    quarantine = Path(state["quarantine"]) if state.get("quarantine") else None
+    if quarantine and (quarantine.exists() or quarantine.is_symlink()):
+        if item.identity and item.identity.matches(quarantine):
+            _delete_scratch_quarantine(quarantine)
             journal[item.path] = {"status": "done"}
             return "removed", 0, None
+        return "unresolved", 0, "scratch quarantine identity changed"
+    if not path.exists():
         return "absent", 0, None
     if not path.is_dir() or not item.identity or not item.identity.matches(path):
         return "unresolved", 0, "scratch root identity changed"
@@ -642,15 +820,15 @@ def _apply_scratch_root(
     quarantine = _quarantine_path(path)
     journal[item.path] = {"status": "quarantining", "quarantine": str(quarantine)}
     checkpoint()
-    path.rename(quarantine)
+    _rename_nofollow(path, quarantine)
     if not item.identity.matches(quarantine):
         return "unresolved", 0, "scratch quarantine identity changed"
-    _delete_quarantine(quarantine)
+    _delete_scratch_quarantine(quarantine)
     journal[item.path] = {"status": "done"}
     return "removed", 0, None
 
 
-def _apply_candidate(
+def _apply_candidate(  # noqa: PLR0911 -- each disposition boundary fails closed
     root: Path,
     item: CleanupItem,
     entry: ManifestEntry | None,
@@ -662,9 +840,21 @@ def _apply_candidate(
     if entry is None:
         return _apply_scratch_root(root, item, journal, checkpoint)
     if item.category == "evict-cache":
-        if cache_evictor is None or not cache_evictor(item.path):
-            return "unresolved", 0, "Flow cache owner is unavailable"
-        return "evicted", 0, None
+        if cache_evictor is not None:
+            if not cache_evictor(item.path):
+                return "unresolved", 0, "Flow cache owner rejected eviction"
+            return "evicted", 0, None
+        from booley.flows.edam import WorkRootLeaseError, try_work_root_lease
+
+        path = _entry_path(root, entry)
+        try:
+            with try_work_root_lease(path) as leased:
+                if leased is None:
+                    return "unresolved", 0, "Flow cache slot is actively leased"
+                outcome, size, reason = _apply_entry(root, entry, journal, checkpoint)
+        except WorkRootLeaseError as exc:
+            return "unresolved", 0, str(exc)
+        return ("evicted", size, reason) if outcome == "removed" else (outcome, size, reason)
     return _apply_entry(root, entry, journal, checkpoint)
 
 

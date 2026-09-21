@@ -134,6 +134,25 @@ def _rewrite_selected(
     return changed, before
 
 
+def _render_proofs(project_dir: Path, entries: list[Finding]) -> tuple[str, str]:
+    """Render both Feedback views so attachment migration proves equivalence."""
+    from booley.feedback import render
+
+    log = read_log(project_dir)
+    log.entries = entries
+    environment = render.collect_environment(project_dir)
+    origin = render.report_origin(log)
+    local = render.render_user_report(log, env=environment, origin=origin)
+    preview = render.render_booley_report(
+        log,
+        project_dir.parent,
+        project_dir=project_dir,
+        env=environment,
+        origin=origin,
+    ).body
+    return local, preview
+
+
 def materialize_attachments(project_dir: Path, sources: Iterable[Path]) -> tuple[Path, ...]:
     """Retarget selected structured attachments after equivalent render proof."""
     selected = {Path(source).expanduser().resolve(strict=False) for source in sources}
@@ -144,20 +163,12 @@ def materialize_attachments(project_dir: Path, sources: Iterable[Path]) -> tuple
         raise CorruptFindingsLogError(
             f"refusing attachment materialization: {log.corrupt_lines} corrupt Findings Log line(s)"
         )
-    changed, before = _rewrite_selected(project_dir, selected, log.entries)
+    before_proof = _render_proofs(project_dir, log.entries)
+    changed, _ = _rewrite_selected(project_dir, selected, log.entries)
     if not changed:
         return ()
-    from booley.feedback import render
-
-    for finding in log.entries:
-        if finding.id not in before:
-            continue
-        expected = before[finding.id]
-        actual: list[str] = []
-        for attachment in finding.attachments:
-            actual.extend(render._attachment_block(attachment))
-        if expected and expected != actual:
-            raise MaterializationError(f"attachment render changed for {finding.id}")
+    if before_proof != _render_proofs(project_dir, log.entries):
+        raise MaterializationError("attachment report or preview changed during materialization")
     _rewrite_attachments_only(project_dir, log.entries)
     return tuple(sorted(changed))
 

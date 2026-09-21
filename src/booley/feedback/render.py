@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.core.boundary import as_int
 from booley.feedback import redact as redact_mod
 from booley.feedback.findings import (
     BUCKET_TITLE,
@@ -171,9 +172,11 @@ def _attachment_block(raw_path: str) -> list[str]:
     excerpt_line_count = len(excerpt.splitlines())
     if metadata:
         display_name = Path(str(metadata.get("original_path", path))).name
-        line_count = int(metadata.get("line_count", line_count))
-        clipped = bool(metadata.get("clipped", clipped))
-        excerpt_line_count = int(metadata.get("excerpt_line_count", excerpt_line_count))
+        line_count = _metadata_int(metadata, "line_count", line_count)
+        clipped = _metadata_bool(metadata, "clipped", clipped)
+        excerpt_line_count = _metadata_int(
+            metadata, "excerpt_line_count", excerpt_line_count
+        )
     label = f"`{display_name}`" + (
         f" — last {excerpt_line_count} of {line_count} lines" if clipped else ""
     )
@@ -189,6 +192,18 @@ def _attachment_metadata(path: Path) -> dict[str, object]:
     except (OSError, json.JSONDecodeError, TypeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _metadata_int(metadata: dict[str, object], key: str, default: int) -> int:
+    """Read one non-negative optional metadata count."""
+    value = as_int(metadata.get(key), default)
+    return default if value is None or value < 0 else value
+
+
+def _metadata_bool(metadata: dict[str, object], key: str, default: bool) -> bool:
+    """Read one optional metadata flag without truthiness coercion."""
+    value = metadata.get(key)
+    return value if isinstance(value, bool) else default
 
 
 def _finding_block(finding: Finding, *, include_evidence: bool = True) -> list[str]:

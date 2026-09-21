@@ -45,6 +45,8 @@ def _add_record(commands: argparse._SubParsersAction) -> None:
     parser.add_argument("--disposition", choices=("preserve", "remove"), default="remove")
     parser.add_argument("--dependency", action="append", default=[])
     parser.add_argument("--active", action="store_true")
+    parser.add_argument("--process-group", type=int, default=None)
+    parser.add_argument("--job-record", default=None)
 
 
 def _add_preview(commands: argparse._SubParsersAction) -> None:
@@ -103,6 +105,8 @@ def _run_record(args: argparse.Namespace, root: Path) -> int:
         disposition=args.disposition,
         dependencies=args.dependency,
         active=args.active,
+        process_group_id=args.process_group,
+        job_record=args.job_record,
     )
     _print(entry.as_dict(), False)
     return 0
@@ -110,29 +114,29 @@ def _run_record(args: argparse.Namespace, root: Path) -> int:
 
 def _run_preview(args: argparse.Namespace, root: Path) -> int:
     """Build and print an immutable cleanup plan."""
-    plan = cleanup.preview_cleanup(
-        root,
-        run_id=args.run_id,
-        retention_mode=args.retention,
-        cache_disposition=args.cache_disposition,
-    )
+    plan = _build_plan(args, root)
     _print(plan.as_dict() if args.json else cleanup.format_summary(plan), args.json)
     return 0
 
 
 def _run_apply(args: argparse.Namespace, root: Path) -> int:
     """Apply the caller-approved digest, with no raw delete surface."""
-    plan = cleanup.preview_cleanup(
-        root,
-        run_id=args.run_id,
-        retention_mode=args.retention,
-        cache_disposition=args.cache_disposition,
-    )
+    plan = _build_plan(args, root)
     if plan.digest != args.digest:
         raise cleanup.CleanupBlockedError("the supplied preview digest is stale")
     result = cleanup.apply_cleanup(plan)
     _print(result.as_dict() if args.json else cleanup.format_summary(plan, result), args.json)
     return 0 if not result.unresolved else 1
+
+
+def _build_plan(args: argparse.Namespace, root: Path) -> cleanup.CleanupPlan:
+    """Build the same immutable plan for preview and digest-guarded apply."""
+    return cleanup.preview_cleanup(
+        root,
+        run_id=args.run_id,
+        retention_mode=args.retention,
+        cache_disposition=args.cache_disposition,
+    )
 
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
@@ -151,4 +155,3 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     except cleanup.CleanupError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-

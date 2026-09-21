@@ -166,9 +166,11 @@ ASIC synth — and **Booley emits no completion notification**. Nothing will nud
 you when one ends. Parking on "standing by" is never a correct state: if you are
 waiting, you are polling.
 
-- **Start it detached.** Run the command in the background with stdout
-  redirected to a file. A foreground call that outlives your own MCP tool timeout
-  loses the output and reads as a hang.
+- **Start it detached.** Run the command in the background with stdout and
+  stderr redirected beneath the current run's manifest-owned scratch root,
+  after `booley cleanup prepare`; register the capture before moving on. A
+  foreground call that outlives your own MCP tool timeout loses the output and
+  reads as a hang.
 - **Know the bound before you start.** A Booley Flow cannot outlive its
   `[flows.<flow>].timeout_ms` (`sim` applies it per test; `synth`
   defaults to 30 min). Budget that plus a minute of teardown — past it the run
