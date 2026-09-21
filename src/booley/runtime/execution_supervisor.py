@@ -15,6 +15,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from types import FrameType
@@ -31,6 +32,7 @@ from booley.runtime.execution_records import (
     read_json,
     request_cancellation,
 )
+from booley.runtime.heartbeat import touch_reaper_heartbeat
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.process_tree import descendant_pids
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -38,6 +40,7 @@ from booley.runtime.timefmt import utc_now_rfc3339
 _PR_SET_CHILD_SUBREAPER = 36
 _POLL_SECONDS = 0.02
 _FORCE_REAP_SECONDS = 5.0
+_EXECUTION_HEARTBEAT_SECONDS = 0.25
 
 
 @dataclass
@@ -48,6 +51,43 @@ class _RuntimeSignals:
     def receive(self, signum: int, _frame: FrameType | None) -> None:
         self.signum = self.signum or signum
         self.count += 1
+
+
+class _ExecutionHeartbeat:
+    """Keep protected Sandbox activity visible for the complete supervisor lifetime."""
+
+    def __init__(self, interval: float | None = None) -> None:
+        self._interval = _EXECUTION_HEARTBEAT_SECONDS if interval is None else interval
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        _touch_reaper_heartbeat()
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join()
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval):
+            _touch_reaper_heartbeat()
+
+    def __enter__(self) -> _ExecutionHeartbeat:
+        self.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop()
+
+
+def _touch_reaper_heartbeat() -> None:
+    """Refresh lifecycle safety without allowing heartbeat I/O to affect work."""
+    with contextlib.suppress(OSError):
+        touch_reaper_heartbeat()
 
 
 @contextlib.contextmanager
@@ -339,35 +379,36 @@ def supervise(
     supervisor = capture_process_identity(os.getpid())
     starting = _execution_record(state="starting", supervisor=supervisor, leader=None)
     atomic_write_json(paths.record, starting)
-    if read_attachment_heartbeat(paths) is None:
-        failed = _execution_record(
-            state="unrecoverable",
-            supervisor=supervisor,
-            leader=None,
-            exit_code=125,
-            terminal_cause="attachment_missing",
+    with _ExecutionHeartbeat():
+        if read_attachment_heartbeat(paths) is None:
+            failed = _execution_record(
+                state="unrecoverable",
+                supervisor=supervisor,
+                leader=None,
+                exit_code=125,
+                terminal_cause="attachment_missing",
+            )
+            atomic_write_json(paths.record, failed)
+            return 125
+        cancellation = _cancellation_request(paths)
+        if cancellation is not None:
+            return _finish_prestart_cancellation(paths, supervisor, cancellation)
+        grouped_tty = tty and os.isatty(0) and hasattr(os, "tcsetpgrp")
+        child = subprocess.Popen(command, process_group=0 if grouped_tty else None)
+        pending = _RuntimeSignals()
+        with _capture_runtime_signals(pending), _foreground_child(child, enabled=grouped_tty):
+            leader = capture_process_identity(child.pid)
+            running = _execution_record(state="running", supervisor=supervisor, leader=leader)
+            atomic_write_json(paths.record, running)
+            stop = _wait_until_stop(child, paths, attachment_timeout_s, pending)
+        return _finish_owned_tree(
+            child,
+            paths,
+            supervisor,
+            leader,
+            stop,
+            grace_seconds,
         )
-        atomic_write_json(paths.record, failed)
-        return 125
-    cancellation = _cancellation_request(paths)
-    if cancellation is not None:
-        return _finish_prestart_cancellation(paths, supervisor, cancellation)
-    grouped_tty = tty and os.isatty(0) and hasattr(os, "tcsetpgrp")
-    child = subprocess.Popen(command, process_group=0 if grouped_tty else None)
-    pending = _RuntimeSignals()
-    with _capture_runtime_signals(pending), _foreground_child(child, enabled=grouped_tty):
-        leader = capture_process_identity(child.pid)
-        running = _execution_record(state="running", supervisor=supervisor, leader=leader)
-        atomic_write_json(paths.record, running)
-        stop = _wait_until_stop(child, paths, attachment_timeout_s, pending)
-    return _finish_owned_tree(
-        child,
-        paths,
-        supervisor,
-        leader,
-        stop,
-        grace_seconds,
-    )
 
 
 @contextlib.contextmanager
