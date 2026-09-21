@@ -278,6 +278,18 @@ Either way, this decides only the fate of `.booley_project/` itself. The
 minimal-footprint guardrail still holds: no other Booley-generated file joins
 the RTL repo's tracked tree.
 
+## Artifact registration
+
+The Doctor command owns its Flow output locations, so do not redirect them with
+invented environment variables. Register only setup-authored command captures,
+exit-code sidecars, and exact Doctor scratch subtrees in the current run
+manifest. A Doctor scratch registration must name the bounded leaf subtree and
+the producing command; never register the shared `.booley_project/tmp/` root.
+Record any structured Findings attachment dependency while the source still
+exists. Active Job/process state, clean stamps, Tickets, worktrees, reusable
+`.runtime/edalize` slots, and pre-existing residue are preserved or unresolved,
+never adopted by discovery.
+
 ## Final Report
 
 Setup is not complete while any doctor invocation exits nonzero **or reports an

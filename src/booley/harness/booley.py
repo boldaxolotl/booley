@@ -59,6 +59,7 @@ from booley.harness.doctor import run_doctor
 from booley.harness.init_cmd import run_init
 from booley.harness.orphan_handler import handle_post_run_orphans, handle_startup_orphans
 from booley.harness.render_md import render
+from booley.harness.setup import cleanup_cli
 from booley.harness.setup.common import configure_progress_output
 from booley.harness.subscription_limit import detect_subscription_limit
 from booley.harness.terminal import status, status_indent
@@ -121,6 +122,7 @@ COMMAND_LOCATIONS = {
     "targets": CommandLocation.MIXED,
     "flow": CommandLocation.MIXED,
     "feedback": CommandLocation.MIXED,
+    "cleanup": CommandLocation.MIXED,
 }
 
 
@@ -390,7 +392,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         metavar=(
-            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,projects,upgrade,targets,flow,feedback}"
+            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,projects,upgrade,targets,flow,feedback,cleanup}"
         ),
     )
 
@@ -933,6 +935,7 @@ def _add_utility_subparsers(sub) -> None:
 
     # Feedback spans runtime contexts: logging is in-container, submission host-only.
     feedback_cli.add_subparser(sub)
+    cleanup_cli.add_subparser(sub)
     project_inventory_cli.add_subparser(sub)
     upgrade_cli.add_subparser(sub)
     _add_session_subparser(sub)
@@ -1859,6 +1862,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "targets": _cmd_targets,
     "flow": _cmd_flow,
     "feedback": feedback_cli.run,
+    "cleanup": cleanup_cli.run,
     "upgrade": upgrade_cli.run,
 }
 
