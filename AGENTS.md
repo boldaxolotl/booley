@@ -7,6 +7,16 @@ simulation, synthesis, linting, and ticket workflows.
 
 - Before modifying Booley code in a new chat, create a worktree and new branch
   from `main`, even when the existing checkout has dirty files.
+- Before creating that worktree, run the Agent Readiness Check's `prepare`
+  phase with the intended `codex/` branch. After creating it and before
+  modifying files, run `develop` from the intended worktree:
+  `python3 .github/scripts/agent_readiness.py` on POSIX or
+  `py -3 .github/scripts/agent_readiness.py` on Windows. Treat its reported
+  paths, statuses, escalation requirements, and blockers as authoritative.
+  Exit zero is not permission to proceed when the aggregate status is
+  `escalation-required`; resolve that escalation first. Run remediation only
+  for failed checks and verification commands at their reported lifecycle
+  point.
 - Keep worktree branches local. Push a branch or create/update a pull request
   only on explicit request. A request to create/update a PR authorizes its
   required branch push; an implement, edit, or commit request does not.
@@ -26,7 +36,10 @@ simulation, synthesis, linting, and ticket workflows.
   Mergify reports an authorized merge, delete its local branch and worktree
   and its GitHub branch.
 - Read `docs/internals/CODING_PRINCIPLES.md` before writing Python code.
-- Run `ruff check src/ tests/` before committing Python changes.
+- Ruff findings are repository work: during Python work, fix every finding
+  reported for `src/` or `tests/`, including pre-existing or unrelated
+  findings. Before committing, run the complete Ruff command reported by
+  Agent Readiness and make it pass; a changed-files-only check is insufficient.
 - Keep project-specific content in the directory resolved by `booley.runtime.project_dir`;
   framework code must not hardcode project paths or names.
 - Keep implementation plans under `docs/plans/`. Plans are local-only artifacts

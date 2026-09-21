@@ -40,6 +40,16 @@ After editing it, refresh the installed-runtime copy with
 `python -m booley.dev_support.reference_docs`; use `--check` to verify it
 without writing.
 
+### Agent source-development checks
+
+Agents use the read-only Agent Readiness Check at
+`.github/scripts/agent_readiness.py` before creating a linked worktree and
+again before editing it. It uses one shared tools-only environment, never
+installs Booley from any checkout, and runs commands against the active
+worktree's source. Human contributors may continue using the editable `.venv`
+workflow above. Readiness output contains local paths and is diagnostic
+material; do not publish it.
+
 ### Development environment troubleshooting
 
 Debian and Ubuntu split `venv` out of the Python package. If `python3 -m venv
