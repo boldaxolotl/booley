@@ -107,6 +107,7 @@ BUILD_METADATA_ARGS=(
   --build-arg "BOOLEY_SOURCE_UPDATED_AT=${SOURCE_UPDATED_AT:-unknown}"
   --build-arg "BOOLEY_IMAGE_BUILT_AT=$IMAGE_BUILT_AT"
   --build-arg "BOOLEY_PAYLOAD_FINGERPRINT=${WHEEL_SOURCE_FINGERPRINT:-unknown}"
+  --build-arg "BOOLEY_WHEEL_SHA256=$WHEEL_SHA256"
 )
 
 BASE_CONTRACT="$($PYBUILD "$BOOLEY_ROOT/.github/scripts/docker_base_contract.py" \

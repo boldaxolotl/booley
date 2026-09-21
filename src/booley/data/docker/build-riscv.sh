@@ -59,6 +59,7 @@ run_docker_build booley-sandbox-riscv docker build "$@" \
   --build-arg "BOOLEY_SOURCE_UPDATED_AT=$(git -C "$BOOLEY_ROOT" log -1 --format=%cI HEAD 2>/dev/null || echo unknown)" \
   --build-arg "BOOLEY_IMAGE_BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --build-arg "BOOLEY_PAYLOAD_FINGERPRINT=$WHEEL_SOURCE_FINGERPRINT" \
+  --build-arg "BOOLEY_WHEEL_SHA256=$WHEEL_SHA256" \
   --label "io.booley.provenance.schema=3" \
   --label "io.booley.artifact.role=wheel-overlay" \
   --label "io.booley.artifact.effective-inputs=$WHEEL_SOURCE_FINGERPRINT" \

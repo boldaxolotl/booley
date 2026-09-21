@@ -43,6 +43,7 @@ class _RuntimeImages:
             final.wheel_sha256,
             self._prepared_image_state(),
             changed,
+            self._prepared.plan.nodes[-1].wheel_source_fingerprint,
         )
 
     def _prepared_image_state(self) -> tuple[runtime_refresh.RefreshPreparedImage, ...]:
@@ -78,7 +79,14 @@ class _RuntimeImages:
             result.wheel_sha256,
             prepared_images,
             graph_changed,
+            result.wheel_source_fingerprint or result.payload_fingerprint,
         )
+
+    def validate(self, prepared: runtime_refresh.RefreshImage) -> None:
+        del prepared
+        if self._prepared is None:
+            raise SessionError("image refresh candidates were not prepared")
+        init_cmd.validate_runtime_image(self._prepared)
 
     def abort(self) -> None:
         if self._prepared is not None:

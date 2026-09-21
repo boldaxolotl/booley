@@ -919,6 +919,8 @@ def _run_up_transaction(
     rebuild: bool,
     expected_image_id: str | None,
     expected_payload_fingerprint: str | None,
+    expected_wheel_source_fingerprint: str | None = None,
+    expected_wheel_sha256: str | None = None,
 ) -> None:
     replacing = rebuild and idk.container_exists(request.name)
     if replacing and request.profile is not None:
@@ -959,6 +961,8 @@ def _run_up_transaction(
                 workspace,
                 expected_image_id,
                 expected_payload_fingerprint,
+                expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
+                expected_wheel_sha256=expected_wheel_sha256,
             )
     except BaseException:
         if parked is not None:
@@ -977,6 +981,8 @@ def _up_unlocked(
     image_override: str | None = None,
     expected_image_id: str | None = None,
     expected_payload_fingerprint: str | None = None,
+    expected_wheel_source_fingerprint: str | None = None,
+    expected_wheel_sha256: str | None = None,
 ) -> str:
     """Create-or-start the Sandbox for *workspace*; return its name.
 
@@ -998,6 +1004,8 @@ def _up_unlocked(
         rebuild=rebuild,
         expected_image_id=expected_image_id,
         expected_payload_fingerprint=expected_payload_fingerprint,
+        expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
+        expected_wheel_sha256=expected_wheel_sha256,
     )
     for name in stale_vscode:
         _remove_stopped_session_container(name)
@@ -2180,8 +2188,11 @@ def verify_refreshed_session(
     workspace: Path,
     expected_image_id: str,
     expected_payload_fingerprint: str | None,
+    *,
+    expected_wheel_source_fingerprint: str | None = None,
+    expected_wheel_sha256: str | None = None,
 ) -> None:
-    """Verify the recreated Session uses the reconciled artifact and payload."""
+    """Verify image, payload, and installed-wheel identity after recreation."""
     name = session_container_name(workspace)
     actual_image_id = _docker_stdout(["docker", "inspect", name, "--format", "{{.Image}}"])
     if actual_image_id != expected_image_id:
@@ -2189,22 +2200,61 @@ def verify_refreshed_session(
             f"refreshed Sandbox uses {actual_image_id or '<unknown>'}, "
             f"expected {expected_image_id}"
         )
-    if expected_payload_fingerprint is None:
+    if expected_payload_fingerprint is None and (
+        expected_wheel_source_fingerprint is None and expected_wheel_sha256 is None
+    ):
         return
+    if expected_payload_fingerprint is not None:
+        _verify_payload_identity(name, expected_payload_fingerprint)
+    if expected_wheel_source_fingerprint is None and expected_wheel_sha256 is None:
+        return
+    _verify_wheel_identity(name, expected_wheel_source_fingerprint, expected_wheel_sha256)
+
+
+def _verify_payload_identity(name: str, expected: str) -> None:
     probe = (
         "from booley.runtime.build_metadata import current_build_metadata; "
         "print(current_build_metadata().payload_fingerprint)"
+    )
+    result = _run(["docker", "exec", name, "python3", "-I", "-c", probe], capture=True)
+    actual = result.stdout.strip()
+    if result.returncode != 0 or actual != expected:
+        detail = result.stderr.strip() or actual or "probe produced no output"
+        raise SessionError("refreshed Sandbox payload does not match the reconciled image: " + detail)
+
+
+def _verify_wheel_identity(
+    name: str, expected_source: str | None, expected_sha256: str | None
+) -> None:
+    probe = (
+        "import importlib.metadata, json, os; "
+        "import booley; "
+        "from booley.runtime.build_stamp import embedded_wheel_source_fingerprint; "
+        "print(json.dumps({"
+        "'source': embedded_wheel_source_fingerprint() or '', "
+        "'sha256': os.environ.get('BOOLEY_WHEEL_SHA256', ''), "
+        "'package_version': importlib.metadata.version('booley-rtl'), "
+        "'module_version': booley.__version__}))"
     )
     result = _run(
         ["docker", "exec", name, "python3", "-I", "-c", probe],
         capture=True,
     )
-    actual_fingerprint = result.stdout.strip()
-    if result.returncode != 0 or actual_fingerprint != expected_payload_fingerprint:
-        detail = result.stderr.strip() or actual_fingerprint or "probe produced no output"
-        raise SessionError(
-            "refreshed Sandbox payload does not match the reconciled image: " + detail
-        )
+    try:
+        identity = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        identity = {}
+    source = identity.get("source") if isinstance(identity, dict) else None
+    wheel_sha256 = identity.get("sha256") if isinstance(identity, dict) else None
+    package_version = identity.get("package_version") if isinstance(identity, dict) else None
+    module_version = identity.get("module_version") if isinstance(identity, dict) else None
+    if result.returncode != 0 or (
+        expected_source is not None and source != expected_source
+    ) or (expected_sha256 is not None and wheel_sha256 != expected_sha256) or (
+        not package_version or package_version != module_version
+    ):
+        detail = result.stderr.strip() or result.stdout.strip() or "probe produced no output"
+        raise SessionError("refreshed Sandbox wheel identity does not match: " + detail)
 
 
 def _down_unlocked(workspace: Path, *, remove: bool = True) -> bool:

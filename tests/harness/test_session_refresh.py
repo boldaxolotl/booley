@@ -209,6 +209,7 @@ def test_current_graph_issuance_and_running_sandbox_are_a_true_noop(
             return_value=_issuance(tmp_path, "sha256:fresh"),
         ),
         patch.object(sr, "plan_session_refresh", return_value=parked),
+        patch.object(sr, "verify_refreshed_session"),
         patch.object(sr, "park_planned_session") as park,
         patch.object(sr, "_up_unlocked") as up,
     ):
@@ -374,6 +375,7 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
                 None,
             ),
         ),
+        wheel_source_fingerprint="payload-123",
     )
     assert events == [
         ("inspect", tmp_path, True),

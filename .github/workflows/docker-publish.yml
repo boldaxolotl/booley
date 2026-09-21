@@ -131,6 +131,7 @@ jobs:
             BOOLEY_SOURCE_UPDATED_AT=${{ steps.version.outputs.source_updated_at }}
             BOOLEY_IMAGE_BUILT_AT=${{ steps.version.outputs.image_built_at }}
             BOOLEY_PAYLOAD_FINGERPRINT=${{ steps.version.outputs.wheel_source_fingerprint }}
+            BOOLEY_WHEEL_SHA256=${{ steps.wheel.outputs.wheel_sha256 }}
           labels: |
             io.booley.provenance.schema=3
             io.booley.artifact.role=wheel-overlay
@@ -237,6 +238,7 @@ jobs:
             BOOLEY_SOURCE_UPDATED_AT=${{ steps.version.outputs.source_updated_at }}
             BOOLEY_IMAGE_BUILT_AT=${{ steps.version.outputs.image_built_at }}
             BOOLEY_PAYLOAD_FINGERPRINT=${{ steps.version.outputs.wheel_source_fingerprint }}
+            BOOLEY_WHEEL_SHA256=${{ steps.wheel.outputs.wheel_sha256 }}
           labels: |
             io.booley.provenance.schema=3
             io.booley.artifact.role=wheel-overlay

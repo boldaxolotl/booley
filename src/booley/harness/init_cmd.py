@@ -832,6 +832,8 @@ def _selected_image_handled(ctx: InitContext, sandbox: dict, generated: str) -> 
         return False
     selected = configured.strip()
     if selected in FLAVOR_IMAGES:
+        if sandbox.get("pip_requirements"):
+            return False
         if ensure_flavor_image(ctx, selected):
             _warn_on_live_session_on_old_image(ctx, selected)
         return True
@@ -1031,7 +1033,12 @@ def _step_project_image(ctx: InitContext) -> None:
         return
 
     docker_dir = project_dir / "docker"
-    pi.write_project_image_files(docker_dir, body)
+    parent_image = (
+        image_lifecycle.RISCV_SUBSTRATE_IMAGE
+        if sandbox.get("image") == "booley-sandbox-riscv"
+        else pi.BASE_IMAGE
+    )
+    pi.write_project_image_files(docker_dir, body, parent_image=parent_image)
     _build_and_configure_image(ctx, docker_dir, generated)
 
 
@@ -1169,6 +1176,13 @@ def commit_runtime_image(
 ) -> LifecycleResult:
     """Adopt prepared image candidates after refresh state is journaled."""
     return image_lifecycle.commit(prepared)
+
+
+def validate_runtime_image(
+    prepared: image_lifecycle.PreparedConvergence,
+) -> None:
+    """Revalidate prepared image inputs before parking the live Sandbox."""
+    image_lifecycle.validate(prepared)
 
 
 def abort_runtime_image(prepared: image_lifecycle.PreparedConvergence) -> None:

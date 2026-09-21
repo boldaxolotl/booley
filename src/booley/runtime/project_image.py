@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["project_image_name", "project_sandbox_image"]
 
 BASE_IMAGE = SANDBOX_IMAGE
+MANAGED_PROJECT_PARENT = "booley-project-parent"
 
 # Packages the base sandbox image pins and manages (ADR 0019). A project
 # requirements pin on any of these shadows the image's version at build time

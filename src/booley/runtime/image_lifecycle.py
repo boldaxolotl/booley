@@ -335,6 +335,17 @@ class TransactionBuildPort(Protocol):
     ) -> str: ...
 
 
+def _candidate_reference_is_transactional(reference: str) -> bool:
+    return reference.startswith("booley-lifecycle-") and reference.endswith(":candidate")
+
+
+def _discard_orphaned_candidates(docker: DockerPort) -> None:
+    """Remove unjournaled transaction tags left by a process crash."""
+    for image in docker.image_references():
+        if _candidate_reference_is_transactional(image.reference):
+            docker.remove_tag(image.reference)
+
+
 def _build_adapter(
     _project_root: Path,
     _docker: DockerPort,
@@ -671,66 +682,17 @@ def _graph_node(
 def _source_graph(project_root: Path, selected: str) -> tuple[ImageNode, ...]:
     root = docker_data_dir().parents[3]
     docker_dir = docker_data_dir()
-    runtime_recipe = docker_dir / "Dockerfile.base"
-    substrate_recipe = docker_dir / "Dockerfile.substrate"
-    riscv_recipe = docker_dir / "Dockerfile.riscv"
-    overlay_recipe = docker_dir / "Dockerfile.wheel"
-    from booley.runtime.docker_base_contract import contract as runtime_base_contract
-
-    runtime = _graph_node(
-        reference=STABLE_RUNTIME_BASE_IMAGE,
-        role=ImageRole.RUNTIME_BASE,
-        recipe=runtime_recipe,
-        effective_inputs=runtime_base_contract(root),
-        parent=None,
-    )
-    standard_inputs = standard_substrate_fingerprint(root)
-    standard = _graph_node(
-        reference=STANDARD_SUBSTRATE_IMAGE,
-        role=ImageRole.STANDARD_SUBSTRATE,
-        recipe=substrate_recipe,
-        effective_inputs=standard_inputs,
-        parent=runtime,
-    )
+    runtime, standard = _source_graph_base(root, docker_dir)
     nodes = [runtime, standard]
     substrate = standard
-    configured = _configured_image(project_root)
-    wants_riscv = configured == "booley-sandbox-riscv"
-    if wants_riscv:
-        substrate = _graph_node(
-            reference=RISCV_SUBSTRATE_IMAGE,
-            role=ImageRole.RISCV_SUBSTRATE,
-            recipe=riscv_recipe,
-            effective_inputs=resolve_recipe_fingerprint((riscv_recipe,)),
-            parent=standard,
-        )
+    if _configured_image(project_root) == "booley-sandbox-riscv":
+        substrate = _source_graph_riscv(standard, docker_dir)
         nodes.append(substrate)
-    requirements_body = _project_requirements_body(project_root)
     if selected == project_image.project_image_name(project_root):
-        dockerfile = _direct_project_dir(project_root) / "docker" / "Dockerfile"
-        if dockerfile.is_file() and not project_image.is_managed_generated_file(dockerfile):
-            raise ImageLifecycleError(
-                "wheel-only convergence is unavailable for a user-owned Project Docker "
-                "recipe; preserve its exact ancestry and rebuild it explicitly"
-            )
-        generated_recipe, _generated_requirements = project_image.managed_project_image_files(
-            requirements_body or "",
-            parent_image="booley-project-parent",
-        )
-        project_node = _graph_node(
-            reference=f"{selected}-substrate",
-            role=ImageRole.PROJECT_SUBSTRATE,
-            recipe=dockerfile,
-            effective_inputs=_project_recipe_fingerprint(
-                project_root,
-                requirements_body,
-                parent_image="booley-project-parent",
-            ),
-            parent=substrate,
-            recipe_fingerprint=hashlib.sha256(generated_recipe.encode()).hexdigest(),
-        )
+        project_node = _source_graph_project(project_root, selected, substrate)
         nodes.append(project_node)
         substrate = project_node
+    overlay_recipe = docker_dir / "Dockerfile.wheel"
     wheel_source = _expected_wheel_source_fingerprint()
     if wheel_source is None:
         raise ImageLifecycleError("could not determine the Booley wheel-source fingerprint")
@@ -744,6 +706,63 @@ def _source_graph(project_root: Path, selected: str) -> tuple[ImageNode, ...]:
     )
     nodes.append(overlay)
     return tuple(nodes)
+
+
+def _source_graph_base(root: Path, docker_dir: Path) -> tuple[ImageNode, ImageNode]:
+    from booley.runtime.docker_base_contract import contract as runtime_base_contract
+
+    runtime = _graph_node(
+        reference=STABLE_RUNTIME_BASE_IMAGE,
+        role=ImageRole.RUNTIME_BASE,
+        recipe=docker_dir / "Dockerfile.base",
+        effective_inputs=runtime_base_contract(root),
+        parent=None,
+    )
+    standard = _graph_node(
+        reference=STANDARD_SUBSTRATE_IMAGE,
+        role=ImageRole.STANDARD_SUBSTRATE,
+        recipe=docker_dir / "Dockerfile.substrate",
+        effective_inputs=standard_substrate_fingerprint(root),
+        parent=runtime,
+    )
+    return runtime, standard
+
+
+def _source_graph_riscv(standard: ImageNode, docker_dir: Path) -> ImageNode:
+    return _graph_node(
+        reference=RISCV_SUBSTRATE_IMAGE,
+        role=ImageRole.RISCV_SUBSTRATE,
+        recipe=docker_dir / "Dockerfile.riscv",
+        effective_inputs=resolve_recipe_fingerprint((docker_dir / "Dockerfile.riscv",)),
+        parent=standard,
+    )
+
+
+def _source_graph_project(
+    project_root: Path, selected: str, substrate: ImageNode
+) -> ImageNode:
+    requirements_body = _project_requirements_body(project_root)
+    dockerfile = _direct_project_dir(project_root) / "docker" / "Dockerfile"
+    if dockerfile.is_file() and not project_image.is_managed_generated_file(dockerfile):
+        raise ImageLifecycleError(
+            "wheel-only convergence is unavailable for a user-owned Project Docker "
+            "recipe; preserve its exact ancestry and rebuild it explicitly"
+        )
+    generated_recipe, _ = project_image.managed_project_image_files(
+        requirements_body or "", parent_image=project_image.MANAGED_PROJECT_PARENT
+    )
+    return _graph_node(
+        reference=f"{selected}-substrate",
+        role=ImageRole.PROJECT_SUBSTRATE,
+        recipe=dockerfile,
+        effective_inputs=_project_recipe_fingerprint(
+            project_root,
+            requirements_body,
+            parent_image=project_image.MANAGED_PROJECT_PARENT,
+        ),
+        parent=substrate,
+        recipe_fingerprint=hashlib.sha256(generated_recipe.encode()).hexdigest(),
+    )
 
 
 def _complete_release_node(selected: str) -> ImageNode:
@@ -823,9 +842,11 @@ def _node_ancestry_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | N
             return Diagnostic("parent-changed", "release ancestry is not digest-qualified")
     if node.parent is not None:
         expected_parent = docker.image_id(node.parent)
-        if expected_parent is None or docker.label(
-            node.reference, LABEL_PARENT_ARTIFACT
-        ) != expected_parent:
+        if expected_parent is None:
+            return Diagnostic("parent-changed", "reusable parent artifact is missing")
+        if docker.label(node.reference, LABEL_PARENT_ARTIFACT_KIND) != (
+            PARENT_ARTIFACT_LOCAL_IMAGE_ID
+        ) or docker.label(node.reference, LABEL_PARENT_ARTIFACT) != expected_parent:
             return Diagnostic("parent-changed", "recorded immutable parent differs")
     return None
 
@@ -884,6 +905,26 @@ def _verify_prepared_image(
     image_id = docker.image_id(reference)
     if image_id is None:
         raise ImageLifecycleError(f"prepared candidate {reference!r} disappeared")
+    required = _prepared_provenance(node, parent_artifact)
+    if parent_artifact is None and node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
+        parent_artifact = _verify_release_parent(reference, docker)
+    mismatched = [
+        name for name, expected in required.items() if docker.label(reference, name) != expected
+    ]
+    if mismatched:
+        raise ImageLifecycleError(
+            f"prepared candidate {reference!r} has invalid provenance: "
+            + ", ".join(mismatched)
+        )
+    wheel_sha256 = docker.label(reference, LABEL_WHEEL_SHA256)
+    if node.role is ImageRole.WHEEL_OVERLAY and not wheel_sha256:
+        raise ImageLifecycleError(f"prepared wheel overlay {reference!r} has no wheel SHA-256")
+    return PreparedImage(node.reference, reference, image_id, parent_artifact, wheel_sha256)
+
+
+def _prepared_provenance(
+    node: ImageNode, parent_artifact: str | None
+) -> dict[str, str]:
     required = {
         LABEL_SCHEMA: PROVENANCE_SCHEMA,
         LABEL_ARTIFACT_ROLE: node.role.value if node.role else "",
@@ -900,36 +941,18 @@ def _verify_prepared_image(
     if parent_artifact is not None:
         required[LABEL_PARENT_ARTIFACT] = parent_artifact
         required[LABEL_PARENT_ARTIFACT_KIND] = PARENT_ARTIFACT_LOCAL_IMAGE_ID
-    elif node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
-        recorded_parent = docker.label(reference, LABEL_PARENT_ARTIFACT)
-        if (
-            docker.label(reference, LABEL_PARENT_ARTIFACT_KIND)
-            != PARENT_ARTIFACT_REGISTRY_DIGEST
-            or recorded_parent is None
-            or normalize_registry_digest(recorded_parent) is None
-        ):
-            raise ImageLifecycleError(
-                f"prepared release {reference!r} has invalid registry ancestry"
-            )
-        parent_artifact = recorded_parent
-    mismatched = [
-        name for name, expected in required.items() if docker.label(reference, name) != expected
-    ]
-    if mismatched:
-        raise ImageLifecycleError(
-            f"prepared candidate {reference!r} has invalid provenance: "
-            + ", ".join(mismatched)
-        )
-    wheel_sha256 = docker.label(reference, LABEL_WHEEL_SHA256)
-    if node.role is ImageRole.WHEEL_OVERLAY and not wheel_sha256:
-        raise ImageLifecycleError(f"prepared wheel overlay {reference!r} has no wheel SHA-256")
-    return PreparedImage(
-        node.reference,
-        reference,
-        image_id,
-        parent_artifact,
-        wheel_sha256,
-    )
+    return required
+
+
+def _verify_release_parent(reference: str, docker: DockerPort) -> str:
+    recorded = docker.label(reference, LABEL_PARENT_ARTIFACT)
+    if (
+        docker.label(reference, LABEL_PARENT_ARTIFACT_KIND) != PARENT_ARTIFACT_REGISTRY_DIGEST
+        or recorded is None
+        or normalize_registry_digest(recorded) is None
+    ):
+        raise ImageLifecycleError(f"prepared release {reference!r} has invalid registry ancestry")
+    return recorded
 
 
 def prepare(
@@ -941,6 +964,7 @@ def prepare(
 ) -> PreparedConvergence:
     """Acquire and verify candidates without changing any managed image tag."""
     resolved_docker = docker or _docker_adapter()
+    _discard_orphaned_candidates(resolved_docker)
     resolved_builder = builder or _transaction_build_adapter(
         lifecycle_plan.project_root,
         resolved_docker,
@@ -956,38 +980,17 @@ def prepare(
     candidate_references: list[str] = []
     try:
         for node, step in zip(lifecycle_plan.nodes, lifecycle_plan.steps, strict=True):
-            parent = realized.get(node.parent or "")
-            parent_reference = parent.candidate_reference if parent else node.parent
-            parent_artifact = parent.image_id if parent else (
-                resolved_docker.image_id(node.parent) if node.parent else None
-            )
-            if step.action is PlanAction.REUSE:
-                reused = _verify_prepared_image(
-                    node,
-                    node.reference,
-                    parent_artifact,
-                    resolved_docker,
-                )
-                prepared.append(reused)
-                realized[node.reference] = reused
-                continue
-            candidate = _candidate_reference(transaction_id, node)
-            candidate_references.append(candidate)
-            built = resolved_builder.prepare(
+            acquired, candidates = _prepare_node(
                 node,
-                candidate_reference=candidate,
-                parent_reference=parent_reference,
-            )
-            if built not in candidate_references and built != node.reference:
-                candidate_references.append(built)
-            acquired = _verify_prepared_image(
-                node,
-                built,
-                parent_artifact,
+                step,
+                transaction_id,
+                realized,
                 resolved_docker,
+                resolved_builder,
             )
             prepared.append(acquired)
             realized[node.reference] = acquired
+            candidate_references.extend(candidates)
     except BaseException:
         for reference in candidate_references:
             if resolved_docker.image_id(reference) is not None:
@@ -999,6 +1002,52 @@ def prepare(
         tuple(prepared),
         prior_tags,
     )
+
+
+def _prepare_node(
+    node: ImageNode,
+    step: PlanStep,
+    transaction_id: str,
+    realized: dict[str, PreparedImage],
+    docker: DockerPort,
+    builder: TransactionBuildPort,
+) -> tuple[PreparedImage, tuple[str, ...]]:
+    parent = realized.get(node.parent or "")
+    parent_reference = parent.candidate_reference if parent else node.parent
+    parent_artifact = (
+        parent.image_id if parent else docker.image_id(node.parent) if node.parent else None
+    )
+    if step.action is PlanAction.REUSE:
+        return _verify_prepared_image(node, node.reference, parent_artifact, docker), ()
+    candidate = _candidate_reference(transaction_id, node)
+    built = builder.prepare(node, candidate_reference=candidate, parent_reference=parent_reference)
+    candidates = [candidate]
+    if built not in candidates and built != node.reference:
+        candidates.append(built)
+    return _verify_prepared_image(node, built, parent_artifact, docker), tuple(candidates)
+
+
+def validate(
+    prepared: PreparedConvergence,
+    *,
+    docker: DockerPort | None = None,
+) -> None:
+    """Revalidate inputs and candidate identities before external downtime."""
+    resolved_docker = docker or _docker_adapter()
+    current = plan(
+        ProjectImageScope(prepared.plan.project_root),
+        docker=resolved_docker,
+        artifact_policy=prepared.plan.nodes[-1].acquisition_policy,
+    )
+    if current.input_snapshot != prepared.input_snapshot:
+        raise ImageLifecycleError("image inputs changed while candidates were being prepared")
+    for image in prepared.candidates:
+        if image.candidate_reference == image.reference:
+            continue
+        if resolved_docker.image_id(image.candidate_reference) != image.image_id:
+            raise ImageLifecycleError(
+                f"prepared candidate {image.candidate_reference!r} changed before commit"
+            )
 
 
 def _restore_tag_snapshots(
@@ -1036,23 +1085,16 @@ def commit(
 ) -> LifecycleResult:
     """Revalidate inputs and atomically adopt verified candidates in graph order."""
     resolved_docker = docker or _docker_adapter()
-    current = plan(
-        ProjectImageScope(prepared.plan.project_root),
-        docker=resolved_docker,
-        artifact_policy=prepared.plan.nodes[-1].acquisition_policy,
-    )
-    if current.input_snapshot != prepared.input_snapshot:
+    try:
+        validate(prepared, docker=resolved_docker)
+    except ImageLifecycleError:
         abort(prepared, docker=resolved_docker)
-        raise ImageLifecycleError("image inputs changed while candidates were being prepared")
+        raise
     changed: list[str] = []
     try:
         for step, image in zip(prepared.plan.steps, prepared.candidates, strict=True):
             if step.action is PlanAction.REUSE:
                 continue
-            if resolved_docker.image_id(image.candidate_reference) != image.image_id:
-                raise ImageLifecycleError(
-                    f"prepared candidate {image.candidate_reference!r} changed before commit"
-                )
             resolved_docker.tag(image.image_id, image.reference)
             if resolved_docker.image_id(image.reference) != image.image_id:
                 raise ImageLifecycleError(f"managed tag {image.reference!r} changed during commit")

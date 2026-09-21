@@ -3662,6 +3662,61 @@ class TestSessionRefresh:
         ):
             sr.verify_refreshed_session(tmp_path, image_id, "payload-123")
 
+    def test_runtime_probe_verifies_exact_wheel_identity(self, tmp_path: Path):
+        image_id = "sha256:" + "a" * 64
+        identity = json.dumps(
+            {
+                "source": "wheel-source",
+                "sha256": "b" * 64,
+                "package_version": "0.2.6",
+                "module_version": "0.2.6",
+            }
+        )
+        with (
+            patch.object(sr, "_docker_stdout", return_value=image_id),
+            patch.object(
+                sr,
+                "_run",
+                return_value=subprocess.CompletedProcess([], 0, identity, ""),
+            ) as run,
+        ):
+            sr.verify_refreshed_session(
+                tmp_path,
+                image_id,
+                None,
+                expected_wheel_source_fingerprint="wheel-source",
+                expected_wheel_sha256="b" * 64,
+            )
+
+        assert run.call_count == 1
+
+    def test_runtime_probe_rejects_wheel_identity_mismatch(self, tmp_path: Path):
+        image_id = "sha256:" + "a" * 64
+        identity = json.dumps(
+            {
+                "source": "other-source",
+                "sha256": "b" * 64,
+                "package_version": "0.2.6",
+                "module_version": "0.2.6",
+            }
+        )
+        with (
+            patch.object(sr, "_docker_stdout", return_value=image_id),
+            patch.object(
+                sr,
+                "_run",
+                return_value=subprocess.CompletedProcess([], 0, identity, ""),
+            ),
+            pytest.raises(sr.SessionError, match="wheel identity"),
+        ):
+            sr.verify_refreshed_session(
+                tmp_path,
+                image_id,
+                None,
+                expected_wheel_source_fingerprint="wheel-source",
+                expected_wheel_sha256="b" * 64,
+            )
+
     def test_down_up_never_announces_persisted_stale_doctor_findings(
         self,
         tmp_path: Path,

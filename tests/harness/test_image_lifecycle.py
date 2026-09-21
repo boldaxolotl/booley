@@ -295,6 +295,51 @@ def test_prepare_uses_realized_parent_ids_and_commit_adopts_after_verification(
     assert result.wheel_sha256 == "e" * 64
 
 
+def test_prepare_removes_orphaned_transaction_candidates(tmp_path: Path) -> None:
+    stale = "booley-lifecycle-crashed-wheel-overlay:candidate"
+    docker = FakeDocker({stale: ("sha256:stale", {})})
+
+    lifecycle._discard_orphaned_candidates(docker)
+
+    assert stale not in docker.images
+    assert docker.mutations == [("remove_tag", stale)]
+
+
+def test_parent_artifact_kind_is_part_of_reuse_ancestry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    _install_planned_graph(docker, planned.nodes)
+    child = planned.nodes[1].reference
+    docker.images[child][1][lifecycle.LABEL_PARENT_ARTIFACT_KIND] = (
+        lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST
+    )
+
+    refreshed = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+
+    assert refreshed.steps[1].reason.code == "parent-changed"
+
+
+def test_validate_rejects_candidates_changed_after_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+    selected = prepared.candidates[-1]
+    docker.images[selected.candidate_reference] = ("sha256:changed", docker.images[selected.candidate_reference][1])
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="changed before commit"):
+        lifecycle.validate(prepared, docker=docker)
+
+
 def test_official_release_plan_observes_only_selected_complete_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

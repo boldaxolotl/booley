@@ -89,6 +89,7 @@ class RefreshImage:
     wheel_sha256: str | None = None
     prepared_images: tuple[RefreshPreparedImage, ...] = ()
     image_graph_changed: bool = True
+    wheel_source_fingerprint: str | None = None
 
 
 class RuntimeImageOperations(Protocol):
@@ -97,6 +98,8 @@ class RuntimeImageOperations(Protocol):
     def inspect(self, project_root: Path, *, verbose: bool) -> None: ...
 
     def prepare(self, project_root: Path, *, verbose: bool) -> RefreshImage: ...
+
+    def validate(self, prepared: RefreshImage) -> None: ...
 
     def commit(self) -> RefreshImage: ...
 
@@ -539,7 +542,8 @@ def _resume_journal(journal: _RefreshJournal) -> RecoveryResult:
     sr._up_unlocked(
         journal.project_root,
         expected_image_id=target,
-        expected_payload_fingerprint=journal.target_payload_fingerprint,
+        expected_wheel_source_fingerprint=journal.target_payload_fingerprint,
+        expected_wheel_sha256=journal.target_wheel_sha256,
     )
     if journal.direction is not _RecoveryDirection.COMMITTED_FORWARD:
         journal = replace(
@@ -759,7 +763,10 @@ def _issue_and_verify_replacement(
     sr._up_unlocked(  # refresh already owns the host lifecycle lock
         project,
         expected_image_id=result.selected_id,
-        expected_payload_fingerprint=result.payload_fingerprint,
+        expected_wheel_source_fingerprint=(
+            result.wheel_source_fingerprint or result.payload_fingerprint
+        ),
+        expected_wheel_sha256=result.wheel_sha256,
     )
     _reject_vscode_started(project, "the new headless Session is being rolled back")
     journal = replace(
@@ -801,31 +808,15 @@ def _refresh_unlocked(
         snapshot = capture_session_spec(project)
         issuance = _load_recovery_issuance(project, snapshot)
         parked = sr.plan_session_refresh(project, issuance)
-        if (
-            not prepared_result.image_graph_changed
-            and issuance.image_id == prepared_result.selected_id
-            and parked is not None
-            and parked.image_id == prepared_result.selected_id
-            and parked.was_running
-        ):
-            committed = images.commit()
-            if committed != prepared_result:
-                raise sr.SessionError("committed Sandbox Image differs from the verified candidate")
+        images.validate(prepared_result)
+        committed = _try_complete_noop(
+            project, prepared_result, issuance, parked, images
+        )
+        if committed is not None:
             return committed
-        journal = _new_journal(
-            project,
-            snapshot,
-            issuance,
-            parked,
+        journal = _prepared_journal(
+            project, snapshot, issuance, parked, prepared_result
         )
-        journal = replace(
-            journal,
-            target_image_id=prepared_result.selected_id,
-            target_payload_fingerprint=prepared_result.payload_fingerprint,
-            target_wheel_sha256=prepared_result.wheel_sha256,
-            prepared_images=prepared_result.prepared_images,
-        )
-        _write_journal(journal)
         result, journal = _reconcile_refresh_image(
             journal,
             prepared_result,
@@ -846,6 +837,68 @@ def _refresh_unlocked(
         sr.discard_refresh_session(journal.prior_runtime)
     _delete_journal(project)
     return result
+
+
+def _try_complete_noop(
+    project: Path,
+    prepared: RefreshImage,
+    issuance: runtime_spec.Issuance,
+    parked: sr.ParkedSession | None,
+    images: RuntimeImageOperations,
+) -> RefreshImage | None:
+    if not _is_current_running_session(prepared, issuance, parked):
+        return None
+    try:
+        sr.verify_refreshed_session(
+            project,
+            prepared.selected_id,
+            None,
+            expected_wheel_source_fingerprint=(
+                prepared.wheel_source_fingerprint or prepared.payload_fingerprint
+            ),
+            expected_wheel_sha256=prepared.wheel_sha256,
+        )
+    except sr.SessionError:
+        return None
+    committed = images.commit()
+    if committed != prepared:
+        raise sr.SessionError("committed Sandbox Image differs from the verified candidate")
+    return committed
+
+
+def _is_current_running_session(
+    prepared: RefreshImage,
+    issuance: runtime_spec.Issuance,
+    parked: sr.ParkedSession | None,
+) -> bool:
+    return (
+        not prepared.image_graph_changed
+        and issuance.image_id == prepared.selected_id
+        and parked is not None
+        and parked.image_id == prepared.selected_id
+        and parked.was_running
+    )
+
+
+def _prepared_journal(
+    project: Path,
+    snapshot: SessionSpecSnapshot,
+    issuance: runtime_spec.Issuance,
+    parked: sr.ParkedSession | None,
+    prepared: RefreshImage,
+) -> _RefreshJournal:
+    journal = _new_journal(project, snapshot, issuance, parked)
+    journal = replace(
+        journal,
+        target_image_id=prepared.selected_id,
+        target_payload_fingerprint=(
+            prepared.wheel_source_fingerprint or prepared.payload_fingerprint
+        ),
+        target_wheel_sha256=prepared.wheel_sha256,
+        prepared_images=prepared.prepared_images,
+    )
+    _write_journal(journal)
+    return journal
 
 
 def refresh(
