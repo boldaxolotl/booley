@@ -29,7 +29,6 @@ from booley.targets.parameter_integrity import (
 from .. import edam as edam_layer
 from ..base import SubprocessResult
 from . import edam as sim_edam
-from .config import resolve_run_cwd
 
 BuildVerdict = Literal["pass", "fail"] | None
 BuildFailureKind = Literal["design", "infrastructure"] | None
@@ -156,7 +155,7 @@ def _prepare_simulation_build(
             f"simulator {eda_tool!r} is not supported by the public sim Flow; "
             "select a Verilator or Icarus Target"
         )
-    _stage_doctor_overlay(root, work_root, resolved.build_root)
+    _stage_doctor_overlay(root, resolved.build_root)
     try:
         inspection = TargetCatalog.build(root).inspect(handle)
         fileset = {
@@ -180,8 +179,8 @@ def _prepare_simulation_build(
     )
 
 
-def _stage_doctor_overlay(project_root: Path, work_root: Path, build_root: Path) -> None:
-    """Apply Doctor's bad fixture to isolated build and runtime views."""
+def _stage_doctor_overlay(project_root: Path, build_root: Path) -> None:
+    """Apply Doctor's conventional bad fixture to the resolved build root."""
     import os
 
     if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) != selftest_overlay.BAD_KIND:
@@ -193,13 +192,6 @@ def _stage_doctor_overlay(project_root: Path, work_root: Path, build_root: Path)
             "Doctor requested a bad simulation fixture, but "
             f"{selftest_overlay.bad_overlay_dir(project_dir, 'sim')} is empty"
         )
-    run_cwd = (project_root / resolve_run_cwd(project_root)).resolve()
-    selftest_overlay.stage_bad_run_overlay(
-        project_dir,
-        "sim",
-        run_cwd,
-        selftest_overlay.doctor_shadow_path(project_root, work_root),
-    )
 
 
 def build_stage_script(
