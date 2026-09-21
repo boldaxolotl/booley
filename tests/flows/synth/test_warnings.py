@@ -113,6 +113,20 @@ def test_missing_final_check_is_incomplete_not_clean() -> None:
     assert diagnostics.warnings.total_warnings == 0
 
 
+def test_yosys_loop_is_structural_when_final_check_is_clean() -> None:
+    diagnostics = parse_synth_diagnostics(
+        {
+            "yosys": "Warning: found logic loop in module top:\n    wire \\feedback\n",
+            "final_check": "Found and reported 0 problems.\n",
+        }
+    )
+
+    assert diagnostics.structural.complete is True
+    assert diagnostics.structural.comb_loops == 1
+    assert diagnostics.structural.multi_driven == 0
+    assert diagnostics.warnings.by_category == {"combinational_loop": 1}
+
+
 def test_final_check_without_completion_marker_is_incomplete() -> None:
     diagnostics = parse_synth_diagnostics(
         {"final_check": ("Warning: found logic loop in module top:\n    wire \\feedback\n")}

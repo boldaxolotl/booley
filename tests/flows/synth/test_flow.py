@@ -2017,6 +2017,44 @@ class TestFileBasedInterpretation:
         assert criterion.met is False
         assert criterion.detail["total_warnings"] == 2
 
+    def test_yosys_loop_fails_even_when_final_check_is_clean(self, flow_and_state, tmp_path: Path):
+        flow, state_file = flow_and_state
+        build_dir = self._build_dir(tmp_path)
+
+        def mock_execute(cmd, **_kwargs):
+            build_dir.mkdir(parents=True, exist_ok=True)
+            (build_dir / "yosys.log").write_text(
+                "Warning: found logic loop in module dut:\n"
+                "    wire \\feedback\n"
+                "Chip area for top module '\\dut': 6400.0\n"
+                "Number of cells: 100\n",
+                encoding="utf-8",
+            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+            (build_dir / "check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
+            fresh = time.time() + 1
+            for artifact in build_dir.iterdir():
+                os.utime(artifact, (fresh, fresh))
+            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+
+        with patch.object(flow, "_execute", side_effect=mock_execute):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_FAILURE
+        assert "CRITICAL -- 1 comb loop" in result.report_text
+        target = result.detail["lite"]
+        assert target["comb_loops"] == 1
+        assert target["passed"] is False
+        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+        assert report["returncode"] == 0
+        assert report["passed"] is False
+        assert report["implementation"]["conditions"]["has_critical"] is True
+        criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
+        assert criterion.met is False
+        assert criterion.detail["comb_loops"] == 1
+
     def test_advisory_warning_yields_warn_grade_without_failing(
         self, flow_and_state, tmp_path: Path
     ):

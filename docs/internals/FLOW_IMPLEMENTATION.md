@@ -642,13 +642,15 @@ For the full comparison and known `slang` limitations, see
 - no critical condition remains: zero latches beyond `expected_latches`, zero
   combinational loops, zero multi-driven nets, and zero unmapped processes.
 
-The loop and multi-driver counts come from a dedicated final Yosys `check`
-artifact emitted after technology mapping and optimization. Yosys runs its own
-`check` pass several times during `synth`; those earlier warnings remain in the
-warning inventory, but they may describe repeated or transient conditions and
-therefore do not decide the final structural verdict. Missing or stale final
-check evidence makes `structural_checks_complete` false and cannot produce a
-passing synthesis result.
+Exact loop and multi-driver counts come from a dedicated final Yosys `check`
+artifact emitted after technology mapping and optimization. Yosys also runs
+`check` several times during `synth`; any combinational-loop warning from those
+earlier checks is fatal even when the final check reports none. Because the
+same loop can be reported repeatedly, an earlier-only loop is recorded as a
+conservative count of one rather than summing occurrences. Earlier multi-driver
+warnings remain inventory-only; the final check decides that condition.
+Missing or stale final-check evidence makes `structural_checks_complete` false
+and cannot produce a passing synthesis result.
 
 Timeouts, infrastructure errors, and metric-less nonzero exits are Flow
 failures; critical conditions on an otherwise clean run are design failures.
