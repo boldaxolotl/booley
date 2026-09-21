@@ -877,10 +877,13 @@ booley session refresh                  # rebuild configured image, recreate ses
 booley session down                     # stop and remove
 ```
 
-`session refresh` is transactional for the headless Sandbox. It keeps the old
-container recoverable until the replacement is running on the reconciled
+`session refresh` is transactional for the headless Sandbox. It first prints a
+node-by-node reuse/build plan and builds verified candidates without changing
+managed tags or parking the old Sandbox. A Python-only edit rebuilds only the
+final Booley wheel overlay. After candidates are ready, refresh keeps the old
+Sandbox recoverable until the replacement is running on the reconciled
 immutable image ID and an isolated in-container probe confirms the expected
-Booley payload. Its host-side journal survives interruption: the next mutating
+wheel-source identity. Its host-side journal survives interruption: the next mutating
 host lifecycle command either restores the exact prior spec and container or,
 after the replacement was durably committed, finishes deleting that exact
 predecessor. The recovery command stops after doing so and asks you to rerun the

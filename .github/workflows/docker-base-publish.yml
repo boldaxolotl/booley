@@ -45,6 +45,7 @@ jobs:
             --repo . --github-output "${GITHUB_OUTPUT}"
           echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
           echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+          echo "recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.base"),)))')" >> "${GITHUB_OUTPUT}"
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -68,6 +69,12 @@ jobs:
             BOOLEY_BASE_SOURCE_REVISION=${{ steps.base.outputs.revision }}
             BOOLEY_BASE_CONTRACT=${{ steps.base.outputs.contract }}
             BOOLEY_BASE_BUILT_AT=${{ steps.base.outputs.built_at }}
+          labels: |
+            io.booley.provenance.schema=3
+            io.booley.artifact.role=runtime-base
+            io.booley.artifact.effective-inputs=${{ steps.base.outputs.contract }}
+            io.booley.build.recipe-fingerprint=${{ steps.base.outputs.recipe_fingerprint }}
+            io.booley.build.origin=registry
           cache-from: type=gha,scope=sandbox-runtime-base
           cache-to: type=gha,scope=sandbox-runtime-base,mode=max,ignore-error=true
 

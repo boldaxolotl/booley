@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.runtime import image_lifecycle as runtime_lifecycle
 from booley.runtime import project_image
-from booley.runtime.build_stamp import embedded_official_release, extracted_development_context
+from booley.runtime.build_stamp import (
+    embedded_official_release,
+    extracted_development_context,
+    wheel_embedded_source_fingerprint,
+)
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.version_attribution import VersionOrigin
@@ -30,6 +35,10 @@ Intent = runtime_lifecycle.Intent
 LifecycleResult = runtime_lifecycle.LifecycleResult
 ProjectImageScope = runtime_lifecycle.ProjectImageScope
 Status = runtime_lifecycle.Status
+ImageRole = runtime_lifecycle.ImageRole
+LifecyclePlan = runtime_lifecycle.LifecyclePlan
+PreparedConvergence = runtime_lifecycle.PreparedConvergence
+PlanAction = runtime_lifecycle.PlanAction
 
 
 class _LegacyBuildAdapter:
@@ -139,12 +148,163 @@ class _LegacyBuildAdapter:
             raise ImageLifecycleError(f"failed to rebuild {node.reference}")
 
 
+class _IncrementalBuildAdapter:
+    """Build role-specific candidates without moving managed image tags."""
+
+    def __init__(self, project_root: Path, docker: DockerPort, *, verbose: bool) -> None:
+        self.project_root = project_root
+        self.docker = docker
+        self.verbose = verbose
+        self._wheel_sha256: str | None = None
+
+    def prepare(
+        self,
+        node: ImageNode,
+        *,
+        candidate_reference: str,
+        parent_reference: str | None,
+    ) -> str:
+        if node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
+            return self._pull_complete_release(node)
+        from booley.harness.setup.common import InitContext
+
+        context = InitContext(
+            project_root=self.project_root,
+            force=True,
+            verbose=self.verbose,
+            show_step_banners=False,
+        )
+        parent_id = self.docker.image_id(parent_reference) if parent_reference else None
+        if parent_reference is not None and parent_id is None:
+            raise ImageLifecycleError(
+                f"could not resolve prepared parent {parent_reference!r} for {node.reference}"
+            )
+        self._materialize_managed_project_recipe(node)
+        self._build_role(context, node, candidate_reference, parent_reference, parent_id)
+        failures = [result.detail for result in context.results if result.status == "err"]
+        if failures:
+            raise ImageLifecycleError("; ".join(failures))
+        if self.docker.image_id(candidate_reference) is None:
+            raise ImageLifecycleError(f"candidate build produced no image {candidate_reference!r}")
+        return candidate_reference
+
+    def _pull_complete_release(self, node: ImageNode) -> str:
+        from booley.harness.setup.docker_image import _try_pull_image, remote_tag
+
+        if node.role is not ImageRole.WHEEL_OVERLAY or node.reference not in {
+            BASE_IMAGE,
+            *FLAVOR_RECIPES,
+        }:
+            raise ImageLifecycleError(
+                f"no complete published Sandbox Image exists for {node.reference}"
+            )
+        if not _try_pull_image(node.payload.version, node.reference, adopt=False):
+            raise ImageLifecycleError(
+                f"could not pull current packaged Sandbox Image {node.reference}"
+            )
+        return remote_tag(node.reference, node.payload.version)
+
+    def _materialize_managed_project_recipe(self, node: ImageNode) -> None:
+        if node.role is not ImageRole.PROJECT_SUBSTRATE:
+            return
+        root = resolve_checkout_project_dir(self.project_root)
+        body = runtime_lifecycle._project_requirements_body(self.project_root)
+        project_image.write_project_image_files(
+            root / "docker",
+            body or "",
+            parent_image="booley-project-parent",
+        )
+
+    def _build_role(
+        self,
+        context,
+        node: ImageNode,
+        candidate: str,
+        parent_reference: str | None,
+        parent_id: str | None,
+    ) -> None:
+        from booley.harness.setup import docker_image
+
+        root = docker_data_dir().parents[3]
+        docker_dir = docker_data_dir()
+        build_context = root
+        contexts: tuple[tuple[str, str], ...] = ()
+        build_args: tuple[str, ...] = ()
+        if node.role is ImageRole.RUNTIME_BASE:
+            build_args = tuple(docker_image._runtime_base_build_metadata_args(root))
+        elif node.role is ImageRole.STANDARD_SUBSTRATE:
+            contexts = (("booley-runtime-base", f"docker-image://{parent_reference}"),)
+        elif node.role is ImageRole.RISCV_SUBSTRATE:
+            build_context = docker_dir
+            contexts = (("booley-standard-substrate", f"docker-image://{parent_reference}"),)
+        elif node.role is ImageRole.PROJECT_SUBSTRATE:
+            build_context = resolve_checkout_project_dir(self.project_root) / "docker"
+            contexts = (("booley-project-parent", f"docker-image://{parent_reference}"),)
+        elif node.role is ImageRole.WHEEL_OVERLAY:
+            if not docker_image._docker_build_wheel(context, root):
+                return
+            wheels = sorted((root / "dist").glob("booley_rtl-*.whl"))
+            if len(wheels) != 1:
+                raise ImageLifecycleError("wheel preparation did not produce exactly one wheel")
+            embedded = wheel_embedded_source_fingerprint(wheels[0])
+            if embedded != node.wheel_source_fingerprint:
+                raise ImageLifecycleError(
+                    "built wheel source fingerprint differs from the planned inputs"
+                )
+            self._wheel_sha256 = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
+            contexts = (("booley-substrate", f"docker-image://{parent_reference}"),)
+            build_args = tuple(docker_image._image_build_metadata_args(root))
+        else:
+            raise ImageLifecycleError(f"unsupported image role {node.role!r}")
+        labels = [
+            (runtime_lifecycle.LABEL_SCHEMA, runtime_lifecycle.PROVENANCE_SCHEMA),
+            (runtime_lifecycle.LABEL_ARTIFACT_ROLE, node.role.value),
+            (runtime_lifecycle.LABEL_EFFECTIVE_INPUTS, node.effective_inputs or ""),
+            (runtime_lifecycle.LABEL_RECIPE_FINGERPRINT, node.build.recipe_fingerprint),
+            (runtime_lifecycle.LABEL_BUILD_ORIGIN, "local"),
+            (runtime_lifecycle.LABEL_VERSION, node.payload.version),
+        ]
+        if node.wheel_source_fingerprint is not None:
+            labels.append(
+                (
+                    runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT,
+                    node.wheel_source_fingerprint,
+                )
+            )
+            labels.append((runtime_lifecycle.LABEL_WHEEL_SHA256, self._wheel_sha256 or ""))
+        spec = docker_image._DockerBuildSpec(
+            dockerfile=node.recipe,
+            context=build_context,
+            exists=False,
+            image=candidate,
+            build_contexts=contexts,
+            build_args=build_args,
+            parent_artifact=parent_id,
+            labels=tuple(labels),
+            build_note=f"preparing {node.role.value}",
+        )
+        result = docker_image._docker_build_image(context, spec)
+        if result is None:
+            return
+        if result != 0:
+            context.record("docker_image", "err", f"{node.role.value} build failed")
+
+
 def _docker_adapter() -> DockerPort:
     return runtime_lifecycle._docker_adapter()
 
 
 def _build_adapter(project_root: Path, docker: DockerPort, *, verbose: bool) -> BuildPort:
     return _LegacyBuildAdapter(project_root, docker, verbose=verbose)
+
+
+def _transaction_build_adapter(
+    project_root: Path,
+    docker: DockerPort,
+    *,
+    verbose: bool,
+) -> _IncrementalBuildAdapter:
+    return _IncrementalBuildAdapter(project_root, docker, verbose=verbose)
 
 
 def _artifact_policy() -> ArtifactPolicy:
@@ -188,3 +348,39 @@ def reconcile(
         builder=builder,
         artifact_policy=_artifact_policy(),
     )
+
+
+def plan(scope: ProjectImageScope) -> LifecyclePlan:
+    """Plan source/release convergence using the installed artifact policy."""
+    docker = _docker_adapter()
+    return runtime_lifecycle.plan(scope, docker=docker, artifact_policy=_artifact_policy())
+
+
+def prepare(
+    lifecycle_plan: LifecyclePlan,
+    *,
+    verbose: bool = False,
+) -> PreparedConvergence:
+    """Build and verify candidates while leaving managed tags unchanged."""
+    docker = _docker_adapter()
+    builder = _transaction_build_adapter(
+        lifecycle_plan.project_root,
+        docker,
+        verbose=verbose,
+    )
+    return runtime_lifecycle.prepare(
+        lifecycle_plan,
+        docker=docker,
+        builder=builder,
+        verbose=verbose,
+    )
+
+
+def commit(prepared: PreparedConvergence) -> LifecycleResult:
+    """Adopt one previously prepared convergence."""
+    return runtime_lifecycle.commit(prepared, docker=_docker_adapter())
+
+
+def abort(prepared: PreparedConvergence) -> None:
+    """Discard one previously prepared convergence."""
+    runtime_lifecycle.abort(prepared, docker=_docker_adapter())

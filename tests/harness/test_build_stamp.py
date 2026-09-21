@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,9 @@ from booley.runtime.build_stamp import (
     resolve_build_commit,
     resolve_payload_fingerprint,
     resolve_source_updated_at,
+    resolve_wheel_source_fingerprint,
     stamp_path,
+    wheel_embedded_source_fingerprint,
     write_build_stamp,
 )
 
@@ -118,8 +121,19 @@ class TestWriteBuildStamp:
         exec(compile(text, "_build_commit.py", "exec"), namespace)
         assert namespace["COMMIT"] == commit != ""
         assert namespace["PAYLOAD_FINGERPRINT"] == resolve_payload_fingerprint(repo)
+        assert namespace["WHEEL_SOURCE_FINGERPRINT"] == resolve_wheel_source_fingerprint(repo)
         assert namespace["OFFICIAL_RELEASE"] is False
         assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
+
+    def test_reads_wheel_source_identity_without_importing_wheel(self, tmp_path: Path):
+        wheel = tmp_path / WHEEL_NAME
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr(
+                "booley/_build_commit.py",
+                f'WHEEL_SOURCE_FINGERPRINT = "{"a" * 64}"\n',
+            )
+
+        assert wheel_embedded_source_fingerprint(wheel) == "a" * 64
 
     def test_marks_an_official_release_build_explicitly(self, repo: Path):
         context = development_context_path(repo)

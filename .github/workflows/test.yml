@@ -803,9 +803,8 @@ jobs:
         run: |
           set -o pipefail
           docker buildx build --builder default --load \
-            --file src/booley/data/docker/Dockerfile \
-            --tag booley-test \
-            --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=booley-runtime-base:ci" \
+            --file src/booley/data/docker/Dockerfile.substrate \
+            --tag booley-standard-substrate:ci \
             --build-context booley-runtime-base=docker-image://booley-runtime-base:ci . \
             2>&1 | tee "${RUNNER_TEMP}/stable-base-build.log"
 
@@ -825,17 +824,29 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: src/booley/data/docker/Dockerfile
+          file: src/booley/data/docker/Dockerfile.substrate
           build-contexts: |
             booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}
-          build-args: |
-            BOOLEY_RUNTIME_BASE_IMAGE=${{ steps.runtime-base.outputs.image }}
           load: true
-          tags: booley-test
-          cache-from: type=gha,scope=sandbox
+          tags: booley-standard-substrate:ci
+          cache-from: type=gha,scope=sandbox-substrate
           cache-to: >-
             ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-            'type=gha,scope=sandbox,mode=max,ignore-error=true' || '' }}
+            'type=gha,scope=sandbox-substrate,mode=max,ignore-error=true' || '' }}
+
+      - name: Build standard wheel overlay
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.wheel
+          build-contexts: |
+            booley-substrate=docker-image://booley-standard-substrate:ci
+          load: true
+          tags: booley-test
+          cache-from: type=gha,scope=sandbox-wheel
+          cache-to: >-
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+            'type=gha,scope=sandbox-wheel,mode=max,ignore-error=true' || '' }}
 
       - name: Capture Docker cache and layer evidence
         shell: bash
@@ -953,8 +964,13 @@ jobs:
               set -o pipefail
               docker buildx build --builder default --load \
                 --file src/booley/data/docker/Dockerfile.riscv \
+                --tag booley-riscv-substrate:ci \
+                --build-context booley-standard-substrate=docker-image://booley-standard-substrate:ci . \
+                2>&1 | tee "${RUNNER_TEMP}/riscv-image-evidence/build.log"
+              docker buildx build --builder default --load \
+                --file src/booley/data/docker/Dockerfile.wheel \
                 --tag booley-riscv-test \
-                --build-context booley-sandbox=docker-image://booley-test . \
+                --build-context booley-substrate=docker-image://booley-riscv-substrate:ci . \
                 2>&1 | tee "${RUNNER_TEMP}/riscv-image-evidence/build.log"
               PYTHONPATH=src python .github/scripts/image_contract.py \
                 --image booley-riscv-test \

@@ -91,6 +91,43 @@ class FailOnSecondBuilder(FakeBuilder):
             raise lifecycle.ImageLifecycleError("derived build failed")
 
 
+def _install_planned_graph(docker: FakeDocker, nodes: tuple[lifecycle.ImageNode, ...]) -> None:
+    for index, node in enumerate(nodes, start=1):
+        image_id = f"sha256:{index:064x}"
+        labels = dict(node.expected_labels)
+        labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
+        if node.parent is not None:
+            labels[lifecycle.LABEL_PARENT_ARTIFACT] = docker.image_id(node.parent) or ""
+            labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = (
+                lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
+            )
+        if node.role is lifecycle.ImageRole.WHEEL_OVERLAY:
+            labels[lifecycle.LABEL_WHEEL_SHA256] = "f" * 64
+        docker.images[node.reference] = (image_id, labels)
+
+
+class TransactionBuilder:
+    def __init__(self, docker: FakeDocker) -> None:
+        self.docker = docker
+        self.built: list[tuple[lifecycle.ImageRole, str | None]] = []
+
+    def prepare(self, node, *, candidate_reference: str, parent_reference: str | None) -> str:
+        parent_id = self.docker.image_id(parent_reference) if parent_reference else None
+        image_id = f"sha256:{len(self.built) + 20:064x}"
+        labels = dict(node.expected_labels)
+        labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
+        if parent_id is not None:
+            labels[lifecycle.LABEL_PARENT_ARTIFACT] = parent_id
+            labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = (
+                lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
+            )
+        if node.role is lifecycle.ImageRole.WHEEL_OVERLAY:
+            labels[lifecycle.LABEL_WHEEL_SHA256] = "e" * 64
+        self.docker.images[candidate_reference] = (image_id, labels)
+        self.built.append((node.role, parent_id))
+        return candidate_reference
+
+
 def _project(tmp_path: Path, image: str | None = None) -> Path:
     root = tmp_path / "project"
     project_dir = root / ".booley_project"
@@ -138,6 +175,157 @@ def _wire(monkeypatch: pytest.MonkeyPatch, docker: FakeDocker) -> FakeBuilder:
     monkeypatch.setattr(lifecycle, "_docker_adapter", lambda: docker)
     monkeypatch.setattr(lifecycle, "_build_adapter", lambda *_args, **_kwargs: builder)
     return builder
+
+
+def test_incremental_plan_builds_only_wheel_overlay_for_python_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel-old")
+    initial = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    _install_planned_graph(docker, initial.nodes)
+
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel-new")
+    refreshed = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+
+    assert [step.action for step in refreshed.steps] == [
+        lifecycle.PlanAction.REUSE,
+        lifecycle.PlanAction.REUSE,
+        lifecycle.PlanAction.BUILD,
+    ]
+    assert refreshed.steps[-1].role is lifecycle.ImageRole.WHEEL_OVERLAY
+    assert refreshed.steps[-1].reason.code == "inputs-changed"
+
+
+def test_incremental_plan_produces_a_true_noop_for_current_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    initial = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    _install_planned_graph(docker, initial.nodes)
+
+    current = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+
+    assert all(step.action is lifecycle.PlanAction.REUSE for step in current.steps)
+
+
+def test_incremental_plan_propagates_standard_change_only_to_descendants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    initial = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    _install_planned_graph(docker, initial.nodes)
+    original_hash = lifecycle._hash_paths
+    monkeypatch.setattr(
+        lifecycle,
+        "_hash_paths",
+        lambda root, paths: "standard-new"
+        if any("bwave" in path.as_posix() for path in paths)
+        else original_hash(root, paths),
+    )
+
+    refreshed = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+
+    assert [step.action for step in refreshed.steps] == [
+        lifecycle.PlanAction.REUSE,
+        lifecycle.PlanAction.BUILD,
+        lifecycle.PlanAction.BUILD,
+        lifecycle.PlanAction.BUILD,
+    ]
+    assert refreshed.steps[1].reason.code == "inputs-changed"
+    assert all(step.reason.code == "parent-changed" for step in refreshed.steps[2:])
+
+
+def test_riscv_requirements_select_generated_project_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    requirements = root / "requirements.txt"
+    requirements.write_text("cocotb==2.0.0\n", encoding="utf-8")
+    config = root / ".booley_project" / "booley.toml"
+    config.write_text(
+        '[sandbox]\nimage = "booley-sandbox-riscv"\npip_requirements = ["requirements.txt"]\n',
+        encoding="utf-8",
+    )
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+
+    assert planned.selected_reference == lifecycle.project_image.project_image_name(root)
+    assert [node.role for node in planned.nodes] == [
+        lifecycle.ImageRole.RUNTIME_BASE,
+        lifecycle.ImageRole.STANDARD_SUBSTRATE,
+        lifecycle.ImageRole.RISCV_SUBSTRATE,
+        lifecycle.ImageRole.PROJECT_SUBSTRATE,
+        lifecycle.ImageRole.WHEEL_OVERLAY,
+    ]
+
+
+def test_prepare_uses_realized_parent_ids_and_commit_adopts_after_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    builder = TransactionBuilder(docker)
+
+    prepared = lifecycle.prepare(planned, docker=docker, builder=builder)
+
+    assert docker.image_id(lifecycle.BASE_IMAGE) is None
+    assert builder.built[1][1] == prepared.candidates[0].image_id
+    assert builder.built[2][1] == prepared.candidates[1].image_id
+
+    result = lifecycle.commit(prepared, docker=docker)
+
+    assert result.changed_images == tuple(node.reference for node in planned.nodes)
+    assert result.selected_id == prepared.candidates[-1].image_id
+    assert result.wheel_source_fingerprint == "wheel"
+    assert result.wheel_sha256 == "e" * 64
+
+
+def test_official_release_plan_observes_only_selected_complete_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    node = lifecycle._complete_release_node("booley-sandbox-riscv")
+    labels = dict(node.expected_labels)
+    labels.update(
+        {
+            lifecycle.LABEL_BUILD_ORIGIN: "registry",
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (
+                lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST
+            ),
+            lifecycle.LABEL_PARENT_ARTIFACT: (
+                "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "d" * 64
+            ),
+            lifecycle.LABEL_WHEEL_SHA256: "e" * 64,
+        }
+    )
+    docker.images[node.reference] = ("sha256:" + "a" * 64, labels)
+
+    planned = lifecycle.plan(
+        lifecycle.ProjectImageScope(root),
+        docker=docker,
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert planned.nodes == (node,)
+    assert planned.steps[0].action is lifecycle.PlanAction.REUSE
 
 
 def _labels(*, payload: str, recipe: str, parent: str | None = None) -> dict[str, str]:

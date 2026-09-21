@@ -275,6 +275,28 @@ class TestSourceFingerprintMismatch:
         self._patch(monkeypatch, fingerprint="abc", label="old")
         assert init_docker_image.source_fingerprint_mismatch("img") is True
 
+    def test_schema_three_wheel_source_is_authoritative(self, monkeypatch):
+        expected = "a" * 64
+        monkeypatch.setattr(
+            init_docker_image,
+            "resolve_wheel_source_fingerprint",
+            lambda _root: expected,
+        )
+        monkeypatch.setattr(
+            init_docker_image,
+            "_image_label",
+            lambda _image, label: "b" * 64
+            if label == init_docker_image.LABEL_WHEEL_SOURCE_FINGERPRINT
+            else None,
+        )
+        monkeypatch.setattr(
+            init_docker_image,
+            "_image_build_fingerprint",
+            lambda _root: (_ for _ in ()).throw(AssertionError("legacy probe must not run")),
+        )
+
+        assert init_docker_image.source_fingerprint_mismatch("img") is True
+
 
 def test_checkout_version_overrides_stale_distribution_metadata(tmp_path, monkeypatch):
     (tmp_path / "VERSION").write_text("0.2.0\n", encoding="utf-8")

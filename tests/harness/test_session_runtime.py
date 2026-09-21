@@ -3467,14 +3467,12 @@ class TestSessionRefresh:
 
         refresh.assert_called_once_with(tmp_path, verbose=False)
 
-    def test_refresh_runs_host_bootstrap_then_rebuilds_selected_flavor(
+    def test_refresh_prepares_then_commits_selected_graph(
         self, tmp_path: Path, monkeypatch
     ):
-        from booley.harness import bootstrap, init_cmd
+        from booley.harness import init_cmd
         from booley.runtime.image_lifecycle import (
-            Intent,
             LifecycleResult,
-            ProjectImageScope,
             Status,
         )
 
@@ -3484,76 +3482,54 @@ class TestSessionRefresh:
             Status.CHANGED,
             changed_images=("booley-sandbox", "booley-sandbox-riscv"),
         )
-        base = LifecycleResult(
-            "booley-sandbox",
-            "sha256:base",
-            Status.CHANGED,
-            changed_images=("booley-sandbox",),
-        )
+        prepared = object()
         calls = []
-        bootstrap_result = bootstrap.BootstrapResult(
-            Intent.REFRESH,
-            (bootstrap.BootstrapFinding("host", bootstrap.BootstrapState.CHANGED, "ready"),),
-            base_image=base,
-        )
         monkeypatch.setattr(
             init_cmd,
-            "reconcile_bootstrap",
-            lambda intent, *, verbose=False: (
-                calls.append(("bootstrap", intent, verbose)) or bootstrap_result
+            "prepare_runtime_image",
+            lambda root, *, verbose=False: (
+                calls.append(("prepare", root, verbose)) or prepared
             ),
         )
         monkeypatch.setattr(
             init_cmd,
-            "reconcile_images",
-            lambda root, intent, *, verbose=False: (
-                calls.append((root, intent, verbose)) or expected
+            "commit_runtime_image",
+            lambda value: (
+                calls.append(("commit", value)) or expected
             ),
         )
+        monkeypatch.setattr(init_cmd, "abort_runtime_image", lambda value: calls.append(("abort", value)))
 
         assert init_cmd.refresh_runtime_image(tmp_path, verbose=True) is expected
         assert calls == [
-            (ProjectImageScope(tmp_path), Intent.CHECK, True),
-            ("bootstrap", Intent.REFRESH, True),
-            (ProjectImageScope(tmp_path, base), Intent.REFRESH, True),
+            ("prepare", tmp_path, True),
+            ("commit", prepared),
         ]
 
-    def test_refresh_fails_when_host_bootstrap_cannot_converge(self, tmp_path: Path, monkeypatch):
-        from booley.harness import bootstrap, init_cmd
-        from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
+    def test_refresh_aborts_prepared_candidates_when_commit_fails(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from booley.harness import init_cmd
 
+        prepared = object()
+        aborted = []
+        monkeypatch.setattr(init_cmd, "prepare_runtime_image", lambda *_args, **_kwargs: prepared)
         monkeypatch.setattr(
-            init_cmd,
-            "reconcile_images",
-            lambda *_args, **_kwargs: LifecycleResult(
-                "booley-sandbox", "sha256:old", Status.CURRENT
-            ),
+            init_cmd, "commit_runtime_image", lambda _value: (_ for _ in ()).throw(RuntimeError("commit failed"))
         )
-        monkeypatch.setattr(
-            init_cmd,
-            "reconcile_bootstrap",
-            lambda *_args, **_kwargs: bootstrap.BootstrapResult(
-                Intent.REFRESH,
-                (
-                    bootstrap.BootstrapFinding(
-                        "proxy", bootstrap.BootstrapState.ERROR, "foreign collision"
-                    ),
-                ),
-            ),
-        )
+        monkeypatch.setattr(init_cmd, "abort_runtime_image", aborted.append)
 
-        with pytest.raises(RuntimeError, match="foreign collision"):
+        with pytest.raises(RuntimeError, match="commit failed"):
             init_cmd.refresh_runtime_image(tmp_path)
+        assert aborted == [prepared]
 
     def test_refresh_refuses_user_managed_image(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
-        from booley.runtime.image_lifecycle import LifecycleResult, Status
-
         monkeypatch.setattr(
             init_cmd,
-            "reconcile_images",
-            lambda *_args, **_kwargs: LifecycleResult(
-                "registry.example/custom:latest", None, Status.EXTERNAL
+            "prepare_runtime_image",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("user-managed Sandbox Image")
             ),
         )
         with pytest.raises(RuntimeError, match="user-managed"):

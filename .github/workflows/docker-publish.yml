@@ -29,6 +29,8 @@ jobs:
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       runtime-base: ${{ steps.runtime-base.outputs.image }}
+      substrate-digest: ${{ steps.substrate.outputs.digest }}
+      wheel-sha256: ${{ steps.wheel.outputs.wheel_sha256 }}
       version: ${{ steps.version.outputs.version }}
 
     steps:
@@ -42,8 +44,10 @@ jobs:
             echo "revision=$(git rev-parse --short HEAD)"
             echo "source_updated_at=$(git log -1 --format=%cI HEAD)"
             echo "image_built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "payload_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
-            echo "recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile"),)))')"
+            echo "wheel_source_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
+            echo "substrate_inputs=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_lifecycle import standard_substrate_fingerprint; print(standard_substrate_fingerprint(Path.cwd()))')"
+            echo "substrate_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.substrate"),)))')"
+            echo "overlay_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.wheel"),)))')"
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
@@ -53,12 +57,21 @@ jobs:
           cache: pip
 
       - name: Build wheel
+        id: wheel
         run: |
           pip install build==1.6.0
           PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.RUNTIME_IMAGE)'
           trap 'rm -f src/booley/_build_commit.py' EXIT
           rm -rf build/
           python -m build --wheel --outdir dist/
+          echo "wheel_sha256=$(sha256sum dist/booley_rtl-*.whl | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Retain exact release wheel for both final overlays
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-wheel
+          path: dist/booley_rtl-*.whl
+          if-no-files-found: error
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -78,17 +91,38 @@ jobs:
           --resolver remote --resolve-image "${BASE_REF}"
           --github-output "${GITHUB_OUTPUT}"
 
-      - id: build
+      - name: Build and publish standard substrate
+        id: substrate
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: src/booley/data/docker/Dockerfile
+          file: src/booley/data/docker/Dockerfile.substrate
           build-contexts: |
             booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}
           push: true
           sbom: true
-          # Unique, non-advertised candidate tag. Public version/latest tags
-          # are assigned only by the final digest-promotion job.
+          tags: >-
+            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:standard-${{ steps.version.outputs.substrate_inputs }}
+          labels: |
+            io.booley.provenance.schema=3
+            io.booley.artifact.role=standard-substrate
+            io.booley.artifact.effective-inputs=${{ steps.version.outputs.substrate_inputs }}
+            io.booley.build.recipe-fingerprint=${{ steps.version.outputs.substrate_recipe_fingerprint }}
+            io.booley.build.parent-artifact-kind=registry-digest
+            io.booley.build.parent-artifact=${{ steps.runtime-base.outputs.image }}
+            io.booley.build.origin=registry
+          cache-from: type=gha,scope=sandbox-substrate
+
+      - name: Build complete standard image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.wheel
+          build-contexts: |
+            booley-substrate=docker-image://${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}
+          push: true
+          sbom: true
           tags: >-
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: |
@@ -96,25 +130,24 @@ jobs:
             BOOLEY_SOURCE_REVISION=${{ steps.version.outputs.revision }}
             BOOLEY_SOURCE_UPDATED_AT=${{ steps.version.outputs.source_updated_at }}
             BOOLEY_IMAGE_BUILT_AT=${{ steps.version.outputs.image_built_at }}
-            BOOLEY_PAYLOAD_FINGERPRINT=${{ steps.version.outputs.payload_fingerprint }}
-            BOOLEY_RUNTIME_BASE_IMAGE=${{ steps.runtime-base.outputs.image }}
+            BOOLEY_PAYLOAD_FINGERPRINT=${{ steps.version.outputs.wheel_source_fingerprint }}
           labels: |
-            io.booley.provenance.schema=2
-            io.booley.payload.fingerprint=${{ steps.version.outputs.payload_fingerprint }}
-            io.booley.build.recipe-fingerprint=${{ steps.version.outputs.recipe_fingerprint }}
+            io.booley.provenance.schema=3
+            io.booley.artifact.role=wheel-overlay
+            io.booley.artifact.effective-inputs=${{ steps.version.outputs.wheel_source_fingerprint }}
+            io.booley.wheel.source-fingerprint=${{ steps.version.outputs.wheel_source_fingerprint }}
+            io.booley.wheel.sha256=${{ steps.wheel.outputs.wheel_sha256 }}
+            io.booley.build.recipe-fingerprint=${{ steps.version.outputs.overlay_recipe_fingerprint }}
             io.booley.build.parent-artifact-kind=registry-digest
-            io.booley.build.parent-artifact=${{ steps.runtime-base.outputs.image }}
+            io.booley.build.parent-artifact=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}
             io.booley.build.origin=registry
-            booley.build-fingerprint=${{ steps.version.outputs.payload_fingerprint }}
-          cache-from: type=gha,scope=sandbox
+          cache-from: type=gha,scope=sandbox-wheel
           # The shared scope has one writer: main pushes in test.yml. Release
           # builds reuse it without replacing it with tag- or dispatch-specific
           # state.
 
-  # RISC-V variant: base sandbox + RISC-V toolchain/Spike/specs (Dockerfile.riscv).
-  # It is `FROM booley-sandbox`; the build-context mapping below resolves that
-  # bare name to the exact digest produced above, so a mutable tag cannot race
-  # or redirect the derived-image build.
+  # RISC-V uses the exact standard-substrate digest, then applies the same wheel
+  # bytes as the standard final image.
   build-and-push-riscv:
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -124,6 +157,8 @@ jobs:
       packages: write
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
+      substrate-digest: ${{ steps.substrate.outputs.digest }}
+      wheel-sha256: ${{ steps.wheel.outputs.wheel_sha256 }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -133,9 +168,23 @@ jobs:
         run: |
           {
             echo "version=$(cat VERSION)"
-            echo "payload_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
-            echo "recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
+            echo "revision=$(git rev-parse --short HEAD)"
+            echo "source_updated_at=$(git log -1 --format=%cI HEAD)"
+            echo "image_built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "wheel_source_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
+            echo "substrate_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
+            echo "overlay_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.wheel"),)))')"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact release wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-wheel
+          path: dist/
+
+      - name: Record wheel identity
+        id: wheel
+        run: echo "wheel_sha256=$(sha256sum dist/booley_rtl-*.whl | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -145,8 +194,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push RISC-V image
-        id: build
+      - name: Build and publish RISC-V substrate
+        id: substrate
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -154,21 +203,50 @@ jobs:
           push: true
           sbom: true
           build-contexts: |
-            booley-sandbox=docker-image://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+            booley-standard-substrate=docker-image://${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ needs.build-and-push.outputs.substrate-digest }}
           tags: >-
-            ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:riscv-${{ steps.version.outputs.substrate_recipe_fingerprint }}
           labels: |
-            io.booley.provenance.schema=2
-            io.booley.payload.fingerprint=${{ steps.version.outputs.payload_fingerprint }}
-            io.booley.build.recipe-fingerprint=${{ steps.version.outputs.recipe_fingerprint }}
+            io.booley.provenance.schema=3
+            io.booley.artifact.role=riscv-substrate
+            io.booley.artifact.effective-inputs=${{ steps.version.outputs.substrate_recipe_fingerprint }}
+            io.booley.build.recipe-fingerprint=${{ steps.version.outputs.substrate_recipe_fingerprint }}
             io.booley.build.parent-artifact-kind=registry-digest
-            io.booley.build.parent-artifact=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+            io.booley.build.parent-artifact=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ needs.build-and-push.outputs.substrate-digest }}
             io.booley.build.origin=registry
-            booley.build-fingerprint=${{ steps.version.outputs.payload_fingerprint }}
           # No GHA cache here: the riscv image is ~10 GB, larger than the
           # repo's entire 10 GB Actions cache budget — writing it would evict
           # the per-PR sandbox cache that bwave-smoke depends on, for a build
           # that only runs on release tags anyway.
+
+      - name: Build complete RISC-V image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.wheel
+          push: true
+          sbom: true
+          build-contexts: |
+            booley-substrate=docker-image://${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}
+          tags: >-
+            ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          build-args: |
+            BOOLEY_VERSION=${{ steps.version.outputs.version }}
+            BOOLEY_SOURCE_REVISION=${{ steps.version.outputs.revision }}
+            BOOLEY_SOURCE_UPDATED_AT=${{ steps.version.outputs.source_updated_at }}
+            BOOLEY_IMAGE_BUILT_AT=${{ steps.version.outputs.image_built_at }}
+            BOOLEY_PAYLOAD_FINGERPRINT=${{ steps.version.outputs.wheel_source_fingerprint }}
+          labels: |
+            io.booley.provenance.schema=3
+            io.booley.artifact.role=wheel-overlay
+            io.booley.artifact.effective-inputs=${{ steps.version.outputs.wheel_source_fingerprint }}
+            io.booley.wheel.source-fingerprint=${{ steps.version.outputs.wheel_source_fingerprint }}
+            io.booley.wheel.sha256=${{ steps.wheel.outputs.wheel_sha256 }}
+            io.booley.build.recipe-fingerprint=${{ steps.version.outputs.overlay_recipe_fingerprint }}
+            io.booley.build.parent-artifact-kind=registry-digest
+            io.booley.build.parent-artifact=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}
+            io.booley.build.origin=registry
 
   standard-image-contract:
     name: Standard image contract
@@ -199,14 +277,16 @@ jobs:
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
           IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image-digest }}
-          EXPECTED_PARENT: ${{ needs.build-and-push.outputs.runtime-base }}
+          EXPECTED_PARENT: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ needs.build-and-push.outputs.substrate-digest }}
+          EXPECTED_WHEEL_SHA256: ${{ needs.build-and-push.outputs.wheel-sha256 }}
         run: |
           mkdir -p "${RUNNER_TEMP}/standard-image-evidence"
-          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
-          expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile"),)))')"
+          expected_wheel_source="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
+          expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.wheel"),)))')"
           python .github/scripts/release_validation/image_provenance.py \
             --image "${IMAGE}" --candidate-sha "${GITHUB_SHA}" \
-            --image-digest "${IMAGE_DIGEST}" --expected-payload "${expected_payload}" \
+            --image-digest "${IMAGE_DIGEST}" --expected-wheel-source "${expected_wheel_source}" \
+            --expected-wheel-sha256 "${EXPECTED_WHEEL_SHA256}" \
             --expected-recipe "${expected_recipe}" --expected-parent "${EXPECTED_PARENT}" \
             --expected-revision "$(git rev-parse --short HEAD)" \
             --evidence "${RUNNER_TEMP}/standard-image-evidence/provenance.json"
@@ -463,16 +543,19 @@ jobs:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
           RISCV_IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
           RISCV_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
+          EXPECTED_PARENT: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.substrate-digest }}
+          EXPECTED_WHEEL_SHA256: ${{ needs.build-and-push-riscv.outputs.wheel-sha256 }}
         run: |
           mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
           docker pull "${BASE_IMAGE}"
           docker pull "${RISCV_IMAGE}"
-          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
-          expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
+          expected_wheel_source="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
+          expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.wheel"),)))')"
           python .github/scripts/release_validation/image_provenance.py \
             --image "${RISCV_IMAGE}" --candidate-sha "${GITHUB_SHA}" \
-            --image-digest "${RISCV_DIGEST}" --expected-payload "${expected_payload}" \
-            --expected-recipe "${expected_recipe}" --expected-parent "${BASE_IMAGE}" \
+            --image-digest "${RISCV_DIGEST}" --expected-wheel-source "${expected_wheel_source}" \
+            --expected-wheel-sha256 "${EXPECTED_WHEEL_SHA256}" \
+            --expected-recipe "${expected_recipe}" --expected-parent "${EXPECTED_PARENT}" \
             --expected-revision "$(git rev-parse --short HEAD)" \
             --evidence "${RUNNER_TEMP}/riscv-image-evidence/provenance.json"
           PYTHONPATH=src python .github/scripts/image_contract.py \

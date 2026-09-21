@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -72,7 +73,7 @@ def _snapshot(root: Path) -> SessionSpecSnapshot:
     )
 
 
-def test_running_target_is_parked_before_host_bootstrap_refresh(
+def test_candidate_is_prepared_before_running_target_is_parked(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
@@ -88,14 +89,19 @@ def test_running_target_is_parked_before_host_bootstrap_refresh(
         events.append("park")
         return parked
 
-    def refresh_image(*_args, **_kwargs) -> session_refresh.RefreshImage:
-        if active:
-            raise RuntimeError("cannot refresh bootstrap while Sandboxes are active")
-        events.append("bootstrap")
+    def prepare_image(*_args, **_kwargs) -> session_refresh.RefreshImage:
+        assert active
+        events.append("prepare")
+        return result
+
+    def commit_image() -> session_refresh.RefreshImage:
+        assert not active
+        events.append("commit")
         return result
 
     images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.refresh.side_effect = refresh_image
+    images.prepare.side_effect = prepare_image
+    images.commit.side_effect = commit_image
     images.reissue.side_effect = lambda *_args, **_kwargs: events.append("reissue")
 
     with (
@@ -118,49 +124,34 @@ def test_running_target_is_parked_before_host_bootstrap_refresh(
     ):
         assert session_refresh.refresh(tmp_path, images) is result
 
-    assert events == ["park", "bootstrap", "reissue", "up", "discard"]
+    assert events == ["prepare", "park", "commit", "reissue", "up", "discard"]
 
 
-def test_bootstrap_failure_restores_exact_parked_session_and_spec(
+def test_candidate_failure_leaves_running_session_and_spec_untouched(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    parked = _parked(tmp_path)
-    snapshot = _snapshot(tmp_path)
-    events: list[str] = []
     images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.refresh.side_effect = RuntimeError("other active Session")
+    images.prepare.side_effect = RuntimeError("candidate build failed")
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
-        patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
-        patch.object(session_refresh, "_load_recovery_issuance", return_value=_issuance(tmp_path)),
-        patch.object(sr, "plan_session_refresh", return_value=parked),
-        patch.object(sr, "park_planned_session"),
-        patch.object(
-            session_refresh,
-            "restore_session_spec",
-            side_effect=lambda root, saved: events.append(
-                f"spec:{root == tmp_path}:{saved == snapshot}"
-            ),
-        ),
-        patch.object(
-            sr,
-            "restore_refresh_session",
-            side_effect=lambda saved, **_kwargs: events.append(f"runtime:{saved == parked}"),
-        ),
-        patch.object(session_refresh, "_verify_restored_journal"),
-        pytest.raises(RuntimeError, match="other active Session"),
+        patch.object(session_refresh, "capture_session_spec") as capture,
+        patch.object(sr, "park_planned_session") as park,
+        pytest.raises(RuntimeError, match="candidate build failed"),
     ):
         session_refresh.refresh(tmp_path, images)
 
-    assert events == ["spec:True:True", "runtime:True"]
+    capture.assert_not_called()
+    park.assert_not_called()
+    images.abort.assert_called_once_with()
 
 
 def test_incomplete_rollback_reports_recovery_container(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     parked = _parked(tmp_path)
     images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.refresh.side_effect = RuntimeError("bootstrap failed")
+    images.prepare.return_value = _result()
+    images.commit.side_effect = RuntimeError("commit failed")
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=_snapshot(tmp_path)),
@@ -196,6 +187,38 @@ def test_vscode_owner_is_rejected_before_image_inspection(tmp_path: Path) -> Non
     images.inspect.assert_not_called()
 
 
+def test_current_graph_issuance_and_running_sandbox_are_a_true_noop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    result = session_refresh.RefreshImage(
+        "booley-sandbox",
+        "sha256:fresh",
+        image_graph_changed=False,
+    )
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.prepare.return_value = result
+    images.commit.return_value = result
+    parked = replace(_parked(tmp_path), image_id="sha256:fresh")
+    with (
+        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(session_refresh, "capture_session_spec", return_value=_snapshot(tmp_path)),
+        patch.object(
+            session_refresh,
+            "_load_recovery_issuance",
+            return_value=_issuance(tmp_path, "sha256:fresh"),
+        ),
+        patch.object(sr, "plan_session_refresh", return_value=parked),
+        patch.object(sr, "park_planned_session") as park,
+        patch.object(sr, "_up_unlocked") as up,
+    ):
+        assert session_refresh.refresh(tmp_path, images) == result
+
+    images.commit.assert_called_once_with()
+    park.assert_not_called()
+    up.assert_not_called()
+
+
 def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     result = _result()
@@ -204,7 +227,8 @@ def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path, monk
     candidate_issuance = _issuance(tmp_path, "sha256:fresh")
     events: list[str] = []
     images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.refresh.return_value = result
+    images.prepare.return_value = result
+    images.commit.return_value = result
     with (
         patch.object(
             sr,
@@ -259,7 +283,7 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
     result = session_refresh.RefreshImage("booley-sandbox", None)  # type: ignore[arg-type]
     snapshot = _snapshot(tmp_path)
     images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.refresh.return_value = result
+    images.prepare.return_value = result
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
@@ -271,7 +295,7 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
     ):
         session_refresh.refresh(tmp_path, images)
 
-    restore.assert_called_once_with(tmp_path, snapshot)
+    restore.assert_not_called()
 
 
 def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> None:
@@ -284,9 +308,24 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
     )
     events: list[tuple[object, ...]] = []
 
+    prepared = Mock()
+    prepared.plan.selected_reference = "booley-sandbox"
+    prepared.plan.nodes = (Mock(wheel_source_fingerprint="payload-123"),)
+    prepared.plan.steps = (Mock(action=object()),)
+    prepared.candidates = (
+        Mock(
+            reference="booley-sandbox",
+            candidate_reference="candidate",
+            image_id="sha256:fresh",
+            wheel_sha256=None,
+        ),
+    )
+    prepared.prior_tags = ()
+
     def drive_runtime(project_root, images, *, verbose):
         images.inspect(project_root, verbose=verbose)
-        result = images.refresh(project_root, verbose=verbose)
+        result = images.prepare(project_root, verbose=verbose)
+        result = images.commit()
         images.reissue(project_root, result.selected_id, verbose=verbose)
         return result
 
@@ -300,9 +339,16 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         ),
         patch.object(
             harness_refresh.init_cmd,
-            "refresh_runtime_image",
-            side_effect=lambda root, *, verbose, inspection: (
-                events.append(("refresh", root, verbose, inspection)) or refreshed
+            "prepare_runtime_image",
+            side_effect=lambda root, *, verbose: (
+                events.append(("prepare", root, verbose)) or prepared
+            ),
+        ),
+        patch.object(
+            harness_refresh.init_cmd,
+            "commit_runtime_image",
+            side_effect=lambda value: (
+                events.append(("commit", value)) or refreshed
             ),
         ),
         patch.object(
@@ -320,9 +366,18 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         "booley-sandbox",
         "sha256:fresh",
         "payload-123",
+        prepared_images=(
+            session_refresh.RefreshPreparedImage(
+                "booley-sandbox",
+                "candidate",
+                "sha256:fresh",
+                None,
+            ),
+        ),
     )
     assert events == [
         ("inspect", tmp_path, True),
-        ("refresh", tmp_path, True, inspection),
+        ("prepare", tmp_path, True),
+        ("commit", prepared),
         ("reissue", tmp_path, "sha256:fresh", True),
     ]

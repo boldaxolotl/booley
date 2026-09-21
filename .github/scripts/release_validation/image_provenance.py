@@ -51,7 +51,7 @@ def _runtime_identity(image: str) -> dict[str, int]:
     return {"uid": int(values[0]), "gid": int(values[1])}
 
 
-def _runtime_fingerprint(image: str) -> str:
+def _runtime_wheel_source_fingerprint(image: str) -> str:
     return _docker_text(
         [
             "run",
@@ -63,8 +63,8 @@ def _runtime_fingerprint(image: str) -> str:
             image,
             "-I",
             "-c",
-            "from booley.runtime.build_metadata import current_build_metadata; "
-            "print(current_build_metadata().payload_fingerprint)",
+            "from booley.runtime.build_stamp import embedded_wheel_source_fingerprint; "
+            "print(embedded_wheel_source_fingerprint() or '')",
         ]
     )
 
@@ -88,20 +88,23 @@ def validate(
     image: str,
     candidate_sha: str,
     image_digest: str,
-    expected_payload: str,
+    expected_wheel_source: str,
+    expected_wheel_sha256: str,
     expected_recipe: str,
     expected_parent: str,
     expected_revision: str,
 ) -> dict[str, object]:
     labels = _inspect_labels(image)
     expected_labels = {
-        "io.booley.provenance.schema": "2",
-        "io.booley.payload.fingerprint": expected_payload,
+        "io.booley.provenance.schema": "3",
+        "io.booley.artifact.role": "wheel-overlay",
+        "io.booley.artifact.effective-inputs": expected_wheel_source,
+        "io.booley.wheel.source-fingerprint": expected_wheel_source,
+        "io.booley.wheel.sha256": expected_wheel_sha256,
         "io.booley.build.recipe-fingerprint": expected_recipe,
         "io.booley.build.parent-artifact-kind": "registry-digest",
         "io.booley.build.parent-artifact": expected_parent,
         "io.booley.build.origin": "registry",
-        "booley.build-fingerprint": expected_payload,
         "org.opencontainers.image.revision": expected_revision,
     }
     checks: list[dict[str, str]] = []
@@ -115,10 +118,10 @@ def validate(
             errors.append(f"label {name} differs from the expected value")
     if not any(error.startswith("label ") for error in errors):
         checks.append({"id": "provenance.labels", "status": "pass"})
-    if _runtime_fingerprint(image) != expected_payload:
-        errors.append("installed runtime payload fingerprint differs")
+    if _runtime_wheel_source_fingerprint(image) != expected_wheel_source:
+        errors.append("installed wheel-source fingerprint differs")
     else:
-        checks.append({"id": "provenance.runtime-payload", "status": "pass"})
+        checks.append({"id": "provenance.runtime-wheel-source", "status": "pass"})
     sbom = _sbom_summary(image)
     if not sbom["present"]:
         errors.append("image has no attached SBOM attestation")
@@ -140,7 +143,8 @@ def main() -> int:
     parser.add_argument("--image", required=True)
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--image-digest", required=True)
-    parser.add_argument("--expected-payload", required=True)
+    parser.add_argument("--expected-wheel-source", required=True)
+    parser.add_argument("--expected-wheel-sha256", required=True)
     parser.add_argument("--expected-recipe", required=True)
     parser.add_argument("--expected-parent", required=True)
     parser.add_argument("--expected-revision", required=True)
@@ -150,7 +154,8 @@ def main() -> int:
         image=args.image,
         candidate_sha=args.candidate_sha,
         image_digest=args.image_digest,
-        expected_payload=args.expected_payload,
+        expected_wheel_source=args.expected_wheel_source,
+        expected_wheel_sha256=args.expected_wheel_sha256,
         expected_recipe=args.expected_recipe,
         expected_parent=args.expected_parent,
         expected_revision=args.expected_revision,

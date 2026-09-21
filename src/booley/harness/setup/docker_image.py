@@ -30,6 +30,7 @@ from booley.runtime.build_stamp import (
     resolve_build_commit,
     resolve_payload_fingerprint,
     resolve_source_updated_at,
+    resolve_wheel_source_fingerprint,
 )
 from booley.runtime.docker_base_contract import contract as runtime_base_contract
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
@@ -40,6 +41,7 @@ from booley.runtime.image_provenance import (
     LABEL_PAYLOAD_FINGERPRINT,
     LABEL_RECIPE_FINGERPRINT,
     LABEL_SCHEMA,
+    LABEL_WHEEL_SOURCE_FINGERPRINT,
     PARENT_ARTIFACT_LOCAL_IMAGE_ID,
     PROVENANCE_SCHEMA,
     resolve_recipe_fingerprint,
@@ -175,6 +177,7 @@ class _DockerBuildSpec:
     build_contexts: tuple[tuple[str, str], ...] = ()
     build_args: tuple[str, ...] = ()
     parent_artifact: str | None = None
+    labels: tuple[tuple[str, str], ...] = ()
 
 
 def _iter_fingerprint_files(booley_root: Path):
@@ -287,6 +290,15 @@ def source_fingerprint_mismatch(image: str) -> bool | None:
     behavior.
     """
     booley_root = docker_data_dir().parent.parent.parent.parent
+    wheel_source = resolve_wheel_source_fingerprint(booley_root)
+    wheel_label = _image_label(image, LABEL_WHEEL_SOURCE_FINGERPRINT)
+    if (
+        wheel_source is not None
+        and wheel_label is not None
+        and len(wheel_label) == 64
+        and all(character in "0123456789abcdef" for character in wheel_label)
+    ):
+        return wheel_label != wheel_source
     fingerprint = _image_build_fingerprint(booley_root)
     if fingerprint is None:
         return None
@@ -836,6 +848,8 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
         ]
     if spec.parent_artifact:
         build_cmd += _local_parent_label_args(spec.parent_artifact)
+    for name, value in spec.labels:
+        build_cmd += ["--label", f"{name}={value}"]
     if spec.image in FLAVOR_IMAGES:
         base_image_id = _docker_image_id(DOCKER_IMAGE)
         if base_image_id:

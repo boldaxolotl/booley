@@ -354,9 +354,13 @@ def test_refresh_persists_recovery_identity_before_parking(tmp_path: Path, monke
         patch.object(session_refresh, "_verify_restored_journal"),
         pytest.raises(RuntimeError, match="parking failed"),
     ):
+        images = Mock(spec=session_refresh.RuntimeImageOperations)
+        prepared = session_refresh.RefreshImage("booley-sandbox", "sha256:fresh")
+        images.prepare.return_value = prepared
+        images.commit.return_value = prepared
         session_refresh.refresh(
             project,
-            Mock(spec=session_refresh.RuntimeImageOperations),
+            images,
         )
 
 
@@ -592,7 +596,9 @@ def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
         raise RuntimeError("Docker unreachable")
 
     images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.refresh.side_effect = fail_during_image_refresh
+    prepared = session_refresh.RefreshImage("booley-sandbox", "sha256:fresh")
+    images.prepare.return_value = prepared
+    images.commit.side_effect = fail_during_image_refresh
 
     def restore_always_fails(parked, candidate_issuance=None, *, recovery=False):
         raise sr.SessionError("Docker unreachable")
@@ -615,6 +621,43 @@ def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
     identity = hashlib.sha256(str(project).encode()).hexdigest()
     journal = config / "booley" / "eda" / "session-refresh" / f"{identity}.json"
     assert journal.is_file()
+
+
+def test_recovery_restores_partially_adopted_image_tags(monkeypatch) -> None:
+    class Docker:
+        def __init__(self) -> None:
+            self.images = {
+                "booley-sandbox": "sha256:candidate",
+                "transaction:candidate": "sha256:candidate",
+                "sha256:prior": "sha256:prior",
+            }
+
+        def image_id(self, reference: str) -> str | None:
+            return self.images.get(reference)
+
+        def tag(self, source: str, target: str) -> None:
+            self.images[target] = self.images.get(source, source)
+
+        def remove_tag(self, reference: str) -> None:
+            self.images.pop(reference, None)
+
+    from booley.runtime import image_lifecycle
+
+    docker = Docker()
+    monkeypatch.setattr(image_lifecycle, "_docker_adapter", lambda: docker)
+    state = (
+        session_refresh.RefreshPreparedImage(
+            "booley-sandbox",
+            "transaction:candidate",
+            "sha256:candidate",
+            "sha256:prior",
+        ),
+    )
+
+    session_refresh._recover_prepared_image_tags(state, restore=True)
+
+    assert docker.image_id("booley-sandbox") == "sha256:prior"
+    assert docker.image_id("transaction:candidate") is None
 
 
 def test_validate_refresh_egress_strict_without_recovery(tmp_path: Path) -> None:
@@ -745,7 +788,7 @@ def test_issuance_boundary_rejects_non_object_extra_fields_and_old_version(tmp_p
         (("prior_runtime", "name"), "wrong", "invalid Sandbox names"),
         (("prior_runtime", "egress_network_id"), None, "egress identity is incomplete"),
         (("phase",), "future", "replay metadata is invalid"),
-        (("version",), 2, "identity or version is invalid"),
+        (("version",), 3, "identity or version is invalid"),
     ],
 )
 def test_journal_rejects_invalid_nested_boundary_values(

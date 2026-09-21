@@ -1711,12 +1711,11 @@ FROM booley-sandbox-riscv
 RUN pip install --no-cache-dir -r /tmp/reqs.txt
 ```
 
-For a hand-authored `FROM booley-sandbox-riscv` recipe, init refreshes the
-shipped RISC-V flavor after refreshing `booley-sandbox`, then rebuilds the
-project image from your unchanged Dockerfile. The same inherited-provenance
-check rebuilds a project image left behind by a base version/source update.
-Manual ownership prevents file rewriting; it does not freeze stale parent
-layers into the Sandbox.
+Hand-authored recipes remain conservative: Booley preserves their bytes and
+exact ancestry and cannot move their Project dependencies below its final wheel
+overlay. The same inherited-provenance check rebuilds a Project image left
+behind by a parent update. Manual ownership prevents file rewriting; it does
+not freeze stale parent layers into the Sandbox.
 
 Booley infers ancestry only from a Dockerfile with one unambiguous `FROM`. For
 a multi-stage or variable-based recipe, declare the managed direct parent
@@ -1743,11 +1742,14 @@ preparation. Use a custom image for EDA tools that must exist in every container
 before commands run.
 
 **Changing an already-built image is a lifecycle operation, not a config
-edit.** For a headless Booley-managed Sandbox, `booley session refresh`
-reconciles the full image chain, pins the new immutable image ID into the host
-spec, recreates the container, and probes its installed Booley payload before
-discarding the old container. A failed recreation or probe restores the old
-container. If VS Code owns the running Sandbox, refresh the image with
+edit.** For a headless Booley-managed Sandbox, `booley session refresh` plans
+the minimal invalid image closure, builds and verifies transaction candidates
+while the old Sandbox remains available, then pins the new immutable image ID,
+recreates the Sandbox, and probes its installed Booley wheel before discarding
+the predecessor. A Python-only change rebuilds only the final wheel overlay;
+compatible EDA, RISC-V, and Project-dependency substrates retain their exact
+immutable IDs. A failed recreation or probe restores the old Sandbox. If VS
+Code owns the running Sandbox, refresh the image with
 `booley init --force` and use **Dev Containers: Rebuild Container**. Explicit
 external images remain your responsibility: rebuild or pull them, run
 `booley init --seed`, then recreate and probe the Sandbox.
@@ -1795,15 +1797,15 @@ make -C sw/... RV_ISA=rv32im_zicsr    # CoreMark's variable name
 The right variable name is the project's own; grep its makefiles for `rv32i`.
 Keep the override at the call site (the `post-setup` hook).
 
-Project Initialization owns this flavor image, building it if missing and
-rebuilding it when the Host Bootstrap-owned base moves (see the table above for
-what it does with a name it doesn't recognise).
+Project Initialization owns this flavor image. Internally, both user-facing
+images are assembled from reusable substrates in
+`ghcr.io/boldaxolotl/booley-sandbox-base`; those substrate tags are an
+implementation detail, not additional `[sandbox].image` choices.
 
-When Booley is running from a source checkout, both the base and this flavor are
-built locally from the same checkout identity; Project Initialization does not
-try a same-version release image first. An installed Booley distribution may
-acquire its published flavor, but adopts it only after exact payload, recipe,
-and base-digest provenance validation.
+When Booley is running from a source checkout, it reuses compatible local
+standard and RISC-V substrates and installs the requested checkout's wheel in a
+final overlay. An installed official distribution pulls and verifies only the
+selected complete standard or RISC-V image.
 
 To build or refresh it by hand (this also rebuilds the base first):
 
@@ -1818,11 +1820,19 @@ docker pull ghcr.io/boldaxolotl/booley-sandbox-riscv:latest
 docker tag  ghcr.io/boldaxolotl/booley-sandbox-riscv:latest booley-sandbox-riscv
 ```
 
-When the repo *also* has Python deps to bake (e.g. ibex), don't set `image`
-directly. Instead hand-author `.booley_project/docker/Dockerfile` as
-`FROM booley-sandbox-riscv` + your `pip install`, mark it `# booley:keep`, build
-it, and point `[sandbox].image` at that image. This layers the deps on top of
-the toolchain while keeping `booley init` from clobbering the file.
+When the Project also declares Python dependencies, keep the RISC-V selector
+and declare the requirements normally:
+
+```toml
+[sandbox]
+image = "booley-sandbox-riscv"
+pip_requirements = ["requirements.txt"]
+```
+
+Booley automatically selects the generated Project image, installs those
+dependencies on the RISC-V substrate, then applies the same final wheel
+overlay. All selection surfaces—Project Initialization, Session start,
+refresh, and Doctor—resolve that generated image name consistently.
 
 ### Custom MCP tools
 

@@ -34,6 +34,17 @@ class TestProjectSandboxImage:
 
         assert pi.project_sandbox_image(tmp_path) == pi.BASE_IMAGE
 
+    def test_riscv_with_requirements_selects_generated_final_image(self, tmp_path):
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text(
+            '[sandbox]\nimage = "booley-sandbox-riscv"\n'
+            'pip_requirements = ["requirements.txt"]\n',
+            encoding="utf-8",
+        )
+
+        assert pi.project_sandbox_image(tmp_path) == pi.project_image_name(tmp_path)
+
 
 # ===========================================================================
 # resolve_requirements — only [sandbox].pip_requirements is baked

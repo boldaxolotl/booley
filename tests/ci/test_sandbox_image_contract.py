@@ -109,7 +109,8 @@ def test_dockerfile_parser_rejects_unresolved_from_arg() -> None:
             "build-and-push",
             None,
             "build",
-            "booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}",
+            "booley-substrate=docker-image://${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
+            "${{ steps.substrate.outputs.digest }}",
         ),
         (
             "local RISC-V candidate",
@@ -118,7 +119,7 @@ def test_dockerfile_parser_rejects_unresolved_from_arg() -> None:
             "bwave-smoke",
             "Run RISC-V candidate image contract",
             None,
-            "booley-sandbox=docker-image://booley-test",
+            "booley-standard-substrate=docker-image://booley-standard-substrate:ci",
         ),
         (
             "release RISC-V image",
@@ -127,8 +128,8 @@ def test_dockerfile_parser_rejects_unresolved_from_arg() -> None:
             "build-and-push-riscv",
             None,
             "build",
-            "booley-sandbox=docker-image://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@"
-            "${{ needs.build-and-push.outputs.image-digest }}",
+            "booley-substrate=docker-image://${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
+            "${{ steps.substrate.outputs.digest }}",
         ),
     ],
 )
@@ -155,7 +156,7 @@ def test_release_derivations_reject_mutable_parent_tags(target: str) -> None:
     sources = _sources()
     job = "build-and-push" if target == "standard" else "build-and-push-riscv"
     step = _step(sources, "release_workflow", "docker-publish.yml", job, step_id="build")
-    context = "booley-runtime-base" if target == "standard" else "booley-sandbox"
+    context = "booley-substrate"
     step["with"]["build-contexts"] = f"{context}=docker-image://ghcr.io/acme/image:latest"
 
     role = "release candidate" if target == "standard" else "release RISC-V image"

@@ -35,7 +35,7 @@ from booley.runtime.session_spec import (
     restore_session_spec,
 )
 
-_JOURNAL_VERSION = 1
+_JOURNAL_VERSION = 2
 _JOURNAL_DIR = Path("eda") / "session-refresh"
 _MAX_SNAPSHOT_BYTES = 1024 * 1024
 
@@ -70,12 +70,25 @@ class RecoveryResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RefreshPreparedImage:
+    """Durable image-tag state needed to recover candidate adoption."""
+
+    reference: str
+    candidate_reference: str
+    candidate_id: str
+    prior_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class RefreshImage:
     """Immutable Sandbox Image facts needed by runtime replacement."""
 
     selected_reference: str
     selected_id: str
     payload_fingerprint: str | None = None
+    wheel_sha256: str | None = None
+    prepared_images: tuple[RefreshPreparedImage, ...] = ()
+    image_graph_changed: bool = True
 
 
 class RuntimeImageOperations(Protocol):
@@ -83,7 +96,11 @@ class RuntimeImageOperations(Protocol):
 
     def inspect(self, project_root: Path, *, verbose: bool) -> None: ...
 
-    def refresh(self, project_root: Path, *, verbose: bool) -> RefreshImage: ...
+    def prepare(self, project_root: Path, *, verbose: bool) -> RefreshImage: ...
+
+    def commit(self) -> RefreshImage: ...
+
+    def abort(self) -> None: ...
 
     def reissue(
         self,
@@ -105,6 +122,8 @@ class _RefreshJournal:
     prior_runtime: sr.ParkedSession | None
     target_image_id: str | None
     target_payload_fingerprint: str | None
+    target_wheel_sha256: str | None
+    prepared_images: tuple[RefreshPreparedImage, ...]
     replacement_issuance: runtime_spec.Issuance | None
 
 
@@ -223,9 +242,39 @@ def _decode_runtime(raw: object, project_root: Path) -> sr.ParkedSession | None:
     return parked
 
 
+def _decode_prepared_images(raw: object) -> tuple[RefreshPreparedImage, ...]:
+    if not isinstance(raw, list):
+        raise sr.SessionError("Session refresh journal prepared images must be a list")
+    images = []
+    for item in raw:
+        values = _require_mapping(item, "prepared image")
+        _require_exact_fields(
+            values,
+            frozenset({"reference", "candidate_reference", "candidate_id", "prior_id"}),
+            "prepared image",
+        )
+        try:
+            image = RefreshPreparedImage(
+                require_str(values, "reference"),
+                require_str(values, "candidate_reference"),
+                require_str(values, "candidate_id"),
+                require_opt_str(values, "prior_id"),
+            )
+        except BoundaryError as exc:
+            raise sr.SessionError(
+                f"Session refresh journal prepared image is invalid: {exc}"
+            ) from exc
+        images.append(image)
+    references = [image.reference for image in images]
+    candidates = [image.candidate_reference for image in images]
+    if len(set(references)) != len(references) or len(set(candidates)) != len(candidates):
+        raise sr.SessionError("Session refresh journal prepared image references are duplicated")
+    return tuple(images)
+
+
 def _decode_replay_metadata(
     values: dict[str, Any], expected_root: Path
-) -> tuple[str, _RefreshPhase, _RecoveryDirection, str | None, str | None]:
+) -> tuple[int, str, _RefreshPhase, _RecoveryDirection, str | None, str | None]:
     try:
         version = require_int(values.get("version"), field="journal version")
         project_root = require_str(values, "project_root")
@@ -238,9 +287,9 @@ def _decode_replay_metadata(
         raise sr.SessionError(
             f"Session refresh journal replay metadata is invalid: {exc}"
         ) from exc
-    if version != _JOURNAL_VERSION or project_root != str(expected_root):
+    if version not in {1, _JOURNAL_VERSION} or project_root != str(expected_root):
         raise sr.SessionError("Session refresh journal identity or version is invalid")
-    return transaction_id, phase, direction, target, payload
+    return version, transaction_id, phase, direction, target, payload
 
 
 def _validate_journal_identities(journal: _RefreshJournal) -> None:
@@ -268,25 +317,35 @@ def _validate_journal_identities(journal: _RefreshJournal) -> None:
 
 def _decode_journal(raw: object, expected_root: Path) -> _RefreshJournal:
     values = _require_mapping(raw, "document")
-    expected = frozenset(
-        {
-            "version",
-            "transaction_id",
-            "project_root",
-            "phase",
-            "direction",
-            "snapshot",
-            "prior_issuance",
-            "prior_runtime",
-            "target_image_id",
-            "target_payload_fingerprint",
-            "replacement_issuance",
-        }
-    )
+    try:
+        version = require_int(values.get("version"), field="journal version")
+    except BoundaryError as exc:
+        raise sr.SessionError(f"Session refresh journal version is invalid: {exc}") from exc
+    common = {
+        "version",
+        "transaction_id",
+        "project_root",
+        "phase",
+        "direction",
+        "snapshot",
+        "prior_issuance",
+        "prior_runtime",
+        "target_image_id",
+        "target_payload_fingerprint",
+        "replacement_issuance",
+    }
+    version_two = {"target_wheel_sha256", "prepared_images"}
+    expected = frozenset(common | (version_two if version == 2 else set()))
     _require_exact_fields(values, expected, "document")
-    transaction_id, phase, direction, target, payload = _decode_replay_metadata(
+    _version, transaction_id, phase, direction, target, payload = _decode_replay_metadata(
         values, expected_root
     )
+    try:
+        wheel_sha256 = (
+            require_opt_str(values, "target_wheel_sha256") if version == 2 else None
+        )
+    except BoundaryError as exc:
+        raise sr.SessionError(f"Session refresh journal wheel identity is invalid: {exc}") from exc
     replacement = values.get("replacement_issuance")
     journal = _RefreshJournal(
         expected_root,
@@ -298,6 +357,8 @@ def _decode_journal(raw: object, expected_root: Path) -> _RefreshJournal:
         _decode_runtime(values.get("prior_runtime"), expected_root),
         target,
         payload,
+        wheel_sha256,
+        _decode_prepared_images(values.get("prepared_images")) if version == 2 else (),
         _decode_issuance(replacement, "replacement issuance") if replacement is not None else None,
     )
     _validate_journal_identities(journal)
@@ -356,6 +417,8 @@ def _journal_document(journal: _RefreshJournal) -> dict[str, object]:
         "prior_runtime": asdict(journal.prior_runtime) if journal.prior_runtime else None,
         "target_image_id": journal.target_image_id,
         "target_payload_fingerprint": journal.target_payload_fingerprint,
+        "target_wheel_sha256": journal.target_wheel_sha256,
+        "prepared_images": [asdict(image) for image in journal.prepared_images],
         "replacement_issuance": (
             asdict(journal.replacement_issuance) if journal.replacement_issuance else None
         ),
@@ -392,12 +455,18 @@ def _new_journal(
         None,
         None,
         None,
+        (),
+        None,
     )
 
 
 def _restore_journal(journal: _RefreshJournal) -> RecoveryResult:
     project = journal.project_root
     errors = []
+    try:
+        _recover_prepared_image_tags(journal.prepared_images, restore=True)
+    except BaseException as exc:  # noqa: BLE001 -- attempt every durable recovery action
+        errors.append(f"Sandbox Image tags: {exc}")
     try:
         restore_session_spec(project, journal.snapshot)
     except BaseException as exc:  # noqa: BLE001 -- attempt every durable recovery action
@@ -481,8 +550,41 @@ def _resume_journal(journal: _RefreshJournal) -> RecoveryResult:
         _write_journal(journal)
     if journal.prior_runtime is not None:
         sr.discard_refresh_session(journal.prior_runtime)
+    _recover_prepared_image_tags(journal.prepared_images, restore=False)
     _delete_journal(journal.project_root)
     return RecoveryResult(journal.project_root, RecoveryOutcome.RESUMED)
+
+
+def _recover_prepared_image_tags(
+    images: tuple[RefreshPreparedImage, ...],
+    *,
+    restore: bool,
+) -> None:
+    """Restore prior managed tags or clean committed transaction references."""
+    from booley.runtime import image_lifecycle
+
+    docker = image_lifecycle._docker_adapter()
+    for image in reversed(images):
+        if image.candidate_reference == image.reference:
+            continue
+        managed_id = docker.image_id(image.reference)
+        if restore and managed_id == image.candidate_id:
+            if image.prior_id is None:
+                docker.remove_tag(image.reference)
+            else:
+                docker.tag(image.prior_id, image.reference)
+        elif restore and managed_id not in {image.prior_id, None}:
+            raise sr.SessionError(
+                f"managed tag {image.reference!r} has an unexpected immutable identity"
+            )
+        candidate_id = docker.image_id(image.candidate_reference)
+        if candidate_id is None:
+            continue
+        if candidate_id != image.candidate_id:
+            raise sr.SessionError(
+                f"candidate tag {image.candidate_reference!r} changed before recovery"
+            )
+        docker.remove_tag(image.candidate_reference)
 
 
 def recover_project_locked(project_root: Path) -> RecoveryResult:
@@ -614,22 +716,24 @@ def _load_recovery_issuance(
 
 def _reconcile_refresh_image(
     journal: _RefreshJournal,
+    prepared_result: RefreshImage,
     images: RuntimeImageOperations,
-    *,
-    verbose: bool,
 ) -> tuple[RefreshImage, _RefreshJournal]:
     if journal.prior_runtime is not None:
         sr.park_planned_session(journal.prior_runtime)
     journal = replace(journal, phase=_RefreshPhase.PARKED)
     _write_journal(journal)
-    result = images.refresh(journal.project_root, verbose=verbose)
+    result = images.commit()
     if not result.selected_id:
         raise sr.SessionError("refresh did not produce an immutable Sandbox Image ID")
+    if result != prepared_result:
+        raise sr.SessionError("committed Sandbox Image differs from the verified candidate")
     journal = replace(
         journal,
         phase=_RefreshPhase.IMAGE_SELECTED,
         target_image_id=result.selected_id,
         target_payload_fingerprint=result.payload_fingerprint,
+        target_wheel_sha256=result.wheel_sha256,
     )
     _write_journal(journal)
     return result, journal
@@ -690,12 +794,43 @@ def _refresh_unlocked(
     project = project_root.resolve(strict=True)
     _reject_existing_vscode(project)
     images.inspect(project, verbose=verbose)
-    snapshot = capture_session_spec(project)
-    issuance = _load_recovery_issuance(project, snapshot)
-    journal = _new_journal(project, snapshot, issuance, sr.plan_session_refresh(project, issuance))
-    _write_journal(journal)
     try:
-        result, journal = _reconcile_refresh_image(journal, images, verbose=verbose)
+        prepared_result = images.prepare(project, verbose=verbose)
+        if not prepared_result.selected_id:
+            raise sr.SessionError("refresh did not produce an immutable Sandbox Image ID")
+        snapshot = capture_session_spec(project)
+        issuance = _load_recovery_issuance(project, snapshot)
+        parked = sr.plan_session_refresh(project, issuance)
+        if (
+            not prepared_result.image_graph_changed
+            and issuance.image_id == prepared_result.selected_id
+            and parked is not None
+            and parked.image_id == prepared_result.selected_id
+            and parked.was_running
+        ):
+            committed = images.commit()
+            if committed != prepared_result:
+                raise sr.SessionError("committed Sandbox Image differs from the verified candidate")
+            return committed
+        journal = _new_journal(
+            project,
+            snapshot,
+            issuance,
+            parked,
+        )
+        journal = replace(
+            journal,
+            target_image_id=prepared_result.selected_id,
+            target_payload_fingerprint=prepared_result.payload_fingerprint,
+            target_wheel_sha256=prepared_result.wheel_sha256,
+            prepared_images=prepared_result.prepared_images,
+        )
+        _write_journal(journal)
+        result, journal = _reconcile_refresh_image(
+            journal,
+            prepared_result,
+            images,
+        )
         journal = _issue_and_verify_replacement(
             journal,
             result,
@@ -703,7 +838,9 @@ def _refresh_unlocked(
             verbose=verbose,
         )
     except BaseException as exc:
-        _recover_failed_refresh(project, exc)
+        images.abort()
+        if _load_journal(project) is not None:
+            _recover_failed_refresh(project, exc)
         raise
     if journal.prior_runtime is not None:
         sr.discard_refresh_session(journal.prior_runtime)
