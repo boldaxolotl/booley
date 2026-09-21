@@ -1,11 +1,11 @@
 ---
 name: booley-setup
-description: Perform design-aware Project Setup after Host Bootstrap and Project Initialization — plan first (feasibility + decision grill → SETUP-PLAN.md, Step 0), then execute gate-free (config, AGENTS.md, doctor audit — Steps 2–4). Phase-detects from the plan file; also runs a single step on request, or `new` for a from-scratch (`init --scaffold`) project with a lightweight grill. Post-gate Step 5 optionally cross-checks Booley's results against the repo's native build system; Step 6 always reports the run's findings and offers, once, to send the Booley-side ones upstream.
+description: Perform design-aware Project Setup after Host Bootstrap and Project Initialization — plan first (feasibility + decision grill → SETUP-PLAN.md, Step 0), then execute gate-free (config, AGENTS.md, doctor audit — Steps 2–4). Phase-detects from the plan file; also runs a single step on request, or `new` for a from-scratch (`init --scaffold`) project with a lightweight grill. Post-gate Step 5 optionally cross-checks Booley's results against the repo's native build system; Step 6 reports findings; Step 7 performs bounded manifest-owned cleanup.
 ---
 
-# Booley setup (plan → execute, Steps 0–4, + optional parity)
+# Booley setup (plan → execute, Steps 0–7, + optional parity)
 
-This skill owns Booley setup from **Step 0 (plan)** through **Step 4 (doctor)**,
+This skill owns Booley setup from **Step 0 (plan)** through **Step 7 (cleanup)**,
 plus an **optional post-gate Step 5 (parity)** for projects that want their
 Booley results cross-checked against the repo's native build system.
 The parts outside it are installation and Host Bootstrap in Booley's
@@ -37,6 +37,7 @@ without interruption.
 | 4 | **Doctor** — final audit; resolve every failure and warning, then the deep gate. | container terminal (+ one host run) | yes | `steps/4-doctor.md` |
 | 5 | **Parity** — diff Booley vs the repo's native flow, where EDA tools match. | container | no (only if plan row 18 ≠ `none`) | `steps/5-parity.md` |
 | 6 | **Findings** — report, triage, optional bug report to Booley. | container (host to submit) | yes | `steps/6-findings.md` |
+| 7 | **Cleanup** — preview and apply bounded current-run retention. | container | yes | `steps/7-cleanup.md` |
 
 Step 4 is the gate: setup is not complete until plain `booley doctor` and
 `booley doctor --deep` both exit 0 **and report zero active (unwaived)
@@ -83,8 +84,8 @@ where setup stands:
     for re-runs.
 - **`new`** (or `greenfield`) → **greenfield mode** for a from-scratch
   (`init --scaffold`) project — read `steps/new-greenfield.md` and follow it.
-- **A step selector** (a number `0`–`6`, or a name like `plan`, `doctor`,
-  `project-config`, `agents-md`, `parity`, `findings`) → run **only that step**,
+- **A step selector** (a number `0`–`7`, or a name like `plan`, `doctor`,
+  `project-config`, `agents-md`, `parity`, `findings`, `cleanup`) → run **only that step**,
   then stop. Use this
   to re-run or resume one step. If `SETUP-PLAN.md` exists, the step consumes
   it as usual; if not, ask the user for just the decisions that step needs —
@@ -165,9 +166,11 @@ ASIC synth — and **Booley emits no completion notification**. Nothing will nud
 you when one ends. Parking on "standing by" is never a correct state: if you are
 waiting, you are polling.
 
-- **Start it detached.** Run the command in the background with stdout
-  redirected to a file. A foreground call that outlives your own MCP tool timeout
-  loses the output and reads as a hang.
+- **Start it detached.** Run the command in the background with stdout and
+  stderr redirected beneath the current run's manifest-owned scratch root,
+  after `booley cleanup prepare`; register the capture before moving on. A
+  foreground call that outlives your own MCP tool timeout loses the output and
+  reads as a hang.
 - **Know the bound before you start.** A Booley Flow cannot outlive its
   `[flows.<flow>].timeout_ms` (`sim` applies it per test; `synth`
   defaults to 30 min). Budget that plus a minute of teardown — past it the run
@@ -246,6 +249,10 @@ plain-English reason it matters.
    `.booley_project/SETUP-REPORT.md`, and asks once whether to send the
    Booley-side findings upstream. Post-gate, non-blocking, and a decline is a
    normal outcome.
+8. **Step 7 — cleanup.** Always: `steps/7-cleanup.md` previews and applies the
+   approved retention mode after the report exists. It uses only the current
+   run's manifest, materializes structured Feedback attachments before source
+   deletion, and treats legacy plans as inventory-only.
 
 ## Setup guardrails
 

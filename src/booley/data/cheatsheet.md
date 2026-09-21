@@ -36,6 +36,7 @@ For Interactive Mode, we recommend `booley` / `booley chat`, which launches
 | `booley upgrade` | either | Inspect or acknowledge a pending Booley release review |
 | `booley targets` | either | List or filter Targets and show resolved details |
 | `booley flow` | mixed | List or directly run deterministic Booley Flows |
+| `booley cleanup` | mixed | Preview or apply manifest-owned Project Setup cleanup |
 | `booley cheat` | either | Show this reference, whole or by section |
 
 For Host Bootstrap, `--check-only` reports pending work without writing and

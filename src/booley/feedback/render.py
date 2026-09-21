@@ -21,11 +21,13 @@ flow, which asks for the user report at a clone's root.
 
 from __future__ import annotations
 
+import json
 import platform
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.core.boundary import as_int
 from booley.feedback import redact as redact_mod
 from booley.feedback.findings import (
     BUCKET_TITLE,
@@ -158,17 +160,48 @@ def _attachment_block(raw_path: str) -> list[str]:
     except OSError as e:
         return ["", f"- **Attached:** `{raw_path}` — unreadable at report time ({e})", ""]
 
+    metadata = _attachment_metadata(path)
     lines = text.splitlines()
     tail = lines[-MAX_ATTACHMENT_LINES:]
     excerpt = "\n".join(tail)
     if len(excerpt) > MAX_ATTACHMENT_CHARS:
         excerpt = excerpt[-MAX_ATTACHMENT_CHARS:]
     clipped = len(tail) < len(lines) or len(excerpt) < len("\n".join(tail))
-    label = f"`{path.name}`" + (
-        f" — last {len(excerpt.splitlines())} of {len(lines)} lines" if clipped else ""
+    display_name = path.name
+    line_count = len(lines)
+    excerpt_line_count = len(excerpt.splitlines())
+    if metadata:
+        display_name = Path(str(metadata.get("original_path", path))).name
+        line_count = _metadata_int(metadata, "line_count", line_count)
+        clipped = _metadata_bool(metadata, "clipped", clipped)
+        excerpt_line_count = _metadata_int(metadata, "excerpt_line_count", excerpt_line_count)
+    label = f"`{display_name}`" + (
+        f" — last {excerpt_line_count} of {line_count} lines" if clipped else ""
     )
     fence = _fence(excerpt)
     return ["", f"- **Attached:** {label}", "", fence + "text", excerpt, fence, ""]
+
+
+def _attachment_metadata(path: Path) -> dict[str, object]:
+    """Load optional metadata emitted by Feedback attachment materialization."""
+    meta = path.with_suffix(path.suffix + ".json")
+    try:
+        value = json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _metadata_int(metadata: dict[str, object], key: str, default: int) -> int:
+    """Read one non-negative optional metadata count."""
+    value = as_int(metadata.get(key), default)
+    return default if value is None or value < 0 else value
+
+
+def _metadata_bool(metadata: dict[str, object], key: str, default: bool) -> bool:
+    """Read one optional metadata flag without truthiness coercion."""
+    value = metadata.get(key)
+    return value if isinstance(value, bool) else default
 
 
 def _finding_block(finding: Finding, *, include_evidence: bool = True) -> list[str]:

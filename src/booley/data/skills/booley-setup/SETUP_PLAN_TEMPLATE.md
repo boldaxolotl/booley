@@ -51,6 +51,8 @@
 | 19 | Agent backend: preserve the `[agent] provider` + `auth` selected by `booley init`; ask only for a legacy missing field | | | | | |
 | 20 | `[stealth]`: history scrub plus hidden-core projection; required by row 16 when hidden cores are authored | | | | | |
 | 21 | `[feedback] mode`: `ask` (default, public issue) / `email` (private, to the maintainer) / `file-only` / `off` — always ask | | | | | |
+| 22 | Setup artifact retention: `minimal` (recommended) or `diagnostic` | | | | | |
+| 23 | Flow-cache disposition: `preserve` (recommended) or `evict-setup-touched` | | | | | |
 
 <!-- Repo-specific rows: continue numbering from 22 (git submodules, generator
      steps, env-var-parameterized TBs, scope exclusions such as a VHDL twin, …).
@@ -87,3 +89,23 @@
 
 | Step | What contradicted the plan | How it was settled |
 | --- | --- | --- |
+| | | |
+
+### Execution ledger
+
+<!-- One resumable state machine for Steps 1–7 and cleanup. Missing ledger
+     metadata on a legacy plan deliberately means inventory-only cleanup. -->
+
+- **Run ID:** <unset>
+- **Scratch root:** <unset>
+- **Manifest path:** <unset>
+- **Step 1 status:** pending
+- **Step 2 status:** pending
+- **Step 3 status:** pending
+- **Step 4 status:** pending
+- **Step 5 status:** pending
+- **Step 6 status:** pending
+- **Step 7 status:** pending
+- **Cleanup preview digest:** <unset>
+- **Recovery journal:** idle
+- **Final disposition:** <unset>
