@@ -340,6 +340,64 @@ def test_validate_rejects_candidates_changed_after_preparation(
         lifecycle.validate(prepared, docker=docker)
 
 
+def test_incremental_adapter_build_inputs_cover_each_image_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image
+
+    root = _project(tmp_path)
+    adapter = harness_lifecycle._IncrementalBuildAdapter(
+        root, FakeDocker({}), verbose=False
+    )
+    build_root = tmp_path / "build"
+    (build_root / "dist").mkdir(parents=True)
+    wheel = build_root / "dist" / "booley_rtl-0.2.6.whl"
+    wheel.write_bytes(b"wheel")
+    monkeypatch.setattr(docker_image, "_runtime_base_build_metadata_args", lambda _root: ())
+    monkeypatch.setattr(docker_image, "_image_build_metadata_args", lambda _root: ())
+    monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args: True)
+    monkeypatch.setattr(
+        harness_lifecycle, "wheel_embedded_source_fingerprint", lambda _wheel: "wheel"
+    )
+
+    def node(role: lifecycle.ImageRole, source: str | None = None) -> lifecycle.ImageNode:
+        payload = lifecycle.PayloadProvenance("3", "0.2.6", "payload")
+        return lifecycle.ImageNode(
+            role.value,
+            tmp_path / f"{role.value}.Dockerfile",
+            payload,
+            lifecycle.BuildProvenance("recipe", None),
+            role=role,
+            wheel_source_fingerprint=source,
+        )
+
+    for role in (
+        lifecycle.ImageRole.RUNTIME_BASE,
+        lifecycle.ImageRole.STANDARD_SUBSTRATE,
+        lifecycle.ImageRole.RISCV_SUBSTRATE,
+        lifecycle.ImageRole.PROJECT_SUBSTRATE,
+    ):
+        build_context, _contexts, _args = adapter._role_build_inputs(
+            SimpleNamespace(), node(role), build_root, "parent"
+        )
+        assert build_context
+
+    _context, contexts, args = adapter._role_build_inputs(
+        SimpleNamespace(), node(lifecycle.ImageRole.WHEEL_OVERLAY, "wheel"), build_root, "parent"
+    )
+    assert contexts == (("booley-substrate", "docker-image://parent"),)
+    assert "BOOLEY_WHEEL_SHA256=" + "".join([]) not in args
+    assert args[-2] == "--build-arg"
+
+    monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args: False)
+    assert (
+        adapter._role_build_inputs(
+            SimpleNamespace(), node(lifecycle.ImageRole.WHEEL_OVERLAY, "wheel"), build_root, "parent"
+        )
+        is None
+    )
+
+
 def test_official_release_plan_observes_only_selected_complete_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
