@@ -141,6 +141,9 @@ A named FuseSoC `.core` build target, the single source of truth for one design-
 
 _Avoid_: Design Configuration, build config, profile, named config
 
+**Tech Cell Replacement**:
+A Project's documented mapping and design inputs for realizing technology-dependent RTL intent with cells from its selected physical-library family, including preserved direct instantiations and substitutions through Project hooks or adapters.
+
 **Cocotb Target**:
 A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its tests are named cocotb test functions registered in `tests.toml`, executed batched in a single simulation, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Simulation evidence).
 _Avoid_: python testbench config, cocotb core, cocotb suite

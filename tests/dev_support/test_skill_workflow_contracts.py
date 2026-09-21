@@ -454,3 +454,123 @@ def test_setup_makes_stealth_an_explicit_opt_in():
     assert "ignore_native_cores = true" in project_config
     assert "[stealth]\n" in template
     assert "enabled = false" in template
+
+
+def test_setup_plans_one_project_wide_tech_cell_replacement():
+    plan = " ".join(_skill_text("booley-setup", "steps/0-plan.md").split())
+    template = " ".join(
+        _skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md").split()
+    )
+
+    assert "one Project-wide **Tech Cell Replacement** mapping" in plan
+    assert "per-Target coverage matrix" in plan
+    assert "| 22 | Tech Cell Replacement" in template
+    assert "continue numbering from 23" in template
+    assert "evidence-forced: not applicable" in template
+    assert "### Tech Cell Replacement" in template
+    assert "Caliptra" not in plan
+    assert "Nangate" not in plan
+    assert "Caliptra" not in template
+    assert "Nangate" not in template
+
+
+def test_setup_discovers_reachable_tech_cell_inputs_by_category():
+    plan = " ".join(_skill_text("booley-setup", "steps/0-plan.md").split())
+
+    for category in (
+        "documented technology-integration seam",
+        "direct library-cell instantiation",
+        "behavioral primitive intended for inference or replacement",
+        "existing synthesis-time binding or post-inference mapping",
+        "other library-dependent cell use requiring review",
+    ):
+        assert category in plan
+    for required in (
+        "reachable from each enabled synthesis Target",
+        "repository-only evidence",
+        "dependency-core provenance",
+        "governing define or parameter",
+    ):
+        assert required in plan
+
+
+def test_setup_requires_evidenced_tech_cell_decisions():
+    plan = " ".join(_skill_text("booley-setup", "steps/0-plan.md").split())
+
+    for required in (
+        "Interactive mode asks the user to clarify the choice",
+        "Unattended mode selects the mechanism supported by the strongest Project evidence",
+        "Stop when ambiguity could change hardware semantics",
+        "leave hierarchy coverage incomplete",
+        "introduce conflicting definitions",
+    ):
+        assert required in plan
+
+
+def test_setup_surfaces_missing_replacements_and_latch_policy():
+    plan = " ".join(_skill_text("booley-setup", "steps/0-plan.md").split())
+    project_config = " ".join(
+        _skill_text("booley-setup", "steps/2-project-config.md").split()
+    )
+
+    assert "mark every affected synthesis Target Yellow" in plan
+    assert "Do not create a new post-inference mapping as a fallback" in plan
+    assert "migration evidence only" in project_config
+    assert "expected_latches` only to the evidenced intentional-latch remainder" in project_config
+    assert "a passing allowance is not replacement evidence" in project_config
+
+
+def test_setup_implements_one_authoritative_frontend_definition():
+    project_config = " ".join(
+        _skill_text("booley-setup", "steps/2-project-config.md").split()
+    )
+
+    for required in (
+        "Project-wide mapping",
+        "single authoritative location",
+        "no Target receives a copied or divergent mapping",
+        "exactly one compatible definition",
+        "duplicate or conflicting module definitions",
+        "simulation behavior separate from synthesis-only declarations",
+    ):
+        assert required in project_config
+
+
+def test_setup_requires_all_tech_cell_validation_layers():
+    project_config = " ".join(
+        _skill_text("booley-setup", "steps/2-project-config.md").split()
+    )
+
+    for required in (
+        "**Semantic:**",
+        "**Frontend:**",
+        "**Mapped-netlist:**",
+        "**Physical-link:**",
+        "exact stage count and reset semantics",
+        "preservation or `dont_touch` intent",
+        "applicable timing exceptions",
+        "metastability use",
+    ):
+        assert required in project_config
+
+
+def test_setup_plan_template_records_tech_cell_evidence_not_cell_names_only():
+    template = " ".join(
+        _skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md").split()
+    )
+
+    for required in (
+        "Flow/library and authoritative location",
+        "Project inventory",
+        "Per-Target coverage matrix",
+        "Replacement table and semantic decisions",
+        "Approved Project-owned inputs",
+        "Incomplete/Yellow Targets and open questions",
+        "Semantic behavior",
+        "Frontend:",
+        "Mapped netlist:",
+        "Physical link:",
+        "CDC/synchronizer",
+    ):
+        assert required in template
+    assert "cell-name list alone" in template

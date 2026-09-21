@@ -129,6 +129,15 @@ before touching the repo, and start from its decision sheet rather than
 re-deriving it. Prefer evidence from scripts, docs, manifests, CI, Makefiles,
 filelists, and EDA wrappers over guesses:
 
+Before authoring anything, re-confirm the active inputs that the approved plan
+selected: every enabled synthesis Target, its reachable filesets and
+dependencies, defines and parameters, generated sources, and native synthesis
+scripts. Re-check the Flow's actual Liberty input and, for physical mode, LEF
+input, the one authoritative Tech Cell Replacement location, and the plan's
+per-Target coverage matrix. A changed source, define, parameter, dependency, or
+Flow input is a decision-level contradiction; stop under the deviation rule
+instead of silently widening the mapping.
+
 - Inventory files with `rg --files`, excluding clearly transient or derived
   areas: `.git/`, local client settings, board logs/locks, build outputs,
   simulator/synthesis outputs, caches, dependency directories, and any
@@ -310,6 +319,70 @@ Step 4's final gate:
   **replaces** the fileset list, it does not merge — upstream targets built
   on it may be silently broken; list filesets explicitly in targets you
   author.
+
+### Tech Cell Replacement implementation
+
+Implement only the approved Project-wide mapping from Step 0. The Target owns
+its filesets, defines, parameters, and top; the synthesis Flow owns its current
+reference Liberty/LEF selection; and `booley.toml` owns the existing
+`expected_latches` execution policy. Neither gains Tech Cell Replacement
+configuration.
+
+- Preserve a semantically valid direct library-cell instantiation or existing
+  Project mechanism when the plan selected it. Configure documented
+  technology-integration seams through the Target's defines and parameters.
+- Author only approved Project-owned hooks, adapter modules, and
+  library-cell models/declarations at the single authoritative location in the
+  plan. Add those same authoritative sources to every applicable Target; each
+  Target may reference a different subset, but no Target receives a copied or
+  divergent mapping.
+- Make each physical cell visible to the selected frontend through exactly one
+  compatible definition. Prefer the Project-authoritative model used by its
+  native synthesis Flow, then the selected library's supplied Verilog model,
+  then a minimal Project-owned synthesis declaration. Detect duplicate or
+  conflicting module definitions before synthesis and keep simulation behavior
+  separate from synthesis-only declarations in appropriately scoped filesets.
+- Treat an existing Project-authored post-inference latch map as migration
+  evidence only. Do not author or recommend a new post-inference latch-map
+  fallback. Set `[flows.synth].expected_latches` only to the evidenced
+  intentional-latch remainder after replacement; a passing allowance is not
+  replacement evidence.
+
+If the approved plan records an incomplete mechanism or Yellow Target, leave
+that status visible and preserve vendored/upstream RTL. Do not silently edit
+vendored or upstream sources; an upstream edit requires the plan's explicit
+ownership approval.
+
+### Tech Cell Replacement validation
+
+Record evidence for the Project mapping as a whole and for every enabled
+synthesis Target. Name matching is not semantic evidence: derive behavior from
+Project integration documentation, RTL, authoritative cell models, Liberty,
+and LEF, and run a focused simulation probe when static evidence cannot settle
+it. Check clock/enable/output polarity, scan or test enable, reset behavior,
+latch transparency or stage behavior, output sense, and power-pin assumptions
+where applicable.
+
+Run all four validation layers:
+
+1. **Semantic:** show that the selected cell and mechanism implement the RTL
+   intent, including the checks above; retain a focused probe or native
+   equivalence evidence when needed.
+2. **Frontend:** elaborate the exact Target sources and defines successfully;
+   prove every referenced library-cell module has one compatible definition and
+   no competing definition is active.
+3. **Mapped-netlist:** inspect expected physical cell types and counts, prove
+   replaced behavioral or generic forms disappeared, and account for every
+   approved remainder by Target and hierarchy against the Step 0 matrix.
+4. **Physical-link:** for a physical Target, prove OpenROAD resolves every
+   referenced master from the Flow-supplied LEF/Liberty inputs. A Project that
+   requires a different physical library remains Red for the built-in Flow;
+   successful reference-technology linking does not validate that Project
+   library.
+
+For CDC or synchronizer replacement, also verify exact stage count and reset
+semantics, preservation or `dont_touch` intent, applicable timing exceptions,
+and that the selected cell/library data supports the claimed metastability use.
 
 #### Security & confinement
 

@@ -267,6 +267,57 @@ script lines) as you go.
     style is worth enforcing, that is the *non-mutating* linter of the same
     family (`verible-verilog-lint`) as the style-lint Target in row 11 — record
     the formatter as evidence for row 11, not as a flow.
+- **Tech Cell Replacement.** For every enabled synthesis Target, identify the
+  physical-library family supplied by the selected synthesis Flow and verify
+  the actual Liberty input and, for physical mode, the LEF input. Treat the
+  Flow's fixed reference-library choice as an evidence-forced Project Setup
+  fact, not as a Target field. If Project requirements or a native Flow need a
+  different family, mark the built-in synthesis Flow Red rather than claiming
+  that its reference technology validates the Project's library.
+
+  Build one Project inventory by following every source, include, generated
+  input, dependency core, define, parameter, and synthesis script reachable
+  from each enabled synthesis Target. Classify every finding as exactly one of:
+
+  - **documented technology-integration seam**;
+  - **direct library-cell instantiation**;
+  - **behavioral primitive intended for inference or replacement**;
+  - **existing synthesis-time binding or post-inference mapping**;
+  - **other library-dependent cell use requiring review**.
+
+  For each finding, record its defining file, owning hierarchy or dependency
+  core, applicable Targets, governing define or parameter, and whether it is
+  active for a Target or repository-only evidence. Repository-only evidence can
+  explain intent but is not silently added to a Target. Preserve enough
+  hierarchy and dependency-core provenance that partial top-level coverage
+  cannot look complete.
+
+  Group the inventory into one Project-wide **Tech Cell Replacement** mapping
+  and a per-Target coverage matrix. The matrix names the subset used by each
+  enabled synthesis Target, including embedded cores, and exposes every
+  discovered-but-unhandled remainder. Counts are expectations to validate, not
+  proof. For each entry, record the RTL intent, chosen library cell, mechanism,
+  one authoritative Project-owned source location, frontend definition,
+  semantic evidence, and required checks.
+
+  A mechanism may preserve a valid direct instantiation, configure a documented
+  technology-integration seam, or use an approved Project-owned hook and
+  adapter module. When several mechanisms are credible, explain the hardware
+  consequence of each and recommend one. Interactive mode asks the user to
+  clarify the choice. Unattended mode selects the mechanism supported by the
+  strongest Project evidence and records the resolution and confidence for
+  review. Stop when ambiguity could change hardware semantics, leave hierarchy
+  coverage incomplete, or introduce conflicting definitions; a reversible
+  choice between otherwise valid mechanisms may be recorded as `review`.
+
+  If no replacement mechanism exists, ask for approval to add a Project-owned
+  hook or adapter module. If the RTL is vendored or approval is absent, record
+  the incomplete mapping and mark every affected synthesis Target Yellow;
+  Project Setup does not claim completion. Existing Project-authored
+  post-inference latch maps are migration evidence only. Do not create a new
+  post-inference mapping as a fallback. Reconcile `[flows.synth].expected_latches`
+  with the evidenced intentional-latch remainder after replacement: it is an
+  allowance, not evidence that replacement occurred.
 - **Testbench style.** Booley scores a simulation by matching a stdout
   sentinel. A self-checking SV/Verilog testbench that prints a clear pass/fail
   line is green: its wording becomes config in Step 2. UVM is fine as long as
@@ -416,8 +467,8 @@ script lines) as you go.
   licensed-simulator integration.
   Vendored cores you'd rather Booley not discover can be quarantined with a
   `FUSESOC_IGNORE` marker; those aren't blockers. Synthesis against a real
-  foundry PDK (rather than the reference Nangate45 flow) is outside the built-in
-  flow (red for that flow).
+  foundry PDK (rather than the built-in reference physical-library flow) is
+  outside the built-in flow (red for that flow).
 - **License reachability.** A licensed-EDA-tool Flow is only real if the
   administrator can register an approved License Profile and its fixed server
   answers. The Sandbox must receive licensing only through Booley's
@@ -724,7 +775,27 @@ separate columns (see "How a row resolves"). The standard checklist:
     unattended run has nobody to read a preview, and the offer is not one an
     agent may accept on a user's behalf.
 
-Then add the **repo-specific rows**, numbering on from 22 — everything Part A
+22. **Tech Cell Replacement** — one Project-wide mapping shared by all enabled
+    synthesis Targets, with each Target recording only the subset it reaches.
+    Record the Flow-supplied physical-library family and verified Liberty/LEF
+    inputs, the authoritative replacement location, the classified Project
+    inventory, the per-Target coverage matrix, each semantic decision and
+    frontend definition, approved Project-owned inputs, incomplete or Yellow
+    Targets, open questions, and execution-time checks for every validation
+    layer. When synthesis is disabled, resolve this row as
+    `evidence-forced: not applicable` and omit the replacement subsection.
+    Never satisfy this row with a list of cell names alone.
+
+Immediately after the decision sheet, write the row-22 subsection in the plan
+with these headings: **Flow/library and authoritative location**, **Project
+inventory**, **per-Target coverage matrix**, **replacement table and semantic
+decisions**, **approved Project-owned inputs**, **incomplete/Yellow Targets and
+open questions**, and **execution-time checks**. The replacement table must
+name each entry's RTL intent, cell, mechanism, source location, frontend
+definition, semantic evidence, and validation layers; the coverage matrix must
+retain hierarchy and dependency-core provenance.
+
+Then add the **repo-specific rows**, numbering on from 23 — everything Part A
 surfaced that the standard list doesn't name: generator steps, **git
 submodules** (a row whenever either participating repository's
 `git submodule status` is non-empty: the host-side
@@ -737,8 +808,10 @@ The checklist is the floor, not the ceiling.
 Close with the **execution-time checks** list: every planned verification that
 needs the sandbox (fusesoc target resolution, `-march` compile check, ingest
 smoke, image EDA-tool probes, submodule population in a ticket worktree). Steps
-2–4 run these; a failed check that contradicts a decision triggers the
-deviation rule.
+2–4 run these; include semantic, frontend, mapped-netlist, and physical-link
+checks for every enabled synthesis Target, plus CDC preservation checks when
+applicable. A failed check that contradicts a decision triggers the deviation
+rule.
 
 ## Part C — The grill (interactive mode only)
 
