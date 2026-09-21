@@ -68,6 +68,23 @@ def test_container_runtime_distinguishes_permission_denied() -> None:
     assert audit.finding.fix
 
 
+def test_container_runtime_reports_not_running_and_timeout() -> None:
+    def failed(args, **_kwargs):
+        return subprocess.CompletedProcess(args, 1, "", "unavailable")
+
+    def timed_out(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("docker", 10)
+
+    stopped = host_environment.probe_container_runtime(
+        "docker", inside_session_runtime=False, which=lambda _name: "docker", run=failed
+    )
+    timeout = host_environment.probe_container_runtime(
+        "docker", inside_session_runtime=False, which=lambda _name: "docker", run=timed_out
+    )
+    assert stopped.finding.message == "container runtime not running"
+    assert timeout.finding.message == "container runtime probe timed out"
+
+
 def test_host_environment_does_not_depend_on_presentation_layers() -> None:
     module_path = _ROOT / "src" / "booley" / "audit" / "host_environment.py"
     tree = ast.parse(module_path.read_text(encoding="utf-8"))

@@ -474,8 +474,6 @@ def _worktree_path(root: Path, branch: str, requested: Path | None) -> Path | No
         return None
     if requested is not None and _within(candidate, root) and not _within(candidate, worktrees):
         return None
-    if _within(candidate, root) and not _within(candidate, worktrees):
-        return None
     return candidate
 
 
