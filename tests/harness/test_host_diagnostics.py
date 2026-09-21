@@ -1,6 +1,7 @@
 """Host diagnostics use Bootstrap observations without initiating preparation."""
 
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +26,16 @@ def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, s
 
     monkeypatch.setattr(bootstrap, "reconcile_bootstrap", reconcile)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    identity = SimpleNamespace(
+        version="1.2.3",
+        revision="abc123",
+        payload_fingerprint="f" * 64,
+        executable="/usr/local/bin/booley",
+        interpreter="/usr/local/bin/python3",
+        distribution_root="/opt/booley",
+    )
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
+    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
     monkeypatch.setattr(host_diagnostics.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(
         host_environment,
@@ -58,6 +69,68 @@ def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch):
     assert any(
         f.severity is Severity.SKIP and "inside" in f.message for f in result.report.findings
     )
+
+
+def test_host_diagnosis_reports_canonical_installation(monkeypatch):
+    report = host_diagnostics.Findings()
+    identity = SimpleNamespace(
+        version="1.2.3",
+        revision="abc123",
+        payload_fingerprint="abcdef0123456789",
+        executable="/usr/local/bin/booley",
+        interpreter="/usr/local/bin/python3",
+        distribution_root="/opt/booley",
+    )
+    monkeypatch.setattr(
+        host_diagnostics,
+        "load_host_installation",
+        lambda: identity,
+    )
+    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
+
+    host_diagnostics._inspect_host_installation(report)
+
+    finding = report.report().findings[0]
+    assert "v1.2.3 revision=abc123 fingerprint=abcdef012345" in finding.message
+    assert "/opt/booley" in finding.message
+    assert "revision=abc123" in finding.message
+    assert "executable=/usr/local/bin/booley" in finding.message
+
+
+def test_host_diagnosis_rejects_mismatched_current_installation(monkeypatch):
+    identity = SimpleNamespace(
+        version="1.2.3",
+        revision="abc123",
+        payload_fingerprint="f" * 64,
+        executable="/usr/local/bin/booley",
+        interpreter="/usr/local/bin/python3",
+        distribution_root="/opt/booley",
+    )
+    actual = SimpleNamespace(**{**identity.__dict__, "distribution_root": "/tmp/booley"})
+    report = host_diagnostics.Findings()
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
+    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: actual)
+
+    host_diagnostics._inspect_host_installation(report)
+
+    finding = report.report().findings[0]
+    assert finding.severity is Severity.FAIL
+    assert "--upgrade-installation" in finding.fix
+
+
+def test_host_diagnosis_reports_missing_current_installation(monkeypatch):
+    report = host_diagnostics.Findings()
+    monkeypatch.setattr(
+        host_diagnostics,
+        "load_host_installation",
+        lambda: (_ for _ in ()).throw(host_diagnostics.HostInstallationError("not installed")),
+    )
+
+    host_diagnostics._inspect_host_installation(report)
+
+    finding = report.report().findings[0]
+    assert finding.severity is Severity.FAIL
+    assert "not installed" in finding.message
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])

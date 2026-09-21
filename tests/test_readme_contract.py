@@ -20,7 +20,7 @@ def test_integrated_development_environment_features_lead_with_one_window():
 
 
 def test_install_alternative_is_not_padded():
-    assert "pipx install booley-rtl # or: pip install booley-rtl" in README
+    assert "python3 -m pip install --user booley-rtl" in README
 
 
 def test_try_the_demo_leads_with_the_demo_readme_link():

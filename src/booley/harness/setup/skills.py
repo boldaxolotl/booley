@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness.setup.common import InitContext, warn
+from booley.runtime.host_install import host_install_error
 from booley.runtime.skill_links import SkillLinkReport, reconcile_skill_links
 
 
@@ -62,6 +63,10 @@ def _deploy_skills(ctx: InitContext) -> None:
     if not source.is_dir():
         warn(f"package skills directory not found: {source}")
         ctx.record("skills", "warn", "skills dir missing")
+        return
+    if error := host_install_error(source):
+        warn(error)
+        ctx.record("skills", "err", error)
         return
 
     reconciliations = reconcile_host_skills(

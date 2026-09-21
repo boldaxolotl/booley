@@ -165,17 +165,15 @@ A view that opens but is missing signals is a different thing: signals the viewe
 has no netlist entry for are dropped and named in a WARNING on stderr; the trace
 itself is fine and still queryable.
 
-## `pip install booley-rtl` fails with `externally-managed-environment`
+## Installation fails with `externally-managed-environment`
 
 Recent distributions ship Python as an *externally managed* environment
-(PEP 668), where a plain `pip install` into the system interpreter refuses with
-`externally-managed-environment`. Install with **`pipx`** instead: it puts the
-CLI in its own virtualenv and links the `booley` executable into `~/.local/bin`
-(already on `PATH` on most systems).
-
-```bash
-pipx install booley-rtl
-```
+(PEP 668), where that interpreter refuses package installation. Install a
+separate base Python distribution, ensure its user scripts directory is on
+`PATH`, and use that interpreter's `python -m pip install --user booley-rtl`.
+Do not install the host CLI through a virtual-environment launcher: candidate
+and development environments are deliberately unable to mutate host-owned
+state.
 
 ## The wrong `booley` runs (stale install shadowing)
 
@@ -185,9 +183,9 @@ resolves `booley` from. If `booley --version` and `pip show booley-rtl`
 **disagree**, an older install is shadowing this one on `PATH`.
 
 Run `command -v -a booley` (or `where.exe booley` on Windows) and remove or
-upgrade older `pipx`, user, or system installations that appear before the one
-you intend to use. Reinstalling with `pipx install --force booley-rtl` restores
-the normal isolated CLI entry point.
+upgrade older user or system installations that appear before the one you
+intend to use. Run `booley bootstrap --adopt-installation` for a first install,
+or `booley bootstrap --upgrade-installation` after an intentional upgrade.
 
 ## Windows first-run problems
 
@@ -257,8 +255,9 @@ experiment, not a setup requirement.
   install normally places `booley.exe` under the user scripts directory rather
   than the interpreter's system `Scripts` directory. Current Booley releases
   inspect both trusted locations even when the user scripts directory is not on
-  `PATH`. If the error remains, reinstall with `pipx` or add the scripts
-  directory reported by Python to `PATH`, open a new terminal, and rerun init.
+  `PATH`. If the error remains, reinstall with the canonical base interpreter
+  or add the scripts directory reported by Python to `PATH`, open a new
+  terminal, and rerun init.
 
 - **The first sandbox image build takes over an hour.** First builds compile
   EDA tools from source and can take well over an hour on a WSL2-backed Docker;

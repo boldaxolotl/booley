@@ -51,25 +51,30 @@ supported. You need:
 Install the CLI on the host:
 
 ```bash
-pipx install booley-rtl # or: pip install booley-rtl
+python3 -m pip install --user booley-rtl
 ```
 
 If Booley is already installed, upgrade it instead:
 
 ```bash
-pipx upgrade booley-rtl # or: pip install --upgrade booley-rtl
+python3 -m pip install --user --upgrade booley-rtl
 ```
 
 Then verify the installed version and prepare the host resources:
 
 ```bash
 booley --version
+booley bootstrap --adopt-installation # first installation only
+booley bootstrap
+# after upgrading Booley:
+booley bootstrap --upgrade-installation
 booley bootstrap
 ```
 
-`pipx` is recommended because it avoids system-Python conflicts. See
-[Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md)
-for first-run, PATH, and Python-environment problems, then continue to
+Use a dedicated base Python installation when the operating system marks its
+Python as externally managed; virtual-environment launchers are not valid Host
+Bootstrap owners. See [Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md)
+for installation, PATH, and Python-environment problems, then continue to
 [Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md).
 
 `booley bootstrap` prepares reusable host resources: the VS Code Dev Containers

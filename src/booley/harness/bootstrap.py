@@ -24,6 +24,7 @@ from booley.harness.image_lifecycle import (
     reconcile as reconcile_images,
 )
 from booley.harness.setup.skills import reconcile_host_skills
+from booley.runtime.host_install import host_install_error
 from booley.runtime.paths import skills_dir
 from booley.runtime.skill_links import SkillLinkReport
 
@@ -92,6 +93,10 @@ def reconcile_bootstrap(intent: Intent, *, verbose: bool = False) -> BootstrapRe
     findings.append(
         BootstrapFinding("host-config", BootstrapState.CURRENT, "host policy is valid")
     )
+
+    if error := host_install_error(skills_dir()):
+        findings.append(BootstrapFinding("host-install", BootstrapState.ERROR, error))
+        return BootstrapResult(intent, tuple(findings), policy)
 
     prerequisites = _prerequisite_findings()
     findings.extend(prerequisites)
@@ -329,6 +334,8 @@ def _reconcile_skills(intent: Intent) -> BootstrapFinding:
         return BootstrapFinding(
             "skills", BootstrapState.ERROR, f"packaged skills missing: {source}"
         )
+    if error := host_install_error(source):
+        return BootstrapFinding("skills", BootstrapState.ERROR, error)
     reconciliations = reconcile_host_skills(
         source,
         dry_run=intent is Intent.CHECK,
