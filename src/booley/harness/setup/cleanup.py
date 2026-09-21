@@ -67,7 +67,11 @@ class FileIdentity:
             current = FileIdentity.from_path(path)
         except FileNotFoundError:
             return False
-        if current.kind != self.kind or current.device != self.device or current.inode != self.inode:
+        if (
+            current.kind != self.kind
+            or current.device != self.device
+            or current.inode != self.inode
+        ):
             return False
         return current.size == self.size and current.mode == self.mode
 
@@ -196,7 +200,11 @@ def _project_root(root: Path | None) -> Path:
         project_dir = resolve_checkout_project_dir(resolved)
     except (OSError, ValueError) as exc:
         raise CleanupError(f"cannot resolve the Project directory: {exc}") from exc
-    if project_dir != resolved / SETUP_ROOT or project_dir.is_symlink() or not project_dir.is_dir():
+    if (
+        project_dir != resolved / SETUP_ROOT
+        or project_dir.is_symlink()
+        or not project_dir.is_dir()
+    ):
         raise CleanupError("no .booley_project directory was found")
     return resolved
 
@@ -242,12 +250,7 @@ def _reject_shared_boundary(root: Path, absolute: Path, manifest_path: Path) -> 
 
 def _manifest_path(root: Path, run_id: str) -> Path:
     """Return the only supported manifest location for a setup run."""
-    if (
-        not run_id
-        or run_id in {".", ".."}
-        or Path(run_id).name != run_id
-        or not run_id.isascii()
-    ):
+    if not run_id or run_id in {".", ".."} or Path(run_id).name != run_id or not run_id.isascii():
         raise CleanupError("run_id must be one safe ASCII path component")
     return root / SETUP_ROOT / "tmp" / "setup" / run_id / "manifest.json"
 
@@ -455,7 +458,9 @@ def record_artifact(
     entries = [old for old in entries if old.path != relative]
     entries.extend(new_entries)
     unique = {item.path: item for item in entries}
-    payload["entries"] = [item.as_dict() for item in sorted(unique.values(), key=lambda item: item.path)]
+    payload["entries"] = [
+        item.as_dict() for item in sorted(unique.values(), key=lambda item: item.path)
+    ]
     _atomic_write(manifest_path, payload)
     return new_entries[0]
 
@@ -557,7 +562,9 @@ def _item_for_entry(
         reason = "manifest retention decision"
     elif entry.artifact_class == "flow-cache":
         category = "evict-cache" if cache_disposition == "evict-setup-touched" else "preserve"
-        reason = "explicit Flow-cache eviction" if category == "evict-cache" else "reusable Flow cache"
+        reason = (
+            "explicit Flow-cache eviction" if category == "evict-cache" else "reusable Flow cache"
+        )
     elif entry.disposition == "remove":
         category = "remove"
         reason = f"owned by {entry.producer}"
@@ -583,13 +590,15 @@ def preview_cleanup(
     manifest_path = _find_manifest(root, run_id)
     if manifest_path is None:
         items = _legacy_inventory(root)
-        digest = hashlib.sha256(json.dumps([item.as_dict() for item in items], sort_keys=True).encode()).hexdigest()
-        return CleanupPlan(str(root), None, None, True, retention_mode, cache_disposition, items, digest)
+        digest = hashlib.sha256(
+            json.dumps([item.as_dict() for item in items], sort_keys=True).encode()
+        ).hexdigest()
+        return CleanupPlan(
+            str(root), None, None, True, retention_mode, cache_disposition, items, digest
+        )
     payload = _load_manifest(manifest_path, root)
     entries = [ManifestEntry.from_dict(raw) for raw in payload["entries"]]
-    items = [
-        _item_for_entry(root, entry, retention_mode, cache_disposition) for entry in entries
-    ]
+    items = [_item_for_entry(root, entry, retention_mode, cache_disposition) for entry in entries]
     scratch = manifest_path.parent
     if scratch.exists():
         identity = FileIdentity.from_path(scratch)
@@ -619,7 +628,9 @@ def preview_cleanup(
 def _load_plan_manifest(plan: CleanupPlan) -> tuple[Path, dict[str, Any]]:
     """Reload the manifest named by a preview before applying it."""
     if plan.inventory_only or not plan.manifest_path:
-        raise CleanupBlockedError("legacy inventory has no ownership evidence; nothing may be deleted")
+        raise CleanupBlockedError(
+            "legacy inventory has no ownership evidence; nothing may be deleted"
+        )
     root = Path(plan.project_root)
     path = Path(plan.manifest_path)
     payload = _load_manifest(path, root)
@@ -651,6 +662,11 @@ def _open_parent_nofollow(path: Path) -> int:
 
 def _rename_nofollow(path: Path, quarantine: Path) -> None:
     """Rename within one opened parent directory without following parents."""
+    if os.name == "nt":
+        if path.is_symlink() or path.parent.is_symlink() or quarantine.parent.is_symlink():
+            raise OSError("symlinked cleanup boundary")
+        path.rename(quarantine)
+        return
     fd = _open_parent_nofollow(path.parent)
     try:
         os.rename(path.name, quarantine.name, src_dir_fd=fd, dst_dir_fd=fd)
@@ -660,6 +676,14 @@ def _rename_nofollow(path: Path, quarantine: Path) -> None:
 
 def _delete_quarantine(path: Path) -> None:
     """Delete only an already-quarantined, identity-checked path."""
+    if os.name == "nt":
+        if path.is_symlink():
+            raise OSError("symlinked quarantine")
+        if path.is_dir():
+            path.rmdir()
+        else:
+            path.unlink()
+        return
     fd = _open_parent_nofollow(path.parent)
     try:
         info = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
@@ -770,7 +794,9 @@ def _materialize_for_candidates(
         referenced_before = materialize.referenced_sources(root / SETUP_ROOT, selected)
         changed = _materialize_dependencies(root, dependency_entries)
         candidate_paths = {
-            _absolute(root, candidate.path) for candidate in candidates if candidate.path in entries
+            _absolute(root, candidate.path)
+            for candidate in candidates
+            if candidate.path in entries
         }
         unresolved = [
             _safe_relative(root, path)
@@ -873,6 +899,7 @@ def _apply_candidates(
     def checkpoint() -> None:
         """Persist the quarantine intent before the filesystem rename."""
         _atomic_write(manifest_path, payload)
+
     removed: list[str] = []
     absent: list[str] = []
     evicted: list[str] = []
@@ -947,11 +974,16 @@ def apply_cleanup(
 def format_summary(plan: CleanupPlan, result: CleanupResult | None = None) -> str:
     """Render the concise closeout shared by the CLI and Step 7."""
     groups = plan.grouped()
-    lines = [f"cleanup preview {plan.digest}", f"inventory-only: {'yes' if plan.inventory_only else 'no'}"]
+    lines = [
+        f"cleanup preview {plan.digest}",
+        f"inventory-only: {'yes' if plan.inventory_only else 'no'}",
+    ]
     for category in ("preserve", "remove", "evict-cache", "unresolved"):
         group = groups[category]
         lines.append(f"{category}: {group['count']} path(s), {group['bytes']} byte(s)")
     if result is not None:
-        lines.append(f"removed: {result.bytes_removed} byte(s) across {len(result.removed)} path(s)")
+        lines.append(
+            f"removed: {result.bytes_removed} byte(s) across {len(result.removed)} path(s)"
+        )
         lines.append(f"unresolved after apply: {len(result.unresolved)}")
     return "\n".join(lines)

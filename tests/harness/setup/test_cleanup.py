@@ -80,7 +80,9 @@ def test_diagnostic_retains_raw_evidence_but_minimal_removes_it(tmp_path: Path) 
     )
 
     diagnostic = preview_cleanup(root, run_id="run-mode", retention_mode="diagnostic")
-    assert any(item.path.endswith("raw.log") and item.category == "preserve" for item in diagnostic.items)
+    assert any(
+        item.path.endswith("raw.log") and item.category == "preserve" for item in diagnostic.items
+    )
 
 
 def test_legacy_plan_is_inventory_only_and_never_deletes(tmp_path: Path) -> None:

@@ -174,9 +174,7 @@ def _attachment_block(raw_path: str) -> list[str]:
         display_name = Path(str(metadata.get("original_path", path))).name
         line_count = _metadata_int(metadata, "line_count", line_count)
         clipped = _metadata_bool(metadata, "clipped", clipped)
-        excerpt_line_count = _metadata_int(
-            metadata, "excerpt_line_count", excerpt_line_count
-        )
+        excerpt_line_count = _metadata_int(metadata, "excerpt_line_count", excerpt_line_count)
     label = f"`{display_name}`" + (
         f" — last {excerpt_line_count} of {line_count} lines" if clipped else ""
     )

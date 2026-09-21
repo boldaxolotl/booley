@@ -75,7 +75,9 @@ def _write_snapshot(path: Path, text: str, metadata: dict[str, object]) -> None:
 def _snapshot_path(root: Path, finding: Finding, index: int, source: Path) -> Path:
     """Choose a stable, non-user-controlled evidence filename."""
     name = _SAFE_NAME.sub("-", source.name).strip("-") or "attachment.log"
-    return root / "setup-evidence" / "attachments" / f"{finding.id or 'finding'}-{index}-{name}.txt"
+    return (
+        root / "setup-evidence" / "attachments" / f"{finding.id or 'finding'}-{index}-{name}.txt"
+    )
 
 
 def _attachment_matches(raw: str, project_dir: Path, sources: set[Path]) -> Path | None:
@@ -117,7 +119,9 @@ def _rewrite_selected(
         before[finding.id] = [
             line
             for attachment in finding.attachments
-            for line in render._attachment_block(str(normalize_attachment_path(attachment, project_dir)))
+            for line in render._attachment_block(
+                str(normalize_attachment_path(attachment, project_dir))
+            )
         ]
         for index, attachment in enumerate(list(finding.attachments)):
             source = _attachment_matches(attachment, project_dir, sources)
