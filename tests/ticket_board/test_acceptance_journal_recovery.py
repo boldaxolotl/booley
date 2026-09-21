@@ -10,6 +10,7 @@ import pytest
 
 from booley.ticket_board import completion
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
+from booley.ticket_board.acceptance_journal._model import JournalState
 from booley.ticket_board.acceptance_journal._repository import (
     FaultingAcceptanceRepositories,
     LocalAcceptanceRepositories,
@@ -61,17 +62,107 @@ def _assert_finished(
     assert json.loads(path.read_text(encoding="utf-8"))["state"] == "done"
 
 
-def _assert_crash_window_is_decodable(root: Path) -> None:
-    """A surviving journal is always a complete recovery authority."""
+def _assert_crash_window(
+    root: Path,
+    expected: tuple[JournalState, int, int, tuple[str, ...], tuple[str, ...]] | None,
+    *,
+    cleanup: bool,
+) -> None:
+    """Assert exact durable state at one interrupted publication boundary."""
     path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
-    if not path.exists():
+    if expected is None:
+        assert not path.exists()
         return
+    assert path.is_file()
     journal = FileAcceptanceStore().load_persisted(path)
+    state, source_count, candidate_count, published, cleaned = expected
     assert journal.ticket == "change-target"
     assert journal.schema == 5
+    assert journal.state is state
+    assert journal.cleanup is cleanup
     assert journal.roles == ("outer", "project")
-    assert set(journal.sources).issubset(journal.roles)
-    assert set(journal.candidates).issubset(journal.roles)
+    assert tuple(journal.sources) == journal.roles[:source_count]
+    assert tuple(journal.candidates) == journal.roles[:candidate_count]
+    assert journal.published == published
+    assert journal.cleaned == cleaned
+
+
+_SEMANTIC_STATES = {
+    AcceptanceCheckpoint.NORMALIZED: (JournalState.INITIALIZING, 0, 0, (), ()),
+    AcceptanceCheckpoint.SOURCES_PINNED: (JournalState.INITIALIZING, 2, 0, (), ()),
+    AcceptanceCheckpoint.CANDIDATES_PREPARED: (JournalState.INITIALIZING, 2, 2, (), ()),
+    AcceptanceCheckpoint.PREPARATION_COMPLETE: (JournalState.PREPARED, 2, 2, (), ()),
+    AcceptanceCheckpoint.PROJECT_PUBLISHED: (
+        JournalState.PUBLISHED_PROJECT,
+        2,
+        2,
+        ("project",),
+        (),
+    ),
+    AcceptanceCheckpoint.OUTER_PUBLISHED: (
+        JournalState.PUBLISHED_OUTER,
+        2,
+        2,
+        ("project", "outer"),
+        (),
+    ),
+    AcceptanceCheckpoint.ACCEPTED: (
+        JournalState.ACCEPTED,
+        2,
+        2,
+        ("project", "outer"),
+        (),
+    ),
+    AcceptanceCheckpoint.PROJECT_CLEANED: (
+        JournalState.CLEANUP_PROJECT,
+        2,
+        2,
+        ("project", "outer"),
+        ("project",),
+    ),
+    AcceptanceCheckpoint.OUTER_CLEANED: (
+        JournalState.CLEANUP_OUTER,
+        2,
+        2,
+        ("project", "outer"),
+        ("project", "outer"),
+    ),
+    AcceptanceCheckpoint.DONE: (
+        JournalState.DONE,
+        2,
+        2,
+        ("project", "outer"),
+        ("project", "outer"),
+    ),
+}
+_SEMANTIC_ORDER = tuple(_SEMANTIC_STATES)
+
+
+def _semantic_crash_state(
+    checkpoint: AcceptanceCheckpoint,
+    timing: Literal["before", "after"],
+) -> tuple[JournalState, int, int, tuple[str, ...], tuple[str, ...]] | None:
+    index = _SEMANTIC_ORDER.index(checkpoint)
+    if timing == "after":
+        return _SEMANTIC_STATES[checkpoint]
+    if index == 0:
+        return None
+    return _SEMANTIC_STATES[_SEMANTIC_ORDER[index - 1]]
+
+
+def _repository_crash_state(
+    boundary: RepositoryBoundary,
+    role: str,
+) -> tuple[JournalState, int, int, tuple[str, ...], tuple[str, ...]]:
+    if boundary is RepositoryBoundary.PREPARATION:
+        return _SEMANTIC_STATES[AcceptanceCheckpoint.SOURCES_PINNED]
+    if boundary is RepositoryBoundary.PUBLICATION and role == "project":
+        return _SEMANTIC_STATES[AcceptanceCheckpoint.PREPARATION_COMPLETE]
+    if boundary is RepositoryBoundary.PUBLICATION:
+        return _SEMANTIC_STATES[AcceptanceCheckpoint.PROJECT_PUBLISHED]
+    if role == "project":
+        return _SEMANTIC_STATES[AcceptanceCheckpoint.ACCEPTED]
+    return _SEMANTIC_STATES[AcceptanceCheckpoint.PROJECT_CLEANED]
 
 
 @pytest.mark.parametrize(
@@ -107,7 +198,11 @@ def test_retry_survives_every_semantic_checkpoint(
     _install_runner(monkeypatch, store=store)
     complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
     assert store.triggered is True
-    _assert_crash_window_is_decodable(root)
+    _assert_crash_window(
+        root,
+        _semantic_crash_state(fault_checkpoint, timing),
+        cleanup=True,
+    )
 
     _install_runner(monkeypatch)
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
@@ -151,7 +246,11 @@ def test_retry_survives_each_repository_boundary(
     _install_runner(monkeypatch, repositories=repositories)
     complete_review_ticket(tio, "change-target", _Policy(cleanup=cleanup))
     assert repositories.triggered is True
-    _assert_crash_window_is_decodable(root)
+    _assert_crash_window(
+        root,
+        _repository_crash_state(boundary, role),
+        cleanup=cleanup,
+    )
 
     _install_runner(monkeypatch)
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=cleanup)) is True
