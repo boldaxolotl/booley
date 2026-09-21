@@ -9,8 +9,11 @@ from pruning those registrations.
 from __future__ import annotations
 
 import hashlib
+import io
+import json
 import os
 import subprocess
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -432,6 +435,61 @@ class TestInstalledPrePushGuard:
 
 
 class TestProjectGitHookMigration:
+    def test_crlf_only_legacy_sources_are_not_backed_up(self, tmp_path: Path) -> None:
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.harness.setup.project_git_hook_reconcile import _current_source_bytes
+        from booley.runtime.project_dir import resolve_project_dir
+
+        _git_init(tmp_path)
+        hooks = resolve_project_dir(tmp_path) / "hooks"
+        hooks.mkdir(parents=True, exist_ok=True)
+        for name, data in _current_source_bytes().items():
+            (hooks / name).write_bytes(data.replace(b"\n", b"\r\n"))
+
+        _step_project_git_hooks(_ctx(tmp_path))
+
+        assert not list(hooks.glob("*.pre-booley.*"))
+        assert not any((hooks / name).exists() for name in _current_source_bytes())
+
+    def test_malformed_bundle_manifest_is_recovered(self, tmp_path: Path) -> None:
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import resolve_project_dir
+
+        _git_init(tmp_path)
+        bundle = resolve_project_dir(tmp_path) / ".managed" / "project-git-hooks.pyz"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("manifest.json", json.dumps([]))
+        bundle.write_bytes(buffer.getvalue())
+
+        ctx = _ctx(tmp_path)
+        _step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "ok"
+        assert bundle.is_file()
+
+    def test_reconciliation_rolls_back_on_adapter_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.setup import project_git_hook_reconcile as reconcile
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import resolve_project_dir
+
+        _git_init(tmp_path)
+
+        def fail_after_bundle(_adapters, _transaction):
+            raise OSError("simulated adapter failure")
+
+        monkeypatch.setattr(reconcile, "_apply_adapters", fail_after_bundle)
+        ctx = _ctx(tmp_path)
+        _step_project_git_hooks(ctx)
+
+        project_dir = resolve_project_dir(tmp_path)
+        assert ctx.results[-1].status == "err"
+        assert not (project_dir / ".managed" / "project-git-hooks.pyz").exists()
+        assert not (tmp_path / ".git" / "hooks" / "commit-msg").exists()
+
     def test_legacy_sources_and_managed_bytecode_are_removed(self, tmp_path: Path) -> None:
         from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.harness.setup.project_git_hook_reconcile import _current_source_bytes

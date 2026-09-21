@@ -45,9 +45,9 @@ def _normalized_source(source: Path) -> bytes:
         raise FileNotFoundError(f"canonical hook source is unavailable: {source}") from exc
     if not stat.S_ISREG(mode):
         raise ValueError(f"canonical hook source is not a regular file: {source}")
-    return source.read_text(encoding="utf-8", newline="").replace("\r\n", "\n").replace(
-        "\r", "\n"
-    ).encode("utf-8")
+    with source.open("r", encoding="utf-8", newline="") as handle:
+        content = handle.read()
+    return content.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 
 
 def _read_source_members() -> dict[str, bytes]:

@@ -73,6 +73,7 @@ def test_bundle_runs_without_ambient_booley_package(tmp_path: Path) -> None:
         env=env,
         capture_output=True,
         text=True,
+        timeout=30,
         check=False,
     )
 
@@ -89,6 +90,7 @@ def test_launcher_rejects_missing_or_unknown_commands(tmp_path: Path, argv: list
         ["python3", "-I", "-S", str(bundle), *argv],
         capture_output=True,
         text=True,
+        timeout=30,
         check=False,
     )
 
