@@ -7,6 +7,10 @@ def _skill_text(name: str, relative: str = "SKILL.md") -> str:
     return (skills_dir() / name / relative).read_text(encoding="utf-8")
 
 
+def _compact_skill_text(name: str, relative: str = "SKILL.md") -> str:
+    return " ".join(_skill_text(name, relative).split())
+
+
 def test_triage_routes_confirmed_booley_bugs_to_feedback_skill_by_default():
     main = _skill_text("booley-ticket-triage")
     blocked = _skill_text("booley-ticket-triage", "steps/02-blocked.md")
@@ -488,3 +492,135 @@ def test_setup_makes_stealth_an_explicit_opt_in():
     assert "ignore_native_cores = true" in project_config
     assert "[stealth]\n" in template
     assert "enabled = false" in template
+
+
+def test_setup_plans_one_project_wide_tech_cell_replacement():
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+    template = _compact_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
+
+    assert "one Project-wide **Tech Cell Replacement** mapping" in plan
+    assert "per-Target coverage matrix" in plan
+    assert "| 24 | Tech Cell Replacement" in template
+    assert "continue numbering from 25" in template
+    assert "evidence-forced: not applicable" in template
+    assert (
+        "Synthesis-disabled Projects resolve row 24 as evidence-forced: not applicable "
+        "and omit this subsection"
+    ) in template
+    assert (
+        "When synthesis is disabled, resolve this row as `evidence-forced: not applicable` "
+        "and omit the replacement subsection"
+    ) in plan
+    assert "### Tech Cell Replacement" in template
+    assert "Caliptra" not in plan
+    assert "Nangate" not in plan
+    assert "Caliptra" not in template
+    assert "Nangate" not in template
+
+
+def test_setup_discovers_reachable_tech_cell_inputs_by_category():
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+
+    for category in (
+        "documented technology-integration seam",
+        "direct library-cell instantiation",
+        "behavioral primitive intended for inference or replacement",
+        "existing synthesis-time binding or post-inference mapping",
+        "other library-dependent cell use requiring review",
+    ):
+        assert category in plan
+    for required in (
+        "Flow-supplied physical-library family",
+        "actual Liberty input",
+        "LEF input",
+        "reachable from each enabled synthesis Target",
+        "including embedded cores",
+        "repository-only evidence",
+        "dependency-core provenance",
+        "governing define or parameter",
+        "discovered-but-unhandled remainder",
+        "one authoritative Project-owned source location",
+    ):
+        assert required in plan
+
+
+def test_setup_requires_evidenced_tech_cell_decisions():
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+
+    for required in (
+        "Interactive mode asks the user to clarify the choice",
+        "Unattended mode selects the mechanism supported by the strongest Project evidence",
+        "Stop when ambiguity could change hardware semantics",
+        "leave hierarchy coverage incomplete",
+        "introduce conflicting definitions",
+    ):
+        assert required in plan
+
+
+def test_setup_surfaces_missing_replacements_and_latch_policy():
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+    project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+
+    assert "mark every affected synthesis Target Yellow" in plan
+    assert "Do not create a new post-inference mapping as a fallback" in plan
+    assert "migration evidence only" in project_config
+    assert "expected_latches` only to the evidenced intentional-latch remainder" in project_config
+    assert "a passing allowance is not replacement evidence" in project_config
+
+
+def test_setup_implements_one_authoritative_frontend_definition():
+    project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+
+    for required in (
+        "Project-wide mapping",
+        "single authoritative location",
+        "no Target receives a copied or divergent mapping",
+        "exactly one compatible definition",
+        "duplicate or conflicting module definitions",
+        "simulation behavior separate from synthesis-only declarations",
+    ):
+        assert required in project_config
+
+
+def test_setup_requires_all_tech_cell_validation_layers():
+    project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+
+    for required in (
+        "**Semantic:**",
+        "**Frontend:**",
+        "**Mapped-netlist:**",
+        "**Physical-link:**",
+        "Record evidence for the Project mapping as a whole and for every enabled synthesis Target",
+        "exact stage count and reset semantics",
+        "preservation or `dont_touch` intent",
+        "applicable timing exceptions",
+        "metastability use",
+    ):
+        assert required in project_config
+
+
+def test_setup_plan_template_records_tech_cell_evidence_not_cell_names_only():
+    template = _compact_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
+
+    for required in (
+        "Flow/library and authoritative location",
+        "Flow-supplied physical-library family",
+        "Liberty input",
+        "LEF input (physical mode)",
+        "Project inventory",
+        "Governing define/parameter",
+        "Per-Target coverage matrix",
+        "Unhandled discovered findings",
+        "Replacement table and semantic decisions",
+        "Approved Project-owned inputs",
+        "Incomplete/Yellow Targets and open questions",
+        "Semantic behavior",
+        "Frontend:",
+        "Mapped netlist:",
+        "Physical link:",
+        "CDC/synchronizer",
+        "CDC/synchronizer (when applicable)",
+        "Flow-supplied LEF/Liberty inputs",
+    ):
+        assert required in template
+    assert "cell-name list alone" in template
