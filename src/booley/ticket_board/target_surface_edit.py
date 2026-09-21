@@ -63,21 +63,14 @@ def _line_end(text: str, index: int) -> int:
 
 
 def _block_scalar_content_end(text: str, node: ScalarNode) -> int:
-    header_start = _line_start(text, node.start_mark.index)
-    header = text[header_start : _line_end(text, node.start_mark.index)]
-    header_match = re.match(
-        r"[|>](?:[1-9][+-]?|[+-]?[1-9]|[+-]?)",
-        header[node.start_mark.index - header_start :],
-    )
-    if header_match and "+" in header_match.group():
-        content_end = node.end_mark.index
-        return content_end - 1 if content_end > node.start_mark.index else content_end
     cursor = node.end_mark.index
     while cursor > node.start_mark.index:
         line_start = _line_start(text, cursor - 1)
         line_end = _line_end(text, line_start)
         if text[line_start:line_end].strip():
-            return line_end - 1 if line_end > line_start and text[line_end - 1] == "\n" else line_end
+            return (
+                line_end - 1 if line_end > line_start and text[line_end - 1] == "\n" else line_end
+            )
         cursor = line_start
     return node.start_mark.index
 
@@ -85,10 +78,14 @@ def _block_scalar_content_end(text: str, node: ScalarNode) -> int:
 def _node_content_end(text: str, node: Node) -> int:
     if isinstance(node, ScalarNode) and node.style in {"|", ">"}:
         return _block_scalar_content_end(text, node)
+
+    last_child: Node | None = None
     if isinstance(node, MappingNode) and node.value:
-        return _node_content_end(text, node.value[-1][1])
-    if isinstance(node, SequenceNode) and node.value:
-        return _node_content_end(text, node.value[-1])
+        last_child = node.value[-1][1]
+    elif isinstance(node, SequenceNode) and node.value:
+        last_child = node.value[-1]
+    if last_child is not None:
+        return _node_content_end(text, last_child)
     return node.end_mark.index
 
 
