@@ -2,12 +2,142 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from booley.ticket_board import readiness
+from booley.harness.blocking import FatalError
+from booley.harness.setup import intake
+from booley.ticket_board import acceptance_validation, readiness, ticket_validation
+from booley.ticket_board.ticket_baseline import (
+    BasisParticipant,
+    TicketBaseline,
+    TicketBaselineError,
+)
+
+
+def _git(repository: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout.strip()
+
+
+def test_prepared_validator_materializes_submodule_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    _git(dependency, "init", "-b", "main")
+    _git(dependency, "config", "user.name", "Test")
+    _git(dependency, "config", "user.email", "test@example.invalid")
+    (dependency / "source.sv").write_text("module source; endmodule\n", encoding="utf-8")
+    _git(dependency, "add", "source.sv")
+    _git(dependency, "commit", "-m", "dependency")
+
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "-c", "protocol.file.allow=always", "submodule", "add", str(dependency), "ip")
+    _git(root, "commit", "-m", "project")
+    sha = _git(root, "rev-parse", "HEAD")
+    ticket_ref = "refs/heads/booley-generation/0123456789abcdef/outer"
+    _git(root, "branch", ticket_ref.removeprefix("refs/heads/"), sha)
+    ticket = root / ".booley_project/tickets/board/queue/ticket.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text("ticket\n", encoding="utf-8")
+    basis = TicketBaseline(
+        (BasisParticipant("outer", sha, ticket_ref, "refs/heads/main", sha),)
+    )
+
+    def prepare(_root: Path, checkout: Path, **_kwargs: object) -> SimpleNamespace:
+        assert (checkout / "ip/source.sv").read_text(encoding="utf-8") == (
+            "module source; endmodule\n"
+        )
+        return SimpleNamespace(ok=True, error="")
+
+    monkeypatch.setattr(acceptance_validation, "prepare_project", prepare)
+    monkeypatch.setattr(
+        acceptance_validation, "resolve_checkout_project_dir", lambda checkout: checkout
+    )
+    monkeypatch.setattr(ticket_validation, "validate_ticket_spec", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ticket_validation, "validate_ticket_view", lambda *_args: [])
+    monkeypatch.setattr(ticket_validation, "assert_live_inputs_unchanged", lambda *_args: None)
+
+    document = SimpleNamespace(spec=SimpleNamespace())
+    assert (
+        ticket_validation._validate_prepared_checkout(root, ticket, "ticket", document, basis)
+        == []
+    )
+
+
+def test_executable_validator_reports_conversion_baseline_and_prepare_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    ticket = root / ".booley_project/tickets/board/queue/ticket.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text("ticket\n", encoding="utf-8")
+    monkeypatch.setattr(ticket_validation, "resolve_checkout_project_dir", lambda _root: root / ".booley_project")
+    monkeypatch.setattr(ticket_validation, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "queue"))
+
+    def fail_conversion(*_args: object) -> None:
+        raise TicketBaselineError("conversion failed")
+
+    monkeypatch.setattr(
+        ticket_validation,
+        "_convert_executable_ticket",
+        fail_conversion,
+    )
+    assert ticket_validation.validate_executable_ticket(root, "ticket") == [
+        "conversion failed"
+    ]
+
+    monkeypatch.setattr(ticket_validation, "_convert_executable_ticket", lambda *_args: object())
+
+    def fail_baseline(*_args: object, **_kwargs: object) -> None:
+        raise TicketBaselineError("baseline failed")
+
+    monkeypatch.setattr(
+        ticket_validation.TicketIO,
+        "load_basis",
+        fail_baseline,
+    )
+    assert ticket_validation.validate_executable_ticket(root, "ticket") == ["baseline failed"]
+
+    monkeypatch.setattr(ticket_validation.TicketIO, "load_basis", lambda *_args, **_kwargs: object())
+
+    def fail_preparation(*_args: object) -> None:
+        raise TicketBaselineError("prepare failed")
+
+    monkeypatch.setattr(
+        ticket_validation,
+        "_validate_prepared_checkout",
+        fail_preparation,
+    )
+    assert ticket_validation.validate_executable_ticket(root, "ticket") == ["prepare failed"]
+
+
+def test_git_inspection_failure_is_loud(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        intake.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git"], returncode=128, stdout="", stderr="fatal: broken repository"
+        ),
+    )
+
+    with pytest.raises(FatalError, match="broken repository"):
+        intake._is_git_backed(tmp_path)
 
 
 def test_readiness_delegates_prepared_validation(

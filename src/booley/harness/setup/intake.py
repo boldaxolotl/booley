@@ -34,7 +34,10 @@ from booley.ticket_board.ticket_baseline import (
     requires_return_to_draft,
 )
 from booley.ticket_board.ticket_document import TicketDocument
-from booley.ticket_board.ticket_validation import validate_executable_ticket
+from booley.ticket_board.ticket_validation import (
+    is_operational_ticket_status,
+    validate_executable_ticket,
+)
 
 from .. import ticket_cli
 from ..blocking import FatalError
@@ -95,7 +98,7 @@ def _resolve_and_validate(
 
 def _validate_intake_ticket(project_root: Path, ticket_path: Path, slug: str) -> None:
     """Validate executable Tickets operationally and preserve review intake rules."""
-    if ticket_path.parent.name in {"queue", "active", "blocked"} and _is_git_backed(
+    if is_operational_ticket_status(ticket_path.parent.name) and _is_git_backed(
         project_root
     ):
         errors = validate_executable_ticket(
@@ -114,15 +117,25 @@ def _validate_intake_ticket(project_root: Path, ticket_path: Path, slug: str) ->
 
 def _is_git_backed(project_root: Path) -> bool:
     """Return whether intake can inspect current Ticket-generation refs."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-dir"],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FatalError(f"Git repository inspection failed in {project_root}: {exc}") from exc
+    if result.returncode == 0:
+        return True
+    if not (project_root / ".git").exists():
+        return False
+    detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
+    raise FatalError(
+        f"Git repository inspection failed in {project_root} (rc={result.returncode}): {detail}"
     )
-    return result.returncode == 0
 
 
 def _build_context(

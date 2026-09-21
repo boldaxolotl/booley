@@ -43,6 +43,11 @@ _EXECUTABLE_DIRS = frozenset(
 _OPERATIONAL_STATUSES = frozenset({"queued", "queue", "running", "active", "blocked"})
 
 
+def is_operational_ticket_status(status: str | None) -> bool:
+    """Return whether a Ticket status can enter executable validation."""
+    return status in _OPERATIONAL_STATUSES
+
+
 def validate_executable_ticket(
     project_root: Path,
     slug: str,
@@ -55,7 +60,7 @@ def validate_executable_ticket(
     ticket, status = find_ticket_file(tickets_dir, slug, project_root=root)
     if ticket is None:
         return [f"executable Ticket Board entry {slug!r} is unavailable"]
-    if status not in _OPERATIONAL_STATUSES:
+    if not is_operational_ticket_status(status):
         return [f"ticket {slug!r} is not operationally executable (status: {status})"]
 
     try:
@@ -99,19 +104,8 @@ def _validate_prepared_checkout(
             provider_placeholders=placeholders,
         )
         errors.extend(validate_ticket_view(checkout, basis))
-        _assert_live_inputs_unchanged(basis, root, checkout)
-        return errors
-
-
-def _assert_live_inputs_unchanged(
-    basis: TicketBaseline, root: Path, checkout: Path
-) -> None:
-    """Check any still-mounted authoring worktrees without requiring one to exist."""
-    try:
         assert_live_inputs_unchanged(basis, root, checkout)
-    except TicketBaselineError as exc:
-        if "registered worktree" not in str(exc) or "is unavailable at" not in str(exc):
-            raise
+        return errors
 
 
 def validate_ticket_document(

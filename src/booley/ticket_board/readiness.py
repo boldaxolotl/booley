@@ -15,7 +15,7 @@ from .ticket_document import (
     convert_ticket_document,
     ticket_conversion_context,
 )
-from .ticket_validation import validate_executable_ticket
+from .ticket_validation import is_operational_ticket_status, validate_executable_ticket
 from .validation import validate_ticket_spec
 
 
@@ -70,7 +70,7 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
         return ReadinessResult(None, (f"ticket {slug!r} not found",))
 
     if (root / ".git").exists():
-        if _status not in {"queued", "queue", "running", "active", "blocked"}:
+        if not is_operational_ticket_status(_status):
             return ReadinessResult(
                 ticket,
                 (f"ticket {slug!r} is not executable (status: {_status})",),

@@ -125,6 +125,7 @@ def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
         "booley.ticket_board.workspace_ops.validate_basis_refs",
         lambda *_args, **_kwargs: [],
     )
+    monkeypatch.setattr(intake, "_is_git_backed", lambda _root: False)
 
     original_load = TicketIO.load_document
 

@@ -124,7 +124,7 @@ def test_published_simulation_target_binds_all_required_criteria(project, capsys
     )
     assert board.enqueue_ticket("simulation")
     queued = board.tickets_dir / "board/queue/simulation.md"
-    shutil.rmtree(workspace)
+    _git(root, "worktree", "remove", "--force", str(workspace))
 
     _assert_both_valid(root, queued, capsys)
     assert _resolve_and_validate(root, str(queued)) == (queued, "simulation")
