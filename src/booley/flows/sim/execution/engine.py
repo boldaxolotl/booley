@@ -318,6 +318,7 @@ class SimulationExecution:
             return
         project_dir = resolve_project_dir(handle.project_root)
         with selftest_overlay.managed_runtime_view(
+            handle.project_root,
             project_dir,
             "sim",
             attempt.configured_run_cwd,

@@ -314,7 +314,7 @@ def test_managed_runtime_view_removes_view_on_normal_and_exceptional_exit(
     generation_parent.mkdir(parents=True)
 
     with selftest_overlay.managed_runtime_view(
-        project_dir, "sim", run_cwd, generation_parent, "a" * 32
+        tmp_path, project_dir, "sim", run_cwd, generation_parent, "a" * 32
     ) as view:
         assert (view / "fixture.hex").read_text(encoding="utf-8") == "bad\n"
         assert view.is_dir()
@@ -323,7 +323,7 @@ def test_managed_runtime_view_removes_view_on_normal_and_exceptional_exit(
     with (
         pytest.raises(ValueError, match="body failure"),
         selftest_overlay.managed_runtime_view(
-            project_dir, "sim", run_cwd, generation_parent, "b" * 32
+            tmp_path, project_dir, "sim", run_cwd, generation_parent, "b" * 32
         ) as view,
     ):
         assert view.is_dir()
@@ -349,6 +349,7 @@ def test_managed_runtime_view_removes_partial_staging(
     with (
         pytest.raises(selftest_overlay.SelftestOverlayError, match="staging failed"),
         selftest_overlay.managed_runtime_view(
+            tmp_path,
             project_dir,
             "sim",
             tmp_path,
@@ -393,7 +394,7 @@ def test_managed_runtime_view_retries_cleanup_and_preserves_body_error(
     with (
         pytest.raises(ValueError, match="body failure") as error,
         selftest_overlay.managed_runtime_view(
-            project_dir, "sim", run_cwd, generation_parent, "a" * 32
+            tmp_path, project_dir, "sim", run_cwd, generation_parent, "a" * 32
         ),
     ):
         raise ValueError("body failure")
@@ -403,7 +404,7 @@ def test_managed_runtime_view_retries_cleanup_and_preserves_body_error(
     monkeypatch.setattr(selftest_overlay, "stage_bad_run_overlay", original_stage)
 
     with selftest_overlay.managed_runtime_view(
-        project_dir, "sim", run_cwd, generation_parent, "b" * 32
+        tmp_path, project_dir, "sim", run_cwd, generation_parent, "b" * 32
     ):
         pass
     assert not view.exists()
@@ -433,7 +434,7 @@ def test_managed_runtime_view_prunes_only_owned_siblings(tmp_path: Path) -> None
     (other_slot / f"{selftest_overlay.BAD_RUN_CWD_DIR}-0123456789abcdef").mkdir()
 
     with selftest_overlay.managed_runtime_view(
-        project_dir, "sim", run_cwd, generation_parent, "b" * 32
+        tmp_path, project_dir, "sim", run_cwd, generation_parent, "b" * 32
     ):
         assert unrelated.is_dir()
         assert (other_slot / f"{selftest_overlay.BAD_RUN_CWD_DIR}-0123456789abcdef").is_dir()
@@ -442,6 +443,27 @@ def test_managed_runtime_view_prunes_only_owned_siblings(tmp_path: Path) -> None
         for child in generation_parent.iterdir()
     )
     assert unrelated.is_dir()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_managed_runtime_view_validates_slot_against_checkout_root(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    project_dir = tmp_path / "external-state" / ".booley_project"
+    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("bad\n", encoding="utf-8")
+    run_cwd = checkout / "runtime-assets"
+    run_cwd.mkdir(parents=True)
+    generation_parent = checkout / ".booley_project" / ".runtime" / "g"
+    generation_parent.mkdir(parents=True)
+
+    with selftest_overlay.managed_runtime_view(
+        checkout, project_dir, "sim", run_cwd, generation_parent, "c" * 32
+    ) as view:
+        assert (view / "fixture.hex").read_text(encoding="utf-8") == "bad\n"
+    assert not view.exists()
 
 
 def test_doctor_runtime_view_rejects_invalid_attempt_token(tmp_path: Path) -> None:

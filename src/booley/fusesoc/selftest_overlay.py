@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -132,8 +133,22 @@ def _note_cleanup_failure(primary: BaseException, path: Path, error: OSError) ->
     primary.add_note(f"could not remove Doctor runtime view {path}: {error}")
 
 
+def _cleanup_managed_view(view: Path, primary: BaseException | None) -> None:
+    """Remove a managed view, preserving any active staging or body error."""
+    try:
+        _remove_shadow(view)
+    except OSError as cleanup_error:
+        if primary is not None:
+            _note_cleanup_failure(primary, view, cleanup_error)
+            return
+        raise SelftestOverlayError(
+            f"could not remove Doctor runtime view {view}: {cleanup_error}"
+        ) from cleanup_error
+
+
 @contextmanager
 def managed_runtime_view(
+    checkout_root: Path,
     project_dir: Path,
     flow_name: str,
     run_cwd: Path,
@@ -141,9 +156,10 @@ def managed_runtime_view(
     attempt_token: str,
 ) -> Iterator[Path]:
     """Stage and remove one attempt-scoped Doctor runtime view."""
-    project_root = project_dir.parent.resolve()
+    project_root = checkout_root.resolve()
     parent = _validated_generation_parent(project_root, generation_parent)
     view = doctor_runtime_view_path(project_root, parent, attempt_token)
+    staged = False
     try:
         _remove_owned_views(parent)
         copied = stage_bad_run_overlay(project_dir, flow_name, run_cwd, view)
@@ -152,26 +168,18 @@ def managed_runtime_view(
                 f"Doctor requested a bad simulation fixture, but "
                 f"{bad_overlay_dir(project_dir, flow_name)} is empty"
             )
-    except BaseException as exc:
-        try:
-            _remove_shadow(view)
-        except OSError as cleanup_error:
-            _note_cleanup_failure(exc, view, cleanup_error)
-        if isinstance(exc, SelftestOverlayError):
-            raise
+        staged = True
+    except SelftestOverlayError:
+        raise
+    except (OSError, ValueError, shutil.Error) as exc:
         raise SelftestOverlayError(f"could not stage Doctor runtime view: {exc}") from exc
+    finally:
+        if not staged:
+            _cleanup_managed_view(view, sys.exc_info()[1])
     try:
         yield view
-    except BaseException as exc:
-        try:
-            _remove_shadow(view)
-        except OSError as cleanup_error:
-            _note_cleanup_failure(exc, view, cleanup_error)
-        raise
-    try:
-        _remove_shadow(view)
-    except OSError as exc:
-        raise SelftestOverlayError(f"could not remove Doctor runtime view {view}: {exc}") from exc
+    finally:
+        _cleanup_managed_view(view, sys.exc_info()[1])
 
 
 def _mirror_excluded_ancestor(
