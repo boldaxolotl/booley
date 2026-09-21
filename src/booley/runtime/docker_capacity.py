@@ -61,15 +61,11 @@ def _probe_detail(result: subprocess.CompletedProcess[str]) -> str:
 def _docker_storage(docker: str) -> Path:
     result = _run_docker_probe([docker, "info", "--format", "{{.DockerRootDir}}"])
     if result.returncode != 0:
-        raise DockerCapacityError(
-            f"could not query Docker storage root: {_probe_detail(result)}"
-        )
+        raise DockerCapacityError(f"could not query Docker storage root: {_probe_detail(result)}")
     value = result.stdout.strip()
     path = Path(value)
     if not value or not path.is_absolute():
-        raise DockerCapacityError(
-            f"Docker reported an invalid storage root: {value or '<empty>'}"
-        )
+        raise DockerCapacityError(f"Docker reported an invalid storage root: {value or '<empty>'}")
     return path
 
 
@@ -99,9 +95,7 @@ def _build_cache(docker: str) -> _BuildCache:
         [docker, "system", "df", "--format", "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}"]
     )
     if result.returncode != 0:
-        raise DockerCapacityError(
-            f"could not query Docker build cache: {_probe_detail(result)}"
-        )
+        raise DockerCapacityError(f"could not query Docker build cache: {_probe_detail(result)}")
     for line in result.stdout.splitlines():
         parts = [part.strip() for part in line.split("\t")]
         if len(parts) >= 3 and parts[0].lower() == "build cache":
@@ -123,10 +117,7 @@ def _failure_message(
 ) -> str:
     headroom = CACHED_BUILD_HEADROOM if cached else COLD_BUILD_HEADROOM
     cache_state = "cached-target" if cached else "cold-build"
-    usage = (
-        f" Docker build cache uses {_gib(cache.total)}; "
-        f"{_gib(cache.reclaimable)} reclaimable."
-    )
+    usage = f" Docker build cache uses {_gib(cache.total)}; {_gib(cache.reclaimable)} reclaimable."
     return (
         f"Insufficient disk capacity to build {image}: {_gib(available)} available on "
         f"Docker storage at {storage}, but {_gib(headroom + SAFETY_RESERVE)} required "
@@ -146,9 +137,7 @@ def ensure_docker_build_capacity(command: Sequence[str], *, image: str) -> None:
     try:
         available = shutil.disk_usage(storage).free
     except OSError as exc:
-        raise DockerCapacityError(
-            f"could not inspect Docker storage at {storage}: {exc}"
-        ) from exc
+        raise DockerCapacityError(f"could not inspect Docker storage at {storage}: {exc}") from exc
     cache = _build_cache(command[0])
     cached = cache.total > 0 and _target_is_cached(command[0], image)
     headroom = CACHED_BUILD_HEADROOM if cached else COLD_BUILD_HEADROOM

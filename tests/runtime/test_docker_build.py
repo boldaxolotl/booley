@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 import threading
 import time
@@ -84,37 +85,53 @@ def _install_fake_docker(
     *,
     cached: bool,
     build_cache: str = "20GB",
+    info_failure: bool = False,
 ) -> Path:
-    docker = tmp_path / "docker"
     marker = tmp_path / "build-started"
-    image_result = (
-        "printf 'sha256:cached\\n'"
-        if cached
-        else "printf 'Error response from daemon: No such image\\n' >&2; exit 1"
-    )
-    docker.write_text(
-        "#!/bin/sh\n"
-        "if [ \"$1\" = info ]; then\n"
-        f"  printf '%s\\n' {tmp_path}\n"
-        "elif [ \"$1\" = image ]; then\n"
-        f"  {image_result}\n"
-        "elif [ \"$1\" = system ]; then\n"
-        f"  printf 'Build Cache\\t{build_cache}\\t18GB\\n'\n"
-        "elif [ \"$1\" = build ]; then\n"
-        f"  touch {marker}\n"
-        "fi\n",
+    fake_docker = tmp_path / "fake_docker.py"
+    fake_docker.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"marker = Path({str(marker)!r})\n"
+        f"cache = {build_cache!r}\n"
+        f"cached = {cached!r}\n"
+        f"info_failure = {info_failure!r}\n"
+        "command = sys.argv[1:]\n"
+        "if command and command[0] == 'info':\n"
+        "    if info_failure:\n"
+        "        print('Docker daemon unavailable', file=sys.stderr)\n"
+        "        raise SystemExit(1)\n"
+        f"    print({str(tmp_path)!r})\n"
+        "elif command and command[0] == 'image':\n"
+        "    if cached:\n"
+        "        print('sha256:cached')\n"
+        "    else:\n"
+        "        print('Error response from daemon: No such image', file=sys.stderr)\n"
+        "        raise SystemExit(1)\n"
+        "elif command and command[0] == 'system':\n"
+        "    print(f'Build Cache\\t{cache}\\t18GB')\n"
+        "elif command and command[0] == 'build':\n"
+        "    marker.touch()\n",
         encoding="utf-8",
     )
-    docker.chmod(0o755)
+    if os.name == "nt":
+        docker = tmp_path / "docker.cmd"
+        docker.write_text(f'@"{sys.executable}" "{fake_docker}" %*\r\n', encoding="utf-8")
+    else:
+        docker = tmp_path / "docker"
+        docker.write_text(
+            f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
+            f'{shlex.quote(str(fake_docker))} "$@"\n',
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
     return marker
 
 
 def _set_free_space(monkeypatch: pytest.MonkeyPatch, gib: int) -> None:
     disk_usage = namedtuple("usage", "total used free")
-    monkeypatch.setattr(
-        "shutil.disk_usage", lambda _path: disk_usage(100, 88, gib * 2**30)
-    )
+    monkeypatch.setattr("shutil.disk_usage", lambda _path: disk_usage(100, 88, gib * 2**30))
 
 
 def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -> None:
@@ -151,9 +168,7 @@ def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -
     assert results[0].returncode == 0
 
 
-def test_docker_build_refuses_low_capacity_before_starting(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_docker_build_refuses_low_capacity_before_starting(tmp_path: Path, monkeypatch) -> None:
     marker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
     _set_free_space(monkeypatch, 12)
 
@@ -212,12 +227,8 @@ def test_cached_docker_build_preserves_five_gib_safety_reserve(
     assert not marker.exists()
 
 
-def test_target_without_build_cache_uses_cold_build_headroom(
-    tmp_path: Path, monkeypatch
-) -> None:
-    marker = _install_fake_docker(
-        tmp_path, monkeypatch, cached=True, build_cache="0B"
-    )
+def test_target_without_build_cache_uses_cold_build_headroom(tmp_path: Path, monkeypatch) -> None:
+    marker = _install_fake_docker(tmp_path, monkeypatch, cached=True, build_cache="0B")
     _set_free_space(monkeypatch, 16)
 
     with pytest.raises(OSError, match=r"35\.0 GiB required") as raised:
@@ -233,9 +244,7 @@ def test_target_without_build_cache_uses_cold_build_headroom(
     assert not marker.exists()
 
 
-def test_disk_preflight_override_allows_expert_build(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_disk_preflight_override_allows_expert_build(tmp_path: Path, monkeypatch) -> None:
     marker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
     _set_free_space(monkeypatch, 1)
     monkeypatch.setenv("BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT", "1")
@@ -435,22 +444,8 @@ def test_capacity_exhaustion_in_verbose_tty_has_cleanup_guidance() -> None:
     )
 
 
-def test_capacity_probe_failure_stops_build_before_starting(
-    tmp_path: Path, monkeypatch
-) -> None:
-    docker = tmp_path / "docker"
-    marker = tmp_path / "build-started"
-    docker.write_text(
-        "#!/bin/sh\n"
-        "if [ \"$1\" = info ]; then\n"
-        "  printf 'Docker daemon unavailable\\n' >&2\n"
-        "  exit 1\n"
-        "fi\n"
-        f"if [ \"$1\" = build ]; then touch {marker}; fi\n",
-        encoding="utf-8",
-    )
-    docker.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+def test_capacity_probe_failure_stops_build_before_starting(tmp_path: Path, monkeypatch) -> None:
+    marker = _install_fake_docker(tmp_path, monkeypatch, cached=False, info_failure=True)
 
     with pytest.raises(OSError, match="could not query Docker storage root"):
         run_docker_build(
