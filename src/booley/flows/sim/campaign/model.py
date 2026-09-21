@@ -9,10 +9,24 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TypeAlias
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
+
+
+def _freeze_json(value: object) -> FrozenJson:
+    """Copy JSON-shaped input into recursively immutable storage."""
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("document object keys must be strings")
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_json(item) for item in value)
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    raise TypeError(f"document contains non-JSON value {type(value).__name__}")
 
 
 class ExecutionObservation(StrEnum):
@@ -75,58 +89,69 @@ def grade_observations(
 
 
 @dataclass(frozen=True)
-class SimulationCampaignPlan:
-    target: Mapping[str, FrozenJson]
-    selection: Mapping[str, FrozenJson]
-    workload: Mapping[str, FrozenJson]
-    required_suite: Mapping[str, FrozenJson]
-    build_variants: tuple[FrozenJson, ...]
-    planning_disclosures: tuple[FrozenJson, ...]
-    prerequisites: tuple[FrozenJson, ...]
-    work_items: tuple[FrozenJson, ...]
-    fingerprints: Mapping[str, FrozenJson]
-
-
-@dataclass(frozen=True)
-class CampaignDocument:
+class SimulationCampaignDocument:
     document: Mapping[str, FrozenJson]
 
+    def __post_init__(self) -> None:
+        frozen = _freeze_json(self.document)
+        if not isinstance(frozen, Mapping):
+            raise TypeError("campaign document must be an object")
+        object.__setattr__(self, "document", frozen)
+
     def canonical_bytes(self) -> bytes:
-        from .codec import canonical_json_bytes
+        from .codec import encode_campaign_document
 
-        return canonical_json_bytes(self.document)
+        return encode_campaign_document(self)
 
 
 @dataclass(frozen=True)
-class SimulationCampaignManifest(CampaignDocument):
+class SimulationCampaignManifest(SimulationCampaignDocument):
     pass
 
 
 @dataclass(frozen=True)
-class SimulationAttempt(CampaignDocument):
+class SimulationAttempt(SimulationCampaignDocument):
     pass
 
 
 @dataclass(frozen=True)
-class BundleBuildAttempt(CampaignDocument):
+class BundleBuildAttempt(SimulationCampaignDocument):
     pass
 
 
 @dataclass(frozen=True)
-class BundleBuildResult(CampaignDocument):
+class BundleBuildResult(SimulationCampaignDocument):
     pass
 
 
 @dataclass(frozen=True)
-class SimulationResult(CampaignDocument):
+class SimulationResult(SimulationCampaignDocument):
     pass
 
 
 @dataclass(frozen=True)
-class SimulatorBundle(CampaignDocument):
+class SimulatorBundle(SimulationCampaignDocument):
     pass
 
 
 @dataclass(frozen=True)
-class ExecutableSnapshot(CampaignDocument):
+class ExecutableSnapshot(SimulationCampaignDocument):
     pass
+
+
+@dataclass(frozen=True)
+class SimulationCampaignPlan:
+    """A validated manifest paired with its immutable scheduled work-item order."""
+
+    manifest: SimulationCampaignManifest
+    work_item_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest, SimulationCampaignManifest):
+            raise TypeError("plan manifest must be a SimulationCampaignManifest")
+        work_item_ids = tuple(self.work_item_ids)
+        if any(not isinstance(item, str) or not item for item in work_item_ids):
+            raise TypeError("plan work-item IDs must be non-empty strings")
+        if len(set(work_item_ids)) != len(work_item_ids):
+            raise ValueError("plan work-item IDs must be unique")
+        object.__setattr__(self, "work_item_ids", work_item_ids)

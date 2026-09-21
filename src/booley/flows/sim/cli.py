@@ -30,7 +30,7 @@ class SimArguments(BuiltinArguments):
         parser.add_argument(
             "--test",
             action="append",
-            default=[],
+            default=None,
             metavar="NAME",
             help="Run one exact registered test (repeat for multiple tests)",
         )
@@ -90,10 +90,13 @@ class SimArguments(BuiltinArguments):
             parser.error("--test and --tests-file are mutually exclusive")
         if args.tests_file is not None:
             args.test = SimArguments._read_tests_file(args.tests_file, parser)
-        duplicates = sorted({name for name in args.test if args.test.count(name) > 1})
+        duplicates = sorted(
+            {name for name in (args.test or []) if args.test.count(name) > 1}
+        )
         if duplicates:
             parser.error("duplicate exact test name(s): " + ", ".join(duplicates))
-        args.test = tuple(args.test)
+        if args.test is not None:
+            args.test = tuple(args.test)
         del args.tests_file
         vars(args).pop("_legacy_elab_only")
         vars(args).pop("_legacy_standalone")

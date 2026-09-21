@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from booley.flows.sim.campaign.codec import (
+    CampaignIntegrityError,
+    canonical_json_bytes,
     decode_build_result,
     decode_simulation_result,
+    encode_bundle_build_result,
+    encode_simulation_result,
 )
+from booley.flows.sim.campaign.model import BundleBuildResult, SimulationResult
 
 _BUILD_READY = b'{"$schema":"booley.bundle-build-result/v1","build_attempt":{"build_attempt_id":"550e8400-e29b-41d4-a716-446655440000","bytes":1,"kind":"bundle_build_attempt","owner":"550e8400-e29b-41d4-a716-446655440000","path":"build-attempt.json","sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"build_variant_id":"variant:3333333333333333333333333333333333333333333333333333333333333333","bundle":{"artifacts":[{"bytes":1,"kind":"simulator_executable","path":"simv","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"bundle_id":"6ba7b810-9dad-41d1-80b4-00c04fd430c8","manifest_bytes":1,"manifest_path":"evidence/bundle.json","manifest_sha256":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sharing":"shared_variant"},"campaign_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","elapsed_seconds":1.0,"evidence":[],"finished_at":"2026-09-21T10:00:01Z","manifest_sha256":"sha256:1111111111111111111111111111111111111111111111111111111111111111","observation":null,"phase":"ready","state":"ready","workload_sha256":"sha256:2222222222222222222222222222222222222222222222222222222222222222"}\n'
 _BUILD_DESIGN = b'{"$schema":"booley.bundle-build-result/v1","build_attempt":{"build_attempt_id":"550e8400-e29b-41d4-a716-446655440000","bytes":1,"kind":"bundle_build_attempt","owner":"550e8400-e29b-41d4-a716-446655440000","path":"build-attempt.json","sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"build_variant_id":"variant:3333333333333333333333333333333333333333333333333333333333333333","bundle":null,"campaign_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","elapsed_seconds":1.0,"evidence":[],"finished_at":"2026-09-21T10:00:01Z","manifest_sha256":"sha256:1111111111111111111111111111111111111111111111111111111111111111","observation":{"class":"design","code":"compile","detail":{},"message":"compile failed"},"phase":"compile","state":"design_failure","workload_sha256":"sha256:2222222222222222222222222222222222222222222222222222222222222222"}\n'
@@ -16,7 +25,9 @@ _BUILD_INFRA = b'{"$schema":"booley.bundle-build-result/v1","build_attempt":{"bu
 
 @pytest.mark.parametrize("raw", [_BUILD_READY, _BUILD_DESIGN, _BUILD_INFRA])
 def test_build_result_golden_discriminators(raw: bytes) -> None:
-    assert decode_build_result(raw).canonical_bytes() == raw
+    value = decode_build_result(raw)
+    assert value.canonical_bytes() == raw
+    assert encode_bundle_build_result(value) == raw
 
 
 def _simulation_result(state: str) -> bytes:
@@ -48,4 +59,61 @@ def _simulation_result(state: str) -> bytes:
 )
 def test_simulation_result_golden_discriminators(state: str) -> None:
     raw = _simulation_result(state)
-    assert decode_simulation_result(raw).canonical_bytes() == raw
+    value = decode_simulation_result(raw)
+    assert value.canonical_bytes() == raw
+    assert encode_simulation_result(value) == raw
+
+
+@given(
+    st.sampled_from(["missing", "unknown", "type", "path", "digest", "conditional"]),
+    st.sampled_from(["build", "simulation"]),
+)
+def test_result_structural_mutations_are_rejected(mutation: str, kind: str) -> None:
+    raw = _BUILD_READY if kind == "build" else _simulation_result("completed")
+    document = json.loads(raw)
+    decoder = decode_build_result if kind == "build" else decode_simulation_result
+    reference = document["build_attempt" if kind == "build" else "build_result"]
+    if mutation == "missing":
+        del reference["sha256"]
+    elif mutation == "unknown":
+        document["evidence"] = [
+            {
+                "path": "evidence/log.txt",
+                "bytes": 0,
+                "sha256": "sha256:" + "0" * 64,
+                "kind": "log",
+                "owner": reference["owner"],
+                "unexpected": True,
+            }
+        ]
+    elif mutation == "type":
+        document["elapsed_seconds"] = "1"
+    elif mutation == "path":
+        reference["path"] = "../escape"
+    elif mutation == "digest":
+        document["manifest_sha256"] = "sha256:bad"
+    elif kind == "build":
+        document["bundle"] = None
+    else:
+        document["executable_snapshot"] = None
+    with pytest.raises(CampaignIntegrityError):
+        decoder(canonical_json_bytes(document))
+    value_type = BundleBuildResult if kind == "build" else SimulationResult
+    encoder = encode_bundle_build_result if kind == "build" else encode_simulation_result
+    with pytest.raises(CampaignIntegrityError):
+        encoder(value_type(document))
+
+
+@pytest.mark.parametrize("field", ["test", "detail"])
+def test_simulation_result_rejects_observation_resource_overflow(field: str) -> None:
+    document = json.loads(_simulation_result("completed"))
+    document["observations"][0][field] = "x" * (513 if field == "test" else 2049)
+    with pytest.raises(CampaignIntegrityError, match="ceiling"):
+        decode_simulation_result(canonical_json_bytes(document))
+
+
+def test_nested_evidence_reference_rejects_unknown_fields() -> None:
+    document = json.loads(_simulation_result("completed"))
+    document["executable_snapshot"]["manifest"]["unexpected"] = True
+    with pytest.raises(CampaignIntegrityError, match="exact fields"):
+        decode_simulation_result(canonical_json_bytes(document))

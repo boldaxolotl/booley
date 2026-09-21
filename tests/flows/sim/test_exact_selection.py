@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from jsonschema import Draft202012Validator
 
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.request import SimRequest
 from booley.mcp.flow_adapter import flow_schema
 
 
@@ -11,6 +15,19 @@ def test_repeatable_test_is_exact_and_preserves_order() -> None:
     request = parse_request(SimulateFlow(), ["--target", "sim", "--test", "b", "--test", "a"])
     assert request.test == ("b", "a")
     assert request.mode is None
+
+
+def test_omitted_test_preserves_absence() -> None:
+    request = parse_request(SimulateFlow(), ["--target", "sim"])
+    assert request.test is None
+
+
+@pytest.mark.parametrize("explicit_empty", [(), []])
+def test_typed_request_rejects_explicit_empty_test_selection(
+    explicit_empty: Any,
+) -> None:
+    with pytest.raises(ValueError, match="non-empty array"):
+        SimRequest(target="sim", test=explicit_empty)
 
 
 def test_tests_file_ignores_comments_and_blanks(tmp_path) -> None:
@@ -36,12 +53,21 @@ def test_mcp_schema_accepts_only_array_test_shape() -> None:
     schema = flow_schema(SimulateFlow())
     assert schema["properties"]["test"] == {
         "type": "array",
-        "items": {"type": "string"},
+        "items": {"type": "string", "minLength": 1},
         "description": "Run one exact registered test (repeat for multiple tests)",
-        "default": [],
+        "minItems": 1,
+        "uniqueItems": True,
     }
     assert "skip" not in schema["properties"]
     assert "tests_file" not in schema["properties"]
+
+
+def test_mcp_schema_rejects_explicit_empty_test_selection() -> None:
+    validator = Draft202012Validator(flow_schema(SimulateFlow()))
+    assert not list(validator.iter_errors({"target": "sim"}))
+    errors = list(validator.iter_errors({"target": "sim", "test": []}))
+    assert len(errors) == 1
+    assert errors[0].validator == "minItems"
 
 
 def test_named_selection_requires_catalog_and_is_exact(tmp_path) -> None:

@@ -187,6 +187,14 @@ _Avoid_: Custom Tool, plugin, user tool, project tool
 
 ### Simulation evidence
 
+**Simulation Campaign**:
+The durable execution record for one immutable, exact simulation workload on one **Target**. A Simulation Campaign may span multiple Simulation Flow invocations through explicit resume and records the strict aggregate outcome of all selected work. It is distinct from a [**Coverage Campaign**](../src/booley/flows/sim/CONTEXT.md), which records native RTL coverage for one Target and one Simulation Flow invocation; a coverage-collecting Simulation Campaign may contain a separate Coverage Campaign as evidence for an attempt.
+_Avoid_: Campaign, regression run, test batch, Coverage Campaign
+
+**Simulator Bundle**:
+An authenticated simulator executable and its supporting build outputs, built for a declared variant of one **Simulation Campaign**. Its scope is either shared by compatible work items in that Simulation Campaign or private to one simulation attempt; it is not a cross-campaign cache.
+_Avoid_: binary cache, global build cache, simulator image
+
 **Trace Artifact**:
 Fresh waveform evidence produced by a traced simulation and proven queryable by
 [B-Wave](../crates/bwave/CONTEXT.md). A Trace Artifact is an FST store; VCD is

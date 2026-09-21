@@ -13,6 +13,13 @@ from .codec import (
     decode_simulation_attempt,
     decode_simulation_result,
     decode_simulator_bundle,
+    encode_bundle_build_attempt,
+    encode_bundle_build_result,
+    encode_campaign_manifest,
+    encode_executable_snapshot,
+    encode_simulation_attempt,
+    encode_simulation_result,
+    encode_simulator_bundle,
 )
 from .model import (
     BundleBuildAttempt,
@@ -42,4 +49,11 @@ __all__ = [
     "decode_simulation_attempt",
     "decode_simulation_result",
     "decode_simulator_bundle",
+    "encode_bundle_build_attempt",
+    "encode_bundle_build_result",
+    "encode_campaign_manifest",
+    "encode_executable_snapshot",
+    "encode_simulation_attempt",
+    "encode_simulation_result",
+    "encode_simulator_bundle",
 ]

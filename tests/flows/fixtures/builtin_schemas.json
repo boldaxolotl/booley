@@ -75,10 +75,12 @@
       "test": {
         "type": "array",
         "items": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "description": "Run one exact registered test (repeat for multiple tests)",
-        "default": []
+        "minItems": 1,
+        "uniqueItems": true
       },
       "trace": {
         "type": "boolean",

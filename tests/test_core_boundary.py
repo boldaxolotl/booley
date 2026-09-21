@@ -21,12 +21,14 @@ from booley.core.boundary import (
     as_str_list,
     is_str_list,
     require_bool,
+    require_bool_value,
     require_dict,
     require_finite_number,
     require_int,
     require_list,
     require_opt_str,
     require_str,
+    require_str_value,
 )
 
 NAN = float("nan")
@@ -111,6 +113,14 @@ class TestStr:
         with pytest.raises(BoundaryError):
             require_str({"name": True}, "name")
 
+    def test_require_str_value_controls_empty_strings(self):
+        assert require_str_value("", allow_empty=True) == ""
+        assert require_str_value("name") == "name"
+        with pytest.raises(BoundaryError):
+            require_str_value(1)
+        with pytest.raises(BoundaryError):
+            require_str_value("")
+
 
 class TestRequireOptStr:
     """Optional-config-knob shape: absent → None, present must be non-empty str."""
@@ -166,6 +176,11 @@ class TestRequireBool:
     def test_field_overrides_key_in_message(self):
         with pytest.raises(BoundaryError, match=r"\[flows\.x\] 'ooc'"):
             require_bool({"ooc": 1}, "ooc", field="[flows.x] 'ooc'")
+
+    def test_require_bool_value_is_strict(self):
+        assert require_bool_value(True) is True
+        with pytest.raises(BoundaryError, match="flag"):
+            require_bool_value(1, field="flag")
 
 
 # ---------------------------------------------------------------------------

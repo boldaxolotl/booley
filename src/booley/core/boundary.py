@@ -40,12 +40,14 @@ __all__ = [
     "as_str_list",
     "is_str_list",
     "require_bool",
+    "require_bool_value",
     "require_dict",
     "require_finite_number",
     "require_int",
     "require_list",
     "require_opt_str",
     "require_str",
+    "require_str_value",
 ]
 
 
@@ -117,6 +119,16 @@ def require_opt_str(
     return value
 
 
+def require_str_value(
+    value: Any, *, field: str = "value", allow_empty: bool = False
+) -> str:
+    """Return a strict string value, optionally permitting the empty string."""
+    if not isinstance(value, str) or (not allow_empty and not value):
+        qualifier = "a string" if allow_empty else "a non-empty string"
+        raise BoundaryError(f"{field} must be {qualifier}, got {value!r}")
+    return value
+
+
 def is_str_list(value: Any) -> bool:
     """Return True iff *value* is a list whose every element is a ``str``.
 
@@ -168,6 +180,13 @@ def require_bool(
     value = mapping[key]
     if not isinstance(value, bool):
         raise BoundaryError(f"{field or key} must be a boolean (true/false), got {value!r}")
+    return value
+
+
+def require_bool_value(value: Any, *, field: str = "value") -> bool:
+    """Return a strict boolean value, or raise with boundary context."""
+    if not isinstance(value, bool):
+        raise BoundaryError(f"{field} must be a boolean (true/false), got {value!r}")
     return value
 
 

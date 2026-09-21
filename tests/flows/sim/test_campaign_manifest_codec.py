@@ -11,7 +11,9 @@ from booley.flows.sim.campaign.codec import (
     CampaignIntegrityError,
     canonical_json_bytes,
     decode_campaign_manifest,
+    encode_campaign_manifest,
 )
+from booley.flows.sim.campaign.model import SimulationCampaignManifest
 
 
 def _sha(value: object) -> str:
@@ -144,7 +146,9 @@ def _manifest() -> dict[str, object]:
 
 def test_manifest_exact_codec_recomputes_all_component_digests() -> None:
     raw = canonical_json_bytes(_manifest())
-    assert decode_campaign_manifest(raw).canonical_bytes() == raw
+    value = decode_campaign_manifest(raw)
+    assert value.canonical_bytes() == raw
+    assert encode_campaign_manifest(value) == raw
 
 
 @given(st.sampled_from(["workload_sha256", "target_recipe_sha256", "work_items_sha256"]))
@@ -152,4 +156,86 @@ def test_manifest_digest_mutations_are_rejected(field: str) -> None:
     manifest = _manifest()
     manifest["fingerprints"][field] = "sha256:" + "f" * 64  # type: ignore[index]
     with pytest.raises(CampaignIntegrityError, match="disagrees"):
+        decode_campaign_manifest(canonical_json_bytes(manifest))
+
+
+@given(st.sampled_from(["missing", "unknown", "type", "path", "digest", "conditional"]))
+def test_manifest_structural_mutations_are_rejected(mutation: str) -> None:
+    manifest = _manifest()
+    target = manifest["target"]
+    if mutation == "missing":
+        del target["revision"]
+    elif mutation == "unknown":
+        target["unexpected"] = True
+    elif mutation == "type":
+        target["name"] = 7
+    elif mutation == "path":
+        manifest["required_suite"]["source_path"] = "../escape"  # type: ignore[index]
+    elif mutation == "digest":
+        manifest["fingerprints"]["workload_sha256"] = "sha256:" + "f" * 64  # type: ignore[index]
+    else:
+        manifest["work_items"][0]["role"] = "cycle_count_baseline"  # type: ignore[index]
+    with pytest.raises(CampaignIntegrityError):
+        decode_campaign_manifest(canonical_json_bytes(manifest))
+    with pytest.raises(CampaignIntegrityError):
+        encode_campaign_manifest(SimulationCampaignManifest(manifest))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("defines", ["x" * 4097]),
+        ("pre_sim_commands", ["x" * (16 * 1024 + 1)]),
+    ],
+)
+def test_manifest_rejects_recipe_string_resource_overflow(field: str, value: object) -> None:
+    manifest = _manifest()
+    manifest["workload"]["source_recipe"][field] = value  # type: ignore[index]
+    with pytest.raises(CampaignIntegrityError, match="ceiling"):
+        decode_campaign_manifest(canonical_json_bytes(manifest))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("role", "cycle_count_baseline"), ("revision", "different")],
+)
+def test_work_item_role_and_revision_must_match_target(field: str, value: str) -> None:
+    manifest = _manifest()
+    manifest["work_items"][0][field] = value  # type: ignore[index]
+    with pytest.raises(CampaignIntegrityError, match="role/revision"):
+        decode_campaign_manifest(canonical_json_bytes(manifest))
+
+
+@pytest.mark.parametrize("names", [[], [1], ["smoke", "smoke"]])
+def test_named_selection_requires_unique_nonempty_bounded_strings(names: list[object]) -> None:
+    manifest = _manifest()
+    manifest["work_items"][0]["selection"] = {"kind": "named", "names": names}  # type: ignore[index]
+    with pytest.raises(CampaignIntegrityError):
+        decode_campaign_manifest(canonical_json_bytes(manifest))
+
+
+@pytest.mark.parametrize("mutation", ["target_role", "work_item_id"])
+def test_prerequisite_binds_a_baseline_target_and_valid_work_item(mutation: str) -> None:
+    manifest = _manifest()
+    target = dict(manifest["target"])  # type: ignore[arg-type]
+    target["role"] = "candidate" if mutation == "target_role" else "cycle_count_baseline"
+    prerequisite = {
+        "role": "cycle_count_baseline",
+        "manifest": {
+            "path_base": "origin_invocation",
+            "path": "targets/baseline/manifest.json",
+            "bytes": 1,
+            "sha256": "sha256:" + "a" * 64,
+            "kind": "simulation_campaign_manifest",
+            "owner": "550e8400-e29b-41d4-a716-446655440000",
+        },
+        "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+        "target": target,
+        "required_observation": "cycle_count",
+        "work_item_id": (
+            "not-an-item" if mutation == "work_item_id" else "item:0000:0123456789abcdef"
+        ),
+    }
+    manifest["prerequisites"] = [prerequisite]
+    with pytest.raises(CampaignIntegrityError):
         decode_campaign_manifest(canonical_json_bytes(manifest))

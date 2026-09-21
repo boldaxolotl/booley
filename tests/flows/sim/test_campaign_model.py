@@ -15,13 +15,22 @@ from booley.flows.sim.campaign.codec import (
     decode_executable_snapshot,
     decode_simulation_attempt,
     decode_simulator_bundle,
+    encode_bundle_build_attempt,
+    encode_executable_snapshot,
+    encode_simulation_attempt,
+    encode_simulator_bundle,
     validate_relative_path,
 )
 from booley.flows.sim.campaign.model import (
     AssertionObservation,
+    ExecutableSnapshot,
     ExecutionObservation,
     FailureClass,
     FunctionalObservation,
+    SimulationAttempt,
+    SimulationCampaignManifest,
+    SimulationCampaignPlan,
+    SimulatorBundle,
     grade_observations,
 )
 
@@ -60,6 +69,26 @@ def test_attempt_codec_is_canonical_and_immutable() -> None:
         value.document["attempt_ordinal"] = 2  # type: ignore[index]
 
 
+def test_directly_constructed_documents_deep_freeze_and_validate_on_write() -> None:
+    source = _attempt()
+    value = SimulationAttempt(source)
+    source["run_directory"]["owned"] = False  # type: ignore[index]
+    assert value.document["run_directory"]["owned"] is True  # type: ignore[index]
+    with pytest.raises(TypeError):
+        value.document["run_directory"]["owned"] = False  # type: ignore[index]
+
+    invalid = SimulationAttempt(_attempt() | {"attempt_ordinal": 0})
+    with pytest.raises(CampaignIntegrityError, match="positive integer"):
+        encode_simulation_attempt(invalid)
+
+
+def test_campaign_plan_copies_work_item_order_into_an_immutable_tuple() -> None:
+    work_item_ids = ["item:0000:0123456789abcdef"]
+    plan = SimulationCampaignPlan(SimulationCampaignManifest({}), work_item_ids)
+    work_item_ids.append("item:0001:fedcba9876543210")
+    assert plan.work_item_ids == ("item:0000:0123456789abcdef",)
+
+
 def test_attempt_golden_fixture_is_independent_literal_bytes() -> None:
     fixture = (
         Path(__file__).parents[1] / "fixtures/simulation_campaign/attempt.json"
@@ -82,6 +111,22 @@ def test_attempt_branch_golden_fixtures_are_literal_bytes(name, decoder) -> None
     assert decoder(fixture).canonical_bytes() == fixture
 
 
+@pytest.mark.parametrize(
+    ("name", "decoder", "encoder"),
+    [
+        ("attempt.json", decode_simulation_attempt, encode_simulation_attempt),
+        ("attempt-child.json", decode_simulation_attempt, encode_simulation_attempt),
+        ("build-attempt-shared.json", decode_bundle_build_attempt, encode_bundle_build_attempt),
+        ("build-attempt-private.json", decode_bundle_build_attempt, encode_bundle_build_attempt),
+        ("bundle.json", decode_simulator_bundle, encode_simulator_bundle),
+        ("snapshot.json", decode_executable_snapshot, encode_executable_snapshot),
+    ],
+)
+def test_document_encoders_round_trip_validated_values(name, decoder, encoder) -> None:
+    raw = (Path(__file__).parents[1] / "fixtures/simulation_campaign" / name).read_bytes()
+    assert encoder(decoder(raw)) == raw
+
+
 def test_attempt_codec_rejects_unknown_fields_and_bool_integer() -> None:
     unknown = _attempt() | {"surprise": True}
     with pytest.raises(CampaignIntegrityError, match="exact fields"):
@@ -90,6 +135,31 @@ def test_attempt_codec_rejects_unknown_fields_and_bool_integer() -> None:
     invalid["attempt_ordinal"] = True
     with pytest.raises(CampaignIntegrityError, match="positive integer"):
         decode_simulation_attempt(canonical_json_bytes(invalid))
+
+
+@pytest.mark.parametrize("ordinal", [10_001, 1_000_000])
+def test_attempt_codec_enforces_attempt_resource_ceiling(ordinal: int) -> None:
+    with pytest.raises(CampaignIntegrityError, match="attempt ceiling"):
+        decode_simulation_attempt(canonical_json_bytes(_attempt() | {"attempt_ordinal": ordinal}))
+
+
+def test_build_attempt_codec_enforces_attempt_resource_ceiling() -> None:
+    path = (
+        Path(__file__).parents[1]
+        / "fixtures/simulation_campaign/build-attempt-shared.json"
+    )
+    document = json.loads(path.read_bytes())
+    document["build_attempt_ordinal"] = 10_001
+    with pytest.raises(CampaignIntegrityError, match="attempt ceiling"):
+        decode_bundle_build_attempt(canonical_json_bytes(document))
+
+
+@pytest.mark.parametrize("field", ["configured", "resolved", "collision_key"])
+def test_attempt_codec_rejects_non_string_run_directory_fields(field: str) -> None:
+    attempt = _attempt()
+    attempt["run_directory"][field] = 1  # type: ignore[index]
+    with pytest.raises(CampaignIntegrityError):
+        decode_simulation_attempt(canonical_json_bytes(attempt))
 
 
 def test_codec_rejects_noncanonical_or_oversized_json() -> None:
@@ -154,6 +224,39 @@ def test_campaign_paths_accept_normalized_components(parts: list[str]) -> None:
         return
     path = "/".join(safe)
     assert validate_relative_path(path) == path
+
+
+@given(
+    st.sampled_from(["missing", "unknown", "type", "path", "digest", "conditional"]),
+    st.sampled_from(["bundle.json", "snapshot.json"]),
+)
+def test_bundle_and_snapshot_structural_mutations_are_rejected(
+    mutation: str, name: str
+) -> None:
+    path = Path(__file__).parents[1] / "fixtures/simulation_campaign" / name
+    document = json.loads(path.read_bytes())
+    decoder = decode_simulator_bundle if name == "bundle.json" else decode_executable_snapshot
+    artifact = document["artifacts"][0]
+    if mutation == "missing":
+        del artifact["sha256"]
+    elif mutation == "unknown":
+        artifact["unexpected"] = True
+    elif mutation == "type":
+        artifact["bytes"] = True
+    elif mutation == "path":
+        artifact["path"] = "../escape"
+    elif mutation == "digest":
+        document["inventory_sha256"] = "sha256:" + "f" * 64
+    elif name == "bundle.json":
+        document["sharing"] = "private_work_item"
+    else:
+        artifact["kind"] = "runtime_input"
+    with pytest.raises(CampaignIntegrityError):
+        decoder(canonical_json_bytes(document))
+    value_type = SimulatorBundle if name == "bundle.json" else ExecutableSnapshot
+    encoder = encode_simulator_bundle if name == "bundle.json" else encode_executable_snapshot
+    with pytest.raises(CampaignIntegrityError):
+        encoder(value_type(document))
 
 
 @pytest.mark.parametrize(

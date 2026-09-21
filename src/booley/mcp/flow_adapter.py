@@ -23,4 +23,6 @@ def flow_schema(endpoint: Any) -> dict[str, Any]:
         properties["mode"]["default"] = "simulate"
         # A local file selector is CLI-only. MCP sends exact names directly.
         properties.pop("tests_file", None)
+        properties["test"].update(minItems=1, uniqueItems=True)
+        properties["test"]["items"]["minLength"] = 1
     return schema
