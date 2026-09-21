@@ -205,7 +205,7 @@ def probe_container_runtime(
 
 
 def _run_container_probe(executable: str, run: CommandRunner) -> ContainerRuntimeAudit:
-    observation = probe_docker(executable=executable, run=run)
+    observation = probe_docker(executable=executable, which=lambda _name: executable, run=run)
     if observation.state is ProbeState.TIMEOUT:
         finding = EnvironmentFinding(
             EnvironmentSeverity.FAIL,
