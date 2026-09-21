@@ -23,6 +23,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from booley.runtime.host_probes import ProbeState, probe_docker, probe_github
+
 SCHEMA_VERSION = 1
 MIN_PYTHON = (3, 11)
 PINNED_RUNNERS = {
@@ -286,10 +288,10 @@ def _develop(root: Path, *, require_docker: bool) -> Result:
     head = _git_text(root, ("rev-parse", "HEAD"))
     main = _git_text(root, ("rev-parse", "refs/heads/main"))
     merge_base = _git_text(root, ("merge-base", "HEAD", "refs/heads/main"))
-    unique = _git_count(root, ("rev-list", "--count", "refs/heads/main..HEAD"))
+    unique_commits = _git_count(root, ("rev-list", "--count", "refs/heads/main..HEAD"))
     dirty = _git_text(root, ("status", "--porcelain")) is not None
     topology_status, topology_summary = classify_topology(
-        TopologyFacts(linked, branch, head, main, merge_base, unique, dirty)
+        TopologyFacts(linked, branch, head, main, merge_base, unique_commits, dirty)
     )
     checks.append(Check("git.topology", topology_status, True, topology_summary))
     checks.append(
@@ -310,19 +312,18 @@ def _develop(root: Path, *, require_docker: bool) -> Result:
 
 def _publish(root: Path) -> Result:
     checks = [_git_identity_check(root, _git(root, ("rev-parse", "--show-toplevel")))]
-    gh = shutil.which("gh")
-    checks.append(_presence_check("github.executable", gh is not None, "GitHub CLI found"))
+    gh = probe_github(which=shutil.which, run=subprocess.run, cwd=root)
     checks.append(
-        _gh_check(
-            "github.authentication", gh, ("auth", "status"), "GitHub authentication is available"
+        _presence_check("github.executable", gh.executable is not None, "GitHub CLI found")
+    )
+    checks.append(
+        _probe_check(
+            "github.authentication", gh.authentication, "GitHub authentication is available"
         )
     )
     checks.append(
-        _gh_check(
-            "github.connectivity",
-            gh,
-            ("repo", "view", "--json", "nameWithOwner"),
-            "GitHub read-only connectivity is available",
+        _probe_check(
+            "github.connectivity", gh.connectivity, "GitHub read-only connectivity is available"
         )
     )
     return _result("publish", root, checks, (), git=shutil.which("git"))
@@ -606,7 +607,8 @@ def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bo
     except (OSError, json.JSONDecodeError):
         return False, "shared tools environment is missing or has no valid receipt"
     if (
-        receipt.get("schema_version") != 1
+        not isinstance(receipt, dict)
+        or receipt.get("schema_version") != 1
         or receipt.get("fingerprint") != fingerprint
         or not python.is_file()
     ):
@@ -673,8 +675,13 @@ def _cache_path_check(root: Path) -> Check:
 
 
 def _docker_check(required: bool) -> Check:
-    executable = shutil.which("docker")
-    if executable is None:
+    observation = probe_docker(
+        which=shutil.which,
+        run=subprocess.run,
+        probe_daemon=required,
+        cwd=Path.cwd(),
+    )
+    if observation.state is ProbeState.MISSING:
         return Check(
             "docker.executable",
             Status.BLOCKED if required else Status.DEGRADED,
@@ -690,13 +697,11 @@ def _docker_check(required: bool) -> Check:
             False,
             "Docker executable discovered; daemon not contacted",
         )
-    result = _run_process((executable, "info"), Path.cwd(), timeout=5)
-    if _successful(result):
+    if observation.state is ProbeState.HEALTHY:
         return Check(
             "docker.daemon", Status.READY, True, "Docker daemon responds to the bounded probe"
         )
-    text = (f"{result.stdout or ''}\n{result.stderr or ''}" if result is not None else "").lower()
-    status = Status.ESCALATION if "permission denied" in text else Status.BLOCKED
+    status = Status.ESCALATION if observation.state is ProbeState.PERMISSION else Status.BLOCKED
     summary = (
         "Docker daemon access requires approval"
         if status is Status.ESCALATION
@@ -705,17 +710,12 @@ def _docker_check(required: bool) -> Check:
     return Check("docker.daemon", status, True, summary)
 
 
-def _gh_check(
-    identifier: str, executable: str | None, args: tuple[str, ...], success: str
-) -> Check:
-    if executable is None:
-        return Check(identifier, Status.BLOCKED, True, "GitHub CLI is unavailable")
-    result = _run_process((executable, *args), Path.cwd(), timeout=5)
+def _probe_check(identifier: str, state: ProbeState, success: str) -> Check:
     return Check(
         identifier,
-        Status.READY if _successful(result) else Status.BLOCKED,
+        Status.READY if state is ProbeState.HEALTHY else Status.BLOCKED,
         True,
-        success if _successful(result) else "GitHub read-only probe failed",
+        success if state is ProbeState.HEALTHY else "GitHub read-only probe failed",
     )
 
 

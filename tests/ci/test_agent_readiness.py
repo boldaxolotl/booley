@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -13,6 +14,15 @@ import pytest
 
 from booley.dev_support import agent_readiness as readiness
 from booley.runtime.host_probes import ProbeState, probe_docker, probe_github
+
+
+def _bootstrap_module():
+    path = Path(__file__).parents[2] / ".github/scripts/bootstrap_agent_tools.py"
+    spec = importlib.util.spec_from_file_location("bootstrap_agent_tools", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.mark.parametrize(
@@ -144,6 +154,7 @@ def test_real_launcher_emits_one_versioned_json_document(tmp_path):
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
     assert result.returncode in {0, 1}
     document = json.loads(result.stdout)
@@ -181,3 +192,63 @@ def test_git_write_policy_is_closed(monkeypatch, value):
     monkeypatch.setenv("BOOLEY_AGENT_GIT_WRITE_POLICY", value)
     with pytest.raises(readiness.ReadinessUsageError):
         readiness._prepare(Path.cwd(), "codex/x", None)
+
+
+def test_invalid_receipts_are_rejected_without_attribute_errors(tmp_path):
+    module = _bootstrap_module()
+    environment = tmp_path / "environment"
+    (environment / "bin").mkdir(parents=True)
+    (environment / "bin/python").touch()
+    for value in ("null", "[]"):
+        (environment / "receipt.json").write_text(value, encoding="utf-8")
+        assert not module._valid_receipt(environment, "fingerprint", readiness.PINNED_RUNNERS)
+
+
+def test_receipt_runner_pins_are_checked_before_reusing_environment(tmp_path):
+    module = _bootstrap_module()
+    environment = tmp_path / "environment"
+    (environment / "bin").mkdir(parents=True)
+    (environment / "bin/python").touch()
+    installed = dict(readiness.PINNED_RUNNERS)
+    installed["ruff"] = "0.0.0"
+    (environment / "receipt.json").write_text(
+        json.dumps({"schema_version": 1, "fingerprint": "fingerprint", "installed": installed}),
+        encoding="utf-8",
+    )
+    assert not module._valid_receipt(environment, "fingerprint", readiness.PINNED_RUNNERS)
+
+
+def test_readiness_rejects_nonobject_receipts(tmp_path):
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    (environment / "receipt.json").write_text("null", encoding="utf-8")
+
+    valid, reason = readiness.validate_environment(
+        environment, "fingerprint", environment / "bin/python"
+    )
+
+    assert not valid
+    assert "receipt" in reason
+
+
+def test_invalid_environment_is_replaced_by_complete_staging(tmp_path):
+    module = _bootstrap_module()
+    destination = tmp_path / "environment"
+    staging = tmp_path / "staging"
+    destination.mkdir()
+    staging.mkdir()
+    (destination / "stale").write_text("stale", encoding="utf-8")
+    (staging / "ready").write_text("ready", encoding="utf-8")
+
+    module._publish(staging, destination)
+
+    assert (destination / "ready").read_text(encoding="utf-8") == "ready"
+    assert not (destination / "stale").exists()
+
+
+def test_partial_lock_metadata_is_not_deleted_while_fresh(tmp_path):
+    module = _bootstrap_module()
+    lock = tmp_path / "lock"
+    lock.write_text("", encoding="utf-8")
+
+    assert not module._stale(lock)

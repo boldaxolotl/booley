@@ -34,6 +34,7 @@ def probe_docker(
     probe_daemon: bool = True,
     which: Callable[[str], str | None] = shutil.which,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    cwd: Path | None = None,
 ) -> HostProbe:
     """Discover Docker and optionally ask its daemon for information."""
     found = which(executable)
@@ -42,7 +43,14 @@ def probe_docker(
     if not probe_daemon:
         return HostProbe(found, ProbeState.HEALTHY)
     try:
-        result = run([found, "info"], capture_output=True, text=True, timeout=10, check=False)
+        result = run(
+            [found, "info"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
     except subprocess.TimeoutExpired:
         return HostProbe(found, ProbeState.TIMEOUT)
     except (OSError, subprocess.SubprocessError):
