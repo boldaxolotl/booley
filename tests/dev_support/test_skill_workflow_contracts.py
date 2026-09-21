@@ -525,9 +525,7 @@ def test_setup_requires_evidenced_tech_cell_decisions():
 
 def test_setup_surfaces_missing_replacements_and_latch_policy():
     plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
-    project_config = _compact_skill_text(
-        "booley-setup", "steps/2-project-config.md"
-    )
+    project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
 
     assert "mark every affected synthesis Target Yellow" in plan
     assert "Do not create a new post-inference mapping as a fallback" in plan
@@ -537,9 +535,7 @@ def test_setup_surfaces_missing_replacements_and_latch_policy():
 
 
 def test_setup_implements_one_authoritative_frontend_definition():
-    project_config = _compact_skill_text(
-        "booley-setup", "steps/2-project-config.md"
-    )
+    project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
 
     for required in (
         "Project-wide mapping",
@@ -553,9 +549,7 @@ def test_setup_implements_one_authoritative_frontend_definition():
 
 
 def test_setup_requires_all_tech_cell_validation_layers():
-    project_config = _compact_skill_text(
-        "booley-setup", "steps/2-project-config.md"
-    )
+    project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
 
     for required in (
         "**Semantic:**",
