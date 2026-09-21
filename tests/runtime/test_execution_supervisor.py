@@ -38,6 +38,54 @@ from booley.runtime.execution_records import (
 _EXECUTION_ID = ExecutionId("a" * 32)
 
 
+def _heartbeat_generations(path: Path) -> list[int]:
+    if not path.exists():
+        return []
+    return [int(line) for line in path.read_text(encoding="ascii").splitlines()]
+
+
+def _start_supervisor_with_test_heartbeat(
+    project_dir: Path,
+    execution_id: ExecutionId,
+    heartbeat_path: Path,
+    command: list[str],
+    *,
+    grace_seconds: float = 0.25,
+) -> subprocess.Popen[str]:
+    bootstrap = (
+        "from pathlib import Path\n"
+        "import booley.runtime.execution_supervisor as supervisor\n"
+        f"heartbeat_path = Path({str(heartbeat_path)!r})\n"
+        "generation = 0\n"
+        "def touch():\n"
+        "    global generation\n"
+        "    generation += 1\n"
+        "    with heartbeat_path.open('a', encoding='ascii') as stream:\n"
+        "        stream.write(f'{generation}\\n')\n"
+        "supervisor.touch_reaper_heartbeat = touch\n"
+        "supervisor._EXECUTION_HEARTBEAT_SECONDS = 0.03\n"
+        "raise SystemExit(supervisor.main())\n"
+    )
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            bootstrap,
+            "run",
+            "--execution-id",
+            execution_id,
+            "--grace-seconds",
+            str(grace_seconds),
+            "--attachment-timeout-seconds",
+            "5",
+            "--",
+            *command,
+        ],
+        env=runtime_env(project_dir),
+        text=True,
+    )
+
+
 def test_force_cancellation_is_monotonic(tmp_path: Path) -> None:
     paths = execution_paths(_EXECUTION_ID, project_dir=tmp_path)
     request_cancellation(paths, force=True)
@@ -169,6 +217,72 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
         supervisor.communicate(timeout=5)
         if descendant_pid is not None and _non_zombie_alive(descendant_pid):
             os.killpg(descendant_pid, signal.SIGKILL)
+
+
+def test_supervisor_refreshes_reaper_heartbeat_until_normal_exit(tmp_path: Path) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    execution_id = ExecutionId("f" * 32)
+    paths = execution_paths(execution_id, project_dir=project_dir)
+    heartbeat_path = tmp_path / "reaper-heartbeat"
+    write_attachment_heartbeat(paths, generation=1)
+    supervisor = _start_supervisor_with_test_heartbeat(
+        project_dir,
+        execution_id,
+        heartbeat_path,
+        [sys.executable, "-c", "import time; time.sleep(0.3); raise SystemExit(7)"],
+    )
+    try:
+        wait_for(
+            lambda: len(_heartbeat_generations(heartbeat_path)) >= 2,
+            failure="supervisor did not refresh its reaper heartbeat",
+        )
+        assert supervisor.wait(timeout=5) == 7
+        payload = read_json(paths.record)
+        assert payload["state"] == "terminal"
+        assert payload["exit_code"] == 7
+        assert payload["tree_terminal"] is True
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+        supervisor.wait(timeout=5)
+
+
+def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Path) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    execution_id = ExecutionId("1" * 32)
+    paths = execution_paths(execution_id, project_dir=project_dir)
+    heartbeat_path = tmp_path / "reaper-heartbeat"
+    write_attachment_heartbeat(paths, generation=1)
+    command = [
+        sys.executable,
+        "-c",
+        "import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(10)",
+    ]
+    supervisor = _start_supervisor_with_test_heartbeat(
+        project_dir,
+        execution_id,
+        heartbeat_path,
+        command,
+    )
+    try:
+        wait_for(
+            lambda: len(_heartbeat_generations(heartbeat_path)) >= 2,
+            failure="supervisor did not start its reaper heartbeat",
+        )
+        before_cancel = len(_heartbeat_generations(heartbeat_path))
+        request_cancellation(paths, signum=signal.SIGINT)
+        assert supervisor.wait(timeout=5) == 130
+        after_cancel = len(_heartbeat_generations(heartbeat_path))
+        assert after_cancel > before_cancel
+        payload = read_json(paths.record)
+        assert payload["state"] == "terminal"
+        assert payload["tree_terminal"] is True
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+        supervisor.wait(timeout=5)
 
 
 def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
