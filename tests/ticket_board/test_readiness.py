@@ -249,7 +249,9 @@ def test_executable_validation_uses_authoritative_basis_reader(
         "find_ticket_file",
         lambda *_args, **_kwargs: (ticket, "queued"),
     )
-    monkeypatch.setattr(ticket_validation_module, "_convert_executable_ticket", lambda *_args: None)
+    monkeypatch.setattr(
+        ticket_validation_module, "_convert_executable_ticket", lambda *_args: None
+    )
     errors = ticket_validation_module.validate_executable_ticket(root, "demo")
 
     assert errors == ["Ticket Baseline receipt mismatch"]

@@ -98,9 +98,7 @@ def _resolve_and_validate(
 
 def _validate_intake_ticket(project_root: Path, ticket_path: Path, slug: str) -> None:
     """Validate executable Tickets operationally and preserve review intake rules."""
-    if is_operational_ticket_status(ticket_path.parent.name) and _is_git_backed(
-        project_root
-    ):
+    if is_operational_ticket_status(ticket_path.parent.name) and _is_git_backed(project_root):
         errors = validate_executable_ticket(
             project_root,
             slug,
