@@ -830,6 +830,12 @@ then sanitizes the built-in banned-word list out of all other commit-message
 prose. An already-installed hook no-ops at commit time when the flag is off.
 `banned_words` replaces (not extends) the built-in list.
 
+Project Initialization keeps `.booley_project/hooks/` for Project-authored
+`post-setup` and `post-developer` lifecycle hooks. Booley-managed commit and
+push policy lives in the deterministic
+`.booley_project/.managed/project-git-hooks.pyz` bundle, reached by the small
+`commit-msg` and `pre-push` adapters under `.git/hooks/`.
+
 **Your message is redacted, not truncated.** Subject *and* body are kept, with
 banned phrases substituted in place; the hook prints what it rewrote. Recognized
 attribution is different: `Co-Authored-By:` and robot-prefixed footer lines are

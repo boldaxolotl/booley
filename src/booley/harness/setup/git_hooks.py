@@ -2,9 +2,10 @@
 
 Extracted from ``init_cmd.py`` (Single Responsibility): the ``git_hooks`` step
 installs the leak guard into the project-agnostic ``.booley/`` repo, and the
-``project_git_hooks`` step vendors the commit-message policy scripts into
-``.booley_project/hooks/`` and installs a repo-relative ``commit-msg``
-delegator into the project's own ``.git/hooks/``. Steps are named by their
+``project_git_hooks`` step publishes one standalone policy bundle under
+``.booley_project/.managed/`` and installs repo-relative adapters into the
+project's own ``.git/hooks/``. ``.booley_project/hooks/`` remains reserved for
+Project-authored lifecycle hooks. Steps are named by their
 record key, never by a display number — the banner numbers are allocated at
 print time from the steps that actually run (see :meth:`InitContext.step_banner`),
 so a hardcoded display number in a comment drifts the moment a step is
@@ -16,10 +17,7 @@ it never imports back from ``init_cmd``.
 
 from __future__ import annotations
 
-import shutil
-import stat
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness.setup.common import (
@@ -44,7 +42,21 @@ from booley.harness.setup.line_endings import (
     line_ending_repository_display,
     reconcile_project_line_endings,
 )
-from booley.runtime.paths import dev_support_dir
+from booley.harness.setup.project_git_hook_reconcile import (
+    _LEGACY_MANAGED_HOOKS,
+)
+from booley.harness.setup.project_git_hook_reconcile import (
+    _build_commit_msg_hook_body as _managed_build_commit_msg_hook_body,
+)
+from booley.harness.setup.project_git_hook_reconcile import (
+    _build_hook_delegator_body as _managed_build_hook_delegator_body,
+)
+from booley.harness.setup.project_git_hook_reconcile import (
+    _build_pre_push_hook_body as _managed_build_pre_push_hook_body,
+)
+from booley.harness.setup.project_git_hook_reconcile import (
+    step_project_git_hooks as _managed_step_project_git_hooks,
+)
 from booley.runtime.project_dir import resolve_project_dir
 
 
@@ -114,350 +126,14 @@ def _step_git_hooks(ctx: InitContext) -> None:
     ctx.record("git_hooks", "ok", "installed")
 
 
-# Utility scripts that make up the self-contained project git hooks.
-# commit_msg_hook.py and pre_push_hook.py import the utils by bare name,
-# resolving them via their own directory — so all must sit side-by-side in
-# the project repo.
-# (run_command.py is vendored alongside too — see _step_project_git_hooks — but it
-# lives in core/, not dev_support/, so it isn't listed here.)
-_PROJECT_HOOK_SCRIPTS = (
-    "commit_msg_hook.py",
-    "commit_msg_utils.py",
-    "validate_commit_msg.py",
-    "pre_push_hook.py",
-)
-
-_PROJECT_HOOK_HELPERS = {
-    "boundary.py": Path("core") / "boundary.py",
-    "checkout_role.py": Path("core") / "checkout_role.py",
-    "run_command.py": Path("core") / "run_command.py",
-}
-
-
-@dataclass(frozen=True, slots=True)
-class _VendoredHookAction:
-    name: str
-    source: Path
-    target: Path
-    pending: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _DelegatorHookAction:
-    name: str
-    script_name: str
-    target: Path
-    body: str
-    outcome: WriteOutcome
-
-
-def _vendored_hook_pending(source: Path, target: Path) -> bool:
-    """Whether ``copy2(source, target)`` would reconcile managed state."""
-    if not target.is_file():
-        return True
-    try:
-        return source.read_bytes() != target.read_bytes() or stat.S_IMODE(
-            source.stat().st_mode
-        ) != stat.S_IMODE(target.stat().st_mode)
-    except OSError:
-        return True
-
-
-def _build_hook_delegator_body(
-    project_root: Path,
-    hooks_dst: Path,
-    script_name: str,
-    purpose: str,
-    *,
-    fail_open: bool,
-) -> str:
-    """Build a delegator shell script for a vendored Python hook.
-
-    References the vendored script repo-relatively so the hook works on any
-    clone regardless of where the project lives. Falls back to an absolute
-    path if the project data dir is somehow outside the repo.
-
-    The script may legitimately be absent from ``$ROOT``: a user-made secondary
-    worktree (``git worktree add``) has its own toplevel, and
-    ``.booley_project/`` is untracked/git-ignored, so it exists only in the main
-    worktree. ``exec``ing the missing path made EVERY commit in such a worktree
-    fail with ENOENT (fpu F-42). The body therefore always resolves through the
-    shared git dir first, so the hook genuinely RUNS in a secondary worktree.
-
-    Only the last-resort fallback differs per hook, and *fail_open* picks it:
-
-    - ``True`` (commit-msg): skip with one explanatory line. The policy hook is
-      a convenience; a missing script must never wedge local committing (F-42).
-    - ``False`` (pre-push): refuse the push. That hook exists for one reason —
-      to block — so treating "I could not check" as "nothing to report" is the
-      one answer it must never give. ``.booley_project/`` is git-ignored, so a
-      ``git clean -xdf`` deletes the vendored script while ``.git/hooks/``
-      survives; fail-open there would wave every subsequent push past the
-      ``[stealth]`` banned-term scan and the ``allowed_authors`` allowlist.
-    """
-    try:
-        script_rel = f"{(hooks_dst.relative_to(project_root)).as_posix()}/{script_name}"
-        resolve = (
-            f'SCRIPT="$ROOT/{script_rel}"\n'
-            'if [ ! -f "$SCRIPT" ]; then\n'
-            "    # Secondary worktree (F-42): .booley_project/ is untracked, so it\n"
-            "    # exists only in the MAIN worktree — reach it via the shared git dir.\n"
-            '    COMMON=$(cd "$ROOT" && git rev-parse --path-format=absolute '
-            "--git-common-dir 2>/dev/null) || COMMON=\n"
-            '    case "$COMMON" in\n'
-            "        '') ;;\n"
-            f'        /*) SCRIPT="$(dirname "$COMMON")/{script_rel}" ;;\n'
-            f'        [A-Za-z]:/*) SCRIPT="$(dirname "$COMMON")/{script_rel}" ;;\n'
-            f'        *) SCRIPT="$(dirname "$ROOT/$COMMON")/{script_rel}" ;;\n'
-            "    esac\n"
-            "fi\n"
-        )
-    except ValueError:
-        resolve = f'SCRIPT="{(hooks_dst / script_name).as_posix()}"\n'
-    if fail_open:
-        # A hook whose script is genuinely unavailable must SKIP, not ENOENT-fail
-        # every commit in the worktree (F-42).
-        missing = (
-            f"    echo 'booley {script_name}: vendored hook script not found"
-            " — skipping (run `booley init` to reinstall)' >&2\n"
-            "    exit 0\n"
-        )
-    else:
-        # ENOENT would also have blocked, but only by accident and with a
-        # baffling message. Block on purpose, and say how to get unblocked.
-        missing = (
-            f"    echo 'booley {script_name}: vendored hook script not found at'"
-            ' "$SCRIPT" >&2\n'
-            "    echo 'This is the leak guard — it cannot pass what it could not"
-            " check, so the push is REFUSED.' >&2\n"
-            "    echo 'Restore it with `booley init` (it is git-ignored, so"
-            " `git clean -xdf` removes it).' >&2\n"
-            "    exit 1\n"
-        )
-    resolve += 'if [ ! -f "$SCRIPT" ]; then\n' + missing + "fi\n"
-    script_ref = '"$SCRIPT"'
-
-    return (
-        "#!/bin/sh\n"
-        f"# Booley {purpose}. Self-contained: delegates to\n"
-        "# the copy vendored under the project's hooks dir, located repo-\n"
-        "# relatively so it needs no Booley source checkout.\n"
-        # Same fail-open/fail-closed split as the missing-script branch below:
-        # a blocking guard that cannot even locate the repo must not report "ok".
-        f"ROOT=$(git rev-parse --show-toplevel) || exit {0 if fail_open else 1}\n"
-        + resolve
-        + "# Interpreter ladder (F-7): stock Windows has no python3.exe — only the\n"
-        "# Microsoft Store alias, which prints a Store nag and exits non-zero,\n"
-        "# failing EVERY commit. `command -v` alone can't tell the alias from a\n"
-        "# real interpreter, so each candidate must actually run `-c ''`.\n"
-        "PY=\n"
-        "for cand in python3 python; do\n"
-        "    if \"$cand\" -c '' >/dev/null 2>&1; then PY=$cand; break; fi\n"
-        "done\n"
-        "if [ -z \"$PY\" ] && py -3 -c '' >/dev/null 2>&1; then PY='py -3'; fi\n"
-        'if [ -z "$PY" ]; then\n'
-        f"    echo 'booley {script_name}: no usable Python found (tried python3, python, py -3)' >&2\n"
-        "    exit 1\n"
-        "fi\n"
-        f'exec $PY {script_ref} "$@"\n'
-    )
-
-
-def _build_commit_msg_hook_body(project_root: Path, hooks_dst: Path) -> str:
-    """Build the commit-msg delegator shell script for the project repo."""
-    return _build_hook_delegator_body(
-        project_root,
-        hooks_dst,
-        "commit_msg_hook.py",
-        "commit-msg hook (reject attribution + sanitize + validate) — rejects\n"
-        "# recognized attribution footers and redacts protected terms from\n"
-        "# other commit-message prose",
-        # A policy hook that cannot run is an inconvenience; a commit that cannot
-        # be made is a wedge. Skip (F-42).
-        fail_open=True,
-    )
-
-
-def _build_pre_push_hook_body(project_root: Path, hooks_dst: Path) -> str:
-    """Build the pre-push delegator shell script for the project repo.
-
-    The pre-push leak guard closes the F-17 hole: ``git revert`` and
-    ``git commit --no-verify`` bypass the commit-msg sanitizer entirely, so
-    banned terms are re-checked on every outgoing commit at push time. It also
-    enforces the ``[stealth] allowed_authors`` identity allowlist, which
-    commit-msg structurally cannot: git hands that hook only the message file,
-    so ``git commit --author=...`` never reaches it.
-    """
-    return _build_hook_delegator_body(
-        project_root,
-        hooks_dst,
-        "pre_push_hook.py",
-        "pre-push hook (leak guard, F-17) — blocks pushes whose\n"
-        "# outgoing commits carry banned terms, or an author/committer\n"
-        "# identity outside [stealth] allowed_authors (git revert,\n"
-        "# --author and --no-verify all bypass the commit-msg sanitizer)",
-        # The guard's whole job is blocking, so an unrunnable guard must block.
-        # Fail-open here silently re-opens F-17 the first time `git clean -xdf`
-        # takes the git-ignored .booley_project/ with it.
-        fail_open=False,
-    )
-
-
-def _project_hook_actions(
-    ctx: InitContext,
-    hooks_dst: Path,
-    hooks_dir: Path,
-    src_dir: Path,
-    helper_sources: dict[str, Path],
-) -> tuple[list[_VendoredHookAction], list[_DelegatorHookAction]]:
-    vendored_sources = {
-        **{name: src_dir / name for name in _PROJECT_HOOK_SCRIPTS},
-        **helper_sources,
-    }
-    vendored = [
-        _VendoredHookAction(
-            name,
-            source,
-            hooks_dst / name,
-            _vendored_hook_pending(source, hooks_dst / name),
-        )
-        for name, source in vendored_sources.items()
-    ]
-    hook_specs = (
-        (
-            "commit-msg",
-            "commit_msg_hook.py",
-            _build_commit_msg_hook_body(ctx.project_root, hooks_dst),
-        ),
-        ("pre-push", "pre_push_hook.py", _build_pre_push_hook_body(ctx.project_root, hooks_dst)),
-    )
-    delegators = []
-    for name, script_name, body in hook_specs:
-        target = hooks_dir / name
-        outcome = guarded_write(
-            target,
-            body,
-            owner_marker=script_name,
-            backup_suffix=".pre-booley",
-            dry_run=True,
-            newline="\n",
-            executable=True,
-        )
-        delegators.append(_DelegatorHookAction(name, script_name, target, body, outcome))
-    return vendored, delegators
-
-
-def _project_hook_pending_detail(
-    vendored: list[_VendoredHookAction],
-    delegators: list[_DelegatorHookAction],
-) -> str:
-    updates = [action.name for action in vendored if action.pending]
-    updates.extend(
-        action.name
-        for action in delegators
-        if action.outcome
-        not in (
-            WriteOutcome.UNCHANGED,
-            WriteOutcome.SKIPPED,
-            WriteOutcome.BACKED_UP,
-        )
-    )
-    backups = [action.name for action in delegators if action.outcome is WriteOutcome.BACKED_UP]
-    details = []
-    if updates:
-        details.append("would update " + ", ".join(updates))
-    details.extend(f"would back up {name}" for name in backups)
-    return "; ".join(details)
-
-
-def _apply_project_hook_actions(
-    vendored: list[_VendoredHookAction],
-    delegators: list[_DelegatorHookAction],
-) -> None:
-    pending_vendored = [action for action in vendored if action.pending]
-    if pending_vendored:
-        pending_vendored[0].target.parent.mkdir(parents=True, exist_ok=True)
-    for action in pending_vendored:
-        shutil.copy2(action.source, action.target)
-    for action in delegators:
-        outcome = guarded_write(
-            action.target,
-            action.body,
-            owner_marker=action.script_name,
-            backup_suffix=".pre-booley",
-            newline="\n",
-            executable=True,
-        )
-        if outcome is WriteOutcome.BACKED_UP:
-            warn(f"backed up existing {action.name} hook to {action.name}.pre-booley")
-
-
-@dataclass(frozen=True, slots=True)
-class _ProjectHookLocations:
-    hooks_dst: Path
-    hooks_dir: Path
-    source_dir: Path
-    helper_sources: dict[str, Path]
-
-
-def _project_hook_locations(ctx: InitContext) -> _ProjectHookLocations | None:
-    project_dir = resolve_project_dir(ctx.project_root)
-    source_dir = dev_support_dir()
-    helper_sources = {
-        name: source_dir.parent / relative for name, relative in _PROJECT_HOOK_HELPERS.items()
-    }
-    missing = [name for name in _PROJECT_HOOK_SCRIPTS if not (source_dir / name).is_file()]
-    missing.extend(name for name, source in helper_sources.items() if not source.is_file())
-    if missing:
-        skip(f"commit policy scripts not found in developer-support dir: {', '.join(missing)}")
-        ctx.record("project_git_hooks", "skip", "commit policy scripts missing")
-        return None
-    proc = subprocess.run(
-        ["git", "-C", str(ctx.project_root), "rev-parse", "--git-path", "hooks"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        skip("project root is not a git repo — project commit-msg hook skipped")
-        ctx.record("project_git_hooks", "skip", "not a git repo")
-        return None
-    return _ProjectHookLocations(
-        project_dir / "hooks",
-        (ctx.project_root / proc.stdout.strip()).resolve(),
-        source_dir,
-        helper_sources,
-    )
-
-
-def _step_project_git_hooks(ctx: InitContext) -> None:
-    """Vendor and install the Project commit-msg and pre-push guards."""
-    ctx.step_banner("project commit-msg hook")
-    locations = _project_hook_locations(ctx)
-    if locations is None:
-        return
-    vendored, delegators = _project_hook_actions(
-        ctx,
-        locations.hooks_dst,
-        locations.hooks_dir,
-        locations.source_dir,
-        locations.helper_sources,
-    )
-    detail = _project_hook_pending_detail(vendored, delegators)
-    if not detail:
-        skip("project commit-msg + pre-push hooks are current")
-        ctx.record("project_git_hooks", "skip", "current")
-        return
-    if ctx.check_only:
-        warn(detail)
-        ctx.record("project_git_hooks", "warn", detail)
-        return
-
-    _apply_project_hook_actions(vendored, delegators)
-
-    ok("project commit-msg + pre-push hooks installed (vendored into .booley_project/hooks/)")
-    ctx.record("project_git_hooks", "ok", "installed")
-
+# Project Git-hook reconciliation lives in a focused module. Keep these names here
+# because init_cmd and older integrations import this setup facade.
+_PROJECT_HOOK_SCRIPTS = _LEGACY_MANAGED_HOOKS
+_PROJECT_HOOK_HELPERS: dict[str, Path] = {}
+_build_hook_delegator_body = _managed_build_hook_delegator_body
+_build_commit_msg_hook_body = _managed_build_commit_msg_hook_body
+_build_pre_push_hook_body = _managed_build_pre_push_hook_body
+_step_project_git_hooks = _managed_step_project_git_hooks
 
 _OBSERVATION_MESSAGES = {
     LineEndingObservationCode.CRLF_MISMATCH: (

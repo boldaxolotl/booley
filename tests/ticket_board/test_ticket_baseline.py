@@ -29,6 +29,7 @@ from booley.ticket_board import (
     ticket_baseline as ticket_baseline_module,
 )
 from booley.ticket_board.acceptance_journal import JournalState
+from booley.ticket_board.acceptance_path_policy import is_static_acceptance_path
 from booley.ticket_board.acceptance_targets import (
     AcceptanceTargetBinding,
     validate_binding_selectors,
@@ -1473,6 +1474,11 @@ def test_acceptance_path_policy_protects_routing_config(tmp_path: Path) -> None:
 
     with pytest.raises(TicketBaselineError, match="protected path"):
         assert_inputs_unchanged(basis, root)
+
+
+def test_acceptance_path_policy_protects_managed_project_git_hooks() -> None:
+    assert is_static_acceptance_path(".booley_project/.managed/project-git-hooks.pyz")
+    assert is_static_acceptance_path(".booley_project/.managed/manifest.json")
 
 
 def test_input_validation_supports_project_directory_outside_checkout(

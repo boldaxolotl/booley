@@ -18,11 +18,11 @@ leave the machine and refuses the push on any of these offenses:
 3. **A repository-visible path into the project-state directory**, including
    a symlink whose committed target resolves there.
 
-Vendored into the project's hooks dir by ``booley init`` (Step 10b), beside
-``commit_msg_utils.py``, so it resolves its imports by bare name with no
-Booley source checkout. Escape hatch: ``BOOLEY_SKIP_PUSH_GUARD=1`` skips the
-scan for one push (e.g. the first push of pre-existing upstream history that
-predates the hook).
+Packaged into the Project's ``.booley_project/.managed/project-git-hooks.pyz``
+bundle by ``booley init``. Its flat imports resolve from the zip root, so Git
+operations do not need an installed Booley package. Escape hatch:
+``BOOLEY_SKIP_PUSH_GUARD=1`` skips the scan for one push (e.g. the first push
+of pre-existing upstream history that predates the hook).
 
 Exit 0 = allow push; exit 1 = reject with diagnostic naming the commits.
 """
@@ -35,8 +35,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# Ensure the vendored hooks dir is on sys.path so imports resolve when called
-# as a hook (mirrors commit_msg_hook.py).
+# Ensure the bundle root is on sys.path so flat imports resolve when called
+# from the standalone zip application.
 _HOOK_DIR = str(Path(__file__).resolve().parent)
 if _HOOK_DIR not in sys.path:
     sys.path.insert(0, _HOOK_DIR)
@@ -59,7 +59,7 @@ _ZERO_SHA_PREFIX = "0000000"
 _MAX_COMMITS_SCANNED = 500
 _MAX_SYMLINK_TARGET_BYTES = 64 * 1024
 _SYMLINK_MODE = "120000"
-# Kept local because this module is vendored into Projects and must run without
+# Kept local because this module is packaged into Projects and must run without
 # an installed Booley package.
 _PROJECT_DIR_NAME = ".booley_project"
 
@@ -138,16 +138,22 @@ def _repository_root() -> Path | None:
 
 
 def _guard_project_dir(repository_root: Path) -> Path | None:
-    """Resolve project state without requiring Booley in a vendored hook."""
+    """Resolve project state without requiring Booley in the managed bundle."""
     configured = os.environ.get("BOOLEY_PROJECT_DIR")
     if configured:
         return Path(configured).resolve()
+    hook_file = Path(__file__).resolve()
+    if hook_file.parent.name != "hooks":
+        # The zip-app launcher derives BOOLEY_PROJECT_DIR before importing this
+        # module. Never probe an installed package as a fallback here: the
+        # managed bundle is deliberately stdlib-only and isolated from it.
+        return None
     try:
         from booley.runtime.project_dir import resolve_checkout_project_dir
 
         return resolve_checkout_project_dir(repository_root).resolve()
     except (ImportError, FileNotFoundError):
-        hook_dir = Path(__file__).resolve().parent
+        hook_dir = hook_file.parent
         return hook_dir.parent if hook_dir.name == "hooks" else None
 
 

@@ -60,7 +60,7 @@ except ImportError:
             continue
 
     if run_command is None:
-        # Last-resort insurance for a *stale* vendored hooks dir predating the
+        # Last-resort insurance for a *stale* Project bundle predating the
         # flat run_command.py vendoring (onboarded before that init change and not
         # re-run): shim the one call we make (git diff) with subprocess,
         # mirroring CommandRun's used fields so a host commit still validates
