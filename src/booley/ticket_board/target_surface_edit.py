@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import yaml
-from yaml.nodes import MappingNode, ScalarNode
+from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 from booley.fusesoc import fusesoc_registry
 from booley.targets.domain import FuseSocError
@@ -49,7 +49,7 @@ def _document(text: str, path: Path) -> tuple[MappingNode, ScalarNode, MappingNo
     return document, *targets
 
 
-def _entries(node: MappingNode) -> dict[str, tuple[ScalarNode, object]]:
+def _entries(node: MappingNode) -> dict[str, tuple[ScalarNode, Node]]:
     return {key.value: (key, value) for key, value in node.value if isinstance(key, ScalarNode)}
 
 
@@ -62,15 +62,45 @@ def _line_end(text: str, index: int) -> int:
     return len(text) if newline < 0 else newline + 1
 
 
-def _block_end(text: str, start: int, end: int) -> int:
-    end_line = _line_start(text, end)
-    return end_line if end_line > start else _line_end(text, end)
+def _block_scalar_content_end(text: str, node: ScalarNode) -> int:
+    header_start = _line_start(text, node.start_mark.index)
+    header = text[header_start : _line_end(text, node.start_mark.index)]
+    header_match = re.match(
+        r"[|>](?:[1-9][+-]?|[+-]?[1-9]|[+-]?)",
+        header[node.start_mark.index - header_start :],
+    )
+    if header_match and "+" in header_match.group():
+        content_end = node.end_mark.index
+        return content_end - 1 if content_end > node.start_mark.index else content_end
+    cursor = node.end_mark.index
+    while cursor > node.start_mark.index:
+        line_start = _line_start(text, cursor - 1)
+        line_end = _line_end(text, line_start)
+        if text[line_start:line_end].strip():
+            return line_end - 1 if line_end > line_start and text[line_end - 1] == "\n" else line_end
+        cursor = line_start
+    return node.start_mark.index
 
 
-def _entry_span(text: str, entry: tuple[ScalarNode, object]) -> tuple[int, int]:
+def _node_content_end(text: str, node: Node) -> int:
+    if isinstance(node, ScalarNode) and node.style in {"|", ">"}:
+        return _block_scalar_content_end(text, node)
+    if isinstance(node, MappingNode) and node.value:
+        return _node_content_end(text, node.value[-1][1])
+    if isinstance(node, SequenceNode) and node.value:
+        return _node_content_end(text, node.value[-1])
+    return node.end_mark.index
+
+
+def _block_end(text: str, node: Node) -> int:
+    content_end = _node_content_end(text, node)
+    return _line_end(text, content_end)
+
+
+def _entry_span(text: str, entry: tuple[ScalarNode, Node]) -> tuple[int, int]:
     key, value = entry
     start = _line_start(text, key.start_mark.index)
-    return start, _block_end(text, start, value.end_mark.index)
+    return start, _block_end(text, value)
 
 
 def _reindent(block: str, source_column: int, destination_column: int) -> str:
