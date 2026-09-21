@@ -40,6 +40,7 @@
 | 8 | Data files / built artifacts | | | | | |
 | 9 | Vendored-core quarantine | | | | | |
 | 10 | Constraints (SDC/XDC) | | | | | |
+| 10a | Memory implementation: every synthesis-reachable candidate, evidence, disposition, replacement seam, timing shape, and confidence | | | | | |
 | 11 | Style lint opt-in | | | | | |
 | 12 | Elaboration Check / standalone need | | | | | |
 | 13 | Timeouts, heaviest synth calibration Target, & memory reservation | | | | | |

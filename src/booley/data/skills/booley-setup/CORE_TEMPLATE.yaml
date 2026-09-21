@@ -20,9 +20,15 @@ filesets:
     files:
       - tb/tb_dut.sv: {file_type: systemVerilogSource}
     tags: [tb]               # REQUIRED on the testbench fileset (decision 13).
+  # Ordinary synth-only RTL; never attach this fileset or its selection define
+  # to sim/lint/fpga Targets.
+  # synth_memory:
+  #   files:
+  #     - synth/dut_ram_timing_surrogate.sv: {file_type: systemVerilogSource}
 
 parameters:
   WIDTH: {datatype: int, paramtype: vlogparam, default: 16}
+  # SYNTH_MEMORY_SURROGATE: {datatype: bool, paramtype: vlogdefine, default: true}
 
 targets:
   # Target names follow <axis>_<subject>: an axis token for the driving Booley Flow
@@ -94,5 +100,6 @@ targets:
                              # configure without it (external error: "yosys requires tool option
                              # 'arch'"). Booley's synth script overrides the pass,
                              # but the field must still be present — do NOT drop it.
-    filesets: [rtl]
+    filesets: [rtl]          # Use [rtl, synth_memory] when a surrogate is needed.
+    # parameters: [SYNTH_MEMORY_SURROGATE]  # synth-only implementation switch
     toplevel: dut            # same interface-port caveat as lint, above
