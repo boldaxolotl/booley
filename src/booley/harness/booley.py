@@ -813,16 +813,10 @@ def _add_bootstrap_subparser(sub) -> None:
         action="store_true",
         help="Refresh Booley-managed host resources even when they are current",
     )
-    installation = parser.add_mutually_exclusive_group()
-    installation.add_argument(
-        "--adopt-installation",
+    parser.add_argument(
+        "--update",
         action="store_true",
-        help="Record this installed wheel as the canonical host installation",
-    )
-    installation.add_argument(
-        "--upgrade-installation",
-        action="store_true",
-        help="Explicitly replace the canonical host installation after an upgrade",
+        help="Update Host Bootstrap after upgrading Booley",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show detailed reconciliation output"

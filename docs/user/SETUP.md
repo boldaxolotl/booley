@@ -44,16 +44,13 @@ Their build systems have nothing in common (FuseSoC, bare Makefiles, a vendor te
 
 ## Host Bootstrap · host
 
-Adopt the installed wheel once, then run Host Bootstrap after installation and
-again after Booley upgrades:
+Run Host Bootstrap after installation:
 
 ```bash
-booley bootstrap --adopt-installation
-booley bootstrap
-# after upgrading Booley:
-booley bootstrap --upgrade-installation
 booley bootstrap
 ```
+
+After upgrading Booley, run `booley bootstrap --update` instead.
 
 It validates Git, Docker, and VS Code; installs or verifies VS Code's Dev
 Containers extension; deploys packaged skills; verifies the shared Nangate45

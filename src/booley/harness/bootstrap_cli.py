@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from booley.harness.bootstrap import BootstrapState, reconcile_bootstrap
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
-from booley.runtime.host_install import HostInstallationError, adopt_host_installation
+from booley.runtime.host_install import HostInstallationError, register_host_installation
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.paths import skills_dir
@@ -12,10 +12,9 @@ from booley.runtime.paths import skills_dir
 
 def run_bootstrap(args: object) -> int:
     """Run Host Bootstrap and render its typed findings."""
-    adopt = getattr(args, "adopt_installation", False)
-    upgrade = getattr(args, "upgrade_installation", False)
-    if (adopt or upgrade) and getattr(args, "check_only", False):
-        print(red("installation adoption cannot be combined with --check-only"))
+    update = getattr(args, "update", False)
+    if update and getattr(args, "check_only", False):
+        print(red("--update cannot be combined with --check-only"))
         return 2
     intent = (
         Intent.CHECK
@@ -35,15 +34,15 @@ def run_bootstrap(args: object) -> int:
         from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         with host_lifecycle_lock("host bootstrap"):
-            if adopt or upgrade:
-                try:
-                    identity = adopt_host_installation(skills_dir(), replace=upgrade)
-                except HostInstallationError as exc:
-                    print(red(f"Cannot adopt host installation: {exc}"))
-                    return 2
+            try:
+                identity = register_host_installation(skills_dir(), update=update)
+            except HostInstallationError as exc:
+                print(red(f"Cannot register host installation: {exc}"))
+                return 2
+            if update:
                 print(
                     green(
-                        "Adopted canonical Booley host installation "
+                        "Updated canonical Booley host installation "
                         f"{identity.version} ({identity.payload_fingerprint[:12]})."
                     )
                 )

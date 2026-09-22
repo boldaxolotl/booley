@@ -189,9 +189,9 @@ def test_bare_booley_defaults_to_chat():
 
 
 def test_bootstrap_parser_exposes_only_host_reconciliation_flags():
-    args = tlr._build_parser().parse_args(["bootstrap", "--upgrade-installation", "--verbose"])
+    args = tlr._build_parser().parse_args(["bootstrap", "--update", "--verbose"])
     assert args.command == "bootstrap"
-    assert args.upgrade_installation is True
+    assert args.update is True
     assert args.verbose is True
     assert not hasattr(args, "project_root")
 
