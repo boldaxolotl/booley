@@ -48,7 +48,12 @@ Manifest. Require record-or-verify recovery of the same intent, exactly one
 matching transaction directory and exactly one selection of its transaction ID
 in Development State, no contradictory duplicate records, no new Simulation
 Attempt, and final `simulation.json` with `complete:true`. Run
-`validate_recovery.py` over retained raw copies as an independent cross-check.
+`validate_recovery.py` over the exact Manifest and terminal Results, frozen
+Acceptance Intent, exact transaction commit, complete V2 evidence root,
+byte-archived/failed/recovered Development State files, and final projection.
+The validator authenticates every record's bytes, digest, ordinal, sequence,
+role, envelope binding, and absence of extra matching evidence; it remains an
+independent cross-check rather than replacement evidence.
 
 ## Corrupt terminal rejection
 

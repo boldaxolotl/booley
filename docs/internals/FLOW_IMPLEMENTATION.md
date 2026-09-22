@@ -1043,6 +1043,13 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
 ```
 
+Full pruning releases matching retired child-execution index entries before it
+removes the invocation. The project-data root is inferred only when the report
+root is exactly `<project-data>/.runtime/flow-reports`. A nonstandard report
+root therefore requires `--project-data <resolved-project-data>` for `--full`
+when Campaign child records exist. Native-only pruning does not inspect or
+release those records and does not require the option.
+
 Selection, locking, validation, and filesystem failures exit 2. Both operations
 are retryable for their exact selections. Do not manually remove journals,
 quarantines, invocation locks, or number tombstones.

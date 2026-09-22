@@ -75,4 +75,9 @@ bytes or start a new Campaign; do not patch the evidence.
 Retention protects incomplete or invalid Simulation Campaigns. A complete
 Campaign can be archived or pruned only through exact known-file retention;
 coverage retention follows the authenticated Target-level reference to its
-nested attempt-scoped Coverage Campaign.
+nested attempt-scoped Coverage Campaign. Full pruning infers the project-data
+root when reports use the standard
+`<project-data>/.runtime/flow-reports` location. If `--reports-root` points
+elsewhere and the invocation contains Campaign child records, pass
+`--project-data <resolved-project-data>` with `--full`; native-only pruning does
+not require it.

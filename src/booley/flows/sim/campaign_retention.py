@@ -328,7 +328,10 @@ def main() -> None:
     parser.add_argument(
         "--project-data",
         type=Path,
-        help="Project data root when reports are outside its standard .runtime tree",
+        help=(
+            "Resolved project-data root for --full when --reports-root is outside "
+            "<project-data>/.runtime/flow-reports; not required for --native-target"
+        ),
     )
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--native-target", help="Exact Target selector for native-only pruning")

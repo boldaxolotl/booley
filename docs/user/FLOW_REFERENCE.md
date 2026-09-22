@@ -199,7 +199,10 @@ targets/<encoded-target>/
   campaign/
     manifest.json
     summary.json
-    bundles/...                       authenticated Simulator Bundles
+    build-variants/<digest>/attempts/<attempt>/
+      build-attempt.json
+      build-result.json
+      evidence/bundle.json            authenticated shared Simulator Bundle
     work-items/.../attempts/...       append-only attempts and results
   simulation.json                    replaceable compatibility projection
   coverage.json                      optional authenticated coverage reference
@@ -371,6 +374,14 @@ Use the report root and exact invocation number from the produced report:
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_soc
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
 ```
+
+Full pruning also retires the Campaign's Project-local child-execution records.
+When `REPORTS_ROOT` has the standard
+`<project-data>/.runtime/flow-reports` shape, Booley infers that project-data
+root. If reports live elsewhere and the invocation contains Campaign child
+records, add `--project-data "$PROJECT_DATA"` to `--full`, where the value is
+the exact resolved project-data root. Native-only pruning never requires
+`--project-data`.
 
 Native pruning removes that Target's raw and merged databases while retaining
 the immutable Campaign manifest and point store, Simulation, and hook evidence. Target-local

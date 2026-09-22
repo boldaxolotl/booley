@@ -3371,7 +3371,7 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 25eac4a66d2847e5f783acd240ef27a68495a3525943aebec4b5243d1f362f95
+    sha256: eb484efe16e0fd32cfe16b020e2176fe47e706d95e621351587765162d969d19
   - path: fixtures/simulation-campaign/validate_aggregate.py
     audience: independent evaluator
     sha256: 0375d3b780214ef6696d2f4ff6d5d55830604a4e9f369b5d8ddf21a4c1ffb844
@@ -3402,10 +3402,10 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 25eac4a66d2847e5f783acd240ef27a68495a3525943aebec4b5243d1f362f95
+    sha256: eb484efe16e0fd32cfe16b020e2176fe47e706d95e621351587765162d969d19
   - path: fixtures/simulation-campaign/validate_recovery.py
     audience: independent evaluator
-    sha256: 0013fd72cd7fbfb1024981fe33f96aadfaa079b9a7a7da5832116f28da1d9682
+    sha256: 35390f4c0ccf1876e650904a43c3a944c6c3af2fbfae78b6b642ea99f29c66ea
 - id: campaign.corrupt-terminal-rejection
   phase: exercise
   action: Reject one corrupted owned terminal Simulation Result before any retry is admitted.
@@ -3425,7 +3425,7 @@ steps:
     baseline: campaign.coverage-aggregate-resume
     detection:
     - campaign.acceptance-recovery
-    instruction: Archive the failed acceptance publication and exact owned fault identity even if detection differs; remove only the owned Development State temporary-path directory, prove the state parent and Acceptance Journal bytes otherwise unchanged, resume the exact Manifest, and retain both failed and recovered projections before injecting terminal corruption.
+    instruction: Archive the corrupt terminal Result, rejection, and process/attempt evidence even if detection differs; restore only the exact archived Result bytes, authenticate their digest, resume the same Manifest as a valid control, and prove the completed work item did not rerun before continuing.
   resources:
   - run-owned Simulation Campaign terminal Result
   - run-owned corrupt-result evidence archive
@@ -3433,10 +3433,10 @@ steps:
   assets:
   - path: fixtures/simulation-campaign/RUNBOOK.md
     audience: scenario-operator
-    sha256: 25eac4a66d2847e5f783acd240ef27a68495a3525943aebec4b5243d1f362f95
+    sha256: eb484efe16e0fd32cfe16b020e2176fe47e706d95e621351587765162d969d19
   - path: fixtures/simulation-campaign/validate_recovery.py
     audience: independent evaluator
-    sha256: 0013fd72cd7fbfb1024981fe33f96aadfaa079b9a7a7da5832116f28da1d9682
+    sha256: 35390f4c0ccf1876e650904a43c3a944c6c3af2fbfae78b6b642ea99f29c66ea
 - id: final.regression
   phase: final
   action: With all injections disabled rerun native numeric half and four-property half cases, current accepted

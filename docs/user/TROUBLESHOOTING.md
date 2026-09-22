@@ -558,7 +558,11 @@ a Campaign is complete, use the exact retention command and invocation number
 documented in the Flow reference. For coverage collected inside a Simulation
 Campaign, the public Target-level `coverage.json` is an authenticated reference
 to the selected attempt's nested Coverage Campaign; keep the reference and
-enclosing Simulation Campaign together.
+enclosing Simulation Campaign together. If full pruning reports that Project
+data is required, the supplied report root is outside the inferable
+`<project-data>/.runtime/flow-reports` layout; retry the same exact `--full`
+selection with `--project-data <resolved-project-data>`. Do not add that option
+to compensate for an incorrect project-data path or for native-only pruning.
 
 ### Coverage Analyst input and model availability
 
