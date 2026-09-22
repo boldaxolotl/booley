@@ -139,6 +139,14 @@ class SimulationAcceptanceCoordinator:
         if not has_required_scope:
             return changes
         met = outcome.acceptance_ready and outcome.aggregate_grade == "pass"
+        selected = [str(item["test"] or "default") for item in observations]
+        passed = [
+            str(item["test"] or "default")
+            for item in observations
+            if item["execution"] == "completed"
+            and item["functional"] == "pass"
+            and item["assertions"] != "dirty"
+        ]
         detail = {
             "campaign_manifest": str(outcome.manifest_path),
             "campaign_summary": str(outcome.summary_path),
@@ -146,6 +154,14 @@ class SimulationAcceptanceCoordinator:
             "manifest_sha256": facts["manifest_sha256"],
             "acceptance_facts_sha256": outcome.acceptance_facts.sha256,
             "aggregate_grade": outcome.aggregate_grade,
+            "tests_passed": len(passed),
+            "tests_total": len(selected),
+            "test_selector": "all",
+            "registry_tests": sorted(required_names),
+            "selected_tests": selected,
+            "passed_tests": passed,
+            "failed_tests": [name for name in selected if name not in passed],
+            "skipped_tests": [],
         }
         for key in keys:
             changes.extend(shadow.set_criterion(key, met, detail=detail))

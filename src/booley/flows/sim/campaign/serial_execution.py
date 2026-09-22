@@ -8,6 +8,7 @@ and captures the engine-authorized private image as attempt-owned evidence.
 from __future__ import annotations
 
 import hashlib
+import json
 import stat
 import threading
 import time
@@ -1518,7 +1519,11 @@ def _decode_cocotb_source(raw: bytes, selected: tuple[str, ...]) -> list[dict[st
         encoded = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise SimulationCampaignIntegrityError("Cocotb transport is not UTF-8") from exc
-    decoded = parse_results_line(COCOTB_RESULTS_PREFIX + encoded)
+    try:
+        compact = json.dumps(json.loads(encoded), separators=(",", ":"))
+    except json.JSONDecodeError as exc:
+        raise SimulationCampaignIntegrityError("Cocotb transport is invalid") from exc
+    decoded = parse_results_line(COCOTB_RESULTS_PREFIX + compact)
     if decoded is None:
         raise SimulationCampaignIntegrityError("Cocotb transport is invalid")
     names = selected or tuple(test.name for test in decoded.tests if test.name)
