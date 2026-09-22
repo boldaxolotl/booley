@@ -4,17 +4,49 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from booley.runtime.execution_records import (
     ExecutionId,
+    atomic_write_json,
     execution_paths,
     gc_terminal_executions,
     read_attachment_heartbeat,
     write_attachment_heartbeat,
 )
+
+
+def test_atomic_write_json_fsyncs_file_then_rename_then_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_replace = Path.replace
+
+    def observe_fsync(descriptor: int) -> None:
+        events.append(
+            "parent_fsync" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file_fsync"
+        )
+        real_fsync(descriptor)
+
+    def observe_replace(self: Path, target: Path) -> Path:
+        events.append("replace")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(os, "fsync", observe_fsync)
+    monkeypatch.setattr(Path, "replace", observe_replace)
+
+    path = tmp_path / "record.json"
+    atomic_write_json(path, {"state": "terminal"})
+
+    expected = ["file_fsync", "replace"]
+    if os.name != "nt":
+        expected.append("parent_fsync")
+    assert events == expected
+    assert json.loads(path.read_text()) == {"state": "terminal"}
 
 
 def test_execution_id_owns_validation() -> None:

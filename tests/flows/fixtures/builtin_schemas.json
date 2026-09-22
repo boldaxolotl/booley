@@ -69,16 +69,17 @@
           "elab_only",
           "elab_only_standalone"
         ],
-        "description": "Execution mode: run tests, elaborate only, or elaborate then perform the standalone module sweep",
-        "default": "simulate"
+        "description": "Execution mode: run tests, elaborate only, or elaborate then perform the standalone module sweep"
       },
       "test": {
-        "type": "string",
-        "description": "Run specific test by name (substring match)"
-      },
-      "skip": {
-        "type": "string",
-        "description": "Comma-separated test names to exclude (exact match). Adds to any [flows.sim] / tests.toml 'skip' list. Use to dodge known-hanging tests that burn the full wall-clock budget."
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": "Run exact registered test names in caller order (CLI: repeat; MCP: array)",
+        "minItems": 1,
+        "uniqueItems": true
       },
       "trace": {
         "type": "boolean",
@@ -99,15 +100,16 @@
         "default": false,
         "description": "Skip zombie process cleanup"
       },
+      "resume_from": {
+        "type": "string",
+        "description": "Resume one exact Simulation Campaign manifest.json"
+      },
       "coverage": {
         "type": "boolean",
         "default": false,
         "description": "Collect a native Verilator Coverage Campaign for each selected Target"
       }
     },
-    "required": [
-      "target"
-    ],
     "additionalProperties": false
   },
   "synth": {

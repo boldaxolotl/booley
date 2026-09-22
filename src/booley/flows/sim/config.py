@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from string import Formatter
 from typing import Any, Final
 
 from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
@@ -11,6 +12,7 @@ from booley.targets.flow_names import config_section
 
 DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3
 DEFAULT_SIM_TIMEOUT_MS: Final[int] = default_timeout_ms("sim")
+_RUN_CWD_FIELDS = frozenset({"campaign", "target", "test", "attempt"})
 
 
 def _sim_config(work_dir: Path | str | None) -> Mapping[str, Any]:
@@ -36,6 +38,27 @@ def resolve_run_cwd(work_dir: Path | str | None = None) -> str:
     return str(value) if value else "."
 
 
+def parse_run_cwd_template(configured: str) -> tuple[str, ...]:
+    """Validate and return first-occurrence ordered campaign placeholders."""
+    if not configured or "\0" in configured:
+        raise ValueError("[flows.sim].run_cwd must be a nonempty path template")
+    fields: list[str] = []
+    try:
+        parsed = Formatter().parse(configured)
+        for _literal, field, format_spec, conversion in parsed:
+            if field is None:
+                continue
+            if field not in _RUN_CWD_FIELDS:
+                raise ValueError(f"unsupported run_cwd placeholder {field!r}")
+            if format_spec or conversion:
+                raise ValueError("run_cwd placeholders do not accept formatting")
+            if field not in fields:
+                fields.append(field)
+    except ValueError as exc:
+        raise ValueError(f"invalid [flows.sim].run_cwd template: {exc}") from exc
+    return tuple(fields)
+
+
 def resolve_trace_args(work_dir: Path | str | None = None) -> list[str]:
     """Return project-owned arguments that enable its trace harness."""
     return [str(argument) for argument in (_sim_config(work_dir).get("trace_args") or [])]
@@ -49,6 +72,16 @@ def resolve_trace_files(work_dir: Path | str | None = None) -> list[str]:
 def resolve_pre_sim_commands(work_dir: Path | str | None = None) -> list[str]:
     """Return Project-owned shell lines run before each Simulation work unit."""
     return [str(command) for command in (_sim_config(work_dir).get("pre_run_commands") or [])]
+
+
+def resolve_pre_sim_build_access(work_dir: Path | str | None = None) -> str:
+    """Return the workload-identifying Pre-Sim build-access contract."""
+    value = _sim_config(work_dir).get("pre_sim_build_access", "immutable")
+    if value not in {"immutable", "legacy-per-test"}:
+        raise ValueError(
+            "[flows.sim].pre_sim_build_access must be 'immutable' or 'legacy-per-test'"
+        )
+    return str(value)
 
 
 def resolve_max_rundir_bytes(work_dir: Path | str | None = None) -> int:

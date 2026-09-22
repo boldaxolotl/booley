@@ -16,6 +16,7 @@ class PreparedSimulationWork:
     build_dir: str
     run_cwd: str
     timeout_s: int
+    work_dir: str = ""
     eda_tool: str = ""
     max_rundir_bytes: int = 0
     plusargs: tuple[str, ...] = ()

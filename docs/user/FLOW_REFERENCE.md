@@ -20,7 +20,10 @@ booley flow synth --target synth_soc
 booley flow <name> --help
 ```
 
-Every Target-aware call requires `--target`; Booley has no project-wide default.
+Every new Target-aware call requires `--target`; Booley has no project-wide default.
+The one exception is `sim --resume-from`, which reconstructs its Target and
+workload from the named immutable Simulation Campaign manifest and rejects a
+simultaneous Target.
 Use `booley targets` to list available Targets and
 `booley targets --for-flow <flow>` to narrow the list. If two cores expose the
 same Target name, use the qualified selector printed by `booley targets`, such as
@@ -130,10 +133,18 @@ Useful controls:
   then adds the stronger reusable-module sweep.
 - `--elab-only`, `--build-only`, and their combination with `--standalone`
   remain deprecated CLI-only aliases for one compatibility window.
-- `--test <substring>` selects every registered test whose name contains the
-  substring. For a Target with no registered test list, the value is passed
-  through as the test name.
-- `--skip <name,...>` excludes exact registered test names.
+- `--test <name>` selects one registered test by exact name and may be repeated.
+- `--tests-file <path>` selects exact names from a UTF-8 file, one per line;
+  blanks and `#` comments are ignored. It cannot be combined with `--test`.
+- Duplicate, unknown, empty, or catalog-less named selections fail before
+  simulation. Every explicit name must exist in every selected Target.
+- A plain unfiltered run applies configured `skip` entries. Repeatable `--test`
+  or `--tests-file` is an exact explicit suite and therefore overrides those
+  entries. A plain Target whose complete registered suite is configured skipped
+  fails preflight instead of passing vacuously.
+- There is no CLI `--skip` option. Put long-lived exclusions in `tests.toml`,
+  or name the exact suite to run with repeated `--test` options or
+  `--tests-file`.
 - `--trace` captures a waveform artifact.
 - `--coverage` (permanent alias `--cov`) explicitly collects a native Verilator
   Coverage Campaign. MCP uses boolean `coverage: true`; the default is false.
@@ -142,6 +153,98 @@ Useful controls:
   artifacts are retained in either mode.
 - `--no-kill` skips the pre-run zombie-process cleanup; this is a diagnostic
   escape hatch, not a normal simulation control.
+- `--resume-from <manifest.json>` validates and resumes that exact durable
+  Simulation Campaign. It cannot be combined with Target, test, mode, coverage,
+  or trace selection: those values are reconstructed from the immutable
+  manifest. Timeout and presentation controls may change. `--dry-run` reports
+  completed, interrupted, and pending work without admission or mutation.
+
+Ordinary HDL, Cocotb-batch, and native-coverage-aggregate executions publish
+their resume authority at
+`<report-root>/sim/<N>/targets/<encoded-target>/campaign/manifest.json`, with
+append-only attempts/results beneath it and an atomically regenerated
+`summary.json`. When no report root is supplied, Simulation Campaigns use
+`<project>/flow-reports`. A resume creates a new compatibility invocation but
+keeps authoritative Simulation Campaign writes beside the original manifest.
+Cocotb interruption retries its whole batch as one new Simulation Attempt while
+retaining independent XML-derived observations. Native coverage interruption
+retries its whole serial collection/merge aggregate as one new Simulation
+Attempt and creates a distinct nested Coverage Campaign; it never continues or
+overwrites an interrupted native database.
+
+The CLI prints each exact manifest path before admitting simulator work. Its
+final card gives the strict grade and keeps the manifest path needed to resume:
+
+```bash
+booley flow sim --target sim_soc --test reset --test interrupts
+booley flow sim --resume-from \
+  flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
+```
+
+The MCP `sim` input deliberately uses an array, not the former scalar shape:
+
+```json
+{"target":"sim_soc","test":["reset","interrupts"]}
+```
+
+MCP has no `tests_file` or `skip` property. It accepts the same exact ordered
+test names directly in `test`; `resume_from` names one manifest and conflicts
+with `target`, `test`, explicit `mode`, `coverage`, and `trace`.
+
+The authoritative files remain beside the original manifest even when resume
+creates a later compatibility invocation:
+
+```text
+targets/<encoded-target>/
+  campaign/
+    manifest.json
+    summary.json
+    build-variants/<digest>/attempts/<attempt>/
+      build-attempt.json
+      build-result.json
+      evidence/bundle.json            authenticated shared Simulator Bundle
+    work-items/.../attempts/...       append-only attempts and results
+  simulation.json                    replaceable compatibility projection
+  coverage.json                      optional authenticated coverage reference
+```
+
+Do not edit, copy into place, or repair Campaign JSON manually. Manifests,
+bundles, attempts, results, summaries, and nested coverage references bind one
+another by exact identity, byte count, and digest. Resume validates that chain
+and the current Target revision/workload before launching an EDA tool.
+
+Structured campaign output keeps bounded authority pointers in `manifest`,
+`summary`, `simulation`, and nullable `coverage`. It reports `grade`, `complete`,
+aggregate `observation_counts`, and a maximum-32 `observations` preview. Every
+preview entry retains `test`, `execution`, `functional`, `assertions`,
+`assertion_count`, and bounded `detail`; `observation_total` and
+`observations_truncated` disclose whether the preview is complete.
+The independent observation axes mean:
+
+- `execution`: whether the simulator process completed, timed out, or failed
+  before producing trustworthy test evidence;
+- `functional`: the pass/fail/inconclusive test verdict;
+- `assertions`: assertion evidence independently observed for that test.
+
+Open `summary`, then the referenced terminal result, for the complete durable
+record; the MCP preview is intentionally not a replacement for those files.
+
+Simulation Campaign scheduling uses the admitted Simulation Job as one heavy
+lane. With `[jobs].max_heavy = 1` execution is serial. Higher caps allow at most
+`max_heavy` simulator processes across that Project, including the borrowed
+outer lane; work sharing a literal `run_cwd` still serializes to prevent
+cross-talk. Templated attempt directories can overlap safely.
+
+Existing CLI, MCP, and report consumers should follow the concise
+[Simulation Campaign migration guide](SIMULATION_CAMPAIGN_MIGRATION.md).
+
+Each Simulation Campaign freezes the Target's Required Simulation Suite in its immutable
+manifest. A target-level `sim_pass_<target>` Criterion is eligible to pass only
+when every member of that frozen suite has a durable passing result; selecting
+and passing a subset does not satisfy the target-level Criterion. A registered
+Target with no named suite instead requires its one default-selection work item
+to pass. Changing the suite or its source fingerprint makes an old manifest
+ineligible for resume rather than applying historical results to the new suite.
 
 HDL testbenches report their outcome through configured pass/fail sentinels;
 cocotb Targets use cocotb's result file, with assertion output still able to
@@ -158,7 +261,7 @@ unchanged.
 
 Elaboration Check mode skips Pre-Sim Commands, test selection, Cocotb Python,
 run guards, sentinels, and tracing. Run-only arguments such as `--test`,
-`--skip`, `--trace`, `--result-verbosity full`, and `--no-kill` are rejected in
+`--tests-file`, `--trace`, `--result-verbosity full`, and `--no-kill` are rejected in
 this mode. Only Simulation Targets are eligible. A compiler diagnostic that
 proves the RTL was rejected is exit `1`; setup, missing-tool, timeout, OOM,
 signal/crash, filesystem, and ambiguous nonzero failures are exit `2` and do
@@ -271,6 +374,14 @@ Use the report root and exact invocation number from the produced report:
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_soc
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
 ```
+
+Full pruning also retires the Campaign's Project-local child-execution records.
+When `REPORTS_ROOT` has the standard
+`<project-data>/.runtime/flow-reports` shape, Booley infers that project-data
+root. If reports live elsewhere and the invocation contains Campaign child
+records, add `--project-data "$PROJECT_DATA"` to `--full`, where the value is
+the exact resolved project-data root. Native-only pruning never requires
+`--project-data`.
 
 Native pruning removes that Target's raw and merged databases while retaining
 the immutable Campaign manifest and point store, Simulation, and hook evidence. Target-local

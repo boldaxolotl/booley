@@ -49,7 +49,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.config.jobs import SlotCaps, parse_caps
@@ -173,6 +173,13 @@ class TokenState:
     position: int | None = None  # 0-based queue position when QUEUED
 
 
+@dataclass(frozen=True)
+class LeaseHealth:
+    """Token-scoped signal that renewal no longer protects a holder."""
+
+    lost: threading.Event
+
+
 @dataclass
 class SlotToken:
     """Handle for one admission request — one entry file, owned by one PID.
@@ -205,6 +212,7 @@ class SlotToken:
     lease_expires_at: str | None = None
     owner_identity: ProcessIdentity | None = None
     owner_kind: str = "process"
+    lease_health: LeaseHealth = field(default_factory=lambda: LeaseHealth(threading.Event()))
 
     @property
     def is_holder(self) -> bool:
@@ -360,6 +368,8 @@ class SlotStore:
         self._n = 0  # per-store counter: distinct entries from one process
         self._auto_renew = now is time.time and sleep is time.sleep
         self._renewals: dict[str, tuple[threading.Event, threading.Thread]] = {}
+        self._deferred_releases: dict[str, threading.Event] = {}
+        self._deferred_gate = threading.Lock()
 
     # ---------------------------------------------------------------- submit
 
@@ -664,47 +674,78 @@ class SlotStore:
         on_queued: Callable[[int | None], None] | None = None,
         should_abort: Callable[[], bool] | None = None,
         narrate_interval_s: float = NARRATE_INTERVAL_SECONDS,
+        execution_id: str | ExecutionId | None = None,
+        on_submitted: Callable[[SlotToken], None] | None = None,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
 
         Queue narration repeats when its interval elapses. ``should_abort``
         lets signal handlers end a wait without leaking the caller's entry.
         """
-        token = self.submit(job_class, pid=pid, argv=argv, role=role, timeout_s=timeout_s)
-        last_pos: int | None = None
-        last_narrated: float | None = None
+        token = self.submit(
+            job_class,
+            pid=pid,
+            argv=argv,
+            role=role,
+            timeout_s=timeout_s,
+            execution_id=execution_id,
+        )
+        if on_submitted is not None:
+            on_submitted(token)
         try:
-            while token.path.exists():
-                if should_abort is not None and should_abort():
-                    raise ClaimAbortedError(
-                        f"aborted while waiting for a {job_class} slot (shutdown requested)"
-                    )
-                state = self.refresh(token)
-                if state.state == HOLDING:
-                    self._start_renewal(token)
-                    return token
-                if state.state == LOST:
-                    raise ClaimLostError(
-                        f"{job_class} queue entry vanished while waiting — the job was cancelled"
-                    )
-                now = self._now()
-                due = last_narrated is None or (now - last_narrated) >= narrate_interval_s
-                if on_queued is not None and (state.position != last_pos or due):
-                    last_pos = state.position
-                    last_narrated = now
-                    on_queued(state.position)
-                self._sleep(poll_interval)
-            raise ClaimLostError(
-                f"{job_class} queue entry vanished while waiting — the job was cancelled"
+            return self._wait_for_promotion(
+                token,
+                should_abort=should_abort,
+                on_queued=on_queued,
+                poll_interval=poll_interval,
+                narrate_interval_s=narrate_interval_s,
             )
         except BaseException:
             self.release(token)  # idempotent; no-op on the LOST path
             raise
 
+    def _wait_for_promotion(
+        self,
+        token: SlotToken,
+        *,
+        should_abort: Callable[[], bool] | None,
+        on_queued: Callable[[int | None], None] | None,
+        poll_interval: float,
+        narrate_interval_s: float,
+    ) -> SlotToken:
+        last_position: int | None = None
+        last_narrated: float | None = None
+        while token.path.exists():
+            if should_abort is not None and should_abort():
+                raise ClaimAbortedError(
+                    f"aborted while waiting for a {token.job_class} slot (shutdown requested)"
+                )
+            state = self.refresh(token)
+            if state.state == HOLDING:
+                self._start_renewal(token)
+                return token
+            if state.state == LOST:
+                break
+            now = self._now()
+            due = last_narrated is None or now - last_narrated >= narrate_interval_s
+            if on_queued is not None and (state.position != last_position or due):
+                last_position, last_narrated = state.position, now
+                on_queued(state.position)
+            self._sleep(poll_interval)
+        raise ClaimLostError(
+            f"{token.job_class} queue entry vanished while waiting — the job was cancelled"
+        )
+
     # ------------------------------------------------------- release/inspect
 
     def release(self, token: SlotToken) -> None:
         """Release a slot or withdraw a queued entry. Idempotent, never raises."""
+        with self._deferred_gate:
+            deferred = self._deferred_releases.get(token.lease_id)
+            if deferred is not None and not deferred.is_set():
+                return
+            if deferred is not None:
+                self._deferred_releases.pop(token.lease_id, None)
         renewal = self._renewals.pop(token.lease_id, None)
         if renewal is not None:
             stop, thread = renewal
@@ -716,6 +757,7 @@ class SlotStore:
                 return
             current = self._load_token(token.path)
             if current is None:
+                self._unlink_entry(token.path)
                 return
             if current.lease_id and current.lease_id != token.lease_id:
                 return
@@ -727,10 +769,30 @@ class SlotStore:
                 return
             self._unlink_entry(token.path)
 
+    def defer_release_until(self, token: SlotToken, terminal: threading.Event) -> None:
+        """Keep one holder unavailable until its escaped owner actually exits."""
+        with self._deferred_gate:
+            current = self._deferred_releases.get(token.lease_id)
+            if current is not None and current is not terminal:
+                raise RuntimeError("slot token already has another deferred release")
+            self._deferred_releases[token.lease_id] = terminal
+        monitor = threading.Thread(
+            target=self._finish_deferred_release,
+            args=(token, terminal),
+            name=f"booley-deferred-slot-{token.lease_id[:8]}",
+            daemon=True,
+        )
+        monitor.start()
+
+    def _finish_deferred_release(self, token: SlotToken, terminal: threading.Event) -> None:
+        terminal.wait()
+        self.release(token)
+
     def renew(self, token: SlotToken) -> bool:
         """Extend one active holder lease; refuse after recovery has claimed it."""
         with self._lease_gate(token) as acquired:
             if not acquired:
+                token.lease_health.lost.set()
                 return False
             current = self._load_token(token.path)
             if (
@@ -739,10 +801,12 @@ class SlotStore:
                 or current.lease_id != token.lease_id
                 or current.lease_state != LEASE_ACTIVE
             ):
+                token.lease_health.lost.set()
                 return False
             current.lease_generation += 1
             current.lease_expires_at = _utc_stamp(self._now() + LEASE_DURATION_SECONDS)
             if not self._rewrite_token(current):
+                token.lease_health.lost.set()
                 return False
             token.lease_generation = current.lease_generation
             token.lease_expires_at = current.lease_expires_at
@@ -756,6 +820,7 @@ class SlotStore:
         def maintain() -> None:
             while not stop.wait(LEASE_RENEW_INTERVAL_SECONDS):
                 if not self.renew(token):
+                    token.lease_health.lost.set()
                     return
 
         thread = threading.Thread(target=maintain, name=f"booley-lease-{token.lease_id[:8]}")
@@ -899,6 +964,32 @@ class SlotStore:
                     return False  # promoted (or vanished) under us — refuse
                 return True
         return False
+
+    def cancel_waiter_token(self, token: SlotToken) -> bool:
+        """Withdraw exactly *token* while it is still queued."""
+        if token.is_holder:
+            return False
+        current = self._load_token(token.path)
+        if current is None or current.lease_id != token.lease_id:
+            return False
+        try:
+            token.path.unlink()
+        except OSError:
+            return False
+        return True
+
+    def begin_token_recovery(self, token: SlotToken) -> bool:
+        """Claim exact-token cancellation without releasing reusable capacity."""
+        claimed = self._begin_execution_recovery(token, request_cancel=True)
+        if claimed:
+            token.lease_state = LEASE_CANCELLING
+            token.lease_health.lost.set()
+        return claimed
+
+    def token_absent(self, token: SlotToken) -> bool:
+        """Prove the exact lease ID is absent from its Job class."""
+        holders, waiters = self.snapshot(token.job_class)
+        return all(candidate.lease_id != token.lease_id for candidate in (*holders, *waiters))
 
     def state_for_pid(self, pid: int) -> TokenState | None:
         """Admission state of the entry owned by *pid*, or None when absent.

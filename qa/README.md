@@ -156,6 +156,25 @@ fault and recovery sequences, independent evaluation, and product cleanup Checks
 [published design](https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/HANDOFF.md)
 records the historical decisions behind the production files.
 
+### Pending Simulation Campaign qualification
+
+The 20 `campaign.*` Checks are behavioral additions and have no qualifying
+Scenario Run for this suite revision. Only these four representative Configured
+Scenarios select the dedicated Simulation Campaign Check sets and therefore
+require fresh runs:
+
+- `picorv32-ubuntu-codex-cli` selects `picorv32-simulation-campaign` (Checks 1–7).
+- `taxi-ubuntu-codex-cli` selects `taxi-simulation-campaign` (Checks 8–13).
+- `uart-ubuntu-codex-cli` selects `uart-simulation-campaign` (Checks 14–17).
+- `coverage-lifecycle-ubuntu-codex-cli` selects
+  `coverage-lifecycle-simulation-campaign` (Checks 18–20).
+
+Structural validation, fixture tests, and optional real EDA tool gates keep the
+authored contracts executable but do not complete these Checks or replace the
+fresh Scenario Runs. Run them only through a separately authorized
+`booley-qa-run`; until then, qualification for the changed suite remains
+incomplete rather than inheriting earlier sealed evidence.
+
 ## Validate changes
 
 After changing QA assets, run:

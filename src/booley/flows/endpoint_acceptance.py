@@ -20,6 +20,7 @@ from booley.flows.endpoint_events import (
 from booley.flows.endpoint_session import PreparedExecution
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import (
+    EXIT_CANCELLED,
     EXIT_ERROR,
     EXIT_SUCCESS,
     EndpointOutcome,
@@ -27,6 +28,7 @@ from booley.runtime.endpoint_execution import (
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
+    from booley.targets.domain import TargetHandle
 
 
 logger = logging.getLogger(__name__)
@@ -243,6 +245,58 @@ def _bound_criterion_keys(endpoint: EndpointState, target: str) -> list[str]:
     return bound
 
 
+def _bound_criterion_keys_for_target(endpoint: EndpointState, target: TargetHandle) -> list[str]:
+    """Return bindings for an already-resolved Target without re-resolving it."""
+    from booley.targets.domain import criterion_matches_target
+
+    selector = getattr(endpoint.args, "test", None)
+    detail = {
+        "test_selector": selector or "all",
+        "selected_tests": [selector] if selector else [],
+    }
+    bound = _acceptance_target_bindings(endpoint, target)
+    for family in endpoint.satisfies:
+        generic_key = f"{family}_{target.name}"
+        if generic_key in endpoint.state.criteria:
+            bound.append(generic_key)
+            continue
+        for alias in endpoint.state.flow_key_aliases.get(generic_key, []):
+            if alias in endpoint.state.criteria and endpoint.state._alias_matches_run(
+                alias, detail
+            ):
+                bound.append(alias)
+        if family in endpoint.state.criteria:
+            bound.append(family)
+        bound.extend(
+            key
+            for key, entry in endpoint.state.criteria.items()
+            if key.startswith(f"{family}_")
+            and isinstance(entry.params, dict)
+            and criterion_matches_target(
+                entry.params,
+                identity=target.identity,
+                selector=target.selector,
+            )
+            and key not in bound
+        )
+    return bound
+
+
+def _acceptance_target_bindings(endpoint: EndpointState, target: TargetHandle) -> list[str]:
+    """Match exact candidate or baseline identities sealed by Ticket intake."""
+    matches: list[str] = []
+    for binding in endpoint.flow_acceptance.bindings:
+        if binding.flow != endpoint.name:
+            continue
+        pairs = (
+            (binding.candidate, binding.candidate_selector),
+            (binding.baseline, binding.baseline_selector),
+        )
+        if (target.identity, target.selector) in pairs:
+            matches.append(binding.criterion)
+    return matches
+
+
 def _criterion_target_matches(
     endpoint: EndpointState,
     params: dict[str, Any],
@@ -282,25 +336,10 @@ def _criterion_target_matches(
 
 def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     """Reject an unbound Ticket-mode Target before job admission/EDA."""
-    # Explicit native collection also supports ungated Targets (#213). Coverage
-    # preflight has already validated the complete selection before admission.
-    if endpoint.name == "sim" and getattr(endpoint.args, "coverage", False):
-        return None
-    if (
-        not endpoint.state.strict_criteria
-        or not endpoint.satisfies
-        or getattr(endpoint.args, "diagnostic", False)
-    ):
-        return None
-    targets = endpoint._requested_targets()
-    if not targets:
-        return None
-    missing = [target for target in targets if not endpoint._bound_criterion_keys(target)]
+    missing = _missing_criterion_bindings(endpoint)
     if not missing:
         return None
-
     from booley.core.checkout_role import SourceCheckoutProjectError
-    from booley.criteria.actions import planned_invocation
     from booley.criteria.endpoint_catalog import (
         CriterionEndpointCatalog,
         EndpointCriterionRelationship,
@@ -313,7 +352,6 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
         )
     except (FileNotFoundError, SourceCheckoutProjectError):
         project_criteria_path = None
-
     endpoint_catalog = CriterionEndpointCatalog.load(
         project_criteria_path,
         (
@@ -324,6 +362,38 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
             ),
         ),
     )
+    pending_text = _pending_criterion_invocations(endpoint, endpoint_catalog)
+    return EndpointOutcome(
+        exit_code=EXIT_ERROR,
+        detail={"acceptance_effect": "rejected_unbound", "unbound_targets": missing},
+        report_text=(
+            f"{endpoint.name}: Target(s) {', '.join(missing)} do not bind an Acceptance "
+            f"Basis criterion.\nPending compatible criteria:\n{pending_text}\n"
+            "Use --diagnostic only when this is intentionally a non-acceptance run."
+        ),
+    )
+
+
+def _missing_criterion_bindings(endpoint: EndpointState) -> list[str]:
+    # Explicit native collection also supports ungated Targets (#213). Coverage
+    # preflight has already validated the complete selection before admission.
+    if endpoint.name == "sim" and getattr(endpoint.args, "coverage", False):
+        return []
+    if (
+        not endpoint.state.strict_criteria
+        or not endpoint.satisfies
+        or getattr(endpoint.args, "diagnostic", False)
+    ):
+        return []
+    return [
+        target
+        for target in endpoint._requested_targets()
+        if not endpoint._bound_criterion_keys(target)
+    ]
+
+
+def _pending_criterion_invocations(endpoint, endpoint_catalog) -> str:
+    from booley.criteria.actions import planned_invocation
 
     pending: list[str] = []
     for key, entry in endpoint.state.criteria.items():
@@ -333,19 +403,7 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
             continue
         invocation = planned_invocation(key, entry, endpoint_catalog)
         pending.append(f"  {key} -> {invocation or endpoint.name}")
-    pending_text = "\n".join(pending) if pending else "  (no compatible criterion declared)"
-    return EndpointOutcome(
-        exit_code=EXIT_ERROR,
-        detail={
-            "acceptance_effect": "rejected_unbound",
-            "unbound_targets": missing,
-        },
-        report_text=(
-            f"{endpoint.name}: Target(s) {', '.join(missing)} do not bind an Acceptance "
-            f"Basis criterion.\nPending compatible criteria:\n{pending_text}\n"
-            "Use --diagnostic only when this is intentionally a non-acceptance run."
-        ),
-    )
+    return "\n".join(pending) if pending else "  (no compatible criterion declared)"
 
 
 def record_acceptance(
@@ -356,6 +414,16 @@ def record_acceptance(
     """Record immutable Ticket evidence before state/report persistence."""
     if prepared.non_persisting_dry_run:
         endpoint._pending_criteria_set = ()
+        return
+    if outcome.exit_code == EXIT_CANCELLED:
+        endpoint._pending_criteria_set = ()
+        return
+    campaign_outcomes = getattr(endpoint, "_simulation_campaign_outcomes", ())
+    if campaign_outcomes:
+        handler = getattr(getattr(endpoint, "flow", None), "record_campaign_acceptance", None)
+        if not callable(handler):
+            raise RuntimeError("campaign outcomes have no Flow-owned acceptance handler")
+        handler(campaign_outcomes)
         return
     result = endpoint._adapt_outcome(outcome)
     if endpoint._state is not None and endpoint._state._file_path is not None:

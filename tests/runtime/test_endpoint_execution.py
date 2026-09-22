@@ -18,11 +18,13 @@ from booley.runtime.endpoint_execution import (
 
 
 @dataclass
-class _ReleaseWitness(AbstractContextManager[None]):
+class _ReleaseWitness(AbstractContextManager[object]):
     events: list[str]
+    borrowed: object
 
-    def __enter__(self) -> None:
+    def __enter__(self) -> object:
         self.events.append("admit")
+        return self.borrowed
 
     def __exit__(self, *exc_info: object) -> None:
         self.events.append("release")
@@ -46,8 +48,9 @@ class _Endpoint:
         self.reject_admission = reject_admission
         self.unexpected_failure = unexpected_failure
         self.acceptance_failure = acceptance_failure
+        self.borrowed = object()
 
-    def admission(self, prepared: object) -> AbstractContextManager[None]:
+    def admission(self, prepared: object) -> AbstractContextManager[object]:
         assert prepared == "prepared"
         if self.reject_gate:
             self.events.append("gate-rejected")
@@ -59,10 +62,13 @@ class _Endpoint:
             raise EndpointRejectedError(
                 EndpointOutcome(exit_code=EXIT_ERROR, report_text="queue full")
             )
-        return _ReleaseWitness(self.events)
+        return _ReleaseWitness(self.events, self.borrowed)
 
-    def invoke_endpoint(self, prepared: object, *, started: float) -> EndpointOutcome:
+    def invoke_endpoint(
+        self, prepared: object, *, admission: object, started: float
+    ) -> EndpointOutcome:
         assert prepared == "prepared"
+        assert admission is self.borrowed
         assert started > 0
         self.events.append("invoke")
         if self.unexpected_failure:

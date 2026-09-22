@@ -8,6 +8,7 @@ Full removal leaves an empty numbered tombstone to prevent invocation-id reuse.
 import hashlib
 import json
 import shutil
+import stat
 from pathlib import Path
 
 from .campaign_reports import (
@@ -18,10 +19,24 @@ from .campaign_reports import (
 )
 from .coverage_campaign import CoverageCampaign
 from .coverage_campaign_store import LoadedCoverageCampaign, load_coverage_campaign
+from .coverage_reference import (
+    REFERENCE_SCHEMA,
+    authenticate_coverage_campaign_owner,
+    resolve_coverage_campaign_reference,
+)
 
 
 class CampaignRetentionError(ValueError):
     """A selection or filesystem tree cannot be safely pruned."""
+
+
+def _remove_tree(path: Path) -> None:
+    """Remove an authenticated artifact tree, including read-only snapshots."""
+    for child in path.rglob("*"):
+        if child.is_file():
+            child.chmod(child.stat().st_mode | stat.S_IWUSR)
+    path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    shutil.rmtree(path)
 
 
 def _safe_tree(path: Path) -> None:
@@ -63,12 +78,21 @@ def _target(
     ):
         raise CampaignRetentionError("Target does not resolve exactly in this invocation")
     target = target_report_directory(root, selector)
-    loaded = load_coverage_campaign(target / "coverage.json")
+    public_path = target / "coverage.json"
+    public = _read_object(public_path)
+    if public.get("$schema") == REFERENCE_SCHEMA:
+        resolved = resolve_coverage_campaign_reference(public_path)
+        authenticate_coverage_campaign_owner(resolved)
+        loaded = resolved.loaded
+        storage = resolved.campaign_path.parent
+    else:
+        loaded = load_coverage_campaign(public_path)
+        storage = target
     campaign = loaded.campaign
     if campaign.target.selector != selector or campaign.invocation["id"] != int(root.name):
         raise CampaignRetentionError("Campaign identity disagrees with the exact selection")
     if not require_projection:
-        return target, loaded
+        return storage, loaded
     projection = _read_object(target / "simulation.json")
     if (
         projection.get("target_identity") != campaign.target.identity
@@ -77,7 +101,7 @@ def _target(
         raise CampaignRetentionError(
             "Simulation projection is missing or belongs to another Target"
         )
-    return target, loaded
+    return storage, loaded
 
 
 def _native_manifest(target: Path, campaign: CoverageCampaign) -> list[dict[str, object]]:
@@ -143,7 +167,7 @@ def _prune_native(root: Path, target: str) -> Path:
     if native.exists():
         native.rename(quarantine)
     if quarantine.exists():
-        shutil.rmtree(quarantine)
+        _remove_tree(quarantine)
     write_campaign_json(sidecar, {**document, "status": "pruned"})
     return sidecar
 
@@ -162,14 +186,16 @@ def _validate_unpruned(directory: Path, campaign: CoverageCampaign) -> None:
             )
 
 
-def prune_invocation(reports_root: Path, invocation: int) -> None:
+def prune_invocation(
+    reports_root: Path, invocation: int, *, project_data: Path | None = None
+) -> None:
     """Remove exactly one invocation, retaining only an empty number tombstone."""
     root = _invocation(reports_root, invocation)
     with campaign_invocation_lock(root):
-        _prune_invocation(root)
+        _prune_invocation(root, project_data=project_data)
 
 
-def _prune_invocation(root: Path) -> None:
+def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
     _safe_tree(root)
     quarantine = root.with_name(f".pruned-{root.name}")
     _safe_tree(quarantine)
@@ -177,6 +203,7 @@ def _prune_invocation(root: Path) -> None:
         if quarantine.exists():
             raise CampaignRetentionError("Ambiguous invocation pruning state")
         _validate_invocation_targets(root)
+        _release_child_indexes(root, project_data)
         write_campaign_json(
             root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
         )
@@ -196,10 +223,36 @@ def _prune_invocation(root: Path) -> None:
         if child == journal:
             continue
         if child.is_dir():
-            shutil.rmtree(child)
+            _remove_tree(child)
         else:
             child.unlink()
     journal.unlink()
+
+
+def _release_child_indexes(root: Path, project_data: Path | None) -> None:
+    from booley.runtime.execution_records import release_retired_campaign_children
+
+    target_root = root / "targets"
+    campaign_children = tuple(target_root.glob("*/campaign/child-executions"))
+    if not campaign_children:
+        return
+    resolved = project_data or _infer_project_data(root)
+    if resolved is None:
+        raise CampaignRetentionError(
+            "Project data is required to release retained campaign child records"
+        )
+    try:
+        for children in campaign_children:
+            release_retired_campaign_children(resolved, children)
+    except (OSError, ValueError) as exc:
+        raise CampaignRetentionError(f"Campaign child retention is invalid: {exc}") from exc
+
+
+def _infer_project_data(root: Path) -> Path | None:
+    reports_root = root.parent.parent
+    if reports_root.name == "flow-reports" and reports_root.parent.name == ".runtime":
+        return reports_root.parent.parent
+    return None
 
 
 def _validate_invocation_targets(root: Path) -> None:
@@ -223,6 +276,33 @@ def _validate_invocation_targets(root: Path) -> None:
                 target for target in targets if target_report_directory(root, target) == directory
             )
             _target(root, selector, require_projection=False)
+        campaign = directory / "campaign"
+        if (campaign / "manifest.json").exists():
+            _validate_simulation_campaign(directory, campaign)
+
+
+def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
+    from .campaign.store import CampaignStore
+
+    try:
+        store = CampaignStore(campaign)
+        recovery = store.scan()
+        summary = _read_object(store.summary_path)
+        projection = _read_object(target / "simulation.json")
+    except (OSError, ValueError) as exc:
+        raise CampaignRetentionError(
+            f"Simulation Campaign is invalid and cannot be pruned: {exc}"
+        ) from exc
+    if recovery.pending or recovery.interrupted:
+        raise CampaignRetentionError("Incomplete Simulation Campaigns cannot be pruned")
+    if (
+        summary.get("complete") is not True
+        or summary.get("completed") != list(recovery.complete)
+        or projection.get("complete") is not True
+        or projection.get("campaign_manifest") != str(store.manifest_path)
+        or projection.get("campaign_summary") != str(store.summary_path)
+    ):
+        raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
 
 
 def _validate_completed_targets(
@@ -253,13 +333,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reports-root", required=True, type=Path)
     parser.add_argument("--invocation", required=True, type=int)
+    parser.add_argument(
+        "--project-data",
+        type=Path,
+        help=(
+            "Resolved project-data root for --full when --reports-root is outside "
+            "<project-data>/.runtime/flow-reports; not required for --native-target"
+        ),
+    )
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--native-target", help="Exact Target selector for native-only pruning")
     operation.add_argument("--full", action="store_true", help="Remove the full invocation")
     args = parser.parse_args()
     try:
         if args.full:
-            prune_invocation(args.reports_root, args.invocation)
+            prune_invocation(args.reports_root, args.invocation, project_data=args.project_data)
         else:
             prune_native_payload(args.reports_root, args.invocation, args.native_target)
     except (OSError, ValueError) as exc:

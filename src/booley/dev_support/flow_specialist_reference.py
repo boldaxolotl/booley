@@ -54,7 +54,12 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
     "sim": (
         "`--mode elab-only` compiles, elaborates, and links without running tests; "
         "`--mode elab-only-standalone` adds the stronger module sweep. "
-        "`--test <name>` selects a test, `--skip <name,...>` excludes tests, "
+        "Repeat `--test <name>` for an exact ordered suite or use `--tests-file <path>`; "
+        "there is no CLI `--skip`, and configured skips apply only to unfiltered selection. "
+        "MCP passes the same suite as a `test` array. Resume one exact durable "
+        "Simulation Campaign with `--resume-from <exact-manifest.json>` (optionally with "
+        "`--dry-run`): Cocotb retries the whole batch and coverage retries the whole "
+        "aggregate into a distinct nested Coverage Campaign. "
         "`--coverage` / `--cov` collects a native Coverage Campaign, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "

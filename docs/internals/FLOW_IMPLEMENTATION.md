@@ -270,7 +270,7 @@ owns the exact simulation keys and defaults, while its
 [design-description section](../user/CONFIG.md#design-description-core-and-tests-teststoml)
 owns the `tests.toml` schema.
 
-The CLI selectors `--test` (substring include-filter), `--skip`, `--trace`
+The CLI selectors `--test` (repeatable exact include), `--tests-file`, `--trace`
 (debug-only; never a pass/fail source), `--timeout-ms`, and `--dry-run` resolve
 against those config entries rather than acting as raw command fragments.
 
@@ -279,11 +279,13 @@ project-owned hook, and they do not loosen the contract. Shell lines run at the
 Sandbox immediately before each run (per test for an HDL Target, once per
 Cocotb batch), under a `BOOLEY_*` env contract that names the run
 (`BOOLEY_TEST_NAME` / `BOOLEY_TEST_NAMES`, `BOOLEY_TARGET`) and its authoritative
-directories (`BOOLEY_RUN_CWD`, `BOOLEY_BUILD_ROOT`). This is how a per-test
-non-RTL build step (e.g. cross-compiling the selected test's firmware) joins the
-Simulation Flow: a failing Pre-Sim Commands invocation is recorded as that test's failed result with
-an attributed tail. It can never manufacture a pass, and it never crashes the
-Flow.
+run directory (`BOOLEY_RUN_CWD`). The default immutable build-access contract
+withholds the authenticated Simulator Bundle path; `BOOLEY_BUILD_ROOT` exists
+only for an explicit `pre_sim_build_access = "legacy-per-test"` private build.
+This is how a per-test non-RTL build step (e.g. cross-compiling the selected
+test's firmware) joins the Simulation Flow: a failing Pre-Sim Commands
+invocation is recorded as that test's failed result with an attributed tail. It
+can never manufacture a pass, and it never crashes the Flow.
 
 ### Verdict semantics
 
@@ -353,9 +355,14 @@ claiming that RTL alone caused it.
 
 ### Reports and artifacts
 
-Every run writes a per-Target JSON report at
-`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` carrying the resolved identity (`target`,
-`tb_top`, `eda_tool`), timing, the target `passed` flag, and a `tests`
+Every simulation run first publishes an immutable per-Target Simulation
+Campaign manifest at
+`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/campaign/manifest.json`.
+Append-only attempts/results and the ordered `summary.json` remain beside that
+manifest across exact resume. The replaceable compatibility report at
+`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` carries
+the resolved identity (`target`, `tb_top`, `eda_tool`), timing, the target
+`passed` flag, and a `tests`
 list: one entry per test with its `name`, `verdict`, `sva_errors`, and an
 `error_tail`. Entries also carry `cycles`, a typed `cycle_observation` status,
 and a workload fingerprint when resolved inputs are available. For native HDL Targets, every entry also carries
@@ -387,7 +394,7 @@ a later full simulation can reuse the retained image.
 
 Only Simulation Targets are eligible. `--mode elab-only-standalone` is a
 cumulative stronger module sweep. Both elaboration modes reject run-only
-arguments such as `--test`, `--skip`, `--trace`, `--result-verbosity full`, and
+arguments such as `--test`, `--tests-file`, `--trace`, `--result-verbosity full`, and
 `--no-kill`.
 
 A compiler diagnostic that proves the design was rejected is a design FAIL
@@ -1035,6 +1042,13 @@ Explicit maintenance entry points:
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_example
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
 ```
+
+Full pruning releases matching retired child-execution index entries before it
+removes the invocation. The project-data root is inferred only when the report
+root is exactly `<project-data>/.runtime/flow-reports`. A nonstandard report
+root therefore requires `--project-data <resolved-project-data>` for `--full`
+when Campaign child records exist. Native-only pruning does not inspect or
+release those records and does not require the option.
 
 Selection, locking, validation, and filesystem failures exit 2. Both operations
 are retryable for their exact selections. Do not manually remove journals,

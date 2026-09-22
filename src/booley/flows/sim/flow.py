@@ -15,7 +15,7 @@ import re
 import shlex
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -30,6 +30,7 @@ from booley.core.build_paths import work_root_for
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.display import format_flow_display_label
+from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -57,6 +58,7 @@ from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
+    EXIT_CANCELLED,
     EXIT_ERROR,
     EXIT_FAILURE,
     EXIT_SUCCESS,
@@ -102,6 +104,29 @@ from .build_session import (
     preview_generation_root,
     project_compile_surface,
 )
+from .campaign.codec import SimulationCampaignIntegrityError, encode_simulation_campaign_manifest
+from .campaign.coordinator import (
+    CampaignOutcome,
+    CampaignPolicy,
+    NewCampaignPreviewRequest,
+    NewCampaignRunRequest,
+    ResumeCampaignPreview,
+    ResumeCampaignPreviewRequest,
+    ResumeCampaignRunRequest,
+    SimulationCampaign,
+    SimulationCampaignCancellationError,
+)
+from .campaign.coverage_execution import CoverageAggregateExecutor
+from .campaign.flow_planning import (
+    plan_coarse_simulation_campaign,
+    plan_ordinary_hdl_campaign,
+)
+from .campaign.model import SimulationCampaignManifest, SimulationCampaignPlan
+from .campaign.planning import manifest_digest
+from .campaign.resume import ValidatedResumeManifest, validate_resume_manifest
+from .campaign.serial_execution import OrdinaryHdlSerialExecutor
+from .campaign.store import CampaignStore
+from .coverage_reference import resolve_coverage_campaign_reference
 from .execution import (
     DefaultSelection,
     NamedTests,
@@ -172,6 +197,16 @@ class SimulationBuildInfrastructureError(RuntimeError):
         super().__init__(outcome.reason)
         self.target = target
         self.outcome = outcome
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSimulationEndpoint:
+    """Read-only all-Target preflight retained through endpoint execution."""
+
+    targets: tuple[TargetHandle, ...]
+    resume: ValidatedResumeManifest | None
+    selected_targets: tuple[str, ...]
+    test_names_map: Mapping[str, list[str]]
 
 
 def _raise_if_missing_executable(text: str) -> None:
@@ -353,6 +388,151 @@ def _target_progress_detail(result: TargetResult) -> dict[str, Any]:
     if any(entry is not None for entry in build_stage):
         detail["build_stage"] = [entry for entry in build_stage if entry is not None]
     return detail
+
+
+def _campaign_observation_counts(
+    observations: Sequence[Mapping[str, object]],
+) -> dict[str, dict[str, int]]:
+    """Bounded structured summary preserving independent observation axes."""
+    axes = ("execution", "functional", "assertions")
+    return {axis: dict(Counter(str(item[axis]) for item in observations)) for axis in axes}
+
+
+def _campaign_report_lines(outcomes: Sequence[CampaignOutcome]) -> list[str]:
+    lines: list[str] = []
+    for outcome in outcomes:
+        line = (
+            f"{outcome.target['selector']}: {outcome.aggregate_grade.upper()} "
+            f"({outcome.manifest_path})"
+        )
+        reasons = []
+        for observation in outcome.observations:
+            detail = observation.get("detail")
+            reason = detail.get("reason") if isinstance(detail, Mapping) else None
+            if isinstance(reason, str) and reason and reason not in reasons:
+                reasons.append(reason)
+        lines.append("\n".join((line, *(f"  {reason}" for reason in reasons))))
+    return lines
+
+
+def _campaign_structured_details(
+    outcomes: Sequence[CampaignOutcome],
+) -> dict[str, object]:
+    """Expose bounded durable pointers instead of embedding campaign records."""
+    return {
+        str(outcome.target["selector"]): {
+            "manifest": str(outcome.manifest_path),
+            "summary": str(outcome.summary_path),
+            "simulation": str(outcome.manifest_path.parents[1] / "simulation.json"),
+            "coverage": (
+                str(outcome.manifest_path.parents[1] / "coverage.json")
+                if outcome.coverage_reference is not None
+                else None
+            ),
+            "grade": outcome.aggregate_grade,
+            "complete": outcome.complete,
+            "observation_counts": _campaign_observation_counts(outcome.observations),
+            **_campaign_observation_preview(outcome.observations),
+        }
+        for outcome in outcomes
+    }
+
+
+def _campaign_observation_preview(
+    observations: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    limit = 32
+    preview = [
+        {
+            "test": item["test"],
+            "execution": item["execution"],
+            "functional": item["functional"],
+            "assertions": item["assertions"],
+            "assertion_count": item["assertion_count"],
+            "detail": _structured_json(item["detail"]),
+        }
+        for item in observations[:limit]
+    ]
+    total = len(observations)
+    return {
+        "observations": preview,
+        "observation_total": total,
+        "observations_truncated": total > limit,
+    }
+
+
+def _structured_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _structured_json(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_structured_json(item) for item in value]
+    return value
+
+
+def _coverage_compatibility_targets(
+    outcomes: Sequence[CampaignOutcome], project_root: Path
+) -> dict[str, object]:
+    """Preserve bounded coverage endpoint fields while authority stays referenced."""
+    targets: dict[str, object] = {}
+    for outcome in outcomes:
+        if outcome.coverage_reference is None:
+            continue
+        public = outcome.manifest_path.parents[1] / "coverage.json"
+        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+        selector = str(outcome.target["selector"])
+        targets[selector] = {
+            "target": selector,
+            "passed": outcome.aggregate_grade == "pass",
+            "simulation": _campaign_simulation_status(outcome),
+            "collection": campaign.collection["status"],
+            "evaluation": campaign.evaluation["status"],
+            "abort_remaining": False,
+            "coverage_campaign": posix_relpath(public, project_root),
+        }
+    return targets
+
+
+def _campaign_simulation_status(outcome: CampaignOutcome) -> str:
+    executions = {str(item["execution"]) for item in outcome.observations}
+    functional = {str(item["functional"]) for item in outcome.observations}
+    for state in ("crash", "timeout"):
+        if state in executions:
+            return state
+    for verdict in ("fail", "inconclusive", "pass"):
+        if verdict in functional:
+            return verdict
+    return "not_run"
+
+
+def _coverage_campaign_exit_code(outcomes: Sequence[CampaignOutcome]) -> int:
+    """Preserve native collection/evaluation exit policy for wrapped aggregates."""
+    saw_failure = False
+    for outcome in outcomes:
+        if outcome.coverage_reference is None:
+            continue
+        public = outcome.manifest_path.parents[1] / "coverage.json"
+        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+        if (
+            campaign.collection["status"] != "complete"
+            or campaign.evaluation["status"] == "blocked"
+        ):
+            return EXIT_ERROR
+        saw_failure |= campaign.evaluation["status"] == "fail"
+    return EXIT_FAILURE if saw_failure else 0
+
+
+def _checkpoint_coverage_campaign(progress: CoverageProgress, outcome: CampaignOutcome) -> None:
+    public = outcome.manifest_path.parents[1] / "coverage.json"
+    campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+    progress.completed(
+        CoverageTargetOutcome(
+            str(outcome.target["selector"]),
+            _coverage_campaign_exit_code([outcome]),
+            public,
+            public.with_name("simulation.json"),
+            campaign.evaluation,
+        )
+    )
 
 
 def _build_outcome_entry(outcome: BuildOutcome | None) -> dict[str, Any] | None:
@@ -669,16 +849,18 @@ def _get_test_selects(work_dir: Path | str | None = None) -> dict[str, str]:
         return {}
 
 
-def _filter_tests(tests: list[str], substring: str) -> list[str]:
-    """Filter test names by substring match."""
-    return [t for t in tests if substring in t]
+def _filter_tests(tests: list[str], exact_names: str | Sequence[str]) -> list[str]:
+    """Select registered tests by exact name while preserving request order."""
+    requested = (exact_names,) if isinstance(exact_names, str) else tuple(exact_names)
+    available = set(tests)
+    return [name for name in requested if name in available]
 
 
 def _selected_test_work_units(
     target: str,
     test_names: Mapping[str, list[str]],
     configured_skips: Mapping[str, list[str]],
-    test_selector: str | None,
+    test_selector: Sequence[str] | str | None,
     skip_arg: str | None,
 ) -> int:
     """Simulator processes a non-cocotb Target will launch, at least one."""
@@ -701,7 +883,7 @@ def _selected_test_work_units(
 def _resolve_sim_campaign_work_units(
     work_dir: Path,
     target_arg: str,
-    test_selector: str | None = None,
+    test_selector: Sequence[str] | str | None = None,
     skip_arg: str | None = None,
     mode: SimulationMode | str = SimulationMode.SIMULATE,
 ) -> int:
@@ -921,6 +1103,17 @@ def _test_verdict(test: TestResult) -> str:
     if test.elab_failed:
         return "elab_error"
     return "fail"
+
+
+def _cycle_detail(result: TargetResult, test: TestResult) -> dict[str, object]:
+    return {
+        "target": result.target,
+        "target_identity": result.target_identity,
+        "test": test.name,
+        "verdict": _test_verdict(test),
+        "cycles": test.cycles,
+        "observation": test.cycle_status,
+    }
 
 
 _ERROR_MARKERS = (
@@ -1166,12 +1359,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         *,
         coverage_execution: Callable[[TargetHandle, SimulationOptions], SimulationExecutionPort]
         | None = None,
+        campaign_publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
         self._coverage_execution_factory = coverage_execution
+        self._campaign_publication_checkpoint = campaign_publication_checkpoint
 
     request_type = SimRequest
     argument_adapter = SimArguments
+    target_required = False
 
     name: str = "sim"
     description: str = (
@@ -1190,6 +1386,136 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Simulation is a heavy Sandbox workload."""
         return job_slots.CLASS_HEAVY
 
+    def record_campaign_acceptance(self, outcomes: tuple[object, ...]) -> None:
+        """Own campaign-specific reconciliation behind the generic endpoint hook."""
+        from .acceptance import record_campaign_acceptance
+
+        record_campaign_acceptance(self.context, outcomes)
+
+    def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
+        self,
+    ) -> PreparedSimulationEndpoint | EndpointOutcome | None:
+        """Resolve and authorize every Target before reservation or admission."""
+        # Contract tests and embedding adapters may replace the complete Flow
+        # implementation at the instance boundary.  Such an endpoint has no
+        # campaign execution to prepare and keeps the generic lifecycle.
+        if "_run" in self.__dict__ or self._mode.elaborates_only:
+            return None
+        from booley.flows.endpoint_admission import authorize_simulation_targets
+
+        if (binding_error := self.context._criterion_binding_gate()) is not None:
+            return binding_error
+
+        try:
+            prepared = self._prepare_campaign_targets()
+            if isinstance(prepared, EndpointOutcome):
+                return prepared
+            targets, resume, selected_targets, test_names_map = prepared
+            if resume is None:
+                selection_error = self._validate_prepared_selection(
+                    list(selected_targets), dict(test_names_map)
+                )
+                if selection_error is not None:
+                    return selection_error
+            rejection = authorize_simulation_targets(self.context, targets)
+        except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"sim campaign preflight failed: {exc}",
+            )
+        if rejection is not None:
+            return rejection
+        return PreparedSimulationEndpoint(targets, resume, selected_targets, test_names_map)
+
+    def _validate_prepared_selection(
+        self, targets: list[str], test_names_map: dict[str, list[str]]
+    ) -> EndpointOutcome | None:
+        """Reject all selection/configuration errors before heavy admission."""
+        if (error := self._validate_test_selector(targets, test_names_map)) is not None:
+            return error
+        if (error := self._validate_cocotb_targets(targets)) is not None:
+            return error
+        return self._validate_runnable_tests(targets, test_names_map)
+
+    def run_prepared_simulation(
+        self,
+        prepared: PreparedSimulationEndpoint,
+        admission: object | None,
+    ) -> EndpointOutcome:
+        """Run one immutable preflight with its explicitly borrowed admission."""
+        if prepared.resume is not None:
+            return self._run_campaign_resume(prepared.resume, admission)
+        result = (
+            self._run_coverage_campaigns(admission)
+            if getattr(self.args, "coverage", False)
+            else self._run_selected_mode(prepared=prepared, admission=admission)
+        )
+        result.detail["mode"] = self._mode.value
+        return result
+
+    def _prepare_campaign_targets(
+        self,
+    ) -> (
+        tuple[
+            tuple[TargetHandle, ...],
+            ValidatedResumeManifest | None,
+            tuple[str, ...],
+            Mapping[str, list[str]],
+        ]
+        | EndpointOutcome
+    ):
+        if self.args.resume_from is not None:
+            roots: dict[str, Path] = {}
+
+            def revision_root(target: Mapping[str, str]) -> Path:
+                if target["role"] == "candidate":
+                    return Path(self.args.work_dir)
+                revision = target["revision"]
+                if revision not in roots:
+                    resources = self.context.publication_resources
+                    roots[revision] = resources.enter_context(
+                        baseline_worktree(
+                            Path(self.args.work_dir),
+                            revision,
+                            paired_project=self._paired_project_baseline,
+                        )
+                    )
+                return roots[revision]
+
+            resume = validate_resume_manifest(
+                self.args.resume_from,
+                project_root=Path(self.args.work_dir),
+                revision_root=revision_root,
+            )
+            return resume.target_handles, resume, (), {}
+        requested = self._resolve_requested_targets()
+        if isinstance(requested, EndpointOutcome):
+            return requested
+        if (missing := self._validate_interactive_args(requested)) is not None:
+            return missing
+        selected = [self._target_handle(target) for target in requested]
+        baseline_ref, baseline_targets, baseline_error = self._cycle_baseline_selection(requested)
+        if baseline_error is not None:
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=baseline_error)
+        baselines = self._campaign_authorization_baselines(baseline_ref, baseline_targets)
+        return (*selected, *baselines), None, tuple(requested), _get_test_names(self.args.work_dir)
+
+    def _campaign_authorization_baselines(
+        self, revision: str | None, selectors: Sequence[str]
+    ) -> tuple[TargetHandle, ...]:
+        """Resolve Criterion baselines from their historical checkout."""
+        if revision is None or not selectors:
+            return ()
+        root = self.context.publication_resources.enter_context(
+            baseline_worktree(
+                Path(self.args.work_dir),
+                revision,
+                paired_project=self._paired_project_baseline,
+            )
+        )
+        catalog = TargetCatalog.build(root)
+        return tuple(catalog.select(selector, for_flow="sim") for selector in selectors)
+
     satisfies: ClassVar[list[str]] = [
         "elab_pass",
         "elaborate_standalone",
@@ -1206,18 +1532,27 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     # long enough for the child sim timeout plus one non-FIFO trace retry.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
 
+    @property
+    def _mode(self) -> SimulationMode:
+        """Effective mode without erasing whether the caller supplied it."""
+        return self.args.mode or SimulationMode.SIMULATE
+
     def _resolve_display_label(self) -> str | None:
         """Describe the requested Target/test scope without validating it."""
         targets = self._requested_targets()
-        if self.args.mode.elaborates_only:
+        if self._mode.elaborates_only:
             return format_flow_display_label(targets, mode="elaboration")
         try:
             test_names = _get_test_names(self.args.work_dir)
-            selected = [
-                test
-                for target in targets
-                for test in self._resolve_tests_to_run(target, test_names)
-            ]
+            selected = (
+                [name for _target in targets for name in self.args.test]
+                if self.args.test
+                else [
+                    test
+                    for target in targets
+                    for test in self._resolve_tests_to_run(target, test_names)
+                ]
+            )
         except Exception:  # display metadata must not block a Flow run
             logger.debug("could not resolve simulation display scope", exc_info=True)
             return format_flow_display_label(targets, tests=None)
@@ -1348,10 +1683,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return err
         return targets, _get_test_names(self.args.work_dir)
 
-    def _maybe_dispatch_special_run(
+    def _maybe_dispatch_special_run(  # noqa: PLR0911 -- ordered endpoint gates
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
+        *,
+        campaign_prepared: bool = False,
     ) -> EndpointOutcome | None:
         """Handle validation + the dry-run path; ``None`` means "continue".
 
@@ -1374,14 +1711,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         plan = self._plan_simulation(targets, test_names_map)
         self._flow_plan = plan
-        if self.args.dry_run:
-            return self._handle_dry_run(targets, test_names_map)
         if plan.aggregate_errors:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
-                detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
+                detail={"mode": self._mode.value, "plan": plan.as_dict()},
             )
+        if self.args.dry_run:
+            if campaign_prepared:
+                return self._preview_ordinary_campaigns(targets, test_names_map)
+            return self._handle_dry_run(targets, test_names_map)
 
         return None
 
@@ -1404,7 +1743,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         return FlowPlan(
             flow="sim",
-            mode=self.args.mode.value,
+            mode=self._mode.value,
             work_units=(*baseline_units, *candidate_units),
             aggregate_errors=(*baseline_errors, *candidate_errors),
         )
@@ -1457,7 +1796,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         recipe = {
             "environment_fingerprint": plan_value_fingerprint(environment),
             "flow_options": preview.flow_options,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "result_verbosity": self.args.result_verbosity,
             "toplevel": preview.toplevel,
             "trace": self.args.trace,
@@ -1543,8 +1882,315 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if getattr(self.args, "coverage", False)
             else self._run_selected_mode()
         )
-        result.detail["mode"] = self.args.mode.value
+        result.detail["mode"] = self._mode.value
         return result
+
+    def _run_campaign_resume(
+        self, validated: ValidatedResumeManifest, admission: object | None
+    ) -> EndpointOutcome:
+        """Validate and report one exact durable campaign resume."""
+        try:
+            store = CampaignStore(validated.path.parent)
+            recovery = store.scan()
+        except (OSError, ValueError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign integrity failure: {exc}",
+            )
+        status: dict[str, object] = {
+            "manifest": str(validated.path),
+            "manifest_sha256": validated.sha256,
+            "completed": list(recovery.complete),
+            "interrupted": list(recovery.interrupted),
+            "pending": list(recovery.pending),
+        }
+        if self.args.dry_run:
+            return self._preview_campaign_resume(validated, status)
+        return self._execute_campaign_resume(validated, admission, status)
+
+    def _preview_campaign_resume(
+        self, validated: ValidatedResumeManifest, status: dict[str, object]
+    ) -> EndpointOutcome:
+        origin = cast(Mapping[str, object], validated.manifest.document["origin"])
+        try:
+            current_plan = self._resume_campaign_plan(
+                validated, cast(int, origin["invocation_id"])
+            )
+            preview = SimulationCampaign().preview(
+                ResumeCampaignPreviewRequest(
+                    validated,
+                    current_plan,
+                    Path(self.args.work_dir),
+                    self.args.report_dir,
+                    self._campaign_policy(),
+                )
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign resume preview failed: {exc}",
+                detail=status,
+            )
+        assert isinstance(preview, ResumeCampaignPreview)
+        status["mismatches"] = [item.message for item in preview.mismatches]
+        status["required_bundle_variants"] = list(preview.required_bundle_variants)
+        lines = [
+            f"manifest: {validated.path}",
+            f"completed: {len(preview.completed)}",
+            f"interrupted: {len(preview.interrupted)}",
+            f"pending: {len(preview.pending)}",
+            f"mismatches: {len(preview.mismatches)}",
+        ]
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR if preview.mismatches else EXIT_SUCCESS,
+            detail=status,
+            report_text="\n".join(lines),
+        )
+
+    def _execute_campaign_resume(
+        self,
+        validated: ValidatedResumeManifest,
+        admission: object | None,
+        status: dict[str, object],
+    ) -> EndpointOutcome:
+        if self.args.report_dir is None:
+            self.args.report_dir = Path(self.args.work_dir) / "flow-reports"
+        invocation = self.reserve_invocation_dir()
+        assert invocation is not None
+        from .campaign_reports import campaign_invocation_lock
+
+        self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
+        if not isinstance(admission, AdmissionContext):
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text="sim: no admission context")
+        try:
+            outcome = self._execute_validated_resume(validated, invocation, admission)
+        except SimulationCampaignCancellationError as exc:
+            return self._campaign_cancelled_outcome(exc, status)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign resume failed: {exc}",
+                detail=status,
+            )
+        return self._campaign_endpoint_outcome([outcome])
+
+    def _execute_validated_resume(
+        self,
+        validated: ValidatedResumeManifest,
+        invocation: Path,
+        admission: AdmissionContext,
+    ) -> CampaignOutcome:
+        items = cast(tuple[Mapping[str, object], ...], validated.manifest.document["work_items"])
+        coverage_plan = (
+            self._resume_coverage_target_plan(validated)
+            if items and items[0]["kind"] == "coverage_aggregate"
+            else None
+        )
+        progress = (
+            CoverageProgress(invocation, (coverage_plan.handle.selector,))
+            if coverage_plan is not None
+            else None
+        )
+        if progress is not None:
+            progress.checkpoint()
+        plan = self._resume_campaign_plan(
+            validated, int(invocation.name), coverage_plan=coverage_plan
+        )
+        executor = self._resume_campaign_executor(coverage_plan)
+        outcome = SimulationCampaign(
+            executor, publication_checkpoint=self._campaign_publication_checkpoint
+        ).run(
+            ResumeCampaignRunRequest(
+                validated,
+                plan,
+                Path(self.args.work_dir),
+                self.args.report_dir,
+                self._campaign_policy(),
+                invocation,
+                admission,
+            )
+        )
+        if progress is not None:
+            _checkpoint_coverage_campaign(progress, outcome)
+            progress.checkpoint(complete=True)
+        return outcome
+
+    def _resume_campaign_executor(self, coverage_plan: CoverageTargetPlan | None):
+        if coverage_plan is None:
+            return OrdinaryHdlSerialExecutor(invoke=self._execute_boundary)
+        return CoverageAggregateExecutor(
+            plans={coverage_plan.handle.identity: coverage_plan},
+            execution_factory=self._coverage_campaign_execution,
+            publication_checkpoint=self._campaign_publication_checkpoint,
+        )
+
+    def _resume_campaign_plan(
+        self,
+        validated: ValidatedResumeManifest,
+        invocation_id: int,
+        *,
+        coverage_plan: CoverageTargetPlan | None = None,
+    ):
+        """Recompute current workload identity for exact resume comparison."""
+        manifest = validated.manifest
+        binding = validated.binding_for(manifest)
+        handle = binding.handle if binding is not None else validated.target_handles[0]
+        inspection = TargetCatalog.build(handle.project_root).inspect(handle)
+        items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+        groups = tuple(
+            cast(tuple[str, ...], cast(Mapping[str, object], item["selection"])["names"])
+            for item in items
+        )
+        names = tuple(name for group in groups for name in group)
+        execution = self._simulation_execution()
+        preview = execution.preview(handle, NamedTests(names) if names else DefaultSelection())
+        if items and items[0]["kind"] == "coverage_aggregate":
+            preview = replace(preview, groups=(names,))
+        disclosures = (
+            ()
+            if items and items[0]["kind"] == "coverage_aggregate"
+            else tuple(execution.plan_campaign_group(handle, group) for group in groups)
+        )
+        suite = cast(Mapping[str, object], manifest.document["required_suite"])
+        target = cast(Mapping[str, str], manifest.document["target"])
+        revision = git_full_sha("HEAD", handle.project_root)
+        if revision is None:
+            raise SimulationCampaignIntegrityError(
+                f"cannot verify resume Target revision at {handle.project_root}"
+            )
+        if items and items[0]["kind"] in {"coverage_aggregate", "cocotb_batch"}:
+            kind = cast(str, items[0]["kind"])
+            if kind == "coverage_aggregate" and coverage_plan is None:
+                self._resume_coverage_target_plan(validated)
+            return plan_coarse_simulation_campaign(
+                handle=handle,
+                inspection=inspection,
+                preview=preview,
+                selected_tests=names,
+                required_suite=cast(tuple[str, ...], suite["names"]),
+                revision=revision,
+                invocation_id=invocation_id,
+                execution_id="",
+                trace=cast(
+                    bool,
+                    cast(Mapping[str, object], manifest.document["workload"])["trace"],
+                ),
+                kind=kind,
+                planning_disclosures=disclosures if kind == "cocotb_batch" else (),
+                required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
+            )
+        return self._ordinary_resume_plan(
+            handle,
+            inspection,
+            preview,
+            groups,
+            suite,
+            target,
+            revision,
+            invocation_id,
+            manifest,
+            disclosures,
+        )
+
+    def _ordinary_resume_plan(
+        self,
+        handle,
+        inspection,
+        preview,
+        groups,
+        suite,
+        target,
+        revision,
+        invocation_id,
+        manifest,
+        disclosures,
+    ) -> SimulationCampaignPlan:
+        return plan_ordinary_hdl_campaign(
+            handle=handle,
+            inspection=inspection,
+            preview=preview,
+            groups=groups,
+            required_suite=cast(tuple[str, ...], suite["names"]),
+            revision=revision,
+            invocation_id=invocation_id,
+            execution_id="",
+            trace=cast(bool, manifest.document["workload"]["trace"]),
+            prerequisite_documents=cast(
+                tuple[Mapping[str, object], ...], manifest.document["prerequisites"]
+            ),
+            planning_disclosures=disclosures,
+            role=target["role"],
+            required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
+        )
+
+    def _resume_source_mismatches(self, manifest: SimulationCampaignManifest) -> list[str]:
+        """Compare current source/suite bytes without launching a generator."""
+        import hashlib
+
+        mismatches: list[str] = []
+        project = Path(self.args.work_dir)
+        workload = cast(Mapping[str, Any], manifest.document["workload"])
+        recipe = cast(Mapping[str, Any], workload["source_recipe"])
+        for index, source in enumerate(cast(tuple[Mapping[str, Any], ...], recipe["sources"])):
+            path = project / cast(str, source["path"])
+            try:
+                raw = path.read_bytes()
+            except OSError as exc:
+                mismatches.append(f"/workload/source_recipe/sources/{index}: {exc}")
+                continue
+            digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+            if len(raw) != source["bytes"] or digest != source["sha256"]:
+                mismatches.append(f"/workload/source_recipe/sources/{index}: source bytes changed")
+        suite = cast(Mapping[str, Any], manifest.document["required_suite"])
+        source_path = cast(str, suite["source_path"])
+        if source_path:
+            try:
+                raw = (project / source_path).read_bytes()
+            except OSError as exc:
+                mismatches.append(f"/required_suite/source_path: {exc}")
+            else:
+                digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+                if len(raw) != suite["source_bytes"] or digest != suite["source_sha256"]:
+                    mismatches.append("/required_suite: required suite changed")
+        return mismatches
+
+    def _resume_coverage_target_plan(
+        self, validated: ValidatedResumeManifest
+    ) -> CoverageTargetPlan:
+        """Reconstruct the exact native coverage plan bound by the manifest."""
+        from booley.criteria.state import DevelopmentState
+        from booley.flows.sim.coverage_flow_context import coverage_project_context
+        from booley.flows.sim.coverage_invocation import (
+            CoverageInvocationRequest,
+            prepare_coverage_invocation,
+        )
+
+        manifest = validated.manifest
+        target = cast(Mapping[str, str], manifest.document["target"])
+        items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+        names = cast(tuple[str, ...], cast(Mapping[str, object], items[0]["selection"])["names"])
+        workload = cast(Mapping[str, object], manifest.document["workload"])
+        context = coverage_project_context(
+            self.args.work_dir,
+            DevelopmentState.load(self.args.state_file)
+            if self.args.state_file
+            else DevelopmentState(),
+        )
+        prepared = prepare_coverage_invocation(
+            CoverageInvocationRequest(
+                (target["selector"],),
+                tests=names,
+                trace=cast(bool, workload["trace"]),
+            ),
+            context,
+        )
+        if prepared.plan is None or len(prepared.plan.targets) != 1:
+            detail = "; ".join(item.message for item in prepared.findings)
+            raise SimulationCampaignIntegrityError(
+                f"cannot reconstruct coverage aggregate: {detail}"
+            )
+        self._coverage_context = context
+        return prepared.plan.targets[0]
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         error = super()._pre_state_gate()
@@ -1560,7 +2206,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             prepare_coverage_invocation,
         )
 
-        if self.args.mode.elaborates_only:
+        if self._mode.elaborates_only:
             return EndpointOutcome(exit_code=2, report_text="Coverage requires simulation mode")
         if not self._flow_enabled():
             return EndpointOutcome(exit_code=2, report_text="sim is disabled")
@@ -1576,11 +2222,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             prepared = prepare_coverage_invocation(
                 CoverageInvocationRequest(
                     tuple(self._requested_targets()),
+                    tests=self.args.test or None,
                     trace=self.args.trace,
-                    test_filter=self.args.test,
-                    skip=tuple(
-                        part.strip() for part in (self.args.skip or "").split(",") if part.strip()
-                    ),
                 ),
                 context,
             )
@@ -1621,6 +2264,169 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
         return self._run_coverage_invocation(invocation, prepared)
+
+    def _run_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
+        """Run each native coverage selection as one durable aggregate item."""
+        error = self._prepare_coverage()
+        if error is not None:
+            return error
+        if not isinstance(admission, AdmissionContext):
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text="sim: Coverage Campaign has no borrowed admission context",
+            )
+        try:
+            campaign, requests, progress = self._coverage_campaign_session(admission)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign coverage planning failed: {exc}",
+            )
+        return self._execute_coverage_campaign_requests(campaign, requests, progress)
+
+    def _coverage_campaign_session(
+        self, admission: AdmissionContext
+    ) -> tuple[
+        SimulationCampaign,
+        list[NewCampaignRunRequest],
+        CoverageProgress,
+    ]:
+        """Publish every immutable coverage manifest before admitting work."""
+        prepared = self._coverage_prepared
+        if self.args.report_dir is None:
+            self.args.report_dir = self._coverage_context.project_data_repository / "flow-reports"
+        invocation = self.reserve_invocation_dir()
+        assert invocation is not None
+        from .campaign_reports import campaign_invocation_lock
+
+        self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
+        progress = CoverageProgress(
+            invocation, tuple(plan.handle.selector for plan in prepared.targets)
+        )
+        progress.checkpoint()
+        plans = {plan.handle.identity: plan for plan in prepared.targets}
+        executor = CoverageAggregateExecutor(
+            plans=plans,
+            execution_factory=self._coverage_campaign_execution,
+            publication_checkpoint=self._campaign_publication_checkpoint,
+        )
+        campaign = SimulationCampaign(
+            executor,
+            publication_checkpoint=self._campaign_publication_checkpoint,
+        )
+        execution_id = (
+            admission.execution_id
+            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
+            else ""
+        )
+        requests = [
+            NewCampaignRunRequest(
+                self._coverage_campaign_plan(plan, int(invocation.name), execution_id),
+                Path(self.args.work_dir),
+                self.args.report_dir,
+                self._campaign_policy(),
+                invocation,
+                admission,
+            )
+            for plan in prepared.targets
+        ]
+        for request in requests:
+            campaign.publish_new(request)
+        return campaign, requests, progress
+
+    def _execute_coverage_campaign_requests(
+        self,
+        campaign: SimulationCampaign,
+        requests: list[NewCampaignRunRequest],
+        progress: CoverageProgress,
+    ) -> EndpointOutcome:
+        """Execute published coverage aggregates in deterministic Target order."""
+        outcomes: list[CampaignOutcome] = []
+        for index, request in enumerate(requests):
+            try:
+                outcome = campaign.run(request)
+                outcomes.append(outcome)
+                _checkpoint_coverage_campaign(progress, outcome)
+            except SimulationCampaignCancellationError as exc:
+                return self._campaign_cancelled_outcome(exc)
+            except (OSError, ValueError, RuntimeError) as exc:
+                return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
+        progress.checkpoint(complete=True)
+        return self._campaign_endpoint_outcome(outcomes)
+
+    def _coverage_campaign_failure(
+        self,
+        outcomes: list[CampaignOutcome],
+        requests: list[NewCampaignRunRequest],
+        index: int,
+        request: NewCampaignRunRequest,
+        error: Exception,
+    ) -> EndpointOutcome:
+        """Report a fatal aggregate without inventing a terminal Simulation result."""
+        self.context._simulation_campaign_outcomes = tuple(outcomes)
+        targets = _coverage_compatibility_targets(outcomes, Path(self.args.work_dir))
+        failed = str(
+            cast(Mapping[str, object], request.plan.manifest.document["target"])["selector"]
+        )
+        targets[failed] = {
+            "target": failed,
+            "passed": None,
+            "simulation": "not_run",
+            "collection": "infrastructure_error",
+            "evaluation": "blocked",
+            "error": str(error),
+            "abort_remaining": True,
+        }
+        pending = [
+            str(cast(Mapping[str, object], item.plan.manifest.document["target"])["selector"])
+            for item in requests[index + 1 :]
+        ]
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            detail={
+                "coverage": True,
+                "campaigns": _campaign_structured_details(outcomes),
+                "targets": targets,
+                "pending_targets": pending,
+            },
+            report_text=f"Simulation Campaign coverage execution failed: {error}",
+        )
+
+    def _coverage_campaign_execution(
+        self, plan: CoverageTargetPlan, options: SimulationOptions
+    ) -> SimulationExecutionPort:
+        from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
+
+        return (
+            self._coverage_execution_factory(plan.handle, options)
+            if self._coverage_execution_factory is not None
+            else VerilatorCoverageExecution(
+                plan.handle,
+                invoke=self._execute_boundary,
+                options=options,
+            )
+        )
+
+    def _coverage_campaign_plan(
+        self, plan: CoverageTargetPlan, invocation_id: int, execution_id: str
+    ) -> SimulationCampaignPlan:
+        inspection = TargetCatalog.build(plan.handle.project_root).inspect(plan.handle)
+        execution = self._simulation_execution()
+        preview = execution.preview(plan.handle, NamedTests(plan.selected_tests))
+        preview = replace(preview, groups=(plan.selected_tests,))
+        return plan_coarse_simulation_campaign(
+            handle=plan.handle,
+            inspection=inspection,
+            preview=preview,
+            selected_tests=plan.selected_tests,
+            required_suite=plan.declared_tests,
+            revision=git_full_sha("HEAD", plan.handle.project_root) or "unversioned",
+            invocation_id=invocation_id,
+            execution_id=execution_id,
+            trace=self.args.trace,
+            kind="coverage_aggregate",
+            required_suite_catalog_backed=True,
+        )
 
     def _run_coverage_invocation(self, invocation, prepared) -> EndpointOutcome:
         progress = CoverageProgress(
@@ -1700,142 +2506,649 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             report_text="\n".join(lines),
         )
 
-    def _run_selected_mode(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
+    def _run_selected_mode(
+        self,
+        *,
+        prepared: PreparedSimulationEndpoint | None = None,
+        admission: object | None = None,
+    ) -> EndpointOutcome:
         """Execute simulation across configs and tests."""
         mode_error = self._validate_mode_args()
         if mode_error is not None:
             return mode_error
-        if self.args.mode.elaborates_only:
+        if self._mode.elaborates_only:
             return self._run_elab_only()
         total_start = time.monotonic()
         resolution_started = total_start
-        resolved = self._resolve_run_targets()
-        if isinstance(resolved, EndpointOutcome):
-            return resolved
-        targets, test_names_map = resolved
+        if prepared is None:
+            resolved = self._resolve_run_targets()
+            if isinstance(resolved, EndpointOutcome):
+                return resolved
+            targets, test_names_map = resolved
+        else:
+            targets = list(prepared.selected_targets)
+            test_names_map = dict(prepared.test_names_map)
         resolution_s = time.monotonic() - resolution_started
 
-        special_result = self._maybe_dispatch_special_run(targets, test_names_map)
+        special_result = self._maybe_dispatch_special_run(
+            targets, test_names_map, campaign_prepared=prepared is not None
+        )
         if special_result is not None:
             return special_result
+        if self.args.report_dir is None:
+            self.args.report_dir = Path(self.args.work_dir) / "flow-reports"
 
-        all_results: list[TargetResult] = []
-        output_lines: list[str] = []
-        overall_pass = True
-        # The report writer composes the per-target compile command from the
-        # same inputs a --dry-run uses; stash the resolved test-name map so it
-        # doesn't have to re-derive it.
+        if prepared is not None:
+            return self._run_ordinary_campaigns(targets, test_names_map, admission)
+        return self._run_legacy_selected_mode(targets, test_names_map, total_start, resolution_s)
+
+    def _run_legacy_selected_mode(
+        self, targets, test_names_map, total_start, resolution_s
+    ) -> EndpointOutcome:
+        prepared = self._prepare_legacy_run(targets, test_names_map)
+        if isinstance(prepared, EndpointOutcome):
+            return prepared
+        results, lines, passed = prepared
+        return self._legacy_endpoint_outcome(
+            targets, results, lines, passed, time.monotonic() - total_start, resolution_s
+        )
+
+    def _prepare_legacy_run(self, targets, test_names_map):
+        results: list[TargetResult] = []
+        lines: list[str] = []
         self._test_names_map = test_names_map
-        # Reserve the final report directory before the first long Target.
-        # Checkpoints and the eventual report.json then share one invocation,
-        # even when the outer watchdog kills the process between Targets.
         self.reserve_invocation_dir()
-        self._write_progress_report(targets, all_results, phase="starting")
-
-        baseline_result = self._run_cycle_count_baselines(targets, test_names_map)
-        if isinstance(baseline_result, EndpointOutcome):
-            return baseline_result
-        self._baseline_results = baseline_result
-
+        self._write_progress_report(targets, results, phase="starting")
+        baseline = self._run_cycle_count_baselines(targets, test_names_map)
+        if isinstance(baseline, EndpointOutcome):
+            return baseline
+        self._baseline_results = baseline
         for target in targets:
             try:
-                target_result = self._run_resolved_target(
-                    target,
-                    test_names_map,
-                    output_lines,
-                )
+                result = self._run_resolved_target(target, test_names_map, lines)
             except MissingExecutableError as exc:
-                # F-32: no simulator ran, so nothing was observed about the
-                # design. Abandon the sweep and report a Flow error — every
-                # remaining Target would hit the same missing binary.
                 return self._missing_executable_result(exc, target)
             except SimulationBuildInfrastructureError as exc:
                 return self._build_infrastructure_result(exc)
-            self._attach_workload_snapshots(target_result)
-            all_results.append(target_result)
-            if not target_result.passed:
-                overall_pass = False
-            self._persist_target_outcome(target_result)
-            self._write_progress_report(targets, all_results, phase="running")
-            if len(targets) > 1:
-                for line in _target_display_lines(target_result):
-                    self.emit_completion(line, repeats_at_end=True)
+            self._record_legacy_target(targets, results, result)
+        return results, lines, all(result.passed for result in results)
 
-        total_elapsed = time.monotonic() - total_start
-        report_text = self._format_summary(all_results, output_lines, overall_pass)
+    def _record_legacy_target(self, targets, results, result) -> None:
+        self._attach_workload_snapshots(result)
+        results.append(result)
+        self._persist_target_outcome(result)
+        self._write_progress_report(targets, results, phase="running")
+        if len(targets) > 1:
+            for line in _target_display_lines(result):
+                self.emit_completion(line, repeats_at_end=True)
 
-        # Run-level eda_tool report key (base.write_report): the unique raw
-        # EDA tools this run resolved to, ", "-joined in resolution order.
-        eda_tools = [r.eda_tool for r in all_results if r.eda_tool]
+    def _legacy_endpoint_outcome(
+        self, targets, results, lines, passed, elapsed, resolution_s
+    ) -> EndpointOutcome:
+        report_text = self._format_summary(results, lines, passed)
+        eda_tools = [result.eda_tool for result in results if result.eda_tool]
         if eda_tools:
             self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
+        detail = self._legacy_result_detail(results, elapsed, resolution_s)
+        self._attach_legacy_artifacts(detail, results)
+        self._write_progress_report(targets, results, phase="complete", complete=True)
+        return EndpointOutcome(
+            exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
+            criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
+            criterion_met=passed,
+            display_lines=_build_display_lines(results, elapsed),
+            display_label=_completed_display_label(targets, results),
+            detail=detail,
+            report_text=report_text,
+        )
 
-        targets_passed = sum(1 for r in all_results if r.passed)
-        any_elab_failed = any(r.elab_failed for r in all_results)
+    def _legacy_result_detail(self, results, elapsed, resolution_s) -> dict[str, Any]:
         detail: dict[str, Any] = {
-            "mode": self.args.mode.value,
-            "targets": len(all_results),
-            "targets_passed": targets_passed,
-            "elapsed_s": round(total_elapsed, 1),
+            "mode": self._mode.value,
+            "targets": len(results),
+            "targets_passed": sum(1 for result in results if result.passed),
+            "elapsed_s": round(elapsed, 1),
             "resolution_s": round(resolution_s, 3),
-            "phase_timings_s": {
-                result.target: dict(result.phase_timings_s) for result in all_results
-            },
+            "phase_timings_s": {result.target: dict(result.phase_timings_s) for result in results},
             "elaboration": {
                 result.target: [
                     entry
                     for test in result.tests
                     if (entry := _build_outcome_entry(test.build_outcome)) is not None
                 ]
-                for result in all_results
+                for result in results
             },
             "cycle_counts": [
-                {
-                    "target": result.target,
-                    "target_identity": result.target_identity,
-                    "test": test.name,
-                    "verdict": _test_verdict(test),
-                    "cycles": test.cycles,
-                    "observation": test.cycle_status,
-                }
-                for result in all_results
-                for test in result.tests
+                _cycle_detail(result, test) for result in results for test in result.tests
             ],
         }
-        if any_elab_failed:
+        if any(result.elab_failed for result in results):
             detail["elab_failed"] = True
-        # Per-target artifact pointers, keyed by target so a multi-target run
-        # stays unambiguous. This is the copy that survives into the MCP
-        # ``structuredContent`` (base.write_report carries ``detail`` through),
-        # which the stdout headline block does not.
-        for r in all_results:
-            block = self._artifacts_for(r)
+        return detail
+
+    def _attach_legacy_artifacts(self, detail, results) -> None:
+        for result in results:
+            block = self._artifacts_for(result)
+            if block and self.args.report_dir is not None:
+                invocation = self.reserve_invocation_dir()
+                assert invocation is not None
+                block["report"] = posix_relpath(
+                    target_report_directory(invocation, result.target) / "simulation.json",
+                    self.args.work_dir,
+                )
             if block:
-                # ``report`` too: the detail copy is what an agent receives over
-                # MCP, and without it the block names every file the run wrote
-                # except the one holding the rest of the numbers.
-                if self.args.report_dir is not None:
-                    invocation_dir = self.reserve_invocation_dir()
-                    assert invocation_dir is not None
-                    block["report"] = posix_relpath(
-                        target_report_directory(invocation_dir, r.target) / "simulation.json",
-                        self.args.work_dir,
-                    )
-                detail.setdefault("artifacts", {})[r.target] = block
-        self._write_progress_report(
-            targets,
-            all_results,
-            phase="complete",
-            complete=True,
+                detail.setdefault("artifacts", {})[result.target] = block
+
+    def _run_ordinary_campaigns(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+        admission: object | None,
+    ) -> EndpointOutcome:
+        """Run every ordinary Target through manifest-first serial authority."""
+        invocation = self.reserve_invocation_dir()
+        assert invocation is not None
+        if not isinstance(admission, AdmissionContext):
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text="sim: Simulation Campaign has no borrowed admission context",
+            )
+        campaign = SimulationCampaign(
+            OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
+            publication_checkpoint=self._campaign_publication_checkpoint,
         )
+        try:
+            baseline_requests, prerequisites = self._plan_campaign_baselines(
+                invocation,
+                admission,
+                targets,
+                test_names_map,
+            )
+            candidate_requests = self._candidate_campaign_requests(
+                targets, test_names_map, prerequisites, invocation, admission
+            )
+            outcomes = self._publish_and_run_campaign_requests(
+                campaign, baseline_requests, candidate_requests
+            )
+        except SimulationCampaignCancellationError as exc:
+            return self._campaign_cancelled_outcome(exc)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign execution failed: {exc}",
+            )
+        return self._campaign_endpoint_outcome(outcomes)
+
+    @staticmethod
+    def _campaign_cancelled_outcome(
+        error: SimulationCampaignCancellationError,
+        detail: Mapping[str, object] | None = None,
+    ) -> EndpointOutcome:
         return EndpointOutcome(
-            exit_code=EXIT_SUCCESS if overall_pass else EXIT_FAILURE,
-            criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
-            criterion_met=overall_pass,
-            display_lines=_build_display_lines(all_results, total_elapsed),
-            display_label=_completed_display_label(targets, all_results),
+            exit_code=EXIT_CANCELLED,
+            detail=dict(detail or {}),
+            report_text=str(error),
+        )
+
+    def _candidate_campaign_requests(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+        prerequisites: Mapping[str, Sequence[Mapping[str, object]]],
+        invocation: Path,
+        admission: AdmissionContext,
+    ) -> list[NewCampaignRunRequest]:
+        execution_id = (
+            admission.execution_id
+            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
+            else ""
+        )
+        requests = []
+        for target in targets:
+            plan = self._ordinary_campaign_plan(
+                target,
+                test_names_map,
+                invocation_id=int(invocation.name),
+                execution_id=execution_id,
+                prerequisite_documents=prerequisites.get(target, ()),
+            )
+            requests.append(
+                NewCampaignRunRequest(
+                    plan,
+                    Path(self.args.work_dir),
+                    self.args.report_dir,
+                    self._campaign_policy(),
+                    invocation,
+                    admission,
+                )
+            )
+        return requests
+
+    @staticmethod
+    def _publish_and_run_campaign_requests(
+        campaign: SimulationCampaign,
+        baselines: Sequence[NewCampaignRunRequest],
+        candidates: Sequence[NewCampaignRunRequest],
+    ) -> list[CampaignOutcome]:
+        for request in (*baselines, *candidates):
+            campaign.publish_new(request)
+        for request in baselines:
+            campaign.run(request)
+        return [campaign.run(request) for request in candidates]
+
+    def _plan_campaign_baselines(
+        self,
+        invocation: Path,
+        admission: Any,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+    ) -> tuple[list[NewCampaignRunRequest], dict[str, list[Mapping[str, object]]]]:
+        """Plan linked baselines without starting any campaign work."""
+        baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
+        if error is not None:
+            raise BaselineWorktreeError(error)
+        if baseline_ref is None:
+            return [], {}
+        project_root = Path(self.args.work_dir)
+        requirements = self._campaign_baseline_requirements(targets)
+        expected = {target: self._target_handle(target).identity for target in baseline_targets}
+        prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
+        resources = self.context.publication_resources
+        worktree = resources.enter_context(
+            baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            )
+        )
+        requests: list[NewCampaignRunRequest] = []
+        self.args.work_dir = worktree
+        try:
+            for target in baseline_targets:
+                request, by_test = self._planned_baseline_request(
+                    target,
+                    expected[target],
+                    baseline_ref,
+                    requirements,
+                    test_names_map,
+                    worktree,
+                    invocation,
+                    admission,
+                )
+                requests.append(request)
+                for candidate, baseline, test in requirements:
+                    if baseline == target:
+                        prerequisites[candidate].append(by_test[test])
+        finally:
+            self.args.work_dir = project_root
+        return requests, prerequisites
+
+    def _planned_baseline_request(
+        self,
+        target: str,
+        expected_identity: str,
+        baseline_ref: str,
+        requirements: tuple[tuple[str, str, str], ...],
+        test_names_map: dict[str, list[str]],
+        worktree: Path,
+        invocation: Path,
+        admission: Any,
+    ) -> tuple[NewCampaignRunRequest, dict[str, Mapping[str, object]]]:
+        handle = self._target_handle(target)
+        if handle.identity != expected_identity:
+            raise BaselineWorktreeError(
+                f"Cycle Count baseline selector {target!r} resolves to "
+                f"{handle.identity!r}, expected {expected_identity!r}"
+            )
+        plan = self._ordinary_campaign_plan(
+            target,
+            test_names_map,
+            invocation_id=int(invocation.name),
+            execution_id=admission.execution_id
+            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
+            else "",
+            role="cycle_count_baseline",
+            revision=baseline_ref,
+            selected_override=tuple(
+                dict.fromkeys(
+                    test for _candidate, baseline, test in requirements if baseline == target
+                )
+            ),
+        )
+        request = NewCampaignRunRequest(
+            plan,
+            worktree,
+            self.args.report_dir,
+            self._campaign_policy(),
+            invocation,
+            admission,
+        )
+        return request, self._baseline_prerequisites_by_test(target, plan)
+
+    def _baseline_prerequisites_by_test(
+        self, target: str, plan: SimulationCampaignPlan
+    ) -> dict[str, Mapping[str, object]]:
+        target_document = cast(Mapping[str, str], plan.manifest.document["target"])
+        relative = (
+            target_report_directory(
+                Path(), f"{target}@baseline-{target_document['revision'][:12]}"
+            )
+            / "campaign"
+            / "manifest.json"
+        )
+        documents = self._campaign_prerequisite_documents(plan, relative)
+        items = cast(tuple[Mapping[str, object], ...], plan.manifest.document["work_items"])
+        return {
+            cast(tuple[str, ...], cast(Mapping[str, object], item["selection"])["names"])[
+                0
+            ]: document
+            for item, document in zip(items, documents, strict=True)
+        }
+
+    def _campaign_baseline_requirements(
+        self, targets: Sequence[str]
+    ) -> tuple[tuple[str, str, str], ...]:
+        """Return candidate/baseline/test links required by relative criteria."""
+        handles = {target: self._target_handle(target) for target in targets}
+        links: list[tuple[str, str, str]] = []
+        for key, entry in self.state.criteria.items():
+            params = entry.params or {}
+            candidate = self._matching_cycle_target(handles, params)
+            test = params.get("test")
+            if (
+                not key.startswith("cycle_count_")
+                or candidate is None
+                or not has_relative_threshold(params)
+                or not isinstance(test, str)
+                or not test
+            ):
+                continue
+            baseline = params.get(BASELINE_TARGET_PARAM, candidate)
+            if isinstance(baseline, str) and baseline:
+                links.append((candidate, baseline, test))
+        return tuple(dict.fromkeys(links))
+
+    @staticmethod
+    def _campaign_prerequisite_documents(
+        plan: SimulationCampaignPlan, manifest_path: Path
+    ) -> list[Mapping[str, object]]:
+        raw = encode_simulation_campaign_manifest(plan.manifest)
+        manifest_ref = {
+            "path_base": "origin_invocation",
+            "path": manifest_path.as_posix(),
+            "bytes": len(raw),
+            "sha256": manifest_digest(plan.manifest),
+            "kind": "simulation_campaign_manifest",
+            "owner": plan.manifest.document["campaign_id"],
+        }
+        baseline_target = dict(cast(Mapping[str, object], plan.manifest.document["target"]))
+        return [
+            {
+                "role": "cycle_count_baseline",
+                "manifest": manifest_ref,
+                "campaign_id": plan.manifest.document["campaign_id"],
+                "target": baseline_target,
+                "required_observation": "cycle_count",
+                "work_item_id": item["work_item_id"],
+            }
+            for item in cast(
+                tuple[Mapping[str, object], ...], plan.manifest.document["work_items"]
+            )
+        ]
+
+    def _preview_ordinary_campaigns(
+        self, targets: list[str], test_names_map: dict[str, list[str]]
+    ) -> EndpointOutcome:
+        """Preview ordinary campaigns without reserving or mutating report state."""
+        previews = []
+        campaign = SimulationCampaign()
+        try:
+            prerequisites, baseline_previews = self._preview_campaign_baselines(
+                campaign, targets, test_names_map
+            )
+            previews.extend(baseline_previews)
+            for target in targets:
+                plan = self._ordinary_campaign_plan(
+                    target,
+                    test_names_map,
+                    invocation_id=1,
+                    execution_id="",
+                    prerequisite_documents=prerequisites.get(target, ()),
+                )
+                preview = campaign.preview(
+                    NewCampaignPreviewRequest(
+                        plan,
+                        Path(self.args.work_dir),
+                        self.args.report_dir,
+                        self._campaign_policy(),
+                    )
+                )
+                previews.append(
+                    {
+                        "target": dict(preview.target),
+                        "work_items": len(preview.work_items),
+                        "build_variants": len(preview.build_variants),
+                        "prerequisites": len(preview.prerequisites),
+                    }
+                )
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign preview failed: {exc}",
+            )
+        return EndpointOutcome(
+            exit_code=EXIT_SUCCESS,
+            detail={"campaign_preview": previews, "mutated": False},
+            report_text="\n".join(
+                f"{item['target']['selector']}: {item['work_items']} pending work item(s)"
+                for item in previews
+            ),
+        )
+
+    def _preview_campaign_baselines(
+        self,
+        campaign: SimulationCampaign,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+    ) -> tuple[dict[str, list[Mapping[str, object]]], list[dict[str, object]]]:
+        """Preview linked baselines through the campaign seam without publication."""
+        baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
+        if error is not None:
+            raise BaselineWorktreeError(error)
+        if baseline_ref is None:
+            return {}, []
+        project_root = Path(self.args.work_dir)
+        requirements = self._campaign_baseline_requirements(targets)
+        prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
+        previews: list[dict[str, object]] = []
+        with baseline_worktree(
+            project_root,
+            baseline_ref,
+            paired_project=self._paired_project_baseline,
+        ) as worktree:
+            self.args.work_dir = worktree
+            try:
+                for target in baseline_targets:
+                    preview, by_test = self._preview_one_campaign_baseline(
+                        campaign,
+                        target,
+                        baseline_ref,
+                        requirements,
+                        test_names_map,
+                        worktree,
+                    )
+                    previews.append(preview)
+                    for candidate, baseline, test in requirements:
+                        if baseline == target:
+                            prerequisites[candidate].append(by_test[test])
+            finally:
+                self.args.work_dir = project_root
+        return prerequisites, previews
+
+    def _preview_one_campaign_baseline(
+        self,
+        campaign: SimulationCampaign,
+        target: str,
+        baseline_ref: str,
+        requirements: tuple[tuple[str, str, str], ...],
+        test_names_map: dict[str, list[str]],
+        worktree: Path,
+    ) -> tuple[dict[str, object], dict[str, Mapping[str, object]]]:
+        selected = tuple(
+            dict.fromkeys(
+                test for _candidate, baseline, test in requirements if baseline == target
+            )
+        )
+        plan = self._ordinary_campaign_plan(
+            target,
+            test_names_map,
+            invocation_id=1,
+            execution_id="",
+            role="cycle_count_baseline",
+            revision=baseline_ref,
+            selected_override=selected,
+        )
+        preview = campaign.preview(
+            NewCampaignPreviewRequest(
+                plan,
+                worktree,
+                self.args.report_dir,
+                self._campaign_policy(),
+            )
+        )
+        summary = {
+            "target": dict(preview.target),
+            "work_items": len(preview.work_items),
+            "build_variants": len(preview.build_variants),
+            "prerequisites": 0,
+        }
+        return summary, self._baseline_prerequisites_by_test(target, plan)
+
+    def _ordinary_campaign_plan(
+        self,
+        target: str,
+        test_names_map: dict[str, list[str]],
+        *,
+        invocation_id: int,
+        execution_id: str,
+        prerequisite_documents: Sequence[Mapping[str, object]] = (),
+        role: str = "candidate",
+        revision: str | None = None,
+        selected_override: Sequence[str] | None = None,
+    ) -> SimulationCampaignPlan:
+        """Resolve one Target into the same exact plan used by preview and run."""
+        handle = self._target_handle(target)
+        inputs = self._ordinary_campaign_inputs(target, test_names_map, handle, selected_override)
+        if self.is_cocotb_target(target):
+            return self._cocotb_campaign_plan(
+                handle,
+                inputs[0],
+                inputs[1],
+                inputs[3],
+                revision,
+                invocation_id,
+                execution_id,
+                inputs[2],
+                inputs[4],
+            )
+        return plan_ordinary_hdl_campaign(
+            handle=handle,
+            inspection=inputs[0],
+            preview=inputs[1],
+            groups=inputs[1].groups,
+            required_suite=inputs[3],
+            revision=revision or git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
+            invocation_id=invocation_id,
+            execution_id=execution_id,
+            trace=self.args.trace,
+            prerequisite_documents=prerequisite_documents,
+            planning_disclosures=inputs[2],
+            role=role,
+            required_suite_catalog_backed=inputs[4],
+        )
+
+    def _ordinary_campaign_inputs(self, target, test_names_map, handle, selected_override):
+        inspection = TargetCatalog.build(handle.project_root).inspect(handle)
+        selected = (
+            list(selected_override)
+            if selected_override is not None
+            else self._resolve_tests_to_run(target, test_names_map)
+        )
+        execution = self._simulation_execution()
+        preview = execution.preview(handle, self._execution_selection(selected))
+        disclosures = tuple(
+            execution.plan_campaign_group(handle, group) for group in preview.groups
+        )
+        suite = resolve_target_test_suite(
+            target,
+            test_names=test_names_map,
+            test_skips=_get_test_skips(self.args.work_dir),
+        )
+        required = tuple(name for name in suite.tests if name is not None)
+        catalog_backed = bool(lookup_target_section(test_names_map, target) or [])
+        return inspection, preview, disclosures, required, catalog_backed
+
+    def _cocotb_campaign_plan(
+        self,
+        handle,
+        inspection,
+        preview,
+        required,
+        revision,
+        invocation_id,
+        execution_id,
+        planning_disclosures,
+        catalog_backed,
+    ) -> SimulationCampaignPlan:
+        selected = tuple(name for group in preview.groups for name in group)
+        return plan_coarse_simulation_campaign(
+            handle=handle,
+            inspection=inspection,
+            preview=preview,
+            selected_tests=selected,
+            required_suite=required,
+            revision=revision or git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
+            invocation_id=invocation_id,
+            execution_id=execution_id,
+            trace=self.args.trace,
+            kind="cocotb_batch",
+            planning_disclosures=planning_disclosures,
+            required_suite_catalog_backed=catalog_backed,
+        )
+
+    def _campaign_policy(self) -> CampaignPolicy:
+        return CampaignPolicy(
+            timeout_seconds=self._effective_timeout_ms() / 1000,
+            no_kill=self.args.no_kill,
+            diagnostic=self.args.diagnostic,
+            result_verbosity=self.args.result_verbosity,
+        )
+
+    def _campaign_endpoint_outcome(self, outcomes: list[CampaignOutcome]) -> EndpointOutcome:
+        self.context._simulation_campaign_outcomes = tuple(outcomes)
+        grades = [outcome.aggregate_grade for outcome in outcomes]
+        exit_code = _coverage_campaign_exit_code(outcomes) or (
+            EXIT_ERROR
+            if "error" in grades
+            else EXIT_FAILURE
+            if any(grade != "pass" for grade in grades)
+            else EXIT_SUCCESS
+        )
+        lines = _campaign_report_lines(outcomes)
+        campaigns = _campaign_structured_details(outcomes)
+        coverage_targets = _coverage_compatibility_targets(outcomes, Path(self.args.work_dir))
+        detail: dict[str, object] = {"campaigns": campaigns}
+        if coverage_targets:
+            detail.update(
+                coverage=True,
+                targets=coverage_targets,
+                pending_targets=[],
+            )
+        return EndpointOutcome(
+            exit_code=exit_code,
+            criterion_met=exit_code == EXIT_SUCCESS,
             detail=detail,
-            report_text=report_text,
+            report_text="\n".join(lines),
         )
 
     def _validate_mode_args(self) -> EndpointOutcome | None:
@@ -1847,11 +3160,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     "sim: --standalone alone is invalid; use --mode elab-only-standalone"
                 ),
             )
-        if not self.args.mode.elaborates_only:
+        if not self._mode.elaborates_only:
             return None
         conflicts = (
-            ("--test", self.args.test is not None),
-            ("--skip", self.args.skip is not None),
+            ("--test", bool(self.args.test)),
             ("--trace", self.args.trace),
             ("--result-verbosity full", self.args.result_verbosity == "full"),
             ("--no-kill", self.args.no_kill),
@@ -1861,7 +3173,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: {argument} conflicts with --mode {self.args.mode.value}; "
+                        f"sim: {argument} conflicts with --mode {self._mode.value}; "
                         f"remove {argument} or use --mode simulate."
                     ),
                 )
@@ -1878,7 +3190,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if missing is not None:
             target, exc = missing
             result = self._missing_executable_result(exc, target)
-            result.detail["mode"] = self.args.mode.value
+            result.detail["mode"] = self._mode.value
             result.detail["targets"] = [
                 self._elab_only_detail(target_result) for target_result in results
             ]
@@ -1916,16 +3228,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim is disabled ([flows.sim].enabled = false).",
-                detail={"mode": self.args.mode.value},
+                detail={"mode": self._mode.value},
             )
         targets_or_error = self._resolve_requested_targets()
         if isinstance(targets_or_error, EndpointOutcome):
-            targets_or_error.detail["mode"] = self.args.mode.value
+            targets_or_error.detail["mode"] = self._mode.value
             return targets_or_error
         targets = targets_or_error
         target_error = self._validate_interactive_args(targets)
         if target_error is not None:
-            target_error.detail["mode"] = self.args.mode.value
+            target_error.detail["mode"] = self._mode.value
             return target_error
         plan = self._plan_elaboration(targets)
         self._flow_plan = plan
@@ -1935,7 +3247,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
-                detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
+                detail={"mode": self._mode.value, "plan": plan.as_dict()},
             )
         return targets
 
@@ -1956,7 +3268,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         return FlowPlan(
             flow="sim",
-            mode=self.args.mode.value,
+            mode=self._mode.value,
             work_units=tuple(units),
             aggregate_errors=tuple(errors),
         )
@@ -1973,7 +3285,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         recipe = {
             "environment_fingerprint": plan_value_fingerprint(self._target_sim_env(target)),
             "flow_options": inspection.flow_options,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "toplevel": inspection.toplevel,
         }
         return WorkUnitPlan(
@@ -2041,7 +3353,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             parameters={},
             recipe={
                 "frontend": standalone.frontend,
-                "mode": self.args.mode.value,
+                "mode": self._mode.value,
                 "module_sources": [
                     {"module": module, "source": source} for module, source in standalone.modules
                 ],
@@ -2125,7 +3437,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if eda_tools:
             self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
         detail: dict[str, Any] = {
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "targets": [self._elab_only_detail(result) for result in results],
         }
         artifacts = {
@@ -2275,7 +3587,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             result.outcome.passed,
             source_target=result.target,
             detail={
-                "mode": self.args.mode.value,
+                "mode": self._mode.value,
                 "target": result.target,
                 "elapsed_s": round(result.outcome.elapsed_s, 3),
                 "error_gist": (
@@ -2331,7 +3643,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return
         report = {
             "flow": "sim",
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "timestamp": utc_now_rfc3339(),
             **self._elab_only_detail(result),
         }
@@ -2356,7 +3668,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         completed = [result.target for result in results]
         payload = {
             "flow": self.name,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
             "timestamp": utc_now_rfc3339(),
             "phase": phase,
@@ -2696,7 +4008,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             target_result.passed,
             source_target=target_result.target,
             detail={
-                "mode": self.args.mode.value,
+                "mode": self._mode.value,
                 "tests_passed": sum(1 for t in target_result.tests if t.passed),
                 "tests_total": len(target_result.tests),
                 "test_selector": self.args.test or ("all" if complete_suite else "partial"),
@@ -2732,7 +4044,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if met and relative:
                 met, reason = _admissible_cycle_evidence(baseline, "baseline")
             detail = {
-                "mode": self.args.mode.value,
+                "mode": self._mode.value,
                 "target": target_result.target,
                 "target_identity": target_result.target_identity,
                 "test": test_name,
@@ -3212,16 +4524,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         ]
 
     def _effective_skips(self, target: str) -> set[str]:
-        """Test names to exclude for *target*: tests.toml ``skip`` union ``--skip``.
-
-        The config list (``TEST_SKIP``) carries a project's durable known-hangs;
-        the ``--skip`` arg adds ad-hoc ones for a single call. Both match test
-        names exactly (unlike ``--test``'s substring include-filter).
-        """
-        skips = set(lookup_target_section(_get_test_skips(self.args.work_dir), target) or [])
-        if self.args.skip:
-            skips.update(s.strip() for s in self.args.skip.split(",") if s.strip())
-        return skips
+        """Return Project-configured exact names excluded by default."""
+        return set(lookup_target_section(_get_test_skips(self.args.work_dir), target) or [])
 
     def _validate_test_selector(
         self,
@@ -3242,20 +4546,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         unknown). Returns an ``EXIT_ERROR`` EndpointOutcome on the first offending
         target, else ``None``.
         """
-        selector = self.args.test
-        if not selector:
+        selectors = self.args.test
+        if not selectors:
             return None
         for target in targets:
             available = lookup_target_section(test_names_map, target) or []
-            if available and not _filter_tests(available, selector):
+            if not available:
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: --test {selector!r} matched no test for "
-                        f"target {target!r}. Declared tests: "
-                        f"{', '.join(available)}. (Running it would silently "
-                        "execute the testbench's default test and report a "
-                        "false PASS.)"
+                        f"sim: exact named selection requires target {target!r} "
+                        "to have a registered test catalog"
+                    ),
+                )
+            unknown = [name for name in selectors if name not in available]
+            if unknown:
+                return EndpointOutcome(
+                    exit_code=EXIT_ERROR,
+                    report_text=(
+                        f"sim: unknown exact test(s) for target {target!r}: "
+                        f"{', '.join(unknown)}. Declared tests: {', '.join(available)}."
                     ),
                 )
         return None
@@ -3308,9 +4618,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: {exc}. Tests are excluded by tests.toml `skip` or "
-                        "--skip. Remove a skip "
-                        "or explicitly select one test with --test."
+                        f"sim: {exc}. Tests are excluded by tests.toml `skip`. "
+                        "Remove a configured skip or explicitly select a test "
+                        "with --test."
                     ),
                 )
         return None
@@ -3322,7 +4632,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> list[str | None]:
         """Resolve the list of tests to run for a target, minus skip list.
 
-        Skips (tests.toml ``skip`` + ``--skip``) prune known-hanging tests so
+        Project-configured skips prune known-hanging tests so
         they don't each burn the full per-test wall-clock budget. An explicit
         ``--test`` selector that matches *only* skipped tests still runs them —
         naming a test by hand is a clear override of the skip list. When every
@@ -3331,24 +4641,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """
         if self.args.test:
             available_tests = lookup_target_section(test_names_map, target) or []
-            skips = self._effective_skips(target)
             matched = _filter_tests(available_tests, self.args.test)
-            # No match: a declared-but-unmatched name is rejected up front by
-            # _validate_test_selector, so this branch is only reached when the
-            # target declares no test list — a raw passthrough the TB owns.
-            if not matched:
-                return [self.args.test]
-            kept: list[str | None] = [t for t in matched if t not in skips]
-            # Explicit --test naming only skipped tests overrides the skip list.
-            return kept or cast(list[str | None], matched)
-        if self.args.skip:
-            available_tests = lookup_target_section(test_names_map, target) or []
-            if not available_tests:
-                return [None]
-            kept: list[str | None] = [
-                test for test in available_tests if test not in self._effective_skips(target)
-            ]
-            return kept
+            return cast(list[str | None], matched)
         suite = resolve_target_test_suite(
             target,
             test_names=test_names_map,
@@ -3367,11 +4661,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         report what was skipped — silent truncation reads as "ran everything".
         Empty when nothing was skipped or when ``--test`` overrode the skip list.
         """
-        if self.args.test or self.args.skip:
-            run = set(self._resolve_tests_to_run(target, test_names_map))
-            skips = self._effective_skips(target)
-            available = lookup_target_section(test_names_map, target) or []
-            return [t for t in available if t in skips and t not in run]
+        if self.args.test:
+            return []
         return list(
             resolve_target_test_suite(
                 target,
@@ -3411,7 +4702,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Compose best-effort build context around one Target verdict."""
         report: dict[str, Any] = {
             "flow": self.name,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "target": result.target,
             "target_identity": result.target_identity,
             "tb_top": result.tb_top,
@@ -3458,7 +4749,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         completed = [result.target for result in results]
         payload: dict[str, Any] = {
             "flow": self.name,
-            "mode": self.args.mode.value,
+            "mode": self._mode.value,
             "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
             "timestamp": utc_now_rfc3339(),
             "phase": phase,
@@ -3508,7 +4799,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             f"elab_pass_{result.target}",
             met,
             source_target=result.target,
-            detail={"mode": self.args.mode.value, "target": result.target, "attempts": attempts},
+            detail={"mode": self._mode.value, "target": result.target, "attempts": attempts},
         )
 
 

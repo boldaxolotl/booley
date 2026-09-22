@@ -11,7 +11,7 @@ from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
 from booley.criteria.coverage import validate_coverage_metrics
 from booley.criteria.state import DevelopmentState
-from booley.flows.execution_persistence import AcceptanceRecorder
+from booley.flows.execution_persistence import AcceptanceRecorder, NoAcceptanceRecorder
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
 
@@ -65,7 +65,7 @@ def coverage_acceptance(
     *,
     diagnostic: bool,
 ) -> CoverageAcceptance | None:
-    if diagnostic or state._file_path is None:
+    if diagnostic or state._file_path is None or isinstance(recorder, NoAcceptanceRecorder):
         return None
     return CoverageAcceptance(state, recorder)
 

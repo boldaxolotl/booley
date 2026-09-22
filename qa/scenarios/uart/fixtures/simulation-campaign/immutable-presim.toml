@@ -1,0 +1,4 @@
+[flows.sim]
+run_cwd = ".booley-qa/campaign/{campaign}/{test}/{attempt}"
+pre_sim_build_access = "immutable"
+pre_run_commands = ["python3 qa-campaign/reject_build_mutation.py"]

@@ -99,6 +99,33 @@ def test_explicit_run_cwd_overrides_live_project_configuration(tmp_path: Path) -
     assert run.call_args.kwargs["env"]["BOOLEY_RUN_CWD"] == str(tmp_path / "frozen" / "sim")
 
 
+def test_immutable_campaign_hook_runs_from_cwd_without_build_access(
+    tmp_path: Path,
+) -> None:
+    handle = _handle(tmp_path)
+    actual_cwd = tmp_path / "attempt-run"
+    actual_cwd.mkdir()
+    run = MagicMock(return_value=_completed())
+
+    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
+        evidence = run_pre_sim_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "private-build",
+            eda_tool="icarus",
+            timeout_s=5,
+            run_cwd=str(actual_cwd),
+            working_directory=actual_cwd,
+            expose_build_root=False,
+        )
+
+    assert evidence is not None and evidence.status == "passed"
+    assert run.call_args.kwargs["cwd"] == actual_cwd
+    environment = run.call_args.kwargs["env"]
+    assert environment["BOOLEY_RUN_CWD"] == str(actual_cwd)
+    assert "BOOLEY_BUILD_ROOT" not in environment
+
+
 def test_nonzero_pre_sim_is_a_design_stage_failure(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     with patch(

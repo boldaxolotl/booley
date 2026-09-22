@@ -476,6 +476,14 @@ check_sets:
   - cleanup.remotes
   - cleanup.verdict
   - physical.archive-cleanup
+- id: taxi-simulation-campaign
+  checks:
+  - campaign.verilator-single-build
+  - campaign.heavy-cap
+  - campaign.attempt-isolation
+  - campaign.continue-after-failure
+  - campaign.cocotb-batch-resume
+  - campaign.mcp-structured-pointers
 - id: taxi-gui
   checks:
   - viewer.scoped-state
@@ -512,6 +520,7 @@ configured_scenarios:
   - Declared authority and owned fixture roots
   check_sets:
   - taxi-core
+  - taxi-simulation-campaign
   exclusions: []
 - id: taxi-ubuntu-codex-vscode
   required: true
@@ -9330,6 +9339,156 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TICKET-EXECUTION-POLICY.timeout-wall
   requires:
   - inputs.pin
+- id: campaign.verilator-single-build
+  phase: ticket2
+  action: Run the owned two-test Verilator Target through one shared Simulator Bundle.
+  checks:
+  - id: campaign.verilator-single-build
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    - EDA-VERILATOR-SIMULATION
+    stimulus: Stage the owned ordinary-HDL fixture, select exact tests `first` and `second` in one Simulation Campaign, and preserve the build tree before and after both runs.
+    expected: Exactly one authenticated ready `shared_variant` Simulator Bundle Build Result serves two distinct Simulation Attempts; both terminal results bind its exact digest and Simulator Bundle ID, and the Simulator Bundle bytes remain unchanged.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
+    evidence: Verilator version and exact compile/run argv, fixture/Target/source/test identities, Simulation Campaign Manifest and Simulator Bundle/build/result bytes and digests, build-attempt listing, distinct Simulation Attempt IDs, compatibility reports, logs, and before/after Simulator Bundle hashes.
+    capture: evidence/taxi-10g-mac-port-evolution.campaign.verilator-single-build
+  requires:
+  - inputs.pin
+  timeout_minutes: 10
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
+  - path: fixtures/simulation-campaign/campaign.core
+    audience: scenario-operator
+    sha256: e70d4846204ac4c46a16cda2ee83f385024dae74e4fe1dded35898a7d1501ae0
+  - path: fixtures/simulation-campaign/campaign_main.cpp
+    audience: scenario-operator
+    sha256: e6a83d665bbac9c5236304cc3fbcc72d8950f5c70e527e4311638b2bc081cc51
+  - path: fixtures/simulation-campaign/campaign_tb.sv
+    audience: scenario-operator
+    sha256: 19a9fe968d67f9621413a7e8d980d0b0aa089ab90e8403333fcc55e89110a726
+  - path: fixtures/simulation-campaign/tests.toml
+    audience: scenario-operator
+    sha256: 1ea74048449fbbf4af5c9812b74e66b9651f4db1790a09e3ac8e3fbb89dc991f
+  - path: fixtures/simulation-campaign/validate_bundle.py
+    audience: independent evaluator
+    sha256: ad985036cf708f5d5229cfcc6e133f2b201197347859262871d561f07772281e
+- id: campaign.heavy-cap
+  phase: ticket2
+  action: Run three bounded slow tests with a real SlotStore and max_heavy three.
+  checks:
+  - id: campaign.heavy-cap
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    - JOB-ADMISSION-CONTROL
+    stimulus: Apply the owned parallel fixture, keep the already-admitted outer Job live, and sample real filesystem-backed heavy holders, waiters, child identities, and simulator intervals throughout the pass/fail/pass campaign.
+    expected: More than one simulator overlaps, peak simulators and all heavy-holder samples never exceed three including the borrowed outer Job, and every child claim is absent after completion.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
+    evidence: Exact max_heavy configuration and argv, monotonic process intervals, complete timestamped SlotStore holder/waiter samples with outer and child execution identities, acquisition/release transitions, terminal campaign artifacts, and final empty child-holder/waiter inspection.
+    capture: evidence/taxi-10g-mac-port-evolution.campaign.heavy-cap
+  requires:
+  - campaign.verilator-single-build
+  timeout_minutes: 10
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
+  - path: fixtures/simulation-campaign/parallel.toml
+    audience: scenario-operator
+    sha256: 384f99c8ffcb6dcaee4649b7328477df5f68ddaaf26e7fdc3ef30fc08e829ee2
+  - path: fixtures/simulation-campaign/validate_parallel.py
+    audience: independent evaluator
+    sha256: 15cdb1bba2e99fe05163c0a9b890f35f9feeb917579f1273ff8218b2e9afe45f
+- id: campaign.attempt-isolation
+  phase: ticket2
+  action: Authenticate identical relative outputs from concurrent owned attempts.
+  checks:
+  - id: campaign.attempt-isolation
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    stimulus: Run exact tests `slow-first`, `slow-fail`, and `slow-last` through templated attempt-owned directories while every process writes `qa-shared-name.txt` with its distinct token.
+    expected: Canonical run directories and tokens are distinct; every same-named output, log, trace, and runtime input remains bound to its own Simulation Attempt with no cross-test content.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
+    evidence: Manifest and attempt identities, canonical run-directory paths, same-named output bytes and hashes, token-bearing logs, trace/runtime-input inventories, process intervals, result bindings, and cleanup proof.
+    capture: evidence/taxi-10g-mac-port-evolution.campaign.attempt-isolation
+  requires:
+  - campaign.heavy-cap
+  timeout_minutes: 5
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
+  - path: fixtures/simulation-campaign/validate_parallel.py
+    audience: independent evaluator
+    sha256: 15cdb1bba2e99fe05163c0a9b890f35f9feeb917579f1273ff8218b2e9afe45f
+- id: campaign.continue-after-failure
+  phase: ticket2
+  action: Prove concurrent strict failure does not omit later manifest work.
+  checks:
+  - id: campaign.continue-after-failure
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    stimulus: Retain the bounded parallel `slow-first`, `slow-fail`, `slow-last` campaign after its middle deterministic functional failure.
+    expected: All three work items publish terminal pass/fail/pass results; the summary remains in immutable manifest order, has strict grade `fail`, and contains no fail-fast omission.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
+    evidence: Exact selection argv, immutable Manifest, all Simulation Attempt/Result bytes and digests, process timeline, ordered summary and compatibility report, strict exit code, and final SlotStore inspection.
+    capture: evidence/taxi-10g-mac-port-evolution.campaign.continue-after-failure
+  requires:
+  - campaign.attempt-isolation
+  timeout_minutes: 5
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
+  - path: fixtures/simulation-campaign/validate_parallel.py
+    audience: independent evaluator
+    sha256: 15cdb1bba2e99fe05163c0a9b890f35f9feeb917579f1273ff8218b2e9afe45f
+- id: campaign.cocotb-batch-resume
+  phase: ticket2
+  action: Interrupt and resume the existing Taxi multi-test Cocotb batch.
+  checks:
+  - id: campaign.cocotb-batch-resume
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    - COCOTB-TEST-EXECUTION
+    stimulus: Run the existing exact Taxi Cocotb multi-test selection as one batch work item, terminate and reap the owned producer after batch execution begins, then resume from the exact immutable Simulation Campaign Manifest.
+    expected: The interrupted batch retains one nonterminal attempt; resume creates one new attempt and reruns the whole batch, publishing multiple XML-derived per-test observations without claiming independent per-test Simulation Attempts.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
+    evidence: Exact argv and Cocotb selection environment, Cocotb/tool versions, module/package manifest, process interruption and reap timeline, immutable Simulation Campaign Manifest, interrupted attempt with absent terminal result, resumed attempt/result, complete XML/JSON transport, per-test observations, compatibility reports, and cleanup proof.
+    capture: evidence/taxi-10g-mac-port-evolution.campaign.cocotb-batch-resume
+  requires:
+  - campaign.continue-after-failure
+  timeout_minutes: 15
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
+  - path: fixtures/simulation-campaign/validate_phase5.py
+    audience: independent evaluator
+    sha256: ce92766c7ce601e9dff30d9edff07ed7f16b6e815cd7583087f3595f3f9c5dfc
+- id: campaign.mcp-structured-pointers
+  phase: ticket2
+  action: Exercise exact array selection through MCP and authenticate its bounded pointers and observations.
+  checks:
+  - id: campaign.mcp-structured-pointers
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    stimulus: Invoke the Taxi Cocotb Simulation Campaign over MCP with an exact ordered test array, preserving the full request and bounded response bytes alongside every referenced product artifact.
+    expected: Structured output retains nonempty Manifest, summary, and simulation pointers, aggregate counts, and a maximum-32 observation preview whose entries preserve independent test, execution, functional, assertion, assertion-count, and bounded detail fields; total/truncated metadata is exact, the text card retains the same exit code, and the response stays within its declared bound.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/MCP.md
+    evidence: Exact MCP request and response bytes/count, displayed text card and exit code, Configured Scenario and Target identities, immutable Simulation Campaign Manifest and summary, simulation compatibility report, Cocotb XML/JSON, terminal result bytes/digests, preview entries, aggregate counts, total/truncated metadata, and resolved pointer hashes.
+    capture: evidence/taxi-10g-mac-port-evolution.campaign.mcp-structured-pointers
+  requires:
+  - campaign.cocotb-batch-resume
+  timeout_minutes: 10
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
+  - path: fixtures/simulation-campaign/validate_phase5.py
+    audience: independent evaluator
+    sha256: ce92766c7ce601e9dff30d9edff07ed7f16b6e815cd7583087f3595f3f9c5dfc
 - id: final.doctor-plain
   phase: final
   action: Rerun plain Doctor warning-free.

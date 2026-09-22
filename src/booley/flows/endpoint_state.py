@@ -12,7 +12,7 @@ import uuid
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from booley.criteria.state import (
     CriterionChange,
@@ -39,6 +39,9 @@ from booley.runtime.endpoint_execution import (
     ExecutionResult,
     execute_endpoint,
 )
+
+if TYPE_CHECKING:
+    from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +235,9 @@ class EndpointState(ABC):
     def _bound_criterion_keys(self, target: str) -> list[str]:
         return endpoint_acceptance._bound_criterion_keys(self, target)
 
+    def _bound_criterion_keys_for_target(self, target: TargetHandle) -> list[str]:
+        return endpoint_acceptance._bound_criterion_keys_for_target(self, target)
+
     def _criterion_target_matches(
         self,
         params: dict[str, Any],
@@ -268,16 +274,19 @@ class EndpointState(ABC):
     def _apply_pre_state_gate(self) -> EndpointOutcome | None:
         return endpoint_session._apply_pre_state_gate(self)
 
-    def admission(self, prepared: PreparedExecution) -> AbstractContextManager[None]:
+    def admission(self, prepared: PreparedExecution) -> AbstractContextManager[object | None]:
         return endpoint_admission.admission(self, prepared)
 
     def invoke_endpoint(
         self,
         prepared: PreparedExecution,
         *,
+        admission: object | None,
         started: float,
     ) -> EndpointOutcome:
-        return endpoint_session.invoke_endpoint(self, prepared, started=started)
+        return endpoint_session.invoke_endpoint(
+            self, prepared, admission=admission, started=started
+        )
 
     def finish_execution(
         self,

@@ -18,6 +18,7 @@ from booley.core.boundary import BoundaryError, as_str, require_int
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     RUNTIME_EXECUTION_ENV,
+    ExecutionId,
     ExecutionPaths,
     execution_paths,
     gc_terminal_executions,
@@ -45,6 +46,26 @@ class ExecutionResult:
     state: str
     tree_terminal: bool
     terminal_cause: str
+
+
+class SupervisedExecutionDriver:
+    """Drive one preallocated execution ID through bounded terminal proof."""
+
+    def __init__(self, project_data: Path) -> None:
+        self._project_data = project_data
+
+    def run(self, execution_id: ExecutionId, transport_argv: list[str]) -> ExecutionResult:
+        paths = execution_paths(execution_id, project_dir=self._project_data)
+        write_attachment_heartbeat(paths, generation=1)
+        pending = _PendingSignals()
+        with _capture_host_signals(pending):
+            process = subprocess.Popen(transport_argv)
+            try:
+                result = _drive_execution(process, paths, pending)
+                _report_protocol_failure(result)
+                return result
+            finally:
+                _stop_transport(process)
 
 
 @dataclass
@@ -220,11 +241,9 @@ def run_command(
     """Run one explicit command and own it through complete scoped cleanup."""
     from booley.runtime.session_runtime import exec_argv
 
-    execution_id = uuid.uuid4().hex
+    execution_id = ExecutionId(uuid.uuid4().hex)
     project_data = resolve_checkout_project_dir(project_root)
     gc_terminal_executions(project_data)
-    paths = execution_paths(execution_id, project_dir=project_data)
-    write_attachment_heartbeat(paths, generation=1)
     supervisor = _supervisor_command(execution_id, command, tty=tty)
     docker_argv = exec_argv(
         container_name,
@@ -232,12 +251,4 @@ def run_command(
         tty=tty,
         env={**(env or {}), RUNTIME_EXECUTION_ENV: execution_id},
     )
-    pending = _PendingSignals()
-    with _capture_host_signals(pending):
-        process = subprocess.Popen(docker_argv)
-        try:
-            result = _drive_execution(process, paths, pending)
-            _report_protocol_failure(result)
-            return result
-        finally:
-            _stop_transport(process)
+    return SupervisedExecutionDriver(project_data).run(execution_id, docker_argv)

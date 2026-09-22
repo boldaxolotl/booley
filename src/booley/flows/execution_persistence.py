@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Protocol
+from collections.abc import Mapping
+from typing import Any, Protocol
 
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.evidence.acceptance import ResolvedFlowAcceptance
@@ -23,6 +24,15 @@ class AcceptanceRecorder(Protocol):
         producer: str,
         transaction_id: str | None = None,
     ) -> None: ...
+
+    def record_or_verify_transaction(
+        self,
+        state: DevelopmentState,
+        changes: list[CriterionChange],
+        *,
+        acceptance_facts: Mapping[str, Any],
+        ticket_identity: Mapping[str, Any],
+    ) -> object | None: ...
 
 
 class AcceptanceRecordingError(RuntimeError):
@@ -51,6 +61,16 @@ class NoAcceptanceRecorder:
         transaction_id: str | None = None,
     ) -> None:
         return
+
+    def record_or_verify_transaction(
+        self,
+        state: DevelopmentState,
+        changes: list[CriterionChange],
+        *,
+        acceptance_facts: Mapping[str, Any],
+        ticket_identity: Mapping[str, Any],
+    ) -> object | None:
+        return None
 
 
 class StandaloneFlowExecution(NoAcceptanceRecorder):
