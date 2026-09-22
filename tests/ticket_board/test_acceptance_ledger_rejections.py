@@ -359,3 +359,36 @@ def test_commit_transaction_id_must_match_envelope(tmp_path: Path) -> None:
     path.write_bytes(ledger._canonical(commit) + b"\n")
     with pytest.raises(ledger.AcceptanceLedgerError, match="ID does not match"):
         ledger._verify_commit(tmp_path, path, transaction_id)
+
+
+def test_record_publication_removes_hidden_stage_after_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(ledger, "_fsync_directory", lambda _path: None)
+
+    def fail_replace(self, _target):
+        raise RuntimeError("publish failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(RuntimeError, match="publish failed"):
+        ledger._publish_v2_record(tmp_path, _envelope(), "b" * 64, 0)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_temp_recovery_ignores_other_transactions_and_rejects_contradictions(
+    tmp_path: Path,
+) -> None:
+    other = tmp_path / (
+        f".tmp.acceptance.tx-{'c' * 64}.ord-00000000.seq-000000001.nonce-{'d' * 32}"
+    )
+    other.mkdir()
+    ledger._recover_current_temps(tmp_path, _envelope(), "b" * 64)
+    assert other.is_dir()
+
+    current = tmp_path / (
+        f".tmp.acceptance.tx-{'b' * 64}.ord-00000000.seq-000000001.nonce-{'e' * 32}"
+    )
+    current.mkdir()
+    (current / "record.json").write_bytes(ledger._canonical({"wrong": True}) + b"\n")
+    with pytest.raises(ledger.AcceptanceLedgerError, match="contradicts"):
+        ledger._recover_current_temps(tmp_path, _envelope(), "b" * 64)
