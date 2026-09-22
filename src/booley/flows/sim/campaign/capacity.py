@@ -78,6 +78,11 @@ class HeavyCapacity:
     def shutdown_timeout_seconds(self) -> float:
         return self._admission.timeout_seconds or 30.0
 
+    @property
+    def slot_store(self):
+        """Return the managed store used to prove child-token retirement."""
+        return self._admission.slot_store
+
     @contextmanager
     def outer_permit(self) -> Iterator[HeavyPermit]:
         """Lend the already-held outer permit exactly once."""

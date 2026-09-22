@@ -93,6 +93,7 @@ class BoundedCampaignScheduler:
             self._join_workers(workers)
             self._stop.set()
             monitor.join(timeout=1)
+        self._registry.recover_unretired(self._capacity.slot_store)
         if not self._errors.empty():
             raise self._errors.get()
 
