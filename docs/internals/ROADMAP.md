@@ -51,6 +51,37 @@ not support.
 
 The blocker is licenses, not design: the maintainer can't validate a Flow for an EDA tool they can't run, which makes this the best place for an outside contribution. [CONTRIBUTING.md](CONTRIBUTING.md#the-1-priority-port-commercial-eda-tools) lists the specific EDA tools worth porting per vendor, which of them Edalize already invokes, and what a port actually takes. For what ships today, see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 
+## VHDL and GHDL Support
+
+**Planned.** Add VHDL as a first-class source language without creating a
+second design-description path. FuseSoC and Edalize already carry VHDL source
+types, ordered files, logical libraries, standards, and generic parameters;
+Booley must preserve that metadata through Target resolution, Flow planning,
+fingerprints, Doctor, source isolation, and evidence instead of reconstructing
+Verilog-only inputs from file suffixes.
+
+The first production slice is pure-VHDL simulation with a pinned
+[GHDL](https://ghdl.github.io/ghdl/) Sandbox tool, initially using cocotb for
+structured per-test verdicts and GHDL's direct FST output for Trace Artifacts.
+The supported VHDL-2008 subset will be characterized by acceptance fixtures
+rather than inferred from the standard name; GHDL describes its VHDL-2008
+support as partial. Native VHDL testbenches need a separate, explicit mapping
+from assertions and test cases to Booley's per-test evidence contract.
+
+Later slices add GHDL analysis/elaboration as the first VHDL correctness-lint
+lane, pass VHDL libraries and generics through the existing Vivado FPGA Flow,
+and evaluate GHDL's experimental Yosys frontend for ASIC synthesis before the
+existing ABC/OpenROAD stages. The synthesis lane must publish a tested language
+subset because GHDL and `ghdl-yosys-plugin` label that integration experimental.
+Verilator-native coverage remains specific to Verilog/SystemVerilog until a
+separate VHDL coverage contract is designed and qualified.
+
+GHDL does not make mixed VHDL/SystemVerilog simulation a supported Booley
+configuration. That capability depends on promoting a mixed-language simulator
+such as Xcelium or VCS under the complete commercial installation, licensing,
+trace, verdict, and Doctor contracts above (or adding a separately qualified
+Vivado XSim policy).
+
 ## Native Coverage Campaigns
 
 The implementation of [#213](https://github.com/boldaxolotl/booley/issues/213) provide
@@ -141,6 +172,7 @@ corrupt local work or Criterion evidence.
 
 **Partial.** [cocotb](https://www.cocotb.org/) testbenches run on the sandbox simulators today (see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md)). What's left:
 
+- Cocotb on the planned GHDL VHDL simulation lane.
 - Cocotb on future commercial policies. The hard part is proving the complete
   image/runtime and licensing contract, not a host Python environment.
 
