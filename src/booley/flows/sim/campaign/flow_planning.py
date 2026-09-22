@@ -173,7 +173,7 @@ def _workload_document(
         "flow_options": dict(inspection.flow_options), "trace": trace,
     }
     build_recipe = {
-        "backend": inspection.eda_tool or "", "toplevel": inspection.toplevel,
+        "eda_tool": inspection.eda_tool or "", "toplevel": inspection.toplevel,
         "arguments": [], "command_model_sha256": canonical_sha256(command_model),
     }
     configured_cwd = resolve_run_cwd(root)

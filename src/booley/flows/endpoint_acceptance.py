@@ -20,6 +20,7 @@ from booley.flows.endpoint_events import (
 from booley.flows.endpoint_session import PreparedExecution
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import (
+    EXIT_CANCELLED,
     EXIT_ERROR,
     EXIT_SUCCESS,
     EndpointOutcome,
@@ -357,7 +358,6 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
         return None
 
     from booley.core.checkout_role import SourceCheckoutProjectError
-    from booley.criteria.actions import planned_invocation
     from booley.criteria.endpoint_catalog import (
         CriterionEndpointCatalog,
         EndpointCriterionRelationship,
@@ -382,6 +382,21 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
         ),
     )
 
+    pending_text = _pending_criterion_invocations(endpoint, endpoint_catalog)
+    return EndpointOutcome(
+        exit_code=EXIT_ERROR,
+        detail={"acceptance_effect": "rejected_unbound", "unbound_targets": missing},
+        report_text=(
+            f"{endpoint.name}: Target(s) {', '.join(missing)} do not bind an Acceptance "
+            f"Basis criterion.\nPending compatible criteria:\n{pending_text}\n"
+            "Use --diagnostic only when this is intentionally a non-acceptance run."
+        ),
+    )
+
+
+def _pending_criterion_invocations(endpoint, endpoint_catalog) -> str:
+    from booley.criteria.actions import planned_invocation
+
     pending: list[str] = []
     for key, entry in endpoint.state.criteria.items():
         if key.startswith("_") or not any(
@@ -390,19 +405,7 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
             continue
         invocation = planned_invocation(key, entry, endpoint_catalog)
         pending.append(f"  {key} -> {invocation or endpoint.name}")
-    pending_text = "\n".join(pending) if pending else "  (no compatible criterion declared)"
-    return EndpointOutcome(
-        exit_code=EXIT_ERROR,
-        detail={
-            "acceptance_effect": "rejected_unbound",
-            "unbound_targets": missing,
-        },
-        report_text=(
-            f"{endpoint.name}: Target(s) {', '.join(missing)} do not bind an Acceptance "
-            f"Basis criterion.\nPending compatible criteria:\n{pending_text}\n"
-            "Use --diagnostic only when this is intentionally a non-acceptance run."
-        ),
-    )
+    return "\n".join(pending) if pending else "  (no compatible criterion declared)"
 
 
 def record_acceptance(
@@ -412,6 +415,9 @@ def record_acceptance(
 ) -> None:
     """Record immutable Ticket evidence before state/report persistence."""
     if prepared.non_persisting_dry_run:
+        endpoint._pending_criteria_set = ()
+        return
+    if outcome.exit_code == EXIT_CANCELLED:
         endpoint._pending_criteria_set = ()
         return
     campaign_outcomes = getattr(endpoint, "_simulation_campaign_outcomes", ())

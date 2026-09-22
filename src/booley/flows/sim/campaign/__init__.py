@@ -31,6 +31,7 @@ from .coordinator import (
     ResumeCampaignPreviewRequest,
     ResumeCampaignRunRequest,
     SimulationCampaign,
+    SimulationCampaignCancellationError,
 )
 from .facts import (
     AcceptanceFacts,
@@ -69,6 +70,7 @@ __all__ = [
     "ResumeCampaignRunRequest",
     "SimulationAttempt",
     "SimulationCampaign",
+    "SimulationCampaignCancellationError",
     "SimulationCampaignIntegrityError",
     "SimulationCampaignManifest",
     "SimulationCampaignPlan",

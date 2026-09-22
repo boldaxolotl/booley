@@ -2073,46 +2073,13 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     run_cwd = tmp_path / "run"
     run_cwd.mkdir()
     commands: list[list[str]] = []
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        del timeout
-        commands.append(command)
-        if "BOOLEY_BUILD_STAGE" in command[-1]:
-            return SubprocessResult(
-                returncode=0,
-                stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
-            )
-        identity = AdapterTransportIdentity(
-            eda_tool,
-            "abc123",
-            handle.identity,
-            ("smoke",),
-            snapshot.parent / "execution-evidence" / "adapter-abc123.json",
-        )
-        write_adapter_result(
-            identity,
-            AdapterResult(
-                True,
-                False,
-                0,
-                ("smoke",),
-                test_results=(AdapterTestResult("smoke", "pass"),),
-            ),
-        )
-        return SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n")
-
-    execution = SimulationExecution(
-        invoke=invoke, options=SimulationOptions(timeout_ms=5000)
-    )
+    invoke = _snapshot_invoke(commands, eda_tool, handle, snapshot)
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     with (
         patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
         patch.object(SimulationBuildSession, "capture_inputs", return_value={}),
-        patch.object(
-            SimulationBuildSession,
-            "authorize_fresh_image",
-            return_value=artifacts,
-        ),
+        patch.object(SimulationBuildSession, "authorize_fresh_image", return_value=artifacts),
     ):
         with execution.ordinary_group(handle, ("smoke",)) as group:
             build = group.compile()
@@ -2129,6 +2096,30 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     assert str(run_cwd) in launch
     assert f"--work-dir {snapshot.parent / 'execution-evidence'}" in launch
     assert str(prepared.build_root) not in launch
+
+
+def _snapshot_invoke(commands, eda_tool, handle, snapshot):
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        commands.append(command)
+        if "BOOLEY_BUILD_STAGE" in command[-1]:
+            return SubprocessResult(
+                returncode=0, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
+            )
+        identity = AdapterTransportIdentity(
+            eda_tool, "abc123", handle.identity, ("smoke",),
+            snapshot.parent / "execution-evidence" / "adapter-abc123.json",
+        )
+        write_adapter_result(
+            identity,
+            AdapterResult(
+                True, False, 0, ("smoke",),
+                test_results=(AdapterTestResult("smoke", "pass"),),
+            ),
+        )
+        return SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n")
+
+    return invoke
 
 
 def test_ordinary_group_refuses_snapshot_launch_until_lease_released(

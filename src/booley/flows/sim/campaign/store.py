@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import stat
@@ -21,6 +20,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar, cast
 
+from booley.core.boundary import (
+    BoundaryError,
+    require_bool_value,
+    require_finite_number,
+    require_int,
+)
 from booley.flows.sim.campaign_durability import (
     durable_create,
     durable_directory,
@@ -947,52 +952,43 @@ def _validate_build_execution_document(document: Mapping[str, object]) -> None:
 
 
 def _validate_process_values(process: Mapping[str, object]) -> None:
-    if (
-        type(process["returncode"]) is not int
-        or type(process["oom_kill_delta"]) is not int
-        or not isinstance(process["stdout"], str)
-        or not isinstance(process["stderr"], str)
-        or type(process["timed_out"]) is not bool
-    ):
+    try:
+        require_int(process["returncode"], field="build process returncode")
+        require_int(process["oom_kill_delta"], field="build process OOM delta")
+        require_bool_value(process["timed_out"], field="build process timed_out")
+        for field in ("duration_s", "dispatched_unix"):
+            require_finite_number(process[field], field=f"build process {field}")
+        peak = process["peak_rss_mb"]
+        if peak is not None:
+            require_finite_number(peak, field="build process peak_rss_mb")
+    except BoundaryError as exc:
+        raise SimulationCampaignIntegrityError("build process evidence types disagree") from exc
+    if not isinstance(process["stdout"], str) or not isinstance(process["stderr"], str):
         raise SimulationCampaignIntegrityError("build process evidence types disagree")
-    for field in ("duration_s", "dispatched_unix"):
-        value = process[field]
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int | float)
-            or not math.isfinite(value)
-        ):
-            raise SimulationCampaignIntegrityError("build process timing is invalid")
-    peak = process["peak_rss_mb"]
-    if peak is not None and (
-        isinstance(peak, bool) or not isinstance(peak, int | float) or not math.isfinite(peak)
-    ):
-        raise SimulationCampaignIntegrityError("build process peak RSS is invalid")
 
 
 def _validate_build_values(build: Mapping[str, object]) -> None:
+    try:
+        require_int(build["returncode"], field="normalized build returncode")
+        require_bool_value(build["timed_out"], field="normalized build timed_out")
+        require_bool_value(build["terminal_record"], field="normalized build terminal_record")
+        require_int(build["oom_kill_delta"], field="normalized build OOM delta")
+        for field in ("elapsed_s", "peak_rss_mb"):
+            if build[field] is not None:
+                require_finite_number(build[field], field=f"normalized build {field}")
+    except BoundaryError as exc:
+        raise SimulationCampaignIntegrityError("normalized build measurement is invalid") from exc
     if (
         build["ran"] is not True
         or build["verdict"] != "pass"
         or build["failure_kind"] is not None
-        or type(build["returncode"]) is not int
         or build["returncode"] != 0
         or build["timed_out"] is not False
-        or type(build["terminal_record"]) is not bool
-        or type(build["oom_kill_delta"]) is not int
         or any(
             not isinstance(build[field], str) for field in ("output", "reason", "cache_decision")
         )
     ):
         raise SimulationCampaignIntegrityError("normalized build evidence is not successful")
-    for field in ("elapsed_s", "peak_rss_mb"):
-        value = build[field]
-        if value is not None and (
-            isinstance(value, bool)
-            or not isinstance(value, int | float)
-            or not math.isfinite(value)
-        ):
-            raise SimulationCampaignIntegrityError("normalized build measurement is invalid")
 
 
 def _validate_result_attempt_binding(attempt: SimulationAttempt, result: SimulationResult) -> None:

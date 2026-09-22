@@ -49,77 +49,7 @@ def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
 ) -> None:
     validator = _module("taxi_parallel_validator", TAXI / "validate_parallel.py")
     timeline = tmp_path / "timeline.json"
-    _write_json(
-        timeline,
-        {
-            "outer_execution_id": "outer",
-            "slot_samples": [
-                {
-                    "at_ns": 2,
-                    "heavy_holders": ["outer", "child-a", "child-b"],
-                    "heavy_waiters": ["child-c"],
-                },
-                {
-                    "at_ns": 5,
-                    "heavy_holders": ["outer", "child-b", "child-c"],
-                    "heavy_waiters": [],
-                },
-            ],
-            "final_slot_state": {"heavy_holders": [], "heavy_waiters": []},
-            "claim_transitions": [
-                {"at_ns": 0, "child_execution_id": "child-a", "state": "submitted"},
-                {"at_ns": 1, "child_execution_id": "child-a", "state": "promoted"},
-                {"at_ns": 1, "child_execution_id": "child-b", "state": "submitted"},
-                {"at_ns": 2, "child_execution_id": "child-b", "state": "promoted"},
-                {"at_ns": 2, "child_execution_id": "child-c", "state": "submitted"},
-                {"at_ns": 5, "child_execution_id": "child-c", "state": "promoted"},
-                {"at_ns": 5, "child_execution_id": "child-a", "state": "released"},
-                {"at_ns": 6, "child_execution_id": "child-b", "state": "released"},
-                {"at_ns": 9, "child_execution_id": "child-c", "state": "released"},
-            ],
-            "intervals": [
-                {
-                    "test": "slow-first",
-                    "start_ns": 1,
-                    "end_ns": 5,
-                    "run_directory": "run-a",
-                    "relative_output": "qa-shared-name.txt",
-                    "token": "slow-first",
-                    "output_text": "slow-first",
-                    "attempt_id": "attempt-a",
-                    "child_execution_id": "child-a",
-                    "work_item_id": "item-0",
-                    **_artifact_evidence(tmp_path, "attempt-a", "slow-first"),
-                },
-                {
-                    "test": "slow-fail",
-                    "start_ns": 2,
-                    "end_ns": 6,
-                    "run_directory": "run-b",
-                    "relative_output": "qa-shared-name.txt",
-                    "token": "slow-fail",
-                    "output_text": "slow-fail",
-                    "attempt_id": "attempt-b",
-                    "child_execution_id": "child-b",
-                    "work_item_id": "item-1",
-                    **_artifact_evidence(tmp_path, "attempt-b", "slow-fail"),
-                },
-                {
-                    "test": "slow-last",
-                    "start_ns": 5,
-                    "end_ns": 9,
-                    "run_directory": "run-c",
-                    "relative_output": "qa-shared-name.txt",
-                    "token": "slow-last",
-                    "output_text": "slow-last",
-                    "attempt_id": "attempt-c",
-                    "child_execution_id": "child-c",
-                    "work_item_id": "item-2",
-                    **_artifact_evidence(tmp_path, "attempt-c", "slow-last"),
-                },
-            ],
-        },
-    )
+    _write_parallel_timeline(timeline, tmp_path)
     assert validator.validate_heavy_cap(timeline, 3) == {
         "max_heavy": 3,
         "peak_simulators": 2,
@@ -132,7 +62,55 @@ def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
     with pytest.raises(ValueError, match="retained digest differs"):
         validator.validate_attempt_isolation(timeline)
     retained_output.write_bytes(original_output)
+    _validate_continuation(tmp_path, validator)
+    _assert_claim_corruption_rejected(timeline, validator)
 
+
+def _write_parallel_timeline(timeline, root) -> None:
+    _write_json(timeline, {
+        "outer_execution_id": "outer",
+        "slot_samples": [
+            {"at_ns": 2, "heavy_holders": ["outer", "child-a", "child-b"],
+             "heavy_waiters": ["child-c"]},
+            {"at_ns": 5, "heavy_holders": ["outer", "child-b", "child-c"],
+             "heavy_waiters": []},
+        ],
+        "final_slot_state": {"heavy_holders": [], "heavy_waiters": []},
+        "claim_transitions": _claim_transitions(),
+        "intervals": [
+            _interval(root, "slow-first", 1, 5, "a", 0),
+            _interval(root, "slow-fail", 2, 6, "b", 1),
+            _interval(root, "slow-last", 5, 9, "c", 2),
+        ],
+    })
+
+
+def _claim_transitions() -> list[dict[str, object]]:
+    return [
+        {"at_ns": 0, "child_execution_id": "child-a", "state": "submitted"},
+        {"at_ns": 1, "child_execution_id": "child-a", "state": "promoted"},
+        {"at_ns": 1, "child_execution_id": "child-b", "state": "submitted"},
+        {"at_ns": 2, "child_execution_id": "child-b", "state": "promoted"},
+        {"at_ns": 2, "child_execution_id": "child-c", "state": "submitted"},
+        {"at_ns": 5, "child_execution_id": "child-c", "state": "promoted"},
+        {"at_ns": 5, "child_execution_id": "child-a", "state": "released"},
+        {"at_ns": 6, "child_execution_id": "child-b", "state": "released"},
+        {"at_ns": 9, "child_execution_id": "child-c", "state": "released"},
+    ]
+
+
+def _interval(root, name, start, end, suffix, index) -> dict[str, object]:
+    attempt_id = f"attempt-{suffix}"
+    return {
+        "test": name, "start_ns": start, "end_ns": end,
+        "run_directory": f"run-{suffix}", "relative_output": "qa-shared-name.txt",
+        "token": name, "output_text": name, "attempt_id": attempt_id,
+        "child_execution_id": f"child-{suffix}", "work_item_id": f"item-{index}",
+        **_artifact_evidence(root, attempt_id, name),
+    }
+
+
+def _validate_continuation(tmp_path, validator) -> None:
     manifest = tmp_path / "manifest.json"
     summary = tmp_path / "summary.json"
     results = [tmp_path / f"result-{index}.json" for index in range(3)]
@@ -172,6 +150,8 @@ def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
         )
     validator.validate_continue_after_failure(manifest, summary, results)
 
+
+def _assert_claim_corruption_rejected(timeline, validator) -> None:
     document = json.loads(timeline.read_text())
     complete_transitions = list(document["claim_transitions"])
     document["claim_transitions"] = [

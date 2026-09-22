@@ -27,6 +27,7 @@ from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
     NewCampaignRunRequest,
     SimulationCampaign,
+    SimulationCampaignCancellationError,
 )
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest
@@ -78,6 +79,14 @@ def _managed(store: SlotStore, outer, *, max_heavy: int = 2) -> AdmissionContext
         5.0,
         lambda: False,
     )
+
+
+def test_cancelled_campaign_stops_before_publication() -> None:
+    request = SimpleNamespace(
+        admission=SimpleNamespace(cancellation=lambda: True)
+    )
+    with pytest.raises(SimulationCampaignCancellationError, match="cancelled"):
+        SimulationCampaign._raise_if_cancelled(request)  # type: ignore[arg-type]
 
 
 def _three_item_manifest():
@@ -816,18 +825,22 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_it(
     )
     worker.start()
     try:
-        _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[1]) == 1)
-        assert attempts and attempts[0].is_file()
-        assert tuple((campaign_store.root / "child-executions/entries").glob("*.json"))
-        cancelled.set()
-        worker.join(timeout=4)
-        assert not worker.is_alive()
-        entries = tuple((campaign_store.root / "child-executions/entries").glob("*.json"))
-        retired = tuple((campaign_store.root / "child-executions/retired").glob("*.json"))
-        assert len(entries) == len(retired) == 1
-        assert slots.snapshot(CLASS_HEAVY)[1] == []
+        _cancel_child_and_assert(slots, attempts, campaign_store, cancelled, worker)
     finally:
         slots.release(outer)
+
+
+def _cancel_child_and_assert(slots, attempts, campaign_store, cancelled, worker) -> None:
+    _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[1]) == 1)
+    assert attempts and attempts[0].is_file()
+    assert tuple((campaign_store.root / "child-executions/entries").glob("*.json"))
+    cancelled.set()
+    worker.join(timeout=4)
+    assert not worker.is_alive()
+    entries = tuple((campaign_store.root / "child-executions/entries").glob("*.json"))
+    retired = tuple((campaign_store.root / "child-executions/retired").glob("*.json"))
+    assert len(entries) == len(retired) == 1
+    assert slots.snapshot(CLASS_HEAVY)[1] == []
 
 
 def _capture_error(errors: list[BaseException], call, *args) -> None:
@@ -837,9 +850,85 @@ def _capture_error(errors: list[BaseException], call, *args) -> None:
         errors.append(exc)
 
 
+class _ParallelState:
+    def __init__(self, build_root, run_log, handle, first_finisher, schedule_seed):
+        self.build_root = build_root
+        self.run_log = run_log
+        self.handle = handle
+        self.first_finisher = first_finisher
+        self.schedule_seed = schedule_seed
+        self.barrier = threading.Barrier(2, timeout=2)
+        self.first_finished = threading.Event()
+        self.interval_gate = threading.Lock()
+        self.intervals: list[tuple[str, float, float]] = []
+        self.completion_order: list[str] = []
+        self.compile_count = 0
+
+
+class _ParallelGroup:
+    def __init__(self, state: _ParallelState, names: tuple[str, ...]) -> None:
+        self.state = state
+        self.names = names
+        self.build_root = state.build_root
+        self.artifact_paths = (state.build_root / "simv",)
+
+    def planning_disclosure(self):
+        return {}
+
+    def compile(self):
+        self.state.compile_count += 1
+        return SimpleNamespace(passed=True)
+
+    def reuse_compilation_from(self, _source) -> None:
+        return None
+
+    def build_recovery_document(self):
+        return _build_execution()
+
+    def bind_authenticated_bundle(self, evidence) -> None:
+        assert evidence == _build_execution()
+
+    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
+        del snapshot_root, run_cwd
+        name = self.names[0]
+        started = time.monotonic()
+        self._coordinate(name)
+        finished = time.monotonic()
+        with self.state.interval_gate:
+            self.state.intervals.append((name, started, finished))
+            self.state.completion_order.append(name)
+        passed = name != "beta"
+        test = SimulationTestOutcome(
+            name, "pass" if passed else "fail", passed, str(self.state.run_log)
+        )
+        return SimulationTargetOutcome(
+            "sim", self.state.handle.identity, "tb", "icarus", passed,
+            "pass" if passed else "fail", 0.1, (test,),
+        )
+
+    def _coordinate(self, name: str) -> None:
+        if name not in {"alpha", "beta"}:
+            return
+        self.state.barrier.wait()
+        time.sleep(0.001 * self.state.schedule_seed)
+        if name == self.state.first_finisher:
+            self.state.first_finished.set()
+        else:
+            assert self.state.first_finished.wait(timeout=2)
+
+
+class _ParallelExecution:
+    def __init__(self, state: _ParallelState) -> None:
+        self.state = state
+
+    @contextmanager
+    def ordinary_group(self, _handle, names):
+        yield _ParallelGroup(self.state, names)
+
+
 @pytest.mark.parametrize("first_finisher", ["alpha", "beta"])
 @pytest.mark.parametrize("schedule_seed", range(5))
-def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(  # noqa: PLR0915 -- stable end-to-end seam keeps setup and assertions visible
+def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     first_finisher: str,
@@ -847,6 +936,23 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(  #
 ) -> None:
     manifest = _three_item_manifest()
     plan = create_simulation_campaign_plan(manifest)
+    project, state = _parallel_environment(tmp_path, first_finisher, schedule_seed)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
+    )
+    outcome, slot_store, invocation = _run_parallel_campaign(
+        tmp_path, manifest, plan, project, executor
+    )
+    _assert_parallel_outcome(outcome, plan, state, first_finisher)
+    _assert_child_claim_integrity(invocation, slot_store, plan)
+
+
+def _parallel_environment(tmp_path, first_finisher, schedule_seed):
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
@@ -857,87 +963,15 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(  #
     run_log = build_root / "run.log"
     run_log.write_text("PASS\n", encoding="utf-8")
     handle = SimpleNamespace(
-        identity="acme:lib:dut:1#sim",
-        project_root=project,
-        selector="sim",
-        eda_tool="icarus",
+        identity="acme:lib:dut:1#sim", project_root=project,
+        selector="sim", eda_tool="icarus",
     )
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
-        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
+    return project, _ParallelState(
+        build_root, run_log, handle, first_finisher, schedule_seed
     )
-    barrier = threading.Barrier(2, timeout=2)
-    first_finished = threading.Event()
-    interval_gate = threading.Lock()
-    intervals: list[tuple[str, float, float]] = []
-    completion_order: list[str] = []
-    compile_count = 0
 
-    class FakeGroup:
-        def __init__(self, names: tuple[str, ...]) -> None:
-            self.names = names
-            self.build_root = build_root
-            self.artifact_paths = (build_root / "simv",)
 
-        def planning_disclosure(self):
-            return {}
-
-        def compile(self):
-            nonlocal compile_count
-            compile_count += 1
-            return SimpleNamespace(passed=True)
-
-        def reuse_compilation_from(self, _source) -> None:
-            return None
-
-        def build_recovery_document(self):
-            return _build_execution()
-
-        def bind_authenticated_bundle(self, evidence) -> None:
-            assert evidence == _build_execution()
-
-        def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
-            del snapshot_root, run_cwd
-            name = self.names[0]
-            started = time.monotonic()
-            if name in {"alpha", "beta"}:
-                barrier.wait()
-                time.sleep(0.001 * schedule_seed)
-                if name == first_finisher:
-                    first_finished.set()
-                else:
-                    assert first_finished.wait(timeout=2)
-            finished = time.monotonic()
-            with interval_gate:
-                intervals.append((name, started, finished))
-                completion_order.append(name)
-            passed = name != "beta"
-            test = SimulationTestOutcome(
-                name=name,
-                verdict="pass" if passed else "fail",
-                passed=passed,
-                run_log_path=str(run_log),
-            )
-            return SimulationTargetOutcome(
-                target="sim",
-                target_identity=handle.identity,
-                toplevel="tb",
-                eda_tool="icarus",
-                passed=passed,
-                verdict="pass" if passed else "fail",
-                elapsed_s=0.1,
-                tests=(test,),
-            )
-
-    class FakeExecution:
-        @contextmanager
-        def ordinary_group(self, _handle, names):
-            yield FakeGroup(names)
-
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: FakeExecution(),  # type: ignore[arg-type,return-value]
-    )
+def _run_parallel_campaign(tmp_path, manifest, plan, project, executor):
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
@@ -960,16 +994,22 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(  #
         assert waiters == []
     finally:
         slot_store.release(outer)
+    return outcome, slot_store, invocation
 
+
+def _assert_parallel_outcome(outcome, plan, state, first_finisher) -> None:
     assert outcome.complete is True
     assert outcome.aggregate_grade == "fail"
-    assert compile_count == 1
-    by_name = {name: (start, end) for name, start, end in intervals}
+    assert state.compile_count == 1
+    by_name = {name: (start, end) for name, start, end in state.intervals}
     assert by_name["alpha"][0] <= by_name["beta"][1]
     assert by_name["beta"][0] <= by_name["alpha"][1]
-    assert completion_order.index(first_finisher) < completion_order.index(
+    assert state.completion_order.index(first_finisher) < state.completion_order.index(
         "beta" if first_finisher == "alpha" else "alpha"
     )
+
+
+def _assert_child_claim_integrity(invocation, slot_store, plan) -> None:
     store = CampaignStore(invocation / "targets/sim/campaign")
     summary = json.loads(store.summary_path.read_text())
     assert summary["completed"] == list(plan.work_item_ids)

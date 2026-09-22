@@ -288,6 +288,14 @@ def test_uart_validator_covers_isolation_immutable_and_legacy(tmp_path: Path) ->
     manifest = tmp_path / "manifest.json"
     attempts = [tmp_path / "attempt-alpha.json", tmp_path / "attempt-beta.json"]
     results = [tmp_path / "result-alpha.json", tmp_path / "result-beta.json"]
+    _write_isolated_attempts(manifest, attempts, results)
+    validator.validate_runtime_isolation(manifest, attempts, results)
+    _assert_immutable_validation(tmp_path, validator, attempts[0])
+    _write_legacy_attempts(manifest, attempts, results)
+    validator.validate_legacy_builds(manifest, attempts, results)
+
+
+def _write_isolated_attempts(manifest, attempts, results) -> None:
     _write_json(
         manifest,
         {
@@ -317,17 +325,20 @@ def test_uart_validator_covers_isolation_immutable_and_legacy(tmp_path: Path) ->
                 ],
             },
         )
-    validator.validate_runtime_isolation(manifest, attempts, results)
 
+
+def _assert_immutable_validation(tmp_path, validator, attempt) -> None:
     environment = tmp_path / "environment.json"
     immutable_result = tmp_path / "immutable-result.json"
     _write_json(environment, {"BOOLEY_RUN_CWD": "run-0"})
     _write_json(immutable_result, {"grade": "fail", "state": "setup_error"})
-    validator.validate_immutable_failure(attempts[0], immutable_result, environment)
+    validator.validate_immutable_failure(attempt, immutable_result, environment)
     _write_json(environment, {"BOOLEY_BUILD_ROOT": "secret-build"})
     with pytest.raises(ValueError, match="disclosed build root"):
-        validator.validate_immutable_failure(attempts[0], immutable_result, environment)
+        validator.validate_immutable_failure(attempt, immutable_result, environment)
 
+
+def _write_legacy_attempts(manifest, attempts, results) -> None:
     _write_json(
         manifest,
         {
@@ -351,7 +362,6 @@ def test_uart_validator_covers_isolation_immutable_and_legacy(tmp_path: Path) ->
                 }
             },
         )
-    validator.validate_legacy_builds(manifest, attempts, results)
 
 
 def test_public_checks_have_product_regression_backlinks() -> None:

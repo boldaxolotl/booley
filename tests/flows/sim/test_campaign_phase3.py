@@ -88,9 +88,15 @@ def _two_item_manifest() -> object:
     }
     target = document["target"]
     variant = document["build_variants"][0]  # type: ignore[index]
-    items = []
-    for ordinal, name in enumerate(("alpha", "beta")):
-        identity = {
+    document["work_items"] = [
+        _work_item(ordinal, name, target, variant["build_variant_id"])
+        for ordinal, name in enumerate(("alpha", "beta"))
+    ]
+    return finalize_manifest(document)
+
+
+def _work_item(ordinal: int, name: str, target: object, variant_id: object) -> dict:
+    identity = {
             "ordinal": ordinal,
             "kind": "ordinary_hdl",
             "role": "candidate",
@@ -98,23 +104,19 @@ def _two_item_manifest() -> object:
             "target": target,
             "selection": {"kind": "named", "names": [name]},
             "arguments": [name],
-            "build_variant_id": variant["build_variant_id"],
+            "build_variant_id": variant_id,
             "run_directory": {
                 "configured": "runs/{test}/{attempt}",
                 "kind": "templated",
                 "collision_template": "runs/test/attempt",
             },
-        }
-        fingerprint = _sha(identity)
-        items.append(
-            {
-                "work_item_id": f"item:{ordinal:04d}:" + fingerprint.removeprefix("sha256:")[:16],
-                **identity,
-                "fingerprint_sha256": fingerprint,
-            }
-        )
-    document["work_items"] = items
-    return finalize_manifest(document)
+    }
+    fingerprint = _sha(identity)
+    return {
+        "work_item_id": f"item:{ordinal:04d}:" + fingerprint.removeprefix("sha256:")[:16],
+        **identity,
+        "fingerprint_sha256": fingerprint,
+    }
 
 
 def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
@@ -130,7 +132,7 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
     (build_root / "input.bin").write_bytes(b"pristine")
     run_log = build_root / "run.log"
     run_log.write_text("PASS\n", encoding="utf-8")
-    compile_count = 0
+    compile_count = [0]
     launches: list[tuple[str, Path, bytes]] = []
 
     handle = SimpleNamespace(
@@ -144,21 +146,29 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
     )
 
+    executor = _shared_executor(build_root, run_log, handle, launches, compile_count)
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    outcome = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+        )
+    )
+    _assert_shared_campaign(outcome, compile_count[0], launches, invocation)
+
+
+def _shared_executor(build_root, run_log, handle, launches, compile_count):
     class FakeGroup:
         def __init__(self, names: tuple[str, ...]) -> None:
             self.names = names
             self.build_root = build_root
             self.artifact_paths = (build_root / "simv",)
             self.reused = False
-
         def planning_disclosure(self):
             return {}
-
         def compile(self):
-            nonlocal compile_count
-            compile_count += 1
+            compile_count[0] += 1
             return SimpleNamespace(passed=True)
-
         def reuse_compilation_from(self, source) -> None:
             assert source.names == ("alpha",)
             self.reused = True
@@ -193,24 +203,13 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
         @contextmanager
         def ordinary_group(self, _handle, names):
             yield FakeGroup(names)
-
-    executor = OrdinaryHdlSerialExecutor(
+    return OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: FakeExecution(),  # type: ignore[arg-type,return-value]
     )
-    invocation = tmp_path / "reports" / "000001"
-    invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan,
-            project,
-            invocation.parent,
-            CampaignPolicy(),
-            invocation,
-            _admission(),
-        )
-    )
 
+
+def _assert_shared_campaign(outcome, compile_count, launches, invocation) -> None:
     assert outcome.complete is True
     assert compile_count == 1
     assert [item[0] for item in launches] == ["alpha", "beta"]

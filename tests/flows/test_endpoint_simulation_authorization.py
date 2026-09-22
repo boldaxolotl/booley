@@ -14,6 +14,7 @@ from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcce
 from booley.flows import endpoint_acceptance
 from booley.flows.endpoint_admission import authorize_simulation_targets
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow, SimulationMode
+from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -71,6 +72,31 @@ def test_strict_authorization_preserves_candidate_then_historical_baseline() -> 
 
     assert rejection is None
     assert endpoint.observed == [candidate, baseline]
+
+
+def test_selection_rejection_precedes_target_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle = _handle("sim", "acme:lib:dut:1#sim", tmp_path)
+    flow = SimulateFlow()
+    flow._state = DevelopmentState()
+    flow._args = SimpleNamespace(mode=SimulationMode.SIMULATE)
+    monkeypatch.setattr(flow.context, "_criterion_binding_gate", lambda: None)
+    monkeypatch.setattr(
+        flow,
+        "_prepare_campaign_targets",
+        lambda: ((handle,), None, ("sim",), {"sim": ["smoke"]}),
+    )
+    rejected = EndpointOutcome(exit_code=2, report_text="unknown exact test")
+    monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: rejected)
+    authorized: list[tuple[TargetHandle, ...]] = []
+    monkeypatch.setattr(
+        "booley.flows.endpoint_admission.authorize_simulation_targets",
+        lambda _context, targets: authorized.append(targets),
+    )
+
+    assert flow.prepare_simulation_endpoint() is rejected
+    assert authorized == []
 
 
 def test_strict_authorization_rejects_unbound_distinct_baseline() -> None:
@@ -139,6 +165,7 @@ def test_campaign_preflight_orders_candidate_before_historical_baseline(
     monkeypatch.setattr(flow.context, "_criterion_binding_gate", lambda: None)
     monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim"])
     monkeypatch.setattr(flow, "_validate_interactive_args", lambda _targets: None)
+    monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: None)
     monkeypatch.setattr(flow, "_target_handle", lambda _selector: candidate)
     monkeypatch.setattr(
         flow,

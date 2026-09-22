@@ -98,35 +98,81 @@ class _CrashOnce:
             raise _InjectedProcessDeath(boundary)
 
 
+class _CrashCatalog:
+    def __init__(self, project: Path) -> None:
+        self.project = project
+
+    def select(self, token: str, *, for_flow: str):
+        assert (token, for_flow) == ("sim", "sim")
+        return SimpleNamespace(
+            identity="acme:lib:dut:1#sim",
+            project_root=self.project,
+            selector="sim",
+            eda_tool="icarus",
+        )
+
+
+class _CrashGroup:
+    def __init__(self, build_root: Path, run_log: Path, launches: list[int]) -> None:
+        self.build_root = build_root
+        self.run_log = run_log
+        self.launches = launches
+        self.artifact_paths = (build_root / "simv",)
+
+    def compile(self):
+        return SimpleNamespace(passed=True)
+
+    def planning_disclosure(self):
+        return {}
+
+    def build_recovery_document(self):
+        return _build_execution()
+
+    def reuse_compilation_from(self, _source):
+        return None
+
+    def bind_authenticated_bundle(self, evidence):
+        assert evidence == _build_execution()
+
+    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
+        self.launches.append(1)
+        assert (snapshot_root / "simv").is_file()
+        assert (run_cwd / "inputs/input.bin").read_bytes() == b"runtime"
+        test = SimulationTestOutcome("sim", "pass", True, str(self.run_log))
+        return SimulationTargetOutcome(
+            "sim", "acme:lib:dut:1#sim", "tb", "icarus", True, "pass", 0.1, (test,)
+        )
+
+
+class _CrashExecution:
+    def __init__(self, group: _CrashGroup) -> None:
+        self.group = group
+
+    @contextmanager
+    def ordinary_group(self, handle, names):
+        del handle
+        assert names == ()
+        yield self.group
+
+
 def _admission() -> AdmissionContext:
     return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
 
 
-@pytest.mark.parametrize("crash_point", _CRASH_POINTS)
-def test_serial_publication_boundary_resume_matrix(  # noqa: PLR0915 -- matrix harness
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    crash_point: str,
-) -> None:
-    """Every durable prefix resumes; only a committed Result suppresses rerun."""
+def _crash_manifest():
     document = _manifest()
     document.pop("fingerprints")
-    declaration_identity = {
-        "source_artifact_path": "input.bin",
-        "destination": "inputs/input.bin",
-    }
-    declaration_id = (
-        "sha256:"
-        + hashlib.sha256(canonical_json_bytes(declaration_identity).rstrip(b"\n")).hexdigest()
-    )
+    identity = {"source_artifact_path": "input.bin", "destination": "inputs/input.bin"}
+    declaration_id = "sha256:" + hashlib.sha256(
+        canonical_json_bytes(identity).rstrip(b"\n")
+    ).hexdigest()
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
-        {
-            "declaration_id": declaration_id,
-            **declaration_identity,
-        }
+        {"declaration_id": declaration_id, **identity}
     ]
-    manifest = finalize_manifest(document)
-    plan = create_simulation_campaign_plan(manifest)
+    return finalize_manifest(document)
+
+
+def _crash_environment(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
     (project / "run").mkdir()
@@ -136,71 +182,59 @@ def test_serial_publication_boundary_resume_matrix(  # noqa: PLR0915 -- matrix h
     (build_root / "input.bin").write_bytes(b"runtime")
     run_log = build_root / "run.log"
     run_log.write_text("PASS\n", encoding="utf-8")
+    return project, build_root, run_log
+
+
+def _resume_crashed_campaign(campaign, request, store, manifest, plan, crash_point):
+    if crash_point == "before:manifest_commit":
+        assert not store.manifest_path.exists()
+        return campaign.run(request)
+    assert store.manifest_path.is_file()
+    validated = ValidatedResumeManifest(
+        ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)), (), ()
+    )
+    return campaign.run(
+        ResumeCampaignRunRequest(
+            validated, plan, request.project_root, request.report_root,
+            request.policy, request.invocation_directory, request.admission,
+        )
+    )
+
+
+def _assert_crash_recovery(outcome, store, crash_point, launches, crash) -> None:
+    recovered = store.scan().items[0]
+    committed = crash_point in {
+        "after:simulation_result", "before:summary_replace", "after:summary_replace"
+    }
+    pre_attempt = crash_point in {"before:manifest_commit", "after:manifest_commit"}
+    assert outcome.complete is True
+    assert recovered.state == "complete"
+    assert recovered.attempt_count == (1 if committed or pre_attempt else 2)
+    assert len(launches) == 1 if committed else 1 <= len(launches) <= 2
+    assert crash.tripped is True
+    assert crash_point in crash.seen
+
+
+@pytest.mark.parametrize("crash_point", _CRASH_POINTS)
+def test_serial_publication_boundary_resume_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_point: str,
+) -> None:
+    """Every durable prefix resumes; only a committed Result suppresses rerun."""
+    manifest = _crash_manifest()
+    plan = create_simulation_campaign_plan(manifest)
+    project, build_root, run_log = _crash_environment(tmp_path)
     launches: list[int] = []
-
-    class FakeCatalog:
-        def select(self, token: str, *, for_flow: str):
-            assert (token, for_flow) == ("sim", "sim")
-            return SimpleNamespace(
-                identity="acme:lib:dut:1#sim",
-                project_root=project,
-                selector="sim",
-                eda_tool="icarus",
-            )
-
-    class FakeGroup:
-        def __init__(self) -> None:
-            self.build_root = build_root
-            self.artifact_paths = (build_root / "simv",)
-
-        def compile(self):
-            return SimpleNamespace(passed=True)
-
-        def planning_disclosure(self):
-            return {}
-
-        def build_recovery_document(self):
-            return _build_execution()
-
-        def reuse_compilation_from(self, _source):
-            return None
-
-        def bind_authenticated_bundle(self, evidence):
-            assert evidence == _build_execution()
-
-        def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
-            launches.append(1)
-            assert (snapshot_root / "simv").is_file()
-            assert (run_cwd / "inputs/input.bin").read_bytes() == b"runtime"
-            test = SimulationTestOutcome(
-                name="sim", verdict="pass", passed=True, run_log_path=str(run_log)
-            )
-            return SimulationTargetOutcome(
-                target="sim",
-                target_identity="acme:lib:dut:1#sim",
-                toplevel="tb",
-                eda_tool="icarus",
-                passed=True,
-                verdict="pass",
-                elapsed_s=0.1,
-                tests=(test,),
-            )
-
-    class FakeExecution:
-        @contextmanager
-        def ordinary_group(self, handle, names):
-            del handle
-            assert names == ()
-            yield FakeGroup()
-
+    group = _CrashGroup(build_root, run_log, launches)
     monkeypatch.setattr(
         "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
-        lambda _root: FakeCatalog(),
+        lambda _root: _CrashCatalog(project),
     )
     crash = _CrashOnce(crash_point)
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: FakeExecution(),  # type: ignore[arg-type,return-value]
+        execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
         publication_checkpoint=crash,
     )
     campaign = SimulationCampaign(executor, publication_checkpoint=crash)
@@ -218,51 +252,9 @@ def test_serial_publication_boundary_resume_matrix(  # noqa: PLR0915 -- matrix h
 
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
         campaign.run(new_request)
-
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
-    if crash_point == "before:manifest_commit":
-        assert not store.manifest_path.exists()
-        outcome = campaign.run(new_request)
-    else:
-        assert store.manifest_path.is_file()
-        validated = ValidatedResumeManifest(
-            ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)),
-            (),
-            (),
-        )
-        outcome = campaign.run(
-            ResumeCampaignRunRequest(
-                validated=validated,
-                current_plan=plan,
-                project_root=project,
-                report_root=invocation.parent,
-                policy=policy,
-                invocation_directory=invocation,
-                admission=_admission(),
-            )
-        )
-
-    recovered = store.scan().items[0]
-    committed_before_crash = crash_point in {
-        "after:simulation_result",
-        "before:summary_replace",
-        "after:summary_replace",
-    }
-    crashed_before_attempt_allocation = crash_point in {
-        "before:manifest_commit",
-        "after:manifest_commit",
-    }
-    assert outcome.complete is True
-    assert recovered.state == "complete"
-    assert recovered.attempt_count == (
-        1 if committed_before_crash or crashed_before_attempt_allocation else 2
-    )
-    if committed_before_crash:
-        assert len(launches) == 1
-    else:
-        assert 1 <= len(launches) <= 2
-    assert crash.tripped is True
-    assert crash_point in crash.seen
+    outcome = _resume_crashed_campaign(campaign, new_request, store, manifest, plan, crash_point)
+    _assert_crash_recovery(outcome, store, crash_point, launches, crash)
 
 
 def test_fault_matrix_has_no_distinct_partial_fsync_state() -> None:

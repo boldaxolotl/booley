@@ -16,6 +16,7 @@ from typing import Any, Protocol, TypeVar
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_ERROR = 2
+EXIT_CANCELLED = 130
 
 
 @dataclass

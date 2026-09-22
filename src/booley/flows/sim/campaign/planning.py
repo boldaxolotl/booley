@@ -7,7 +7,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from booley.flows.sim.runtime_inputs import preview_runtime_inputs
 from booley.targets.domain import TargetInput
@@ -86,15 +86,21 @@ def finalize_manifest(document: Mapping[str, object]) -> SimulationCampaignManif
         raise SimulationCampaignIntegrityError(
             f"manifest planning input must have exact fields {sorted(required)}"
         )
-    target = mutable["target"]
-    workload = mutable["workload"]
-    source_recipe = workload["source_recipe"]
-    build_recipe = workload["build_recipe"]
-    variants = mutable["build_variants"]
-    items = mutable["work_items"]
-    mutable["fingerprints"] = {
+    mutable["fingerprints"] = _manifest_fingerprints(mutable)
+    raw = canonical_json_bytes(mutable)
+    return decode_simulation_campaign_manifest(raw)
+
+
+def _manifest_fingerprints(mutable: Mapping[str, object]) -> dict[str, str]:
+    workload = cast(Mapping[str, object], mutable["workload"])
+    variants = cast(Sequence[Mapping[str, object]], mutable["build_variants"])
+    return {
         "target_recipe_sha256": canonical_sha256(
-            {"target": target, "source_recipe": source_recipe, "build_recipe": build_recipe}
+            {
+                "target": mutable["target"],
+                "source_recipe": workload["source_recipe"],
+                "build_recipe": workload["build_recipe"],
+            }
         ),
         "source_closures_sha256": canonical_sha256(
             [
@@ -110,7 +116,7 @@ def finalize_manifest(document: Mapping[str, object]) -> SimulationCampaignManif
             mutable["planning_disclosures"]
         ),
         "prerequisites_sha256": canonical_sha256(mutable["prerequisites"]),
-        "work_items_sha256": canonical_sha256(items),
+        "work_items_sha256": canonical_sha256(mutable["work_items"]),
         "workload_sha256": canonical_sha256(
             {
                 key: mutable[key]
@@ -126,8 +132,6 @@ def finalize_manifest(document: Mapping[str, object]) -> SimulationCampaignManif
             }
         ),
     }
-    raw = canonical_json_bytes(mutable)
-    return decode_simulation_campaign_manifest(raw)
 
 
 def compare_manifests(

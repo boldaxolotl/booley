@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import stat
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -23,6 +24,17 @@ from .codec import (
 from .model import ExecutableSnapshot, SimulatorBundle
 
 
+@dataclass(frozen=True, slots=True)
+class SnapshotAttemptIdentity:
+    """Immutable campaign and attempt identity carried into one snapshot."""
+
+    campaign_id: str
+    manifest_sha256: str
+    workload_sha256: str
+    work_item_id: str
+    attempt_id: str
+
+
 def authenticate_bundle_artifacts(bundle: SimulatorBundle, root: Path) -> None:
     """Verify every declared artifact by type, byte count, and digest."""
     artifacts = cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
@@ -38,11 +50,7 @@ def create_executable_snapshot(
     bundle: SimulatorBundle,
     bundle_root: Path,
     snapshot_root: Path,
-    campaign_id: str,
-    manifest_sha256: str,
-    workload_sha256: str,
-    work_item_id: str,
-    attempt_id: str,
+    identity: SnapshotAttemptIdentity,
     build_result: Mapping[str, object],
     created_at: str,
 ) -> ExecutableSnapshot:
@@ -52,6 +60,16 @@ def create_executable_snapshot(
         raise SimulationCampaignIntegrityError("executable snapshot already exists")
     durable_directory(snapshot_root)
     snapshot_root.chmod(0o700)
+    copied = _copy_snapshot_artifacts(bundle, bundle_root, snapshot_root)
+    document = _snapshot_document(identity, bundle, build_result, created_at, copied)
+    value = decode_executable_snapshot(canonical_json_bytes(document))
+    _create_file(snapshot_root / "snapshot.json", encode_executable_snapshot(value))
+    return value
+
+
+def _copy_snapshot_artifacts(
+    bundle: SimulatorBundle, bundle_root: Path, snapshot_root: Path
+) -> list[dict[str, object]]:
     copied: list[dict[str, object]] = []
     artifacts = cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
     for artifact in artifacts:
@@ -73,24 +91,29 @@ def create_executable_snapshot(
         if size != artifact["bytes"] or digest != artifact["sha256"]:
             raise SimulationCampaignIntegrityError("snapshot copy authentication failed")
         copied.append(dict(artifact))
-    inventory = _digest(copied)
-    document = {
+    return copied
+
+
+def _snapshot_document(
+    identity: SnapshotAttemptIdentity,
+    bundle: SimulatorBundle,
+    build_result: Mapping[str, object],
+    created_at: str,
+    artifacts: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
         "$schema": "booley.executable-snapshot/v1",
-        "campaign_id": campaign_id,
-        "manifest_sha256": manifest_sha256,
-        "workload_sha256": workload_sha256,
-        "work_item_id": work_item_id,
-        "attempt_id": attempt_id,
+        "campaign_id": identity.campaign_id,
+        "manifest_sha256": identity.manifest_sha256,
+        "workload_sha256": identity.workload_sha256,
+        "work_item_id": identity.work_item_id,
+        "attempt_id": identity.attempt_id,
         "bundle_id": bundle.document["bundle_id"],
         "build_result": dict(build_result),
         "created_at": created_at,
-        "artifacts": copied,
-        "inventory_sha256": inventory,
+        "artifacts": artifacts,
+        "inventory_sha256": _digest(artifacts),
     }
-    value = decode_executable_snapshot(canonical_json_bytes(document))
-    manifest_path = snapshot_root / "snapshot.json"
-    _create_file(manifest_path, encode_executable_snapshot(value))
-    return value
 
 
 def authenticate_executable_snapshot(
@@ -145,6 +168,7 @@ def _create_file(path: Path, raw: bytes) -> None:
 
 
 __all__ = [
+    "SnapshotAttemptIdentity",
     "authenticate_bundle_artifacts",
     "authenticate_executable_snapshot",
     "create_executable_snapshot",

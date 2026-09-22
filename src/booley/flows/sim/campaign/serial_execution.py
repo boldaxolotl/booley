@@ -26,6 +26,7 @@ from booley.flows.sim.backends.cocotb_results import (
 )
 from booley.flows.sim.build_session import project_compile_surface
 from booley.flows.sim.campaign.bundle import (
+    SnapshotAttemptIdentity,
     authenticate_executable_snapshot,
     create_executable_snapshot,
 )
@@ -1314,11 +1315,13 @@ def _create_snapshot(
         bundle=bundle,
         bundle_root=build_directory,
         snapshot_root=snapshot_root,
-        campaign_id=cast(str, request.manifest.document["campaign_id"]),
-        manifest_sha256=manifest_digest(request.manifest),
-        workload_sha256=fingerprints["workload_sha256"],
-        work_item_id=cast(str, request.work_item["work_item_id"]),
-        attempt_id=request.attempt_id,
+        identity=SnapshotAttemptIdentity(
+            campaign_id=cast(str, request.manifest.document["campaign_id"]),
+            manifest_sha256=manifest_digest(request.manifest),
+            workload_sha256=fingerprints["workload_sha256"],
+            work_item_id=cast(str, request.work_item["work_item_id"]),
+            attempt_id=request.attempt_id,
+        ),
         build_result=_build_result_ref(request, build_directory, build_result),
         created_at=_now(),
     )

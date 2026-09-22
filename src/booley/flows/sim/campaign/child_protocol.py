@@ -10,6 +10,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.boundary import BoundaryError, require_int
 from booley.flows.sim.campaign_durability import durable_create
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
@@ -467,8 +468,11 @@ def _validate_entry(path: Path, entry: dict) -> None:
         raise SimulationCampaignIntegrityError(f"child entry has an invalid id: {path}") from exc
     if path.stem != child_id:
         raise SimulationCampaignIntegrityError("child entry filename disagrees with its identity")
-    ordinal = entry.get("attempt_ordinal")
-    if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 1:
+    try:
+        ordinal = require_int(entry.get("attempt_ordinal"), field="child attempt ordinal")
+    except BoundaryError as exc:
+        raise SimulationCampaignIntegrityError("child entry attempt ordinal is invalid") from exc
+    if ordinal < 1:
         raise SimulationCampaignIntegrityError("child entry attempt ordinal is invalid")
     for field in ("manifest_sha256", "runtime_context_sha256"):
         if not isinstance(entry.get(field), str) or not _DIGEST_RE.fullmatch(entry[field]):

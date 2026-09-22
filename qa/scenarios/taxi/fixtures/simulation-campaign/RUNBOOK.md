@@ -4,7 +4,7 @@ This fixture supports `campaign.verilator-single-build`, `campaign.heavy-cap`,
 `campaign.attempt-isolation`, `campaign.continue-after-failure`,
 `campaign.cocotb-batch-resume`, and `campaign.mcp-structured-pointers`. It is
 registered for Public QA but remains pending until an authorized Configured
-Scenario Run captures product evidence. Unit and real-tool fixture gates do not
+Scenario Run captures product evidence. Unit and real EDA tool fixture gates do not
 complete the Checks.
 
 Copy this directory into the run-owned Taxi Project, register `campaign.core`,

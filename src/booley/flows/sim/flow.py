@@ -58,6 +58,7 @@ from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
+    EXIT_CANCELLED,
     EXIT_ERROR,
     EXIT_FAILURE,
     EXIT_SUCCESS,
@@ -113,6 +114,7 @@ from .campaign.coordinator import (
     ResumeCampaignPreviewRequest,
     ResumeCampaignRunRequest,
     SimulationCampaign,
+    SimulationCampaignCancellationError,
 )
 from .campaign.coverage_execution import CoverageAggregateExecutor
 from .campaign.flow_planning import (
@@ -203,6 +205,8 @@ class PreparedSimulationEndpoint:
 
     targets: tuple[TargetHandle, ...]
     resume: ValidatedResumeManifest | None
+    selected_targets: tuple[str, ...]
+    test_names_map: Mapping[str, list[str]]
 
 
 def _raise_if_missing_executable(text: str) -> None:
@@ -1089,6 +1093,17 @@ def _test_verdict(test: TestResult) -> str:
     return "fail"
 
 
+def _cycle_detail(result: TargetResult, test: TestResult) -> dict[str, object]:
+    return {
+        "target": result.target,
+        "target_identity": result.target_identity,
+        "test": test.name,
+        "verdict": _test_verdict(test),
+        "cycles": test.cycles,
+        "observation": test.cycle_status,
+    }
+
+
 _ERROR_MARKERS = (
     "%Error",
     "FATAL",
@@ -1365,7 +1380,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         record_campaign_acceptance(self.context, outcomes)
 
-    def prepare_simulation_endpoint(
+    def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,
     ) -> PreparedSimulationEndpoint | EndpointOutcome | None:
         """Resolve and authorize every Target before reservation or admission."""
@@ -1383,7 +1398,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             prepared = self._prepare_campaign_targets()
             if isinstance(prepared, EndpointOutcome):
                 return prepared
-            targets, resume = prepared
+            targets, resume, selected_targets, test_names_map = prepared
+            if resume is None:
+                selection_error = self._validate_prepared_selection(
+                    list(selected_targets), dict(test_names_map)
+                )
+                if selection_error is not None:
+                    return selection_error
             rejection = authorize_simulation_targets(self.context, targets)
         except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
@@ -1392,7 +1413,17 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         if rejection is not None:
             return rejection
-        return PreparedSimulationEndpoint(targets, resume)
+        return PreparedSimulationEndpoint(targets, resume, selected_targets, test_names_map)
+
+    def _validate_prepared_selection(
+        self, targets: list[str], test_names_map: dict[str, list[str]]
+    ) -> EndpointOutcome | None:
+        """Reject all selection/configuration errors before heavy admission."""
+        if (error := self._validate_test_selector(targets, test_names_map)) is not None:
+            return error
+        if (error := self._validate_cocotb_targets(targets)) is not None:
+            return error
+        return self._validate_runnable_tests(targets, test_names_map)
 
     def run_prepared_simulation(
         self,
@@ -1412,7 +1443,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _prepare_campaign_targets(
         self,
-    ) -> tuple[tuple[TargetHandle, ...], ValidatedResumeManifest | None] | EndpointOutcome:
+    ) -> tuple[
+        tuple[TargetHandle, ...],
+        ValidatedResumeManifest | None,
+        tuple[str, ...],
+        Mapping[str, list[str]],
+    ] | EndpointOutcome:
         if self.args.resume_from is not None:
             roots: dict[str, Path] = {}
 
@@ -1436,7 +1472,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 project_root=Path(self.args.work_dir),
                 revision_root=revision_root,
             )
-            return resume.target_handles, resume
+            return resume.target_handles, resume, (), {}
         requested = self._resolve_requested_targets()
         if isinstance(requested, EndpointOutcome):
             return requested
@@ -1447,7 +1483,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if baseline_error is not None:
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=baseline_error)
         baselines = self._campaign_authorization_baselines(baseline_ref, baseline_targets)
-        return (*selected, *baselines), None
+        return (*selected, *baselines), None, tuple(requested), _get_test_names(self.args.work_dir)
 
     def _campaign_authorization_baselines(
         self, revision: str | None, selectors: Sequence[str]
@@ -1913,6 +1949,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text="sim: no admission context")
         try:
             outcome = self._execute_validated_resume(validated, invocation, admission)
+        except SimulationCampaignCancellationError as exc:
+            return self._campaign_cancelled_outcome(exc, status)
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -2265,6 +2303,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 outcome = campaign.run(request)
                 outcomes.append(outcome)
                 _checkpoint_coverage_campaign(progress, outcome)
+            except SimulationCampaignCancellationError as exc:
+                return self._campaign_cancelled_outcome(exc)
             except (OSError, ValueError, RuntimeError) as exc:
                 return self._coverage_campaign_failure(
                     outcomes, requests, index, request, exc
@@ -2422,7 +2462,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             report_text="\n".join(lines),
         )
 
-    def _run_selected_mode(  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
+    def _run_selected_mode(
         self,
         *,
         prepared: PreparedSimulationEndpoint | None = None,
@@ -2436,10 +2476,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return self._run_elab_only()
         total_start = time.monotonic()
         resolution_started = total_start
-        resolved = self._resolve_run_targets()
-        if isinstance(resolved, EndpointOutcome):
-            return resolved
-        targets, test_names_map = resolved
+        if prepared is None:
+            resolved = self._resolve_run_targets()
+            if isinstance(resolved, EndpointOutcome):
+                return resolved
+            targets, test_names_map = resolved
+        else:
+            targets = list(prepared.selected_targets)
+            test_names_map = dict(prepared.test_names_map)
         resolution_s = time.monotonic() - resolution_started
 
         special_result = self._maybe_dispatch_special_run(
@@ -2452,68 +2496,77 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         if prepared is not None:
             return self._run_ordinary_campaigns(targets, test_names_map, admission)
+        return self._run_legacy_selected_mode(targets, test_names_map, total_start, resolution_s)
 
-        all_results: list[TargetResult] = []
-        output_lines: list[str] = []
-        overall_pass = True
-        # The report writer composes the per-target compile command from the
-        # same inputs a --dry-run uses; stash the resolved test-name map so it
-        # doesn't have to re-derive it.
+    def _run_legacy_selected_mode(
+        self, targets, test_names_map, total_start, resolution_s
+    ) -> EndpointOutcome:
+        prepared = self._prepare_legacy_run(targets, test_names_map)
+        if isinstance(prepared, EndpointOutcome):
+            return prepared
+        results, lines, passed = prepared
+        return self._legacy_endpoint_outcome(
+            targets, results, lines, passed, time.monotonic() - total_start, resolution_s
+        )
+
+    def _prepare_legacy_run(self, targets, test_names_map):
+        results: list[TargetResult] = []
+        lines: list[str] = []
         self._test_names_map = test_names_map
-        # Reserve the final report directory before the first long Target.
-        # Checkpoints and the eventual report.json then share one invocation,
-        # even when the outer watchdog kills the process between Targets.
         self.reserve_invocation_dir()
-        self._write_progress_report(targets, all_results, phase="starting")
-
-        baseline_result = self._run_cycle_count_baselines(targets, test_names_map)
-        if isinstance(baseline_result, EndpointOutcome):
-            return baseline_result
-        self._baseline_results = baseline_result
-
+        self._write_progress_report(targets, results, phase="starting")
+        baseline = self._run_cycle_count_baselines(targets, test_names_map)
+        if isinstance(baseline, EndpointOutcome):
+            return baseline
+        self._baseline_results = baseline
         for target in targets:
             try:
-                target_result = self._run_resolved_target(
-                    target,
-                    test_names_map,
-                    output_lines,
-                )
+                result = self._run_resolved_target(target, test_names_map, lines)
             except MissingExecutableError as exc:
-                # F-32: no simulator ran, so nothing was observed about the
-                # design. Abandon the sweep and report a Flow error — every
-                # remaining Target would hit the same missing binary.
                 return self._missing_executable_result(exc, target)
             except SimulationBuildInfrastructureError as exc:
                 return self._build_infrastructure_result(exc)
-            self._attach_workload_snapshots(target_result)
-            all_results.append(target_result)
-            if not target_result.passed:
-                overall_pass = False
-            self._persist_target_outcome(target_result)
-            self._write_progress_report(targets, all_results, phase="running")
-            if len(targets) > 1:
-                for line in _target_display_lines(target_result):
-                    self.emit_completion(line, repeats_at_end=True)
+            self._record_legacy_target(targets, results, result)
+        return results, lines, all(result.passed for result in results)
 
-        total_elapsed = time.monotonic() - total_start
-        report_text = self._format_summary(all_results, output_lines, overall_pass)
+    def _record_legacy_target(self, targets, results, result) -> None:
+        self._attach_workload_snapshots(result)
+        results.append(result)
+        self._persist_target_outcome(result)
+        self._write_progress_report(targets, results, phase="running")
+        if len(targets) > 1:
+            for line in _target_display_lines(result):
+                self.emit_completion(line, repeats_at_end=True)
 
-        # Run-level eda_tool report key (base.write_report): the unique raw
-        # EDA tools this run resolved to, ", "-joined in resolution order.
-        eda_tools = [r.eda_tool for r in all_results if r.eda_tool]
+    def _legacy_endpoint_outcome(
+        self, targets, results, lines, passed, elapsed, resolution_s
+    ) -> EndpointOutcome:
+        report_text = self._format_summary(results, lines, passed)
+        eda_tools = [result.eda_tool for result in results if result.eda_tool]
         if eda_tools:
             self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
+        detail = self._legacy_result_detail(results, elapsed, resolution_s)
+        self._attach_legacy_artifacts(detail, results)
+        self._write_progress_report(targets, results, phase="complete", complete=True)
+        return EndpointOutcome(
+            exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
+            criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
+            criterion_met=passed,
+            display_lines=_build_display_lines(results, elapsed),
+            display_label=_completed_display_label(targets, results),
+            detail=detail,
+            report_text=report_text,
+        )
 
-        targets_passed = sum(1 for r in all_results if r.passed)
-        any_elab_failed = any(r.elab_failed for r in all_results)
+    def _legacy_result_detail(self, results, elapsed, resolution_s) -> dict[str, Any]:
         detail: dict[str, Any] = {
             "mode": self._mode.value,
-            "targets": len(all_results),
-            "targets_passed": targets_passed,
-            "elapsed_s": round(total_elapsed, 1),
+            "targets": len(results),
+            "targets_passed": sum(1 for result in results if result.passed),
+            "elapsed_s": round(elapsed, 1),
             "resolution_s": round(resolution_s, 3),
             "phase_timings_s": {
-                result.target: dict(result.phase_timings_s) for result in all_results
+                result.target: dict(result.phase_timings_s) for result in results
             },
             "elaboration": {
                 result.target: [
@@ -2521,56 +2574,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     for test in result.tests
                     if (entry := _build_outcome_entry(test.build_outcome)) is not None
                 ]
-                for result in all_results
+                for result in results
             },
-            "cycle_counts": [
-                {
-                    "target": result.target,
-                    "target_identity": result.target_identity,
-                    "test": test.name,
-                    "verdict": _test_verdict(test),
-                    "cycles": test.cycles,
-                    "observation": test.cycle_status,
-                }
-                for result in all_results
-                for test in result.tests
-            ],
+            "cycle_counts": [_cycle_detail(result, test) for result in results for test in result.tests],
         }
-        if any_elab_failed:
+        if any(result.elab_failed for result in results):
             detail["elab_failed"] = True
-        # Per-target artifact pointers, keyed by target so a multi-target run
-        # stays unambiguous. This is the copy that survives into the MCP
-        # ``structuredContent`` (base.write_report carries ``detail`` through),
-        # which the stdout headline block does not.
-        for r in all_results:
-            block = self._artifacts_for(r)
+        return detail
+
+    def _attach_legacy_artifacts(self, detail, results) -> None:
+        for result in results:
+            block = self._artifacts_for(result)
+            if block and self.args.report_dir is not None:
+                invocation = self.reserve_invocation_dir()
+                assert invocation is not None
+                block["report"] = posix_relpath(
+                    target_report_directory(invocation, result.target) / "simulation.json",
+                    self.args.work_dir,
+                )
             if block:
-                # ``report`` too: the detail copy is what an agent receives over
-                # MCP, and without it the block names every file the run wrote
-                # except the one holding the rest of the numbers.
-                if self.args.report_dir is not None:
-                    invocation_dir = self.reserve_invocation_dir()
-                    assert invocation_dir is not None
-                    block["report"] = posix_relpath(
-                        target_report_directory(invocation_dir, r.target) / "simulation.json",
-                        self.args.work_dir,
-                    )
-                detail.setdefault("artifacts", {})[r.target] = block
-        self._write_progress_report(
-            targets,
-            all_results,
-            phase="complete",
-            complete=True,
-        )
-        return EndpointOutcome(
-            exit_code=EXIT_SUCCESS if overall_pass else EXIT_FAILURE,
-            criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
-            criterion_met=overall_pass,
-            display_lines=_build_display_lines(all_results, total_elapsed),
-            display_label=_completed_display_label(targets, all_results),
-            detail=detail,
-            report_text=report_text,
-        )
+                detail.setdefault("artifacts", {})[result.target] = block
 
     def _run_ordinary_campaigns(
         self,
@@ -2603,12 +2626,25 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             outcomes = self._publish_and_run_campaign_requests(
                 campaign, baseline_requests, candidate_requests
             )
+        except SimulationCampaignCancellationError as exc:
+            return self._campaign_cancelled_outcome(exc)
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign execution failed: {exc}",
             )
         return self._campaign_endpoint_outcome(outcomes)
+
+    @staticmethod
+    def _campaign_cancelled_outcome(
+        error: SimulationCampaignCancellationError,
+        detail: Mapping[str, object] | None = None,
+    ) -> EndpointOutcome:
+        return EndpointOutcome(
+            exit_code=EXIT_CANCELLED,
+            detail=dict(detail or {}),
+            report_text=str(error),
+        )
 
     def _candidate_campaign_requests(
         self,
@@ -2945,15 +2981,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return summary, self._baseline_prerequisites_by_test(target, plan)
 
     def _ordinary_campaign_plan(
-        self,
-        target: str,
-        test_names_map: dict[str, list[str]],
+        self, target: str, test_names_map: dict[str, list[str]],
         *,
         invocation_id: int,
         execution_id: str,
         prerequisite_documents: Sequence[Mapping[str, object]] = (),
-        role: str = "candidate",
-        revision: str | None = None,
+        role: str = "candidate", revision: str | None = None,
         selected_override: Sequence[str] | None = None,
     ) -> SimulationCampaignPlan:
         """Resolve one Target into the same exact plan used by preview and run."""

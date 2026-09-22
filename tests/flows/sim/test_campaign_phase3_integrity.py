@@ -312,7 +312,6 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     (build_root / "simv").write_bytes(b"image")
     counters = {"compile": 0, "memory_reuse": 0, "durable_reuse": 0, "launch": 0}
     hooks: list[tuple[tuple[str, ...], bool, Path | None]] = []
-
     def record_hook(
         _handle: object,
         _root: Path,
@@ -322,7 +321,6 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         expose_build_root: bool,
     ) -> None:
         hooks.append((names, expose_build_root, run_cwd))
-
     monkeypatch.setattr(serial_execution, "_run_hook", record_hook)
     monkeypatch.setattr(
         serial_execution.TargetCatalog,
@@ -336,7 +334,10 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
             plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
+    _assert_private_legacy_results(outcome, counters, hooks, invocation)
 
+
+def _assert_private_legacy_results(outcome, counters, hooks, invocation) -> None:
     assert outcome.complete is True
     assert counters["compile"] == 2
     assert counters["memory_reuse"] == counters["durable_reuse"] == 0

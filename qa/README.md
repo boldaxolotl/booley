@@ -169,7 +169,7 @@ require fresh runs:
 - `coverage-lifecycle-ubuntu-codex-cli` selects
   `coverage-lifecycle-simulation-campaign` (Checks 18–20).
 
-Structural validation, fixture tests, and optional real-tool gates keep the
+Structural validation, fixture tests, and optional real EDA tool gates keep the
 authored contracts executable but do not complete these Checks or replace the
 fresh Scenario Runs. Run them only through a separately authorized
 `booley-qa-run`; until then, qualification for the changed suite remains

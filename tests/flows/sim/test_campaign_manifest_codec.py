@@ -77,7 +77,88 @@ def _build_execution() -> dict[str, object]:
     }
 
 
+class _GeneratorCatalog:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def select(self, token: str, *, for_flow: str):
+        assert (token, for_flow) == ("sim", "sim")
+        return SimpleNamespace(
+            identity="acme:lib:dut:1#sim",
+            project_root=self.root,
+            selector="sim",
+            eda_tool="icarus",
+        )
+
+
+class _GeneratorGroup:
+    def __init__(self, root: Path, build_root: Path, run_log: Path, disclosure, changed):
+        self.root = root
+        self.build_root = build_root
+        self.run_log = run_log
+        self.disclosure = disclosure
+        self.changed = changed
+        self.artifact_paths = (build_root / "simv",)
+
+    def compile(self):
+        return SimpleNamespace(passed=True)
+
+    def planning_disclosure(self):
+        return self.changed if self.changed is not None else self.disclosure
+
+    def build_recovery_document(self):
+        return _build_execution()
+
+    def reuse_compilation_from(self, _source):
+        return None
+
+    def bind_authenticated_bundle(self, evidence):
+        assert evidence == _build_execution()
+
+    def launch_snapshot(self, snapshot_root, run_cwd):
+        assert snapshot_root.is_dir()
+        assert run_cwd == self.root / "run"
+        test = SimulationTestOutcome("sim", "pass", True, str(self.run_log))
+        return SimulationTargetOutcome(
+            "sim", "acme:lib:dut:1#sim", "tb", "icarus", True, "pass", 0.1, (test,)
+        )
+
+
+class _GeneratorExecution:
+    def __init__(self, group: _GeneratorGroup) -> None:
+        self.group = group
+
+    @contextmanager
+    def ordinary_group(self, handle, names):
+        del handle
+        assert names == ()
+        yield self.group
+
+
 def _manifest() -> dict[str, object]:
+    target, source_recipe, build_recipe, workload, suite = _manifest_components()
+    variants, items = _manifest_work(target, source_recipe, build_recipe, workload)
+    manifest = {
+        "$schema": "booley.simulation-campaign-manifest/v1",
+        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "created_at": "2026-09-21T10:00:00Z",
+        "origin": {"execution_id": "", "invocation_id": 1},
+        "target": target,
+        "workload": workload,
+        "required_suite": suite,
+        "build_variants": variants,
+        "planning_disclosures": [],
+        "prerequisites": [],
+        "work_items": items,
+        "fingerprints": {},
+    }
+    manifest["fingerprints"] = _manifest_fingerprints(
+        manifest, target, source_recipe, build_recipe, variants, items, suite
+    )
+    return manifest
+
+
+def _manifest_components():
     target = {
         "vlnv": "acme:lib:dut:1",
         "name": "sim",
@@ -94,7 +175,7 @@ def _manifest() -> dict[str, object]:
         "pre_sim_commands": [],
     }
     build_recipe = {
-        "backend": "icarus",
+        "eda_tool": "icarus",
         "toplevel": "tb",
         "arguments": [],
         "command_model_sha256": "sha256:" + "a" * 64,
@@ -119,6 +200,10 @@ def _manifest() -> dict[str, object]:
         "source_bytes": 0,
         "source_sha256": "sha256:" + hashlib.sha256(b"").hexdigest(),
     }
+    return target, source_recipe, build_recipe, workload, suite
+
+
+def _manifest_work(target, source_recipe, build_recipe, workload):
     variant_recipe = {
         "kind": "candidate",
         "source_closure": [],
@@ -157,21 +242,13 @@ def _manifest() -> dict[str, object]:
             "fingerprint_sha256": item_sha,
         }
     ]
-    manifest = {
-        "$schema": "booley.simulation-campaign-manifest/v1",
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "created_at": "2026-09-21T10:00:00Z",
-        "origin": {"execution_id": "", "invocation_id": 1},
-        "target": target,
-        "workload": workload,
-        "required_suite": suite,
-        "build_variants": variants,
-        "planning_disclosures": [],
-        "prerequisites": [],
-        "work_items": items,
-        "fingerprints": {},
-    }
-    manifest["fingerprints"] = {
+    return variants, items
+
+
+def _manifest_fingerprints(
+    manifest, target, source_recipe, build_recipe, variants, items, suite
+):
+    return {
         "target_recipe_sha256": _sha(
             {"target": target, "source_recipe": source_recipe, "build_recipe": build_recipe}
         ),
@@ -197,7 +274,6 @@ def _manifest() -> dict[str, object]:
             }
         ),
     }
-    return manifest
 
 
 def _baseline_manifest():
@@ -544,26 +620,48 @@ def test_recovery_retries_a_crash_after_attempt_directory_allocation(
 def test_serial_executor_authenticates_planned_generator_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nondeterministic: bool
 ) -> None:
-    document = _manifest()
-    document.pop("fingerprints")
-    disclosure = {
+    disclosure = _generator_disclosure()
+    manifest, store, item, ordinal, attempt_directory = _generator_campaign(
+        tmp_path, disclosure
+    )
+    executor = _generator_executor(tmp_path, disclosure, nondeterministic, monkeypatch)
+    request = _generator_request(
+        tmp_path, store, manifest, item, ordinal, attempt_directory
+    )
+    if nondeterministic:
+        with pytest.raises(
+            SimulationCampaignIntegrityError,
+            match="generator source closure disagrees",
+        ):
+            executor.execute(request)
+        assert store.scan().interrupted == (item["work_item_id"],)  # type: ignore[index]
+        return
+    result = executor.execute(request)
+    store.verify_result_evidence(attempt_directory, result)
+    store.publish_result(item["work_item_id"], result)  # type: ignore[index]
+    assert store.scan().complete == (item["work_item_id"],)  # type: ignore[index]
+    assert result.document["grade"] == "pass"
+    assert result.document["build_result"]["sharing"] == "shared_variant"  # type: ignore[index]
+
+
+def _generator_disclosure() -> dict[str, object]:
+    return {
         "planner": "fusesoc_setup",
         "scratch_inputs": [],
-        "generated_files": [
-            {
-                "path": "generated.sv",
-                "bytes": 1,
-                "sha256": "sha256:" + hashlib.sha256(b"a").hexdigest(),
-                "kind": "generated_input",
-            }
-        ],
-        "tool_provenance": {
-            "kind": "fusesoc",
-            "version": "1",
-            "contract_version": "1",
-        },
+        "generated_files": [{
+            "path": "generated.sv",
+            "bytes": 1,
+            "sha256": "sha256:" + hashlib.sha256(b"a").hexdigest(),
+            "kind": "generated_input",
+        }],
+        "tool_provenance": {"kind": "fusesoc", "version": "1", "contract_version": "1"},
         "cleanup": {"removed": True},
     }
+
+
+def _generator_campaign(tmp_path: Path, disclosure):
+    document = _manifest()
+    document.pop("fingerprints")
     document["planning_disclosures"] = [disclosure]
     manifest = finalize_manifest(document)
     store = CampaignStore(tmp_path / "campaign")
@@ -574,6 +672,10 @@ def test_serial_executor_authenticates_planned_generator_closure(
         item["work_item_id"],
         attempt_id,  # type: ignore[index]
     )
+    return manifest, store, item, ordinal, attempt_directory
+
+
+def _generator_executor(tmp_path, disclosure, nondeterministic, monkeypatch):
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (tmp_path / "run").mkdir()
@@ -583,78 +685,25 @@ def test_serial_executor_authenticates_planned_generator_closure(
     )
     run_log = build_root / "run.log"
     run_log.write_text("PASS\n", encoding="utf-8")
-
-    class FakeCatalog:
-        def select(self, token: str, *, for_flow: str):
-            assert (token, for_flow) == ("sim", "sim")
-            return SimpleNamespace(
-                identity="acme:lib:dut:1#sim",
-                project_root=tmp_path,
-                selector="sim",
-                eda_tool="icarus",
-            )
-
-    class FakeGroup:
-        def __init__(self):
-            self.artifact_paths = (build_root / "simv",)
-
-        @property
-        def build_root(self):
-            return build_root
-
-        def compile(self):
-            return SimpleNamespace(passed=True)
-
-        def planning_disclosure(self):
-            if not nondeterministic:
-                return disclosure
-            changed = json.loads(json.dumps(disclosure))
-            changed["generated_files"][0]["sha256"] = (  # type: ignore[index]
-                "sha256:" + hashlib.sha256(b"b").hexdigest()
-            )
-            return changed
-
-        def build_recovery_document(self):
-            return _build_execution()
-
-        def reuse_compilation_from(self, _source):
-            return None
-
-        def bind_authenticated_bundle(self, evidence):
-            assert evidence == _build_execution()
-
-        def launch_snapshot(self, snapshot_root, run_cwd):
-            assert snapshot_root.is_dir()
-            assert run_cwd == tmp_path / "run"
-            test = SimulationTestOutcome(
-                name="sim", verdict="pass", passed=True, run_log_path=str(run_log)
-            )
-            return SimulationTargetOutcome(
-                target="sim",
-                target_identity="acme:lib:dut:1#sim",
-                toplevel="tb",
-                eda_tool="icarus",
-                passed=True,
-                verdict="pass",
-                elapsed_s=0.1,
-                tests=(test,),
-            )
-
-    class FakeExecution:
-        @contextmanager
-        def ordinary_group(self, handle, names):
-            del handle
-            assert names == ()
-            yield FakeGroup()
-
+    changed = None
+    if nondeterministic:
+        changed = json.loads(json.dumps(disclosure))
+        changed["generated_files"][0]["sha256"] = (  # type: ignore[index]
+            "sha256:" + hashlib.sha256(b"b").hexdigest()
+        )
+    group = _GeneratorGroup(tmp_path, build_root, run_log, disclosure, changed)
     monkeypatch.setattr(
         "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
-        lambda _root: FakeCatalog(),
+        lambda _root: _GeneratorCatalog(tmp_path),
     )
-    executor = OrdinaryHdlSerialExecutor(
+    return OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: FakeExecution(),  # type: ignore[arg-type,return-value]
+        execution_factory=lambda _options: _GeneratorExecution(group),  # type: ignore[arg-type,return-value]
     )
+
+
+def _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directory):
+    attempt_id = "550e8400-e29b-41d4-a716-446655440001"
     request = WorkExecutionRequest(
         store=store,
         manifest=manifest,
@@ -669,21 +718,7 @@ def test_serial_executor_authenticates_planned_generator_closure(
         ),
         project_root=tmp_path,
     )
-    if nondeterministic:
-        with pytest.raises(
-            SimulationCampaignIntegrityError,
-            match="generator source closure disagrees",
-        ):
-            executor.execute(request)
-        assert store.scan().interrupted == (item["work_item_id"],)  # type: ignore[index]
-        return
-    result = executor.execute(request)
-    store.verify_result_evidence(attempt_directory, result)
-    store.publish_result(item["work_item_id"], result)  # type: ignore[index]
-    recovery = store.scan()
-    assert recovery.complete == (item["work_item_id"],)  # type: ignore[index]
-    assert result.document["grade"] == "pass"
-    assert result.document["build_result"]["sharing"] == "shared_variant"  # type: ignore[index]
+    return request
 
 
 @given(st.sampled_from(["workload_sha256", "target_recipe_sha256", "work_items_sha256"]))

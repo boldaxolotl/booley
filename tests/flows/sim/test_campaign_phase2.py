@@ -13,6 +13,7 @@ from booley.flows.endpoint_acceptance import record_acceptance
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
 from booley.flows.sim.campaign.bundle import (
+    SnapshotAttemptIdentity,
     authenticate_executable_snapshot,
     create_executable_snapshot,
 )
@@ -30,7 +31,7 @@ from booley.flows.sim.campaign.run_directory import (
 from booley.flows.sim.config import parse_run_cwd_template, resolve_pre_sim_build_access
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.runtime_inputs import materialize_campaign_runtime_inputs
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.endpoint_execution import EXIT_CANCELLED, EndpointOutcome
 
 
 def _sha(raw: bytes) -> str:
@@ -275,11 +276,13 @@ def test_executable_snapshot_detects_post_launch_mutation(tmp_path: Path) -> Non
         bundle=bundle,
         bundle_root=bundle_root,
         snapshot_root=snapshot_root,
-        campaign_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        manifest_sha256="sha256:" + "1" * 64,
-        workload_sha256="sha256:" + "2" * 64,
-        work_item_id="item:0000:0123456789abcdef",
-        attempt_id="550e8400-e29b-41d4-a716-446655440001",
+        identity=SnapshotAttemptIdentity(
+            campaign_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            manifest_sha256="sha256:" + "1" * 64,
+            workload_sha256="sha256:" + "2" * 64,
+            work_item_id="item:0000:0123456789abcdef",
+            attempt_id="550e8400-e29b-41d4-a716-446655440001",
+        ),
         build_result=build_result,
         created_at="2026-09-21T10:00:01Z",
     )
@@ -505,6 +508,24 @@ def test_generic_endpoint_delegates_campaign_acceptance_to_owning_flow() -> None
     )
 
     assert received == [("campaign-outcome",)]
+
+
+def test_cancelled_campaign_suppresses_acceptance_publication() -> None:
+    received: list[tuple[object, ...]] = []
+    endpoint = SimpleNamespace(
+        _pending_criteria_set=("sim",),
+        _simulation_campaign_outcomes=("partial-outcome",),
+        flow=SimpleNamespace(record_campaign_acceptance=received.append),
+    )
+
+    record_acceptance(
+        endpoint,  # type: ignore[arg-type]
+        PreparedExecution(None, None, False, False),
+        EndpointOutcome(exit_code=EXIT_CANCELLED),
+    )
+
+    assert received == []
+    assert endpoint._pending_criteria_set == ()
 
 
 def test_all_candidate_manifests_publish_before_first_baseline_work() -> None:

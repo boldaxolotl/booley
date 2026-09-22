@@ -24,6 +24,22 @@ def _digest(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def _result_identity(path: Path, expected_digest: str) -> tuple[object, object]:
+    result, _ = _load(path)
+    reference = result.get("build_result")
+    _need(isinstance(reference, dict), "result build reference is missing")
+    _need(reference.get("sharing") == "shared_variant", "result uses a private build")
+    _need(reference.get("sha256") == expected_digest, "result build digest differs")
+    observations = result.get("observations")
+    _need(
+        isinstance(observations, list) and len(observations) == 1,
+        "ordinary result must contain one observation",
+    )
+    observation = observations[0]
+    _need(isinstance(observation, dict), "result observation is invalid")
+    return observation.get("test"), result.get("attempt_id")
+
+
 def validate(
     manifest_path: Path,
     build_result_path: Path,
@@ -55,23 +71,9 @@ def validate(
     _need(manifest_tests == expected_tests, "manifest test order differs")
 
     expected_digest = _digest(build_raw)
-    result_tests = []
-    attempt_ids = set()
-    for path in result_paths:
-        result, _ = _load(path)
-        reference = result.get("build_result")
-        _need(isinstance(reference, dict), "result build reference is missing")
-        _need(reference.get("sharing") == "shared_variant", "result uses a private build")
-        _need(reference.get("sha256") == expected_digest, "result build digest differs")
-        observations = result.get("observations")
-        _need(
-            isinstance(observations, list) and len(observations) == 1,
-            "ordinary result must contain one observation",
-        )
-        observation = observations[0]
-        _need(isinstance(observation, dict), "result observation is invalid")
-        result_tests.append(observation.get("test"))
-        attempt_ids.add(result.get("attempt_id"))
+    identities = [_result_identity(path, expected_digest) for path in result_paths]
+    result_tests = [test for test, _attempt in identities]
+    attempt_ids = {attempt for _test, attempt in identities}
     _need(result_tests == expected_tests, "result test order differs")
     _need(len(attempt_ids) == len(expected_tests), "simulation attempts are not independent")
     return {

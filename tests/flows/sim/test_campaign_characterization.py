@@ -185,6 +185,11 @@ def test_compatibility_projection_and_endpoint_detail_shape(
             encoding="utf-8"
         )
     )
+    _assert_projection_shapes(report, outcome)
+    _assert_projection_values(report, outcome)
+
+
+def _assert_projection_shapes(report, outcome) -> None:
     assert set(report) == {
         "artifacts",
         "build_stage",
@@ -229,6 +234,9 @@ def test_compatibility_projection_and_endpoint_detail_shape(
         "targets",
         "targets_passed",
     }
+
+
+def _assert_projection_values(report, outcome) -> None:
     test = report["tests"][0]
     assert report["flow"] == "sim"
     assert report["mode"] == "simulate"

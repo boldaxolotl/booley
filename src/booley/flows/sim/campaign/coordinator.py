@@ -55,6 +55,10 @@ class CampaignPolicy:
             raise ValueError("result verbosity must be compact or full")
 
 
+class SimulationCampaignCancellationError(RuntimeError):
+    """The borrowed endpoint admission requested orderly campaign shutdown."""
+
+
 @dataclass(frozen=True, slots=True)
 class NewCampaignPreviewRequest:
     plan: SimulationCampaignPlan
@@ -218,14 +222,21 @@ class SimulationCampaign:
                 raise SimulationCampaignIntegrityError(f"campaign workload mismatch: {detail}")
             manifest = request.validated.manifest
         with store.mutation_lock():
+            self._raise_if_cancelled(request)
             self._run_prerequisites(store, manifest, request, set())
             recovery = store.scan()
             self._run_pending(store, manifest, recovery, request)
+            self._raise_if_cancelled(request)
             self._publication_checkpoint("before:summary_replace")
             summary = store.regenerate_summary()
             self._publication_checkpoint("after:summary_replace")
             coverage_reference = self._publish_coverage_reference(store, manifest)
             return _outcome(store, manifest, summary, coverage_reference)
+
+    @staticmethod
+    def _raise_if_cancelled(request: CampaignRunRequest) -> None:
+        if request.admission.cancellation():
+            raise SimulationCampaignCancellationError("Simulation Campaign cancelled")
 
     def _publish_coverage_reference(
         self, store: CampaignStore, manifest: SimulationCampaignManifest
@@ -355,8 +366,7 @@ class SimulationCampaign:
             for recovered in recovery.items
             if recovered.state != "complete"
         ]
-        if request.admission.cancellation():
-            return
+        self._raise_if_cancelled(request)
         capacity = HeavyCapacity(
             request.admission,
             terminal_proof=registry.is_terminal,
@@ -365,6 +375,7 @@ class SimulationCampaign:
         self._scheduler(
             capacity, registry, store, manifest, project_root, invocation, request
         ).run(pending)
+        self._raise_if_cancelled(request)
 
     def _scheduler(
         self, capacity, registry, store, manifest, project_root, invocation, request

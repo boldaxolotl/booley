@@ -1124,9 +1124,9 @@ def _validate_source_entries(value: object, field: str) -> list[Mapping[str, obj
 
 def _validate_build_recipe(value: object) -> None:
     recipe = _exact_object(
-        value, {"backend", "toplevel", "arguments", "command_model_sha256"}, "build_recipe"
+        value, {"eda_tool", "toplevel", "arguments", "command_model_sha256"}, "build_recipe"
     )
-    _bounded_string(recipe["backend"], "build backend")
+    _bounded_string(recipe["eda_tool"], "build EDA tool")
     _bounded_string(recipe["toplevel"], "build toplevel")
     _bounded_string_list(
         recipe["arguments"],
