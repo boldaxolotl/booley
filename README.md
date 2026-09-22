@@ -41,8 +41,7 @@ supported. You need:
 - Python 3.11+
 - [Git 2.37.2+](https://git-scm.com/downloads)
 - [Docker](https://www.docker.com/)
-- [VS Code](https://code.visualstudio.com/); `booley bootstrap` installs its
-  [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+- [VS Code](https://code.visualstudio.com/)
 - Credentials for Claude (the default) or Codex
 - Reserve about **4 GB of Docker storage** for the standard image or **6 GB**
   for image with RISC-V tools included, plus project artifacts and temporary
@@ -60,26 +59,19 @@ If Booley is already installed, upgrade it instead:
 python3 -m pip install --user --upgrade booley-rtl
 ```
 
-Then verify the installed version and prepare the host resources:
+Then prepare the host:
 
 ```bash
-booley --version
-booley bootstrap --adopt-installation # first installation only
-booley bootstrap
-# after upgrading Booley:
-booley bootstrap --upgrade-installation
 booley bootstrap
 ```
+
+After upgrading Booley, run `booley bootstrap --update` instead.
 
 Use a dedicated base Python installation when the operating system marks its
 Python as externally managed; virtual-environment launchers are not valid Host
 Bootstrap owners. See [Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md)
 for installation, PATH, and Python-environment problems, then continue to
 [Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md).
-
-`booley bootstrap` prepares reusable host resources: the VS Code Dev Containers
-extension, skills, the shared PDK cache, the base Sandbox Image, and global
-Interactive Mode services.
 
 ## Quick Start
 

@@ -139,8 +139,8 @@ def load_host_installation(path: Path | None = None) -> HostInstallationIdentity
         return _parse_identity(json.loads(source.read_text(encoding="utf-8")))
     except FileNotFoundError as exc:
         raise HostInstallationError(
-            "canonical host installation is not recorded; run "
-            "`booley bootstrap --adopt-installation` from the intended installed wheel"
+            "canonical host installation is not recorded; run `booley bootstrap` "
+            "from the intended installed wheel"
         ) from exc
     except (BoundaryError, json.JSONDecodeError, OSError, UnicodeError) as exc:
         raise HostInstallationError(
@@ -161,23 +161,23 @@ def _write_identity(identity: HostInstallationIdentity, path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def adopt_host_installation(
+def register_host_installation(
     package_resource: Path,
     *,
-    replace: bool = False,
+    update: bool = False,
     path: Path | None = None,
 ) -> HostInstallationIdentity:
-    """Record this eligible wheel as canonical, refusing implicit replacement."""
+    """Record this eligible wheel as canonical, refusing implicit updates."""
     if error := _eligibility_error(package_resource):
         raise HostInstallationError(error)
     destination = path or host_installation_path()
     candidate = current_host_installation(package_resource)
-    if destination.exists() and not replace:
+    if destination.exists() and not update:
         current = load_host_installation(destination)
         if current != candidate:
             raise HostInstallationError(
-                "a different canonical host installation is already recorded; use the explicit "
-                "installation-upgrade workflow"
+                "a different canonical host installation is already recorded; run "
+                "`booley bootstrap --update` after an intentional upgrade"
             )
         return current
     _write_identity(candidate, destination)
@@ -203,6 +203,6 @@ def host_install_error(
         return (
             "this Booley process does not match the canonical host installation "
             f"({actual.distribution_root} != {expected.distribution_root}); run the canonical "
-            "host `booley bootstrap --upgrade-installation` if this upgrade is intentional"
+            "host `booley bootstrap --update` if this upgrade is intentional"
         )
     return None

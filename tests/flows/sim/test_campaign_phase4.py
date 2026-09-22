@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,8 +30,8 @@ from booley.flows.sim.campaign.coordinator import (
     SimulationCampaign,
     SimulationCampaignCancellationError,
 )
-from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-from booley.flows.sim.campaign.planning import finalize_manifest
+from booley.flows.sim.campaign.model import SimulationAttempt, create_simulation_campaign_plan
+from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.campaign.scheduler import (
     BoundedCampaignScheduler,
     CampaignSchedulingError,
@@ -762,7 +763,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_it(
     attempts: list[Path] = []
 
     def allocate(item) -> ScheduledAttempt:
-        attempt_id = os.urandom(16).hex()
+        attempt_id = str(uuid.uuid4())
         ordinal, directory = campaign_store.allocate_attempt_directory(
             str(item["work_item_id"]), attempt_id
         )
@@ -770,9 +771,32 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_it(
 
     def prepare(attempt, child_id, digest) -> None:
         attempts.append(attempt.directory / "attempt.json")
-        (attempt.directory / "attempt.json").write_text(
-            json.dumps({"child_execution_id": child_id, "child_entry_sha256": digest})
+        published = SimulationAttempt(
+            {
+                "$schema": "booley.simulation-attempt/v1",
+                "campaign_id": manifest.document["campaign_id"],
+                "manifest_sha256": manifest_digest(manifest),
+                "workload_sha256": "sha256:" + "0" * 64,
+                "work_item_id": attempt.item["work_item_id"],
+                "attempt_id": attempt.attempt_id,
+                "attempt_ordinal": attempt.ordinal,
+                "producer_invocation_id": 1,
+                "build_variant_id": "variant:" + "0" * 64,
+                "run_directory": {
+                    "kind": "literal",
+                    "configured": "run",
+                    "resolved": "run",
+                    "collision_key": "run",
+                    "owned": True,
+                },
+                "child_execution_id": child_id,
+                "child_entry_sha256": digest,
+                "pre_sim_build_access": "immutable",
+                "policy": {"timeout_seconds": None, "no_kill": False, "diagnostic": False},
+                "started_at": "2026-09-22T14:00:00Z",
+            }
         )
+        (attempt.directory / "attempt.json").write_bytes(published.canonical_bytes())
 
     errors: list[BaseException] = []
     scheduler = BoundedCampaignScheduler(

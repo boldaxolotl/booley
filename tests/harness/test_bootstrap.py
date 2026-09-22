@@ -148,6 +148,7 @@ def test_check_only_pending_is_exit_one_but_mutating_pending_is_failure() -> Non
 
 def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Intent] = []
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         bootstrap_cli,
         "reconcile_bootstrap",
@@ -160,7 +161,7 @@ def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) 
     assert seen == [Intent.REFRESH]
 
 
-def test_public_adapter_adopts_before_reconciliation(
+def test_public_adapter_registers_before_reconciliation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -168,8 +169,8 @@ def test_public_adapter_adopts_before_reconciliation(
     monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
     monkeypatch.setattr(
         bootstrap_cli,
-        "adopt_host_installation",
-        lambda _source, *, replace: events.append(f"adopt:{replace}") or identity,
+        "register_host_installation",
+        lambda _source, *, update: events.append(f"register:{update}") or identity,
     )
     monkeypatch.setattr(
         bootstrap_cli,
@@ -184,15 +185,43 @@ def test_public_adapter_adopts_before_reconciliation(
             force=False,
             check_only=False,
             verbose=False,
-            adopt_installation=True,
         )
     )
 
     assert status == 0
-    assert events == ["adopt:False", "reconcile"]
+    assert events == ["register:False", "reconcile"]
 
 
-def test_public_adapter_explicitly_replaces_during_upgrade(
+def test_public_adapter_recovers_before_registering_installation(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.runtime import session_refresh
+
+    monkeypatch.setattr(
+        session_refresh,
+        "shared_recovery_blocks_command",
+        lambda *, read_only: not read_only,
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "register_host_installation",
+        lambda *_a, **_kw: pytest.fail("recovery must block installation registration"),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda *_a, **_kw: pytest.fail("recovery must block reconciliation"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(force=False, check_only=False, verbose=False)
+    )
+
+    assert status == 2
+    assert "Recovered interrupted Sandbox host state" in capsys.readouterr().out
+
+
+def test_public_adapter_explicitly_updates_registered_installation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -200,8 +229,8 @@ def test_public_adapter_explicitly_replaces_during_upgrade(
     monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
     monkeypatch.setattr(
         bootstrap_cli,
-        "adopt_host_installation",
-        lambda _source, *, replace: events.append(f"adopt:{replace}") or identity,
+        "register_host_installation",
+        lambda _source, *, update: events.append(f"register:{update}") or identity,
     )
     monkeypatch.setattr(
         bootstrap_cli,
@@ -216,23 +245,21 @@ def test_public_adapter_explicitly_replaces_during_upgrade(
             force=False,
             check_only=False,
             verbose=False,
-            adopt_installation=False,
-            upgrade_installation=True,
+            update=True,
         )
     )
 
     assert status == 0
-    assert events == ["adopt:True", "reconcile"]
+    assert events == ["register:True", "reconcile"]
 
 
-def test_public_adapter_rejects_adoption_in_check_only(capsys):
+def test_public_adapter_rejects_update_in_check_only(capsys):
     status = bootstrap_cli.run_bootstrap(
         SimpleNamespace(
             force=False,
             check_only=True,
             verbose=False,
-            adopt_installation=True,
-            upgrade_installation=False,
+            update=True,
         )
     )
 
@@ -240,13 +267,32 @@ def test_public_adapter_rejects_adoption_in_check_only(capsys):
     assert "check-only" in capsys.readouterr().out
 
 
-def test_public_adapter_reports_adoption_failure(monkeypatch, capsys):
+def test_public_adapter_check_only_does_not_register(monkeypatch):
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "register_host_installation",
+        lambda *_a, **_kw: pytest.fail("check-only must not register an installation"),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, ()),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(force=False, check_only=True, verbose=False)
+    )
+
+    assert status == 0
+
+
+def test_public_adapter_reports_registration_failure(monkeypatch, capsys):
     monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: Path("/installed/skills"))
     monkeypatch.setattr(
         bootstrap_cli,
-        "adopt_host_installation",
-        lambda _source, *, replace: (_ for _ in ()).throw(
-            bootstrap_cli.HostInstallationError("adoption failed")
+        "register_host_installation",
+        lambda _source, *, update: (_ for _ in ()).throw(
+            bootstrap_cli.HostInstallationError("registration failed")
         ),
     )
 
@@ -255,13 +301,11 @@ def test_public_adapter_reports_adoption_failure(monkeypatch, capsys):
             force=False,
             check_only=False,
             verbose=False,
-            adopt_installation=True,
-            upgrade_installation=False,
         )
     )
 
     assert status == 2
-    assert "adoption failed" in capsys.readouterr().out
+    assert "registration failed" in capsys.readouterr().out
 
 
 def test_skill_reconciliation_rejects_noncanonical_install(
