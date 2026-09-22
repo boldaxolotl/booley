@@ -34,6 +34,13 @@ def run_bootstrap(args: object) -> int:
         from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         with host_lifecycle_lock("host bootstrap"):
+            if shared_recovery_blocks_command(read_only=False):
+                print(
+                    yellow(
+                        "Recovered interrupted Sandbox host state; run `booley bootstrap` again."
+                    )
+                )
+                return 2
             try:
                 identity = register_host_installation(skills_dir(), update=update)
             except HostInstallationError as exc:
@@ -46,13 +53,6 @@ def run_bootstrap(args: object) -> int:
                         f"{identity.version} ({identity.payload_fingerprint[:12]})."
                     )
                 )
-            if shared_recovery_blocks_command(read_only=False):
-                print(
-                    yellow(
-                        "Recovered interrupted Sandbox host state; run `booley bootstrap` again."
-                    )
-                )
-                return 2
             result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
     print(bold_chrome("Host Bootstrap"))
     glyphs = {

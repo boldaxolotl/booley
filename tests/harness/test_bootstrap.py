@@ -192,6 +192,35 @@ def test_public_adapter_registers_before_reconciliation(
     assert events == ["register:False", "reconcile"]
 
 
+def test_public_adapter_recovers_before_registering_installation(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.runtime import session_refresh
+
+    monkeypatch.setattr(
+        session_refresh,
+        "shared_recovery_blocks_command",
+        lambda *, read_only: not read_only,
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "register_host_installation",
+        lambda *_a, **_kw: pytest.fail("recovery must block installation registration"),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda *_a, **_kw: pytest.fail("recovery must block reconciliation"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(force=False, check_only=False, verbose=False)
+    )
+
+    assert status == 2
+    assert "Recovered interrupted Sandbox host state" in capsys.readouterr().out
+
+
 def test_public_adapter_explicitly_updates_registered_installation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
