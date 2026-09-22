@@ -37,6 +37,7 @@ class SimRequest(FlowRequest):
         self._normalize_campaign_paths()
         self._normalize_test_selection()
         self._validate_resume_shape()
+        self._consume_tests_file()
         if self.result_verbosity not in ("compact", "full"):
             raise ValueError("result_verbosity must be compact or full")
 
@@ -60,6 +61,26 @@ class SimRequest(FlowRequest):
                 raise ValueError("test names must be unique")
         if self.test is not None and self.tests_file is not None:
             raise ValueError("test and tests_file are mutually exclusive")
+
+    def _consume_tests_file(self) -> None:
+        """Give typed callers the same exact-selection semantics as the CLI."""
+        if self.tests_file is None:
+            return
+        try:
+            text = self.tests_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"cannot read tests_file {self.tests_file}: {exc}") from exc
+        names = tuple(
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+        if not names:
+            raise ValueError("tests_file contains no test names")
+        if len(set(names)) != len(names):
+            raise ValueError("test names must be unique")
+        self.test = names
+        self.tests_file = None
 
     def _validate_resume_shape(self) -> None:
         if self.resume_from is not None:

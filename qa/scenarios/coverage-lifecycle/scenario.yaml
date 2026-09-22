@@ -3405,7 +3405,7 @@ steps:
     sha256: eb484efe16e0fd32cfe16b020e2176fe47e706d95e621351587765162d969d19
   - path: fixtures/simulation-campaign/validate_recovery.py
     audience: independent evaluator
-    sha256: 35390f4c0ccf1876e650904a43c3a944c6c3af2fbfae78b6b642ea99f29c66ea
+    sha256: 0c360c5e77a15878c4a48880d4e82e58b2dbe7d9ac4a50d1b99d7bbf34bb2779
 - id: campaign.corrupt-terminal-rejection
   phase: exercise
   action: Reject one corrupted owned terminal Simulation Result before any retry is admitted.
@@ -3436,7 +3436,7 @@ steps:
     sha256: eb484efe16e0fd32cfe16b020e2176fe47e706d95e621351587765162d969d19
   - path: fixtures/simulation-campaign/validate_recovery.py
     audience: independent evaluator
-    sha256: 35390f4c0ccf1876e650904a43c3a944c6c3af2fbfae78b6b642ea99f29c66ea
+    sha256: 0c360c5e77a15878c4a48880d4e82e58b2dbe7d9ac4a50d1b99d7bbf34bb2779
 - id: final.regression
   phase: final
   action: With all injections disabled rerun native numeric half and four-property half cases, current accepted

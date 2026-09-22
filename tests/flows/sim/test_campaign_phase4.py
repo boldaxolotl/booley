@@ -16,6 +16,7 @@ import pytest
 from booley.config.jobs import SlotCaps
 from booley.flows.base import FlowMechanics
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.campaign import child_protocol
 from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.codec import (
@@ -505,6 +506,69 @@ def test_resume_rejects_retirement_with_wrong_terminal_digest(tmp_path: Path) ->
         SimulationCampaignIntegrityError, match="terminal digest"
     ):
         registry.recover_unretired(slot_store)
+
+
+@pytest.mark.parametrize("defect", ["symlink", "hardlink"])
+def test_child_recovery_rejects_linked_entry_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
+) -> None:
+    _project_data, child_id, registry, prepared, _flow = _prepared_child(
+        tmp_path, monkeypatch
+    )
+    source = prepared.project_entry.with_name("source.json")
+    prepared.project_entry.rename(source)
+    if defect == "symlink":
+        prepared.project_entry.symlink_to(source.name)
+    else:
+        prepared.project_entry.hardlink_to(source)
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="link"):
+        registry.recover_unretired(None)
+
+    assert not (
+        registry._campaign_root / "retired" / f"{child_id}.json"
+    ).exists()
+
+
+def test_child_protocol_parses_the_same_bytes_it_authenticated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "entry.json"
+    original = canonical_json_bytes({"value": "original"})
+    replacement = canonical_json_bytes({"value": "replacement"})
+    path.write_bytes(original)
+    real_open = child_protocol.open_regular_nofollow
+
+    def open_then_replace(selected: Path) -> int:
+        descriptor = real_open(selected)
+        selected.rename(selected.with_name("opened-original.json"))
+        selected.write_bytes(replacement)
+        return descriptor
+
+    monkeypatch.setattr(child_protocol, "open_regular_nofollow", open_then_replace)
+    raw, document = child_protocol._read_protocol_record(path, "test entry")
+
+    assert raw == original
+    assert document == {"value": "original"}
+
+
+@pytest.mark.parametrize("defect", ["symlink", "hardlink"])
+def test_child_protocol_conflict_read_rejects_links(
+    tmp_path: Path, defect: str
+) -> None:
+    raw = canonical_json_bytes({"value": "expected"})
+    source = tmp_path / "source.json"
+    source.write_bytes(raw)
+    record = tmp_path / "record.json"
+    if defect == "symlink":
+        record.symlink_to(source.name)
+    else:
+        record.hardlink_to(source)
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="link"):
+        child_protocol._publish_or_verify(record, raw)
+
+    assert source.read_bytes() == raw
 
 
 @pytest.mark.parametrize(

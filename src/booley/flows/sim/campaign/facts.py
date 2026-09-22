@@ -97,7 +97,7 @@ def _validate_facts(value: Mapping[str, object]) -> None:
         raise SimulationCampaignIntegrityError("required suite names are invalid")
     if type(suite["default_invocation"]) is not bool:
         raise SimulationCampaignIntegrityError("required_suite.default_invocation must be boolean")
-    if bool(names) == suite["default_invocation"]:
+    if names and suite["default_invocation"]:
         raise SimulationCampaignIntegrityError(
             "required suite names disagree with default_invocation"
         )

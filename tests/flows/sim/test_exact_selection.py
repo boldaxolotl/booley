@@ -37,6 +37,16 @@ def test_tests_file_ignores_comments_and_blanks(tmp_path) -> None:
     assert request.test == ("smoke", "edge")
 
 
+def test_typed_tests_file_uses_the_same_exact_selection(tmp_path) -> None:
+    selected = tmp_path / "selected.txt"
+    selected.write_text("# campaign\ntail\n\nquick\n", encoding="utf-8")
+
+    request = SimRequest(target="sim", tests_file=selected)
+
+    assert request.test == ("tail", "quick")
+    assert request.tests_file is None
+
+
 def test_resume_preserves_omitted_mode_and_requires_no_target(tmp_path) -> None:
     manifest = tmp_path / "manifest.json"
     request = parse_request(SimulateFlow(), ["--resume-from", str(manifest)])

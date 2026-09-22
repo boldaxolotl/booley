@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from booley.runtime.execution_records import (
 )
 from booley.runtime.execution_recovery import recover_execution
 from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .codec import (
@@ -34,6 +37,7 @@ _ENTRY_SCHEMA = "booley.simulation-campaign-child-entry/v1"
 _CONTEXT_SCHEMA = "booley.supervised-child-context/v1"
 _RETIREMENT_SCHEMA = "booley.simulation-campaign-child-retirement/v1"
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+_PROTOCOL_RECORD_LIMIT = 1024 * 1024
 _ENTRY_FIELDS = {
     "$schema",
     "child_execution_id",
@@ -215,10 +219,7 @@ class ChildExecutionRegistry:
         recovered_ids: set[str] = set()
         paths = sorted(entries.glob("*.json")) if entries.is_dir() else []
         for path in paths:
-            raw = path.read_bytes()
-            entry = read_json(path)
-            if entry is None:
-                raise SimulationCampaignIntegrityError(f"invalid child entry: {path}")
+            raw, entry = _read_protocol_record(path, "child entry")
             _validate_entry(path, entry)
             if (
                 entry.get("manifest_path") != expected_manifest
@@ -237,9 +238,7 @@ class ChildExecutionRegistry:
         if not entries.is_dir():
             return
         for path in sorted(entries.glob("*.json")):
-            document = read_json(path)
-            if document is None:
-                raise SimulationCampaignIntegrityError(f"invalid campaign child entry: {path}")
+            _raw, document = _read_protocol_record(path, "campaign child entry")
             if (
                 document.get("manifest_path") == manifest_path
                 and document.get("manifest_sha256") == manifest_sha256
@@ -279,10 +278,7 @@ class ChildExecutionRegistry:
     ) -> None:
         if path.is_symlink() or not path.is_file():
             raise SimulationCampaignIntegrityError("child-bound attempt is not regular")
-        try:
-            raw = path.read_bytes()
-        except OSError as exc:
-            raise SimulationCampaignIntegrityError("child-bound attempt is unreadable") from exc
+        raw = _read_protocol_bytes(path, "child-bound attempt")
         attempt = decode_simulation_attempt(raw).document
         expected = {
             "child_execution_id": entry["child_execution_id"],
@@ -305,7 +301,9 @@ class ChildExecutionRegistry:
         project_retired = self._project_root / "retired" / path.name
         campaign_retired = self._campaign_root / "retired" / path.name
         if project_retired.exists():
-            retired_raw = project_retired.read_bytes()
+            retired_raw, _retirement = _read_protocol_record(
+                project_retired, "child retirement"
+            )
             terminal = read_json(
                 execution_paths(execution_id, project_dir=self._project_data).record
             )
@@ -534,15 +532,8 @@ def _validate_retirement(
 
 
 def _publish_or_verify(path: Path, raw: bytes) -> None:
-    if path.is_symlink():
-        raise SimulationCampaignIntegrityError(f"child protocol path is a link: {path}")
     if path.exists():
-        try:
-            current = path.read_bytes()
-        except OSError as exc:
-            raise SimulationCampaignIntegrityError(
-                f"child protocol record cannot be read: {path}"
-            ) from exc
+        current = _read_protocol_bytes(path, "child protocol record")
         if current != raw:
             raise SimulationCampaignIntegrityError(
                 f"child protocol record disagrees with durable identity: {path}"
@@ -551,10 +542,52 @@ def _publish_or_verify(path: Path, raw: bytes) -> None:
     try:
         durable_create(path, raw)
     except FileExistsError:
-        if path.read_bytes() != raw:
+        if _read_protocol_bytes(path, "child protocol record") != raw:
             raise SimulationCampaignIntegrityError(
                 f"child protocol publication raced with different bytes: {path}"
             ) from None
+
+
+def _read_protocol_record(path: Path, label: str) -> tuple[bytes, dict]:
+    raw = _read_protocol_bytes(path, label)
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SimulationCampaignIntegrityError(f"{label} is invalid JSON: {path}") from exc
+    if not isinstance(document, dict) or canonical_json_bytes(document) != raw:
+        raise SimulationCampaignIntegrityError(f"{label} is not canonical JSON: {path}")
+    return raw, document
+
+
+def _read_protocol_bytes(path: Path, label: str) -> bytes:
+    try:
+        descriptor = open_regular_nofollow(path)
+    except OSError as exc:
+        raise SimulationCampaignIntegrityError(
+            f"{label} is not a link-free regular file: {path}"
+        ) from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise SimulationCampaignIntegrityError(
+                f"{label} is not a singly linked regular file: {path}"
+            )
+        if info.st_size > _PROTOCOL_RECORD_LIMIT:
+            raise SimulationCampaignIntegrityError(f"{label} exceeds size limit: {path}")
+        raw = bytearray()
+        while len(raw) <= _PROTOCOL_RECORD_LIMIT:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, _PROTOCOL_RECORD_LIMIT + 1 - len(raw)),
+            )
+            if not chunk:
+                break
+            raw.extend(chunk)
+        if len(raw) != info.st_size:
+            raise SimulationCampaignIntegrityError(f"{label} changed while reading: {path}")
+        return bytes(raw)
+    finally:
+        os.close(descriptor)
 
 
 __all__ = ["ChildExecutionRegistry", "PreparedChild"]

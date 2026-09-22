@@ -122,7 +122,7 @@ def _facts(
                     "path_base": "origin_invocation",
                     "path": "targets/sim_toggle/campaign/work-items/item/result.json",
                     "bytes": len(raw),
-                    "sha256": _sha256(raw.rstrip(b"\n")),
+                    "sha256": _sha256(raw),
                     "kind": "simulation_result",
                     "owner": result["attempt_id"],
                 },

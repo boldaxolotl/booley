@@ -1160,8 +1160,8 @@ def _validate_required_suite(value: object) -> Mapping[str, object]:
         validate_relative_path(source_path)
     elif not suite["default_invocation"]:
         raise SimulationCampaignIntegrityError("catalog-backed required suite needs a source path")
-    if suite["default_invocation"] != (not names):
-        raise SimulationCampaignIntegrityError("required suite default flag disagrees with names")
+    if suite["default_invocation"] and names:
+        raise SimulationCampaignIntegrityError("default required suite cannot name tests")
     if suite["default_invocation"] and (
         suite["source_path"] != ""
         or suite["source_bytes"] != 0
@@ -1303,11 +1303,6 @@ def _validate_work_items(
         selection = cast(Mapping[str, object], decoded["selection"])
         if selection["kind"] == "default" and not suite["default_invocation"]:
             raise SimulationCampaignIntegrityError("default work item requires an unnamed target")
-        if selection["kind"] == "named" and any(
-            name not in cast(list[object], suite["names"])
-            for name in cast(list[object], selection["names"])
-        ):
-            raise SimulationCampaignIntegrityError("work item selection is outside required suite")
         identity_input = {
             key: entry
             for key, entry in decoded.items()

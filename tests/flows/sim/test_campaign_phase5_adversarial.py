@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -102,6 +102,25 @@ def _facts(
         flow_options=flow_options,
     )
     return handle, inspection, preview
+
+
+def test_coverage_plan_labels_its_build_variant_as_coverage(tmp_path: Path) -> None:
+    handle, inspection, preview = _facts(tmp_path, cocotb=False)
+    preview = replace(preview, groups=(("count", "reset"),))
+    plan = plan_coarse_simulation_campaign(
+        handle=handle,
+        inspection=inspection,
+        preview=preview,
+        selected_tests=("count", "reset"),
+        required_suite=("reset", "count"),
+        revision="abc123",
+        invocation_id=1,
+        execution_id="",
+        trace=False,
+        kind="coverage_aggregate",
+    )
+
+    assert plan.manifest.document["build_variants"][0]["kind"] == "coverage"  # type: ignore[index]
 
 
 def _write_cocotb_core(root: Path) -> None:

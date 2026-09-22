@@ -40,6 +40,7 @@ def plan_ordinary_hdl_campaign(
     prerequisite_documents: Sequence[Mapping[str, object]] = (),
     planning_disclosures: Sequence[Mapping[str, object]] = (),
     role: str = "candidate",
+    required_suite_catalog_backed: bool | None = None,
 ) -> SimulationCampaignPlan:
     """Build one strict immutable plan from already-resolved Target facts."""
     if inspection.handle != handle or preview.target_identity != handle.identity:
@@ -58,7 +59,7 @@ def plan_ordinary_hdl_campaign(
         handle, inspection, sources, trace, coverage=False
     )
     target = _target_document(handle, root, revision, role)
-    suite = _required_suite(root, required_suite)
+    suite = _required_suite(root, required_suite, catalog_backed=required_suite_catalog_backed)
     variant = _variant_document(workload, sources, trace)
     work_items = _work_items(
         groups, target, variant, configured_cwd, run_kind, kind="ordinary_hdl"
@@ -83,6 +84,7 @@ def plan_coarse_simulation_campaign(
     trace: bool,
     kind: str,
     planning_disclosures: Sequence[Mapping[str, object]] = (),
+    required_suite_catalog_backed: bool | None = None,
 ) -> SimulationCampaignPlan:
     """Plan one honest coarse Cocotb batch or native coverage aggregate."""
     names = _validate_coarse_inputs(handle, inspection, preview, selected_tests, kind)
@@ -92,7 +94,7 @@ def plan_coarse_simulation_campaign(
         handle, inspection, sources, trace, coverage=kind == "coverage_aggregate"
     )
     target = _target_document(handle, root, revision, "candidate")
-    suite = _required_suite(root, required_suite)
+    suite = _required_suite(root, required_suite, catalog_backed=required_suite_catalog_backed)
     variant = _variant_document(workload, sources, trace)
     work_items = _work_items(
         (names,), target, variant, configured_cwd, run_kind, kind=kind
@@ -202,8 +204,9 @@ def _target_document(
 def _variant_document(
     workload: Mapping[str, object], sources: list[dict[str, object]], trace: bool
 ) -> dict[str, object]:
+    kind = "coverage" if workload["coverage"] is True else "trace" if trace else "candidate"
     recipe = {
-        "kind": "trace" if trace else "candidate", "source_closure": sources,
+        "kind": kind, "source_closure": sources,
         "source_recipe": workload["source_recipe"],
         "build_recipe": workload["build_recipe"], "eda": workload["eda"],
         "trace": trace, "coverage": workload["coverage"],
@@ -211,7 +214,8 @@ def _variant_document(
     digest = canonical_sha256(recipe)
     return {
         "build_variant_id": "variant:" + digest.removeprefix("sha256:"),
-        "kind": recipe["kind"], "sharing_eligible": True,
+        "kind": recipe["kind"],
+        "sharing_eligible": workload["pre_sim_build_access"] == "immutable",
         "source_closure": sources, "recipe_sha256": digest,
     }
 
@@ -275,9 +279,15 @@ def _eda_identity(kind: str | None) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-def _required_suite(root: Path, names: Sequence[str]) -> dict[str, object]:
+def _required_suite(
+    root: Path,
+    names: Sequence[str],
+    *,
+    catalog_backed: bool | None = None,
+) -> dict[str, object]:
     ordered = list(dict.fromkeys(names))
-    if not ordered:
+    backed = bool(ordered) if catalog_backed is None else catalog_backed
+    if not backed:
         raw = b""
         relative = ""
     else:
@@ -291,7 +301,7 @@ def _required_suite(root: Path, names: Sequence[str]) -> dict[str, object]:
         relative = path.relative_to(root).as_posix()
     return {
         "names": ordered,
-        "default_invocation": not ordered,
+        "default_invocation": not backed,
         "source_path": relative,
         "source_bytes": len(raw),
         "source_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),

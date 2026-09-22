@@ -93,6 +93,8 @@ CampaignRunRequest = NewCampaignRunRequest | ResumeCampaignRunRequest
 @dataclass(frozen=True, slots=True)
 class NewCampaignPreview:
     target: Mapping[str, object]
+    normalized_selection: tuple[Mapping[str, object], ...]
+    workload: Mapping[str, object]
     required_suite: Mapping[str, object]
     build_variants: tuple[object, ...]
     planning_disclosures: tuple[object, ...]
@@ -107,6 +109,7 @@ class NewCampaignPreview:
 class ResumeCampaignPreview:
     manifest_path: Path
     manifest_sha256: str
+    manifest: Mapping[str, object]
     completed: tuple[str, ...]
     interrupted: tuple[str, ...]
     pending: tuple[str, ...]
@@ -184,6 +187,7 @@ class SimulationCampaign:
         return ResumeCampaignPreview(
             request.validated.path,
             request.validated.sha256,
+            request.validated.manifest.document,
             recovery.complete,
             recovery.interrupted,
             recovery.pending,
@@ -578,6 +582,11 @@ def _new_preview(request: NewCampaignPreviewRequest) -> NewCampaignPreview:
     document = request.plan.manifest.document
     return NewCampaignPreview(
         cast(Mapping[str, object], document["target"]),
+        tuple(
+            cast(Mapping[str, object], item["selection"])
+            for item in cast(tuple[Mapping[str, object], ...], document["work_items"])
+        ),
+        cast(Mapping[str, object], document["workload"]),
         cast(Mapping[str, object], document["required_suite"]),
         cast(tuple[object, ...], document["build_variants"]),
         cast(tuple[object, ...], document["planning_disclosures"]),
@@ -640,7 +649,7 @@ def _acceptance_ready(
     complete: bool,
     grade: str,
 ) -> bool:
-    if not complete or grade == "error":
+    if not complete or grade != "pass":
         return False
     suite = cast(Mapping[str, object], manifest.document["required_suite"])
     passing = {
@@ -723,7 +732,7 @@ def _collected_result_facts(
             continue
         item = by_id[recovered.work_item_id]
         raw = encode_simulation_result(recovered.result)
-        digest = "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
         result_path = store.work_item_directory(recovered.work_item_id) / "result.json"
         invocation = store.root.parents[2]
         relative = result_path.relative_to(invocation).as_posix()
@@ -776,7 +785,7 @@ def _prerequisite_facts(
         )
         selected = _selected_prerequisite_result(store, entry)
         raw = encode_simulation_result(selected.result)
-        digest = "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
         result_path = store.work_item_directory(selected.work_item_id) / "result.json"
         result_reference = {
             "path_base": "origin_invocation",

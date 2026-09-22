@@ -151,7 +151,7 @@ def _validate_consumed_results(facts: dict[str, object], result_paths: list[Path
         _need(result.get("finished_at") == entry["finished_at"], "finished timestamp differs")
         _need(reference["kind"] == "simulation_result", "result reference kind differs")
         _need(reference["bytes"] == len(raw), "result byte count differs")
-        _need(reference["sha256"] == _digest(raw.rstrip(b"\n")), "result digest differs")
+        _need(reference["sha256"] == _digest(raw), "result digest differs")
     _need(not expected, "acceptance facts omit a terminal result")
 
 

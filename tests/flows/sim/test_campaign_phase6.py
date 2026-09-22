@@ -29,10 +29,12 @@ from booley.flows.sim.campaign.codec import (
 )
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
+    NewCampaignPreviewRequest,
     NewCampaignRunRequest,
     ResumeCampaignPreviewRequest,
     SimulationCampaign,
     WorkExecutionRequest,
+    _acceptance_ready,
 )
 from booley.flows.sim.campaign.model import SimulationResult, create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import manifest_digest
@@ -352,6 +354,53 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
     assert peak_delta < 128 * 1024
 
 
+def test_campaign_previews_expose_the_complete_public_contract(tmp_path: Path) -> None:
+    manifest = _manifest_for(("smoke",))
+    plan = create_simulation_campaign_plan(manifest)
+    preview = SimulationCampaign().preview(
+        NewCampaignPreviewRequest(plan, tmp_path, None, CampaignPolicy())
+    )
+    assert preview.normalized_selection == (
+        manifest.document["work_items"][0]["selection"],  # type: ignore[index]
+    )
+    assert preview.workload == manifest.document["workload"]
+
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store.publish_manifest(manifest)
+    resumed = SimulationCampaign().preview(_resume_request(store, tmp_path))
+    assert resumed.manifest == manifest.document
+
+
+def test_acceptance_readiness_requires_strict_superset_grade() -> None:
+    manifest = cast(
+        object,
+        SimpleNamespace(
+            document={
+                "required_suite": {
+                    "names": ("required",),
+                    "default_invocation": False,
+                }
+            }
+        ),
+    )
+    observations = (
+        {
+            "test": "required",
+            "execution": "completed",
+            "functional": "pass",
+            "assertions": "clean",
+        },
+        {
+            "test": "extra",
+            "execution": "completed",
+            "functional": "fail",
+            "assertions": "clean",
+        },
+    )
+
+    assert _acceptance_ready(manifest, observations, True, "fail") is False  # type: ignore[arg-type]
+
+
 def _acceptance_endpoint(state, recorder, invocation):
     return SimpleNamespace(
         state=state,
@@ -378,6 +427,15 @@ def _one_item_outcome(tmp_path: Path):
         admission=_admission(),
     )
     return SimulationCampaign(_NoEdaExecutor()).run(request), invocation
+
+
+def test_acceptance_result_reference_hashes_exact_stored_bytes(tmp_path: Path) -> None:
+    outcome, invocation = _one_item_outcome(tmp_path)
+    consumed = outcome.acceptance_facts.document["consumed_results"]
+    reference = consumed[0]["result"]  # type: ignore[index]
+    raw = (invocation / reference["path"]).read_bytes()  # type: ignore[index]
+    assert raw.endswith(b"\n")
+    assert reference["sha256"] == "sha256:" + hashlib.sha256(raw).hexdigest()  # type: ignore[index]
 
 
 def _ledger_bytes(log_dir: Path) -> dict[Path, bytes]:

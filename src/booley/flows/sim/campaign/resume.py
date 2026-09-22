@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import cast
 
 from booley.flows.baseline_worktree import git_full_sha
+from booley.runtime.regular_file import open_regular_nofollow
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -190,16 +191,19 @@ def _load_node(path: Path) -> ValidatedManifestNode:
 
 
 def _read_regular(path: Path) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(path, flags)
+        descriptor = open_regular_nofollow(path)
     except OSError as exc:
         raise SimulationCampaignIntegrityError(
             f"cannot read resume manifest {path}: {exc}"
         ) from exc
     try:
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MANIFEST_MAX_BYTES:
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_size > MANIFEST_MAX_BYTES
+        ):
             raise SimulationCampaignIntegrityError("resume manifest is not a bounded regular file")
         raw = os.read(descriptor, MANIFEST_MAX_BYTES + 1)
         if len(raw) != info.st_size:

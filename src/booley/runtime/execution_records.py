@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import tempfile
 import time
 import uuid
 from contextlib import suppress
@@ -110,11 +111,30 @@ def execution_paths(
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically replace one protocol JSON file with canonical content."""
+    """Durably replace one protocol JSON file with canonical content."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def read_json(path: Path) -> dict[str, Any] | None:

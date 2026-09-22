@@ -395,6 +395,64 @@ def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
     assert validated.prerequisite_for(reference).path == baseline_store.manifest_path
 
 
+@pytest.mark.parametrize("defect", ["ancestor_symlink", "final_symlink", "hardlink"])
+def test_resume_rejects_linked_manifest_paths_without_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
+) -> None:
+    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    real = CampaignStore(tmp_path / "real/000001/targets/sim/campaign")
+    real.publish_manifest(manifest)
+    view = tmp_path / "view/000001/targets/sim/campaign"
+    if defect == "ancestor_symlink":
+        (tmp_path / "view").mkdir()
+        (tmp_path / "view/000001").symlink_to(real.root.parents[2], target_is_directory=True)
+    else:
+        view.mkdir(parents=True)
+        if defect == "final_symlink":
+            (view / "manifest.json").symlink_to(real.manifest_path)
+        else:
+            (view / "manifest.json").hardlink_to(real.manifest_path)
+    target = manifest.document["target"]
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.resume.git_full_sha",
+        lambda _ref, _root: target["revision"],
+    )
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        lambda root: SimpleNamespace(
+            select=lambda _selector, **_kwargs: SimpleNamespace(
+                identity=f"{target['vlnv']}#{target['name']}",
+                project_root=Path(root),
+            )
+        ),
+    )
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"regular|link"):
+        validate_resume_manifest(
+            view / "manifest.json", project_root=tmp_path / "source"
+        )
+
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
+
+
+def test_campaign_store_rejects_linked_root_before_lock_write(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(outside, target_is_directory=True)
+    store = CampaignStore(linked / "campaign")
+
+    with (
+        pytest.raises(SimulationCampaignIntegrityError, match="contains a link"),
+        store.mutation_lock(),
+    ):
+        pass
+
+    assert not (outside / "campaign").exists()
+
+
 def _source_equal_revision_drift(tmp_path: Path) -> tuple[Path, str]:
     root = tmp_path / "source"
     root.mkdir()

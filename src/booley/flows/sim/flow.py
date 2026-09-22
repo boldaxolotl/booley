@@ -2012,6 +2012,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 revision=revision, invocation_id=invocation_id, execution_id="",
                 trace=cast(bool, manifest.document["workload"]["trace"]), kind=kind,
                 planning_disclosures=disclosures if kind == "cocotb_batch" else (),
+                required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
             )
         return self._ordinary_resume_plan(
             handle, inspection, preview, groups, suite, target, revision,
@@ -2037,6 +2038,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             ),
             planning_disclosures=disclosures,
             role=target["role"],
+            required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
         )
 
     def _resume_source_mismatches(self, manifest: SimulationCampaignManifest) -> list[str]:
@@ -2339,6 +2341,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             execution_id=execution_id,
             trace=self.args.trace,
             kind="coverage_aggregate",
+            required_suite_catalog_backed=True,
         )
 
     def _run_coverage_invocation(self, invocation, prepared) -> EndpointOutcome:
@@ -2972,10 +2975,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             test_skips=_get_test_skips(self.args.work_dir),
         )
         required = tuple(name for name in suite.tests if name is not None)
+        catalog_backed = bool(lookup_target_section(test_names_map, target) or [])
         if self.is_cocotb_target(target):
             return self._cocotb_campaign_plan(
                 handle, inspection, preview, required, revision,
-                invocation_id, execution_id, planning_disclosures,
+                invocation_id, execution_id, planning_disclosures, catalog_backed,
             )
         return plan_ordinary_hdl_campaign(
             handle=handle,
@@ -2990,11 +2994,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             prerequisite_documents=prerequisite_documents,
             planning_disclosures=planning_disclosures,
             role=role,
+            required_suite_catalog_backed=catalog_backed,
         )
 
     def _cocotb_campaign_plan(
         self, handle, inspection, preview, required, revision,
-        invocation_id, execution_id, planning_disclosures,
+        invocation_id, execution_id, planning_disclosures, catalog_backed,
     ) -> SimulationCampaignPlan:
         selected = tuple(name for group in preview.groups for name in group)
         return plan_coarse_simulation_campaign(
@@ -3004,6 +3009,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             invocation_id=invocation_id, execution_id=execution_id,
             trace=self.args.trace, kind="cocotb_batch",
             planning_disclosures=planning_disclosures,
+            required_suite_catalog_backed=catalog_backed,
         )
 
     def _campaign_policy(self) -> CampaignPolicy:

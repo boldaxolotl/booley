@@ -27,6 +27,7 @@ from booley.flows.sim.campaign_durability import (
     fsync_directory,
 )
 from booley.runtime.file_lock import nonblocking_file_lock
+from booley.runtime.regular_file import open_regular_nofollow
 
 from .codec import (
     MANIFEST_MAX_BYTES,
@@ -119,11 +120,12 @@ def _is_link(path: Path) -> bool:
 
 def _require_safe_parents(path: Path, root: Path) -> None:
     try:
-        relative = path.absolute().relative_to(root.absolute())
+        path.absolute().relative_to(root.absolute())
     except ValueError as exc:
         raise SimulationCampaignIntegrityError(f"campaign path escapes store: {path}") from exc
-    current = root.absolute()
-    for component in relative.parts:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
         current /= component
         if _is_link(current):
             raise SimulationCampaignIntegrityError(f"campaign path contains a link: {current}")
@@ -151,9 +153,8 @@ def _replace_projection(path: Path, raw: bytes) -> None:
 def _read_regular(path: Path, *, limit: int) -> bytes:
     if _is_link(path):
         raise SimulationCampaignIntegrityError(f"authoritative path is a link: {path}")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(path, flags)
+        descriptor = open_regular_nofollow(path)
     except OSError as exc:
         raise SimulationCampaignIntegrityError(
             f"cannot read authoritative file {path}: {exc}"
@@ -218,6 +219,7 @@ class CampaignStore:
     @contextmanager
     def mutation_lock(self) -> Iterator[None]:
         """Fail immediately when another scheduler owns this campaign."""
+        _require_safe_parents(self.root, self.root)
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / ".lock"
         _require_safe_parents(path, self.root)
@@ -712,6 +714,7 @@ class CampaignStore:
         raw = canonical_json_bytes(document)
         if len(raw) > MANIFEST_MAX_BYTES:
             raise SimulationCampaignIntegrityError("summary exceeds size ceiling")
+        _require_safe_parents(self.summary_path, self.root)
         _replace_projection(self.summary_path, raw)
         return json.loads(raw)
 
