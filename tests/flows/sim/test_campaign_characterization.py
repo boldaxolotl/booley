@@ -57,10 +57,7 @@ def _legacy_build_transport():
         pytest.param(
             SubprocessResult(
                 returncode=0,
-                stdout=(
-                    "[SIM_RESULT] FAILED\n"
-                    '[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
-                ),
+                stdout=('[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'),
             ),
             EXIT_SUCCESS,
             "pass",
@@ -70,10 +67,7 @@ def _legacy_build_transport():
         pytest.param(
             SubprocessResult(
                 returncode=0,
-                stdout=(
-                    "[SIM_RESULT] PASSED\n"
-                    '[SIM_SUMMARY] {"passed":false,"sva_errors":2}\n'
-                ),
+                stdout=('[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":false,"sva_errors":2}\n'),
             ),
             EXIT_FAILURE,
             "fail",
@@ -83,10 +77,7 @@ def _legacy_build_transport():
         pytest.param(
             SubprocessResult(
                 returncode=-9,
-                stdout=(
-                    "[SIM_RESULT] FAILED\n"
-                    '[SIM_SUMMARY] {"passed":false,"sva_errors":3}\n'
-                ),
+                stdout=('[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":false,"sva_errors":3}\n'),
                 timed_out=True,
                 duration_s=600.0,
             ),
@@ -165,9 +156,7 @@ def test_compatibility_projection_and_endpoint_detail_shape(
     process = SubprocessResult(
         returncode=0,
         stdout=(
-            "[SIM_RESULT] PASSED\n"
-            "[SIM_CYCLES] 21\n"
-            '[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
+            '[SIM_RESULT] PASSED\n[SIM_CYCLES] 21\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
         ),
         duration_s=0.25,
     )
@@ -181,9 +170,7 @@ def test_compatibility_projection_and_endpoint_detail_shape(
         outcome = flow._run()
 
     report = json.loads(
-        (tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text(encoding="utf-8")
     )
     _assert_projection_shapes(report, outcome)
     _assert_projection_values(report, outcome)
@@ -301,6 +288,7 @@ class _BuildSessionBoundary(SimulationBuildSession):
         _key: str | None,
     ) -> None:
         self.cached = prepared
+
 
 class _SessionBoundaryExecution(SimulationExecution):
     def __init__(self, *, eda_tool: str, cocotb: bool) -> None:

@@ -83,7 +83,9 @@ def decode_coverage_campaign_reference(raw: bytes) -> CoverageCampaignReference:
     try:
         value = require_dict(json.loads(raw))
     except (UnicodeDecodeError, json.JSONDecodeError, BoundaryError) as exc:
-        raise CoverageCampaignReferenceError("Coverage Campaign reference is not valid JSON") from exc
+        raise CoverageCampaignReferenceError(
+            "Coverage Campaign reference is not valid JSON"
+        ) from exc
     if _canonical_json_bytes(value) != raw:
         raise CoverageCampaignReferenceError("Coverage Campaign reference is not canonical JSON")
     _validate_reference(value)
@@ -121,11 +123,11 @@ def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
     nested = cast(Mapping[str, object], document["coverage_campaign"])
     target_root = absolute.parent
     campaign_path = _contained_relative(target_root, cast(str, nested["path"]))
-    campaign_raw = _read_regular(
-        campaign_path, "nested Coverage Campaign", MAX_MANIFEST_BYTES
-    )
+    campaign_raw = _read_regular(campaign_path, "nested Coverage Campaign", MAX_MANIFEST_BYTES)
     if len(campaign_raw) != nested["bytes"] or _digest_bytes(campaign_raw) != nested["sha256"]:
-        raise CoverageCampaignReferenceError("nested Coverage Campaign bytes disagree with reference")
+        raise CoverageCampaignReferenceError(
+            "nested Coverage Campaign bytes disagree with reference"
+        )
     loaded = load_coverage_campaign_bytes(campaign_path, campaign_raw)
     campaign = loaded.campaign
     target = cast(Mapping[str, str], document["target"])
@@ -172,9 +174,7 @@ def build_coverage_campaign_reference(
     coverage_campaign_path: Path,
 ) -> CoverageCampaignReference:
     """Construct a reference from an already committed nested Coverage Campaign."""
-    raw = _read_regular(
-        coverage_campaign_path, "nested Coverage Campaign", MAX_MANIFEST_BYTES
-    )
+    raw = _read_regular(coverage_campaign_path, "nested Coverage Campaign", MAX_MANIFEST_BYTES)
     loaded = load_coverage_campaign_bytes(coverage_campaign_path, raw)
     relative = coverage_campaign_path.relative_to(origin_target_directory).as_posix()
     return CoverageCampaignReference(
@@ -220,13 +220,10 @@ def authenticate_coverage_campaign_owner(
     matching = [
         item
         for item in recovery.items
-        if item.work_item_id == document["simulation_work_item_id"]
-        and item.result is not None
+        if item.work_item_id == document["simulation_work_item_id"] and item.result is not None
     ]
     if len(matching) != 1:
-        raise CoverageCampaignReferenceError(
-            "reference has no exact enclosing Simulation result"
-        )
+        raise CoverageCampaignReferenceError("reference has no exact enclosing Simulation result")
     result = matching[0].result
     assert result is not None
     evidence = cast(tuple[Mapping[str, object], ...], result.document["evidence"])
@@ -254,9 +251,15 @@ def _validate_reference(value: Mapping[str, object]) -> None:
     _exact(
         value,
         {
-            "$schema", "simulation_campaign_id", "simulation_manifest_sha256", "target",
-            "origin_invocation_id", "producer_invocation_id", "simulation_work_item_id",
-            "simulation_attempt_id", "coverage_campaign",
+            "$schema",
+            "simulation_campaign_id",
+            "simulation_manifest_sha256",
+            "target",
+            "origin_invocation_id",
+            "producer_invocation_id",
+            "simulation_work_item_id",
+            "simulation_attempt_id",
+            "coverage_campaign",
         },
         "reference",
     )
@@ -280,9 +283,9 @@ def _validate_reference(value: Mapping[str, object]) -> None:
     _string(target["selector"], "target.selector")
     _validate_nested_reference(
         _exact(
-        value["coverage_campaign"],
-        {"path_base", "path", "bytes", "sha256", "campaign_id", "schema"},
-        "coverage_campaign",
+            value["coverage_campaign"],
+            {"path_base", "path", "bytes", "sha256", "campaign_id", "schema"},
+            "coverage_campaign",
         )
     )
 
@@ -361,12 +364,16 @@ def _contained_relative(root: Path, relative: str) -> Path:
     try:
         path.resolve().relative_to(root.resolve())
     except ValueError as exc:
-        raise CoverageCampaignReferenceError("coverage_campaign.path escapes origin Target") from exc
+        raise CoverageCampaignReferenceError(
+            "coverage_campaign.path escapes origin Target"
+        ) from exc
     for parent in (path, *path.parents):
         if parent == root.parent:
             break
         if parent.is_symlink():
-            raise CoverageCampaignReferenceError("Coverage Campaign reference path contains a link")
+            raise CoverageCampaignReferenceError(
+                "Coverage Campaign reference path contains a link"
+            )
     return path
 
 

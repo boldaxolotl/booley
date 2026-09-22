@@ -83,9 +83,10 @@ def _copy_snapshot_artifacts(
         if artifact["kind"] == "simulator_executable":
             mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
         durable_copy(source, destination, mode=mode)
-        if source.stat(follow_symlinks=False).st_ino == destination.stat(
-            follow_symlinks=False
-        ).st_ino:
+        if (
+            source.stat(follow_symlinks=False).st_ino
+            == destination.stat(follow_symlinks=False).st_ino
+        ):
             raise SimulationCampaignIntegrityError("snapshot artifact must not be a hardlink")
         size, digest = _file_identity(destination)
         if size != artifact["bytes"] or digest != artifact["sha256"]:
@@ -116,9 +117,7 @@ def _snapshot_document(
     }
 
 
-def authenticate_executable_snapshot(
-    snapshot: ExecutableSnapshot, snapshot_root: Path
-) -> str:
+def authenticate_executable_snapshot(snapshot: ExecutableSnapshot, snapshot_root: Path) -> str:
     """Authenticate a snapshot before launch or after process-tree death."""
     artifacts = cast(tuple[Mapping[str, object], ...], snapshot.document["artifacts"])
     for artifact in artifacts:

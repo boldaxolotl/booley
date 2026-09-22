@@ -46,9 +46,7 @@ def _nested_campaign(origin_target: Path, *, attempt_id: str = _SIMULATION_ATTEM
         / "attempts"
         / f"0001-{attempt_id}"
     )
-    campaign = decode_coverage_campaign(
-        _valid_document(), DurableTargetIdentity(_TARGET_IDENTITY)
-    )
+    campaign = decode_coverage_campaign(_valid_document(), DurableTargetIdentity(_TARGET_IDENTITY))
     return publish_coverage_campaign(attempt / "coverage-campaign", campaign).campaign
 
 
@@ -89,21 +87,30 @@ def _facts_with_reference(value: CoverageCampaignReference) -> dict[str, object]
         "manifest_sha256": _MANIFEST_SHA256,
         "origin": {"execution_id": "", "invocation_id": _ORIGIN_INVOCATION_ID},
         "target": {
-            "vlnv": "acme:demo:counter:1.0", "name": _TARGET_SELECTOR,
-            "selector": _TARGET_SELECTOR, "project_identity": "project",
-            "revision": "abc", "role": "candidate", "display_name": _TARGET_SELECTOR,
+            "vlnv": "acme:demo:counter:1.0",
+            "name": _TARGET_SELECTOR,
+            "selector": _TARGET_SELECTOR,
+            "project_identity": "project",
+            "revision": "abc",
+            "role": "candidate",
+            "display_name": _TARGET_SELECTOR,
         },
         "required_suite": {
-            "names": ["reset"], "default_invocation": False,
+            "names": ["reset"],
+            "default_invocation": False,
             "source_sha256": "sha256:" + "b" * 64,
         },
-        "prerequisites": [], "consumed_results": [], "observations": [],
+        "prerequisites": [],
+        "consumed_results": [],
+        "observations": [],
         "coverage_reference": {
             "reference": {
                 "path_base": "origin_invocation",
                 "path": f"targets/{_TARGET_SELECTOR}/coverage.json",
-                "bytes": len(raw), "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-                "kind": "coverage_campaign_reference", "owner": _SIMULATION_CAMPAIGN_ID,
+                "bytes": len(raw),
+                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "kind": "coverage_campaign_reference",
+                "owner": _SIMULATION_CAMPAIGN_ID,
             },
             "document": json.loads(raw),
         },

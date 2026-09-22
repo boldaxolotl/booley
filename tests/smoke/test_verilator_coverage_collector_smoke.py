@@ -320,8 +320,7 @@ def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path)
 def test_real_coverage_flow_publishes_canonical_campaign(
     tmp_path: Path, harness: str, trace: bool
 ) -> None:
-    from booley.flows.sim.coverage_campaign import DurableTargetIdentity
-    from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
+    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
 
@@ -343,9 +342,9 @@ def test_real_coverage_flow_publishes_canonical_campaign(
     )
     assert result.exit_code == 0, result.outcome
     path = tmp_path / result.outcome.detail["targets"]["sim"]["coverage_campaign"]
-    campaign = load_coverage_campaign(
-        path, DurableTargetIdentity("booley:smoke:coverage:1#sim")
-    ).campaign
+    resolved = resolve_coverage_campaign_reference(path)
+    campaign = resolved.loaded.campaign
+    assert campaign.target.identity == "booley:smoke:coverage:1#sim"
     assert campaign.collection["status"] == "complete"
     assert campaign.evaluation["status"] == "not_requested"
     assert campaign.build["trace"] is trace
@@ -420,7 +419,7 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
         binaries = {
             path: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in root.rglob("Vtop")
-            if path.is_file()
+            if path.is_file() and "snapshot" not in path.parts
         }
         assert len(binaries) == len(previous) + 1
         assert all(binaries.get(path) == digest for path, digest in previous.items())

@@ -127,9 +127,7 @@ def supervised_execution_scope(
         _SCOPE.reset(token)
 
 
-def _watch_scope_cancellation(
-    scope: SupervisedExecutionScope, stop: threading.Event
-) -> None:
+def _watch_scope_cancellation(scope: SupervisedExecutionScope, stop: threading.Event) -> None:
     while not stop.wait(0.01):
         if scope.cancelled():
             scope.processes.terminate_all()

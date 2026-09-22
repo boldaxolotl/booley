@@ -274,9 +274,7 @@ class ChildExecutionRegistry:
             self._validate_bound_attempt(attempt_path, entry, entry_sha256)
 
     @staticmethod
-    def _validate_bound_attempt(
-        path: Path, entry: dict, entry_sha256: str
-    ) -> None:
+    def _validate_bound_attempt(path: Path, entry: dict, entry_sha256: str) -> None:
         if path.is_symlink() or not path.is_file():
             raise SimulationCampaignIntegrityError("child-bound attempt is not regular")
         raw = _read_protocol_bytes(path, "child-bound attempt")
@@ -302,9 +300,7 @@ class ChildExecutionRegistry:
         project_retired = self._project_root / "retired" / path.name
         campaign_retired = self._campaign_root / "retired" / path.name
         if project_retired.exists():
-            retired_raw, _retirement = _read_protocol_record(
-                project_retired, "child retirement"
-            )
+            retired_raw, _retirement = _read_protocol_record(project_retired, "child retirement")
             terminal = read_json(
                 execution_paths(execution_id, project_dir=self._project_data).record
             )
@@ -334,9 +330,7 @@ class ChildExecutionRegistry:
             self._assert_no_unmanaged_token(execution_id)
         record = read_json(execution_paths(execution_id, project_dir=self._project_data).record)
         cause = str(record.get("terminal_cause", "recovered")) if record else "recovered"
-        self.retire(
-            prepared, lease_id=lease_id, terminal_cause=cause, token_absent=True
-        )
+        self.retire(prepared, lease_id=lease_id, terminal_cause=cause, token_absent=True)
 
     def _recover_execution(self, prepared: PreparedChild, entry: dict) -> None:
         identity = _ChildIdentity(
@@ -355,9 +349,7 @@ class ChildExecutionRegistry:
         paths = execution_paths(prepared.execution_id, project_dir=self._project_data)
         if read_json(paths.record) is None:
             atomic_write_json(paths.record, _waiting_record())
-        if not self.is_terminal(prepared.execution_id) and not self.cancel(
-            prepared.execution_id
-        ):
+        if not self.is_terminal(prepared.execution_id) and not self.cancel(prepared.execution_id):
             raise SimulationCampaignIntegrityError(
                 f"child execution recovery is incomplete: {prepared.execution_id}"
             )
@@ -521,10 +513,7 @@ def _validate_retirement(
         or not _DIGEST_RE.fullmatch(document["execution_terminal_sha256"])
         or not isinstance(document.get("terminal_cause"), str)
         or not document["terminal_cause"]
-        or (
-            document.get("lease_id") is not None
-            and not isinstance(document.get("lease_id"), str)
-        )
+        or (document.get("lease_id") is not None and not isinstance(document.get("lease_id"), str))
     ):
         detail = (
             "child retirement terminal digest is invalid"

@@ -74,7 +74,9 @@ def validate_heavy_cap(timeline_path: Path, max_heavy: int) -> dict[str, int]:
         previous_sample = at_ns
         _need(isinstance(holders, list), "heavy-holder sample is missing")
         _need(isinstance(waiters, list), "heavy-waiter sample is missing")
-        _need(len(set(holders + waiters)) == len(holders + waiters), "slot sample duplicates a claim")
+        _need(
+            len(set(holders + waiters)) == len(holders + waiters), "slot sample duplicates a claim"
+        )
         _need(len(holders) <= max_heavy, "SlotStore heavy holders exceed max_heavy")
         _need(outer_id in holders, "SlotStore sample omits the borrowed outer Job")
         child_samples.update(value for value in holders + waiters if value != outer_id)
@@ -109,8 +111,7 @@ def _validate_claim_transitions(
         by_child.setdefault(child, []).append(transition)
     _need(
         all(
-            [event["state"] for event in events]
-            == ["submitted", "promoted", "released"]
+            [event["state"] for event in events] == ["submitted", "promoted", "released"]
             for events in by_child.values()
         ),
         "claim transitions do not end in exact release",
@@ -140,7 +141,9 @@ def _validate_interval_accounting(timeline: dict[str, object], transitions) -> N
     intervals = _intervals(timeline)
     interval_children = {item.get("child_execution_id") for item in intervals}
     _need(interval_children == set(transitions), "process intervals do not bind every exact child")
-    _need(len({item.get("attempt_id") for item in intervals}) == len(intervals), "attempt ids repeat")
+    _need(
+        len({item.get("attempt_id") for item in intervals}) == len(intervals), "attempt ids repeat"
+    )
     for interval in intervals:
         child = interval["child_execution_id"]
         events = transitions[child]
@@ -156,7 +159,9 @@ def validate_attempt_isolation(timeline_path: Path) -> None:
     _need(relative_paths == {"qa-shared-name.txt"}, "relative output names differ")
     directories = [item.get("run_directory") for item in intervals]
     tokens = [item.get("token") for item in intervals]
-    _need(all(isinstance(value, str) and value for value in directories), "run directory is missing")
+    _need(
+        all(isinstance(value, str) and value for value in directories), "run directory is missing"
+    )
     _need(all(isinstance(value, str) and value for value in tokens), "attempt token is missing")
     _need(len(set(directories)) == len(directories), "parallel run directories collide")
     _need(len(set(tokens)) == len(tokens), "parallel attempt tokens collide")

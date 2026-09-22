@@ -27,7 +27,9 @@ def test_atomic_write_json_fsyncs_file_then_rename_then_parent(
     real_replace = Path.replace
 
     def observe_fsync(descriptor: int) -> None:
-        events.append("parent_fsync" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file_fsync")
+        events.append(
+            "parent_fsync" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file_fsync"
+        )
         real_fsync(descriptor)
 
     def observe_replace(self: Path, target: Path) -> Path:

@@ -139,9 +139,7 @@ def test_sim_campaign_resume_granularity_stays_documented() -> None:
 
 def test_sim_configured_skip_control_stays_documented() -> None:
     section = " ".join(_flow_section("sim").split())
-    config = " ".join(
-        (REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8").split()
-    )
+    config = " ".join((REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8").split())
     assert "exact explicit suite" in section
     assert "overrides those entries" in section
     assert "fails preflight instead of passing vacuously" in section

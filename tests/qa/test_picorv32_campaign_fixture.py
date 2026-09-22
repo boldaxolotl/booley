@@ -75,9 +75,7 @@ def test_validator_authenticates_manifest_backlinks(tmp_path: Path) -> None:
     manifest.write_text(json.dumps(manifest_document, sort_keys=True) + "\n")
     digest = "sha256:" + hashlib.sha256(manifest.read_bytes().rstrip(b"\n")).hexdigest()
     summary = tmp_path / "summary.json"
-    summary.write_text(
-        json.dumps({"campaign_id": "campaign-1", "manifest_sha256": digest}) + "\n"
-    )
+    summary.write_text(json.dumps({"campaign_id": "campaign-1", "manifest_sha256": digest}) + "\n")
     projection = tmp_path / "simulation.json"
     projection.write_text(
         json.dumps(
@@ -94,8 +92,7 @@ def test_validator_authenticates_manifest_backlinks(tmp_path: Path) -> None:
         "manifest_sha256": digest,
     }
     summary.write_text(
-        json.dumps({"campaign_id": "campaign-1", "manifest_sha256": "sha256:bad"})
-        + "\n"
+        json.dumps({"campaign_id": "campaign-1", "manifest_sha256": "sha256:bad"}) + "\n"
     )
     with pytest.raises(ValueError, match="summary manifest digest differs"):
         _validator().validate_backlinks(manifest, summary, projection)

@@ -119,9 +119,7 @@ def require_opt_str(
     return value
 
 
-def require_str_value(
-    value: Any, *, field: str = "value", allow_empty: bool = False
-) -> str:
+def require_str_value(value: Any, *, field: str = "value", allow_empty: bool = False) -> str:
     """Return a strict string value, optionally permitting the empty string."""
     if not isinstance(value, str) or (not allow_empty and not value):
         qualifier = "a string" if allow_empty else "a non-empty string"

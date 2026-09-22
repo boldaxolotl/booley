@@ -97,19 +97,19 @@ def _two_item_manifest() -> object:
 
 def _work_item(ordinal: int, name: str, target: object, variant_id: object) -> dict:
     identity = {
-            "ordinal": ordinal,
-            "kind": "ordinary_hdl",
-            "role": "candidate",
-            "revision": "abc123",
-            "target": target,
-            "selection": {"kind": "named", "names": [name]},
-            "arguments": [name],
-            "build_variant_id": variant_id,
-            "run_directory": {
-                "configured": "runs/{test}/{attempt}",
-                "kind": "templated",
-                "collision_template": "runs/test/attempt",
-            },
+        "ordinal": ordinal,
+        "kind": "ordinary_hdl",
+        "role": "candidate",
+        "revision": "abc123",
+        "target": target,
+        "selection": {"kind": "named", "names": [name]},
+        "arguments": [name],
+        "build_variant_id": variant_id,
+        "run_directory": {
+            "configured": "runs/{test}/{attempt}",
+            "kind": "templated",
+            "collision_template": "runs/test/attempt",
+        },
     }
     fingerprint = _sha(identity)
     return {
@@ -164,11 +164,14 @@ def _shared_executor(build_root, run_log, handle, launches, compile_count):
             self.build_root = build_root
             self.artifact_paths = (build_root / "simv",)
             self.reused = False
+
         def planning_disclosure(self):
             return {}
+
         def compile(self):
             compile_count[0] += 1
             return SimpleNamespace(passed=True)
+
         def reuse_compilation_from(self, source) -> None:
             assert source.names == ("alpha",)
             self.reused = True
@@ -185,27 +188,30 @@ def _shared_executor(build_root, run_log, handle, launches, compile_count):
             launches.append((name, run_cwd, staged.read_bytes()))
             staged.write_bytes(name.encode())
             assert (snapshot_root / "simv").read_bytes() == b"image"
-            test = SimulationTestOutcome(
-                name=name, verdict="pass", passed=True, run_log_path=str(run_log)
-            )
-            return SimulationTargetOutcome(
-                target="sim",
-                target_identity=handle.identity,
-                toplevel="tb",
-                eda_tool="icarus",
-                passed=True,
-                verdict="pass",
-                elapsed_s=0.1,
-                tests=(test,),
-            )
+            return _shared_outcome(name, handle, run_log)
 
     class FakeExecution:
         @contextmanager
         def ordinary_group(self, _handle, names):
             yield FakeGroup(names)
+
     return OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: FakeExecution(),  # type: ignore[arg-type,return-value]
+    )
+
+
+def _shared_outcome(name, handle, run_log):
+    test = SimulationTestOutcome(name=name, verdict="pass", passed=True, run_log_path=str(run_log))
+    return SimulationTargetOutcome(
+        target="sim",
+        target_identity=handle.identity,
+        toplevel="tb",
+        eda_tool="icarus",
+        passed=True,
+        verdict="pass",
+        elapsed_s=0.1,
+        tests=(test,),
     )
 
 

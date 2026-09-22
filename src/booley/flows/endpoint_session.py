@@ -97,9 +97,7 @@ def invoke_endpoint(
     try:
         try:
             flow = getattr(endpoint, "flow", None)
-            if prepared.simulation is not None and hasattr(
-                flow, "run_prepared_simulation"
-            ):
+            if prepared.simulation is not None and hasattr(flow, "run_prepared_simulation"):
                 raw = flow.run_prepared_simulation(prepared.simulation, admission)
             else:
                 raw = endpoint._run()

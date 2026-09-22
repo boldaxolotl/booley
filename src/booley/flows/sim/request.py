@@ -53,8 +53,10 @@ class SimRequest(FlowRequest):
         if self.test is not None:
             if isinstance(self.test, list):
                 self.test = tuple(self.test)
-            if not isinstance(self.test, tuple) or not self.test or any(
-                not isinstance(name, str) or not name for name in self.test
+            if (
+                not isinstance(self.test, tuple)
+                or not self.test
+                or any(not isinstance(name, str) or not name for name in self.test)
             ):
                 raise ValueError("test must be a non-empty array of exact names")
             if len(set(self.test)) != len(self.test):
@@ -97,8 +99,6 @@ class SimRequest(FlowRequest):
                 if present
             ]
             if conflicts:
-                raise ValueError(
-                    "resume_from cannot be combined with " + ", ".join(conflicts)
-                )
+                raise ValueError("resume_from cannot be combined with " + ", ".join(conflicts))
         if self.mode is not None and self.mode.elaborates_only and self.resume_from is not None:
             raise ValueError("elaboration modes cannot resume a Simulation Campaign")

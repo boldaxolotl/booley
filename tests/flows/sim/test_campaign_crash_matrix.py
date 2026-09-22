@@ -163,9 +163,9 @@ def _crash_manifest():
     document = _manifest()
     document.pop("fingerprints")
     identity = {"source_artifact_path": "input.bin", "destination": "inputs/input.bin"}
-    declaration_id = "sha256:" + hashlib.sha256(
-        canonical_json_bytes(identity).rstrip(b"\n")
-    ).hexdigest()
+    declaration_id = (
+        "sha256:" + hashlib.sha256(canonical_json_bytes(identity).rstrip(b"\n")).hexdigest()
+    )
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
         {"declaration_id": declaration_id, **identity}
     ]
@@ -195,8 +195,13 @@ def _resume_crashed_campaign(campaign, request, store, manifest, plan, crash_poi
     )
     return campaign.run(
         ResumeCampaignRunRequest(
-            validated, plan, request.project_root, request.report_root,
-            request.policy, request.invocation_directory, request.admission,
+            validated,
+            plan,
+            request.project_root,
+            request.report_root,
+            request.policy,
+            request.invocation_directory,
+            request.admission,
         )
     )
 
@@ -204,7 +209,9 @@ def _resume_crashed_campaign(campaign, request, store, manifest, plan, crash_poi
 def _assert_crash_recovery(outcome, store, crash_point, launches, crash) -> None:
     recovered = store.scan().items[0]
     committed = crash_point in {
-        "after:simulation_result", "before:summary_replace", "after:summary_replace"
+        "after:simulation_result",
+        "before:summary_replace",
+        "after:summary_replace",
     }
     pre_attempt = crash_point in {"before:manifest_commit", "after:manifest_commit"}
     assert outcome.complete is True

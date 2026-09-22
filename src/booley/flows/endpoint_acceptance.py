@@ -245,9 +245,7 @@ def _bound_criterion_keys(endpoint: EndpointState, target: str) -> list[str]:
     return bound
 
 
-def _bound_criterion_keys_for_target(
-    endpoint: EndpointState, target: TargetHandle
-) -> list[str]:
+def _bound_criterion_keys_for_target(endpoint: EndpointState, target: TargetHandle) -> list[str]:
     """Return bindings for an already-resolved Target without re-resolving it."""
     from booley.targets.domain import criterion_matches_target
 
@@ -284,9 +282,7 @@ def _bound_criterion_keys_for_target(
     return bound
 
 
-def _acceptance_target_bindings(
-    endpoint: EndpointState, target: TargetHandle
-) -> list[str]:
+def _acceptance_target_bindings(endpoint: EndpointState, target: TargetHandle) -> list[str]:
     """Match exact candidate or baseline identities sealed by Ticket intake."""
     matches: list[str] = []
     for binding in endpoint.flow_acceptance.bindings:
@@ -340,23 +336,9 @@ def _criterion_target_matches(
 
 def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     """Reject an unbound Ticket-mode Target before job admission/EDA."""
-    # Explicit native collection also supports ungated Targets (#213). Coverage
-    # preflight has already validated the complete selection before admission.
-    if endpoint.name == "sim" and getattr(endpoint.args, "coverage", False):
-        return None
-    if (
-        not endpoint.state.strict_criteria
-        or not endpoint.satisfies
-        or getattr(endpoint.args, "diagnostic", False)
-    ):
-        return None
-    targets = endpoint._requested_targets()
-    if not targets:
-        return None
-    missing = [target for target in targets if not endpoint._bound_criterion_keys(target)]
+    missing = _missing_criterion_bindings(endpoint)
     if not missing:
         return None
-
     from booley.core.checkout_role import SourceCheckoutProjectError
     from booley.criteria.endpoint_catalog import (
         CriterionEndpointCatalog,
@@ -370,7 +352,6 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
         )
     except (FileNotFoundError, SourceCheckoutProjectError):
         project_criteria_path = None
-
     endpoint_catalog = CriterionEndpointCatalog.load(
         project_criteria_path,
         (
@@ -381,7 +362,6 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
             ),
         ),
     )
-
     pending_text = _pending_criterion_invocations(endpoint, endpoint_catalog)
     return EndpointOutcome(
         exit_code=EXIT_ERROR,
@@ -392,6 +372,24 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
             "Use --diagnostic only when this is intentionally a non-acceptance run."
         ),
     )
+
+
+def _missing_criterion_bindings(endpoint: EndpointState) -> list[str]:
+    # Explicit native collection also supports ungated Targets (#213). Coverage
+    # preflight has already validated the complete selection before admission.
+    if endpoint.name == "sim" and getattr(endpoint.args, "coverage", False):
+        return []
+    if (
+        not endpoint.state.strict_criteria
+        or not endpoint.satisfies
+        or getattr(endpoint.args, "diagnostic", False)
+    ):
+        return []
+    return [
+        target
+        for target in endpoint._requested_targets()
+        if not endpoint._bound_criterion_keys(target)
+    ]
 
 
 def _pending_criterion_invocations(endpoint, endpoint_catalog) -> str:

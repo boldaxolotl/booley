@@ -185,7 +185,7 @@ def _require_no_links(path: Path) -> None:
 
 
 def _fsync_file(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    descriptor = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):

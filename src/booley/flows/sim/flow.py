@@ -395,10 +395,24 @@ def _campaign_observation_counts(
 ) -> dict[str, dict[str, int]]:
     """Bounded structured summary preserving independent observation axes."""
     axes = ("execution", "functional", "assertions")
-    return {
-        axis: dict(Counter(str(item[axis]) for item in observations))
-        for axis in axes
-    }
+    return {axis: dict(Counter(str(item[axis]) for item in observations)) for axis in axes}
+
+
+def _campaign_report_lines(outcomes: Sequence[CampaignOutcome]) -> list[str]:
+    lines: list[str] = []
+    for outcome in outcomes:
+        line = (
+            f"{outcome.target['selector']}: {outcome.aggregate_grade.upper()} "
+            f"({outcome.manifest_path})"
+        )
+        reasons = []
+        for observation in outcome.observations:
+            detail = observation.get("detail")
+            reason = detail.get("reason") if isinstance(detail, Mapping) else None
+            if isinstance(reason, str) and reason and reason not in reasons:
+                reasons.append(reason)
+        lines.append("\n".join((line, *(f"  {reason}" for reason in reasons))))
+    return lines
 
 
 def _campaign_structured_details(
@@ -507,9 +521,7 @@ def _coverage_campaign_exit_code(outcomes: Sequence[CampaignOutcome]) -> int:
     return EXIT_FAILURE if saw_failure else 0
 
 
-def _checkpoint_coverage_campaign(
-    progress: CoverageProgress, outcome: CampaignOutcome
-) -> None:
+def _checkpoint_coverage_campaign(progress: CoverageProgress, outcome: CampaignOutcome) -> None:
     public = outcome.manifest_path.parents[1] / "coverage.json"
     campaign = resolve_coverage_campaign_reference(public).loaded.campaign
     progress.completed(
@@ -1443,12 +1455,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _prepare_campaign_targets(
         self,
-    ) -> tuple[
-        tuple[TargetHandle, ...],
-        ValidatedResumeManifest | None,
-        tuple[str, ...],
-        Mapping[str, list[str]],
-    ] | EndpointOutcome:
+    ) -> (
+        tuple[
+            tuple[TargetHandle, ...],
+            ValidatedResumeManifest | None,
+            tuple[str, ...],
+            Mapping[str, list[str]],
+        ]
+        | EndpointOutcome
+    ):
         if self.args.resume_from is not None:
             roots: dict[str, Path] = {}
 
@@ -1965,9 +1980,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         invocation: Path,
         admission: AdmissionContext,
     ) -> CampaignOutcome:
-        items = cast(
-            tuple[Mapping[str, object], ...], validated.manifest.document["work_items"]
-        )
+        items = cast(tuple[Mapping[str, object], ...], validated.manifest.document["work_items"])
         coverage_plan = (
             self._resume_coverage_target_plan(validated)
             if items and items[0]["kind"] == "coverage_aggregate"
@@ -1988,8 +2001,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             executor, publication_checkpoint=self._campaign_publication_checkpoint
         ).run(
             ResumeCampaignRunRequest(
-                validated, plan, Path(self.args.work_dir), self.args.report_dir,
-                self._campaign_policy(), invocation, admission,
+                validated,
+                plan,
+                Path(self.args.work_dir),
+                self.args.report_dir,
+                self._campaign_policy(),
+                invocation,
+                admission,
             )
         )
         if progress is not None:
@@ -2045,21 +2063,44 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if kind == "coverage_aggregate" and coverage_plan is None:
                 self._resume_coverage_target_plan(validated)
             return plan_coarse_simulation_campaign(
-                handle=handle, inspection=inspection, preview=preview,
-                selected_tests=names, required_suite=cast(tuple[str, ...], suite["names"]),
-                revision=revision, invocation_id=invocation_id, execution_id="",
-                trace=cast(bool, manifest.document["workload"]["trace"]), kind=kind,
+                handle=handle,
+                inspection=inspection,
+                preview=preview,
+                selected_tests=names,
+                required_suite=cast(tuple[str, ...], suite["names"]),
+                revision=revision,
+                invocation_id=invocation_id,
+                execution_id="",
+                trace=cast(bool, manifest.document["workload"]["trace"]),
+                kind=kind,
                 planning_disclosures=disclosures if kind == "cocotb_batch" else (),
                 required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
             )
         return self._ordinary_resume_plan(
-            handle, inspection, preview, groups, suite, target, revision,
-            invocation_id, manifest, disclosures,
+            handle,
+            inspection,
+            preview,
+            groups,
+            suite,
+            target,
+            revision,
+            invocation_id,
+            manifest,
+            disclosures,
         )
 
     def _ordinary_resume_plan(
-        self, handle, inspection, preview, groups, suite, target, revision,
-        invocation_id, manifest, disclosures,
+        self,
+        handle,
+        inspection,
+        preview,
+        groups,
+        suite,
+        target,
+        revision,
+        invocation_id,
+        manifest,
+        disclosures,
     ) -> SimulationCampaignPlan:
         return plan_ordinary_hdl_campaign(
             handle=handle,
@@ -2306,9 +2347,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             except SimulationCampaignCancellationError as exc:
                 return self._campaign_cancelled_outcome(exc)
             except (OSError, ValueError, RuntimeError) as exc:
-                return self._coverage_campaign_failure(
-                    outcomes, requests, index, request, exc
-                )
+                return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
         progress.checkpoint(complete=True)
         return self._campaign_endpoint_outcome(outcomes)
 
@@ -2565,9 +2604,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "targets_passed": sum(1 for result in results if result.passed),
             "elapsed_s": round(elapsed, 1),
             "resolution_s": round(resolution_s, 3),
-            "phase_timings_s": {
-                result.target: dict(result.phase_timings_s) for result in results
-            },
+            "phase_timings_s": {result.target: dict(result.phase_timings_s) for result in results},
             "elaboration": {
                 result.target: [
                     entry
@@ -2576,7 +2613,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 ]
                 for result in results
             },
-            "cycle_counts": [_cycle_detail(result, test) for result in results for test in result.tests],
+            "cycle_counts": [
+                _cycle_detail(result, test) for result in results for test in result.tests
+            ],
         }
         if any(result.elab_failed for result in results):
             detail["elab_failed"] = True
@@ -2981,16 +3020,49 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return summary, self._baseline_prerequisites_by_test(target, plan)
 
     def _ordinary_campaign_plan(
-        self, target: str, test_names_map: dict[str, list[str]],
+        self,
+        target: str,
+        test_names_map: dict[str, list[str]],
         *,
         invocation_id: int,
         execution_id: str,
         prerequisite_documents: Sequence[Mapping[str, object]] = (),
-        role: str = "candidate", revision: str | None = None,
+        role: str = "candidate",
+        revision: str | None = None,
         selected_override: Sequence[str] | None = None,
     ) -> SimulationCampaignPlan:
         """Resolve one Target into the same exact plan used by preview and run."""
         handle = self._target_handle(target)
+        inputs = self._ordinary_campaign_inputs(target, test_names_map, handle, selected_override)
+        if self.is_cocotb_target(target):
+            return self._cocotb_campaign_plan(
+                handle,
+                inputs[0],
+                inputs[1],
+                inputs[3],
+                revision,
+                invocation_id,
+                execution_id,
+                inputs[2],
+                inputs[4],
+            )
+        return plan_ordinary_hdl_campaign(
+            handle=handle,
+            inspection=inputs[0],
+            preview=inputs[1],
+            groups=inputs[1].groups,
+            required_suite=inputs[3],
+            revision=revision or git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
+            invocation_id=invocation_id,
+            execution_id=execution_id,
+            trace=self.args.trace,
+            prerequisite_documents=prerequisite_documents,
+            planning_disclosures=inputs[2],
+            role=role,
+            required_suite_catalog_backed=inputs[4],
+        )
+
+    def _ordinary_campaign_inputs(self, target, test_names_map, handle, selected_override):
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         selected = (
             list(selected_override)
@@ -2999,7 +3071,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         execution = self._simulation_execution()
         preview = execution.preview(handle, self._execution_selection(selected))
-        planning_disclosures = tuple(
+        disclosures = tuple(
             execution.plan_campaign_group(handle, group) for group in preview.groups
         )
         suite = resolve_target_test_suite(
@@ -3009,38 +3081,32 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         required = tuple(name for name in suite.tests if name is not None)
         catalog_backed = bool(lookup_target_section(test_names_map, target) or [])
-        if self.is_cocotb_target(target):
-            return self._cocotb_campaign_plan(
-                handle, inspection, preview, required, revision,
-                invocation_id, execution_id, planning_disclosures, catalog_backed,
-            )
-        return plan_ordinary_hdl_campaign(
+        return inspection, preview, disclosures, required, catalog_backed
+
+    def _cocotb_campaign_plan(
+        self,
+        handle,
+        inspection,
+        preview,
+        required,
+        revision,
+        invocation_id,
+        execution_id,
+        planning_disclosures,
+        catalog_backed,
+    ) -> SimulationCampaignPlan:
+        selected = tuple(name for group in preview.groups for name in group)
+        return plan_coarse_simulation_campaign(
             handle=handle,
             inspection=inspection,
             preview=preview,
-            groups=preview.groups,
+            selected_tests=selected,
             required_suite=required,
             revision=revision or git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
             invocation_id=invocation_id,
             execution_id=execution_id,
             trace=self.args.trace,
-            prerequisite_documents=prerequisite_documents,
-            planning_disclosures=planning_disclosures,
-            role=role,
-            required_suite_catalog_backed=catalog_backed,
-        )
-
-    def _cocotb_campaign_plan(
-        self, handle, inspection, preview, required, revision,
-        invocation_id, execution_id, planning_disclosures, catalog_backed,
-    ) -> SimulationCampaignPlan:
-        selected = tuple(name for group in preview.groups for name in group)
-        return plan_coarse_simulation_campaign(
-            handle=handle, inspection=inspection, preview=preview,
-            selected_tests=selected, required_suite=required,
-            revision=revision or git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
-            invocation_id=invocation_id, execution_id=execution_id,
-            trace=self.args.trace, kind="cocotb_batch",
+            kind="cocotb_batch",
             planning_disclosures=planning_disclosures,
             required_suite_catalog_backed=catalog_backed,
         )
@@ -3063,11 +3129,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if any(grade != "pass" for grade in grades)
             else EXIT_SUCCESS
         )
-        lines = [
-            f"{outcome.target['selector']}: {outcome.aggregate_grade.upper()} "
-            f"({outcome.manifest_path})"
-            for outcome in outcomes
-        ]
+        lines = _campaign_report_lines(outcomes)
         campaigns = _campaign_structured_details(outcomes)
         coverage_targets = _coverage_compatibility_targets(outcomes, Path(self.args.work_dir))
         detail: dict[str, object] = {"campaigns": campaigns}

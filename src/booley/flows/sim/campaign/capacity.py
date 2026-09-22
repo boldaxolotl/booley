@@ -101,9 +101,7 @@ class HeavyCapacity:
         if self._cancelled():
             raise ClaimAbortedError("campaign shutdown requested")
         token = self._acquire_child(store, child_execution_id)
-        permit = ChildHeavyPermit(
-            work_item_id, child_execution_id, token, token.lease_health
-        )
+        permit = ChildHeavyPermit(work_item_id, child_execution_id, token, token.lease_health)
         watch_stop = threading.Event()
         watcher = threading.Thread(
             target=self._watch_lease,
@@ -178,9 +176,7 @@ class HeavyCapacity:
         if store is None:
             return True
         holders, waiters = store.snapshot(CLASS_HEAVY)
-        return all(
-            token.execution_id != execution_id for token in (*holders, *waiters)
-        )
+        return all(token.execution_id != execution_id for token in (*holders, *waiters))
 
     def retain_outer_until(self, workers: tuple[threading.Thread, ...]) -> None:
         """Transfer outer release to a terminal monitor for escaped workers."""
@@ -209,9 +205,7 @@ class HeavyCapacity:
     def _cancelled(self) -> bool:
         return self._shutdown.is_set() or self._admission.cancellation()
 
-    def _watch_lease(
-        self, permit: ChildHeavyPermit, stop: threading.Event
-    ) -> None:
+    def _watch_lease(self, permit: ChildHeavyPermit, stop: threading.Event) -> None:
         while not stop.wait(0.01):
             if not permit.lease_health.lost.is_set():
                 continue

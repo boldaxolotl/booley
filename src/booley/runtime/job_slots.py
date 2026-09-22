@@ -212,9 +212,7 @@ class SlotToken:
     lease_expires_at: str | None = None
     owner_identity: ProcessIdentity | None = None
     owner_kind: str = "process"
-    lease_health: LeaseHealth = field(
-        default_factory=lambda: LeaseHealth(threading.Event())
-    )
+    lease_health: LeaseHealth = field(default_factory=lambda: LeaseHealth(threading.Event()))
 
     @property
     def is_holder(self) -> bool:
@@ -785,9 +783,7 @@ class SlotStore:
         )
         monitor.start()
 
-    def _finish_deferred_release(
-        self, token: SlotToken, terminal: threading.Event
-    ) -> None:
+    def _finish_deferred_release(self, token: SlotToken, terminal: threading.Event) -> None:
         terminal.wait()
         self.release(token)
 
@@ -992,9 +988,7 @@ class SlotStore:
     def token_absent(self, token: SlotToken) -> bool:
         """Prove the exact lease ID is absent from its Job class."""
         holders, waiters = self.snapshot(token.job_class)
-        return all(
-            candidate.lease_id != token.lease_id for candidate in (*holders, *waiters)
-        )
+        return all(candidate.lease_id != token.lease_id for candidate in (*holders, *waiters))
 
     def state_for_pid(self, pid: int) -> TokenState | None:
         """Admission state of the entry owned by *pid*, or None when absent.

@@ -42,7 +42,7 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.flow import _campaign_structured_details
+from booley.flows.sim.flow import _campaign_report_lines, _campaign_structured_details
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -61,9 +61,7 @@ def _facts(
     project = root / ".booley_project"
     project.mkdir()
     (project / "booley.toml").write_text("[flows.sim]\nrun_cwd = '.'\n", encoding="utf-8")
-    (project / "tests.toml").write_text(
-        '[sim]\ntests = ["reset", "count"]\n', encoding="utf-8"
-    )
+    (project / "tests.toml").write_text('[sim]\ntests = ["reset", "count"]\n', encoding="utf-8")
     source = root / ("test_counter.py" if cocotb else "tb.sv")
     source.write_text("# cocotb\n" if cocotb else "module tb; endmodule\n", encoding="utf-8")
     if cocotb:
@@ -177,9 +175,7 @@ def test_cocotb_named_selection_is_one_ordered_batch_work_item(tmp_path: Path) -
 
 
 def test_cocotb_unfiltered_selection_is_one_disclosed_batch(tmp_path: Path) -> None:
-    document = _plan(
-        tmp_path, kind="cocotb_batch", names=(), cocotb=True
-    ).manifest.document
+    document = _plan(tmp_path, kind="cocotb_batch", names=(), cocotb=True).manifest.document
 
     item = document["work_items"][0]  # type: ignore[index]
     assert item["kind"] == "cocotb_batch"
@@ -190,9 +186,7 @@ def test_cocotb_unfiltered_selection_is_one_disclosed_batch(tmp_path: Path) -> N
 def test_coverage_selection_is_one_named_aggregate_with_coverage_variant(
     tmp_path: Path,
 ) -> None:
-    document = _plan(
-        tmp_path, kind="coverage_aggregate", cocotb=False
-    ).manifest.document
+    document = _plan(tmp_path, kind="coverage_aggregate", cocotb=False).manifest.document
 
     assert document["workload"]["coverage"] is True  # type: ignore[index]
     assert len(document["work_items"]) == 1  # type: ignore[arg-type]
@@ -201,12 +195,17 @@ def test_coverage_selection_is_one_named_aggregate_with_coverage_variant(
     assert item["selection"] == {"kind": "named", "names": ("count", "reset")}
 
 
+def test_coverage_aggregate_accepts_a_cocotb_target(tmp_path: Path) -> None:
+    document = _plan(tmp_path, kind="coverage_aggregate", cocotb=True).manifest.document
+
+    assert document["work_items"][0]["kind"] == "coverage_aggregate"  # type: ignore[index]
+
+
 @pytest.mark.parametrize(
     ("kind", "cocotb", "names"),
     [
         ("ordinary_hdl", False, ("reset",)),
         ("cocotb_batch", False, ("reset",)),
-        ("coverage_aggregate", True, ("reset",)),
         ("coverage_aggregate", False, ()),
         ("coverage_aggregate", False, ("reset", "reset")),
     ],
@@ -317,9 +316,7 @@ class _RuntimeCheckingExecution(NativeExecution):
 
     def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
         super().bind_authenticated_attempt(snapshot_root, run_cwd)
-        assert (run_cwd / "data/stimulus.bin").read_bytes() == (
-            b"authenticated runtime input"
-        )
+        assert (run_cwd / "data/stimulus.bin").read_bytes() == (b"authenticated runtime input")
         self.bound = True
 
     def run(self, request):
@@ -344,31 +341,37 @@ def _coverage_campaign_plan(root: Path, *, runtime_input: bool = False):
     (project_data / "tests.toml").write_text(
         '[sim_0]\ntests = ["reset", "wrap"]\n', encoding="utf-8"
     )
-    prepared = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",)), context
-    )
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
     target = prepared.plan.targets[0]
     inspection = TargetCatalog.build(root).inspect(target.handle)
     names = target.selected_tests
     preview = SimulationPreview(
-        commands=(("coverage", *names),), groups=(names,),
-        target_identity=target.handle.identity, toplevel=inspection.toplevel,
+        commands=(("coverage", *names),),
+        groups=(names,),
+        target_identity=target.handle.identity,
+        toplevel=inspection.toplevel,
         eda_tool=inspection.eda_tool,
-        sources=tuple(item.path for item in inspection.inputs), constraints=(),
-        parameters=inspection.parameters, flow_options=inspection.flow_options,
+        sources=tuple(item.path for item in inspection.inputs),
+        constraints=(),
+        parameters=inspection.parameters,
+        flow_options=inspection.flow_options,
     )
     plan = plan_coarse_simulation_campaign(
-        handle=target.handle, inspection=inspection, preview=preview,
-        selected_tests=names, required_suite=target.declared_tests,
-        revision="abc123", invocation_id=1, execution_id="8" * 32,
-        trace=False, kind="coverage_aggregate",
+        handle=target.handle,
+        inspection=inspection,
+        preview=preview,
+        selected_tests=names,
+        required_suite=target.declared_tests,
+        revision="abc123",
+        invocation_id=1,
+        execution_id="8" * 32,
+        trace=False,
+        kind="coverage_aggregate",
     )
     return plan, target
 
 
-def _run_coverage_campaign(
-    root: Path, native: NativeExecution, *, runtime_input: bool = False
-):
+def _run_coverage_campaign(root: Path, native: NativeExecution, *, runtime_input: bool = False):
     plan, target = _coverage_campaign_plan(root, runtime_input=runtime_input)
     executor = CoverageAggregateExecutor(
         plans={target.handle.identity: target},
@@ -406,18 +409,14 @@ def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_t
     assert len(runtime) == 1
     assert runtime[0]["destination"] == "data/stimulus.bin"
     attempt = next(
-        store.work_item_directory(result.document["work_item_id"])
-        .joinpath("attempts")
-        .iterdir()
+        store.work_item_directory(result.document["work_item_id"]).joinpath("attempts").iterdir()
     )
     build = json.loads((attempt / "private-build/build-result.json").read_bytes())
     assert build["elapsed_seconds"] > 0
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:
-    outcome, store = _run_coverage_campaign(
-        tmp_path, _FailedCoverageBuild(infrastructure=False)
-    )
+    outcome, store = _run_coverage_campaign(tmp_path, _FailedCoverageBuild(infrastructure=False))
 
     assert outcome.complete is True
     result = store.scan().items[0].result
@@ -495,21 +494,25 @@ class _CocotbGroup:
         self._harness.launches.append(self.names)
         path = self.build_root / "cocotb-results.json"
         tests = self._harness.reported or tuple(
-            SimulationTestOutcome(name=name, verdict="pass", passed=True)
-            for name in self.names
+            SimulationTestOutcome(name=name, verdict="pass", passed=True) for name in self.names
         )
         transport_names = self._harness.transport_names or tuple(test.name for test in tests)
         transported = self._harness.transport_reported or tests
-        path.write_text(
-            json.dumps(_transport(transported, transport_names)), encoding="utf-8"
-        )
+        path.write_text(json.dumps(_transport(transported, transport_names)), encoding="utf-8")
         return SimulationTargetOutcome(
-            target="sim", target_identity=self._harness.handle.identity,
-            toplevel="tb", eda_tool="icarus", passed=True, verdict="pass",
-            elapsed_s=0.1, tests=tests,
-            artifacts=(SimulationArtifactEvidence(
-                "cocotb_results_json", str(path), path.stat().st_size, transport_names
-            ),),
+            target="sim",
+            target_identity=self._harness.handle.identity,
+            toplevel="tb",
+            eda_tool="icarus",
+            passed=True,
+            verdict="pass",
+            elapsed_s=0.1,
+            tests=tests,
+            artifacts=(
+                SimulationArtifactEvidence(
+                    "cocotb_results_json", str(path), path.stat().st_size, transport_names
+                ),
+            ),
         )
 
 
@@ -533,9 +536,7 @@ def _transport(
     }
 
 
-def _assert_result_selection_is_authenticated(
-    store: CampaignStore, work_item_id: str
-) -> None:
+def _assert_result_selection_is_authenticated(store: CampaignStore, work_item_id: str) -> None:
     result_path = store.work_item_directory(work_item_id) / "result.json"
     hostile = json.loads(result_path.read_bytes())
     hostile["observations"].reverse()
@@ -574,7 +575,9 @@ def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path)
         execution_factory=lambda _options: execution,  # type: ignore[arg-type,return-value]
     )
     invocation, store = _start_crashed_cocotb_campaign(plan, tmp_path, executor)
-    node = ValidatedManifestNode(store.manifest_path, plan.manifest, manifest_digest(plan.manifest))
+    node = ValidatedManifestNode(
+        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
+    )
     validated = ValidatedResumeManifest(
         node,
         (),
@@ -645,7 +648,10 @@ def _result_document(store: CampaignStore) -> tuple[Path, dict[str, object]]:
 def test_cocotb_result_preserves_exact_ordered_observations(tmp_path: Path) -> None:
     reported = (
         SimulationTestOutcome(
-            name="count", verdict="fail", passed=False, sva_errors=2,
+            name="count",
+            verdict="fail",
+            passed=False,
+            sva_errors=2,
             error_tail="counter assertion failed",
         ),
         SimulationTestOutcome(name="reset", verdict="pass", passed=True),
@@ -656,7 +662,8 @@ def test_cocotb_result_preserves_exact_ordered_observations(tmp_path: Path) -> N
     assert result is not None
     observations = result.document["observations"]
     assert [(item["test"], item["functional"]) for item in observations] == [
-        ("count", "fail"), ("reset", "pass")
+        ("count", "fail"),
+        ("reset", "pass"),
     ]
     assert observations[0]["assertions"] == "dirty"
     assert observations[0]["assertion_count"] == 2
@@ -676,7 +683,8 @@ def test_unfiltered_cocotb_binds_discovered_order_and_detail(tmp_path: Path) -> 
     assert result is not None
     observations = result.document["observations"]
     assert [(item["test"], item["functional"]) for item in observations] == [
-        ("discovered_b", "pass"), ("discovered_a", "fail")
+        ("discovered_b", "pass"),
+        ("discovered_a", "fail"),
     ]
     assert observations[1]["detail"] == {"reason": "bad value"}
 
@@ -776,8 +784,22 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
     assert details["observations_truncated"] is True
     assert len(details["observations"]) == 32
     assert set(details["observations"][0]) == {
-        "test", "execution", "functional", "assertions", "assertion_count", "detail"
+        "test",
+        "execution",
+        "functional",
+        "assertions",
+        "assertion_count",
+        "detail",
     }
-    assert details["observation_counts"]["execution"] == {
-        "completed": 39, "timeout": 1
-    }
+    assert details["observation_counts"]["execution"] == {"completed": 39, "timeout": 1}
+
+
+def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -> None:
+    outcome = SimpleNamespace(
+        target={"selector": "sim_fail"},
+        manifest_path=tmp_path / "campaign/manifest.json",
+        aggregate_grade="fail",
+        observations=({"detail": {"reason": "intentional simulator failure"}},),
+    )
+
+    assert "intentional simulator failure" in _campaign_report_lines((outcome,))[0]

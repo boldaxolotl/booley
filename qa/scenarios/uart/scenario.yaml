@@ -5985,7 +5985,7 @@ steps:
     sha256: 83adb055d9c1d8f2deff9dcccd9e07c2706504850635c8b090de08320ff247a6
   - path: fixtures/simulation-campaign/validate_campaign.py
     audience: independent evaluator
-    sha256: cbf21708ea67ce9d1857d54fd5120467553b7eadf448b09f1ab2df815f8dd7a8
+    sha256: 2f4a5c5836acab7a62e9c87526a2c24cc34ef77091905cf1742deeeaa5731829
   - path: fixtures/simulation-campaign/vectors/alpha.hex
     audience: scenario-operator
     sha256: 320540cafa300cbdcf98656bcc20b316f40c712dc750b0002afc97fb43c23b7d
@@ -6019,7 +6019,7 @@ steps:
     sha256: d87d82f7d512e397bcf775902305054aa3f625626203832330bb3e4085b6120b
   - path: fixtures/simulation-campaign/validate_campaign.py
     audience: independent evaluator
-    sha256: cbf21708ea67ce9d1857d54fd5120467553b7eadf448b09f1ab2df815f8dd7a8
+    sha256: 2f4a5c5836acab7a62e9c87526a2c24cc34ef77091905cf1742deeeaa5731829
 - id: campaign.presim-immutable
   phase: interactive
   action: Attempt to mutate the selected image through default immutable Pre-Sim Commands.

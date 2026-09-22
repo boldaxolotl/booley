@@ -91,9 +91,13 @@ def _validate_facts(value: Mapping[str, object]) -> None:
         {"vlnv", "name", "selector", "project_identity", "revision", "role", "display_name"},
         "target",
     )
-    suite = _exact(value["required_suite"], {"names", "default_invocation", "source_sha256"}, "required_suite")
+    suite = _exact(
+        value["required_suite"], {"names", "default_invocation", "source_sha256"}, "required_suite"
+    )
     names = _list(suite["names"], "required_suite.names", 4_000)
-    if any(not isinstance(name, str) or not name for name in names) or len(set(names)) != len(names):
+    if any(not isinstance(name, str) or not name for name in names) or len(set(names)) != len(
+        names
+    ):
         raise SimulationCampaignIntegrityError("required suite names are invalid")
     if type(suite["default_invocation"]) is not bool:
         raise SimulationCampaignIntegrityError("required_suite.default_invocation must be boolean")
@@ -116,9 +120,7 @@ def _validate_facts(value: Mapping[str, object]) -> None:
         _validate_coverage_reference(value, coverage)
 
 
-def _validate_coverage_reference(
-    facts: Mapping[str, object], value: object
-) -> None:
+def _validate_coverage_reference(facts: Mapping[str, object], value: object) -> None:
     from booley.flows.sim.coverage_reference import decode_coverage_campaign_reference
 
     exact = _exact(value, {"reference", "document"}, "coverage_reference")
@@ -155,7 +157,15 @@ def _validate_coverage_reference(
 def _validate_prerequisite(value: object, index: int) -> None:
     item = _exact(
         value,
-        {"role", "manifest", "campaign_id", "target", "work_item_id", "result", "cycle_observation"},
+        {
+            "role",
+            "manifest",
+            "campaign_id",
+            "target",
+            "work_item_id",
+            "result",
+            "cycle_observation",
+        },
         f"prerequisites[{index}]",
     )
     if item["role"] != "cycle_count_baseline":
@@ -164,7 +174,11 @@ def _validate_prerequisite(value: object, index: int) -> None:
     _evidence(item["manifest"], "prerequisite manifest")
     _evidence(item["result"], "prerequisite result")
     cycle = _exact(item["cycle_observation"], {"test", "cycle_count", "unit"}, "cycle_observation")
-    if cycle["unit"] != "cycles" or type(cycle["cycle_count"]) is not int or cycle["cycle_count"] < 0:
+    if (
+        cycle["unit"] != "cycles"
+        or type(cycle["cycle_count"]) is not int
+        or cycle["cycle_count"] < 0
+    ):
         raise SimulationCampaignIntegrityError("cycle observation is invalid")
 
 
@@ -182,9 +196,19 @@ def _validate_observation(value: object, index: int) -> None:
     item = _exact(
         value,
         {
-            "work_item_id", "role", "revision", "target", "result_sha256", "test",
-            "execution", "failure_class", "functional", "assertions", "assertion_count",
-            "detail", "cycle_count",
+            "work_item_id",
+            "role",
+            "revision",
+            "target",
+            "result_sha256",
+            "test",
+            "execution",
+            "failure_class",
+            "functional",
+            "assertions",
+            "assertion_count",
+            "detail",
+            "cycle_count",
         },
         f"observations[{index}]",
     )

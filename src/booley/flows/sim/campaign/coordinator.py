@@ -258,8 +258,10 @@ class SimulationCampaign:
             raise SimulationCampaignIntegrityError(
                 "coverage aggregate result has no matching Simulation Attempt"
             )
-        attempt_directory = store.work_item_directory(completed[0].work_item_id) / "attempts" / (
-            f"{result_document['attempt_ordinal']:04d}-{result_document['attempt_id']}"
+        attempt_directory = (
+            store.work_item_directory(completed[0].work_item_id)
+            / "attempts"
+            / (f"{result_document['attempt_ordinal']:04d}-{result_document['attempt_id']}")
         )
         nested_path = attempt_directory / "coverage-campaign" / "coverage.json"
         target = cast(Mapping[str, str], manifest.document["target"])
@@ -383,9 +385,7 @@ class SimulationCampaign:
         return BoundedCampaignScheduler(
             capacity,
             registry,
-            allocate=lambda item: self._allocate_scheduled(
-                store, manifest, project_root, item
-            ),
+            allocate=lambda item: self._allocate_scheduled(store, manifest, project_root, item),
             execute=lambda attempt, child_id, child_digest: self._execute_scheduled(
                 store,
                 manifest,
@@ -636,9 +636,7 @@ def _outcome(
     coverage_reference: CoverageCampaignReference | None = None,
 ) -> CampaignOutcome:
     recovery = store.scan()
-    facts, observations = _acceptance_facts(
-        store, manifest, recovery, coverage_reference
-    )
+    facts, observations = _acceptance_facts(store, manifest, recovery, coverage_reference)
     complete = cast(bool, summary["complete"])
     grade = cast(str, summary["aggregate_grade"])
     return CampaignOutcome(

@@ -292,9 +292,7 @@ def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
         or projection.get("campaign_manifest") != str(store.manifest_path)
         or projection.get("campaign_summary") != str(store.summary_path)
     ):
-        raise CampaignRetentionError(
-            "Simulation Campaign acceptance projections are incomplete"
-        )
+        raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
 
 
 def _validate_completed_targets(
@@ -339,9 +337,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         if args.full:
-            prune_invocation(
-                args.reports_root, args.invocation, project_data=args.project_data
-            )
+            prune_invocation(args.reports_root, args.invocation, project_data=args.project_data)
         else:
             prune_native_payload(args.reports_root, args.invocation, args.native_target)
     except (OSError, ValueError) as exc:

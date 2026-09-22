@@ -135,10 +135,7 @@ def test_attempt_codec_enforces_attempt_resource_ceiling(ordinal: int) -> None:
 
 
 def test_build_attempt_codec_enforces_attempt_resource_ceiling() -> None:
-    path = (
-        Path(__file__).parents[1]
-        / "fixtures/simulation_campaign/build-attempt-shared.json"
-    )
+    path = Path(__file__).parents[1] / "fixtures/simulation_campaign/build-attempt-shared.json"
     document = json.loads(path.read_bytes())
     document["build_attempt_ordinal"] = 10_001
     with pytest.raises(SimulationCampaignIntegrityError, match="attempt ceiling"):
@@ -221,9 +218,7 @@ def test_campaign_paths_accept_normalized_components(parts: list[str]) -> None:
     st.sampled_from(["missing", "unknown", "type", "path", "digest", "conditional"]),
     st.sampled_from(["bundle.json", "snapshot.json"]),
 )
-def test_bundle_and_snapshot_structural_mutations_are_rejected(
-    mutation: str, name: str
-) -> None:
+def test_bundle_and_snapshot_structural_mutations_are_rejected(mutation: str, name: str) -> None:
     path = Path(__file__).parents[1] / "fixtures/simulation_campaign" / name
     document = json.loads(path.read_bytes())
     decoder = decode_simulator_bundle if name == "bundle.json" else decode_executable_snapshot

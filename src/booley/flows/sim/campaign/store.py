@@ -561,8 +561,7 @@ class CampaignStore:
         ]
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         recovered = tuple(
-            self._scan_item(item, expected_manifest, expected_workload)
-            for item in items
+            self._scan_item(item, expected_manifest, expected_workload) for item in items
         )
         return CampaignRecovery(recovered)
 
@@ -740,9 +739,7 @@ def _validate_result_selection(
     """Bind terminal observation order and transport evidence to the manifest."""
     selection = cast(Mapping[str, object], work_item["selection"])
     names = cast(tuple[str, ...], selection["names"])
-    observations = cast(
-        tuple[Mapping[str, object], ...], result.document["observations"]
-    )
+    observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
     observed = tuple(item["test"] for item in observations)
     kind = cast(str, work_item["kind"])
     if selection["kind"] == "named" and observed != names:
@@ -751,11 +748,12 @@ def _validate_result_selection(
         )
     if selection["kind"] == "unfiltered":
         unnamed_failure = observed == (None,) and result.document["state"] in {
-            "blocked_by_build", "setup_error", "timeout", "crash"
+            "blocked_by_build",
+            "setup_error",
+            "timeout",
+            "crash",
         }
-        discovered = bool(observed) and all(
-            isinstance(name, str) and name for name in observed
-        )
+        discovered = bool(observed) and all(isinstance(name, str) and name for name in observed)
         if not (unnamed_failure or discovered):
             raise SimulationCampaignIntegrityError(
                 "unfiltered Cocotb result has invalid observation identity"
@@ -818,9 +816,7 @@ def _validate_cocotb_source(
     if not isinstance(source, list) or len(source) != len(observations):
         raise SimulationCampaignIntegrityError("Cocotb source transport count disagrees")
     for transported, observed in zip(source, observations, strict=True):
-        if not isinstance(transported, dict) or set(transported) != {
-            "test", "verdict", "detail"
-        }:
+        if not isinstance(transported, dict) or set(transported) != {"test", "verdict", "detail"}:
             raise SimulationCampaignIntegrityError("Cocotb source transport is invalid")
         verdict_matches = _cocotb_source_verdict_matches(transported, observed)
         detail = cast(Mapping[str, object], observed["detail"])["reason"]

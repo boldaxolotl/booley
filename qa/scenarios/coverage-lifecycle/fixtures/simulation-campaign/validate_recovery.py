@@ -58,8 +58,15 @@ def _acceptance_facts(
     facts = _exact(
         value,
         {
-            "$schema", "campaign_id", "manifest_sha256", "origin", "target",
-            "required_suite", "prerequisites", "consumed_results", "observations",
+            "$schema",
+            "campaign_id",
+            "manifest_sha256",
+            "origin",
+            "target",
+            "required_suite",
+            "prerequisites",
+            "consumed_results",
+            "observations",
             "coverage_reference",
         },
         "acceptance facts",
@@ -70,18 +77,27 @@ def _acceptance_facts(
     return facts
 
 
-def _envelope(
-    value: object, campaign_id: object, manifest_sha256: str
-) -> dict[str, object]:
+def _envelope(value: object, campaign_id: object, manifest_sha256: str) -> dict[str, object]:
     envelope = _exact(
         value,
         {
-            "$schema", "campaign_id", "manifest_sha256", "origin", "producer", "purpose",
-            "ticket", "recorded_at", "role_derivation", "changes",
+            "$schema",
+            "campaign_id",
+            "manifest_sha256",
+            "origin",
+            "producer",
+            "purpose",
+            "ticket",
+            "recorded_at",
+            "role_derivation",
+            "changes",
         },
         "transaction envelope",
     )
-    _need(envelope["$schema"] == "booley.acceptance-transaction-envelope/v1", "envelope schema differs")
+    _need(
+        envelope["$schema"] == "booley.acceptance-transaction-envelope/v1",
+        "envelope schema differs",
+    )
     _need(envelope["campaign_id"] == campaign_id, "envelope campaign identity differs")
     _need(envelope["manifest_sha256"] == manifest_sha256, "envelope manifest digest differs")
     _need(envelope["producer"] == "simulation_campaign", "envelope producer differs")
@@ -116,8 +132,12 @@ def _validate_intent(
     lookup = _exact(
         intent["lookup_key"],
         {
-            "campaign_id", "manifest_sha256", "ticket_identity", "ticket_generation",
-            "producer", "purpose",
+            "campaign_id",
+            "manifest_sha256",
+            "ticket_identity",
+            "ticket_generation",
+            "producer",
+            "purpose",
         },
         "intent lookup key",
     )
@@ -144,10 +164,14 @@ def _validate_consumed_results(facts: dict[str, object], result_paths: list[Path
         )
         result, raw = expected.pop(entry["work_item_id"], ({}, b""))
         reference = _exact(
-            entry["result"], {"path_base", "path", "bytes", "sha256", "kind", "owner"},
+            entry["result"],
+            {"path_base", "path", "bytes", "sha256", "kind", "owner"},
             "consumed result reference",
         )
-        _need(result.get("attempt_id") == entry["attempt_id"] == reference["owner"], "attempt binding differs")
+        _need(
+            result.get("attempt_id") == entry["attempt_id"] == reference["owner"],
+            "attempt binding differs",
+        )
         _need(result.get("finished_at") == entry["finished_at"], "finished timestamp differs")
         _need(reference["kind"] == "simulation_result", "result reference kind differs")
         _need(reference["bytes"] == len(raw), "result byte count differs")
@@ -171,21 +195,32 @@ def _expected_record(
     changes = envelope["changes"]
     assert isinstance(changes, list)
     change = _exact(
-        changes[ordinal], {"key", "met", "reason", "mandatory", "params", "detail", "role"},
+        changes[ordinal],
+        {"key", "met", "reason", "mandatory", "params", "detail", "role"},
         "transaction change",
     )
     origin = _exact(envelope["origin"], {"execution_id", "invocation_id"}, "origin")
     ticket = _exact(envelope["ticket"], {"slug", "identity", "generation"}, "ticket")
     return {
-        "$schema": "booley.acceptance-record/v2", "sequence": sequence,
-        "transaction_id": transaction_id, "transaction_ordinal": ordinal,
-        "transaction_size": len(changes), "envelope_sha256": _digest(_canonical(envelope)),
-        "ticket": ticket["slug"], "execution_id": origin["execution_id"],
-        "purpose": envelope["purpose"], "producer": envelope["producer"],
-        "invocation_id": origin["invocation_id"], "role": change["role"],
-        "criterion": change["key"], "met": change["met"], "reason": change["reason"],
-        "mandatory": change["mandatory"], "params": change["params"],
-        "detail": change["detail"], "ticket_identity": ticket["identity"],
+        "$schema": "booley.acceptance-record/v2",
+        "sequence": sequence,
+        "transaction_id": transaction_id,
+        "transaction_ordinal": ordinal,
+        "transaction_size": len(changes),
+        "envelope_sha256": _digest(_canonical(envelope)),
+        "ticket": ticket["slug"],
+        "execution_id": origin["execution_id"],
+        "purpose": envelope["purpose"],
+        "producer": envelope["producer"],
+        "invocation_id": origin["invocation_id"],
+        "role": change["role"],
+        "criterion": change["key"],
+        "met": change["met"],
+        "reason": change["reason"],
+        "mandatory": change["mandatory"],
+        "params": change["params"],
+        "detail": change["detail"],
+        "ticket_identity": ticket["identity"],
         "recorded_at": envelope["recorded_at"],
     }
 
@@ -196,7 +231,8 @@ def _validate_records(
     bound = set()
     for ordinal, value in enumerate(entries):
         entry = _exact(
-            value, {"transaction_ordinal", "sequence", "sha256", "criterion", "role"},
+            value,
+            {"transaction_ordinal", "sequence", "sha256", "criterion", "role"},
             "record reference",
         )
         sequence = entry["sequence"]
@@ -218,9 +254,7 @@ def _validate_records(
     _need(actual == bound, "transaction has evidence outside its commit")
 
 
-def _validate_commit(
-    path: Path, envelope: dict[str, object], evidence_root: Path
-) -> str:
+def _validate_commit(path: Path, envelope: dict[str, object], evidence_root: Path) -> str:
     commit = _load_canonical(path, "acceptance commit")
     _exact(
         commit,
@@ -253,7 +287,8 @@ def _validate_criteria_projection(
     assert isinstance(changes, list)
     for value in changes:
         change = _exact(
-            value, {"key", "met", "reason", "mandatory", "params", "detail", "role"},
+            value,
+            {"key", "met", "reason", "mandatory", "params", "detail", "role"},
             "transaction change",
         )
         key = change["key"]
@@ -261,8 +296,10 @@ def _validate_criteria_projection(
         entry = expected[key]
         _need(isinstance(entry, dict), "archived Criterion is invalid")
         entry.update(
-            met=change["met"], mandatory=change["mandatory"],
-            params=change["params"], detail=change["detail"],
+            met=change["met"],
+            mandatory=change["mandatory"],
+            params=change["params"],
+            detail=change["detail"],
         )
         if change["met"] is True:
             entry["ever_met"] = True
@@ -272,26 +309,46 @@ def _validate_criteria_projection(
 
 
 def _validate_state_transition(
-    archived_path: Path, failed_path: Path, recovered_path: Path,
-    transaction_id: str, envelope: dict[str, object]
+    archived_path: Path,
+    failed_path: Path,
+    recovered_path: Path,
+    transaction_id: str,
+    envelope: dict[str, object],
 ) -> None:
     archived, archived_raw = _load(archived_path)
     failed, failed_raw = _load(failed_path)
     recovered, _ = _load(recovered_path)
-    _need(failed_raw == archived_raw and failed == archived, "failed save changed archived state bytes")
+    _need(
+        failed_raw == archived_raw and failed == archived,
+        "failed save changed archived state bytes",
+    )
     before = archived.get("acceptance_transactions")
     _need(isinstance(before, list), "archived acceptance transactions are missing")
-    _need(recovered.get("acceptance_transactions") == [*before, transaction_id], "transaction was not selected exactly once")
+    _need(
+        recovered.get("acceptance_transactions") == [*before, transaction_id],
+        "transaction was not selected exactly once",
+    )
     _need(set(recovered) == set(archived), "recovered state fields differ")
-    stable = set(archived) - {"acceptance_transactions", "criteria", "all_mandatory_met", "last_updated"}
+    stable = set(archived) - {
+        "acceptance_transactions",
+        "criteria",
+        "all_mandatory_met",
+        "last_updated",
+    }
     _need(all(recovered.get(key) == archived[key] for key in stable), "unrelated state changed")
     _validate_criteria_projection(archived, recovered, envelope)
 
 
 def validate_acceptance_recovery(
-    manifest_path: Path, result_paths: list[Path], intent_path: Path,
-    transaction_path: Path, evidence_root: Path, archived_state_path: Path,
-    failed_state_path: Path, recovered_state_path: Path, simulation_path: Path,
+    manifest_path: Path,
+    result_paths: list[Path],
+    intent_path: Path,
+    transaction_path: Path,
+    evidence_root: Path,
+    archived_state_path: Path,
+    failed_state_path: Path,
+    recovered_state_path: Path,
+    simulation_path: Path,
 ) -> None:
     """Require byte-authenticated, idempotent acceptance recovery."""
     manifest, _ = _load(manifest_path)
@@ -328,7 +385,9 @@ def validate_corrupt_terminal(
     _need(attempts == rejection.get("attempts_after"), "corrupt resume created an attempt")
     _need(rejection.get("control_exit_code") == 0, "restored control did not succeed")
     _need(rejection.get("control_complete") is True, "restored control is incomplete")
-    _need(attempts == rejection.get("attempts_after_restore"), "restored completed work item reran")
+    _need(
+        attempts == rejection.get("attempts_after_restore"), "restored completed work item reran"
+    )
     _need(rejection.get("eda_processes_started") == [], "corrupt resume launched EDA")
     valid_sha256 = _digest(archived)
     _need(rejection.get("valid_sha256") == valid_sha256, "archived result digest differs")

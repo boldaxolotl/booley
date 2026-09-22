@@ -146,7 +146,6 @@ def validate_literal_cwd_serialization(
             "unrelated interval bounds are invalid",
         )
         overlaps = overlaps or any(
-            start < interval["end_ns"] and interval["start_ns"] < end
-            for interval in shared
+            start < interval["end_ns"] and interval["start_ns"] < end for interval in shared
         )
     _need(overlaps, "evidence does not prove unrelated work can overlap")

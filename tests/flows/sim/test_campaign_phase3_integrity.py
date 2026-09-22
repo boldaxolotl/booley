@@ -289,16 +289,7 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
 def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    disclosures = {
-        name: {
-            "planner": f"fake-{name}",
-            "scratch_inputs": [],
-            "generated_files": [],
-            "tool_provenance": {"kind": "fake", "version": "1", "contract_version": "1"},
-            "cleanup": {"removed": True},
-        }
-        for name in ("alpha", "beta")
-    }
+    disclosures = _legacy_disclosures()
     base_manifest = _manifest_for(("alpha", "beta"), access="legacy-per-test")
     manifest_document = json.loads(canonical_json_bytes(base_manifest.document))
     manifest_document.pop("fingerprints")
@@ -312,6 +303,7 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     (build_root / "simv").write_bytes(b"image")
     counters = {"compile": 0, "memory_reuse": 0, "durable_reuse": 0, "launch": 0}
     hooks: list[tuple[tuple[str, ...], bool, Path | None]] = []
+
     def record_hook(
         _handle: object,
         _root: Path,
@@ -321,6 +313,7 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         expose_build_root: bool,
     ) -> None:
         hooks.append((names, expose_build_root, run_cwd))
+
     monkeypatch.setattr(serial_execution, "_run_hook", record_hook)
     monkeypatch.setattr(
         serial_execution.TargetCatalog,
@@ -335,6 +328,19 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         )
     )
     _assert_private_legacy_results(outcome, counters, hooks, invocation)
+
+
+def _legacy_disclosures():
+    return {
+        name: {
+            "planner": f"fake-{name}",
+            "scratch_inputs": [],
+            "generated_files": [],
+            "tool_provenance": {"kind": "fake", "version": "1", "contract_version": "1"},
+            "cleanup": {"removed": True},
+        }
+        for name in ("alpha", "beta")
+    }
 
 
 def _assert_private_legacy_results(outcome, counters, hooks, invocation) -> None:

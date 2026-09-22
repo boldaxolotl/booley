@@ -60,9 +60,7 @@ def derive_runtime_input_declarations(
             "source_artifact_path": normalized,
             "destination": normalized,
         }
-        declarations.append(
-            {"declaration_id": canonical_sha256(identity), **identity}
-        )
+        declarations.append({"declaration_id": canonical_sha256(identity), **identity})
     return tuple(declarations)
 
 
@@ -112,9 +110,7 @@ def _manifest_fingerprints(mutable: Mapping[str, object]) -> dict[str, str]:
             ]
         ),
         "required_suite_sha256": canonical_sha256(mutable["required_suite"]),
-        "planning_disclosures_sha256": canonical_sha256(
-            mutable["planning_disclosures"]
-        ),
+        "planning_disclosures_sha256": canonical_sha256(mutable["planning_disclosures"]),
         "prerequisites_sha256": canonical_sha256(mutable["prerequisites"]),
         "work_items_sha256": canonical_sha256(mutable["work_items"]),
         "workload_sha256": canonical_sha256(

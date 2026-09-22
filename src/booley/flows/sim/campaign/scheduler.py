@@ -115,9 +115,7 @@ class BoundedCampaignScheduler:
     def _join_workers(self, workers: list[threading.Thread]) -> None:
         deadline: float | None = None
         while any(worker.is_alive() for worker in workers):
-            if deadline is None and (
-                self._stop.is_set() or self._capacity.shutdown_requested
-            ):
+            if deadline is None and (self._stop.is_set() or self._capacity.shutdown_requested):
                 self._stop.set()
                 self._capacity.cancel_waiters()
                 deadline = time.monotonic() + self._capacity.shutdown_timeout_seconds
@@ -192,9 +190,7 @@ class BoundedCampaignScheduler:
                 self._active_collisions.discard(key)
                 self._collision_condition.notify_all()
 
-    def _run_child(
-        self, item: Mapping[str, object], attempt: ScheduledAttempt
-    ) -> None:
+    def _run_child(self, item: Mapping[str, object], attempt: ScheduledAttempt) -> None:
         child_id = ExecutionId(uuid.uuid4().hex)
         prepared = self._registry.prepare(
             child_id,
@@ -234,10 +230,7 @@ class BoundedCampaignScheduler:
             scope = SupervisedExecutionScope(
                 child_id,
                 self._registry.project_data,
-                lambda: (
-                    permit.lease_health.lost.is_set()
-                    or self._capacity.shutdown_requested
-                ),
+                lambda: permit.lease_health.lost.is_set() or self._capacity.shutdown_requested,
             )
             with supervised_execution_scope(scope):
                 self._execute(attempt, str(child_id), prepared.entry_sha256)
@@ -245,9 +238,7 @@ class BoundedCampaignScheduler:
                 state.terminal_cause = "lease_lost"
             self._registry.mark_terminal(prepared, state.terminal_cause)
         if state.token is not None and not self._capacity.token_absent(state.token):
-            raise HeavyCapacityError(
-                f"child token remained after terminal proof: {child_id}"
-            )
+            raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
 
     def _capacity_parent_id(self) -> str:
         return self._capacity.parent_execution_id

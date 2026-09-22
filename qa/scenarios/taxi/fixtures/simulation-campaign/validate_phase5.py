@@ -8,7 +8,12 @@ from pathlib import Path
 
 _OBSERVATION_PREVIEW_LIMIT = 32
 _OBSERVATION_FIELDS = {
-    "test", "execution", "functional", "assertions", "assertion_count", "detail"
+    "test",
+    "execution",
+    "functional",
+    "assertions",
+    "assertion_count",
+    "detail",
 }
 
 
@@ -41,10 +46,14 @@ def validate_cocotb_batch(
     interrupted = _load(interrupted_attempt_path)
     resumed = _load(resumed_result_path)
     _need(
-        interrupted.get("work_item_id") == resumed.get("work_item_id") == work_item.get("work_item_id"),
+        interrupted.get("work_item_id")
+        == resumed.get("work_item_id")
+        == work_item.get("work_item_id"),
         "attempts do not bind the one batch work item",
     )
-    _need(interrupted.get("attempt_id") != resumed.get("attempt_id"), "batch retry reused an attempt")
+    _need(
+        interrupted.get("attempt_id") != resumed.get("attempt_id"), "batch retry reused an attempt"
+    )
     _need(
         interrupted.get("$schema") == "booley.simulation-attempt/v1",
         "interrupted attempt schema differs",
@@ -52,7 +61,10 @@ def validate_cocotb_batch(
     _need(not interrupted_result_path.exists(), "interrupted batch has a terminal result")
     _need(resumed.get("state") == "completed", "resumed batch did not complete")
     observations = resumed.get("observations")
-    _need(isinstance(observations, list) and len(observations) > 1, "batch has no per-test observations")
+    _need(
+        isinstance(observations, list) and len(observations) > 1,
+        "batch has no per-test observations",
+    )
     names = []
     for observation in observations:
         _need(isinstance(observation, dict), "Cocotb observation is invalid")
@@ -79,9 +91,7 @@ def validate_mcp_response(response_path: Path, max_bytes: int) -> None:
     _need(isinstance(envelope, dict), "MCP result envelope is missing")
     content = envelope.get("content")
     _need(isinstance(content, list) and content, "MCP text card is missing")
-    text = "\n".join(
-        item.get("text", "") for item in content if isinstance(item, dict)
-    )
+    text = "\n".join(item.get("text", "") for item in content if isinstance(item, dict))
     structured = envelope.get("structuredContent")
     _need(isinstance(structured, dict), "MCP structured output is missing")
     reports = structured.get("reports")
@@ -104,16 +114,24 @@ def _validate_mcp_campaign(value: object) -> None:
     for key in ("manifest", "summary", "simulation"):
         pointer = value.get(key)
         _need(isinstance(pointer, str) and pointer, f"MCP {key} pointer is missing")
-    _need(value.get("coverage") is None or isinstance(value.get("coverage"), str), "MCP coverage pointer is invalid")
+    _need(
+        value.get("coverage") is None or isinstance(value.get("coverage"), str),
+        "MCP coverage pointer is invalid",
+    )
     _need(value.get("grade") in {"pass", "fail", "error"}, "MCP campaign grade is invalid")
     _need(isinstance(value.get("complete"), bool), "MCP campaign completion is missing")
     observations = value.get("observations")
     total = value.get("observation_total")
     truncated = value.get("observations_truncated")
     _need(isinstance(observations, list), "MCP observation preview is missing")
-    _need(isinstance(total, int) and not isinstance(total, bool), "MCP observation total is invalid")
+    _need(
+        isinstance(total, int) and not isinstance(total, bool), "MCP observation total is invalid"
+    )
     _need(isinstance(truncated, bool), "MCP observation truncation flag is missing")
-    _need(len(observations) == min(total, _OBSERVATION_PREVIEW_LIMIT), "MCP observation preview length disagrees")
+    _need(
+        len(observations) == min(total, _OBSERVATION_PREVIEW_LIMIT),
+        "MCP observation preview length disagrees",
+    )
     _need(truncated == (total > len(observations)), "MCP observation truncation flag disagrees")
     for observation in observations:
         _validate_mcp_observation(observation)
@@ -124,23 +142,46 @@ def _validate_mcp_campaign(value: object) -> None:
         counter = counts.get(key)
         _need(isinstance(counter, dict) and counter, f"MCP {key} observations are missing")
         _need(
-            all(isinstance(name, str) and isinstance(count, int) and count >= 0 for name, count in counter.items()),
+            all(
+                isinstance(name, str) and isinstance(count, int) and count >= 0
+                for name, count in counter.items()
+            ),
             f"MCP {key} observation counts are invalid",
         )
         totals.append(sum(counter.values()))
         preview = Counter(str(item[key]) for item in observations)
-        _need(all(counter.get(name, 0) >= count for name, count in preview.items()), f"MCP {key} counts contradict preview")
+        _need(
+            all(counter.get(name, 0) >= count for name, count in preview.items()),
+            f"MCP {key} counts contradict preview",
+        )
         if not truncated:
             _need(dict(counter) == dict(preview), f"MCP {key} counts differ from preview")
     _need(len(set(totals)) == 1 and totals[0] == total > 0, "MCP observation totals disagree")
 
 
 def _validate_mcp_observation(value: object) -> None:
-    _need(isinstance(value, dict) and set(value) == _OBSERVATION_FIELDS, "MCP observation fields differ")
-    _need(value["test"] is None or isinstance(value["test"], str), "MCP observation test is invalid")
-    _need(value["execution"] in {"completed", "timeout", "crash", "setup_error", "blocked_by_build"}, "MCP execution observation is invalid")
-    _need(value["functional"] in {"pass", "fail", "inconclusive", "not_observed"}, "MCP functional observation is invalid")
-    _need(value["assertions"] in {"clean", "dirty", "not_observed"}, "MCP assertion observation is invalid")
+    _need(
+        isinstance(value, dict) and set(value) == _OBSERVATION_FIELDS,
+        "MCP observation fields differ",
+    )
+    _need(
+        value["test"] is None or isinstance(value["test"], str), "MCP observation test is invalid"
+    )
+    _need(
+        value["execution"] in {"completed", "timeout", "crash", "setup_error", "blocked_by_build"},
+        "MCP execution observation is invalid",
+    )
+    _need(
+        value["functional"] in {"pass", "fail", "inconclusive", "not_observed"},
+        "MCP functional observation is invalid",
+    )
+    _need(
+        value["assertions"] in {"clean", "dirty", "not_observed"},
+        "MCP assertion observation is invalid",
+    )
     count = value["assertion_count"]
-    _need(isinstance(count, int) and not isinstance(count, bool) and count >= 0, "MCP assertion count is invalid")
+    _need(
+        isinstance(count, int) and not isinstance(count, bool) and count >= 0,
+        "MCP assertion count is invalid",
+    )
     _need(isinstance(value["detail"], dict), "MCP observation detail is invalid")

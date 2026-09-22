@@ -51,10 +51,15 @@ def _validate_attempts(manifest, interrupted, interrupted_result_path, resumed) 
     _need(isinstance(work_item, dict), "coverage work item is invalid")
     _need(work_item.get("kind") == "coverage_aggregate", "work item is not coverage aggregate")
     _need(
-        interrupted.get("work_item_id") == resumed.get("work_item_id") == work_item.get("work_item_id"),
+        interrupted.get("work_item_id")
+        == resumed.get("work_item_id")
+        == work_item.get("work_item_id"),
         "coverage attempts do not bind the aggregate work item",
     )
-    _need(interrupted.get("attempt_id") != resumed.get("attempt_id"), "aggregate retry reused an attempt")
+    _need(
+        interrupted.get("attempt_id") != resumed.get("attempt_id"),
+        "aggregate retry reused an attempt",
+    )
     _need(
         interrupted.get("$schema") == "booley.simulation-attempt/v1",
         "interrupted attempt schema differs",
@@ -72,7 +77,10 @@ def _validate_reference(coverage, coverage_raw, reference, resumed) -> None:
     _need(isinstance(nested, dict), "nested coverage reference is missing")
     _need(nested.get("sha256") == _digest(coverage_raw), "nested coverage digest differs")
     _need(nested.get("bytes") == len(coverage_raw), "nested coverage byte count differs")
-    _need(nested.get("campaign_id") == coverage.get("campaign_id"), "nested campaign identity differs")
+    _need(
+        nested.get("campaign_id") == coverage.get("campaign_id"),
+        "nested campaign identity differs",
+    )
     _need(nested.get("path_base") == "origin_target", "nested path base differs")
     invocation = coverage.get("invocation")
     _need(isinstance(invocation, dict), "nested coverage invocation is missing")
@@ -84,8 +92,14 @@ def _validate_reference(coverage, coverage_raw, reference, resumed) -> None:
         reference.get("producer_invocation_id") == resumed.get("producer_invocation_id"),
         "producer invocation identity differs",
     )
-    _need(reference.get("simulation_attempt_id") == resumed.get("attempt_id"), "attempt identity differs")
-    _need(reference.get("simulation_work_item_id") == resumed.get("work_item_id"), "work-item identity differs")
+    _need(
+        reference.get("simulation_attempt_id") == resumed.get("attempt_id"),
+        "attempt identity differs",
+    )
+    _need(
+        reference.get("simulation_work_item_id") == resumed.get("work_item_id"),
+        "work-item identity differs",
+    )
 
 
 def _validate_projections(projection_paths: list[Path]) -> None:

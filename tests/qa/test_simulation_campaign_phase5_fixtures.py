@@ -45,9 +45,7 @@ def test_phase5_check_sets_are_isolated_to_representative_configurations() -> No
         check_set = next(item for item in scenario["check_sets"] if item["id"] == set_id)
         assert checks <= set(check_set["checks"])
         selected = [
-            item["id"]
-            for item in scenario["configured_scenarios"]
-            if set_id in item["check_sets"]
+            item["id"] for item in scenario["configured_scenarios"] if set_id in item["check_sets"]
         ]
         assert selected == [selected_id]
 

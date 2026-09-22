@@ -46,7 +46,10 @@ class _Endpoint:
         started: float,
     ) -> EndpointOutcome:
         return endpoint_session.invoke_endpoint(
-            self, prepared, admission=admission, started=started  # type: ignore[arg-type]
+            self,
+            prepared,
+            admission=admission,
+            started=started,  # type: ignore[arg-type]
         )
 
     def _adapt_outcome(self, outcome: EndpointOutcome) -> EndpointOutcome:
@@ -55,9 +58,7 @@ class _Endpoint:
     def _finalize_result(self, outcome: EndpointOutcome) -> None:
         self.events.append("finalize")
 
-    def record_acceptance(
-        self, prepared: PreparedExecution, outcome: EndpointOutcome
-    ) -> None:
+    def record_acceptance(self, prepared: PreparedExecution, outcome: EndpointOutcome) -> None:
         self.events.append("acceptance")
 
     def finish_execution(

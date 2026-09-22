@@ -103,9 +103,7 @@ class SimArguments(BuiltinArguments):
         if args.tests_file is not None:
             args.test = SimArguments._read_tests_file(args.tests_file, parser)
             args.tests_file = None
-        duplicates = sorted(
-            {name for name in (args.test or []) if args.test.count(name) > 1}
-        )
+        duplicates = sorted({name for name in (args.test or []) if args.test.count(name) > 1})
         if duplicates:
             parser.error("duplicate exact test name(s): " + ", ".join(duplicates))
         if args.test is not None:

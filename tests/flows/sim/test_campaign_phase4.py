@@ -63,9 +63,7 @@ from tests.flows.sim.test_campaign_phase3 import _build_execution, _two_item_man
 
 
 def _unmanaged() -> AdmissionContext:
-    return AdmissionContext(
-        "unmanaged", None, None, 1, "interactive", "", None, lambda: False
-    )
+    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
 
 
 def _managed(store: SlotStore, outer, *, max_heavy: int = 2) -> AdmissionContext:
@@ -82,9 +80,7 @@ def _managed(store: SlotStore, outer, *, max_heavy: int = 2) -> AdmissionContext
 
 
 def test_cancelled_campaign_stops_before_publication() -> None:
-    request = SimpleNamespace(
-        admission=SimpleNamespace(cancellation=lambda: True)
-    )
+    request = SimpleNamespace(admission=SimpleNamespace(cancellation=lambda: True))
     with pytest.raises(SimulationCampaignCancellationError, match="cancelled"):
         SimulationCampaign._raise_if_cancelled(request)  # type: ignore[arg-type]
 
@@ -198,9 +194,7 @@ def test_process_registration_closes_constructor_cancellation_race(
     cancelled = threading.Event()
     cancelled.set()  # cancellation raced after the caller's pre-spawn check
     killed: list[object] = []
-    monkeypatch.setattr(
-        "booley.runtime.supervised_execution.kill_process_tree", killed.append
-    )
+    monkeypatch.setattr("booley.runtime.supervised_execution.kill_process_tree", killed.append)
     process = object()
     processes = SupervisedProcessSet(None, tmp_path, cancelled.is_set)
     processes.register(process)  # type: ignore[arg-type]
@@ -211,9 +205,7 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
-    project_data, child_id, registry, _prepared, flow = _prepared_child(
-        tmp_path, monkeypatch
-    )
+    project_data, child_id, registry, _prepared, flow = _prepared_child(tmp_path, monkeypatch)
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     capacity = HeavyCapacity(
@@ -231,9 +223,7 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
             record_path = execution_paths(child_id, project_dir=project_data).record
             killer = threading.Thread(
                 target=lambda: (
-                    _wait_until(
-                        lambda: (read_json(record_path) or {}).get("state") == "running"
-                    ),
+                    _wait_until(lambda: (read_json(record_path) or {}).get("state") == "running"),
                     permit.token.path.unlink(),
                 )
             )
@@ -260,13 +250,12 @@ def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child() -> None:
         assert permit.execution_id == ""
         assert capacity.max_lanes == 1
         assert capacity.managed is False
-    with pytest.raises(
-        HeavyCapacityError, match="exactly once"
-    ), capacity.outer_permit():
+    with pytest.raises(HeavyCapacityError, match="exactly once"), capacity.outer_permit():
         pass
-    with pytest.raises(
-        HeavyCapacityError, match="cannot acquire child"
-    ), capacity.child_permit("item", ExecutionId("b" * 32)):
+    with (
+        pytest.raises(HeavyCapacityError, match="cannot acquire child"),
+        capacity.child_permit("item", ExecutionId("b" * 32)),
+    ):
         pass
 
 
@@ -274,9 +263,7 @@ def test_managed_capacity_releases_and_reacquires_exact_child_tokens(
     tmp_path: Path,
 ) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(
-        CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
-    )
+    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     terminal: set[ExecutionId] = set()
     recovered: list[ExecutionId] = []
 
@@ -341,9 +328,7 @@ def test_real_slot_store_preserves_interactive_priority_and_peer_fifo(
 
 def test_capacity_cancellation_withdraws_a_real_queued_child(tmp_path: Path) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    outer = store.acquire(
-        CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
-    )
+    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     capacity = HeavyCapacity(
         _managed(store, outer, max_heavy=1),
         terminal_proof=lambda _execution_id: True,
@@ -373,9 +358,7 @@ def test_capacity_cancellation_withdraws_a_real_queued_child(tmp_path: Path) -> 
 
 def test_capacity_exception_recovers_then_releases_exact_child(tmp_path: Path) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(
-        CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
-    )
+    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     terminal: set[ExecutionId] = set()
     child_id = ExecutionId("e" * 32)
 
@@ -438,9 +421,7 @@ def test_real_slot_store_reports_token_scoped_renewal_loss(
 ) -> None:
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    token = store.acquire(
-        CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("d" * 32)
-    )
+    token = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("d" * 32))
     token.path.unlink()
     _wait_until(token.lease_health.lost.is_set)
     store.release(token)
@@ -451,9 +432,7 @@ def test_lease_loss_starts_exact_child_recovery_before_work_returns(
 ) -> None:
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(
-        CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
-    )
+    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     recovered: list[ExecutionId] = []
     child_id = ExecutionId("b" * 32)
     capacity = HeavyCapacity(
@@ -503,17 +482,13 @@ def test_resume_rejects_retirement_with_wrong_terminal_digest(tmp_path: Path) ->
         / ".booley_project/.runtime/campaign-child-executions/retired"
         / f"{execution_id}.json"
     )
-    campaign_retirement = (
-        campaign_store.root / "child-executions/retired" / f"{execution_id}.json"
-    )
+    campaign_retirement = campaign_store.root / "child-executions/retired" / f"{execution_id}.json"
     document = json.loads(project_retirement.read_text())
     document["execution_terminal_sha256"] = "sha256:" + "9" * 64
     project_retirement.chmod(0o600)
     project_retirement.write_bytes(canonical_json_bytes(document))
     campaign_retirement.unlink()
-    with pytest.raises(
-        SimulationCampaignIntegrityError, match="terminal digest"
-    ):
+    with pytest.raises(SimulationCampaignIntegrityError, match="terminal digest"):
         registry.recover_unretired(slot_store)
 
 
@@ -521,9 +496,7 @@ def test_resume_rejects_retirement_with_wrong_terminal_digest(tmp_path: Path) ->
 def test_child_recovery_rejects_linked_entry_before_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
 ) -> None:
-    _project_data, child_id, registry, prepared, _flow = _prepared_child(
-        tmp_path, monkeypatch
-    )
+    _project_data, child_id, registry, prepared, _flow = _prepared_child(tmp_path, monkeypatch)
     source = prepared.project_entry.with_name("source.json")
     prepared.project_entry.rename(source)
     if defect == "symlink":
@@ -534,9 +507,7 @@ def test_child_recovery_rejects_linked_entry_before_mutation(
     with pytest.raises(SimulationCampaignIntegrityError, match="link"):
         registry.recover_unretired(None)
 
-    assert not (
-        registry._campaign_root / "retired" / f"{child_id}.json"
-    ).exists()
+    assert not (registry._campaign_root / "retired" / f"{child_id}.json").exists()
 
 
 def test_child_protocol_parses_the_same_bytes_it_authenticated(
@@ -562,9 +533,7 @@ def test_child_protocol_parses_the_same_bytes_it_authenticated(
 
 
 @pytest.mark.parametrize("defect", ["symlink", "hardlink"])
-def test_child_protocol_conflict_read_rejects_links(
-    tmp_path: Path, defect: str
-) -> None:
+def test_child_protocol_conflict_read_rejects_links(tmp_path: Path, defect: str) -> None:
     raw = canonical_json_bytes({"value": "expected"})
     source = tmp_path / "source.json"
     source.write_bytes(raw)
@@ -584,9 +553,7 @@ def test_child_protocol_conflict_read_rejects_links(
     "boundary",
     ["campaign-entry", "context", "record", "waiter", "terminal", "campaign-retirement"],
 )
-def test_child_protocol_crash_prefixes_recover_exactly(
-    tmp_path: Path, boundary: str
-) -> None:
+def test_child_protocol_crash_prefixes_recover_exactly(tmp_path: Path, boundary: str) -> None:
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "campaign")
     campaign_store.publish_manifest(manifest)
@@ -628,9 +595,7 @@ def test_child_protocol_crash_prefixes_recover_exactly(
     assert prepared.campaign_entry.is_file()
     assert paths.context.is_file()
     assert slot_store.snapshot(CLASS_HEAVY) == ([], [])
-    assert (
-        campaign_store.root / "child-executions/retired" / f"{execution_id}.json"
-    ).is_file()
+    assert (campaign_store.root / "child-executions/retired" / f"{execution_id}.json").is_file()
 
 
 def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
@@ -642,9 +607,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
     (project / ".booley_project").mkdir()
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
     slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = slot_store.acquire(
-        CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
-    )
+    outer = slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     active = 0
     maximum_active = 0
     gate = threading.Lock()
@@ -671,9 +634,9 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
         recover_child=registry.cancel,
     )
     try:
-        BoundedCampaignScheduler(
-            capacity, registry, allocate=allocate, execute=execute
-        ).run(manifest.document["work_items"])
+        BoundedCampaignScheduler(capacity, registry, allocate=allocate, execute=execute).run(
+            manifest.document["work_items"]
+        )
     finally:
         slot_store.release(outer)
 
@@ -684,9 +647,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
 def test_child_context_fails_closed_when_project_entry_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project_data, child_id, _registry, _prepared, _flow = _prepared_child(
-        tmp_path, monkeypatch
-    )
+    project_data, child_id, _registry, _prepared, _flow = _prepared_child(tmp_path, monkeypatch)
     paths = execution_paths(child_id, project_dir=project_data)
     paths.context.unlink()
     assert child_context_matches(paths, child_id) is False
@@ -902,8 +863,14 @@ class _ParallelGroup:
             name, "pass" if passed else "fail", passed, str(self.state.run_log)
         )
         return SimulationTargetOutcome(
-            "sim", self.state.handle.identity, "tb", "icarus", passed,
-            "pass" if passed else "fail", 0.1, (test,),
+            "sim",
+            self.state.handle.identity,
+            "tb",
+            "icarus",
+            passed,
+            "pass" if passed else "fail",
+            0.1,
+            (test,),
         )
 
     def _coordinate(self, name: str) -> None:
@@ -963,21 +930,19 @@ def _parallel_environment(tmp_path, first_finisher, schedule_seed):
     run_log = build_root / "run.log"
     run_log.write_text("PASS\n", encoding="utf-8")
     handle = SimpleNamespace(
-        identity="acme:lib:dut:1#sim", project_root=project,
-        selector="sim", eda_tool="icarus",
+        identity="acme:lib:dut:1#sim",
+        project_root=project,
+        selector="sim",
+        eda_tool="icarus",
     )
-    return project, _ParallelState(
-        build_root, run_log, handle, first_finisher, schedule_seed
-    )
+    return project, _ParallelState(build_root, run_log, handle, first_finisher, schedule_seed)
 
 
 def _run_parallel_campaign(tmp_path, manifest, plan, project, executor):
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = slot_store.acquire(
-        CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
-    )
+    outer = slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     try:
         outcome = SimulationCampaign(executor).run(
             NewCampaignRunRequest(
@@ -1023,7 +988,5 @@ def _assert_child_claim_integrity(invocation, slot_store, plan) -> None:
     transplanted["attempt_id"] = "0" * 32
     child_entry.chmod(0o600)
     child_entry.write_bytes(canonical_json_bytes(transplanted))
-    with pytest.raises(
-        SimulationCampaignIntegrityError, match="child entry digest disagrees"
-    ):
+    with pytest.raises(SimulationCampaignIntegrityError, match="child entry digest disagrees"):
         store.scan()

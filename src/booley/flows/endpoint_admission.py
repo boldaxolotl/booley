@@ -101,10 +101,7 @@ def authorize_simulation_targets(
     targets: tuple[TargetHandle, ...],
 ) -> EndpointOutcome | None:
     """Authorize the complete ordered Target tuple without acquiring admission."""
-    if (
-        not endpoint.state.strict_criteria
-        or getattr(endpoint.args, "diagnostic", False)
-    ):
+    if not endpoint.state.strict_criteria or getattr(endpoint.args, "diagnostic", False):
         return None
     missing = [
         target.selector

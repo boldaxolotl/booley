@@ -245,9 +245,7 @@ def _manifest_work(target, source_recipe, build_recipe, workload):
     return variants, items
 
 
-def _manifest_fingerprints(
-    manifest, target, source_recipe, build_recipe, variants, items, suite
-):
+def _manifest_fingerprints(manifest, target, source_recipe, build_recipe, variants, items, suite):
     return {
         "target_recipe_sha256": _sha(
             {"target": target, "source_recipe": source_recipe, "build_recipe": build_recipe}
@@ -506,9 +504,7 @@ def test_resume_rejects_linked_manifest_paths_without_writes(
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
 
     with pytest.raises(SimulationCampaignIntegrityError, match=r"regular|link"):
-        validate_resume_manifest(
-            view / "manifest.json", project_root=tmp_path / "source"
-        )
+        validate_resume_manifest(view / "manifest.json", project_root=tmp_path / "source")
 
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
 
@@ -621,13 +617,9 @@ def test_serial_executor_authenticates_planned_generator_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nondeterministic: bool
 ) -> None:
     disclosure = _generator_disclosure()
-    manifest, store, item, ordinal, attempt_directory = _generator_campaign(
-        tmp_path, disclosure
-    )
+    manifest, store, item, ordinal, attempt_directory = _generator_campaign(tmp_path, disclosure)
     executor = _generator_executor(tmp_path, disclosure, nondeterministic, monkeypatch)
-    request = _generator_request(
-        tmp_path, store, manifest, item, ordinal, attempt_directory
-    )
+    request = _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directory)
     if nondeterministic:
         with pytest.raises(
             SimulationCampaignIntegrityError,
@@ -648,12 +640,14 @@ def _generator_disclosure() -> dict[str, object]:
     return {
         "planner": "fusesoc_setup",
         "scratch_inputs": [],
-        "generated_files": [{
-            "path": "generated.sv",
-            "bytes": 1,
-            "sha256": "sha256:" + hashlib.sha256(b"a").hexdigest(),
-            "kind": "generated_input",
-        }],
+        "generated_files": [
+            {
+                "path": "generated.sv",
+                "bytes": 1,
+                "sha256": "sha256:" + hashlib.sha256(b"a").hexdigest(),
+                "kind": "generated_input",
+            }
+        ],
         "tool_provenance": {"kind": "fusesoc", "version": "1", "contract_version": "1"},
         "cleanup": {"removed": True},
     }

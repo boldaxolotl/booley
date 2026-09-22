@@ -97,9 +97,7 @@ class _CapturingExecution:
         try:
             result = self._delegate.build(request)
         except OSError as exc:
-            result = SimulationBuildResult(
-                False, str(exc), infrastructure_error=True
-            )
+            result = SimulationBuildResult(False, str(exc), infrastructure_error=True)
         self.build_elapsed = time.monotonic() - started
         self.build_result = result
         if result.success:
@@ -156,7 +154,10 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         request.store.publish_build_attempt(build_directory, build_attempt)
         execution = self._execution(request)
         identity = _attempt_identity(request)
-        with claimed_run_directory(run_directory, identity=identity) as run_cwd, ExitStack() as stack:
+        with (
+            claimed_run_directory(run_directory, identity=identity) as run_cwd,
+            ExitStack() as stack,
+        ):
             capturing = _CapturingExecution(
                 execution,
                 lambda elapsed: self._capture_build(
@@ -169,8 +170,12 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             outcome = self._collect(request, capturing)
         if capturing.captured is None:
             result = _publish_coverage_build_failure(
-                request, build_directory, build_attempt, outcome,
-                capturing.build_result, capturing.build_elapsed,
+                request,
+                build_directory,
+                build_attempt,
+                outcome,
+                capturing.build_result,
+                capturing.build_elapsed,
                 self._publication_checkpoint,
             )
             if result is not None:
@@ -183,9 +188,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             raise SimulationCampaignIntegrityError(
                 "coverage collection has no authenticated simulator build"
             )
-        return _completed_result(
-            request, capturing.captured, outcome, capturing.bindings, started
-        )
+        return _completed_result(request, capturing.captured, outcome, capturing.bindings, started)
 
     def _collect(
         self, request: WorkExecutionRequest, execution: SimulationExecutionPort
@@ -242,9 +245,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         source_root, paths = execution.authenticated_image()
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         declarations = cast(tuple[Mapping[str, str], ...], workload["runtime_inputs"])
-        artifacts = _capture_private_image(
-            paths, source_root, directory, declarations
-        )
+        artifacts = _capture_private_image(paths, source_root, directory, declarations)
         result, bundle = _publish_ready_build_result(
             request, directory, attempt, artifacts, elapsed
         )
@@ -275,13 +276,15 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         declarations = cast(tuple[dict[str, str], ...], workload["runtime_inputs"])
         self._publication_checkpoint("before:runtime_inputs")
-        bindings = stack.enter_context(materialize_campaign_runtime_inputs(
-            bundle_root=captured.directory,
-            attempt_root=request.attempt_directory,
-            run_cwd=run_cwd,
-            declarations=declarations,
-            owned_run_directory=run_directory.owned,
-        ))
+        bindings = stack.enter_context(
+            materialize_campaign_runtime_inputs(
+                bundle_root=captured.directory,
+                attempt_root=request.attempt_directory,
+                run_cwd=run_cwd,
+                declarations=declarations,
+                owned_run_directory=run_directory.owned,
+            )
+        )
         execution.bind_authenticated_attempt(captured.snapshot_root, run_cwd)
         self._publication_checkpoint("after:runtime_inputs")
         return bindings
@@ -365,8 +368,13 @@ def _publish_coverage_build_failure(
         ),
     )
     result = _publish_failed_build_result(
-        request, directory, attempt, failed, elapsed,
-        infrastructure=infrastructure, checkpoint=checkpoint,
+        request,
+        directory,
+        attempt,
+        failed,
+        elapsed,
+        infrastructure=infrastructure,
+        checkpoint=checkpoint,
     )
     if infrastructure:
         return None
@@ -398,9 +406,11 @@ def _coverage_observation(item: Mapping[str, object]) -> dict[str, object]:
 def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
     name = item.get("name", item.get("test"))
     verdict = item.get("verdict", item.get("simulation_verdict"))
-    if not isinstance(name, str) or not name or verdict not in {
-        "pass", "fail", "timeout", "crash", "inconclusive", "elab_error"
-    }:
+    if (
+        not isinstance(name, str)
+        or not name
+        or verdict not in {"pass", "fail", "timeout", "crash", "inconclusive", "elab_error"}
+    ):
         raise SimulationCampaignIntegrityError("Coverage Campaign test evidence is invalid")
     test = SimulationTestOutcome(
         name=name,
@@ -410,9 +420,7 @@ def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
         crashed=verdict == "crash",
         elab_failed=verdict == "elab_error",
         inconclusive=verdict == "inconclusive",
-        error_tail=(
-            "" if verdict == "pass" else f"coverage simulation {verdict}"
-        ),
+        error_tail=("" if verdict == "pass" else f"coverage simulation {verdict}"),
     )
     return test
 

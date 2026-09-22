@@ -552,9 +552,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         runtime_view = getattr(ready.build[2], "runtime_view", None)
         view = runtime_view(run_cwd, token) if callable(runtime_view) else nullcontext(run_cwd)
         with view as effective_cwd:
-            return self._run_ready_group_in_view(
-                request, build_directory, effective_cwd, ready
-            )
+            return self._run_ready_group_in_view(request, build_directory, effective_cwd, ready)
 
     def _run_ready_group_in_view(
         self,
@@ -1490,13 +1488,15 @@ def _capture_outcome_evidence(
         source_raw = source.read_bytes()
         if artifact.kind == "cocotb_results_json":
             source_observations = _decode_cocotb_source(source_raw, artifact.test_names)
-            raw = canonical_json_bytes({
-                "$schema": "booley.cocotb-campaign-transport/v1",
-                "source_bytes": len(source_raw),
-                "source_sha256": _sha_evidence_bytes(source_raw),
-                "source_observations": source_observations,
-                "observations": [_observation(test) for test in outcome.tests],
-            })
+            raw = canonical_json_bytes(
+                {
+                    "$schema": "booley.cocotb-campaign-transport/v1",
+                    "source_bytes": len(source_raw),
+                    "source_sha256": _sha_evidence_bytes(source_raw),
+                    "source_observations": source_observations,
+                    "observations": [_observation(test) for test in outcome.tests],
+                }
+            )
             _create_immutable(destination, raw)
         else:
             durable_copy(source, destination)
@@ -1506,18 +1506,14 @@ def _capture_outcome_evidence(
                 destination,
                 request.attempt_directory,
                 raw,
-                "cocotb_results"
-                if artifact.kind == "cocotb_results_json"
-                else artifact.kind,
+                "cocotb_results" if artifact.kind == "cocotb_results_json" else artifact.kind,
                 request.attempt_id,
             )
         )
     return references
 
 
-def _decode_cocotb_source(
-    raw: bytes, selected: tuple[str, ...]
-) -> list[dict[str, str]]:
+def _decode_cocotb_source(raw: bytes, selected: tuple[str, ...]) -> list[dict[str, str]]:
     try:
         encoded = raw.decode("utf-8")
     except UnicodeDecodeError as exc:

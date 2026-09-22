@@ -60,13 +60,11 @@ def validate_backlinks(
     )
     _need(summary.get("manifest_sha256") == digest, "summary manifest digest differs")
     _need(
-        Path(str(projection.get("campaign_manifest", ""))).resolve()
-        == manifest_path.resolve(),
+        Path(str(projection.get("campaign_manifest", ""))).resolve() == manifest_path.resolve(),
         "compatibility manifest backlink differs",
     )
     _need(
-        Path(str(projection.get("campaign_summary", ""))).resolve()
-        == summary_path.resolve(),
+        Path(str(projection.get("campaign_summary", ""))).resolve() == summary_path.resolve(),
         "compatibility summary backlink differs",
     )
     return {"campaign_id": manifest.get("campaign_id"), "manifest_sha256": digest}

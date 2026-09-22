@@ -248,10 +248,18 @@ def materialize_campaign_runtime_inputs(
     try:
         for declaration in declarations:
             binding, destination = _materialize_campaign_input(
-                declaration, bundle_root, copies_root, run_cwd,
-                owned_run_directory, owned_directories,
+                declaration,
+                bundle_root,
+                copies_root,
+                run_cwd,
+                owned_run_directory,
+                owned_directories,
             )
-            if binding.owned and binding.method == "copy" and destination != binding.authoritative_copy:
+            if (
+                binding.owned
+                and binding.method == "copy"
+                and destination != binding.authoritative_copy
+            ):
                 owned_destinations.append(destination)
             bindings.append(binding)
         yield tuple(bindings)
@@ -296,12 +304,15 @@ def _materialize_campaign_input(
         authoritative, destination, destination_relative, owned_run_directory
     )
     if _runtime_identity(destination) != (size, digest):
-        raise RuntimeInputError(
-            f"runtime input authentication failed: {destination_relative}"
-        )
+        raise RuntimeInputError(f"runtime input authentication failed: {destination_relative}")
     return RuntimeInputBinding(
-        declaration["declaration_id"], authoritative,
-        destination_relative.as_posix(), method, size, digest, owned,
+        declaration["declaration_id"],
+        authoritative,
+        destination_relative.as_posix(),
+        method,
+        size,
+        digest,
+        owned,
     ), destination
 
 
@@ -314,9 +325,7 @@ def _expose_campaign_input(
     if owned_run_directory and destination.resolve(strict=False) == authoritative.resolve():
         return "copy", True
     if destination.exists() or destination.is_symlink():
-        if destination.is_file() and filecmp.cmp(
-            authoritative, destination, shallow=False
-        ):
+        if destination.is_file() and filecmp.cmp(authoritative, destination, shallow=False):
             return "identical_existing", False
         raise RuntimeInputError(f"run input conflicts with an existing path: {relative}")
     shutil.copyfile(authoritative, destination, follow_symlinks=False)
@@ -333,9 +342,7 @@ def _prepare_destination_parent(
     for component in destination.parts[:-1]:
         current /= component
         if current.is_symlink():
-            raise RuntimeInputError(
-                f"run input destination contains a symlink: {destination}"
-            )
+            raise RuntimeInputError(f"run input destination contains a symlink: {destination}")
         if current.exists():
             if not current.is_dir():
                 raise RuntimeInputError(

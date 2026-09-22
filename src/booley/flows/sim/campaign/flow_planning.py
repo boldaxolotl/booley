@@ -65,8 +65,15 @@ def plan_ordinary_hdl_campaign(
         groups, target, variant, configured_cwd, run_kind, kind="ordinary_hdl"
     )
     manifest = _manifest_document(
-        invocation_id, execution_id, target, workload, suite, variant,
-        planning_disclosures, prerequisite_documents, work_items,
+        invocation_id,
+        execution_id,
+        target,
+        workload,
+        suite,
+        variant,
+        planning_disclosures,
+        prerequisite_documents,
+        work_items,
     )
     return create_simulation_campaign_plan(manifest)
 
@@ -96,12 +103,17 @@ def plan_coarse_simulation_campaign(
     target = _target_document(handle, root, revision, "candidate")
     suite = _required_suite(root, required_suite, catalog_backed=required_suite_catalog_backed)
     variant = _variant_document(workload, sources, trace)
-    work_items = _work_items(
-        (names,), target, variant, configured_cwd, run_kind, kind=kind
-    )
+    work_items = _work_items((names,), target, variant, configured_cwd, run_kind, kind=kind)
     manifest = _manifest_document(
-        invocation_id, execution_id, target, workload, suite, variant,
-        planning_disclosures, (), work_items,
+        invocation_id,
+        execution_id,
+        target,
+        workload,
+        suite,
+        variant,
+        planning_disclosures,
+        (),
+        work_items,
     )
     return create_simulation_campaign_plan(manifest)
 
@@ -118,7 +130,7 @@ def _validate_coarse_inputs(
     if inspection.handle != handle or preview.target_identity != handle.identity:
         raise SimulationCampaignIntegrityError("campaign planning Target facts disagree")
     is_cocotb = bool(inspection.flow_options.get("cocotb_module"))
-    if (kind == "cocotb_batch") != is_cocotb:
+    if kind == "cocotb_batch" and not is_cocotb:
         raise SimulationCampaignIntegrityError("coarse campaign kind disagrees with Target")
     names = tuple(selected_tests)
     if preview.groups != (names,):
@@ -133,19 +145,31 @@ def _validate_coarse_inputs(
 
 
 def _manifest_document(
-    invocation_id, execution_id, target, workload, suite, variant,
-    planning_disclosures, prerequisite_documents, work_items,
+    invocation_id,
+    execution_id,
+    target,
+    workload,
+    suite,
+    variant,
+    planning_disclosures,
+    prerequisite_documents,
+    work_items,
 ):
-    return finalize_manifest({
-        "$schema": "booley.simulation-campaign-manifest/v1",
-        "campaign_id": str(uuid.uuid4()),
-        "created_at": utc_now_rfc3339(),
-        "origin": {"execution_id": execution_id, "invocation_id": invocation_id},
-        "target": target, "workload": workload, "required_suite": suite,
-        "build_variants": [variant],
-        "planning_disclosures": list(planning_disclosures),
-        "prerequisites": list(prerequisite_documents), "work_items": work_items,
-    })
+    return finalize_manifest(
+        {
+            "$schema": "booley.simulation-campaign-manifest/v1",
+            "campaign_id": str(uuid.uuid4()),
+            "created_at": utc_now_rfc3339(),
+            "origin": {"execution_id": execution_id, "invocation_id": invocation_id},
+            "target": target,
+            "workload": workload,
+            "required_suite": suite,
+            "build_variants": [variant],
+            "planning_disclosures": list(planning_disclosures),
+            "prerequisites": list(prerequisite_documents),
+            "work_items": work_items,
+        }
+    )
 
 
 def _workload_document(
@@ -158,8 +182,7 @@ def _workload_document(
 ) -> tuple[dict[str, object], str, str, list[dict[str, object]]]:
     root = handle.project_root.resolve()
     parameters = [
-        {"name": name, "value": value}
-        for name, value in sorted(inspection.parameters.items())
+        {"name": name, "value": value} for name, value in sorted(inspection.parameters.items())
     ]
     source_recipe = {
         "sources": sources,
@@ -168,36 +191,60 @@ def _workload_document(
         "pre_sim_commands": list(resolve_pre_sim_commands(root)),
     }
     command_model = {
-        "target_identity": handle.identity, "toplevel": inspection.toplevel,
-        "eda_tool": inspection.eda_tool or "", "parameters": parameters,
-        "flow_options": dict(inspection.flow_options), "trace": trace,
+        "target_identity": handle.identity,
+        "toplevel": inspection.toplevel,
+        "eda_tool": inspection.eda_tool or "",
+        "parameters": parameters,
+        "flow_options": dict(inspection.flow_options),
+        "trace": trace,
     }
     build_recipe = {
-        "eda_tool": inspection.eda_tool or "", "toplevel": inspection.toplevel,
-        "arguments": [], "command_model_sha256": canonical_sha256(command_model),
+        "eda_tool": inspection.eda_tool or "",
+        "toplevel": inspection.toplevel,
+        "arguments": [],
+        "command_model_sha256": canonical_sha256(command_model),
     }
     configured_cwd = resolve_run_cwd(root)
     placeholders = parse_run_cwd_template(configured_cwd)
     run_kind = "templated" if placeholders else "literal"
-    return {
-        "mode": "simulate", "trace": trace, "coverage": coverage,
-        "eda": {"kind": inspection.eda_tool or "", "version": _eda_identity(inspection.eda_tool)},
-        "planner_contract_version": "1", "adapter_contract_version": "1",
-        "pre_sim_build_access": resolve_pre_sim_build_access(root),
-        "run_cwd": {"configured": configured_cwd, "kind": run_kind,
-                    "placeholders": list(placeholders)},
-        "runtime_inputs": list(derive_runtime_input_declarations(inspection.inputs)),
-        "source_recipe": source_recipe, "build_recipe": build_recipe,
-    }, configured_cwd, run_kind, sources
+    return (
+        {
+            "mode": "simulate",
+            "trace": trace,
+            "coverage": coverage,
+            "eda": {
+                "kind": inspection.eda_tool or "",
+                "version": _eda_identity(inspection.eda_tool),
+            },
+            "planner_contract_version": "1",
+            "adapter_contract_version": "1",
+            "pre_sim_build_access": resolve_pre_sim_build_access(root),
+            "run_cwd": {
+                "configured": configured_cwd,
+                "kind": run_kind,
+                "placeholders": list(placeholders),
+            },
+            "runtime_inputs": list(derive_runtime_input_declarations(inspection.inputs)),
+            "source_recipe": source_recipe,
+            "build_recipe": build_recipe,
+        },
+        configured_cwd,
+        run_kind,
+        sources,
+    )
 
 
 def _target_document(
     handle: TargetHandle, root: Path, revision: str, role: str
 ) -> dict[str, object]:
     return {
-        "vlnv": handle.vlnv, "name": handle.name, "selector": handle.selector,
-        "project_identity": canonical_sha256(str(root)), "revision": revision,
-        "role": role, "display_name": handle.selector,
+        "vlnv": handle.vlnv,
+        "name": handle.name,
+        "selector": handle.selector,
+        "project_identity": canonical_sha256(str(root)),
+        "revision": revision,
+        "role": role,
+        "display_name": handle.selector,
     }
 
 
@@ -206,17 +253,21 @@ def _variant_document(
 ) -> dict[str, object]:
     kind = "coverage" if workload["coverage"] is True else "trace" if trace else "candidate"
     recipe = {
-        "kind": kind, "source_closure": sources,
+        "kind": kind,
+        "source_closure": sources,
         "source_recipe": workload["source_recipe"],
-        "build_recipe": workload["build_recipe"], "eda": workload["eda"],
-        "trace": trace, "coverage": workload["coverage"],
+        "build_recipe": workload["build_recipe"],
+        "eda": workload["eda"],
+        "trace": trace,
+        "coverage": workload["coverage"],
     }
     digest = canonical_sha256(recipe)
     return {
         "build_variant_id": "variant:" + digest.removeprefix("sha256:"),
         "kind": recipe["kind"],
         "sharing_eligible": workload["pre_sim_build_access"] == "immutable",
-        "source_closure": sources, "recipe_sha256": digest,
+        "source_closure": sources,
+        "recipe_sha256": digest,
     }
 
 

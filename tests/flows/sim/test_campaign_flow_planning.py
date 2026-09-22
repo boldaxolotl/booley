@@ -15,7 +15,8 @@ def test_resolved_target_plans_one_private_serial_item_per_exact_test(
     project, handle, inspection, preview = _planning_fixture(tmp_path)
     document = _plan(handle, inspection, preview, ("reset", "count"))
     assert [item["selection"]["names"] for item in document["work_items"]] == [  # type: ignore[index]
-        ("reset",), ("count",),
+        ("reset",),
+        ("count",),
     ]
     assert document["required_suite"]["names"] == ("reset", "count")  # type: ignore[index]
     assert document["workload"]["run_cwd"]["configured"] == "."  # type: ignore[index]

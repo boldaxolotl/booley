@@ -9399,7 +9399,7 @@ steps:
     sha256: 384f99c8ffcb6dcaee4649b7328477df5f68ddaaf26e7fdc3ef30fc08e829ee2
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
-    sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
+    sha256: 15cdb1bba2e99fe05163c0a9b890f35f9feeb917579f1273ff8218b2e9afe45f
 - id: campaign.attempt-isolation
   phase: ticket2
   action: Authenticate identical relative outputs from concurrent owned attempts.
@@ -9421,7 +9421,7 @@ steps:
     sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
-    sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
+    sha256: 15cdb1bba2e99fe05163c0a9b890f35f9feeb917579f1273ff8218b2e9afe45f
 - id: campaign.continue-after-failure
   phase: ticket2
   action: Prove concurrent strict failure does not omit later manifest work.
@@ -9443,7 +9443,7 @@ steps:
     sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
   - path: fixtures/simulation-campaign/validate_parallel.py
     audience: independent evaluator
-    sha256: d72808dfe961f1e8d00c03ea417239b40d54c00bdfa0f2b94f27bbc5fa479028
+    sha256: 15cdb1bba2e99fe05163c0a9b890f35f9feeb917579f1273ff8218b2e9afe45f
 - id: campaign.cocotb-batch-resume
   phase: ticket2
   action: Interrupt and resume the existing Taxi multi-test Cocotb batch.
@@ -9466,7 +9466,7 @@ steps:
     sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
   - path: fixtures/simulation-campaign/validate_phase5.py
     audience: independent evaluator
-    sha256: 01677704e173914972699179ea5e7c5b136431dba09076d97cf1e2db8d95a66b
+    sha256: ce92766c7ce601e9dff30d9edff07ed7f16b6e815cd7583087f3595f3f9c5dfc
 - id: campaign.mcp-structured-pointers
   phase: ticket2
   action: Exercise exact array selection through MCP and authenticate its bounded pointers and observations.
@@ -9488,7 +9488,7 @@ steps:
     sha256: 8e83b9eed504cfa375a9e2cf529fe833e93631744a746bfa6508f98014249ea1
   - path: fixtures/simulation-campaign/validate_phase5.py
     audience: independent evaluator
-    sha256: 01677704e173914972699179ea5e7c5b136431dba09076d97cf1e2db8d95a66b
+    sha256: ce92766c7ce601e9dff30d9edff07ed7f16b6e815cd7583087f3595f3f9c5dfc
 - id: final.doctor-plain
   phase: final
   action: Rerun plain Doctor warning-free.

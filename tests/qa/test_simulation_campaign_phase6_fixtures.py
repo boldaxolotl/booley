@@ -31,7 +31,7 @@ def _canonical(value: object) -> bytes:
 def _write(path: Path, value: object, *, pretty: bool = False) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(value, indent=2) if pretty else _canonical(value).decode()
-    path.write_text(text + "\n")
+    path.write_bytes(text.encode() + b"\n")
     return path
 
 
@@ -98,9 +98,7 @@ def _lookup(envelope: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _facts(
-    campaign_id: str, manifest_sha256: str, result_path: Path
-) -> dict[str, object]:
+def _facts(campaign_id: str, manifest_sha256: str, result_path: Path) -> dict[str, object]:
     result = json.loads(result_path.read_text())
     raw = result_path.read_bytes()
     return {
@@ -109,7 +107,11 @@ def _facts(
         "manifest_sha256": manifest_sha256,
         "origin": {"execution_id": "2" * 32, "invocation_id": 1},
         "target": {"selector": "sim_toggle", "name": "sim_toggle"},
-        "required_suite": {"names": ["half"], "default_invocation": False, "source_sha256": _sha256(b"suite")},
+        "required_suite": {
+            "names": ["half"],
+            "default_invocation": False,
+            "source_sha256": _sha256(b"suite"),
+        },
         "prerequisites": [],
         "consumed_results": [
             {
@@ -200,8 +202,11 @@ def _states(
         assert isinstance(change, dict)
         entry = recovered_value["criteria"][change["key"]]
         entry.update(
-            met=change["met"], mandatory=change["mandatory"], params=change["params"],
-            detail=change["detail"], ever_met=True,
+            met=change["met"],
+            mandatory=change["mandatory"],
+            params=change["params"],
+            detail=change["detail"],
+            ever_met=True,
         )
     recovered = _write(tmp_path / "recovered-state.json", recovered_value, pretty=True)
     return archived, failed, recovered
@@ -228,7 +233,10 @@ def _publish_records(
 
 def _acceptance_evidence(tmp_path: Path) -> dict[str, object]:
     campaign_id = "c3fa3451-3a73-4a43-936c-9a2c40f88d30"
-    manifest_value = {"$schema": "booley.simulation-campaign-manifest/v1", "campaign_id": campaign_id}
+    manifest_value = {
+        "$schema": "booley.simulation-campaign-manifest/v1",
+        "campaign_id": campaign_id,
+    }
     manifest = _write(tmp_path / "manifest.json", manifest_value)
     manifest_sha256 = _sha256(_canonical(manifest_value))
     result = _result(tmp_path, campaign_id, manifest_sha256)
@@ -236,7 +244,10 @@ def _acceptance_evidence(tmp_path: Path) -> dict[str, object]:
     facts = _facts(campaign_id, manifest_sha256, result)
     lookup = _lookup(envelope)
     intent = _write(
-        tmp_path / "acceptance" / "intents" / f"{hashlib.sha256(_canonical(lookup)).hexdigest()}.json",
+        tmp_path
+        / "acceptance"
+        / "intents"
+        / f"{hashlib.sha256(_canonical(lookup)).hexdigest()}.json",
         {
             "$schema": "booley.simulation-acceptance-intent/v1",
             "lookup_key": lookup,
@@ -265,10 +276,16 @@ def _acceptance_evidence(tmp_path: Path) -> dict[str, object]:
         {"complete": True, "campaign_manifest": str(manifest), "passed": True},
     )
     return {
-        "manifest": manifest, "results": [result], "intent": intent,
-        "transaction": transaction, "evidence_root": evidence_root,
-        "archived": archived, "failed": failed, "recovered": recovered,
-        "simulation": simulation, "transaction_id": transaction_id,
+        "manifest": manifest,
+        "results": [result],
+        "intent": intent,
+        "transaction": transaction,
+        "evidence_root": evidence_root,
+        "archived": archived,
+        "failed": failed,
+        "recovered": recovered,
+        "simulation": simulation,
+        "transaction_id": transaction_id,
     }
 
 
@@ -276,8 +293,15 @@ def _acceptance_args(evidence: dict[str, object]) -> tuple[object, ...]:
     return tuple(
         evidence[key]
         for key in (
-            "manifest", "results", "intent", "transaction", "evidence_root",
-            "archived", "failed", "recovered", "simulation",
+            "manifest",
+            "results",
+            "intent",
+            "transaction",
+            "evidence_root",
+            "archived",
+            "failed",
+            "recovered",
+            "simulation",
         )
     )
 
@@ -313,18 +337,55 @@ def _add_duplicate_commit(evidence: dict[str, object]) -> None:
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda e: _mutate_json(e["intent"], lambda d: d.update(acceptance_facts_sha256="sha256:" + "0" * 64)), "facts digest"),
-        (lambda e: _mutate_json(e["transaction"], lambda d: d.update(envelope_sha256="sha256:" + "0" * 64)), "envelope digest"),
-        (lambda e: _mutate_json(e["transaction"], lambda d: d["records"][0].update(transaction_ordinal=1)), "record ordinal"),
-        (lambda e: _mutate_json(e["transaction"], lambda d: d["records"][0].update(role="baseline")), "record role"),
-        (lambda e: _mutate_json(e["transaction"], lambda d: d["records"][0].update(sha256="sha256:" + "0" * 64)), "record digest"),
-        (lambda e: _mutate_first_record(e, lambda d: d.update(role="baseline")), "contradicts its envelope"),
-        (lambda e: _mutate_first_record(e, lambda d: d.update(sequence=99)), "contradicts its envelope"),
+        (
+            lambda e: _mutate_json(
+                e["intent"], lambda d: d.update(acceptance_facts_sha256="sha256:" + "0" * 64)
+            ),
+            "facts digest",
+        ),
+        (
+            lambda e: _mutate_json(
+                e["transaction"], lambda d: d.update(envelope_sha256="sha256:" + "0" * 64)
+            ),
+            "envelope digest",
+        ),
+        (
+            lambda e: _mutate_json(
+                e["transaction"], lambda d: d["records"][0].update(transaction_ordinal=1)
+            ),
+            "record ordinal",
+        ),
+        (
+            lambda e: _mutate_json(
+                e["transaction"], lambda d: d["records"][0].update(role="baseline")
+            ),
+            "record role",
+        ),
+        (
+            lambda e: _mutate_json(
+                e["transaction"], lambda d: d["records"][0].update(sha256="sha256:" + "0" * 64)
+            ),
+            "record digest",
+        ),
+        (
+            lambda e: _mutate_first_record(e, lambda d: d.update(role="baseline")),
+            "contradicts its envelope",
+        ),
+        (
+            lambda e: _mutate_first_record(e, lambda d: d.update(sequence=99)),
+            "contradicts its envelope",
+        ),
         (_add_extra_record, "outside its commit"),
         (_add_duplicate_intent, "multiple acceptance intents"),
         (_add_duplicate_commit, "multiple transactions"),
         (lambda e: e["failed"].write_text(e["failed"].read_text() + " "), "archived state bytes"),
-        (lambda e: _mutate_json(e["recovered"], lambda d: d["criteria"]["sim_pass_sim_toggle"]["detail"].update(extra=True)), "Criteria mutation"),
+        (
+            lambda e: _mutate_json(
+                e["recovered"],
+                lambda d: d["criteria"]["sim_pass_sim_toggle"]["detail"].update(extra=True),
+            ),
+            "Criteria mutation",
+        ),
     ],
 )
 def test_acceptance_recovery_validator_rejects_hostile_mutations(
@@ -343,7 +404,11 @@ def _mutate_first_record(
 ) -> None:
     transaction = json.loads(evidence["transaction"].read_text())
     sequence = transaction["records"][0]["sequence"]
-    path = evidence["evidence_root"] / f"{sequence:09d}.tx.{evidence['transaction_id']}" / "record.json"
+    path = (
+        evidence["evidence_root"]
+        / f"{sequence:09d}.tx.{evidence['transaction_id']}"
+        / "record.json"
+    )
     _mutate_json(path, mutation)
 
 
@@ -390,33 +455,48 @@ def test_phase6_checks_and_pending_run_contract_are_complete() -> None:
         "taxi": ("taxi-simulation-campaign", "taxi-ubuntu-codex-cli", 6),
         "uart": ("uart-simulation-campaign", "uart-ubuntu-codex-cli", 4),
         "coverage-lifecycle": (
-            "coverage-lifecycle-simulation-campaign", "coverage-lifecycle-ubuntu-codex-cli", 3,
+            "coverage-lifecycle-simulation-campaign",
+            "coverage-lifecycle-ubuntu-codex-cli",
+            3,
         ),
     }
     campaign_checks = {}
     for scenario_name, (set_id, configured_id, count) in expected.items():
-        scenario = yaml.safe_load((ROOT / f"qa/scenarios/{scenario_name}/scenario.yaml").read_text())
+        scenario = yaml.safe_load(
+            (ROOT / f"qa/scenarios/{scenario_name}/scenario.yaml").read_text()
+        )
         dedicated = next(item for item in scenario["check_sets"] if item["id"] == set_id)
         assert len(dedicated["checks"]) == count
-        selected = [item["id"] for item in scenario["configured_scenarios"] if set_id in item["check_sets"]]
+        selected = [
+            item["id"] for item in scenario["configured_scenarios"] if set_id in item["check_sets"]
+        ]
         assert selected == [configured_id]
         steps = {
             check["id"]: (step, check)
-            for step in scenario["steps"] for check in step["checks"]
+            for step in scenario["steps"]
+            for check in step["checks"]
             if check["id"] in dedicated["checks"]
         }
         assert list(steps) == dedicated["checks"]
         assert all(step.get("requires") for step, _check in steps.values())
         campaign_checks.update({key: check for key, (_step, check) in steps.items()})
     assert len(campaign_checks) == 20
-    assert "CRITERION-EVIDENCE-BINDING" in campaign_checks["campaign.acceptance-recovery"]["capabilities"]
+    assert (
+        "CRITERION-EVIDENCE-BINDING"
+        in campaign_checks["campaign.acceptance-recovery"]["capabilities"]
+    )
     capability = next(
-        item for item in yaml.safe_load((ROOT / "qa/coverage.yaml").read_text())["capabilities"]
+        item
+        for item in yaml.safe_load((ROOT / "qa/coverage.yaml").read_text())["capabilities"]
         if item["id"] == "SIMULATION-CAMPAIGN"
     )
     assert all(check_id in capability["contract"] for check_id in campaign_checks)
     for name in ("picorv32", "taxi", "uart", "coverage-lifecycle"):
-        text = (ROOT / f"qa/scenarios/{name}/fixtures/simulation-campaign/RUNBOOK.md").read_text().lower()
+        text = (
+            (ROOT / f"qa/scenarios/{name}/fixtures/simulation-campaign/RUNBOOK.md")
+            .read_text()
+            .lower()
+        )
         assert "pending" in text and ("recover" in text or "resume" in text)
         assert "cleanup" in text or "remove only" in text
     readme = (ROOT / "qa/README.md").read_text()

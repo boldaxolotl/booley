@@ -53,9 +53,7 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
             )
         schema = require_dict(json.loads(path.read_text(encoding="utf-8"))).get("$schema")
         resolved = (
-            resolve_coverage_campaign_reference(path)
-            if schema == REFERENCE_SCHEMA
-            else None
+            resolve_coverage_campaign_reference(path) if schema == REFERENCE_SCHEMA else None
         )
         loaded = resolved.loaded if resolved is not None else load_coverage_campaign(path)
         campaign = loaded.campaign
@@ -127,8 +125,7 @@ def _reference_projection(
         manifest.document["campaign_id"] != document["simulation_campaign_id"]
         or manifest_digest(manifest) != document["simulation_manifest_sha256"]
         or target["selector"] != resolved.loaded.campaign.target.selector
-        or f"{target['vlnv']}#{target['name']}"
-        != resolved.loaded.campaign.target.identity
+        or f"{target['vlnv']}#{target['name']}" != resolved.loaded.campaign.target.identity
     ):
         raise CoverageAnalysisError("Simulation Campaign manifest disagrees with reference")
 

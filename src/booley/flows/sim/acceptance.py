@@ -103,10 +103,20 @@ class SimulationAcceptanceCoordinator:
         shadow = deepcopy(state)
         changes = _cycle_changes(outcome, shadow, target)
         changes.extend(_coverage_changes(outcome, shadow, target))
-        key = f"sim_pass_{target_name}"
-        if key not in state.criteria and "sim_pass" in state.criteria:
-            key = "sim_pass"
-        if key not in state.criteria:
+        target_identity = f"{target['vlnv']}#{target_name}"
+        target_selector = str(target["selector"])
+        keys = [
+            key
+            for key, entry in state.criteria.items()
+            if key in {"sim_pass", f"sim_pass_{target_name}"}
+            or (
+                key.startswith("sim_pass_")
+                and criterion_matches_target(
+                    entry.params or {}, identity=target_identity, selector=target_selector
+                )
+            )
+        ]
+        if not keys:
             return changes
         suite = facts["required_suite"]
         observations = facts["observations"]
@@ -130,7 +140,8 @@ class SimulationAcceptanceCoordinator:
             "acceptance_facts_sha256": outcome.acceptance_facts.sha256,
             "aggregate_grade": outcome.aggregate_grade,
         }
-        changes.extend(shadow.set_criterion(key, met, detail=detail))
+        for key in keys:
+            changes.extend(shadow.set_criterion(key, met, detail=detail))
         return changes
 
 
@@ -237,9 +248,7 @@ def _coverage_changes(
         if key == direct
         or (
             key.startswith("coverage_")
-            and criterion_matches_target(
-                entry.params or {}, identity=identity, selector=selector
-            )
+            and criterion_matches_target(entry.params or {}, identity=identity, selector=selector)
         )
     ]
     if not keys:

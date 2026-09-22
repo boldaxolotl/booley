@@ -132,9 +132,7 @@ def validate_resume_manifest(
 def _verify_revision(root: Path, target: Mapping[str, str]) -> None:
     actual = git_full_sha("HEAD", root)
     if actual is None:
-        raise SimulationCampaignIntegrityError(
-            f"cannot verify resume Target revision at {root}"
-        )
+        raise SimulationCampaignIntegrityError(f"cannot verify resume Target revision at {root}")
     if actual != target["revision"]:
         raise SimulationCampaignIntegrityError(
             "resume Target checkout revision disagrees with manifest: "

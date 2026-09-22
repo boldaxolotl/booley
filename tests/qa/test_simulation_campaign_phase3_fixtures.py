@@ -85,7 +85,7 @@ def _instrument_compiler(
     wrapper.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' {shlex.quote(compiler)} >> \"$BOOLEY_QA_COMPILER_LOG\"\n"
-        f"exec {shlex.quote(executable)} \"$@\"\n",
+        f'exec {shlex.quote(executable)} "$@"\n',
         encoding="utf-8",
     )
     wrapper.chmod(0o755)
@@ -132,9 +132,9 @@ def _assert_shared_campaign(
     assert compiler_log.read_text(encoding="utf-8").splitlines() == [compiler]
     manifest_path = campaign / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest_sha256 = "sha256:" + hashlib.sha256(
-        manifest_path.read_bytes().rstrip(b"\n")
-    ).hexdigest()
+    manifest_sha256 = (
+        "sha256:" + hashlib.sha256(manifest_path.read_bytes().rstrip(b"\n")).hexdigest()
+    )
     assert [item["selection"]["names"] for item in manifest["work_items"]] == [
         [name] for name in tests
     ]
@@ -219,7 +219,7 @@ def test_owned_targets_and_policy_fragments_are_explicit() -> None:
     }
     assert taxi_target["toplevel"] == "campaign_tb"
     assert (
-        '[sim_campaign_verilator]\n'
+        "[sim_campaign_verilator]\n"
         'tests = ["first", "second", "slow-first", "slow-fail", "slow-last"]'
         in (TAXI / "tests.toml").read_text()
     )
@@ -230,15 +230,12 @@ def test_owned_targets_and_policy_fragments_are_explicit() -> None:
         "vectors/alpha.hex": "inputs/alpha.hex",
         "vectors/beta.hex": "inputs/beta.hex",
     }
-    assert 'run_cwd = ".booley-qa/campaign/{campaign}/{test}/{attempt}"' in (
-        UART / "runtime-inputs.toml"
-    ).read_text()
-    assert 'pre_sim_build_access = "immutable"' in (
-        UART / "immutable-presim.toml"
-    ).read_text()
-    assert 'pre_sim_build_access = "legacy-per-test"' in (
-        UART / "legacy-presim.toml"
-    ).read_text()
+    assert (
+        'run_cwd = ".booley-qa/campaign/{campaign}/{test}/{attempt}"'
+        in (UART / "runtime-inputs.toml").read_text()
+    )
+    assert 'pre_sim_build_access = "immutable"' in (UART / "immutable-presim.toml").read_text()
+    assert 'pre_sim_build_access = "legacy-per-test"' in (UART / "legacy-presim.toml").read_text()
 
 
 def test_taxi_validator_requires_one_shared_build(tmp_path: Path) -> None:
@@ -273,9 +270,7 @@ def test_taxi_validator_requires_one_shared_build(tmp_path: Path) -> None:
             },
         )
     validator = _module("taxi_campaign_validator", TAXI / "validate_bundle.py")
-    assert validator.validate(manifest, build, results, ["first", "second"])[
-        "compile_count"
-    ] == 1
+    assert validator.validate(manifest, build, results, ["first", "second"])["compile_count"] == 1
     document = json.loads(results[1].read_text())
     document["build_result"]["sharing"] = "private_work_item"
     _write_json(results[1], document)
@@ -421,9 +416,7 @@ def test_campaign_checks_are_isolated_to_representative_configurations() -> None
         check_set = next(item for item in scenario["check_sets"] if item["id"] == set_id)
         assert check_set["checks"] == checks
         selected = [
-            item["id"]
-            for item in scenario["configured_scenarios"]
-            if set_id in item["check_sets"]
+            item["id"] for item in scenario["configured_scenarios"] if set_id in item["check_sets"]
         ]
         assert selected == expected_selected
 

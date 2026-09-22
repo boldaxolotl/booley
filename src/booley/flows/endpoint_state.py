@@ -274,9 +274,7 @@ class EndpointState(ABC):
     def _apply_pre_state_gate(self) -> EndpointOutcome | None:
         return endpoint_session._apply_pre_state_gate(self)
 
-    def admission(
-        self, prepared: PreparedExecution
-    ) -> AbstractContextManager[object | None]:
+    def admission(self, prepared: PreparedExecution) -> AbstractContextManager[object | None]:
         return endpoint_admission.admission(self, prepared)
 
     def invoke_endpoint(

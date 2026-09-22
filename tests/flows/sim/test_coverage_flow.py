@@ -139,7 +139,9 @@ def test_shared_execution_failure_aborts_later_targets_without_losing_completed_
     assert set(result.outcome.detail["campaigns"]) == {"sim_0"}
     assert result.outcome.detail["pending_targets"] == ["sim_2"]
     assert (tmp_path / "reports/sim/1/targets/sim_2/campaign/manifest.json").is_file()
-    assert not list((tmp_path / "reports/sim/1/targets/sim_2/campaign").glob("work-items/*/result.json"))
+    assert not list(
+        (tmp_path / "reports/sim/1/targets/sim_2/campaign").glob("work-items/*/result.json")
+    )
 
 
 def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch):
@@ -158,9 +160,7 @@ def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch)
     assert set(tmp_path.rglob("*")) == before
 
 
-def test_interactive_coverage_criterion_does_not_mutate_or_save_state(
-    tmp_path, monkeypatch
-):
+def test_interactive_coverage_criterion_does_not_mutate_or_save_state(tmp_path, monkeypatch):
     from booley.criteria.state import CriterionEntry, DevelopmentState
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -258,9 +258,7 @@ def _interrupt_coverage_invocation(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     revision = "a" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision
-    )
+    monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
     project(tmp_path)
     data = tmp_path / ".booley_project"
     data.mkdir()
@@ -300,9 +298,7 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     assert result.exit_code == 0
     assert (reports / "sim/1/targets/sim_0/coverage.json").is_file()
     assert original_path.read_bytes() == original
-    attempts = list(
-        (reports / "sim/1/targets/sim_0/campaign").glob("work-items/*/attempts/*")
-    )
+    attempts = list((reports / "sim/1/targets/sim_0/campaign").glob("work-items/*/attempts/*"))
     assert len(attempts) == 2
     for projection in (
         reports / "sim/1/targets/sim_0/simulation.json",
@@ -325,9 +321,7 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     revision = "b" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision
-    )
+    monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
     project(tmp_path)
     data = tmp_path / ".booley_project"
     data.mkdir()
@@ -351,9 +345,7 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
             armed = False
             raise OSError(f"injected crash at {boundary}")
 
-    request = SimRequest(
-        target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports
-    )
+    request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
     interrupted = SimulateFlow(
         coverage_execution=execution_factory,
         campaign_publication_checkpoint=checkpoint,
@@ -384,9 +376,7 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
     completed_runs = tuple(runs)
     manifest = public.parent / "campaign/manifest.json"
 
-    resumed = SimulateFlow(
-        coverage_execution=execution_factory
-    ).execute(
+    resumed = SimulateFlow(coverage_execution=execution_factory).execute(
         SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
     )
 
@@ -394,9 +384,7 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
     assert tuple(runs) == completed_runs * (2 if reruns else 1)
     assert resolve_coverage_campaign_reference(public).campaign_path.is_file()
     nested_campaigns = list(
-        public.parent.glob(
-            "campaign/work-items/*/attempts/*/coverage-campaign/coverage.json"
-        )
+        public.parent.glob("campaign/work-items/*/attempts/*/coverage-campaign/coverage.json")
     )
     expected_campaigns = 2 if boundary == "after:coverage_campaign" else 1
     assert len(nested_campaigns) == expected_campaigns

@@ -2103,17 +2103,21 @@ def _snapshot_invoke(commands, eda_tool, handle, snapshot):
         del timeout
         commands.append(command)
         if "BOOLEY_BUILD_STAGE" in command[-1]:
-            return SubprocessResult(
-                returncode=0, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
-            )
+            return SubprocessResult(returncode=0, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n")
         identity = AdapterTransportIdentity(
-            eda_tool, "abc123", handle.identity, ("smoke",),
+            eda_tool,
+            "abc123",
+            handle.identity,
+            ("smoke",),
             snapshot.parent / "execution-evidence" / "adapter-abc123.json",
         )
         write_adapter_result(
             identity,
             AdapterResult(
-                True, False, 0, ("smoke",),
+                True,
+                False,
+                0,
+                ("smoke",),
                 test_results=(AdapterTestResult("smoke", "pass"),),
             ),
         )

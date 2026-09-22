@@ -67,22 +67,31 @@ def test_taxi_parallel_validator_covers_cap_isolation_and_continuation(
 
 
 def _write_parallel_timeline(timeline, root) -> None:
-    _write_json(timeline, {
-        "outer_execution_id": "outer",
-        "slot_samples": [
-            {"at_ns": 2, "heavy_holders": ["outer", "child-a", "child-b"],
-             "heavy_waiters": ["child-c"]},
-            {"at_ns": 5, "heavy_holders": ["outer", "child-b", "child-c"],
-             "heavy_waiters": []},
-        ],
-        "final_slot_state": {"heavy_holders": [], "heavy_waiters": []},
-        "claim_transitions": _claim_transitions(),
-        "intervals": [
-            _interval(root, "slow-first", 1, 5, "a", 0),
-            _interval(root, "slow-fail", 2, 6, "b", 1),
-            _interval(root, "slow-last", 5, 9, "c", 2),
-        ],
-    })
+    _write_json(
+        timeline,
+        {
+            "outer_execution_id": "outer",
+            "slot_samples": [
+                {
+                    "at_ns": 2,
+                    "heavy_holders": ["outer", "child-a", "child-b"],
+                    "heavy_waiters": ["child-c"],
+                },
+                {
+                    "at_ns": 5,
+                    "heavy_holders": ["outer", "child-b", "child-c"],
+                    "heavy_waiters": [],
+                },
+            ],
+            "final_slot_state": {"heavy_holders": [], "heavy_waiters": []},
+            "claim_transitions": _claim_transitions(),
+            "intervals": [
+                _interval(root, "slow-first", 1, 5, "a", 0),
+                _interval(root, "slow-fail", 2, 6, "b", 1),
+                _interval(root, "slow-last", 5, 9, "c", 2),
+            ],
+        },
+    )
 
 
 def _claim_transitions() -> list[dict[str, object]]:
@@ -102,10 +111,16 @@ def _claim_transitions() -> list[dict[str, object]]:
 def _interval(root, name, start, end, suffix, index) -> dict[str, object]:
     attempt_id = f"attempt-{suffix}"
     return {
-        "test": name, "start_ns": start, "end_ns": end,
-        "run_directory": f"run-{suffix}", "relative_output": "qa-shared-name.txt",
-        "token": name, "output_text": name, "attempt_id": attempt_id,
-        "child_execution_id": f"child-{suffix}", "work_item_id": f"item-{index}",
+        "test": name,
+        "start_ns": start,
+        "end_ns": end,
+        "run_directory": f"run-{suffix}",
+        "relative_output": "qa-shared-name.txt",
+        "token": name,
+        "output_text": name,
+        "attempt_id": attempt_id,
+        "child_execution_id": f"child-{suffix}",
+        "work_item_id": f"item-{index}",
         **_artifact_evidence(root, attempt_id, name),
     }
 
@@ -157,9 +172,7 @@ def _assert_claim_corruption_rejected(timeline, validator) -> None:
     document["claim_transitions"] = [
         item
         for item in complete_transitions
-        if not (
-            item["child_execution_id"] == "child-b" and item["state"] == "promoted"
-        )
+        if not (item["child_execution_id"] == "child-b" and item["state"] == "promoted")
     ]
     _write_json(timeline, document)
     with pytest.raises(ValueError, match="exact release"):
@@ -183,9 +196,7 @@ def test_uart_literal_cwd_validator_proves_scoped_serialization(tmp_path: Path) 
                 {"run_directory": "shared", "start_ns": 1, "end_ns": 4},
                 {"run_directory": "shared", "start_ns": 4, "end_ns": 8},
             ],
-            "unrelated_intervals": [
-                {"run_directory": "isolated", "start_ns": 2, "end_ns": 6}
-            ],
+            "unrelated_intervals": [{"run_directory": "isolated", "start_ns": 2, "end_ns": 6}],
         },
     )
     validator.validate_literal_cwd_serialization(manifest, timeline)
@@ -220,9 +231,7 @@ def test_phase4_checks_are_dedicated_and_pending_fresh_runs() -> None:
         dedicated = next(item for item in scenario["check_sets"] if item["id"] == set_id)
         assert all(check in dedicated["checks"] for check in checks)
         selected = [
-            item["id"]
-            for item in scenario["configured_scenarios"]
-            if set_id in item["check_sets"]
+            item["id"] for item in scenario["configured_scenarios"] if set_id in item["check_sets"]
         ]
         assert selected == [configured_id]
         step_ids = {item["id"] for item in scenario["steps"]}
@@ -230,12 +239,13 @@ def test_phase4_checks_are_dedicated_and_pending_fresh_runs() -> None:
 
 
 def test_phase4_fixture_policy_is_explicit() -> None:
-    assert 'run_cwd = ".booley-qa/campaign/{campaign}/{test}/{attempt}"' in (
-        TAXI / "parallel.toml"
-    ).read_text()
-    assert 'run_cwd = ".booley-qa/campaign/literal-shared"' in (
-        UART / "literal-cwd.toml"
-    ).read_text()
+    assert (
+        'run_cwd = ".booley-qa/campaign/{campaign}/{test}/{attempt}"'
+        in (TAXI / "parallel.toml").read_text()
+    )
+    assert (
+        'run_cwd = ".booley-qa/campaign/literal-shared"' in (UART / "literal-cwd.toml").read_text()
+    )
     taxi_source = (TAXI / "campaign_main.cpp").read_text()
     assert "milliseconds(250)" in taxi_source
     assert 'ofstream marker("qa-shared-name.txt"' in taxi_source

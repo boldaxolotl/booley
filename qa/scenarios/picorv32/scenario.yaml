@@ -5875,7 +5875,7 @@ steps:
     sha256: 651b0706648c23a47167adfeb3b78750ec004b4c3b32730f3a237fd287aa1f7b
   - path: fixtures/simulation-campaign/validate_campaign.py
     audience: independent evaluator
-    sha256: 7101485d8be2f351535ce8865ff9819e54e55e241735c8e63028e3105926b525
+    sha256: aae157326bb7d394626c7fd687ebcb2fedc97f98c5eb44f0d9f6e3fba2ae305e
 - id: campaign.tests-file-normalization
   phase: ticket2
   action: Select the same exact tests through the owned comments-and-blanks file.
