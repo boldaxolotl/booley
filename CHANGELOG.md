@@ -68,8 +68,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 - Host Bootstrap now registers the first eligible installed wheel automatically.
   Run `booley bootstrap` after installation and `booley bootstrap --update`
-  after upgrading Booley; the former adoption and installation-upgrade flags
-  have been removed.
+  after upgrading Booley (`--upgrade` is an alias); the former adoption and
+  installation-upgrade flags have been removed.
 - Ticket Mode's Console now shows each direct Developer Agent B-Wave query,
   including its subcommand, duration, and success or failure.
 - Built-in Flow timeouts now use one positive `timeout_ms` contract across

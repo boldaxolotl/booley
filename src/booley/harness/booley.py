@@ -815,6 +815,8 @@ def _add_bootstrap_subparser(sub) -> None:
     )
     parser.add_argument(
         "--update",
+        "--upgrade",
+        dest="update",
         action="store_true",
         help="Update Host Bootstrap after upgrading Booley",
     )

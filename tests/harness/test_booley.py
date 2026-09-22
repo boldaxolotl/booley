@@ -188,8 +188,9 @@ def test_bare_booley_defaults_to_chat():
     assert "Run bare `booley`" in parser.format_help()
 
 
-def test_bootstrap_parser_exposes_only_host_reconciliation_flags():
-    args = tlr._build_parser().parse_args(["bootstrap", "--update", "--verbose"])
+@pytest.mark.parametrize("update_flag", ["--update", "--upgrade"])
+def test_bootstrap_parser_exposes_only_host_reconciliation_flags(update_flag):
+    args = tlr._build_parser().parse_args(["bootstrap", update_flag, "--verbose"])
     assert args.command == "bootstrap"
     assert args.update is True
     assert args.verbose is True
