@@ -493,7 +493,11 @@ def _safe_relative_path(value: str) -> Path:
     if "\\" in value:
         raise SimulationCampaignIntegrityError("child attempt path is not canonical")
     path = Path(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    if (
+        value.startswith("/")
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
         raise SimulationCampaignIntegrityError("child attempt path is not contained")
     return path
 
