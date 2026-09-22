@@ -185,8 +185,10 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 str(outcome.detail.get("error", "native coverage collection failed"))
             )
         if capturing.captured is None:
+            detail = outcome.detail.get("error") or outcome.detail.get("collection")
             raise SimulationCampaignIntegrityError(
                 "coverage collection has no authenticated simulator build"
+                f" (build={capturing.build_result!r}, detail={detail!r})"
             )
         return _completed_result(request, capturing.captured, outcome, capturing.bindings, started)
 
@@ -338,8 +340,10 @@ def _publish_coverage_build_failure(
     checkpoint: Callable[[str], None],
 ) -> SimulationResult | None:
     if build is None or build.success:
+        detail = outcome.detail.get("error") or outcome.detail.get("collection")
         raise SimulationCampaignIntegrityError(
             "coverage collection has no authenticated simulator build"
+            f" (build={build!r}, detail={detail!r})"
         )
     target = cast(Mapping[str, str], request.manifest.document["target"])
     workload = cast(Mapping[str, object], request.manifest.document["workload"])

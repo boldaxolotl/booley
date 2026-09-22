@@ -13,6 +13,7 @@ from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 
 if TYPE_CHECKING:
     from booley.flows.base import BuiltinFlow
+    from booley.flows.sim.campaign import CampaignOutcome
 
 
 class FlowSession(EndpointState):
@@ -38,6 +39,7 @@ class FlowSession(EndpointState):
         self.config_aware = flow.config_aware
         self.non_persisting_dry_run = flow.non_persisting_dry_run
         self.announce_success_report = flow.announce_success_report
+        self._simulation_campaign_outcomes: tuple[CampaignOutcome, ...] = ()
 
     @property
     def args(self) -> FlowRequest:

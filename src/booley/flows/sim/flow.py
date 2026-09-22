@@ -2071,7 +2071,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 revision=revision,
                 invocation_id=invocation_id,
                 execution_id="",
-                trace=cast(bool, manifest.document["workload"]["trace"]),
+                trace=cast(
+                    bool,
+                    cast(Mapping[str, object], manifest.document["workload"])["trace"],
+                ),
                 kind=kind,
                 planning_disclosures=disclosures if kind == "cocotb_batch" else (),
                 required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
@@ -2362,7 +2365,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Report a fatal aggregate without inventing a terminal Simulation result."""
         self.context._simulation_campaign_outcomes = tuple(outcomes)
         targets = _coverage_compatibility_targets(outcomes, Path(self.args.work_dir))
-        failed = str(request.plan.manifest.document["target"]["selector"])
+        failed = str(
+            cast(Mapping[str, object], request.plan.manifest.document["target"])["selector"]
+        )
         targets[failed] = {
             "target": failed,
             "passed": None,
@@ -2373,7 +2378,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "abort_remaining": True,
         }
         pending = [
-            str(item.plan.manifest.document["target"]["selector"])
+            str(cast(Mapping[str, object], item.plan.manifest.document["target"])["selector"])
             for item in requests[index + 1 :]
         ]
         return EndpointOutcome(

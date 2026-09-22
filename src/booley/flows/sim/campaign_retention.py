@@ -8,6 +8,7 @@ Full removal leaves an empty numbered tombstone to prevent invocation-id reuse.
 import hashlib
 import json
 import shutil
+import stat
 from pathlib import Path
 
 from .campaign_reports import (
@@ -27,6 +28,15 @@ from .coverage_reference import (
 
 class CampaignRetentionError(ValueError):
     """A selection or filesystem tree cannot be safely pruned."""
+
+
+def _remove_tree(path: Path) -> None:
+    """Remove an authenticated artifact tree, including read-only snapshots."""
+    for child in path.rglob("*"):
+        if child.is_file():
+            child.chmod(child.stat().st_mode | stat.S_IWUSR)
+    path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    shutil.rmtree(path)
 
 
 def _safe_tree(path: Path) -> None:
@@ -157,7 +167,7 @@ def _prune_native(root: Path, target: str) -> Path:
     if native.exists():
         native.rename(quarantine)
     if quarantine.exists():
-        shutil.rmtree(quarantine)
+        _remove_tree(quarantine)
     write_campaign_json(sidecar, {**document, "status": "pruned"})
     return sidecar
 
@@ -213,7 +223,7 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
         if child == journal:
             continue
         if child.is_dir():
-            shutil.rmtree(child)
+            _remove_tree(child)
         else:
             child.unlink()
     journal.unlink()

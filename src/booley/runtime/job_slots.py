@@ -757,6 +757,7 @@ class SlotStore:
                 return
             current = self._load_token(token.path)
             if current is None:
+                self._unlink_entry(token.path)
                 return
             if current.lease_id and current.lease_id != token.lease_id:
                 return

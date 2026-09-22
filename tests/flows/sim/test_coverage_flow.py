@@ -56,10 +56,10 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     resolved = resolve_coverage_campaign_reference(campaign_path)
     assert resolved.loaded.campaign.evaluation["status"] == "not_requested"
     campaign = result.outcome.detail["campaigns"]["sim_0"]
-    assert campaign["manifest"].endswith("/targets/sim_0/campaign/manifest.json")
-    assert campaign["summary"].endswith("/targets/sim_0/campaign/summary.json")
-    assert campaign["simulation"].endswith("/targets/sim_0/simulation.json")
-    assert campaign["coverage"].endswith("/targets/sim_0/coverage.json")
+    assert Path(campaign["manifest"]).as_posix().endswith("/targets/sim_0/campaign/manifest.json")
+    assert Path(campaign["summary"]).as_posix().endswith("/targets/sim_0/campaign/summary.json")
+    assert Path(campaign["simulation"]).as_posix().endswith("/targets/sim_0/simulation.json")
+    assert Path(campaign["coverage"]).as_posix().endswith("/targets/sim_0/coverage.json")
     assert campaign["observation_counts"] == {
         "execution": {"completed": 2},
         "functional": {"pass": 2},

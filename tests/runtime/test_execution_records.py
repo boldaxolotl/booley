@@ -42,7 +42,10 @@ def test_atomic_write_json_fsyncs_file_then_rename_then_parent(
     path = tmp_path / "record.json"
     atomic_write_json(path, {"state": "terminal"})
 
-    assert events == ["file_fsync", "replace", "parent_fsync"]
+    expected = ["file_fsync", "replace"]
+    if os.name != "nt":
+        expected.append("parent_fsync")
+    assert events == expected
     assert json.loads(path.read_text()) == {"state": "terminal"}
 
 

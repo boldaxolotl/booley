@@ -1356,7 +1356,7 @@ def _artifact_policies(
     attempt: _Attempt,
 ) -> tuple[TraceArtifactPolicy | None, CompatibilityArtifactPolicy]:
     trace = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
-    compatibility = CompatibilityArtifactPolicy.capture(attempt.prepared.build_root)
+    compatibility = CompatibilityArtifactPolicy.capture(Path(attempt.work.build_dir))
     return trace, compatibility
 
 

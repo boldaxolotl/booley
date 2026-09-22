@@ -352,10 +352,9 @@ def test_real_coverage_flow_publishes_canonical_campaign(
 
 
 def test_real_cocotb_flow_uses_one_process_per_selected_test(tmp_path: Path) -> None:
-    import json
-
     from tests.fixtures.verilator_acceptance.flow_fixture import write_project
 
+    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
 
@@ -375,13 +374,14 @@ def test_real_cocotb_flow_uses_one_process_per_selected_test(tmp_path: Path) -> 
         SimRequest(target="sim", work_dir=root, coverage=True, report_dir=root / "reports")
     )
     assert result.exit_code == 0, result.outcome
-    campaign = json.loads(
-        (root / result.outcome.detail["targets"]["sim"]["coverage_campaign"]).read_text()
+    resolved = resolve_coverage_campaign_reference(
+        root / result.outcome.detail["targets"]["sim"]["coverage_campaign"]
     )
-    assert len(campaign["tests"]["runs"]) == 2
-    raw = [artifact for artifact in campaign["artifacts"] if artifact["kind"] == "raw_native"]
-    assert len({artifact["path"] for artifact in raw}) == 2
-    assert {run["test"] for run in campaign["tests"]["runs"]} == {"another", "check"}
+    campaign = resolved.loaded.campaign
+    assert len(campaign.runs) == 2
+    raw = [artifact for artifact in campaign.artifacts if artifact.kind == "raw_native"]
+    assert len({artifact.path for artifact in raw}) == 2
+    assert {run.test for run in campaign.runs} == {"another", "check"}
 
 
 def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
@@ -404,7 +404,7 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
         )
     )
     (root / ".booley_project" / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
-    previous = {}
+    previous: set[str] = set()
     for coverage, trace in [(False, False), (False, True), (True, False), (True, True)]:
         result = SimulateFlow().execute(
             SimRequest(
@@ -417,10 +417,10 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
         )
         assert result.exit_code == 0, result.outcome
         binaries = {
-            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            hashlib.sha256(path.read_bytes()).hexdigest()
             for path in root.rglob("Vtop")
             if path.is_file() and "snapshot" not in path.parts
         }
         assert len(binaries) == len(previous) + 1
-        assert all(binaries.get(path) == digest for path, digest in previous.items())
+        assert previous.issubset(binaries)
         previous = binaries

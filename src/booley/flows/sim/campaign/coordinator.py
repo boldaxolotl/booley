@@ -8,7 +8,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
@@ -180,6 +180,12 @@ class SimulationCampaign:
         self._executor = executor
         self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
         self._publication_gate = threading.Lock()
+
+    @overload
+    def preview(self, request: NewCampaignPreviewRequest) -> NewCampaignPreview: ...
+
+    @overload
+    def preview(self, request: ResumeCampaignPreviewRequest) -> ResumeCampaignPreview: ...
 
     def preview(self, request: CampaignPreviewRequest) -> CampaignPreview:
         if isinstance(request, NewCampaignPreviewRequest):

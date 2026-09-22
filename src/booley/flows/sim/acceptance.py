@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -50,6 +50,7 @@ class AcceptanceContext:
     recorder: AcceptanceRecorder
     invocation_id: str
     diagnostic: bool = False
+    detail_stamper: Callable[[CriterionChange, str], dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,12 @@ class SimulationAcceptanceCoordinator:
         if context.diagnostic or context.state._file_path is None:
             return AcceptanceOutcome(False, None, (), "no_criteria")
         changes = self._derive_changes(outcome, context.state)
+        if context.detail_stamper is not None:
+            selector = str(outcome.target["selector"])
+            changes = [
+                replace(change, detail=context.detail_stamper(change, selector))
+                for change in changes
+            ]
         if not changes:
             return AcceptanceOutcome(False, None, (), "no_applicable_criteria")
         transaction = context.recorder.record_or_verify_transaction(
@@ -150,9 +157,13 @@ def record_campaign_acceptance(
     outcomes: tuple[object, ...],
 ) -> None:
     """Reconcile campaign facts before publishing compatibility projections."""
+    work_dir = getattr(endpoint.args, "work_dir", None)
+    if endpoint.state._file_path is not None and work_dir is not None:
+        endpoint.state.work_dir = str(Path(work_dir).resolve())
     recorder = endpoint._acceptance_recorder
     identity_loader = getattr(recorder, "_validated_ticket_identity", None)
     ticket_identity = identity_loader() if callable(identity_loader) else {}
+    stamp = getattr(endpoint, "_stamp_source_fingerprint", None)
     context = AcceptanceContext(
         endpoint.state.slug,
         dict(ticket_identity),
@@ -161,6 +172,19 @@ def record_campaign_acceptance(
         recorder,
         endpoint._invocation_id,
         diagnostic=bool(getattr(endpoint.args, "diagnostic", False)),
+        detail_stamper=(
+            lambda change, selector: (
+                stamp(
+                    change.key,
+                    change.met,
+                    change.detail,
+                    source_target=selector,
+                )
+                or change.detail
+            )
+        )
+        if callable(stamp)
+        else None,
     )
     reconciler = SimulationAcceptanceCoordinator()
     keys: list[str] = []

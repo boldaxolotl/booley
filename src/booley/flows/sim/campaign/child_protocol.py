@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -210,7 +211,13 @@ class ChildExecutionRegistry:
     def cancel(self, execution_id: ExecutionId) -> bool:
         paths = execution_paths(execution_id, project_dir=self._project_data)
         request_cancellation(paths, reason="campaign_cancelled")
-        return recover_execution(execution_id, project_dir=self._project_data)
+        deadline = time.monotonic() + 5.0
+        while True:
+            if recover_execution(execution_id, project_dir=self._project_data):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
     def recover_unretired(self, slot_store: object | None) -> None:
         """Finish exact child cleanup before work-item attempt recovery."""

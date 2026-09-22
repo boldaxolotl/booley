@@ -472,11 +472,7 @@ def _durable_create(path: Path, raw: bytes) -> None:
     except BaseException:
         path.unlink(missing_ok=True)
         raise
-    parent = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(parent)
-    finally:
-        os.close(parent)
+    _fsync_directory(path.parent)
 
 
 def _validate_project_inventory(
@@ -504,11 +500,7 @@ def _validate_project_inventory(
 
 def _fsync_registry_directories(project_root: Path) -> None:
     for directory in (project_root / "entries", project_root / "retired"):
-        descriptor = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        _fsync_directory(directory)
 
 
 def _require_child_token_absent(project_dir: Path, execution_id: ExecutionId) -> None:

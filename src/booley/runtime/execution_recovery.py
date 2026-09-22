@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import signal
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -147,6 +148,29 @@ def _publish_recovered_terminal(
     )
 
 
+def _recover_windows_execution(
+    execution_id: ExecutionId,
+    record: dict[str, object] | None,
+    *,
+    project_dir: Path | None,
+) -> bool:
+    leader = ProcessIdentity.from_payload(record.get("leader") if record is not None else None)
+    if leader is not None and observe_process(leader).state in {RUNNING, UNKNOWN}:
+        return False
+    _publish_recovered_terminal(execution_id, project_dir=project_dir)
+    return True
+
+
+def _recover_posix_execution(execution_id: ExecutionId, *, project_dir: Path | None) -> bool:
+    if os.environ.get(RUNTIME_EXECUTION_ENV) == execution_id:
+        return False
+    for signum, timeout_s in _RECOVERY_STAGES:
+        if _wait_for_empty(execution_id, signum, timeout_s):
+            _publish_recovered_terminal(execution_id, project_dir=project_dir)
+            return True
+    return False
+
+
 def recover_execution(
     raw_execution_id: str | ExecutionId, *, project_dir: Path | None = None
 ) -> bool:
@@ -164,13 +188,9 @@ def recover_execution(
     )
     if supervisor is not None and observe_process(supervisor).state in {RUNNING, UNKNOWN}:
         return False
-    if os.environ.get(RUNTIME_EXECUTION_ENV) == execution_id:
-        return False
-    for signum, timeout_s in _RECOVERY_STAGES:
-        if _wait_for_empty(execution_id, signum, timeout_s):
-            _publish_recovered_terminal(execution_id, project_dir=project_dir)
-            return True
-    return False
+    if sys.platform == "win32":
+        return _recover_windows_execution(execution_id, record, project_dir=project_dir)
+    return _recover_posix_execution(execution_id, project_dir=project_dir)
 
 
 def _discover_owned_processes(owner: ProcessIdentity, known: dict[int, ProcessIdentity]) -> None:

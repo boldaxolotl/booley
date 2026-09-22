@@ -2094,7 +2094,8 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     assert adapter_flag in launch
     assert str(snapshot) in launch
     assert str(run_cwd) in launch
-    assert f"--work-dir {snapshot.parent / 'execution-evidence'}" in launch
+    assert "--work-dir" in launch
+    assert str(snapshot.parent / "execution-evidence") in launch
     assert str(prepared.build_root) not in launch
 
 

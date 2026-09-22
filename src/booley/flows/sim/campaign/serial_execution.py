@@ -1414,7 +1414,7 @@ def _observation(
         "functional": functional,
         "assertions": assertions,
         "assertion_count": test.sva_errors,
-        "detail": {"reason": (test.reason or test.error_tail)[:1536]},
+        "detail": {"reason": (test.reason or test.error_tail)[-1536:]},
         "cycle_count": test.cycles if observed_execution == "completed" else None,
     }
 

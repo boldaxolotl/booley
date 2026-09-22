@@ -510,6 +510,7 @@ def test_child_recovery_rejects_linked_entry_before_mutation(
     assert not (registry._campaign_root / "retired" / f"{child_id}.json").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows prevents renaming an open file")
 def test_child_protocol_parses_the_same_bytes_it_authenticated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

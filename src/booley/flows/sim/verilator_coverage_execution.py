@@ -262,7 +262,7 @@ class VerilatorCoverageExecution:
             raise SimulationBuildSlotError("coverage simulator image is not authorized")
         if not self._artifact_paths:
             raise SimulationBuildSlotError("coverage simulator image has no artifacts")
-        return prepared.work_root, self._artifact_paths
+        return prepared.build_root, self._artifact_paths
 
     def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
         """Execute only from the campaign-owned snapshot and claimed run directory."""
@@ -270,9 +270,8 @@ class VerilatorCoverageExecution:
         if prepared is None:
             raise SimulationBuildSlotError("coverage simulator image is not authorized")
         try:
-            relative_build = prepared.build_root.relative_to(prepared.work_root)
             rebound_paths = tuple(
-                snapshot_root / path.relative_to(prepared.work_root)
+                snapshot_root / path.relative_to(prepared.build_root)
                 for path in self._artifact_paths
             )
         except ValueError as exc:
@@ -280,7 +279,7 @@ class VerilatorCoverageExecution:
         self._prepared = replace(
             prepared,
             work_root=snapshot_root,
-            build_root=snapshot_root / relative_build,
+            build_root=snapshot_root,
         )
         self._artifact_paths = rebound_paths
         self._attempt_run_cwd = run_cwd
