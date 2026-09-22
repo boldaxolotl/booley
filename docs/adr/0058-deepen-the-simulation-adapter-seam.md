@@ -4,18 +4,24 @@ status: accepted
 
 # Deepen the Simulation Adapter Seam
 
-Simulation keeps campaign policy in `SimulateFlow` and gives simulator variance
-to a private adapter boundary. The Flow selects Targets and tests, coordinates
-Cycle Count baselines, applies Criteria, renders reports, and chooses the public
-exit code. Adapter composition owns Verilator, Icarus, and Cocotb command
-shaping; leaf adapters own simulator launch, verdict normalization, and trace
-finalization.
+Simulation Campaign policy lives in the deep `SimulationCampaign` module rather
+than `SimulateFlow`. That module owns immutable planning, manifest publication,
+durable serial scheduling and resume. Its private `OrdinaryHdlSerialExecutor`
+bridges one admitted work item to the existing adapter boundary. `SimulateFlow`
+selects Targets and tests, coordinates Cycle Count prerequisites, applies
+Criteria, renders reports, and chooses the public exit code. Adapter composition
+continues to own Verilator, Icarus, and Cocotb command shaping; leaf adapters own
+simulator launch, verdict normalization, and trace finalization.
 
-`SimulationExecution.run(handle, selection)` owns the production execution
-sequence and returns immutable normalized evidence; `preview(handle,
-selection)` renders the same native-per-test or Cocotb-batch grouping without
-executing it. `SimulateFlow` depends on those two operations rather than leaf
-adapter details.
+`SimulationExecution.ordinary_group(handle, selection)` owns compilation and
+launch mechanics for an ordinary-HDL selection and returns immutable normalized
+evidence. `OrdinaryHdlSerialExecutor` owns the surrounding Simulation Attempt,
+Simulator Bundle Build Attempt/Result, executable snapshot, runtime-input and
+Pre-Sim sequencing required by the manifest. The compatibility
+`SimulationExecution.run(handle, selection)` and `preview(handle, selection)`
+operations remain available for execution models that have not moved to the
+durable serial path. Neither `SimulationCampaign` nor `SimulateFlow` depends on
+leaf-adapter details.
 
 The caller expresses test intent as either an ordered, nonempty `NamedTests`
 value or `DefaultSelection`. `None` is not an adapter-level test identity. A
@@ -71,7 +77,10 @@ failure is typed infrastructure evidence, except that a wrapper timeout retains
 its established timeout precedence when the child could not publish a terminal
 result.
 
-Pre-Sim Commands fire after Target preparation and before the composite
-build/run subprocess: once per selected native test and once per Cocotb batch.
-Elaboration Check does not enter this adapter seam and continues to share only
-build preparation and classification with full Simulation.
+For the durable ordinary-HDL path, immutable Pre-Sim Commands fire once per
+Simulation Attempt after Simulator Bundle authentication and runtime-input
+staging but before snapshot launch. Explicit `legacy-per-test` access instead
+uses a private build per work item and runs the command before compilation.
+Cocotb retains one command per batch until it gains finer durable work-item
+isolation. Elaboration Check does not enter this adapter seam and continues to
+share only build preparation and classification with full Simulation.

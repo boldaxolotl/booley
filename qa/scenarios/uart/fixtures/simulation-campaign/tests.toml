@@ -1,0 +1,3 @@
+[sim_campaign_uart]
+tests = ["alpha", "beta"]
+select = "+test={name}"

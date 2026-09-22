@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import cast
 
 from booley.core.boundary import BoundaryError, require_dict
+from booley.flows.sim.campaign.planning import manifest_digest
+from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_reports import is_report_link, target_report_directory
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
@@ -16,6 +18,12 @@ from booley.flows.sim.coverage_campaign import (
 from booley.flows.sim.coverage_campaign_store import (
     LoadedCoverageCampaign,
     load_coverage_campaign,
+)
+from booley.flows.sim.coverage_reference import (
+    REFERENCE_SCHEMA,
+    ResolvedCoverageCampaign,
+    authenticate_coverage_campaign_owner,
+    resolve_coverage_campaign_reference,
 )
 
 
@@ -43,7 +51,13 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
             raise CoverageAnalysisError(
                 "Campaign must belong to one numbered Simulation invocation"
             )
-        loaded = load_coverage_campaign(path)
+        schema = require_dict(json.loads(path.read_text(encoding="utf-8"))).get("$schema")
+        resolved = (
+            resolve_coverage_campaign_reference(path)
+            if schema == REFERENCE_SCHEMA
+            else None
+        )
+        loaded = resolved.loaded if resolved is not None else load_coverage_campaign(path)
         campaign = loaded.campaign
         if str(
             campaign.invocation["id"]
@@ -51,7 +65,10 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
             invocation, campaign.target.selector
         ):
             raise CoverageAnalysisError("Campaign identity disagrees with its exact path")
-        _projection(path.parent / "simulation.json", campaign)
+        projection = _projection(path.parent / "simulation.json", campaign)
+        if resolved is not None:
+            authenticate_coverage_campaign_owner(resolved)
+            _reference_projection(path, projection, resolved)
         return loaded
     except (OSError, ValueError, BoundaryError) as exc:
         raise CoverageAnalysisError(
@@ -68,7 +85,7 @@ def _safe_path(path: Path) -> None:
         raise CoverageAnalysisError(f"Expected a retained regular file: {path}")
 
 
-def _projection(path: Path, campaign: CoverageCampaign) -> None:
+def _projection(path: Path, campaign: CoverageCampaign) -> dict[str, object]:
     _safe_path(path)
     projection = require_dict(json.loads(path.read_text(encoding="utf-8")))
     expected = {
@@ -82,6 +99,38 @@ def _projection(path: Path, campaign: CoverageCampaign) -> None:
         projection.get(key) != value for key, value in expected.items()
     ):
         raise CoverageAnalysisError("Campaign lacks a matching completed Simulation projection")
+    return projection
+
+
+def _reference_projection(
+    public_path: Path,
+    projection: Mapping[str, object],
+    resolved: ResolvedCoverageCampaign,
+) -> None:
+    """Authenticate a Simulation-owned projection through its exact manifest."""
+    manifest_pointer = projection.get("campaign_manifest")
+    expected_manifest = public_path.parent / "campaign" / "manifest.json"
+    if (
+        projection.get("coverage_campaign") != "coverage.json"
+        or projection.get("coverage_campaign_base") != "origin_target"
+        or not isinstance(manifest_pointer, str)
+        or Path(manifest_pointer).absolute() != expected_manifest
+    ):
+        raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
+    _safe_path(expected_manifest)
+    manifest = CampaignStore(expected_manifest.parent).load_manifest()
+    document = resolved.reference.document
+    target = manifest.document["target"]
+    if not isinstance(target, Mapping):
+        raise CoverageAnalysisError("Simulation Campaign Target is invalid")
+    if (
+        manifest.document["campaign_id"] != document["simulation_campaign_id"]
+        or manifest_digest(manifest) != document["simulation_manifest_sha256"]
+        or target["selector"] != resolved.loaded.campaign.target.selector
+        or f"{target['vlnv']}#{target['name']}"
+        != resolved.loaded.campaign.target.identity
+    ):
+        raise CoverageAnalysisError("Simulation Campaign manifest disagrees with reference")
 
 
 def coverage_sources(

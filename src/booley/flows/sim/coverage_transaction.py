@@ -1,6 +1,6 @@
 """One Target's ordered collection, evaluation and durable Campaign publication."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -133,10 +133,13 @@ def run_coverage_target(
     plan: CoverageTargetPlan,
     execution: SimulationExecutionPort,
     progress: CoverageProgressSink,
+    *,
+    embedded_root: Path | None = None,
+    publication_checkpoint: Callable[[str], None] | None = None,
 ) -> CoverageTargetOutcome:
     """Publish Campaign, Simulation, acceptance and state, then checkpoint progress."""
     assert plan.invocation_dir is not None and plan.collection_request is not None
-    root = target_report_directory(plan.invocation_dir, plan.handle.selector)
+    root = embedded_root or target_report_directory(plan.invocation_dir, plan.handle.selector)
     result = None
     campaign = None
     try:
@@ -145,7 +148,14 @@ def run_coverage_target(
         result = collect(replace(plan.collection_request, artifact_root=root), execution)
         validate_coverage_sources(plan)
         campaign = _evaluate(plan, _campaign(plan, result))
-        outcome = _publish(plan, result, root, campaign)
+        outcome = _publish(
+            plan,
+            result,
+            root,
+            campaign,
+            embedded=embedded_root is not None,
+            publication_checkpoint=publication_checkpoint,
+        )
     except (OSError, ValueError, AcceptanceRecordingError) as exc:
         outcome = _transaction_error(plan, root, result, exc, campaign)
     try:
@@ -180,12 +190,19 @@ def _publish(
     result: CoverageCollectionResult,
     root: Path,
     campaign: CoverageCampaign,
+    *,
+    embedded: bool,
+    publication_checkpoint: Callable[[str], None] | None,
 ) -> CoverageTargetOutcome:
     campaign_path, simulation_path = root / "coverage.json", root / "simulation.json"
+    checkpoint = publication_checkpoint or (lambda _boundary: None)
+    checkpoint("before:coverage_campaign")
     publish_coverage_campaign(root, campaign)
+    checkpoint("after:coverage_campaign")
     passed = bool(result.runs) and all(run.simulation_verdict == "pass" for run in result.runs)
     detail = _simulation_projection(plan, campaign, result, passed)
-    write_campaign_json(simulation_path, detail)
+    if not embedded:
+        write_campaign_json(simulation_path, detail)
     status = campaign.evaluation["status"]
     exit_code = (
         2
@@ -200,7 +217,7 @@ def _publish(
         freeze_coverage_mapping(detail),
         abort_remaining=result.infrastructure_error,
     )
-    if plan.acceptance is not None:
+    if plan.acceptance is not None and not embedded:
         plan.acceptance.publish(plan, campaign, campaign_path)
     return outcome
 

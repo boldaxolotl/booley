@@ -1,0 +1,3 @@
+[sim_campaign_verilator]
+tests = ["first", "second", "slow-first", "slow-fail", "slow-last"]
+select = "+test={name}"

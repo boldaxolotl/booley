@@ -98,6 +98,11 @@ check_sets:
   - cleanup.git
   - cleanup.storage
   - cleanup.records
+- id: coverage-lifecycle-simulation-campaign
+  checks:
+  - campaign.coverage-aggregate-resume
+  - campaign.acceptance-recovery
+  - campaign.corrupt-terminal-rejection
 configured_scenarios:
 - id: coverage-lifecycle-ubuntu-codex-cli
   required: true
@@ -121,6 +126,7 @@ configured_scenarios:
     cannot be varied.
   check_sets:
   - coverage-lifecycle-core
+  - coverage-lifecycle-simulation-campaign
   exclusions: []
 - id: coverage-lifecycle-ubuntu-claude-cli
   required: true
@@ -3345,6 +3351,92 @@ steps:
   requires:
   - baseline.retention
   - retain.active.restore
+- id: campaign.coverage-aggregate-resume
+  phase: exercise
+  action: Interrupt native coverage after collection begins, then resume the exact Simulation Campaign aggregate work item from its immutable Manifest.
+  checks:
+  - id: campaign.coverage-aggregate-resume
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    - COVERAGE-CAMPAIGN-STORAGE
+    stimulus: Run the shared `sim_toggle` Target's exact `half` test through public `sim --coverage`, terminate and reap the owned producer after native collection starts but before terminal publication, preserve the interrupted attempt, then resume from the exact Simulation Campaign Manifest using a distinct compatibility report root.
+    expected: Resume creates a new Simulation Attempt and distinct nested Coverage Campaign, reruns serial collection and deterministic merge as one whole aggregate work item, passes the existing independent Coverage Campaign integrity checks, and publishes one canonical origin-invocation coverage reference that both origin and resumed projections resolve.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#native-coverage-campaigns
+    evidence: Exact argv, Target/test/source/tool identities, immutable Simulation Campaign Manifest, process interruption/reap timeline, interrupted and resumed Simulation Attempts, both attempt-scoped Coverage Campaign directories, raw native database and merge identities, nested coverage manifest bytes/digest, enclosing Simulation Result, canonical Target-level reference, Criteria transaction, publication ordering, origin and resumed compatibility projections, independent evaluator output, and cleanup proof.
+    capture: evidence/coverage-lifecycle.campaign.coverage-aggregate-resume
+  requires:
+  - baseline.native
+  - publish.interrupt.restore
+  timeout_minutes: 15
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: eb484efe16e0fd32cfe16b020e2176fe47e706d95e621351587765162d969d19
+  - path: fixtures/simulation-campaign/validate_aggregate.py
+    audience: independent evaluator
+    sha256: 0375d3b780214ef6696d2f4ff6d5d55830604a4e9f369b5d8ddf21a4c1ffb844
+  - path: coverage/RUNBOOK.md
+    base: shared
+    audience: scenario-operator
+    sha256: 0339bce8f8ba6ac37e19f79fd960f91de557a261e1f3c8b3e4b9df67ca45810c
+- id: campaign.acceptance-recovery
+  phase: exercise
+  action: Recover one terminal Simulation Campaign after a deterministic owned Development State save failure.
+  checks:
+  - id: campaign.acceptance-recovery
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    - CRITERION-EVIDENCE-BINDING
+    stimulus: With a run-owned Ticket requiring the complete `sim_toggle` suite, let every terminal Simulation Result commit, archive the Development State and Acceptance Journal, then create an owned directory at the state writer's exact temporary path so selection fails before the compatibility projection completes. Remove only that fault and resume the exact Simulation Campaign Manifest.
+    expected: Resume record-or-verifies the existing Acceptance Journal intent, selects its one transaction exactly once without contradictory duplicate evidence or a new Simulation Attempt, and atomically publishes `simulation.json` with `complete:true`.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
+    evidence: Exact initial/resume argv and exits, immutable Simulation Campaign Manifest and terminal Result bytes/digests, publication timeline, owned temporary-path fault identity, archived and recovered Development State, Acceptance Journal intent/transaction/evidence directories and digests, before/after attempt listings, final summary and `simulation.json`, validator output, and cleanup proof.
+    capture: evidence/coverage-lifecycle.campaign.acceptance-recovery
+  requires:
+  - campaign.coverage-aggregate-resume
+  timeout_minutes: 10
+  resources:
+  - run-owned Simulation Campaign report root
+  - run-owned Ticket Development State temporary path
+  - run-owned Acceptance Journal transaction and evidence directories
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: eb484efe16e0fd32cfe16b020e2176fe47e706d95e621351587765162d969d19
+  - path: fixtures/simulation-campaign/validate_recovery.py
+    audience: independent evaluator
+    sha256: 0c360c5e77a15878c4a48880d4e82e58b2dbe7d9ac4a50d1b99d7bbf34bb2779
+- id: campaign.corrupt-terminal-rejection
+  phase: exercise
+  action: Reject one corrupted owned terminal Simulation Result before any retry is admitted.
+  checks:
+  - id: campaign.corrupt-terminal-rejection
+    capabilities:
+    - SIMULATION-CAMPAIGN
+    stimulus: Archive one valid terminal `result.json`, change one owned byte in the live copy, snapshot attempts and EDA processes, and resume the exact immutable Simulation Campaign Manifest; then restore the archived bytes exactly and resume again.
+    expected: The corrupt resume exits 2 with a precise Simulation Result integrity diagnostic before any new attempt or EDA process; byte-exact restoration makes validation and idempotent recovery succeed without rerunning the completed work item.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/TROUBLESHOOTING.md#coverage-campaign-diagnostics-and-retention
+    evidence: Archived/corrupt/restored Result bytes and SHA-256 digests, exact resume argv/exits/diagnostics, before/after attempt-directory inventories, timestamped process samples proving no EDA launch, unchanged other terminal evidence, final summary and compatibility projection, validator output, restoration and cleanup proof.
+    capture: evidence/coverage-lifecycle.campaign.corrupt-terminal-rejection
+  requires:
+  - campaign.coverage-aggregate-resume
+  timeout_minutes: 10
+  recovery:
+    baseline: campaign.coverage-aggregate-resume
+    detection:
+    - campaign.acceptance-recovery
+    instruction: Archive the corrupt terminal Result, rejection, and process/attempt evidence even if detection differs; restore only the exact archived Result bytes, authenticate their digest, resume the same Manifest as a valid control, and prove the completed work item did not rerun before continuing.
+  resources:
+  - run-owned Simulation Campaign terminal Result
+  - run-owned corrupt-result evidence archive
+  - run-owned EDA process and attempt inventory
+  assets:
+  - path: fixtures/simulation-campaign/RUNBOOK.md
+    audience: scenario-operator
+    sha256: eb484efe16e0fd32cfe16b020e2176fe47e706d95e621351587765162d969d19
+  - path: fixtures/simulation-campaign/validate_recovery.py
+    audience: independent evaluator
+    sha256: 0c360c5e77a15878c4a48880d4e82e58b2dbe7d9ac4a50d1b99d7bbf34bb2779
 - id: final.regression
   phase: final
   action: With all injections disabled rerun native numeric half and four-property half cases, current accepted

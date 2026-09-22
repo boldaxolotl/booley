@@ -32,6 +32,7 @@ class PreparedExecution:
     display_label: str | None
     dry_run: bool
     non_persisting_dry_run: bool
+    simulation: object | None = None
 
 
 def _apply_pre_state_gate(endpoint: EndpointState) -> EndpointOutcome | None:
@@ -52,6 +53,12 @@ def prepare_execution(
         return early_outcome
     endpoint.read_state()
     endpoint._default_target_args()
+    flow = getattr(endpoint, "flow", None)
+    simulation: object | None = None
+    if endpoint.name == "sim" and hasattr(flow, "prepare_simulation_endpoint"):
+        simulation = flow.prepare_simulation_endpoint()
+        if isinstance(simulation, EndpointOutcome):
+            return simulation
     display_target = endpoint._resolve_display_config()
     display_label = endpoint._resolve_display_label()
     dry_run = bool(getattr(endpoint.args, "dry_run", False))
@@ -70,6 +77,7 @@ def prepare_execution(
         display_label=display_label,
         dry_run=dry_run,
         non_persisting_dry_run=non_persisting_dry_run,
+        simulation=simulation,
     )
 
 
@@ -77,6 +85,7 @@ def invoke_endpoint(
     endpoint: EndpointState,
     prepared: PreparedExecution,
     *,
+    admission: object | None,
     started: float,
 ) -> EndpointOutcome:
     """Run the legacy implementation hook under the neutral coordinator."""
@@ -87,7 +96,14 @@ def invoke_endpoint(
     sys.stdout = witness  # type: ignore[assignment]
     try:
         try:
-            result = endpoint._adapt_outcome(endpoint._run())
+            flow = getattr(endpoint, "flow", None)
+            if prepared.simulation is not None and hasattr(
+                flow, "run_prepared_simulation"
+            ):
+                raw = flow.run_prepared_simulation(prepared.simulation, admission)
+            else:
+                raw = endpoint._run()
+            result = endpoint._adapt_outcome(raw)
         except Exception:
             logger.exception("Endpoint %s failed with exception", endpoint.name)
             result = EndpointOutcome(exit_code=EXIT_ERROR)

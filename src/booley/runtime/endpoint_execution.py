@@ -77,14 +77,15 @@ class ExecutableEndpoint(
     different request representations while sharing the same execution order.
     """
 
-    def admission(self, prepared: Prepared_contra) -> AbstractContextManager[None]:
-        """Validate and return the admission lifetime held through finish."""
+    def admission(self, prepared: Prepared_contra) -> AbstractContextManager[object | None]:
+        """Validate and yield the admission value held through finish."""
         ...
 
     def invoke_endpoint(
         self,
         prepared: Prepared_contra,
         *,
+        admission: object | None,
         started: float,
     ) -> EndpointOutcome:
         """Run the endpoint implementation and finalize its raw outcome."""
@@ -136,10 +137,10 @@ def execute_endpoint(
 
     admission = ExitStack()
     try:
-        admission.enter_context(endpoint.admission(request))
+        borrowed = admission.enter_context(endpoint.admission(request))
     except EndpointRejectedError as exc:
         return _record_and_finish(endpoint, request, exc.outcome, started=None)
     with admission:
         started = time.monotonic()
-        outcome = endpoint.invoke_endpoint(request, started=started)
+        outcome = endpoint.invoke_endpoint(request, admission=borrowed, started=started)
         return _record_and_finish(endpoint, request, outcome, started=started)

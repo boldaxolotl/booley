@@ -127,6 +127,27 @@ def test_flow_reference_uses_the_executable_target_filter() -> None:
     assert "booley targets --for <flow>" not in _reference_text()
 
 
+def test_sim_campaign_resume_granularity_stays_documented() -> None:
+    section = _flow_section("sim")
+    assert "Cocotb interruption retries its whole batch" in section
+    assert "coverage interruption" in section
+    assert "distinct nested Coverage Campaign" in section
+    assert "maximum-32 `observations` preview" in section
+    assert "`observation_total`" in section
+    assert "`observations_truncated`" in section
+
+
+def test_sim_configured_skip_control_stays_documented() -> None:
+    section = " ".join(_flow_section("sim").split())
+    config = " ".join(
+        (REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8").split()
+    )
+    assert "exact explicit suite" in section
+    assert "overrides those entries" in section
+    assert "fails preflight instead of passing vacuously" in section
+    assert "all-skip target fails preflight" in config
+
+
 def test_sim_test_fields_stay_documented() -> None:
     entry = _test_report_entry(
         SimTestResult(

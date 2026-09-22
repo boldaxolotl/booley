@@ -82,6 +82,8 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
         cmd += ["--max-rundir-bytes", str(work.max_rundir_bytes)]
     if work.run_cwd:
         cmd += ["--run-cwd", work.run_cwd]
+    if work.work_dir:
+        cmd += ["--work-dir", work.work_dir]
     if work.trace:
         cmd += ["--trace", "--trace-mode", work.trace_mode]
     cmd += [f"--plusarg={value}" for value in work.plusargs]

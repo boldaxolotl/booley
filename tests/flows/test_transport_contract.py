@@ -235,7 +235,9 @@ def test_acceptance_failures_keep_their_distinct_persistence_semantics(
     if phase == "update":
         result = flow.execute(request)
         assert result.exit_code == 2
-        assert len(persisted) == 1  # Error completion still persists, after the failed update.
+        # The failed acceptance append never makes mutable state durable, and
+        # standalone execution no longer persists a fallback error timeline.
+        assert persisted == []
     else:
         with pytest.raises(RuntimeError, match="acceptance append failed"):
             flow.execute(request)

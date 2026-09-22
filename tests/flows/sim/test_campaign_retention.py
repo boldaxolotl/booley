@@ -265,6 +265,27 @@ def test_maintenance_cli_requires_exact_selection_and_executes_both_modes(tmp_pa
     assert not outcome.campaign_path.exists()
 
 
+def test_maintenance_cli_help_scopes_project_data_to_nonstandard_full_pruning():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[3] / "src")}
+    result = subprocess.run(
+        [sys.executable, "-m", "booley.flows.sim.campaign_retention", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=environment,
+        check=False,
+    )
+    assert result.returncode == 0
+    help_text = " ".join(result.stdout.split()).replace("--reports- root", "--reports-root")
+    assert "for --full when --reports-root is outside" in help_text
+    assert "not required for --native-target" in help_text
+
+
 def test_full_pruning_rejects_unresolved_completed_target(tmp_path):
     from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 

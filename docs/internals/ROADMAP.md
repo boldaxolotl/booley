@@ -25,9 +25,14 @@ without a second collection of project-specific scripts.
 
 The three highest-value capabilities are [coverage
 measurement](#native-coverage-campaigns), regression management, and failure
-triage. Regression management should run and retain test/Target/seed matrices,
-support parallel and nightly campaigns, and make every failure exactly
-reproducible. Failure triage should cluster related failures, distinguish
+triage. Durable single-Target Simulation Campaigns now retain an immutable
+exact suite, authenticated shared Simulator Bundles, isolated append-only
+attempts, strict resume, and bounded Project-local parallel execution. Cocotb
+is one resumable batch work item and native coverage is one resumable aggregate
+with an attempt-scoped nested Coverage Campaign. This delivers local durable
+regression management and bounded campaign parallelism; multi-Target/seed
+matrices, named/nightly scheduling, and cross-Campaign result exploration remain
+planned. Failure triage should cluster related failures, distinguish
 design, testbench, and infrastructure problems, and rerun representative
 failures with waveform capture for focused diagnosis.
 

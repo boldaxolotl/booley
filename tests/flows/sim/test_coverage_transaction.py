@@ -1,4 +1,5 @@
 import json
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,6 +25,9 @@ class NativeExecution:
     def __init__(self, *, verdict="pass", hits=2, missing=False):
         self.verdict, self.hits, self.missing = verdict, hits, missing
         self.runs = []
+        self.build_root = Path(tempfile.mkdtemp(prefix="booley-coverage-test-"))
+        self.executable = self.build_root / "simv"
+        self.executable.write_bytes(b"authenticated simulator image")
 
     def build(self, request):
         return SimulationBuildResult(True, collector=PINNED_VERILATOR)
@@ -46,6 +50,13 @@ class NativeExecution:
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
         request.output_path.write_text(self.payload(self.hits * len(self.runs)))
         return SimulationCommandResult(0)
+
+    def authenticated_image(self):
+        return self.build_root, (self.executable,)
+
+    def bind_authenticated_attempt(self, snapshot_root, run_cwd):
+        self.executable = snapshot_root / self.executable.name
+        self.run_cwd = run_cwd
 
 
 class Progress:

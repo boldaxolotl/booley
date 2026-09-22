@@ -20,5 +20,12 @@ def flow_schema(endpoint: Any) -> dict[str, Any]:
     if endpoint.name == "sim":
         properties.pop("_legacy_elab_only", None)
         properties.pop("_legacy_standalone", None)
-        properties["mode"]["default"] = "simulate"
+        # Omission is semantic for manifest resume: even an explicit
+        # ``simulate`` conflicts. The Flow defaults only after selecting the
+        # non-resume path.
+        properties["mode"].pop("default", None)
+        # A local file selector is CLI-only. MCP sends exact names directly.
+        properties.pop("tests_file", None)
+        properties["test"].update(minItems=1, uniqueItems=True)
+        properties["test"]["items"]["minLength"] = 1
     return schema

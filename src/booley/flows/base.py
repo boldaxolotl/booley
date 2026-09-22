@@ -64,6 +64,23 @@ class SubprocessResult:
 _CGROUP_MEMORY_EVENT_PATHS = (Path("/sys/fs/cgroup/memory.events"),)
 
 
+def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
+    from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
+    from booley.runtime.supervised_execution import (
+        current_supervised_execution,
+    )
+
+    scope = current_supervised_execution()
+    if scope is not None and scope.execution_id is not None:
+        env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
+    return cmd, scope
+
+
+def _finish_supervised_process(scope, proc) -> None:
+    if scope is not None and proc is not None:
+        scope.processes.unregister(proc)
+
+
 def _cgroup_oom_kill_count() -> int | None:
     """Return this cgroup's cumulative OOM-kill count when available."""
     for path in _CGROUP_MEMORY_EVENT_PATHS:
@@ -92,6 +109,29 @@ def _popen_kwargs_with_lease() -> dict[str, Any]:
     if os.name != "nt" and lease_fd is not None:
         kwargs["pass_fds"] = (lease_fd,)
     return kwargs
+
+
+def _start_local_process(cmd, cwd, env, scope):
+    if scope is not None and scope.cancelled():
+        return None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            **_popen_kwargs_with_lease(),
+        )
+        if scope is not None:
+            scope.processes.register(proc)
+        return proc
+    except FileNotFoundError:
+        logger.error("Command not found: %s", cmd[0])
+        return None
+    except BaseException:
+        raise
 
 
 def _linux_process_tree_rss_bytes(root_pid: int) -> int | None:
@@ -258,25 +298,17 @@ class FlowMechanics:
         cwd = self._get_cwd()
         env = os.environ.copy()
         env.update(self._extra_subprocess_env())
+        cmd, scope = _prepare_supervised_command(cmd, env)
         start = time.monotonic()
         oom_before = _cgroup_oom_kill_count()
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                **_popen_kwargs_with_lease(),
-            )
-        except FileNotFoundError:
-            logger.error("Command not found: %s", cmd[0])
+        proc = _start_local_process(cmd, cwd, env, scope)
+        if proc is None:
             return SubprocessResult(returncode=-1)
         memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
         memory_monitor.start()
 
         def resource_evidence() -> tuple[float | None, int]:
+            _finish_supervised_process(scope, proc)
             peak_rss_mb = memory_monitor.finish()
             oom_after = _cgroup_oom_kill_count()
             oom_delta = (
@@ -315,6 +347,7 @@ class FlowMechanics:
                 logger.warning("Interrupted; killing the process tree of: %s", " ".join(cmd))
                 kill_process_tree(proc)
                 memory_monitor.finish()
+                _finish_supervised_process(scope, proc)
                 raise
             elapsed = time.monotonic() - start
             peak_rss_mb, oom_kill_delta = resource_evidence()

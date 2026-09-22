@@ -1,0 +1,17 @@
+CAPI=2:
+name: booley:qa:uart_simulation_campaign:1
+filesets:
+  tb:
+    files:
+    - campaign_tb.sv
+    - vectors/alpha.hex: {file_type: user, copyto: inputs/alpha.hex}
+    - vectors/beta.hex: {file_type: user, copyto: inputs/beta.hex}
+    file_type: systemVerilogSource
+    tags:
+    - tb
+targets:
+  sim_campaign_uart:
+    default_tool: icarus
+    filesets:
+    - tb
+    toplevel: campaign_tb

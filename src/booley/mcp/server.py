@@ -3356,7 +3356,7 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
             work_dir,
             raw_target,
             arguments.get("test"),
-            arguments.get("skip"),
+            None,
             mode,
         )
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child

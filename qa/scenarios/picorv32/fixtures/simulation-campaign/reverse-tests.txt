@@ -1,0 +1,4 @@
+# Exact selection intentionally differs from registry order.
+
+tail
+quick

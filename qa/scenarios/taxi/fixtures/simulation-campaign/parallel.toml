@@ -1,0 +1,3 @@
+[flows.sim]
+run_cwd = ".booley-qa/campaign/{campaign}/{test}/{attempt}"
+pre_sim_build_access = "immutable"

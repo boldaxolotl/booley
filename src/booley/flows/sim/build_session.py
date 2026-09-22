@@ -642,8 +642,8 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         prepared: PreparedSimulationBuild,
         inputs: Mapping[str, str],
         key: str | None = None,
-    ) -> None:
-        """Record and check the image from this authenticated fresh compilation."""
+    ) -> tuple[Path, ...]:
+        """Record and check the image, returning its authenticated artifact paths."""
         if self._lock is None:
             raise SimulationBuildSlotError("Simulation slot is not leased")
         root = prepared.build_root.resolve()
@@ -673,6 +673,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                     )
             if key is not None:
                 self._promote_pointer(prepared)
+            return artifacts
         except (OSError, RuntimeError) as exc:
             raise SimulationBuildSlotError(f"cannot authorize Simulation image: {exc}") from exc
 

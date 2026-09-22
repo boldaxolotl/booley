@@ -241,14 +241,32 @@ those relative paths are authored against — usually the testbench dir:
 run_cwd = "tests/work"   # relative to the repo root; unset = run from project root
 ```
 
-Every Simulation adapter honors this as its literal cwd. Its resolved value is
-exported to Pre-Sim Commands as `BOOLEY_RUN_CWD`.
+Durable ordinary-HDL Simulation Campaigns also accept `{campaign}`, `{target}`,
+`{test}`, and `{attempt}` placeholders. Each expands to one path component from
+the immutable Campaign/attempt identity. A templated directory is Booley-owned,
+carries an exact attempt ownership marker, and is removed after terminal
+evidence is committed. Resume removes a surviving interrupted directory only
+when that marker still matches; it refuses an unmarked, linked, or foreign
+directory. A literal directory keeps legacy pre-existing-directory semantics
+and is protected by a collision lock, so Campaign work sharing it runs one at a
+time. Unknown placeholders, formatting conversions/specifiers, and unmatched
+braces are rejected.
 
-**The directory must already exist.** Booley does not create it — the sim run
-spawns with this as its cwd, and a missing one fails the spawn. If your run dir
-is generated (a scratch dir a staging step fills), `mkdir -p` it from
-[Pre-sim commands](#pre-sim-commands-flowssimpre_run_commands), which run
-before the sim and are free to create it.
+`[flows.sim].pre_sim_build_access` selects the Pre-Sim Commands contract:
+`"immutable"` (default) runs hooks after authenticating the bundle and exposes
+no build path, while `"legacy-per-test"` preserves pre-compile hooks against a
+fresh private generation. The selected value is part of Simulation Campaign workload
+identity and cannot change on resume.
+
+Every Simulation adapter honors the resolved path as its literal cwd. That path
+is exported to Pre-Sim Commands as `BOOLEY_RUN_CWD`.
+
+**A literal directory must already exist.** Booley does not create a literal
+`run_cwd`; a missing one fails before simulator launch. A path containing at
+least one Campaign placeholder is different: Booley creates and owns that
+attempt directory, then cleans it using its ownership marker. Pre-Sim Commands
+may create children inside the resolved `BOOLEY_RUN_CWD`, but must not replace
+the directory or its marker.
 
 ### Pre-Sim Commands (`[flows.sim].pre_run_commands`)
 
@@ -283,7 +301,7 @@ artifact staging never has to guess the sim's working directory:
 | `BOOLEY_TEST_NAME` | single-test runs only | the selected test |
 | `BOOLEY_TEST_NAMES` | always | the run's test list, space-joined |
 | `BOOLEY_RUN_CWD` | always | the directory the Simulation Flow runs in ([`run_cwd`](#sim-working-directory-flowssimrun_cwd) when set; otherwise the Project root) |
-| `BOOLEY_BUILD_ROOT` | after resolution | the resolved Edalize build tree |
+| `BOOLEY_BUILD_ROOT` | `pre_sim_build_access = "legacy-per-test"` only | the fresh private per-test Edalize build tree; deliberately absent in immutable mode |
 | `BOOLEY_PROJECT_ROOT` / `BOOLEY_PROJECT_DIR` | always | same meaning as in the [post-setup hook](#post-setup-hook) |
 | `BOOLEY_SIM_EDA_TOOL` | after Target resolution | concrete EDA tool driven by this Simulation Flow run |
 
@@ -305,6 +323,16 @@ Every firing is recorded in the run report — one line per invocation naming th
 Target/test, the number of command lines, the exit status and the duration
 (`pre_run_commands (2 line(s)) for div_test: rc=0 in 4.7s`) — so a hook doing
 the wrong thing quietly is visible without breaking it on purpose.
+
+In the default `immutable` mode the shared Simulator Bundle is authenticated
+before the hook runs, but the hook receives no authoritative build path and
+cannot mutate the image used for execution. Declared `file_type: user` /
+`copyto` runtime inputs are copied or reflinked into the attempt directory and
+authenticated there. Choose `legacy-per-test` only for a hook that truly must
+write into the compile surface: it disables shared-build reuse for that work
+item and records a private build in the Campaign. Changing either build-access
+mode, hook commands, runtime inputs, or `run_cwd` changes workload identity and
+prevents an old manifest from resuming.
 
 Simulate-only by design: no ported project has ever needed a non-sim prebuild.
 For a *once-per-worktree* setup step (not per-run), use the [post-setup
@@ -636,6 +664,16 @@ incomplete calibration, never a successful PPA result.
 
 The slot store is per-project. It does not arbitrate separate Projects' shared
 host resources such as commercial-license seats.
+
+A Simulation Campaign borrows the already-admitted Simulation Job's heavy slot
+as its first lane; it does not acquire a second slot for the same work. At
+`max_heavy = 1`, Campaign work is serial. With a larger cap, ready independent
+work items may acquire child heavy slots up to that same Project-wide cap.
+Literal `run_cwd` collisions still serialize locally, while distinct templated
+attempt directories may overlap. Cancellation and lease loss withdraw queued
+child claims and keep each occupied slot until the matching supervised process
+tree is terminal, so stale capacity is never treated as free while an EDA child
+is still alive.
 
 Each admitted holder has a renewable recovery lease that is separate from its
 optional work timeout. A Job launched through an explicit Sandbox Attachment
@@ -1361,10 +1399,11 @@ a **getopt argument** (`-…` / `--…`), forwarded verbatim to the sim binary's
 `skip` drops known-hanging / known-failing tests from a plain
 `booley flow sim --target <target>`
 run so each doesn't burn the full per-test wall-clock budget. Naming a skipped
-test explicitly with `--test <name>` still runs it (an explicit override), and an
-all-skip target ignores the list rather than passing with zero tests. For a
-one-off exclusion without editing config, pass
-`booley flow sim --target <target> --skip name1,name2`.
+test explicitly with repeatable exact `--test <name>` still runs it (an explicit override), and an
+all-skip target fails preflight rather than passing with zero tests or silently
+running configured-skipped work. For a
+different explicit suite, use repeated `--test` options or `--tests-file`; there
+is no per-invocation `--skip` option.
 
 #### Per-Target environment (`env`)
 

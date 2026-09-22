@@ -7,6 +7,41 @@ range from the packaged copy of this file.
 Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
+## Unreleased
+
+### New features
+
+- Simulation now records each exact Target workload as a durable Simulation
+  Campaign. Immutable manifests, authenticated shared Simulator Bundles,
+  isolated append-only attempts, strict resume, and bounded Project-local
+  scheduling make completed work reusable without treating mutable reports as
+  authority. Cocotb retries as one disclosed batch; native coverage retries as
+  one aggregate with a distinct attempt-scoped Coverage Campaign.
+- `sim --resume-from <manifest.json>` resumes only the named Campaign. Dry-run
+  previews completed, interrupted, pending, and mismatched work without
+  admission or mutation. Structured CLI/MCP results retain bounded manifest,
+  summary, simulation, coverage, and independent observation pointers.
+
+### Upgrade notes
+
+- Simulation selection is deliberately exact: repeat CLI `--test <name>` or
+  use CLI-only `--tests-file <path>`. The per-run CLI `--skip` option is
+  removed; configured `tests.toml` skips affect only an unfiltered run. MCP
+  callers must migrate `test` from a scalar string to a nonempty unique array.
+- Scripts must save the printed `campaign/manifest.json` path and pass that
+  exact file to `--resume-from`; Booley does not infer a latest Campaign.
+  Resume conflicts with Target, test, explicit mode, coverage, and trace
+  selection because those values come from the immutable manifest.
+- The default `pre_sim_build_access = "immutable"` shares authenticated build
+  outputs without exposing the build path to Pre-Sim Commands. Select
+  `"legacy-per-test"` only when a hook must modify a private compile surface.
+  `run_cwd` supports `{campaign}`, `{target}`, `{test}`, and `{attempt}` for
+  Booley-owned isolated attempt directories.
+- Existing Simulation Campaign schema versions are immutable. Unsupported or
+  corrupt manifests fail closed and must be rerun or restored byte-for-byte;
+  upgrades never rewrite retained authority in place. See
+  [Simulation Campaign migration](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SIMULATION_CAMPAIGN_MIGRATION.md).
+
 ## 0.2.15 - 08 SEP 2026
 
 ### New features

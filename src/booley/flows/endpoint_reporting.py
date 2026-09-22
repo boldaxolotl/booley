@@ -17,6 +17,7 @@ from booley.flows.endpoint_events import (
     _endpoint_progress_event,
     _write_display_event,
 )
+from booley.flows.execution_persistence import NoAcceptanceRecorder
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
@@ -400,27 +401,7 @@ def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float)
     provisional outcome before saving mutable state.
     """
     criteria_set = list(endpoint._pending_criteria_set or ())
-    # Extract key endpoint arguments for timeline filtering (e.g. --category)
-    endpoint_args: dict[str, Any] | None = None
-    if endpoint._args:
-        _ta: dict[str, Any] = {}
-        for attr in ("category", "config", "reason", "dry_run"):
-            val = getattr(endpoint._args, attr, None)
-            if val:
-                _ta[attr] = val
-        endpoint_args = _ta or None
-    endpoint.state.record_mcp_tool_run(
-        endpoint.name,
-        result.exit_code,
-        endpoint_kind=endpoint.endpoint_kind,
-        duration_s=duration,
-        criteria_set=criteria_set or None,
-        cost_usd=result.cost_usd if result.cost_usd else None,
-        args=endpoint_args,
-    )
-    if endpoint._state is not None and endpoint._state._file_path is not None:
-        endpoint.state.save()
-        _emit_criteria_update(endpoint.state)
+    _persist_run_state(endpoint, result, duration, criteria_set)
     if endpoint.write_report(result) is None:
         endpoint._warn_no_report_artifact()
     # Human / standalone mode (no state file): the actionable diagnostic lives
@@ -444,6 +425,39 @@ def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float)
         elif endpoint.announce_success_report:
             # A passing run: put the verdict on stdout so it is not silent.
             print(result.report_text, flush=True)
+
+
+def _persist_run_state(
+    endpoint: EndpointState,
+    result: EndpointOutcome,
+    duration: float,
+    criteria_set: list[str],
+) -> None:
+    if isinstance(endpoint._acceptance_recorder, NoAcceptanceRecorder):
+        return
+    endpoint.state.record_mcp_tool_run(
+        endpoint.name,
+        result.exit_code,
+        endpoint_kind=endpoint.endpoint_kind,
+        duration_s=duration,
+        criteria_set=criteria_set or None,
+        cost_usd=result.cost_usd if result.cost_usd else None,
+        args=_endpoint_timeline_args(endpoint),
+    )
+    if endpoint._state is not None and endpoint._state._file_path is not None:
+        endpoint.state.save()
+        _emit_criteria_update(endpoint.state)
+
+
+def _endpoint_timeline_args(endpoint: EndpointState) -> dict[str, Any] | None:
+    if not endpoint._args:
+        return None
+    values = {
+        attr: value
+        for attr in ("category", "config", "reason", "dry_run")
+        if (value := getattr(endpoint._args, attr, None))
+    }
+    return values or None
 
 
 def _finish_main(

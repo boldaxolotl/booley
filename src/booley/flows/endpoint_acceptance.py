@@ -27,6 +27,7 @@ from booley.runtime.endpoint_execution import (
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
+    from booley.targets.domain import TargetHandle
 
 
 logger = logging.getLogger(__name__)
@@ -243,6 +244,62 @@ def _bound_criterion_keys(endpoint: EndpointState, target: str) -> list[str]:
     return bound
 
 
+def _bound_criterion_keys_for_target(
+    endpoint: EndpointState, target: TargetHandle
+) -> list[str]:
+    """Return bindings for an already-resolved Target without re-resolving it."""
+    from booley.targets.domain import criterion_matches_target
+
+    selector = getattr(endpoint.args, "test", None)
+    detail = {
+        "test_selector": selector or "all",
+        "selected_tests": [selector] if selector else [],
+    }
+    bound = _acceptance_target_bindings(endpoint, target)
+    for family in endpoint.satisfies:
+        generic_key = f"{family}_{target.name}"
+        if generic_key in endpoint.state.criteria:
+            bound.append(generic_key)
+            continue
+        for alias in endpoint.state.flow_key_aliases.get(generic_key, []):
+            if alias in endpoint.state.criteria and endpoint.state._alias_matches_run(
+                alias, detail
+            ):
+                bound.append(alias)
+        if family in endpoint.state.criteria:
+            bound.append(family)
+        bound.extend(
+            key
+            for key, entry in endpoint.state.criteria.items()
+            if key.startswith(f"{family}_")
+            and isinstance(entry.params, dict)
+            and criterion_matches_target(
+                entry.params,
+                identity=target.identity,
+                selector=target.selector,
+            )
+            and key not in bound
+        )
+    return bound
+
+
+def _acceptance_target_bindings(
+    endpoint: EndpointState, target: TargetHandle
+) -> list[str]:
+    """Match exact candidate or baseline identities sealed by Ticket intake."""
+    matches: list[str] = []
+    for binding in endpoint.flow_acceptance.bindings:
+        if binding.flow != endpoint.name:
+            continue
+        pairs = (
+            (binding.candidate, binding.candidate_selector),
+            (binding.baseline, binding.baseline_selector),
+        )
+        if (target.identity, target.selector) in pairs:
+            matches.append(binding.criterion)
+    return matches
+
+
 def _criterion_target_matches(
     endpoint: EndpointState,
     params: dict[str, Any],
@@ -356,6 +413,13 @@ def record_acceptance(
     """Record immutable Ticket evidence before state/report persistence."""
     if prepared.non_persisting_dry_run:
         endpoint._pending_criteria_set = ()
+        return
+    campaign_outcomes = getattr(endpoint, "_simulation_campaign_outcomes", ())
+    if campaign_outcomes:
+        handler = getattr(getattr(endpoint, "flow", None), "record_campaign_acceptance", None)
+        if not callable(handler):
+            raise RuntimeError("campaign outcomes have no Flow-owned acceptance handler")
+        handler(campaign_outcomes)
         return
     result = endpoint._adapt_outcome(outcome)
     if endpoint._state is not None and endpoint._state._file_path is not None:

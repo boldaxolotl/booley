@@ -13,6 +13,7 @@ def test_native_adapter_invocations_preserve_order_and_option_shaping() -> None:
     common = {
         "build_dir": "build/sim",
         "run_cwd": "assets",
+        "work_dir": "attempt/evidence",
         "timeout_s": 12,
         "max_rundir_bytes": 2048,
         "plusargs": ("test_id=2", "--firmware=image.elf"),
@@ -36,9 +37,11 @@ def test_native_adapter_invocations_preserve_order_and_option_shaping() -> None:
     assert verilator[:3] == ["python3", "-m", "booley.flows.sim.backends.verilator"]
     assert "--trace-mode" in verilator
     assert "--trace-arg=--trace={file}" in verilator
+    assert verilator[verilator.index("--work-dir") + 1] == "attempt/evidence"
     assert icarus[:3] == ["python3", "-m", "booley.flows.sim.backends.icarus"]
     assert "--top" not in icarus
     assert "--plusarg=--firmware=image.elf" in icarus
+    assert icarus[icarus.index("--work-dir") + 1] == "attempt/evidence"
 
 
 def test_cocotb_adapter_supports_unfiltered_batch() -> None:

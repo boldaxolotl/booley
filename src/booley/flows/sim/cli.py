@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 from typing import Any
 
 from booley.flows.cli_arguments import BuiltinArguments
@@ -28,15 +29,23 @@ class SimArguments(BuiltinArguments):
         SimArguments._add_elaboration_args(parser)
         parser.add_argument(
             "--test",
+            action="append",
             default=None,
-            help="Run specific test by name (substring match)",
+            metavar="NAME",
+            help="Run exact registered test names in caller order (CLI: repeat; MCP: array)",
         )
         parser.add_argument(
-            "--skip",
+            "--tests-file",
+            type=Path,
             default=None,
-            help="Comma-separated test names to exclude (exact match). Adds to "
-            "any [flows.sim] / tests.toml 'skip' list. Use to dodge "
-            "known-hanging tests that burn the full wall-clock budget.",
+            help="Read exact test names from PATH, one per line; blanks and # comments ignored",
+        )
+        parser.add_argument(
+            "--resume-from",
+            type=Path,
+            default=None,
+            metavar="MANIFEST",
+            help="Resume one exact Simulation Campaign manifest.json",
         )
         SimArguments._add_run_control_args(parser)
 
@@ -84,10 +93,55 @@ class SimArguments(BuiltinArguments):
             args.mode = SimulationMode.ELAB_ONLY_STANDALONE
         elif args._legacy_elab_only:
             args.mode = SimulationMode.ELAB_ONLY
-        elif args.mode is None:
-            args.mode = SimulationMode.SIMULATE
+        if args.test and args.tests_file is not None:
+            parser.error("--test and --tests-file are mutually exclusive")
+        if args.resume_from is not None:
+            conflicts = SimArguments._resume_conflicts(args)
+            if conflicts:
+                parser.error("--resume-from cannot be combined with " + ", ".join(conflicts))
+            args.target = ""
+        if args.tests_file is not None:
+            args.test = SimArguments._read_tests_file(args.tests_file, parser)
+            args.tests_file = None
+        duplicates = sorted(
+            {name for name in (args.test or []) if args.test.count(name) > 1}
+        )
+        if duplicates:
+            parser.error("duplicate exact test name(s): " + ", ".join(duplicates))
+        if args.test is not None:
+            args.test = tuple(args.test)
         vars(args).pop("_legacy_elab_only")
         vars(args).pop("_legacy_standalone")
+
+    @staticmethod
+    def _resume_conflicts(args: argparse.Namespace) -> list[str]:
+        return [
+            option
+            for present, option in (
+                (bool(args.target), "--target"),
+                (args.test is not None, "--test"),
+                (args.tests_file is not None, "--tests-file"),
+                (args.mode is not None, "--mode"),
+                (args.coverage, "--coverage"),
+                (args.trace, "--trace"),
+            )
+            if present
+        ]
+
+    @staticmethod
+    def _read_tests_file(path: Path, parser: argparse.ArgumentParser) -> list[str]:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            parser.error(f"cannot read --tests-file {path}: {exc}")
+        names = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not names:
+            parser.error("--tests-file contains no test names")
+        return names
 
     @staticmethod
     def _add_run_control_args(parser: Any) -> None:
