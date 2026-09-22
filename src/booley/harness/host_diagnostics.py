@@ -66,13 +66,13 @@ def _inspect_host_installation(report: Findings) -> None:
         identity = load_host_installation()
         actual = current_host_installation(skills_dir())
     except HostInstallationError as exc:
-        report.fail(str(exc), "booley bootstrap --adopt-installation")
+        report.fail(str(exc), "booley bootstrap")
         return
     if actual != identity:
         report.fail(
             "current Booley process does not match the canonical host installation "
             f"({actual.distribution_root} != {identity.distribution_root})",
-            "booley bootstrap --upgrade-installation",
+            "booley bootstrap --update",
         )
         return
     report.pass_(

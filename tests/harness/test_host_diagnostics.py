@@ -115,7 +115,7 @@ def test_host_diagnosis_rejects_mismatched_current_installation(monkeypatch):
 
     finding = report.report().findings[0]
     assert finding.severity is Severity.FAIL
-    assert "--upgrade-installation" in finding.fix
+    assert "--update" in finding.fix
 
 
 def test_host_diagnosis_reports_missing_current_installation(monkeypatch):

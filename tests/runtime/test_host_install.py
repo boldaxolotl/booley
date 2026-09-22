@@ -84,21 +84,21 @@ def test_load_reports_malformed_state(tmp_path: Path) -> None:
         host_install.load_host_installation(state)
 
 
-def test_adoption_rejects_ineligible_resource(monkeypatch) -> None:
+def test_registration_rejects_ineligible_resource(monkeypatch) -> None:
     monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: "not eligible")
 
     with pytest.raises(HostInstallationError, match="not eligible"):
-        host_install.adopt_host_installation(Path("/skills"))
+        host_install.register_host_installation(Path("/skills"))
 
 
-def test_adoption_is_idempotent_for_existing_identity(tmp_path: Path, monkeypatch) -> None:
+def test_registration_is_idempotent_for_existing_identity(tmp_path: Path, monkeypatch) -> None:
     state = tmp_path / "host-installation.json"
     identity = _identity()
     monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
     monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
     _write(state, identity)
 
-    assert host_install.adopt_host_installation(Path("/skills"), path=state) == identity
+    assert host_install.register_host_installation(Path("/skills"), path=state) == identity
 
 
 def test_host_install_error_reports_invalid_state(tmp_path: Path) -> None:
@@ -170,7 +170,7 @@ def test_rejects_resource_outside_imported_distribution() -> None:
         )
 
 
-def test_unrecorded_installed_wheel_requires_explicit_adoption(tmp_path: Path) -> None:
+def test_unrecorded_installed_wheel_directs_user_to_bootstrap(tmp_path: Path) -> None:
     source = Path("/opt/python/lib/python3.14/site-packages/booley/data/skills")
     error = host_install.host_install_error(
         source,
@@ -179,7 +179,7 @@ def test_unrecorded_installed_wheel_requires_explicit_adoption(tmp_path: Path) -
         path=tmp_path / "missing.json",
     )
     assert error is not None
-    assert "--adopt-installation" in error
+    assert "booley bootstrap" in error
 
 
 def test_mismatched_recorded_identity_is_rejected(tmp_path: Path, monkeypatch) -> None:
@@ -200,24 +200,24 @@ def test_mismatched_recorded_identity_is_rejected(tmp_path: Path, monkeypatch) -
     assert "does not match" in error
 
 
-def test_adoption_is_atomic_and_refuses_implicit_replacement(tmp_path: Path, monkeypatch) -> None:
+def test_registration_is_atomic_and_refuses_implicit_update(tmp_path: Path, monkeypatch) -> None:
     state = tmp_path / "host-installation.json"
     candidate = _identity()
     monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
     monkeypatch.setattr(host_install, "current_host_installation", lambda _source: candidate)
 
-    assert host_install.adopt_host_installation(Path("/skills"), path=state) == candidate
+    assert host_install.register_host_installation(Path("/skills"), path=state) == candidate
     assert host_install.load_host_installation(state) == candidate
     assert not list(tmp_path.glob("*.tmp"))
 
     replacement = replace(candidate, version="2.0.0")
     monkeypatch.setattr(host_install, "current_host_installation", lambda _source: replacement)
     with pytest.raises(HostInstallationError, match="different canonical"):
-        host_install.adopt_host_installation(Path("/skills"), path=state)
+        host_install.register_host_installation(Path("/skills"), path=state)
     assert host_install.load_host_installation(state) == candidate
 
     assert (
-        host_install.adopt_host_installation(Path("/skills"), replace=True, path=state)
+        host_install.register_host_installation(Path("/skills"), update=True, path=state)
         == replacement
     )
     assert host_install.load_host_installation(state) == replacement

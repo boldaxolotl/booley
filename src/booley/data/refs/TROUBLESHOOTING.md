@@ -184,8 +184,8 @@ resolves `booley` from. If `booley --version` and `pip show booley-rtl`
 
 Run `command -v -a booley` (or `where.exe booley` on Windows) and remove or
 upgrade older user or system installations that appear before the one you
-intend to use. Run `booley bootstrap --adopt-installation` for a first install,
-or `booley bootstrap --upgrade-installation` after an intentional upgrade.
+intend to use. Then run `booley bootstrap`, or `booley bootstrap --update`
+after an intentional upgrade.
 
 ## Windows first-run problems
 
