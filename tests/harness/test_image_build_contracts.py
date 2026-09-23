@@ -118,6 +118,9 @@ def test_publisher_and_build_stamp_share_standard_contract_calculator() -> None:
     owner = (SOURCE_ROOT / "src" / "booley" / "runtime" / "image_build_contracts.py").read_text(
         encoding="utf-8"
     )
+    test_workflow = (SOURCE_ROOT / ".github" / "workflows" / "test.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "image_build_contracts import standard_substrate_contract" in workflow
     assert workflow.count("io.booley.runtime-base.contract=") >= 2
@@ -126,6 +129,7 @@ def test_publisher_and_build_stamp_share_standard_contract_calculator() -> None:
     assert "--expected-standard-substrate-contract" in workflow
     assert "source_image_build_contracts(booley_root)" in stamp
     assert "standard_substrate_contract(root)" in owner
+    assert "profile=BuildProfile.DEVELOPMENT_WHEEL" in test_workflow
 
 
 def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access(
@@ -142,8 +146,8 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     expected = contracts.source_image_build_contracts(checkout)
     write_build_stamp(checkout, profile=BuildProfile.OFFICIAL_RELEASE)
     wheel_dir = tmp_path / "wheel"
-    build_python = shutil.which("python3") or sys.executable
-    subprocess.run(
+    build_python = sys.executable
+    built = subprocess.run(
         [
             build_python,
             "-m",
@@ -155,11 +159,12 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
             str(wheel_dir),
         ],
         cwd=checkout,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=120,
     )
+    assert built.returncode == 0, built.stderr or built.stdout
     wheel = next(wheel_dir.glob("booley_rtl-*.whl"))
     installed = tmp_path / "site-packages"
     with zipfile.ZipFile(wheel) as archive:
