@@ -216,13 +216,6 @@ class _IncrementalBuildAdapter:
             return
         root = resolve_checkout_project_dir(self.project_root)
         body = runtime_lifecycle._project_requirements_body(self.project_root)
-        if node.role is ImageRole.PROJECT_OVERLAY:
-            project_image.write_project_image_files(
-                root / "docker",
-                body or "",
-                parent_image=project_image.MANAGED_PROJECT_PARENT,
-            )
-            return
         project_image.write_project_image_files(
             root / "docker",
             body or "",
@@ -244,6 +237,24 @@ class _IncrementalBuildAdapter:
         if inputs is None:
             return
         build_context, contexts, build_args = inputs
+        spec = docker_image._DockerBuildSpec(
+            dockerfile=node.recipe,
+            context=build_context,
+            exists=False,
+            image=candidate,
+            build_contexts=contexts,
+            build_args=build_args,
+            parent_artifact=parent_id,
+            labels=tuple(self._build_labels(node)),
+            build_note=f"preparing {node.role.value}",
+        )
+        result = docker_image._docker_build_image(context, spec)
+        if result is None:
+            return
+        if result != 0:
+            context.record("docker_image", "err", f"{node.role.value} build failed")
+
+    def _build_labels(self, node: ImageNode) -> list[tuple[str, str]]:
         labels = [
             (runtime_lifecycle.LABEL_SCHEMA, runtime_lifecycle.PROVENANCE_SCHEMA),
             (runtime_lifecycle.LABEL_ARTIFACT_ROLE, node.role.value),
@@ -260,22 +271,18 @@ class _IncrementalBuildAdapter:
                 )
             )
             labels.append((runtime_lifecycle.LABEL_WHEEL_SHA256, self._wheel_sha256 or ""))
-        spec = docker_image._DockerBuildSpec(
-            dockerfile=node.recipe,
-            context=build_context,
-            exists=False,
-            image=candidate,
-            build_contexts=contexts,
-            build_args=build_args,
-            parent_artifact=parent_id,
-            labels=tuple(labels),
-            build_note=f"preparing {node.role.value}",
-        )
-        result = docker_image._docker_build_image(context, spec)
-        if result is None:
-            return
-        if result != 0:
-            context.record("docker_image", "err", f"{node.role.value} build failed")
+        if node.runtime_base_contract is not None:
+            labels.append(
+                (runtime_lifecycle.LABEL_RUNTIME_BASE_CONTRACT, node.runtime_base_contract)
+            )
+        if node.standard_substrate_contract is not None:
+            labels.append(
+                (
+                    runtime_lifecycle.LABEL_STANDARD_SUBSTRATE_CONTRACT,
+                    node.standard_substrate_contract,
+                )
+            )
+        return labels
 
     def _role_build_inputs(
         self,
@@ -377,24 +384,24 @@ def _artifact_policy(project_root: Path | None = None) -> ArtifactPolicy:
     if booley.version_attribution.origin is VersionOrigin.SOURCE:
         return ArtifactPolicy.LOCAL_ONLY
     if booley.version_attribution.origin is VersionOrigin.DISTRIBUTION:
-        if project_root is not None and _uses_managed_riscv_project(project_root):
+        if not embedded_official_release():
+            return ArtifactPolicy.LOCAL_ONLY
+        if project_root is not None and _uses_managed_project_overlay(project_root):
             return ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL
-        return (
-            ArtifactPolicy.VERIFIED_RELEASE_ONLY
-            if embedded_official_release()
-            else ArtifactPolicy.LOCAL_ONLY
-        )
+        return ArtifactPolicy.VERIFIED_RELEASE_ONLY
     raise ImageLifecycleError(
         "cannot select managed Sandbox Images because the running Booley code is "
         "neither an attributed source checkout nor an installed distribution"
     )
 
 
-def _uses_managed_riscv_project(project_root: Path) -> bool:
-    configured = runtime_lifecycle._configured_image(project_root)
-    return (
-        configured == "booley-sandbox-riscv"
-        and runtime_lifecycle._project_requirements_body(project_root) is not None
+def _uses_managed_project_overlay(project_root: Path) -> bool:
+    selected = runtime_lifecycle._selected_reference(project_root)
+    if selected != project_image.project_image_name(project_root):
+        return False
+    dockerfile = resolve_checkout_project_dir(project_root) / "docker" / "Dockerfile"
+    return runtime_lifecycle._project_requirements_body(project_root) is not None and (
+        not dockerfile.is_file() or project_image.is_managed_generated_file(dockerfile)
     )
 
 

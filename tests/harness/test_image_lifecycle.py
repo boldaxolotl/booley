@@ -671,9 +671,10 @@ def test_runtime_release_parent_validation_and_adapter_guards(
         lifecycle._build_adapter(tmp_path, docker, verbose=False)
     with pytest.raises(TypeError, match="transaction build adapter"):
         lifecycle._transaction_build_adapter(tmp_path, docker, verbose=False)
+    contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
     monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: None)
     with pytest.raises(lifecycle.ImageLifecycleError, match="wheel-source fingerprint"):
-        lifecycle._complete_release_node(lifecycle.BASE_IMAGE)
+        lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
 
 
 def test_incremental_adapter_release_pull_and_project_recipe_paths(
@@ -769,13 +770,14 @@ def test_harness_image_lifecycle_wrappers_and_distribution_policy(
     monkeypatch.setattr(
         booley,
         "version_attribution",
-        SimpleNamespace(origin=VersionOrigin.DISTRIBUTION),
+        SimpleNamespace(origin=VersionOrigin.DISTRIBUTION, version="0.2.6"),
     )
     monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: True)
     assert harness_lifecycle._artifact_policy() is lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY
     monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: False)
     assert harness_lifecycle._artifact_policy() is lifecycle.ArtifactPolicy.LOCAL_ONLY
-    monkeypatch.setattr(harness_lifecycle, "_uses_managed_riscv_project", lambda _root: True)
+    monkeypatch.setattr(harness_lifecycle, "_uses_managed_project_overlay", lambda _root: True)
+    monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: True)
     assert (
         harness_lifecycle._artifact_policy(tmp_path)
         is lifecycle.ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL
@@ -788,8 +790,10 @@ def test_official_release_plan_observes_only_selected_complete_image(
     root = _project(tmp_path, "booley-sandbox-riscv")
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
+    contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
+    monkeypatch.setattr(lifecycle, "_expected_image_build_contracts", lambda: contracts)
     monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
-    node = lifecycle._complete_release_node("booley-sandbox-riscv")
+    node = lifecycle._complete_release_node("booley-sandbox-riscv", contracts)
     labels = dict(node.expected_labels)
     labels.update(
         {
@@ -811,6 +815,15 @@ def test_official_release_plan_observes_only_selected_complete_image(
 
     assert planned.nodes == (node,)
     assert planned.steps[0].action is lifecycle.PlanAction.REUSE
+
+    docker.images[node.reference][1][lifecycle.LABEL_RUNTIME_BASE_CONTRACT] = "wrong"
+    stale = lifecycle.plan(
+        lifecycle.ProjectImageScope(root),
+        docker=docker,
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+    assert stale.steps[0].action is lifecycle.PlanAction.PULL
+    assert stale.steps[0].reason.code == "inputs-changed"
 
 
 def test_official_release_project_requirements_use_local_overlay_only(
@@ -852,6 +865,44 @@ def test_official_release_project_requirements_use_local_overlay_only(
     assert [step.action for step in planned.steps] == [
         lifecycle.PlanAction.PULL,
         lifecycle.PlanAction.BUILD,
+    ]
+
+
+def test_official_release_default_project_requirements_use_standard_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import booley
+    from booley.runtime.version_attribution import VersionOrigin
+
+    root = _project(tmp_path)
+    (root / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
+    (root / ".booley_project" / "booley.toml").write_text(
+        '[sandbox]\npip_requirements = ["requirements.txt"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        SimpleNamespace(origin=VersionOrigin.DISTRIBUTION, version="0.2.6"),
+    )
+    monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: True)
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(
+        lifecycle,
+        "_expected_image_build_contracts",
+        lambda: lifecycle.ImageBuildContracts("a" * 64, "b" * 64),
+    )
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+
+    planned = harness_lifecycle.plan(lifecycle.ProjectImageScope(root))
+
+    assert [node.reference for node in planned.nodes] == [
+        lifecycle.BASE_IMAGE,
+        lifecycle.project_image.project_image_name(root),
+    ]
+    assert [node.acquisition_policy for node in planned.nodes] == [
+        lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+        lifecycle.ArtifactPolicy.LOCAL_ONLY,
     ]
 
 
@@ -2980,7 +3031,7 @@ def test_incremental_adapter_prepare_and_policy_helpers(
     monkeypatch.setattr(
         harness_lifecycle.runtime_lifecycle, "_project_requirements_body", lambda _root: "req"
     )
-    assert harness_lifecycle._uses_managed_riscv_project(tmp_path)
+    assert harness_lifecycle._uses_managed_project_overlay(tmp_path)
 
 
 def test_runtime_identity_and_ancestry_edge_guards(
@@ -2988,12 +3039,9 @@ def test_runtime_identity_and_ancestry_edge_guards(
 ) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    outside = tmp_path / "outside.txt"
-    outside.write_text("outside", encoding="utf-8")
     monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: root / "a" / "b" / "c" / "d")
     monkeypatch.setattr(lifecycle, "resolve_wheel_source_fingerprint", lambda _root: "resolved")
     assert lifecycle._expected_wheel_source_fingerprint() == "resolved"
-    assert lifecycle._hash_paths(root, (outside,))
 
     node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
     labels = dict(node.expected_labels)

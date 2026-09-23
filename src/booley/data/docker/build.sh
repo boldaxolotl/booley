@@ -157,6 +157,8 @@ run_docker_build booley-sandbox docker build "${BUILD_METADATA_ARGS[@]}" "$@" \
   --label "io.booley.artifact.effective-inputs=$WHEEL_SOURCE_FINGERPRINT" \
   --label "io.booley.wheel.source-fingerprint=$WHEEL_SOURCE_FINGERPRINT" \
   --label "io.booley.wheel.sha256=$WHEEL_SHA256" \
+  --label "io.booley.runtime-base.contract=$BASE_CONTRACT" \
+  --label "io.booley.standard-substrate.contract=$STANDARD_INPUTS" \
   --label "io.booley.build.recipe-fingerprint=$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.wheel")" \
   --label "io.booley.build.parent-artifact-kind=local-image-id" \
   --label "io.booley.build.parent-artifact=$STANDARD_ID" \

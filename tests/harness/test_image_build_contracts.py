@@ -120,6 +120,10 @@ def test_publisher_and_build_stamp_share_standard_contract_calculator() -> None:
     )
 
     assert "image_build_contracts import standard_substrate_contract" in workflow
+    assert workflow.count("io.booley.runtime-base.contract=") >= 2
+    assert workflow.count("io.booley.standard-substrate.contract=") >= 2
+    assert "--expected-runtime-base-contract" in workflow
+    assert "--expected-standard-substrate-contract" in workflow
     assert "source_image_build_contracts(booley_root)" in stamp
     assert "standard_substrate_contract(root)" in owner
 
@@ -165,7 +169,7 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     config.parent.mkdir(parents=True)
     (project / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
     config.write_text(
-        '[sandbox]\nimage = "booley-sandbox-riscv"\npip_requirements = ["requirements.txt"]\n',
+        '[sandbox]\npip_requirements = ["requirements.txt"]\n',
         encoding="utf-8",
     )
     driver = tmp_path / "driver.py"
@@ -190,6 +194,7 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
 
     assert observed["origin"] == "distribution"
     assert observed["contracts"] == [expected.runtime_base, expected.standard_substrate]
+    assert observed["references"] == ["booley-sandbox", "project-booley-sandbox"]
     assert observed["roles"] == ["wheel-overlay", "project-overlay"]
     assert observed["actions"] == ["pull", "build"]
     assert observed["prepared"] == 2
@@ -210,6 +215,7 @@ def audit(event, args):
 sys.addaudithook(audit)
 
 import booley
+from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.image_build_contracts import expected_image_build_contracts
 
@@ -246,16 +252,14 @@ class Builder:
         return candidate_reference
 
 docker = Docker()
-plan = lifecycle.plan(
-    lifecycle.ProjectImageScope(Path(sys.argv[1])),
-    docker=docker,
-    artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL,
-)
+harness_lifecycle._docker_adapter = lambda: docker
+plan = harness_lifecycle.plan(lifecycle.ProjectImageScope(Path(sys.argv[1])))
 prepared = lifecycle.prepare(plan, docker=docker, builder=Builder(docker))
 image_contracts = expected_image_build_contracts(booley.version_attribution)
 print(json.dumps({
     "origin": booley.version_attribution.origin.value,
     "contracts": [image_contracts.runtime_base, image_contracts.standard_substrate],
+    "references": [node.reference for node in plan.nodes],
     "roles": [node.role.value for node in plan.nodes],
     "actions": [step.action.value for step in plan.steps],
     "prepared": len(prepared.candidates),

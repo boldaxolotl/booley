@@ -22,6 +22,8 @@ WHEEL_SOURCE_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$FP_PY" -P -c \
   'import sys; from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path(sys.argv[1])) or "")' \
   "$BOOLEY_ROOT")"
 WHEEL_SHA256="$(sha256sum "$BOOLEY_ROOT"/dist/booley_rtl-*.whl | cut -d' ' -f1)"
+RUNTIME_BASE_CONTRACT="$(docker image inspect booley-sandbox --format '{{ index .Config.Labels "io.booley.runtime-base.contract" }}')"
+STANDARD_SUBSTRATE_CONTRACT="$(docker image inspect booley-sandbox --format '{{ index .Config.Labels "io.booley.standard-substrate.contract" }}')"
 RECIPE_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$FP_PY" -P -c \
   'import sys; from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path(sys.argv[1]),)))' \
   "$SCRIPT_DIR/Dockerfile.riscv")"
@@ -65,6 +67,8 @@ run_docker_build booley-sandbox-riscv docker build "$@" \
   --label "io.booley.artifact.effective-inputs=$WHEEL_SOURCE_FINGERPRINT" \
   --label "io.booley.wheel.source-fingerprint=$WHEEL_SOURCE_FINGERPRINT" \
   --label "io.booley.wheel.sha256=$WHEEL_SHA256" \
+  --label "io.booley.runtime-base.contract=$RUNTIME_BASE_CONTRACT" \
+  --label "io.booley.standard-substrate.contract=$STANDARD_SUBSTRATE_CONTRACT" \
   --label "io.booley.build.recipe-fingerprint=$OVERLAY_RECIPE" \
   --label "io.booley.build.parent-artifact-kind=local-image-id" \
   --label "io.booley.build.parent-artifact=$RISCV_ID" \
