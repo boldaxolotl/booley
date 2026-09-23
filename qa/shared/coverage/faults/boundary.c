@@ -39,17 +39,45 @@ static int selected(const char *op, const char *path) {
            !strcmp(path+m-s,suffix) && !strstr(path,"/../") && !strstr(path,"/./");
 }
 
+static int snapshot_source(const char *source, const char *event, char *snapshot) {
+    char buffer[4096];
+    if (!source || !*source ||
+        snprintf(snapshot,PATH_MAX,"%s.snapshot",event)>=PATH_MAX) return 0;
+    int input=open(source,O_RDONLY|O_NOFOLLOW);
+    if(input<0) return 0;
+    int output=open(snapshot,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+    if(output<0) { close(input); return 0; }
+    int complete=1;
+    for(;;) {
+        ssize_t count=read(input,buffer,sizeof(buffer));
+        if(count==0) break;
+        if(count<0) { if(errno==EINTR) continue; complete=0; break; }
+        for(ssize_t offset=0;offset<count;) {
+            ssize_t written=write(output,buffer+offset,(size_t)(count-offset));
+            if(written<0 && errno==EINTR) continue;
+            if(written<=0) { complete=0; break; }
+            offset+=written;
+        }
+        if(!complete) break;
+    }
+    if(complete && fsync(output)<0) complete=0;
+    close(output); close(input);
+    if(!complete) { unlink(snapshot); return 0; }
+    return 1;
+}
+
 static int decision(const char *op, const char *src, const char *dst) {
     const char *control=getenv("QA_FAULT_CONTROL");
-    char event[PATH_MAX], reply[PATH_MAX + 6], consumed[PATH_MAX];
+    char event[PATH_MAX], reply[PATH_MAX + 6], consumed[PATH_MAX], snapshot[PATH_MAX];
     if (!control || !selected(op,dst)) return 0;
     snprintf(consumed,sizeof(consumed),"%s/consumed",control);
     if (access(consumed,F_OK)==0) return 0;
     snprintf(event,sizeof(event),"%s/event-%ld-%u",control,(long)getpid(),sequence++);
     snprintf(reply,sizeof(reply),"%s.reply",event);
+    const char *recorded_source=snapshot_source(src,event,snapshot) ? snapshot : src;
     int fd=open(event,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
     if(fd<0) return 0;
-    dprintf(fd,"%s\t%s\t%s\n",op,src,dst); fsync(fd); close(fd);
+    dprintf(fd,"%s\t%s\t%s\n",op,recorded_source,dst); fsync(fd); close(fd);
     const struct timespec delay={0,10000000};
     char response='F'; /* a lost controller fails closed, never hangs a producer */
     for(int i=0;i<2000;i++) {
