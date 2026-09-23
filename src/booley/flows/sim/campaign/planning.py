@@ -217,7 +217,7 @@ def _relative_path(value: str, *, field: str) -> str:
 
 
 def _json_copy(value: object) -> Any:
-    return json.loads(json.dumps(value, allow_nan=False))
+    return json.loads(canonical_json_bytes(value))
 
 
 def _escape_pointer(value: str) -> str:

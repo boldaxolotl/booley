@@ -780,7 +780,7 @@ def test_adapter_programmer_value_error_propagates(tmp_path: Path) -> None:
 def test_prepared_source_entries_accept_absolute_project_source(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     source = tmp_path / "top.sv"
-    source.write_text("module top; endmodule\n", encoding="utf-8")
+    source.write_bytes(b"module top; endmodule\n")
     group = _prepared_group_with_source(handle, source)
 
     assert group.prepared_source_entries() == (
@@ -797,7 +797,7 @@ def test_prepared_source_entries_reject_absolute_source_outside_project(tmp_path
     project = tmp_path / "project"
     handle = _handle(project)
     source = tmp_path / "outside.sv"
-    source.write_text("module outside; endmodule\n", encoding="utf-8")
+    source.write_bytes(b"module outside; endmodule\n")
     group = _prepared_group_with_source(handle, source)
 
     with pytest.raises(SimulationBuildSlotError, match="unsafe prepared Simulation source"):
