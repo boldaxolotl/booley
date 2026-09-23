@@ -1076,7 +1076,7 @@ jobs:
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp
               booley-test bash -c "pip install --break-system-packages pytest==9.1.1 pytest-asyncio==1.4.0 &&
-              python -m pytest /work/tests/flows/sim/backends/test_bwave_fifo_pipeline.py
+              python -m pytest /work/tests/bwave/test_waveform_store_streaming.py
               -v -k 'not slow' -o cache_dir=/validation-tmp/pytest-cache"
 
           - name: Run Verilator compiler and native coverage acceptance

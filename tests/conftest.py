@@ -124,7 +124,7 @@ def _isolate_host_lifecycle_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 
 # --- Minimal FST fixtures ---------------------------------------------------
-# ``_bwave_valid`` requires a well-formed header block AND at least one
+# Structural FST inspection requires a well-formed header block AND at least one
 # value-change block: a header-only file is the exact shape a simulator writes
 # when it was asked to trace via a CLI convention its main() does not
 # implement, and accepting it turned an untraced run into a passing one (the

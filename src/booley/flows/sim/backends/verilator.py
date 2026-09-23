@@ -31,6 +31,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.bwave.waveform_store import StreamingConversion
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
@@ -209,11 +210,11 @@ def _setup_bwave(
     trace: TraceSession,
     cmd: list[str],
     trace_args: list[str] | None = None,
-) -> tuple[subprocess.Popen | None, bool, int | None]:
+) -> StreamingConversion | None:
     """Start the FIFO streamer and append the project's trace arguments."""
-    bwave_proc, use_fifo, keepalive_fd = trace.start_fifo()
-    cmd.extend(_render_trace_args(trace_args, trace.fifo_path if use_fifo else None))
-    return bwave_proc, use_fifo, keepalive_fd
+    conversion = trace.start_fifo()
+    cmd.extend(_render_trace_args(trace_args, trace.fifo_path if conversion else None))
+    return conversion
 
 
 def _setup_trace(
@@ -221,18 +222,18 @@ def _setup_trace(
     cmd: list[str],
     trace_args: list[str] | None,
     trace_mode: TraceMode,
-) -> tuple[subprocess.Popen | None, bool, int | None]:
+) -> StreamingConversion | None:
     """Configure the selected trace adapter and append its run arguments."""
     if trace_mode is TraceMode.NATIVE_FST:
         cmd.extend(_render_trace_args(trace_args, trace.work_bwave_path))
-        return None, False, None
+        return None
     return _setup_bwave(trace, cmd, trace_args)
 
 
 def _kill_with_reason(
     proc: subprocess.Popen,
     trace: TraceSession | None,
-    bwave_proc: subprocess.Popen | None,
+    bwave_proc: StreamingConversion | None,
     lines: deque[str],
     reason: str,
 ) -> None:
@@ -276,7 +277,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     env: dict[str, str],
     timeout: int,
     trace: TraceSession | None,
-    bwave_proc: subprocess.Popen | None,
+    bwave_proc: StreamingConversion | None,
     max_rundir_bytes: int = 0,
     work_dir: Path | None = None,
 ) -> tuple[deque[str], subprocess.Popen]:
@@ -498,9 +499,7 @@ class _TraceRuntime:
     search_dirs: list[Path]
     files_before: TraceFileSnapshot
     mode: TraceMode
-    bwave_proc: subprocess.Popen | None
-    use_fifo: bool
-    keepalive_fd: int | None
+    conversion: StreamingConversion | None
 
 
 def _prepare_trace_artifacts(
@@ -551,7 +550,7 @@ def _trace_incident_result(
     trace: TraceSession,
     reason: str,
     proc: subprocess.Popen | None,
-    bwave_proc: subprocess.Popen | None,
+    bwave_proc: StreamingConversion | None,
 ) -> tuple[str, AdapterTraceResult]:
     incident = trace.write_incident(reason, sim_proc=proc, bwave_proc=bwave_proc)
     print(f"ERROR: {reason}")
@@ -580,7 +579,7 @@ def _trace_success_result(artifact: TraceArtifact) -> tuple[str, AdapterTraceRes
 def _finalize_trace(
     trace: TraceSession,
     proc: subprocess.Popen | None,
-    bwave_proc: subprocess.Popen | None,
+    bwave_proc: StreamingConversion | None,
     trace_files: list[str] | None = None,
     search_dirs: list[Path] | None = None,
     trace_files_before: TraceFileSnapshot | None = None,
@@ -646,19 +645,15 @@ def _prepare_trace_runtime(
         paths.work_dir,
         paths.bin_dir,
     )
-    bwave_proc, use_fifo, keepalive_fd = (
-        _setup_trace(session, cmd, trace_args, trace_mode)
-        if session is not None
-        else (None, False, None)
+    conversion = (
+        _setup_trace(session, cmd, trace_args, trace_mode) if session is not None else None
     )
     return _TraceRuntime(
         session=session,
         search_dirs=search_dirs,
         files_before=files_before,
         mode=trace_mode,
-        bwave_proc=bwave_proc,
-        use_fifo=use_fifo,
-        keepalive_fd=keepalive_fd,
+        conversion=conversion,
     )
 
 
@@ -683,14 +678,14 @@ def _execute_with_heartbeat(
             env,
             timeout,
             trace.session,
-            trace.bwave_proc,
+            trace.conversion,
             max_rundir_bytes=max_rundir_bytes,
             work_dir=paths.work_dir,
         )
     finally:
         heartbeat.stop()
         if trace.session is not None and trace.mode is TraceMode.VCD_FIFO:
-            trace.session.cleanup_fifo(trace.bwave_proc, trace.keepalive_fd)
+            trace.session.cleanup_fifo(trace.conversion)
 
 
 def _timeout_result(
@@ -727,12 +722,12 @@ def _finalize_verilated_run(
     )
     if trace.session is None:
         return output, None
-    if trace.mode is TraceMode.VCD_FIFO and not trace.use_fifo:
+    if trace.mode is TraceMode.VCD_FIFO and trace.conversion is None:
         trace.session.postprocess(paths.work_dir / "trace.vcd")
     trace_output, trace_result = _finalize_trace(
         trace.session,
         proc,
-        trace.bwave_proc,
+        trace.conversion,
         trace_files=trace_files,
         search_dirs=trace.search_dirs,
         trace_files_before=trace.files_before,

@@ -124,14 +124,9 @@ def test_trace_session_accepts_native_multi_root_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     work_dir = tmp_path / "run"
-    cache_root = tmp_path / "cache"
     monkeypatch.setattr(
-        "booley.flows.sim.bwave_fifo._find_bwave_bin",
+        "booley.bwave.waveform_store.native_bwave_binary",
         lambda: str(_native_bwave_binary()),
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.trace_session._bwave_cache_root",
-        lambda: cache_root,
     )
 
     inspection = TraceSession(work_dir, trace_scope="uart16550").inspect(multi_root_store)

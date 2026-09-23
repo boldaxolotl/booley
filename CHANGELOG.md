@@ -42,6 +42,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   upgrades never rewrite retained authority in place. See
   [Simulation Campaign migration](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SIMULATION_CAMPAIGN_MIGRATION.md).
 
+### Bug fixes
+
+- B-Wave directory discovery no longer rewrites a Simulation run's
+  `trace_status.json`. Conversion failures are reported directly while the
+  original attempt record remains byte-for-byte intact.
+- B-Wave ignores structurally invalid cached FST files during discovery, so a
+  newer partial cache can no longer prevent conversion of an available VCD.
+
 ## 0.2.15 - 08 SEP 2026
 
 ### New features
