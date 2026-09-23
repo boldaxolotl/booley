@@ -255,6 +255,36 @@
         }
       ]
     },
+    "cleanupLedgerWrite": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_record_format_version", "record_type", "run_id", "resources"],
+          "properties": {
+            "run_record_format_version": {"const": 2},
+            "record_type": {"const": "cleanup-ledger"},
+            "run_id": {"type": "string", "minLength": 1},
+            "resources": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["identity"],
+                "properties": {
+                  "identity": {"type": "string", "minLength": 1},
+                  "actual_disposition": {"type": ["string", "null"]},
+                  "active_authority_possible": {"type": ["boolean", "null"]},
+                  "safe_shutdown_evidence_refs": {"$ref": "#/$defs/stringArray"},
+                  "cleanup_reason": {"type": "string", "minLength": 1}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
     "evidenceManifest": {
       "allOf": [
         {"$ref": "#/$defs/base"},

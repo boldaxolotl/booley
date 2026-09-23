@@ -233,6 +233,27 @@ def validate_order(scenario: dict, path: Path) -> None:
             ancestors[check["id"]] = dependencies
 
 
+def validate_picorv32_contract(scenario: dict, path: Path) -> None:
+    """Keep the firmware-producing preparation on Doctor's dependency chain."""
+    if scenario["scenario_id"] != "picorv32-published-demo-continuity":
+        return
+    steps = {step["id"]: step for step in scenario["steps"]}
+    required = {
+        "baseline.firmware": {"project.separate-repository"},
+        "doctor.first-product-exercise": {"baseline.firmware"},
+        "doctor.plain": {"baseline.firmware", "doctor.first-product-exercise"},
+        "doctor.deep": {"doctor.plain"},
+        "doctor.plain-recheck": {"doctor.deep"},
+    }
+    if missing := required.keys() - steps.keys():
+        raise ValueError(f"{path}: PicoRV32 firmware/Doctor Steps missing {sorted(missing)}")
+    for step_id, prerequisites in required.items():
+        if not prerequisites <= set(steps[step_id].get("requires", [])):
+            raise ValueError(f"{path}: PicoRV32 firmware/Doctor dependency missing for {step_id}")
+    if steps["baseline.firmware"]["phase"] != "prepare":
+        raise ValueError(f"{path}: PicoRV32 firmware must be produced during preparation")
+
+
 def validate_budget(scenario: dict, path: Path) -> None:
     """Charge all work and contingency once, with a protected cleanup phase."""
     budget = scenario["budget"]
@@ -311,6 +332,7 @@ def load_scenarios(root: Path) -> dict:
         if errors:
             raise ValueError(f"{path}: " + "; ".join(e.message for e in errors))
         validate_order(scenario, path)
+        validate_picorv32_contract(scenario, path)
         validate_budget(scenario, path)
         validate_assets(scenario, path, root)
         validate_configured_scenarios(scenario, path)
