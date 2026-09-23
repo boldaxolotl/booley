@@ -255,6 +255,33 @@ def test_run_verilated_binary_creates_missing_work_dir(tmp_path: Path):
     assert work_dir.is_dir()
 
 
+def test_execute_with_heartbeat_cleans_fifo_conversion(tmp_path: Path, monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.cleaned = None
+
+        def cleanup_fifo(self, conversion):
+            self.cleaned = conversion
+
+    session = FakeSession()
+    conversion = object()
+    trace = vr._TraceRuntime(
+        session=session,
+        search_dirs=[],
+        files_before={},
+        mode=vr.TraceMode.VCD_FIFO,
+        conversion=conversion,
+    )
+    paths = vr._RunPaths(tmp_path, tmp_path, tmp_path)
+    process = object()
+    monkeypatch.setattr(vr, "_stream_output", lambda *_args, **_kwargs: (deque(), process))
+
+    _lines, returned = vr._execute_with_heartbeat([], paths, {}, 1, trace, 0)
+
+    assert returned is process
+    assert session.cleaned is conversion
+
+
 class _FinishedProcess:
     """Small cross-platform stand-in for a successfully exited simulator."""
 
@@ -287,7 +314,7 @@ def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, monkeyp
     exe = bin_dir / "Vtb_top"
     exe.touch()
     _stub_verilated_execution(monkeypatch, trace_path=work_dir / "trace.fst")
-    monkeypatch.setattr("booley.flows.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+    monkeypatch.setattr("booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave")
     monkeypatch.setattr(
         vr.subprocess,
         "run",
@@ -332,7 +359,7 @@ def test_declared_native_fst_must_be_fresh_for_current_run(tmp_path: Path, monke
     exe = bin_dir / "Vtb_top"
     exe.touch()
     _stub_verilated_execution(monkeypatch)
-    monkeypatch.setattr("booley.flows.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+    monkeypatch.setattr("booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave")
     monkeypatch.setattr(
         vr.subprocess,
         "run",

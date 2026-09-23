@@ -30,6 +30,8 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
 @pytest.mark.parametrize(
     ("rule", "source", "target", "path"),
     (
+        ("D29", "booley.bwave", "booley.flows", "bwave/__init__.py"),
+        ("D29", "booley.bwave.waveform_store", "booley.flows.sim", "seed.py"),
         ("D27", "booley.targets", "booley.flows", "targets/__init__.py"),
         ("D27", "booley.targets.target_surface", "booley.flows.edam", "seed.py"),
         ("D27", "booley.targets.catalog", "booley.runtime.git", "seed.py"),
@@ -192,6 +194,27 @@ def test_target_separation_allows_downward_mechanisms() -> None:
     )
     for dependency in dependencies:
         assert evaluate_contract((dependency,), _directions_only()) == ()
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import booley.flows.sim\n",
+        "def deferred():\n    import booley.flows.sim\n",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import booley.flows.sim\n",
+    ],
+)
+def test_bwave_separation_catches_all_import_locations(tmp_path: Path, statement: str) -> None:
+    package = tmp_path / "booley"
+    for relative in ("__init__.py", "bwave/__init__.py", "bwave/consumer.py", "flows/sim.py"):
+        path = package / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+    (package / "bwave/consumer.py").write_text(statement)
+
+    problems = evaluate_contract(analyze_imports(package), _directions_only())
+
+    assert "D29" in {problem.rule for problem in problems}
 
 
 def test_approved_target_group_cannot_recombine_with_execution() -> None:

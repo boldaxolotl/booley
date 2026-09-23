@@ -8,7 +8,11 @@ in the [B-Wave documentation](docs/public/intro.md).
 ## Language
 
 **B-Wave**:
-The agent-facing query surface for RTL waveform stores.
+The agent-facing query surface for RTL waveform stores. B-Wave owns store
+structure inspection, native-reader queryability proof, VCD-to-FST conversion,
+explicit-root discovery, and the B-Wave side of FIFO streaming. Simulation owns
+attempt freshness and publication of successful waveform evidence as a shared
+Trace Artifact.
 _Avoid_: waveform viewer, VCD parser, `.bwave` format
 
 **Virtual Signal**:

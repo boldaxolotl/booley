@@ -44,7 +44,7 @@ def test_platform_lock_apis_stay_in_core_lock_module_or_fifo_domain() -> None:
         # Windows descriptor-to-handle conversion is not a file-lock policy.
         _SOURCE_ROOT / "runtime" / "regular_file.py",
         # FIFO flag manipulation is not a file-lock policy.
-        _SOURCE_ROOT / "flows" / "sim" / "bwave_fifo.py",
+        _SOURCE_ROOT / "bwave" / "waveform_store.py",
     }
     offenders = []
     for path in _SOURCE_ROOT.rglob("*.py"):

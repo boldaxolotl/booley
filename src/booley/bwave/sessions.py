@@ -38,6 +38,7 @@ from pathlib import Path
 
 from booley.bwave.contract import decode_list_metadata
 from booley.bwave.contract import exit_usage as _exit_usage
+from booley.bwave.waveform_store import ExistingStorePolicy, convert_vcd, inspect_store
 from booley.core.boundary import BoundaryError
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -187,17 +188,19 @@ def _trace_age_note(trace: Path) -> str:
 def _headeronly_store_note(directory: Path) -> str:
     """Name .fst files find_trace silently skipped as unqueryable, or "".
 
-    ``find_trace`` filters stores through ``_bwave_valid``, so a header-only
+    ``find_trace`` filters stores through structural inspection, so a header-only
     trace.fst is invisible to the directory search: the lookup falls back to
     the raw VCD (or to "no trace found") and the resulting message blames the
     wrong thing. This note restores the real diagnosis — the direct-file
     registration path already explains header-only stores; the directory path
     must not hide the same story.
     """
-    from booley.flows.sim.trace_session import _bwave_valid  # lazy: sim dep
-
     try:
-        skipped = sorted(f for f in directory.glob("*.fst") if not _bwave_valid(f))
+        skipped = sorted(
+            f
+            for f in directory.glob("*.fst")
+            if not inspect_store(f, probe_reader=False).structurally_usable
+        )
     except OSError:
         return ""
     if not skipped:
@@ -254,10 +257,13 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
             f"Or rebuild it deliberately, then register:\n"
             f"  bwave build {trace} -o {out}"
         )
-    from booley.flows.sim.bwave_fifo import postprocess_vcd_to_bwave  # lazy: sim dep
-
     print(f"[bwave] building {out.name} from {trace.name} (--build) ...", file=sys.stderr)
-    if not postprocess_vcd_to_bwave(trace, out, None):
+    result = convert_vcd(trace, out, existing_store=ExistingStorePolicy.REFUSE)
+    for event in result.events:
+        print(f"[bwave] {event}")
+    if not result.success:
+        if result.detail:
+            (trace.parent / "trace.fst.stderr").write_text(result.detail + "\n", encoding="utf-8")
         sys.exit(
             f"ERROR: could not build a queryable store from {trace}.\n"
             f"Run `bwave build {trace} -o {out}` directly to see the failure." + diagnostics
@@ -274,19 +280,19 @@ def cmd_register(args: argparse.Namespace) -> None:
         # Direct-file registration used to accept anything with the right
         # suffix; a header-only .fst then answered every query with silence.
         # Gate on the same store validation the directory search applies
-        # (find_trace filters through _bwave_valid).
-        if target.suffix == ".fst":
-            from booley.flows.sim.trace_session import _bwave_valid  # lazy: sim dep
-
-            if not _bwave_valid(target):
-                _exit_usage(
-                    f"ERROR: {target} is not a queryable waveform store: the "
-                    "FST header is missing or it contains no signal data.\n"
-                    "A header-only trace.fst is what a Verilator sim traced "
-                    "via the auto-generated --main writes — re-run the sim "
-                    "with a custom C++ --exe main that drives tracing."
-                    + bwave._trace_diagnostics(target.parent)
-                )
+        # (find_trace filters through structural inspection).
+        if (
+            target.suffix == ".fst"
+            and not inspect_store(target, probe_reader=False).structurally_usable
+        ):
+            _exit_usage(
+                f"ERROR: {target} is not a queryable waveform store: the "
+                "FST header is missing or it contains no signal data.\n"
+                "A header-only trace.fst is what a Verilator sim traced "
+                "via the auto-generated --main writes — re-run the sim "
+                "with a custom C++ --exe main that drives tracing."
+                + bwave._trace_diagnostics(target.parent)
+            )
         trace = target
         diagnostics = ""
     elif target.is_dir():

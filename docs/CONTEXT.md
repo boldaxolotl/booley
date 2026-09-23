@@ -201,7 +201,9 @@ _Avoid_: binary cache, global build cache, simulator image
 **Trace Artifact**:
 Fresh waveform evidence produced by a traced simulation and proven queryable by
 [B-Wave](../crates/bwave/CONTEXT.md). A Trace Artifact is an FST store; VCD is
-an input or intermediate, not successful trace evidence.
+an input or intermediate, not successful trace evidence. B-Wave proves store
+queryability; Simulation alone proves that the store is fresh evidence from the
+current Simulation Attempt and publishes it as a Trace Artifact.
 _Avoid_: sim output, log, no-sim
 
 **Simulation Sentinel**:

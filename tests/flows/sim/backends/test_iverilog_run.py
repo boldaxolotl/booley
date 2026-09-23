@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from booley.flows.sim.backends import icarus as ir
 from booley.flows.sim.backends.shared import find_icarus_image
+from booley.flows.sim.trace_session import TraceInspection
 
 
 def test_find_image_strips_scr_extension(tmp_path: Path):
@@ -118,6 +120,77 @@ def test_run_icarus_image_missing_image_returns_error(tmp_path: Path):
     """A build dir with no .scr yields a clear error string (no crash, no vvp)."""
     out = ir.run_icarus_image(build_dir=tmp_path)
     assert "no vvp image" in out
+
+
+def test_icarus_marks_raw_trace_as_fallback_after_postprocess(tmp_path: Path, capsys):
+    raw_trace = tmp_path / "dump.vcd"
+    raw_trace.write_text("$enddefinitions $end\n", encoding="utf-8")
+
+    class NonQueryableTrace:
+        def postprocess(self, _path):
+            return None
+
+        def find(self):
+            return raw_trace
+
+        def inspect(self, _path):
+            return TraceInspection(None, "retained trace is raw .vcd")
+
+        def write_incident(self, reason, *, sim_proc):
+            incident = tmp_path / "trace_incident.txt"
+            incident.write_text(reason, encoding="utf-8")
+            return incident
+
+    run = ir._IcarusRun(
+        build_dir=tmp_path,
+        run_cwd=tmp_path,
+        work_dir=tmp_path,
+        image=tmp_path / "sim",
+        command=[],
+        trace=NonQueryableTrace(),
+    )
+
+    output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=0), [])
+
+    assert result is not None
+    assert result.status == "ok"
+    assert "TRACE_FALLBACK" in output
+    assert "TRACE_OK" not in capsys.readouterr().out
+
+
+def test_icarus_marks_unqueryable_fst_as_incident(tmp_path: Path, capsys):
+    retained = tmp_path / "trace.fst"
+
+    class NonQueryableTrace:
+        def postprocess(self, _path):
+            return None
+
+        def find(self):
+            return retained
+
+        def inspect(self, _path):
+            return TraceInspection(None, "FST has no signals")
+
+        def write_incident(self, reason, *, sim_proc):
+            incident = tmp_path / "trace_incident.txt"
+            incident.write_text(reason, encoding="utf-8")
+            return incident
+
+    run = ir._IcarusRun(
+        build_dir=tmp_path,
+        run_cwd=tmp_path,
+        work_dir=tmp_path,
+        image=tmp_path / "sim",
+        command=[],
+        trace=NonQueryableTrace(),
+    )
+
+    output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=1), [])
+
+    assert result is not None
+    assert result.status == "incident"
+    assert "TRACE_INCIDENT" in output
+    assert "ERROR: trace requested" in capsys.readouterr().out
 
 
 def test_run_icarus_image_creates_missing_work_dir(tmp_path: Path):
