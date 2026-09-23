@@ -107,7 +107,7 @@ def _numeric_amendment_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fields["CRITERIA_MANDATORY"] = {
         "SYNTH": {"synth_core": {"area_um2_max": 100, "fmax_mhz_min": 500}}
     }
-    blocked.write_text(amendment._render_ticket(fields, body), encoding="utf-8")
+    blocked.write_bytes(amendment._render_ticket(fields, body).encode("utf-8"))
 
     @contextmanager
     def conversion_context(_root: Path, _slug: str, mode: str):
@@ -130,7 +130,7 @@ def _numeric_amendment_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(amendment, "validate_ticket_spec", lambda *_args, **_kwargs: [])
     document = amendment._convert_ticket(root, "blocked-again", blocked.read_text())
     fields["machine"]["authored_sha256"] = document.spec.semantic_digest()
-    blocked.write_text(amendment._render_ticket(fields, body), encoding="utf-8")
+    blocked.write_bytes(amendment._render_ticket(fields, body).encode("utf-8"))
     document = amendment._convert_ticket(root, "blocked-again", blocked.read_text())
     rows = {row.parameter: row for row in document.spec.criteria}
     fmax = rows["fmax_mhz_min"]
