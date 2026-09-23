@@ -117,7 +117,7 @@ class HeavyCapacity:
         watcher.start()
         try:
             yield permit
-            if permit.lease_health.lost.is_set():
+            if permit.lease_health.lost.is_set() or not store.renew(permit.token):
                 raise HeavyCapacityError(
                     f"heavy lease lost for child execution {child_execution_id}"
                 )

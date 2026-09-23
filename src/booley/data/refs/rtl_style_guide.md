@@ -20,27 +20,17 @@ Project-specific overlays may be supplied by the caller or ticket context.
 |------|----------|
 | No single-letter signals (except `i`, `j`, `k`), no generic names (`data`, `result`, `temp`) — use domain terms | MINOR |
 | Consistent naming within a module — no mixing naming styles for the same kind of signal | MINOR |
-| No confusable names — signal pairs that differ only by a short suffix/abbreviation (e.g. `_prot` vs `_protect`, `_en` vs `_enable`, `_sel` vs `_select`) within the same scope or port list. Rename one to make the distinction obvious (e.g. append `_mode`, `_op`, `_flag`) | MINOR |
-| `parameter` and `localparam` names must be UPPER_CASE (e.g. `NBW_DATA`, `N_ROUNDS`) — lowercase constants are invisible to automated coverage filters and cause false coverage failures | MAJOR |
-| No magic numbers — derive constants from existing package-level parameters | MINOR |
+| No magic numbers — derive constants from existing parameters | MINOR |
 | No redundant localparams that duplicate package constants | MINOR |
 | No ascending bit ranges `[lo:hi]` in ports or signals — use descending `[N-1:0]`. Ascending ranges cause silent data corruption under cocotb/VPI (integer conversion assumes left index is MSB) | CRITICAL |
 
-## 3. Assertions & Cover Points
+## 3. Ifdef & Conditional Compilation
 
 | Rule | Severity |
 |------|----------|
-| Implementation agents must NOT create new assertions (`ap_*`) — only modify existing ones if signal names/conditions change. New assertions are authored during testbench authoring, not by RTL implementation. Leave `// TODO: SVA` comments where coverage is needed | MAJOR |
-| No `cover property` / `cover sequence` (`cp_*`) — cover points are prohibited in all stages | MAJOR |
-
-## 4. Ifdef & Conditional Compilation
-
-| Rule | Severity |
-|------|----------|
-| RTL behavior driven by `localparam`, not `ifdef` branches. `ifdef` only for gating module instantiations (synthesis EDA tools can't optimize away unused instances) | MAJOR |
 | No near-identical `ifdef` paths differing only in names/widths/constants — consolidate via parameterization or runtime muxing | MINOR |
 
-## 5. Arithmetic & Synthesis Cost
+## 4. Arithmetic & Synthesis Cost
 
 | Rule | Severity |
 |------|----------|
