@@ -34,7 +34,7 @@ transfer every still-owned resource to `cleanup-ledger.json` before execution.
 | `operator-state.json` | Mutable Protocol Stage checkpoint, active work, terminal execution status, and cleanup status |
 | `check-results.jsonl` | Append-only Check attempts with expected/observed behavior, evidence, status, correction, cause, review, integrity, deviation, recovery, and producing-Step fields |
 | `observations.jsonl` | Append-only unclassified Observations with stable identity, original text, producing Step, Check Result/cause/correction links, and evidence |
-| `cleanup-ledger.json` | Mutable resource ownership, authority/scarcity, intended and actual disposition, evidence, and retention details; new rows identify the resource and classify possible active authority |
+| `cleanup-ledger.json` | Mutable cleanup state published only as a complete document through `record_cleanup.py`; new-write resource fields are `identity`, `actual_disposition`, `active_authority_possible`, `safe_shutdown_evidence_refs`, and conditional `cleanup_reason` |
 | `evidence/` | Immutable admission provenance, artifacts, logs, traces, diffs, reports, and case manifests |
 | `evidence-manifest.json` | Every retained evidence path, SHA-256, size, and referencing Check Result or Observation |
 | `run-summary.md` | Deterministic projection of structured identities, selected Checks, statuses, Check Result links, Observations, evidence locations, and recording diagnostics; no Findings or verdicts |
@@ -59,7 +59,11 @@ Human Maintainer may record a clerical interpretation correction during triage, 
 evidence already in the sealed evidence manifest. New behavioral evidence requires a
 new Scenario Run.
 
-`cleanup_status` is `complete`, `unverified`, or `failed`. A null ledger disposition
+`cleanup_status` is `complete`, `unverified`, or `failed`. New ledger writes use the
+strict recorder contract: `identity` is a nonblank string; null, empty, or
+whitespace-only `cleanup_reason` is omitted; and resource-level `updated_at` or any
+other undeclared field is rejected. The candidate is always the complete document,
+never a row patch. A null ledger disposition
 is a report of uncertainty, not a release or a failure. New ledger rows use `identity`,
 `actual_disposition`, and `active_authority_possible`; `safe_shutdown_evidence_refs`
 may establish shutdown despite an unknown disposition. Old sealed `complete` records

@@ -32,6 +32,12 @@ Classify whether each uncertain resource may still retain active authority, and 
 safe shutdown evidence when available. Missing disposition or evidence does not by
 itself prevent a seal. Do not decide the Scenario Run Outcome here.
 
+Publish each cleanup reconciliation as a complete candidate through
+`python3 qa/record_cleanup.py <run-root> <candidate.json>`. The candidate must retain
+every resource row, use only the supported resource fields, and reference only
+finished regular files beneath the run's `evidence/` directory. Do not edit the
+ledger directly.
+
 Scenario Checks that exercise product cleanup behavior remain authoritative: execute
 their declared deletion or preservation stimulus even when the final workspace would
 otherwise be retained. Archive its evidence first when the Scenario requires it.

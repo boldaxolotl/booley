@@ -17,13 +17,14 @@ except ImportError:
 
 def append_check_result(run_root: Path, suite_root: Path, source: Path) -> None:
     """Reject an invalid row without changing the existing result log."""
-    with exclusive_file_lock(run_root / ".check-results.lock"):
+    with exclusive_file_lock(run_root / ".run-records.lock"):
         if (run_root / "run-manifest.json").exists():
             raise triage.TriageError(f"{run_root}: sealed Scenario Run is immutable")
         run = triage.read_json(run_root / "run.json")
         triage.validate_definition(run, "run-record.schema.json", "run", str(run_root))
         result = triage.read_json(source)
         triage.validate_definition(result, "run-record.schema.json", "checkResult", str(source))
+        triage.validate_preseal_evidence_refs(run_root, triage.check_result_evidence_refs(result))
         if result["run_id"] != run["run_id"]:
             raise triage.TriageError(f"{source}: result belongs to a different run")
         destination = run_root / "check-results.jsonl"
