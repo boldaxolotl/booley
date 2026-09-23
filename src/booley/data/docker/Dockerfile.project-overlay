@@ -1,0 +1,14 @@
+# Project dependency overlay for a verified complete Booley release image.
+FROM booley-project-parent
+USER root
+
+COPY requirements.txt /tmp/booley-project-requirements.txt
+RUN BEFORE="$(python3 -c 'import importlib.metadata as m; from booley.runtime.build_stamp import embedded_wheel_source_fingerprint; print("|".join((m.version("booley-rtl"), m.version("fusesoc"), m.version("edalize"), embedded_wheel_source_fingerprint() or "")))')" \
+    && pip install --use-pep517 --no-cache-dir --break-system-packages \
+        -r /tmp/booley-project-requirements.txt \
+    && python3 -m pip check \
+    && AFTER="$(python3 -c 'import importlib.metadata as m; from booley.runtime.build_stamp import embedded_wheel_source_fingerprint; print("|".join((m.version("booley-rtl"), m.version("fusesoc"), m.version("edalize"), embedded_wheel_source_fingerprint() or "")))')" \
+    && test "$BEFORE" = "$AFTER"
+
+USER agent
+WORKDIR /work

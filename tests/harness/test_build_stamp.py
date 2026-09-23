@@ -74,7 +74,21 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "config", "user.name", "T")
     (root / "README").write_text("hi\n", encoding="utf-8")
     (root / "src" / "booley" / "payload.py").write_text("VALUE = 1\n", encoding="utf-8")
-    _git(root, "add", "README", "src/booley/payload.py")
+    docker_dir = root / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "stable-base-inputs.txt").write_text("README\n", encoding="utf-8")
+    (root / "src" / "booley" / "data" / "edalize").mkdir(parents=True)
+    (root / "src" / "booley" / "data" / "edalize" / "verible.py").write_text(
+        "# adapter\n", encoding="utf-8"
+    )
+    bwave = root / "crates" / "bwave"
+    for relative in ("src/lib.rs", "schema/query.json", "docs/README.md"):
+        path = bwave / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative + "\n", encoding="utf-8")
+    (bwave / "Cargo.toml").write_text("[package]\nname='bwave'\n", encoding="utf-8")
+    (bwave / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
+    _git(root, "add", ".")
     _git(root, "commit", "-m", "init")
     return root
 
@@ -122,6 +136,8 @@ class TestWriteBuildStamp:
         assert namespace["COMMIT"] == commit != ""
         assert namespace["PAYLOAD_FINGERPRINT"] == resolve_payload_fingerprint(repo)
         assert namespace["WHEEL_SOURCE_FINGERPRINT"] == resolve_wheel_source_fingerprint(repo)
+        assert len(namespace["RUNTIME_BASE_CONTRACT"]) == 64
+        assert len(namespace["STANDARD_SUBSTRATE_CONTRACT"]) == 64
         assert namespace["OFFICIAL_RELEASE"] is False
         assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
 
@@ -503,12 +519,11 @@ class TestInitStampsItsWheel:
 
 
 class TestStampIsNotFingerprinted:
-    def test_stamp_never_reaches_the_image_fingerprint(self, tmp_path: Path):
+    def test_stamp_never_reaches_the_image_fingerprint(self, repo: Path):
         """build.sh and init drop the stamp at different points, so hashing it
         would make their fingerprints disagree — every init after a build.sh
         build would call the image stale and rebuild it for 20 minutes."""
-        root = tmp_path / "root"
-        (root / "src" / "booley").mkdir(parents=True)
+        root = repo
         (root / "src" / "booley" / "real.py").write_text("x = 1\n", encoding="utf-8")
 
         before = init_docker_image._image_build_fingerprint(root)

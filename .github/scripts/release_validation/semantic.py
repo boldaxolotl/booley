@@ -128,12 +128,14 @@ def validate_publication_topology(
         errors.append("build-package must clean stale wheel staging")
     if not any(
         "embedded_official_release() is True" in command
+        and "embedded_image_build_contracts()" in command
         and "not embedded_development_context_path().exists()" in command
         for command in _commands(test_wheel)
     ):
         errors.append("test-wheel must verify the official release attestation")
     if not any(
         "embedded_official_release() is True" in command
+        and "embedded_image_build_contracts()" in command
         and "not embedded_development_context_path().exists()" in command
         for command in _commands(test_sdist)
     ):

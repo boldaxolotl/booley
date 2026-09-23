@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import booley
 from booley.harness import init_cmd
@@ -205,7 +206,16 @@ def test_local_build_constructs_base_before_candidate_with_named_context(
         init_docker_image, "_docker_image_id", lambda _image: "sha256:runtime-base"
     )
     monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
-    monkeypatch.setattr(init_docker_image, "_runtime_base_build_metadata_args", lambda _root: [])
+    monkeypatch.setattr(
+        init_docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base="contract"),
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_runtime_base_build_metadata_args",
+        lambda _root, _contract: [],
+    )
 
     def fake_build(*args, **kwargs):
         calls.append((args, kwargs))

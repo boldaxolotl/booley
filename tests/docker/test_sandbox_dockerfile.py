@@ -295,6 +295,7 @@ def test_shipped_external_base_images_are_digest_pinned() -> None:
                 "booley-runtime-base",
                 "booley-standard-substrate",
                 "booley-substrate",
+                "booley-project-parent",
             }:
                 continue
             assert re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image), (

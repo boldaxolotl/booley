@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 
 import booley
+from booley.runtime.image_build_contracts import embedded_image_build_contracts
 
 EXPECTED_ENTRY_POINTS = {
     "booley": "booley.harness.booley:main",
@@ -22,6 +23,7 @@ EXPECTED_RESOURCES = {
     "booley/data/refs/CHANGELOG.md",
     "booley/data/docker/Dockerfile",
     "booley/data/docker/Dockerfile.base",
+    "booley/data/docker/Dockerfile.project-overlay",
     "booley/data/docker/build.sh",
     "booley/data/docker/export_project_dependencies.py",
     "booley/data/docker/stable-base-inputs.txt",
@@ -159,6 +161,7 @@ def main() -> None:
     files = _distribution_files()
     _assert_resources(files)
     _assert_entry_points()
+    embedded_image_build_contracts()
     if args.wheel is not None:
         _assert_wheel_matches_install(args.wheel, files)
     args.inventory.write_text("\n".join(sorted(files)) + "\n", encoding="utf-8")

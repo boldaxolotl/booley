@@ -93,7 +93,7 @@ WHEEL_SOURCE_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
   "$BOOLEY_ROOT")"
 WHEEL_SHA256="$(sha256sum "$FRESH_WHEEL" | cut -d' ' -f1)"
 STANDARD_INPUTS="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
-  'import sys; from pathlib import Path; from booley.runtime.image_lifecycle import standard_substrate_fingerprint; print(standard_substrate_fingerprint(Path(sys.argv[1])))' \
+  'import sys; from pathlib import Path; from booley.runtime.image_build_contracts import standard_substrate_contract; print(standard_substrate_contract(Path(sys.argv[1])))' \
   "$BOOLEY_ROOT")"
 recipe_fingerprint() {
   PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \

@@ -45,7 +45,7 @@ jobs:
             echo "source_updated_at=$(git log -1 --format=%cI HEAD)"
             echo "image_built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "wheel_source_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
-            echo "substrate_inputs=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_lifecycle import standard_substrate_fingerprint; print(standard_substrate_fingerprint(Path.cwd()))')"
+            echo "substrate_inputs=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import standard_substrate_contract; print(standard_substrate_contract(Path.cwd()))')"
             echo "substrate_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.substrate"),)))')"
             echo "overlay_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.wheel"),)))')"
           } >> "$GITHUB_OUTPUT"

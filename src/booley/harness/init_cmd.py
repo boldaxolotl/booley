@@ -69,6 +69,7 @@ from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_
 from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import (
     ImageLifecycleError,
+    InstalledImageContractError,
     LifecycleResult,
     ProjectImageScope,
 )
@@ -1113,6 +1114,8 @@ def inspect_refreshable_runtime_image(
     del verbose
     try:
         lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
+    except InstalledImageContractError as exc:
+        raise RuntimeError(str(exc)) from exc
     except ImageLifecycleError as exc:
         raise RuntimeError(
             f"the selected Sandbox Image cannot use managed refresh: {exc}. "

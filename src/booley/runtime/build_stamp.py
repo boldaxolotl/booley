@@ -342,6 +342,9 @@ def write_build_stamp(
     target.unlink(missing_ok=True)
     context.unlink(missing_ok=True)
     commit = resolve_build_commit(booley_root)
+    from booley.runtime.image_build_contracts import source_image_build_contracts
+
+    image_contracts = source_image_build_contracts(booley_root)
     payload_fingerprint = resolve_payload_fingerprint(booley_root) or ""
     wheel_source_fingerprint = resolve_wheel_source_fingerprint(booley_root) or ""
     official_release = profile is BuildProfile.OFFICIAL_RELEASE
@@ -358,6 +361,8 @@ def write_build_stamp(
             f'COMMIT = "{commit}"\n'
             f'PAYLOAD_FINGERPRINT = "{payload_fingerprint}"\n'
             f'WHEEL_SOURCE_FINGERPRINT = "{wheel_source_fingerprint}"\n'
+            f'RUNTIME_BASE_CONTRACT = "{image_contracts.runtime_base}"\n'
+            f'STANDARD_SUBSTRATE_CONTRACT = "{image_contracts.standard_substrate}"\n'
             f"OFFICIAL_RELEASE = {official_release!r}\n"
             f'DEVELOPMENT_CONTEXT_SHA256 = "{context_sha256}"\n',
             encoding="utf-8",
