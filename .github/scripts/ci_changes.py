@@ -61,7 +61,7 @@ _PACKAGING_FILES = {
     "setup.py",
 }
 _IMAGE_TEST_PREFIXES = ("tests/docker/", "tests/smoke/")
-_IMAGE_TEST_FILES = {"tests/flows/sim/backends/test_bwave_fifo_pipeline.py"}
+_IMAGE_TEST_FILES = {"tests/bwave/test_waveform_store_streaming.py"}
 _RELEASE_SENSITIVE_PREFIXES = (
     ".github/actions/",
     ".github/contracts/",
