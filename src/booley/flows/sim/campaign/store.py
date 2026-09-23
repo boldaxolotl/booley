@@ -73,6 +73,11 @@ _COMMON_BUILD_FIELDS = (
 )
 
 
+def _manifest_sha256(manifest: SimulationCampaignManifest) -> str:
+    raw = encode_simulation_campaign_manifest(manifest)
+    return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class WorkItemRecovery:
     """Validated durable state for one manifest work item."""
@@ -209,7 +214,7 @@ class CampaignStore:
         raw = encode_simulation_campaign_manifest(manifest)
         _require_safe_parents(self.manifest_path, self.root)
         _create_immutable(self.manifest_path, raw)
-        return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+        return _manifest_sha256(manifest)
 
     def load_manifest(self) -> SimulationCampaignManifest:
         _require_safe_parents(self.manifest_path, self.root)
@@ -218,8 +223,7 @@ class CampaignStore:
         )
 
     def manifest_sha256(self) -> str:
-        raw = encode_simulation_campaign_manifest(self.load_manifest())
-        return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+        return _manifest_sha256(self.load_manifest())
 
     @contextmanager
     def mutation_lock(self) -> Iterator[None]:
@@ -555,13 +559,32 @@ class CampaignStore:
 
     def scan(self) -> CampaignRecovery:
         manifest = self.load_manifest()
-        expected_manifest = self.manifest_sha256()
+        return self._scan_manifest(manifest, _manifest_sha256(manifest))
+
+    def scan_validated(
+        self,
+        manifest: SimulationCampaignManifest,
+        manifest_sha256: str,
+    ) -> CampaignRecovery:
+        """Scan state only when storage still contains an authenticated manifest."""
+        stored = self.load_manifest()
+        if stored != manifest or _manifest_sha256(stored) != manifest_sha256:
+            raise SimulationCampaignIntegrityError(
+                "campaign manifest changed after resume validation"
+            )
+        return self._scan_manifest(manifest, manifest_sha256)
+
+    def _scan_manifest(
+        self,
+        manifest: SimulationCampaignManifest,
+        manifest_sha256: str,
+    ) -> CampaignRecovery:
         expected_workload = cast(Mapping[str, str], manifest.document["fingerprints"])[
             "workload_sha256"
         ]
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         recovered = tuple(
-            self._scan_item(item, expected_manifest, expected_workload) for item in items
+            self._scan_item(item, manifest_sha256, expected_workload) for item in items
         )
         return CampaignRecovery(recovered)
 
@@ -693,7 +716,25 @@ class CampaignStore:
 
     def regenerate_summary(self) -> Mapping[str, object]:
         manifest = self.load_manifest()
-        recovery = self.scan()
+        manifest_sha256 = _manifest_sha256(manifest)
+        recovery = self._scan_manifest(manifest, manifest_sha256)
+        return self._regenerate_summary(manifest, manifest_sha256, recovery)
+
+    def regenerate_summary_validated(
+        self,
+        manifest: SimulationCampaignManifest,
+        manifest_sha256: str,
+    ) -> Mapping[str, object]:
+        """Regenerate the projection from one authenticated manifest snapshot."""
+        recovery = self.scan_validated(manifest, manifest_sha256)
+        return self._regenerate_summary(manifest, manifest_sha256, recovery)
+
+    def _regenerate_summary(
+        self,
+        manifest: SimulationCampaignManifest,
+        manifest_sha256: str,
+        recovery: CampaignRecovery,
+    ) -> Mapping[str, object]:
         grades = tuple(
             cast(str, item.result.document["grade"])
             for item in recovery.items
@@ -705,7 +746,7 @@ class CampaignStore:
         document: dict[str, object] = {
             "$schema": _SUMMARY_SCHEMA,
             "campaign_id": manifest.document["campaign_id"],
-            "manifest_sha256": self.manifest_sha256(),
+            "manifest_sha256": manifest_sha256,
             "workload_sha256": cast(Mapping[str, str], manifest.document["fingerprints"])[
                 "workload_sha256"
             ],

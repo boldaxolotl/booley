@@ -36,7 +36,9 @@ from booley.flows.sim.campaign.coordinator import (
     NewCampaignPreviewRequest,
     NewCampaignRunRequest,
     ResumeCampaignPreviewRequest,
+    ResumeCampaignRunRequest,
     SimulationCampaign,
+    SimulationCampaignCancellationError,
     WorkExecutionRequest,
     _acceptance_ready,
 )
@@ -45,6 +47,8 @@ from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+from booley.flows.sim.flow import SimulateFlow
+from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
 from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
@@ -342,6 +346,7 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
         998,
     )
     request = _resume_request(store, project)
+    status = SimulationCampaign().inspect_resume(request.validated)
 
     before_rss = _peak_rss()
     started = time.monotonic()
@@ -353,7 +358,16 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
     second = store.regenerate_summary()
 
     assert executor.calls == 2
-    assert (len(preview.completed), len(preview.interrupted), len(preview.pending)) == (
+    assert status.manifest_path == store.manifest_path
+    assert status.manifest_sha256 == store.manifest_sha256()
+    assert status.completed == recovery.complete
+    assert status.interrupted == recovery.interrupted
+    assert status.pending == recovery.pending
+    assert (
+        len(preview.recovery.completed),
+        len(preview.recovery.interrupted),
+        len(preview.recovery.pending),
+    ) == (
         1,
         1,
         998,
@@ -379,6 +393,102 @@ def test_campaign_previews_expose_the_complete_public_contract(tmp_path: Path) -
     store.publish_manifest(manifest)
     resumed = SimulationCampaign().preview(_resume_request(store, tmp_path))
     assert resumed.manifest == manifest.document
+
+
+def test_resume_inspection_rejects_manifest_replaced_after_validation(tmp_path: Path) -> None:
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    validated = _resume_request(store, tmp_path).validated
+
+    store.manifest_path.unlink()
+    store.publish_manifest(_manifest_for(("replacement",)))
+
+    with pytest.raises(
+        SimulationCampaignIntegrityError,
+        match="changed after resume validation",
+    ):
+        SimulationCampaign().inspect_resume(validated)
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_resume_endpoint_refreshes_recovery_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cancelled: bool,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    validated = _resume_request(store, project).validated
+    observed = SimulationCampaign().inspect_resume(validated)
+    work_item_id = observed.pending[0]
+    invocation = tmp_path / "reports" / "sim" / "2"
+    invocation.mkdir(parents=True)
+    flow = SimulateFlow()
+    flow.context._args = SimpleNamespace(report_dir=tmp_path / "reports", work_dir=project)
+    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
+
+    def fail_after_attempt(*_args: object) -> None:
+        store.allocate_attempt_directory(work_item_id, str(uuid.uuid4()))
+        if cancelled:
+            raise SimulationCampaignCancellationError("cancelled")
+        raise OSError("failed")
+
+    monkeypatch.setattr(flow, "_execute_validated_resume", fail_after_attempt)
+    with flow.context.publication_resources:
+        result = flow._execute_campaign_resume(validated, _admission(), observed)
+
+    assert result.exit_code == (EXIT_CANCELLED if cancelled else EXIT_ERROR)
+    assert result.detail["completed"] == []
+    assert result.detail["interrupted"] == [work_item_id]
+    assert result.detail["pending"] == []
+
+
+def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    first_invocation = tmp_path / "reports" / "sim" / "1"
+    store = CampaignStore(first_invocation / "targets" / "sim" / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    preview_request = _resume_request(store, project)
+
+    preview = SimulationCampaign().preview(preview_request)
+    assert preview.recovery.pending
+
+    first_executor = _NoEdaExecutor()
+    first_outcome = SimulationCampaign(first_executor).run(
+        ResumeCampaignRunRequest(
+            preview_request.validated,
+            preview_request.current_plan,
+            project,
+            None,
+            CampaignPolicy(),
+            tmp_path / "reports" / "sim" / "2",
+            _admission(),
+        )
+    )
+    assert first_executor.calls == 1
+    assert first_outcome.recovery.pending == ()
+
+    second_executor = _NoEdaExecutor()
+    second_outcome = SimulationCampaign(second_executor).run(
+        ResumeCampaignRunRequest(
+            preview_request.validated,
+            preview_request.current_plan,
+            project,
+            None,
+            CampaignPolicy(),
+            tmp_path / "reports" / "sim" / "3",
+            _admission(),
+        )
+    )
+
+    assert second_executor.calls == 0
+    assert second_outcome.recovery.completed == first_outcome.recovery.completed
 
 
 def test_acceptance_readiness_requires_strict_superset_grade() -> None:
@@ -459,6 +569,9 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
     outcome, invocation = _one_item_outcome(tmp_path)
     assert outcome.complete is True
+    assert outcome.recovery.completed
+    assert outcome.recovery.interrupted == ()
+    assert outcome.recovery.pending == ()
 
     state_path = tmp_path / "state.json"
     state = DevelopmentState.load(state_path)

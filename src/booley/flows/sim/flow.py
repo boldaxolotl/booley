@@ -104,10 +104,10 @@ from .build_session import (
     preview_generation_root,
     project_compile_surface,
 )
-from .campaign.codec import SimulationCampaignIntegrityError, encode_simulation_campaign_manifest
-from .campaign.coordinator import (
+from .campaign import (
     CampaignOutcome,
     CampaignPolicy,
+    CampaignRecoveryStatus,
     NewCampaignPreviewRequest,
     NewCampaignRunRequest,
     ResumeCampaignPreview,
@@ -115,17 +115,20 @@ from .campaign.coordinator import (
     ResumeCampaignRunRequest,
     SimulationCampaign,
     SimulationCampaignCancellationError,
+    SimulationCampaignIntegrityError,
+    SimulationCampaignManifest,
+    SimulationCampaignPlan,
+    ValidatedResumeManifest,
+    encode_simulation_campaign_manifest,
+    validate_resume_manifest,
 )
 from .campaign.coverage_execution import CoverageAggregateExecutor
 from .campaign.flow_planning import (
     plan_coarse_simulation_campaign,
     plan_ordinary_hdl_campaign,
 )
-from .campaign.model import SimulationCampaignManifest, SimulationCampaignPlan
 from .campaign.planning import manifest_digest
-from .campaign.resume import ValidatedResumeManifest, validate_resume_manifest
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
-from .campaign.store import CampaignStore
 from .coverage_reference import resolve_coverage_campaign_reference
 from .execution import (
     DefaultSelection,
@@ -436,6 +439,31 @@ def _campaign_structured_details(
         }
         for outcome in outcomes
     }
+
+
+def _campaign_recovery_detail(status: CampaignRecoveryStatus) -> dict[str, object]:
+    """Translate campaign-owned recovery state into the endpoint's flat shape."""
+    return {
+        "manifest": str(status.manifest_path),
+        "manifest_sha256": status.manifest_sha256,
+        "completed": list(status.completed),
+        "interrupted": list(status.interrupted),
+        "pending": list(status.pending),
+    }
+
+
+def _fresh_campaign_recovery_detail(
+    validated: ValidatedResumeManifest,
+    observed: CampaignRecoveryStatus,
+) -> dict[str, object]:
+    """Refresh failure presentation without treating the pre-run view as authority."""
+    try:
+        status = SimulationCampaign().inspect_resume(validated)
+    except (OSError, ValueError) as exc:
+        detail = _campaign_recovery_detail(observed)
+        detail["recovery_refresh_error"] = str(exc)
+        return detail
+    return _campaign_recovery_detail(status)
 
 
 def _campaign_observation_preview(
@@ -1890,26 +1918,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> EndpointOutcome:
         """Validate and report one exact durable campaign resume."""
         try:
-            store = CampaignStore(validated.path.parent)
-            recovery = store.scan()
+            observed = SimulationCampaign().inspect_resume(validated)
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign integrity failure: {exc}",
             )
-        status: dict[str, object] = {
-            "manifest": str(validated.path),
-            "manifest_sha256": validated.sha256,
-            "completed": list(recovery.complete),
-            "interrupted": list(recovery.interrupted),
-            "pending": list(recovery.pending),
-        }
         if self.args.dry_run:
-            return self._preview_campaign_resume(validated, status)
-        return self._execute_campaign_resume(validated, admission, status)
+            return self._preview_campaign_resume(validated, observed)
+        return self._execute_campaign_resume(validated, admission, observed)
 
     def _preview_campaign_resume(
-        self, validated: ValidatedResumeManifest, status: dict[str, object]
+        self, validated: ValidatedResumeManifest, observed: CampaignRecoveryStatus
     ) -> EndpointOutcome:
         origin = cast(Mapping[str, object], validated.manifest.document["origin"])
         try:
@@ -1929,16 +1949,17 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign resume preview failed: {exc}",
-                detail=status,
+                detail=_campaign_recovery_detail(observed),
             )
         assert isinstance(preview, ResumeCampaignPreview)
+        status = _campaign_recovery_detail(preview.recovery)
         status["mismatches"] = [item.message for item in preview.mismatches]
         status["required_bundle_variants"] = list(preview.required_bundle_variants)
         lines = [
             f"manifest: {validated.path}",
-            f"completed: {len(preview.completed)}",
-            f"interrupted: {len(preview.interrupted)}",
-            f"pending: {len(preview.pending)}",
+            f"completed: {len(preview.recovery.completed)}",
+            f"interrupted: {len(preview.recovery.interrupted)}",
+            f"pending: {len(preview.recovery.pending)}",
             f"mismatches: {len(preview.mismatches)}",
         ]
         return EndpointOutcome(
@@ -1951,7 +1972,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self,
         validated: ValidatedResumeManifest,
         admission: object | None,
-        status: dict[str, object],
+        observed: CampaignRecoveryStatus,
     ) -> EndpointOutcome:
         if self.args.report_dir is None:
             self.args.report_dir = Path(self.args.work_dir) / "flow-reports"
@@ -1961,18 +1982,27 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
         if not isinstance(admission, AdmissionContext):
-            return EndpointOutcome(exit_code=EXIT_ERROR, report_text="sim: no admission context")
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text="sim: no admission context",
+                detail=_campaign_recovery_detail(observed),
+            )
         try:
             outcome = self._execute_validated_resume(validated, invocation, admission)
         except SimulationCampaignCancellationError as exc:
-            return self._campaign_cancelled_outcome(exc, status)
+            return self._campaign_cancelled_outcome(
+                exc,
+                _fresh_campaign_recovery_detail(validated, observed),
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign resume failed: {exc}",
-                detail=status,
+                detail=_fresh_campaign_recovery_detail(validated, observed),
             )
-        return self._campaign_endpoint_outcome([outcome])
+        result = self._campaign_endpoint_outcome([outcome])
+        result.detail.update(_campaign_recovery_detail(outcome.recovery))
+        return result
 
     def _execute_validated_resume(
         self,
