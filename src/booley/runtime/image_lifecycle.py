@@ -27,6 +27,12 @@ from booley.runtime.build_stamp import (
     resolve_payload_fingerprint,
     resolve_wheel_source_fingerprint,
 )
+from booley.runtime.image_build_contracts import (
+    ImageBuildContractMetadataError,
+    ImageBuildContracts,
+    expected_image_build_contracts,
+    standard_substrate_contract,
+)
 from booley.runtime.image_provenance import (
     LABEL_ARTIFACT_ROLE,
     LABEL_BUILD_ORIGIN,
@@ -35,7 +41,9 @@ from booley.runtime.image_provenance import (
     LABEL_PARENT_ARTIFACT_KIND,
     LABEL_PAYLOAD_FINGERPRINT,
     LABEL_RECIPE_FINGERPRINT,
+    LABEL_RUNTIME_BASE_CONTRACT,
     LABEL_SCHEMA,
+    LABEL_STANDARD_SUBSTRATE_CONTRACT,
     LABEL_VERSION,
     LABEL_WHEEL_SHA256,
     LABEL_WHEEL_SOURCE_FINGERPRINT,
@@ -111,6 +119,7 @@ class ImageRole(StrEnum):
     STANDARD_SUBSTRATE = "standard-substrate"
     RISCV_SUBSTRATE = "riscv-substrate"
     PROJECT_SUBSTRATE = "project-substrate"
+    PROJECT_OVERLAY = "project-overlay"
     WHEEL_OVERLAY = "wheel-overlay"
 
 
@@ -124,6 +133,10 @@ class PlanAction(StrEnum):
 
 class ImageLifecycleError(RuntimeError):
     """A managed Sandbox Image could not be reconciled or verified."""
+
+
+class InstalledImageContractError(ImageLifecycleError):
+    """An installed Booley artifact lacks valid image compatibility metadata."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +282,8 @@ class ImageNode:
     effective_inputs: str | None = None
     parent_compatibility_key: str | None = None
     wheel_source_fingerprint: str | None = None
+    runtime_base_contract: str | None = None
+    standard_substrate_contract: str | None = None
     acquisition_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY
 
     @property
@@ -288,6 +303,10 @@ class ImageNode:
             labels.append((LABEL_EFFECTIVE_INPUTS, self.effective_inputs))
         if self.wheel_source_fingerprint is not None:
             labels.append((LABEL_WHEEL_SOURCE_FINGERPRINT, self.wheel_source_fingerprint))
+        if self.runtime_base_contract is not None:
+            labels.append((LABEL_RUNTIME_BASE_CONTRACT, self.runtime_base_contract))
+        if self.standard_substrate_contract is not None:
+            labels.append((LABEL_STANDARD_SUBSTRATE_CONTRACT, self.standard_substrate_contract))
         if self.build.parent_artifact:
             labels.append((LABEL_PARENT_ARTIFACT, self.build.parent_artifact))
         elif self.parent is not None:
@@ -368,26 +387,29 @@ def _transaction_build_adapter(
 
 
 def _expected_version() -> str:
-    from booley import __version__
+    import booley
 
-    root = docker_data_dir().parents[3]
-    version_file = root / "VERSION"
-    try:
-        source_version = version_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        source_version = ""
-    return source_version or __version__
+    return booley.version_attribution.version
 
 
 def _expected_payload_fingerprint() -> str | None:
+    import booley
+
+    root = booley.version_attribution.source_root
     return (
-        resolve_payload_fingerprint(docker_data_dir().parents[3]) or embedded_payload_fingerprint()
+        resolve_payload_fingerprint(root) if root is not None else embedded_payload_fingerprint()
     )
 
 
 def _expected_wheel_source_fingerprint() -> str | None:
-    root = docker_data_dir().parents[3]
-    return resolve_wheel_source_fingerprint(root) or embedded_wheel_source_fingerprint()
+    import booley
+
+    root = booley.version_attribution.source_root
+    return (
+        resolve_wheel_source_fingerprint(root)
+        if root is not None
+        else embedded_wheel_source_fingerprint()
+    )
 
 
 def _direct_project_dir(project_root: Path) -> Path:
@@ -597,27 +619,6 @@ def _with_parent_artifacts(
     return tuple(resolved)
 
 
-def _hash_paths(root: Path, paths: tuple[Path, ...]) -> str:
-    """Hash an explicit set of files and trees using stable repository paths."""
-    files: set[Path] = set()
-    for path in paths:
-        if path.is_dir():
-            files.update(item for item in path.rglob("*") if item.is_file())
-        elif path.is_file():
-            files.add(path)
-    digest = hashlib.sha256()
-    for path in sorted(files):
-        try:
-            name = path.relative_to(root).as_posix()
-        except ValueError:
-            name = path.as_posix()
-        digest.update(name.encode())
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
 def _compatibility_key(node: ImageNode) -> str:
     digest = hashlib.sha256()
     for value in (
@@ -633,17 +634,20 @@ def _compatibility_key(node: ImageNode) -> str:
 
 def standard_substrate_fingerprint(root: Path) -> str:
     """Return the effective-input identity of the standard tool substrate."""
-    return _hash_paths(
-        root,
-        (
-            root / "crates" / "bwave" / "Cargo.toml",
-            root / "crates" / "bwave" / "Cargo.lock",
-            root / "crates" / "bwave" / "src",
-            root / "crates" / "bwave" / "schema",
-            root / "crates" / "bwave" / "docs",
-            root / "src" / "booley" / "data" / "edalize" / "verible.py",
-        ),
-    )
+    return standard_substrate_contract(root)
+
+
+def _expected_image_build_contracts() -> ImageBuildContracts:
+    import booley
+
+    try:
+        return expected_image_build_contracts(booley.version_attribution)
+    except ImageBuildContractMetadataError as exc:
+        raise InstalledImageContractError(
+            "installed Booley distribution lacks valid Sandbox Image compatibility "
+            "metadata; install a current published booley-rtl wheel (or rebuild it "
+            "through Booley's stamped wheel path), then retry `booley session refresh`"
+        ) from exc
 
 
 def _graph_node(
@@ -656,6 +660,7 @@ def _graph_node(
     wheel_source_fingerprint: str | None = None,
     policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY,
     recipe_fingerprint: str | None = None,
+    image_build_contracts: ImageBuildContracts | None = None,
 ) -> ImageNode:
     payload = PayloadProvenance(
         PROVENANCE_SCHEMA,
@@ -675,14 +680,20 @@ def _graph_node(
         effective_inputs=effective_inputs,
         parent_compatibility_key=_compatibility_key(parent) if parent else None,
         wheel_source_fingerprint=wheel_source_fingerprint,
+        runtime_base_contract=(
+            image_build_contracts.runtime_base if image_build_contracts is not None else None
+        ),
+        standard_substrate_contract=(
+            image_build_contracts.standard_substrate if image_build_contracts is not None else None
+        ),
         acquisition_policy=policy,
     )
 
 
 def _source_graph(project_root: Path, selected: str) -> tuple[ImageNode, ...]:
-    root = docker_data_dir().parents[3]
     docker_dir = docker_data_dir()
-    runtime, standard = _source_graph_base(root, docker_dir)
+    contracts = _expected_image_build_contracts()
+    runtime, standard = _source_graph_base(contracts, docker_dir)
     nodes = [runtime, standard]
     substrate = standard
     if _configured_image(project_root) == "booley-sandbox-riscv":
@@ -703,26 +714,27 @@ def _source_graph(project_root: Path, selected: str) -> tuple[ImageNode, ...]:
         effective_inputs=wheel_source,
         parent=substrate,
         wheel_source_fingerprint=wheel_source,
+        image_build_contracts=contracts,
     )
     nodes.append(overlay)
     return tuple(nodes)
 
 
-def _source_graph_base(root: Path, docker_dir: Path) -> tuple[ImageNode, ImageNode]:
-    from booley.runtime.docker_base_contract import contract as runtime_base_contract
-
+def _source_graph_base(
+    contracts: ImageBuildContracts, docker_dir: Path
+) -> tuple[ImageNode, ImageNode]:
     runtime = _graph_node(
         reference=STABLE_RUNTIME_BASE_IMAGE,
         role=ImageRole.RUNTIME_BASE,
         recipe=docker_dir / "Dockerfile.base",
-        effective_inputs=runtime_base_contract(root),
+        effective_inputs=contracts.runtime_base,
         parent=None,
     )
     standard = _graph_node(
         reference=STANDARD_SUBSTRATE_IMAGE,
         role=ImageRole.STANDARD_SUBSTRATE,
         recipe=docker_dir / "Dockerfile.substrate",
-        effective_inputs=standard_substrate_fingerprint(root),
+        effective_inputs=contracts.standard_substrate,
         parent=runtime,
     )
     return runtime, standard
@@ -763,7 +775,7 @@ def _source_graph_project(project_root: Path, selected: str, substrate: ImageNod
     )
 
 
-def _complete_release_node(selected: str) -> ImageNode:
+def _complete_release_node(selected: str, contracts: ImageBuildContracts) -> ImageNode:
     wheel_source = _expected_wheel_source_fingerprint()
     if wheel_source is None:
         raise ImageLifecycleError("installed release has no wheel-source fingerprint")
@@ -775,7 +787,38 @@ def _complete_release_node(selected: str) -> ImageNode:
         parent=None,
         wheel_source_fingerprint=wheel_source,
         policy=ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+        image_build_contracts=contracts,
     )
+
+
+def _release_project_overlay(project_root: Path, selected: str, parent: ImageNode) -> ImageNode:
+    requirements_body = _project_requirements_body(project_root)
+    if requirements_body is None:
+        raise ImageLifecycleError("managed Project overlay has no Project requirements")
+    recipe = docker_data_dir() / "Dockerfile.project-overlay"
+    return _graph_node(
+        reference=selected,
+        role=ImageRole.PROJECT_OVERLAY,
+        recipe=recipe,
+        effective_inputs=_project_recipe_fingerprint(
+            project_root,
+            requirements_body,
+            parent_image=project_image.MANAGED_PROJECT_PARENT,
+        ),
+        parent=parent,
+        recipe_fingerprint=resolve_recipe_fingerprint((recipe,)),
+    )
+
+
+def _hybrid_release_graph(
+    project_root: Path,
+    selected: str,
+    contracts: ImageBuildContracts,
+) -> tuple[ImageNode, ...]:
+    configured = _configured_image(project_root)
+    published_parent = configured if configured in FLAVOR_RECIPES else BASE_IMAGE
+    parent = _complete_release_node(published_parent, contracts)
+    return parent, _release_project_overlay(project_root, selected, parent)
 
 
 def _snapshot(nodes: tuple[ImageNode, ...]) -> InputSnapshot:
@@ -813,8 +856,11 @@ def _node_provenance_reason(node: ImageNode, docker: DockerPort) -> Diagnostic |
         node.reference, LABEL_ARTIFACT_ROLE
     ) != (node.role.value if node.role else None):
         return Diagnostic("legacy-migration", "artifact uses an older image topology")
-    if docker.label(node.reference, LABEL_EFFECTIVE_INPUTS) != node.effective_inputs:
-        return Diagnostic("inputs-changed", "node-owned effective inputs changed")
+    if docker.label(node.reference, LABEL_EFFECTIVE_INPUTS) != node.effective_inputs or any(
+        docker.label(node.reference, name) != expected
+        for name, expected in _image_contract_labels(node).items()
+    ):
+        return Diagnostic("inputs-changed", "node-owned compatibility inputs changed")
     if docker.label(node.reference, LABEL_RECIPE_FINGERPRINT) != node.build.recipe_fingerprint:
         return Diagnostic("recipe-changed", "the node build recipe changed")
     if node.wheel_source_fingerprint is not None and (
@@ -860,6 +906,7 @@ def plan(
     """Observe and purely plan the minimal invalid closure for one Project."""
     if not isinstance(scope, ProjectImageScope):
         raise TypeError("incremental planning requires a ProjectImageScope")
+    contracts = _expected_image_build_contracts()
     resolved_docker = docker or _docker_adapter()
     root = scope.project_root.resolve()
     selected = _selected_reference(root)
@@ -869,14 +916,12 @@ def plan(
         project_image.project_image_name(root),
     }:
         raise ImageLifecycleError(f"Sandbox Image {selected!r} is externally managed")
-    nodes = (
-        (_complete_release_node(selected),)
-        if artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY
-        else tuple(
-            replace(node, acquisition_policy=artifact_policy)
-            for node in _source_graph(root, selected)
-        )
-    )
+    if artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
+        nodes = (_complete_release_node(selected, contracts),)
+    elif artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL:
+        nodes = _hybrid_release_graph(root, selected, contracts)
+    else:
+        nodes = _source_graph(root, selected)
     invalid = False
     steps = []
     for node in nodes:
@@ -894,8 +939,7 @@ def plan(
         invalid = True
         action = (
             PlanAction.PULL
-            if artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY
-            and node.role is ImageRole.WHEEL_OVERLAY
+            if node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY
             else PlanAction.BUILD
         )
         steps.append(PlanStep(node.reference, node.role, action, reason))
@@ -946,10 +990,20 @@ def _prepared_provenance(node: ImageNode, parent_artifact: str | None) -> dict[s
     }
     if node.wheel_source_fingerprint is not None:
         required[LABEL_WHEEL_SOURCE_FINGERPRINT] = node.wheel_source_fingerprint
+    required.update(_image_contract_labels(node))
     if parent_artifact is not None:
         required[LABEL_PARENT_ARTIFACT] = parent_artifact
         required[LABEL_PARENT_ARTIFACT_KIND] = PARENT_ARTIFACT_LOCAL_IMAGE_ID
     return required
+
+
+def _image_contract_labels(node: ImageNode) -> dict[str, str]:
+    labels = {}
+    if node.runtime_base_contract is not None:
+        labels[LABEL_RUNTIME_BASE_CONTRACT] = node.runtime_base_contract
+    if node.standard_substrate_contract is not None:
+        labels[LABEL_STANDARD_SUBSTRATE_CONTRACT] = node.standard_substrate_contract
+    return labels
 
 
 def _verify_release_parent(reference: str, docker: DockerPort) -> str:
@@ -1254,12 +1308,7 @@ def _base_parent_current(origin: str, recorded_parent: str, docker: DockerPort) 
         return normalize_registry_digest(recorded_parent) is not None
     if not is_local_image_id(recorded_parent):
         return False
-    from booley.runtime.docker_base_contract import contract as runtime_base_contract
-
-    try:
-        expected_contract = runtime_base_contract(docker_data_dir().parents[3])
-    except (OSError, ValueError):
-        return docker.image_id(STABLE_RUNTIME_BASE_IMAGE) == recorded_parent
+    expected_contract = _expected_image_build_contracts().runtime_base
     stable_contract = docker.label(STABLE_RUNTIME_BASE_IMAGE, "io.booley.runtime-base.contract")
     return (
         stable_contract == expected_contract

@@ -90,6 +90,8 @@ def validate(
     image_digest: str,
     expected_wheel_source: str,
     expected_wheel_sha256: str,
+    expected_runtime_base_contract: str,
+    expected_standard_substrate_contract: str,
     expected_recipe: str,
     expected_parent: str,
     expected_revision: str,
@@ -98,6 +100,8 @@ def validate(
     expected_labels = _expected_labels(
         expected_wheel_source,
         expected_wheel_sha256,
+        expected_runtime_base_contract,
+        expected_standard_substrate_contract,
         expected_recipe,
         expected_parent,
         expected_revision,
@@ -122,6 +126,8 @@ def validate(
 def _expected_labels(
     wheel_source: str,
     wheel_sha256: str,
+    runtime_base_contract: str,
+    standard_substrate_contract: str,
     recipe: str,
     parent: str,
     revision: str,
@@ -132,6 +138,8 @@ def _expected_labels(
         "io.booley.artifact.effective-inputs": wheel_source,
         "io.booley.wheel.source-fingerprint": wheel_source,
         "io.booley.wheel.sha256": wheel_sha256,
+        "io.booley.runtime-base.contract": runtime_base_contract,
+        "io.booley.standard-substrate.contract": standard_substrate_contract,
         "io.booley.build.recipe-fingerprint": recipe,
         "io.booley.build.parent-artifact-kind": "registry-digest",
         "io.booley.build.parent-artifact": parent,
@@ -187,6 +195,8 @@ def main() -> int:
     parser.add_argument("--image-digest", required=True)
     parser.add_argument("--expected-wheel-source", required=True)
     parser.add_argument("--expected-wheel-sha256", required=True)
+    parser.add_argument("--expected-runtime-base-contract", required=True)
+    parser.add_argument("--expected-standard-substrate-contract", required=True)
     parser.add_argument("--expected-recipe", required=True)
     parser.add_argument("--expected-parent", required=True)
     parser.add_argument("--expected-revision", required=True)
@@ -198,6 +208,8 @@ def main() -> int:
         image_digest=args.image_digest,
         expected_wheel_source=args.expected_wheel_source,
         expected_wheel_sha256=args.expected_wheel_sha256,
+        expected_runtime_base_contract=args.expected_runtime_base_contract,
+        expected_standard_substrate_contract=args.expected_standard_substrate_contract,
         expected_recipe=args.expected_recipe,
         expected_parent=args.expected_parent,
         expected_revision=args.expected_revision,

@@ -45,7 +45,8 @@ jobs:
             echo "source_updated_at=$(git log -1 --format=%cI HEAD)"
             echo "image_built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "wheel_source_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
-            echo "substrate_inputs=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_lifecycle import standard_substrate_fingerprint; print(standard_substrate_fingerprint(Path.cwd()))')"
+            echo "runtime_base_contract=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import source_image_build_contracts; print(source_image_build_contracts(Path.cwd()).runtime_base)')"
+            echo "substrate_inputs=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import standard_substrate_contract; print(standard_substrate_contract(Path.cwd()))')"
             echo "substrate_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.substrate"),)))')"
             echo "overlay_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.wheel"),)))')"
           } >> "$GITHUB_OUTPUT"
@@ -138,6 +139,8 @@ jobs:
             io.booley.artifact.effective-inputs=${{ steps.version.outputs.wheel_source_fingerprint }}
             io.booley.wheel.source-fingerprint=${{ steps.version.outputs.wheel_source_fingerprint }}
             io.booley.wheel.sha256=${{ steps.wheel.outputs.wheel_sha256 }}
+            io.booley.runtime-base.contract=${{ steps.version.outputs.runtime_base_contract }}
+            io.booley.standard-substrate.contract=${{ steps.version.outputs.substrate_inputs }}
             io.booley.build.recipe-fingerprint=${{ steps.version.outputs.overlay_recipe_fingerprint }}
             io.booley.build.parent-artifact-kind=registry-digest
             io.booley.build.parent-artifact=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}
@@ -173,6 +176,8 @@ jobs:
             echo "source_updated_at=$(git log -1 --format=%cI HEAD)"
             echo "image_built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "wheel_source_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
+            echo "runtime_base_contract=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import source_image_build_contracts; print(source_image_build_contracts(Path.cwd()).runtime_base)')"
+            echo "standard_substrate_contract=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import standard_substrate_contract; print(standard_substrate_contract(Path.cwd()))')"
             echo "substrate_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
             echo "overlay_recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.wheel"),)))')"
           } >> "$GITHUB_OUTPUT"
@@ -245,6 +250,8 @@ jobs:
             io.booley.artifact.effective-inputs=${{ steps.version.outputs.wheel_source_fingerprint }}
             io.booley.wheel.source-fingerprint=${{ steps.version.outputs.wheel_source_fingerprint }}
             io.booley.wheel.sha256=${{ steps.wheel.outputs.wheel_sha256 }}
+            io.booley.runtime-base.contract=${{ steps.version.outputs.runtime_base_contract }}
+            io.booley.standard-substrate.contract=${{ steps.version.outputs.standard_substrate_contract }}
             io.booley.build.recipe-fingerprint=${{ steps.version.outputs.overlay_recipe_fingerprint }}
             io.booley.build.parent-artifact-kind=registry-digest
             io.booley.build.parent-artifact=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}
@@ -284,11 +291,15 @@ jobs:
         run: |
           mkdir -p "${RUNNER_TEMP}/standard-image-evidence"
           expected_wheel_source="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
+          expected_runtime_base_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import source_image_build_contracts; print(source_image_build_contracts(Path.cwd()).runtime_base)')"
+          expected_standard_substrate_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import standard_substrate_contract; print(standard_substrate_contract(Path.cwd()))')"
           expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.wheel"),)))')"
           python .github/scripts/release_validation/image_provenance.py \
             --image "${IMAGE}" --candidate-sha "${GITHUB_SHA}" \
             --image-digest "${IMAGE_DIGEST}" --expected-wheel-source "${expected_wheel_source}" \
             --expected-wheel-sha256 "${EXPECTED_WHEEL_SHA256}" \
+            --expected-runtime-base-contract "${expected_runtime_base_contract}" \
+            --expected-standard-substrate-contract "${expected_standard_substrate_contract}" \
             --expected-recipe "${expected_recipe}" --expected-parent "${EXPECTED_PARENT}" \
             --expected-revision "$(git rev-parse --short HEAD)" \
             --evidence "${RUNNER_TEMP}/standard-image-evidence/provenance.json"
@@ -552,11 +563,15 @@ jobs:
           docker pull "${BASE_IMAGE}"
           docker pull "${RISCV_IMAGE}"
           expected_wheel_source="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
+          expected_runtime_base_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import source_image_build_contracts; print(source_image_build_contracts(Path.cwd()).runtime_base)')"
+          expected_standard_substrate_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import standard_substrate_contract; print(standard_substrate_contract(Path.cwd()))')"
           expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.wheel"),)))')"
           python .github/scripts/release_validation/image_provenance.py \
             --image "${RISCV_IMAGE}" --candidate-sha "${GITHUB_SHA}" \
             --image-digest "${RISCV_DIGEST}" --expected-wheel-source "${expected_wheel_source}" \
             --expected-wheel-sha256 "${EXPECTED_WHEEL_SHA256}" \
+            --expected-runtime-base-contract "${expected_runtime_base_contract}" \
+            --expected-standard-substrate-contract "${expected_standard_substrate_contract}" \
             --expected-recipe "${expected_recipe}" --expected-parent "${EXPECTED_PARENT}" \
             --expected-revision "$(git rev-parse --short HEAD)" \
             --evidence "${RUNNER_TEMP}/riscv-image-evidence/provenance.json"

@@ -117,7 +117,9 @@ jobs:
         run: >-
           python -P -c 'from booley.runtime.build_stamp import
           embedded_development_context_path, embedded_official_release;
+          from booley.runtime.image_build_contracts import embedded_image_build_contracts;
           assert embedded_official_release() is True;
+          embedded_image_build_contracts();
           assert not embedded_development_context_path().exists()'
 
       - name: Verify native bwave is not bundled
@@ -152,7 +154,7 @@ jobs:
           python -m venv "${RUNNER_TEMP}/sdist-venv"
           "${RUNNER_TEMP}/sdist-venv/bin/pip" install "${RUNNER_TEMP}"/sdist-wheel/*.whl
           "${RUNNER_TEMP}/sdist-venv/bin/booley" --help
-          "${RUNNER_TEMP}/sdist-venv/bin/python" -P -c 'from booley.runtime.build_stamp import embedded_development_context_path, embedded_official_release; assert embedded_official_release() is True; assert not embedded_development_context_path().exists()'
+          "${RUNNER_TEMP}/sdist-venv/bin/python" -P -c 'from booley.runtime.build_stamp import embedded_development_context_path, embedded_official_release; from booley.runtime.image_build_contracts import embedded_image_build_contracts; assert embedded_official_release() is True; embedded_image_build_contracts(); assert not embedded_development_context_path().exists()'
 
   publish:
     needs: [source-validation, test-wheel, test-sdist]

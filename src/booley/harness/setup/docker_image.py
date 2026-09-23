@@ -32,8 +32,8 @@ from booley.runtime.build_stamp import (
     resolve_source_updated_at,
     resolve_wheel_source_fingerprint,
 )
-from booley.runtime.docker_base_contract import contract as runtime_base_contract
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
+from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
@@ -114,14 +114,14 @@ def _image_build_metadata_args(booley_root: Path) -> list[str]:
     ]
 
 
-def _runtime_base_build_metadata_args(booley_root: Path) -> list[str]:
+def _runtime_base_build_metadata_args(booley_root: Path, runtime_base_contract: str) -> list[str]:
     """Docker build args for explicit stable-base provenance and compatibility."""
     is_checkout = (booley_root / ".git").exists()
     values = {
         "BOOLEY_BASE_SOURCE_REVISION": (
             resolve_build_commit(booley_root) if is_checkout else "unknown"
         ),
-        "BOOLEY_BASE_CONTRACT": runtime_base_contract(booley_root),
+        "BOOLEY_BASE_CONTRACT": runtime_base_contract,
         "BOOLEY_BASE_BUILT_AT": utc_now_rfc3339(),
     }
     return [
@@ -671,7 +671,8 @@ def _docker_local_build(
 def _docker_build_runtime_base(ctx: InitContext, dockerfile: Path, booley_root: Path) -> bool:
     """Build the local named base consumed by the thin candidate Dockerfile."""
     try:
-        build_args = _runtime_base_build_metadata_args(booley_root)
+        contract = source_image_build_contracts(booley_root).runtime_base
+        build_args = _runtime_base_build_metadata_args(booley_root, contract)
     except (OSError, ValueError) as error:
         err(f"stable runtime-base contract failed: {error}")
         ctx.record("docker_image", "err", "runtime-base contract failed")

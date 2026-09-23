@@ -642,6 +642,8 @@ jobs:
       - name: Build wheel and source distribution
         run: |
           pip install build==1.6.0 twine==7.0.0
+          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.DEVELOPMENT_WHEEL)'
+          trap 'rm -f src/booley/_build_commit.py src/booley/data/development-build-context.tar.gz' EXIT
           python -m build
           twine check dist/*
 
