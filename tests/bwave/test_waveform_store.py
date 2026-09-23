@@ -453,6 +453,7 @@ def test_fifo_vcd_materialization_ignores_non_vcd(tmp_path: Path) -> None:
     assert stores._materialize_fifo_vcd(source, tmp_path / "trace.vcd") is None
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
 def test_fifo_detection_rejects_empty_and_fifo(tmp_path: Path) -> None:
     empty = tmp_path / "empty.vcd"
     empty.touch()
