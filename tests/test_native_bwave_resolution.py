@@ -175,7 +175,7 @@ def test_fifo_streaming_prefers_the_binary_over_a_stale_path_wrapper(monkeypatch
     A stale `pip install --user` wrapper in ~/.local/bin is the classic PATH hit;
     the candidate list has to beat it.
     """
-    from booley.flows.sim import bwave_fifo
+    from booley.bwave import waveform_store
 
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents=True)
@@ -185,18 +185,18 @@ def test_fifo_streaming_prefers_the_binary_over_a_stale_path_wrapper(monkeypatch
     monkeypatch.setattr(paths, "_native_bwave_candidates", lambda: [native])
     monkeypatch.setenv("PATH", str(local_bin))
 
-    assert bwave_fifo._find_bwave_bin() == str(native)
-    assert bwave_fifo.can_stream_bwave_fifo() is (os.name == "posix")
+    assert waveform_store.native_bwave_binary() == str(native)
+    assert waveform_store.can_stream_waveform() is (os.name == "posix")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="FIFO streaming is POSIX-only")
 def test_fifo_streaming_declines_when_only_the_wrapper_exists(monkeypatch, tmp_path):
-    from booley.flows.sim import bwave_fifo
+    from booley.bwave import waveform_store
 
     path_dir = tmp_path / "bin"
     path_dir.mkdir()
     _wrapper(path_dir / _bwave_name())
     monkeypatch.setenv("PATH", str(path_dir))
 
-    assert bwave_fifo._find_bwave_bin() is None
-    assert bwave_fifo.can_stream_bwave_fifo() is False
+    assert waveform_store.native_bwave_binary() is None
+    assert waveform_store.can_stream_waveform() is False

@@ -27,7 +27,7 @@ The package layout maps to the canonical concepts indexed by the
 | Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Drive the Developer Agent toward accepted Criteria. |
 | Ticket Board | `booley.ticket_board` | Persist tickets, transitions, Criteria state, execution records, and the complete ticket-review lifecycle. |
 | MCP | `booley.mcp` | Expose Flows and Specialists to calling agents. |
-| B-Wave | `booley.bwave` | Answer structured waveform questions and control human viewing. |
+| B-Wave | `booley.bwave` | Inspect, convert, discover, and query waveform stores; own the B-Wave half of streaming and control human viewing. |
 
 Supporting mechanism packages keep their names. `booley.audit` owns typed
 environment and configuration analysis and typed diagnostic report values; `booley.config` owns configuration;
@@ -165,6 +165,16 @@ recombination even independently of the direction rules. See
 [the #530 evidence](../research/target-fusesoc-530-evidence.md) for exact revisions,
 full reports, migration fan-out, and verification.
 
+## B-Wave and Flow boundary
+
+B-Wave owns reusable FST structure inspection, native reader probing, VCD-to-FST
+conversion, explicit-root discovery, cache path mechanics, and the B-Wave side of
+FIFO streaming. Simulation consumes those mechanics while retaining attempt
+freshness, paired-process stall policy, manifests, failure retention, publication,
+and the decision that a queryable current-attempt store is a Trace Artifact. D29
+forbids every `booley.bwave` module from importing `booley.flows`, including
+function-local and type-only imports; it has no waiver or composition exception.
+
 ## Graph semantics
 
 The analyzer uses `ast` to parse every `*.py` file below `src/booley`. It records
@@ -223,6 +233,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.harness.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
+| D29 | Prefix `booley.bwave` | Prefix `booley.flows` | Forbid | B-Wave owns reusable waveform mechanics without Flow execution or Simulation evidence policy. |
 
 ## Ticket review lifecycle boundary
 
@@ -601,6 +612,20 @@ pair listed above; nine direct mutual package pairs remain. Doctor fan-out is
 D26 retains Doctor's diagnostic-owner boundary. Target/FuseSoC use D27 and D28;
 all three rules have no waiver or composition exception. Exact revisions and
 full archived reports are in [the #530 evidence](../research/target-fusesoc-530-evidence.md).
+
+## Current snapshot: 23 SEP 2026 — B-Wave waveform ownership
+
+Compared source/analyzer `46ad1684` with the issue #658 implementation. Python
+module count remains 547; normalized dependency facts decrease from 2,830 to
+2,822 and unique normalized edges decrease from 2,345 to 2,344. Removed source
+edges are `bwave.cli -> flows.sim.trace_session` and the
+`bwave.sessions -> flows.sim.{trace_session,bwave_fifo}` dependencies. The direct
+`booley.bwave <-> booley.flows` mutual package pair is eliminated, reducing the
+reported mutual pairs from ten to nine. The projected 11-package cyclic group is
+unchanged because other paths still connect both packages through that approved
+legacy SCC. All top-30 and named composition-hotspot fan-out values are unchanged.
+D29 makes the new direction executable: Flows may consume B-Wave waveform-store
+mechanics, while B-Wave cannot regain Flow execution or evidence policy.
 
 ## Required gate
 

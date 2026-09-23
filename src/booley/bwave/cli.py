@@ -47,6 +47,7 @@ from typing import NamedTuple, NoReturn
 from booley.bwave import wcp as bwave_wcp
 from booley.bwave.contract import NO_MATCH_MARKER
 from booley.bwave.contract import exit_usage as _exit_usage
+from booley.bwave.waveform_store import discover_waveform, waveform_cache_dir
 from booley.runtime import runtime_context, vaporview
 
 # ---------------------------------------------------------------------------
@@ -91,13 +92,23 @@ def _bwave_cmd() -> list[str]:
 
 
 def find_trace(work_dir: Path) -> Path | None:
-    """Find trace file: prefer .fst (fast tmpdir first), fall back to .vcd.
-
-    Thin wrapper around TraceSession.find() for CLI compatibility.
-    """
-    from booley.flows.sim.trace_session import TraceSession
-
-    return TraceSession(work_dir).find()
+    """Find and, when needed, convert a waveform without mutating sim state."""
+    result = discover_waveform(work_dir, cache_dir=waveform_cache_dir(work_dir))
+    if result.failure_kind == "ambiguous":
+        sys.exit(result.detail)
+    if result.conversion is not None:
+        for event in result.conversion.events:
+            print(f"[bwave] {event}")
+        if not result.conversion.success and result.conversion.detail:
+            print(result.conversion.detail, file=sys.stderr)
+            return_code = (
+                result.conversion.attempts[-1].return_code if result.conversion.attempts else None
+            )
+            print(
+                f"[bwave] WARNING: VCD conversion failed (rc={return_code})",
+                file=sys.stderr,
+            )
+    return result.selected
 
 
 def _trace_diagnostics(target: Path) -> str:

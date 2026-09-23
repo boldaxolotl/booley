@@ -354,11 +354,16 @@ def test_register_raw_vcd_with_build_converts_and_registers(tmp_path, monkeypatc
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
     built = tmp_path / "waveform.fst"
 
-    def _fake_build(vcd_path, out_path, scope):
-        out_path.write_bytes(MINIMAL_FST_BYTES)
-        return True
+    def _fake_build(vcd_path, out_path, **_kwargs):
+        from booley.bwave.waveform_store import ConversionResult, inspect_store
 
-    monkeypatch.setattr("booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave", _fake_build)
+        out_path.write_bytes(MINIMAL_FST_BYTES)
+        return ConversionResult(
+            out_path,
+            inspection=inspect_store(out_path, probe_reader=False),
+        )
+
+    monkeypatch.setattr("booley.bwave.sessions.convert_vcd", _fake_build)
     monkeypatch.setattr("booley.bwave.sessions._trace_identity", lambda _t: "top")
 
     bwave.cmd_register(argparse.Namespace(sim_dir=str(vcd), alias="dut", build=True))
@@ -378,8 +383,10 @@ def test_register_raw_vcd_build_failure_exits_nonzero(tmp_path, monkeypatch):
     vcd = tmp_path / "waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
     monkeypatch.setattr(
-        "booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave",
-        lambda vcd_path, out_path, scope: False,
+        "booley.bwave.sessions.convert_vcd",
+        lambda *_args, **_kwargs: __import__(
+            "booley.bwave.waveform_store", fromlist=["ConversionResult"]
+        ).ConversionResult(tmp_path / "waveform.fst", failure_kind="failed"),
     )
 
     with pytest.raises(SystemExit) as exc:
@@ -409,7 +416,7 @@ def test_register_build_refuses_to_clobber_an_existing_store(tmp_path, monkeypat
 
     called = []
     monkeypatch.setattr(
-        "booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave",
+        "booley.bwave.sessions.convert_vcd",
         lambda *a: called.append(a) or True,
     )
 
@@ -447,9 +454,18 @@ def test_register_sim_dir_falling_back_to_vcd_shows_why_conversion_failed(
     (tmp_path / "trace_status.json").write_text(
         '{"failure_reason": "bwave binary not found"}', encoding="utf-8"
     )
-    # The one way find() hands back a raw .vcd: its own conversion lost.
+    from booley.bwave.waveform_store import ConversionResult, DiscoveryResult
+
     monkeypatch.setattr(
-        "booley.flows.sim.trace_session.TraceSession._convert_vcd", lambda self, path: None
+        "booley.bwave.cli.discover_waveform",
+        lambda *_args, **_kwargs: DiscoveryResult(
+            vcd,
+            conversion=ConversionResult(
+                tmp_path / "trace.fst",
+                failure_kind="missing_binary",
+                detail="bwave binary not found",
+            ),
+        ),
     )
 
     with pytest.raises(SystemExit) as exc:
@@ -520,7 +536,7 @@ def test_register_rejects_header_only_fst(tmp_path, monkeypatch, capsys):
 def test_register_dir_with_header_only_store_names_the_real_problem(tmp_path, capsys):
     """A sim dir whose only .fst is header-only must not just say "no trace".
 
-    find_trace filters stores through _bwave_valid, so the header-only file
+    find_trace filters stores through structural inspection, so the header-only file
     was invisible: the search fell to "No trace file found" (or blamed a raw
     VCD) while the actual problem — an unqueryable store sitting right there
     — went unmentioned.
@@ -567,7 +583,7 @@ def test_register_missing_identity_warns_loudly(tmp_path, monkeypatch, capsys):
     from tests.conftest import MINIMAL_FST_BYTES
 
     monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
-    # The minimal fixture passes _bwave_valid but is not a real FST the native
+    # The minimal fixture passes structural inspection but is not a real FST the native
     # binary can list scopes from; force the identity probe's empty answer.
     monkeypatch.setattr(bwave_sessions, "_trace_identity", lambda _trace: "")
 

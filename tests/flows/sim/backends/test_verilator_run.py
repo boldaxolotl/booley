@@ -287,7 +287,7 @@ def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, monkeyp
     exe = bin_dir / "Vtb_top"
     exe.touch()
     _stub_verilated_execution(monkeypatch, trace_path=work_dir / "trace.fst")
-    monkeypatch.setattr("booley.flows.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+    monkeypatch.setattr("booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave")
     monkeypatch.setattr(
         vr.subprocess,
         "run",
@@ -332,7 +332,7 @@ def test_declared_native_fst_must_be_fresh_for_current_run(tmp_path: Path, monke
     exe = bin_dir / "Vtb_top"
     exe.touch()
     _stub_verilated_execution(monkeypatch)
-    monkeypatch.setattr("booley.flows.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+    monkeypatch.setattr("booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave")
     monkeypatch.setattr(
         vr.subprocess,
         "run",

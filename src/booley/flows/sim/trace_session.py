@@ -1,50 +1,29 @@
-"""Single owner for simulation trace lifecycle.
-
-Consolidates trace path derivation, cache management, FIFO streaming,
-and invalidation into one object — eliminating the multi-module path
-mismatch bugs that plagued the previous scattered implementation.
-"""
+"""Simulation-owned trace attempt, freshness, evidence, and publication policy."""
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import os
 import shutil
 import stat
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
 
-from booley.bwave.contract import BWaveListMetadata, decode_list_metadata
-from booley.core.boundary import BoundaryError
+from booley.bwave.waveform_store import (
+    ConversionResult,
+    ExistingStorePolicy,
+    StreamingConversion,
+    convert_vcd,
+    discover_waveform,
+    inspect_store,
+    start_streaming_conversion,
+    waveform_cache_dir,
+)
 from booley.runtime.timefmt import utc_now_rfc3339
 
-
-def _bwave_cache_root() -> Path:
-    """Platform-safe temp directory for bwave cache files."""
-    import tempfile
-
-    return Path(tempfile.gettempdir()) / "bwave"
-
-
-# FST files are a sequence of blocks, each [1-byte type][big-endian u64
-# section length, counted from the length field itself][payload]. The first is
-# always the header block: type 0, fixed length 329.
-_FST_HEADER_BLOCK = 0
-_FST_HEADER_LENGTH = 329
-_BWAVE_MIN_SIZE = 16
-# Block types that actually carry value-change data. A trace with a valid
-# header and none of these is a syntactically perfect file describing nothing
-# — which is exactly what a simulator produces when it was asked to trace via
-# a CLI convention its main() does not implement.
-_FST_VCDATA_BLOCKS = frozenset({1, 5, 8})
-# Guard against walking a corrupt/adversarial block chain forever.
-_FST_MAX_BLOCK_SCAN = 4096
 TRACE_STATUS_SCHEMA_VERSION = 1
 TRACE_METADATA_PREFIX = "TRACE_METADATA: "
 
@@ -87,178 +66,6 @@ def _utc_now() -> str:
     return utc_now_rfc3339()
 
 
-def _looks_like_vcd(path: Path) -> bool:
-    """Return True when *path* is a regular file containing VCD text."""
-    try:
-        st = path.stat()
-        if stat.S_ISFIFO(st.st_mode) or st.st_size == 0:
-            return False
-        with path.open("rb") as f:
-            head = f.read(4096)
-    except OSError:
-        return False
-    return b"$date" in head and (b"$scope" in head or b"$timescale" in head)
-
-
-def _materialize_fifo_vcd(fifo_path: Path, vcd_path: Path) -> Path | None:
-    """Copy a regular-file trace.fifo fallback to trace.vcd for discovery.
-
-    On POSIX, the iverilog trace injector targets ``trace.fifo``.  If the
-    bwave FIFO builder is unavailable, the simulator opens that path as a
-    normal file and writes VCD text there.  The rest of Booley's trace tooling
-    discovers ``trace.vcd``, so normalize the fallback file in place.
-    """
-    if not _looks_like_vcd(fifo_path):
-        return None
-    try:
-        if vcd_path.exists() and vcd_path.stat().st_mtime >= fifo_path.stat().st_mtime:
-            return vcd_path
-        shutil.copy2(fifo_path, vcd_path)
-    except OSError:
-        return fifo_path
-    return vcd_path
-
-
-def _bwave_valid(path: Path) -> bool:
-    """Integrity check for a waveform store: FST header *and* signal data.
-
-    Checking only the header is a false-pass generator. A simulator whose
-    ``main()`` uses a trace CLI Booley did not speak still opens the dump file
-    and writes the header, then records nothing; the run passes, and a
-    443-byte "waveform" is accepted as proof of a traced simulation. Requiring
-    at least one value-change block makes the check assert the thing the
-    caller actually cares about.
-    """
-    try:
-        size = path.stat().st_size
-        if size < _BWAVE_MIN_SIZE:
-            return False
-        with path.open("rb") as f:
-            head = f.read(9)
-            if (
-                len(head) != 9
-                or head[0] != _FST_HEADER_BLOCK
-                or int.from_bytes(head[1:9], "big") != _FST_HEADER_LENGTH
-            ):
-                return False
-            return _has_value_change_block(f, size)
-    except OSError:
-        return False
-
-
-def _read_bwave_metadata(candidate: Path) -> tuple[BWaveListMetadata | None, str]:
-    """Run the bounded hierarchy probe and decode its JSON metadata."""
-    stdout, failure_reason = _run_bwave_list_probe(candidate)
-    if stdout is None:
-        return None, failure_reason
-    try:
-        return decode_list_metadata(stdout), ""
-    except (BoundaryError, json.JSONDecodeError) as exc:
-        return None, f"B-Wave returned malformed trace metadata: {exc}"
-
-
-def _run_bwave_list_probe(candidate: Path) -> tuple[str | None, str]:
-    """Return stdout from one bounded B-Wave hierarchy query."""
-    from booley.flows.sim.bwave_fifo import _find_bwave_bin
-
-    bwave_bin = _find_bwave_bin()
-    if not bwave_bin:
-        return None, "native B-Wave binary is unavailable for trace validation"
-    try:
-        result = subprocess.run(
-            [bwave_bin, "list", str(candidate), "--format", "json", "--limit", "1"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return None, f"B-Wave hierarchy probe failed: {exc}"
-    if result.returncode == 0:
-        return result.stdout, ""
-    detail = (result.stderr or result.stdout).strip().splitlines()
-    suffix = f": {detail[-1]}" if detail else ""
-    return None, f"B-Wave could not read the retained trace (rc={result.returncode}){suffix}"
-
-
-def _inspect_trace_candidate(
-    candidate: Path | None,
-    expected_scope: str | None,
-) -> TraceInspection:
-    """Validate one candidate through the native query boundary."""
-    if candidate is None:
-        return TraceInspection(None, "no retained trace artifact was found")
-    if candidate.suffix.lower() != ".fst":
-        return TraceInspection(
-            None,
-            f"retained trace is raw {candidate.suffix or 'data'}, not a queryable FST store",
-        )
-    metadata, failure_reason = _read_bwave_metadata(candidate)
-    if metadata is None:
-        return TraceInspection(None, failure_reason)
-    validation_failure = _trace_metadata_failure(metadata, expected_scope)
-    if validation_failure:
-        return TraceInspection(None, validation_failure)
-    return _trace_artifact(candidate, metadata)
-
-
-def _trace_metadata_failure(
-    metadata: BWaveListMetadata,
-    expected_scope: str | None,
-) -> str:
-    """Return why decoded metadata cannot prove this requested trace."""
-    if metadata.signal_count <= 0:
-        return "retained trace has no signals"
-    if expected_scope and not metadata.contains_scope(expected_scope):
-        return (
-            f"retained trace scope {metadata.display_scope!r} does not contain "
-            f"expected DUT scope {expected_scope!r}"
-        )
-    return ""
-
-
-def _trace_artifact(candidate: Path, metadata: BWaveListMetadata) -> TraceInspection:
-    """Materialize validated metadata with the current on-disk size."""
-    try:
-        size_bytes = candidate.stat().st_size
-    except OSError as exc:
-        return TraceInspection(None, f"retained trace became unreadable: {exc}")
-    return TraceInspection(
-        TraceArtifact(
-            path=candidate,
-            size_bytes=size_bytes,
-            top_scope=metadata.display_scope,
-            signal_count=metadata.signal_count,
-            total_ticks=metadata.total_ticks,
-        )
-    )
-
-
-def _has_value_change_block(f: IO[bytes], size: int) -> bool:
-    """Walk the FST block chain from the header, looking for signal data.
-
-    Each block is a 1-byte type followed by a big-endian u64 section length
-    that counts itself, so the next block starts at ``offset + 1 + length``.
-    The scan is bounded: a corrupt or hostile chain must terminate rather than
-    spin on a self-referencing offset.
-    """
-    offset = 1 + _FST_HEADER_LENGTH
-    for _ in range(_FST_MAX_BLOCK_SCAN):
-        if offset >= size:
-            return False
-        f.seek(offset)
-        block = f.read(9)
-        if len(block) != 9:
-            return False
-        if block[0] in _FST_VCDATA_BLOCKS:
-            return True
-        length = int.from_bytes(block[1:9], "big")
-        if length <= 0:
-            return False
-        offset += 1 + length
-    return False
-
-
 def trace_cache_key(
     source_files: list[Path],
     scope: str | None = None,
@@ -281,11 +88,7 @@ def trace_cache_key(
 
 
 class TraceSession:
-    """Owns the full lifecycle of a simulation trace file.
-
-    Callers provide `work_dir` (the sim output directory) as pre-computed
-    input; TraceSession handles everything from there: cache location,
-    FIFO management, invalidation, and discovery.
+    """Own Simulation trace freshness, attempt evidence, and publication.
 
     When `cache_key` is provided, the cache directory uses content-addressed
     hashing instead of `work_dir.name` — a key change means the old cache
@@ -336,27 +139,8 @@ class TraceSession:
 
     @property
     def cache_dir(self) -> Path:
-        """Per-work-dir cache bucket under the bwave temp root.
-
-        The fallback key used to be the bare ``work_dir.name``, which is not
-        unique: every ticket's sim output directory is called ``sim``, so all
-        of them shared ``/tmp/bwave/sim`` inside one container. ``find()``
-        checks that cache first, so registering a trace could bind a
-        *different design's* waveform — observed in the field, where a query
-        about an AXI bridge returned signals from an unrelated serial-comm
-        testbench with nothing flagging the mismatch. Appending a digest of
-        the absolute work_dir path keeps the readable prefix and makes the
-        bucket collision-free.
-        """
-        if self._cache_key:
-            name = self._cache_key
-        else:
-            resolved = str(self._work_dir.resolve())
-            digest = hashlib.sha256(resolved.encode("utf-8", "replace")).hexdigest()[:12]
-            name = f"{self._work_dir.name}-{digest}"
-        d = _bwave_cache_root() / name
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        """B-Wave-owned collision-resistant cache location."""
+        return waveform_cache_dir(self._work_dir, self._cache_key)
 
     @property
     def bwave_path(self) -> Path:
@@ -465,9 +249,9 @@ class TraceSession:
     def _process_snapshot(
         self,
         sim_proc: subprocess.Popen | None,
-        bwave_proc: subprocess.Popen | None,
+        conversion: StreamingConversion | subprocess.Popen | None,
     ) -> str:
-        pids = [p.pid for p in (sim_proc, bwave_proc) if p is not None]
+        pids = [p.pid for p in (sim_proc, conversion) if p is not None]
         if not pids or os.name != "posix":
             return "process snapshot unavailable"
         try:
@@ -507,7 +291,7 @@ class TraceSession:
         reason: str,
         *,
         sim_proc: subprocess.Popen | None = None,
-        bwave_proc: subprocess.Popen | None = None,
+        bwave_proc: StreamingConversion | subprocess.Popen | None = None,
     ) -> Path:
         """Persist trace failure context next to the sim artifacts."""
         self._work_dir.mkdir(parents=True, exist_ok=True)
@@ -552,49 +336,15 @@ class TraceSession:
         return self.incident_path
 
     def find(self) -> Path | None:
-        """Find existing trace: tmpdir cache first, then work_dir, then VCD fallback.
-
-        Auto-converts VCD→.fst if only VCD exists. Exits on ambiguity.
-        Respects cache_key when set (content-addressed lookup).
-        """
-
-        def _stores_in(directory: Path) -> list[Path]:
-            found = [f for f in directory.glob("*.fst") if _bwave_valid(f)]
-            if len(found) > 1:
-                sys.exit(
-                    f"ERROR: Multiple *.fst files in {directory}:\n"
-                    + "\n".join(f"  {f.name}" for f in found)
-                )
-            return found
-
-        # Tmpdir fast cache (uses cache_key if set) vs. the store published
-        # beside the sim artifacts. Prefer whichever is newer: a cached store
-        # left by an earlier sim of the same work dir is stale the moment a
-        # re-run publishes a fresh trace, and silently answering from the old
-        # one is the same class of bug as the cross-ticket collision.
-        cached = _stores_in(self.cache_dir) if self.cache_dir.is_dir() else []
-        published = _stores_in(self._work_dir)
-        if cached and published:
-            # Publishing uses copy2(), so the cache and project copy normally
-            # have identical mtimes. Prefer the host-visible project artifact
-            # on that tie; list/max's former cache-first tie break leaked a
-            # container-private /tmp path into reports (Taxi F-42).
-            cached_mtime = cached[0].stat().st_mtime
-            published_mtime = published[0].stat().st_mtime
-            return published[0] if published_mtime >= cached_mtime else cached[0]
-        if cached:
-            return cached[0]
-        if published:
-            return published[0]
-
-        # VCD fallback with auto-conversion
-        vcd = self._work_dir / "trace.vcd"
-        if not vcd.exists():
-            vcd = _materialize_fifo_vcd(self.fifo_path, vcd) or vcd
-        if not vcd.exists():
-            return None
-        converted = self._convert_vcd(vcd)
-        return converted if converted else vcd
+        """Adapt B-Wave discovery into Simulation-owned attempt evidence."""
+        result = discover_waveform(self._work_dir, cache_dir=self.cache_dir)
+        if result.failure_kind == "ambiguous":
+            raise SystemExit(result.detail)
+        if result.conversion is not None:
+            self._record_conversion("vcd_convert", result.conversion)
+            if result.conversion.success:
+                self.record_event("bwave_published", str(self.work_bwave_path))
+        return result.selected
 
     def inspect(self, path: Path | None = None) -> TraceInspection:
         """Prove that a retained store has a hierarchy and at least one signal.
@@ -604,11 +354,26 @@ class TraceSession:
         ``bwave list`` hierarchy query, so malformed and zero-signal stores
         cannot earn ``TRACE_OK`` merely because they contain a value block.
         """
-        inspection = _inspect_trace_candidate(path or self.find(), self._trace_scope)
-        if not inspection.usable:
-            return inspection
-        artifact = inspection.artifact
-        assert artifact is not None
+        candidate = path or self.find()
+        if candidate is None:
+            return TraceInspection(None, "no retained trace artifact was found")
+        if candidate.suffix.lower() != ".fst":
+            return TraceInspection(
+                None,
+                f"retained trace is raw {candidate.suffix or 'data'}, not a queryable FST store",
+            )
+        store_inspection = inspect_store(candidate, expected_scope=self._trace_scope)
+        if not store_inspection.queryable:
+            return TraceInspection(None, store_inspection.detail)
+        metadata = store_inspection.metadata
+        assert metadata is not None
+        artifact = TraceArtifact(
+            path=candidate,
+            size_bytes=candidate.stat().st_size,
+            top_scope=metadata.display_scope,
+            signal_count=metadata.signal_count,
+            total_ticks=metadata.total_ticks,
+        )
         self._status["current_status"] = "usable"
         self._status["trace_metadata"] = {
             "path": str(artifact.path),
@@ -621,7 +386,7 @@ class TraceSession:
             "validated",
             f"{artifact.signal_count} signals under {artifact.top_scope}",
         )
-        return inspection
+        return TraceInspection(artifact)
 
     def reset_for_run(self, raw_trace_paths: tuple[Path, ...] = ()) -> None:
         """Remove generated stores that could masquerade as this run's trace.
@@ -660,52 +425,44 @@ class TraceSession:
                 except OSError:
                     pass
 
-    def start_fifo(self) -> tuple[subprocess.Popen | None, bool, int | None]:
-        """Start FIFO streaming pipeline (POSIX only).
-
-        Returns (bwave_proc, use_fifo, keepalive_fd). Caller MUST close
-        keepalive_fd after simulator exits, then call cleanup_fifo().
-        """
-        from booley.flows.sim.bwave_fifo import setup_bwave_paths
-
-        # Hand the streamer *our* store path: it must write exactly the file
-        # cleanup_fifo/find()/write_incident later look for (see F-24).
-        _fifo_path, _bwave_path, bwave_proc, use_fifo, keepalive_fd = setup_bwave_paths(
-            self._work_dir, True, self._trace_scope, self.bwave_path
+    def start_fifo(self) -> StreamingConversion | None:
+        """Start the B-Wave-owned FIFO converter when available."""
+        conversion = start_streaming_conversion(
+            self.fifo_path,
+            self.bwave_path,
+            scope=self._trace_scope,
+            stderr_path=self.persisted_stderr_path,
         )
         self.record_attempt(
             "fifo_stream",
-            "started" if use_fifo else "disabled",
+            "started" if conversion else "disabled",
             detail=(
-                "bwave FIFO streamer active" if use_fifo else "FIFO unavailable; use VCD fallback"
+                "bwave FIFO streamer active"
+                if conversion
+                else "FIFO unavailable; use VCD fallback"
             ),
         )
-        return bwave_proc, use_fifo, keepalive_fd
+        if conversion:
+            print(f"[bwave] streaming VCD through FIFO → {self.bwave_path}")
+        return conversion
 
-    def cleanup_fifo(
-        self,
-        bwave_proc: subprocess.Popen | None,
-        keepalive_fd: int | None,
-    ) -> None:
-        """Close keepalive fd and wait for bwave with kill escalation."""
-        if keepalive_fd is not None:
-            os.close(keepalive_fd)
-        tmp_stderr = self.bwave_path.with_name(self.bwave_path.name + ".stderr")
-        if tmp_stderr.exists():
-            with contextlib.suppress(OSError):
-                shutil.copy2(tmp_stderr, self.persisted_stderr_path)
-        from booley.flows.sim.bwave_fifo import cleanup_bwave
-
-        cleanup_bwave(bwave_proc, self.bwave_path, self.fifo_path)
-        rc = bwave_proc.poll() if bwave_proc is not None else None
-        status = "success" if _bwave_valid(self.bwave_path) else "no_artifact"
+    def cleanup_fifo(self, conversion: StreamingConversion | None) -> None:
+        """Finish converter ownership and record Simulation evidence."""
+        result = conversion.finish() if conversion is not None else None
+        if result:
+            for event in result.events:
+                print(f"[bwave] {event}")
+            if result.detail:
+                print(f"[bwave] stderr: {result.detail}")
+        status = "success" if result and result.success else "no_artifact"
         if status == "success":
             self._publish_bwave(self.bwave_path)
-        self.record_attempt("fifo_cleanup", status, return_code=rc)
+        return_code = result.attempts[-1].return_code if result and result.attempts else None
+        self.record_attempt("fifo_cleanup", status, return_code=return_code)
 
     def start_monitor(
         self,
-        bwave_proc: subprocess.Popen,
+        bwave_proc: StreamingConversion,
         sim_proc: subprocess.Popen,
         stall_timeout: float = 30.0,
         poll_interval: float = 2.0,
@@ -727,27 +484,13 @@ class TraceSession:
             import time
 
             bpath = self.bwave_path
-            # bwave appends to <bwave>.progress every ~5s during VCD
-            # parsing; the .fst itself is only written at EOF.  Watching both
-            # avoids false-positive stalls during long randomized TBs.
-            progress_path = bpath.with_name(bpath.name + ".progress")
             last_size = -1
             stall_start: float | None = None
             stall_count = 0
 
-            def _liveness_size() -> int:
-                total = 0
-                for p in (bpath, progress_path):
-                    try:
-                        if p.exists():
-                            total += p.stat().st_size
-                    except OSError:
-                        pass
-                return total
-
             while sim_proc.poll() is None and bwave_proc.poll() is None:
                 time.sleep(poll_interval)
-                sz = _liveness_size()
+                sz = bwave_proc.progress_size()
 
                 if sz != last_size:
                     last_size = sz
@@ -814,13 +557,9 @@ class TraceSession:
             bwave_proc.pid,
             bwave_proc.poll() is None,
         )
-        stderr_file = bpath.with_name(bpath.name + ".stderr")
-        try:
-            txt = stderr_file.read_text(errors="replace").strip()
-            if txt:
-                log.warning("[bwave monitor] stderr: %s", txt[:500])
-        except OSError:
-            pass
+        txt = bwave_proc.stderr_tail(500)
+        if txt:
+            log.warning("[bwave monitor] stderr: %s", txt)
 
     def _kill_stalled_pipeline(
         self,
@@ -850,21 +589,30 @@ class TraceSession:
         # output and gets surfaced by upstream parsers.
         print(kill_msg, flush=True)
         kill_process_tree(sim_proc)
-        with contextlib.suppress(OSError):
-            bwave_proc.kill()
+        bwave_proc.kill()
 
     def postprocess(self, vcd_path: Path) -> None:
         """Windows/fallback: convert VCD file → .fst after sim completes."""
-        from booley.flows.sim.bwave_fifo import postprocess_vcd_to_bwave
-
         detail = f"{vcd_path} (exists={vcd_path.exists()}; scope={self._trace_scope or '<all>'})"
         self.record_attempt("vcd_postprocess", "started", detail=detail)
         success = False
         try:
-            postprocess_vcd_to_bwave(vcd_path, self.bwave_path, self._trace_scope)
-            success = _bwave_valid(self.bwave_path)
+            result = convert_vcd(
+                vcd_path,
+                self.bwave_path,
+                scope=self._trace_scope,
+                allow_unscoped_fallback=True,
+                existing_store=ExistingStorePolicy.REPLACE,
+            )
+            self._render_conversion(result)
+            self._record_conversion("vcd_postprocess_build", result)
+            success = result.success
             if success:
                 self._publish_bwave(self.bwave_path)
+            elif result.detail:
+                (vcd_path.parent / "trace.fst.stderr").write_text(
+                    result.detail + "\n", encoding="utf-8"
+                )
         finally:
             self._settle_postprocess_artifacts(vcd_path, success=success)
         status = "success" if success else "vcd_only"
@@ -889,62 +637,12 @@ class TraceSession:
             self.persisted_stderr_path.unlink(missing_ok=True)
             shutil.move(source_stderr, self.persisted_stderr_path)
 
-    def _convert_vcd(self, vcd_path: Path) -> Path | None:
-        """Convert VCD → .fst, caching in tmpdir."""
-        bwave_path = self.bwave_path
-        if bwave_path.exists() and bwave_path.stat().st_mtime >= vcd_path.stat().st_mtime:
-            return bwave_path
-
-        from booley.flows.sim.bwave_fifo import _find_bwave_bin
-
-        bwave_bin = _find_bwave_bin()
-        if not bwave_bin:
-            self.record_attempt(
-                "vcd_convert",
-                "disabled",
-                detail="bwave binary not found",
-            )
-            print("[bwave] bwave not found -- cannot convert VCD", file=sys.stderr)
-            return None
-
-        vcd_mb = vcd_path.stat().st_size / (1024 * 1024)
-        print(f"[bwave] converting VCD -> .fst ({vcd_mb:.0f} MB VCD) ...")
-        self.record_attempt("vcd_convert", "started", detail=str(vcd_path))
-        with vcd_path.open("rb") as f:
-            # v0.2 subcommand form: `bwave build -o PATH` reading VCD from stdin
-            result = subprocess.run(
-                [bwave_bin, "build", "-o", str(bwave_path)],
-                stdin=f,
-                capture_output=True,
-                check=False,
-            )
-        if result.returncode == 0 and bwave_path.exists() and _bwave_valid(bwave_path):
-            sz_mb = bwave_path.stat().st_size / (1024 * 1024)
-            print(f"[bwave] wrote {bwave_path.name} ({sz_mb:.1f} MB)")
-            self.record_attempt(
-                "vcd_convert",
-                "success",
-                detail=str(vcd_path),
-                return_code=result.returncode,
-            )
-            self._publish_bwave(bwave_path)
-            return bwave_path
-
-        stderr_out = result.stderr.decode(errors="replace").strip()
-        if stderr_out:
-            print(stderr_out, file=sys.stderr)
-        print(f"[bwave] WARNING: VCD conversion failed (rc={result.returncode})", file=sys.stderr)
-        self.record_attempt(
-            "vcd_convert",
-            "failed",
-            detail=stderr_out[-1000:] if stderr_out else str(vcd_path),
-            return_code=result.returncode,
-        )
-        return None
-
     def _publish_bwave(self, trace_path: Path) -> Path | None:
         """Copy a valid cached store beside sim artifacts for later lookup."""
-        if trace_path.suffix != ".fst" or not _bwave_valid(trace_path):
+        if (
+            trace_path.suffix != ".fst"
+            or not inspect_store(trace_path, probe_reader=False).structurally_usable
+        ):
             return None
         dest = self.work_bwave_path
         try:
@@ -962,3 +660,27 @@ class TraceSession:
         except OSError as exc:
             self.record_event("bwave_publish_failed", str(exc))
             return None
+
+    def _record_conversion(self, kind: str, result: ConversionResult) -> None:
+        """Persist B-Wave conversion attempts in the Simulation manifest."""
+        if not result.attempts:
+            status = "disabled" if result.failure_kind == "missing_binary" else "failed"
+            self.record_attempt(kind, status, detail=result.detail)
+            return
+        for attempt in result.attempts:
+            detail = attempt.stderr or f"scope={attempt.scope or '<all>'}"
+            self.record_attempt(
+                kind,
+                "success" if result.success and attempt is result.attempts[-1] else "failed",
+                detail=detail,
+                return_code=attempt.return_code,
+            )
+
+    @staticmethod
+    def _render_conversion(result: ConversionResult) -> None:
+        for event in result.events:
+            print(f"[bwave] {event}")
+        if not result.success and result.detail:
+            print(result.detail)
+            last_rc = result.attempts[-1].return_code if result.attempts else None
+            print(f"[bwave] WARNING: post-process failed (rc={last_rc})")

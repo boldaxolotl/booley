@@ -46,6 +46,25 @@ def _wait_dead(proc: subprocess.Popen, timeout: float = 5.0) -> bool:
     return False
 
 
+class _StreamStub:
+    def __init__(self, process: subprocess.Popen, store_path) -> None:
+        self._process = process
+        self.store_path = store_path
+        self.pid = process.pid
+
+    def poll(self):
+        return self._process.poll()
+
+    def kill(self):
+        return self._process.kill()
+
+    def progress_size(self) -> int:
+        return self.store_path.stat().st_size if self.store_path.exists() else 0
+
+    def stderr_tail(self, _limit: int = 4000) -> str:
+        return ""
+
+
 class TestStallKill:
     """The monitor must kill sim+bwave when .bwave never grows."""
 
@@ -56,7 +75,7 @@ class TestStallKill:
         bwave_proc = _spawn_sleeper()
         try:
             ts.start_monitor(
-                bwave_proc,
+                _StreamStub(bwave_proc, ts.bwave_path),
                 sim_proc,
                 stall_timeout=0.2,
                 poll_interval=0.05,
@@ -83,7 +102,9 @@ class TestTraceStatusManifest:
     def test_inspection_records_queryable_trace_metadata(self, tmp_path, monkeypatch):
         trace = tmp_path / "trace.fst"
         trace.write_bytes(MINIMAL_FST_BYTES)
-        monkeypatch.setattr("booley.flows.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+        monkeypatch.setattr(
+            "booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave"
+        )
         monkeypatch.setattr(
             subprocess,
             "run",
@@ -120,7 +141,9 @@ class TestTraceStatusManifest:
         """Cocotb/Verilator exposes $rootio beside the DUT, so no common prefix exists."""
         trace = tmp_path / "trace.fst"
         trace.write_bytes(MINIMAL_FST_BYTES)
-        monkeypatch.setattr("booley.flows.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+        monkeypatch.setattr(
+            "booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave"
+        )
         monkeypatch.setattr(
             subprocess,
             "run",
@@ -152,7 +175,9 @@ class TestTraceStatusManifest:
     def test_inspection_rejects_a_different_dut_scope(self, tmp_path, monkeypatch):
         trace = tmp_path / "trace.fst"
         trace.write_bytes(MINIMAL_FST_BYTES)
-        monkeypatch.setattr("booley.flows.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+        monkeypatch.setattr(
+            "booley.bwave.waveform_store.native_bwave_binary", lambda: "/bin/bwave"
+        )
         monkeypatch.setattr(
             subprocess,
             "run",
@@ -184,7 +209,7 @@ class TestTraceStatusManifest:
         tmp_path,
         monkeypatch,
     ):
-        from booley.flows.sim import bwave_fifo
+        from booley.bwave import waveform_store
 
         vcd = tmp_path / "trace.vcd"
         vcd.write_text(
@@ -208,12 +233,17 @@ class TestTraceStatusManifest:
             bwave.write_bytes(MINIMAL_FST_BYTES)
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
 
-        monkeypatch.setattr(bwave_fifo, "_find_bwave_bin", lambda: "bwave")
-        monkeypatch.setattr(bwave_fifo.subprocess, "run", fake_run)
+        monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: "bwave")
+        monkeypatch.setattr(waveform_store.subprocess, "run", fake_run)
 
-        ok = bwave_fifo.postprocess_vcd_to_bwave(vcd, bwave, "tb.missing_dut")
+        result = waveform_store.convert_vcd(
+            vcd,
+            bwave,
+            scope="tb.missing_dut",
+            allow_unscoped_fallback=True,
+        )
 
-        assert ok is True
+        assert result.success is True
         assert len(calls) == 2
         assert calls[0][-2:] == ["--scope", "tb.missing_dut"]
         assert "--scope" not in calls[1]
@@ -225,20 +255,20 @@ class TestTraceStatusManifest:
             cache_key=f"cleanup_publish_{tmp_path.name}",
         )
 
-        def fake_cleanup_bwave(_proc, bwave_path, _fifo_path):
-            bwave_path.parent.mkdir(parents=True, exist_ok=True)
-            bwave_path.write_bytes(MINIMAL_FST_BYTES)
+        from booley.bwave.waveform_store import ConversionAttempt, ConversionResult, inspect_store
 
-        class FakeProc:
-            def poll(self):
-                return 0
+        ts.bwave_path.parent.mkdir(parents=True, exist_ok=True)
+        ts.bwave_path.write_bytes(MINIMAL_FST_BYTES)
 
-        monkeypatch.setattr(
-            "booley.flows.sim.bwave_fifo.cleanup_bwave",
-            fake_cleanup_bwave,
-        )
+        class FakeConversion:
+            def finish(self):
+                return ConversionResult(
+                    ts.bwave_path,
+                    attempts=(ConversionAttempt(None, 0),),
+                    inspection=inspect_store(ts.bwave_path, probe_reader=False),
+                )
 
-        ts.cleanup_fifo(FakeProc(), None)
+        ts.cleanup_fifo(FakeConversion())
 
         published = tmp_path / "trace.fst"
         assert ts.bwave_path.exists()
@@ -272,7 +302,7 @@ class TestTraceStatusManifest:
         bwave_proc = _spawn_sleeper()
         try:
             ts.start_monitor(
-                bwave_proc,
+                _StreamStub(bwave_proc, ts.bwave_path),
                 sim_proc,
                 stall_timeout=0.2,
                 poll_interval=0.05,
@@ -306,7 +336,7 @@ class TestTraceStatusManifest:
         bwave_proc = _spawn_sleeper()
         try:
             ts.start_monitor(
-                bwave_proc,
+                _StreamStub(bwave_proc, ts.bwave_path),
                 sim_proc,
                 stall_timeout=0.2,
                 poll_interval=0.05,
