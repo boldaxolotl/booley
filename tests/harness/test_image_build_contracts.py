@@ -179,7 +179,7 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     driver.write_text(_INSTALLED_WHEEL_DRIVER, encoding="utf-8")
     environment = os.environ.copy()
     for name in tuple(environment):
-        if name.startswith("COV_CORE_") or name in {"COVERAGE_FILE", "COVERAGE_PROCESS_START"}:
+        if name.startswith(("COV_CORE_", "COVERAGE_PROCESS_")) or name == "COVERAGE_FILE":
             environment.pop(name)
     environment.update(
         {
