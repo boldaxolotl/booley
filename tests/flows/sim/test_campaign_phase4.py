@@ -205,7 +205,6 @@ def test_process_registration_closes_constructor_cancellation_race(
 def test_real_child_process_is_terminated_immediately_on_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     project_data, child_id, registry, _prepared, flow = _prepared_child(tmp_path, monkeypatch)
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
@@ -214,6 +213,14 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
         terminal_proof=registry.is_terminal,
         recover_child=registry.cancel,
     )
+    child_registered = threading.Event()
+    original_register = SupervisedProcessSet.register
+
+    def register_and_signal(processes, process) -> None:
+        original_register(processes, process)
+        child_registered.set()
+
+    monkeypatch.setattr(SupervisedProcessSet, "register", register_and_signal)
     started = time.monotonic()
     try:
         with (
@@ -222,11 +229,14 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
             capacity.child_permit("item", child_id) as permit,
         ):
             record_path = execution_paths(child_id, project_dir=project_data).record
+
+            def lose_lease() -> None:
+                assert child_registered.wait(timeout=2)
+                assert (read_json(record_path) or {}).get("state") == "running"
+                permit.lease_health.lost.set()
+
             killer = threading.Thread(
-                target=lambda: (
-                    _wait_until(lambda: (read_json(record_path) or {}).get("state") == "running"),
-                    permit.token.path.unlink(),
-                )
+                target=lose_lease,
             )
             killer.start()
             scope = SupervisedExecutionScope(

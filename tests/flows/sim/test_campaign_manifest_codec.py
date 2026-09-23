@@ -5,7 +5,7 @@ import json
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 from hypothesis import given
@@ -300,6 +300,28 @@ def _baseline_manifest():
     item["fingerprint_sha256"] = fingerprint  # type: ignore[index]
     item["work_item_id"] = "item:0000:" + fingerprint[7:23]  # type: ignore[index]
     return finalize_manifest(document)
+
+
+def test_finalize_manifest_accepts_immutable_nested_planning_input() -> None:
+    document = _manifest()
+    document.pop("fingerprints")
+    document["planning_disclosures"] = [
+        MappingProxyType(
+            {
+                "planner": "fusesoc_setup",
+                "scratch_inputs": (),
+                "generated_files": (),
+                "tool_provenance": MappingProxyType(
+                    {"kind": "fusesoc", "version": "1", "contract_version": "1"}
+                ),
+                "cleanup": MappingProxyType({"removed": True}),
+            }
+        )
+    ]
+
+    manifest = finalize_manifest(document)
+
+    assert manifest.document["planning_disclosures"][0]["planner"] == "fusesoc_setup"  # type: ignore[index]
 
 
 def _linked_campaign_stores(tmp_path: Path):
