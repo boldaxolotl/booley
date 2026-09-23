@@ -1776,7 +1776,7 @@ class ResolvedFile:
     """One file entry from a resolved EDAM (``.eda.yml``)."""
 
     name: str
-    """Path as FuseSoC emits it — relative to the EDAM's :attr:`build_root`."""
+    """Path as FuseSoC emits it — relative or absolute when outside the build root."""
 
     file_type: str
     """The CAPI2 ``file_type`` (e.g. ``systemVerilogSource``)."""

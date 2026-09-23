@@ -125,6 +125,77 @@ def _inspection(*, cocotb: bool) -> SimpleNamespace:
     return inspection
 
 
+def test_prepared_source_entries_accept_project_absolute_sources(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    build_root = tmp_path / "build"
+    project_root.mkdir()
+    build_root.mkdir()
+    source = project_root / "picorv32.v"
+    source.write_text("module picorv32; endmodule\n", encoding="utf-8")
+    handle = _handle(project_root)
+    resolved = ResolvedTarget(
+        name="sim",
+        vlnv=handle.vlnv,
+        toplevel="picorv32",
+        eda_tool="icarus",
+        files=(ResolvedFile(str(source), "verilogSource"),),
+        parameters={},
+        build_root=build_root,
+        edam_path=build_root / "demo.eda.yml",
+    )
+    prepared = PreparedSimulationBuild(
+        target="sim",
+        target_identity=handle.identity,
+        resolved=resolved,
+        work_root=build_root,
+        build_root=build_root,
+        eda_tool="icarus",
+        toplevel="picorv32",
+        make_argv=("true",),
+    )
+    group = object.__new__(PreparedOrdinaryGroup)
+    group._handle = handle
+    group._attempt = SimpleNamespace(prepared=prepared)
+
+    assert group.prepared_source_entries()[0]["path"] == "picorv32.v"
+
+
+def test_prepared_source_entries_reject_project_external_sources(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    build_root = tmp_path / "build"
+    external = tmp_path / "external.v"
+    project_root.mkdir()
+    build_root.mkdir()
+    external.write_text("module external; endmodule\n", encoding="utf-8")
+    handle = _handle(project_root)
+    resolved = ResolvedTarget(
+        name="sim",
+        vlnv=handle.vlnv,
+        toplevel="external",
+        eda_tool="icarus",
+        files=(ResolvedFile(str(external), "verilogSource"),),
+        parameters={},
+        build_root=build_root,
+        edam_path=build_root / "demo.eda.yml",
+    )
+    prepared = PreparedSimulationBuild(
+        target="sim",
+        target_identity=handle.identity,
+        resolved=resolved,
+        work_root=build_root,
+        build_root=build_root,
+        eda_tool="icarus",
+        toplevel="external",
+        make_argv=("true",),
+    )
+    group = object.__new__(PreparedOrdinaryGroup)
+    group._handle = handle
+    group._attempt = SimpleNamespace(prepared=prepared)
+
+    with pytest.raises(SimulationBuildSlotError, match="unsafe prepared Simulation source"):
+        group.prepared_source_entries()
+
+
 def _runtime_input_vvp(root: Path, build_root: Path) -> Path:
     (build_root / "demo.scr").write_text("", encoding="utf-8")
     (build_root / "demo").write_text("", encoding="utf-8")
