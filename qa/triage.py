@@ -183,14 +183,47 @@ def contained(root: Path, relative: str) -> Path:
     return path
 
 
+def validate_evidence_reference(run_root: Path, reference: str) -> Path:
+    """Resolve one existing regular file beneath the run-owned evidence root."""
+    relative = Path(reference)
+    evidence_root = run_root / "evidence"
+    if relative.is_absolute() or not relative.parts or relative.parts[0] != "evidence":
+        raise TriageError(f"{run_root}: invalid evidence reference {reference}")
+    if ".." in relative.parts:
+        raise TriageError(f"{run_root}: invalid evidence traversal {reference}")
+    path = run_root / relative
+    if not path.resolve().is_relative_to(evidence_root.resolve()) or not path.is_file():
+        raise TriageError(f"{run_root}: missing or uncontained evidence {reference}")
+    return path
+
+
+def check_result_evidence_refs(result: dict[str, Any]) -> tuple[str, ...]:
+    """Extract every evidence-bearing path field from a Check Result."""
+    references = [*result["evidence_refs"], *result["recovery_refs"]]
+    if deviation := result.get("deviation"):
+        references.extend(deviation["evidence_refs"])
+    if preservation := result.get("borrowed_preservation"):
+        for field in (
+            "setup_evidence_refs",
+            "end_evidence_refs",
+            "pre_run_absence_evidence_refs",
+        ):
+            references.extend(preservation.get(field, []))
+    return tuple(references)
+
+
+def validate_preseal_evidence_refs(
+    run_root: Path, references: tuple[str, ...] | list[str]
+) -> None:
+    """Require every mutable-record reference to name existing run-owned evidence."""
+    for reference in references:
+        validate_evidence_reference(run_root, reference)
+
+
 def validate_evidence(run_root: Path, manifest: dict[str, Any]) -> frozenset[str]:
     paths = []
     for entry in manifest["entries"]:
-        path = contained(run_root, entry["path"])
-        if not entry["path"].startswith("evidence/"):
-            raise TriageError(f"{path}: evidence must be beneath evidence/")
-        if not path.is_file():
-            raise TriageError(f"{path}: missing evidence")
+        path = validate_evidence_reference(run_root, entry["path"])
         if path.stat().st_size != entry["size"] or sha256_file(path) != entry["sha256"]:
             raise TriageError(f"{path}: evidence identity changed")
         paths.append(entry["path"])
@@ -241,7 +274,11 @@ def validate_evidence_refs(
     records: list[dict[str, Any]], evidence_paths: frozenset[str], id_field: str, run_root: Path
 ) -> None:
     for record in records:
-        refs = set(record["evidence_refs"])
+        refs = set(
+            check_result_evidence_refs(record)
+            if record.get("record_type") == "check-result"
+            else record["evidence_refs"]
+        )
         if unknown := refs - evidence_paths:
             raise TriageError(
                 f"{run_root}: {record[id_field]}: unknown evidence {sorted(unknown)}"
@@ -426,9 +463,14 @@ def source_evidence_refs(
         *((result, "check_result_id") for result in results),
         *((observation, "observation_id") for observation in observations),
     ]:
-        for path in record["evidence_refs"]:
+        references = (
+            check_result_evidence_refs(record)
+            if id_field == "check_result_id"
+            else record["evidence_refs"]
+        )
+        for path in references:
             sources[path].append(record[id_field])
-    return {path: sorted(ids) for path, ids in sources.items()}
+    return {path: sorted(set(ids)) for path, ids in sources.items()}
 
 
 def build_evidence_manifest(

@@ -24,6 +24,7 @@ def append_check_result(run_root: Path, suite_root: Path, source: Path) -> None:
         triage.validate_definition(run, "run-record.schema.json", "run", str(run_root))
         result = triage.read_json(source)
         triage.validate_definition(result, "run-record.schema.json", "checkResult", str(source))
+        triage.validate_preseal_evidence_refs(run_root, triage.check_result_evidence_refs(result))
         if result["run_id"] != run["run_id"]:
             raise triage.TriageError(f"{source}: result belongs to a different run")
         destination = run_root / "check-results.jsonl"
