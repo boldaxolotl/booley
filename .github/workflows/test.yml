@@ -334,29 +334,14 @@ jobs:
           --ci-shard-manifest "${{ runner.temp }}/shard/shard-manifest.json"
           --ci-timing-output "${{ runner.temp }}/shard/test-timings.json"
 
-      - name: Summarize pytest execution and skips
+      - name: Publish pytest evidence
         if: always()
-        shell: bash
-        run: >-
-          python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
-          --label "${{ matrix.name }}"
-          --min-tests 1 --summary "${GITHUB_STEP_SUMMARY}"
-
-      - name: Upload test timing data
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: ./.github/actions/publish-pytest-evidence
         with:
-          name: junit-${{ matrix.name }}
-          path: ${{ runner.temp }}/junit.xml
-          if-no-files-found: error
-
-      - name: Upload shard selection and timing evidence
-        if: always() && matrix.mode == 'shard'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: shard-${{ matrix.group }}-${{ matrix.shard_index }}
-          path: ${{ runner.temp }}/shard/
-          if-no-files-found: error
+          label: ${{ matrix.name }}
+          publish-shard: ${{ matrix.mode == 'shard' }}
+          shard-group: ${{ matrix.group }}
+          shard-index: ${{ matrix.shard_index }}
 
   coverage-shards:
     needs: changes
@@ -415,29 +400,14 @@ jobs:
           --ci-shard-manifest "${{ runner.temp }}/shard/shard-manifest.json"
           --ci-timing-output "${{ runner.temp }}/shard/test-timings.json"
 
-      - name: Summarize pytest execution and skips
+      - name: Publish pytest evidence
         if: always()
-        shell: bash
-        run: >-
-          python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
-          --label "${{ matrix.name }}"
-          --min-tests 1 --summary "${GITHUB_STEP_SUMMARY}"
-
-      - name: Upload test timing data
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: ./.github/actions/publish-pytest-evidence
         with:
-          name: junit-${{ matrix.name }}
-          path: ${{ runner.temp }}/junit.xml
-          if-no-files-found: error
-
-      - name: Upload shard selection and timing evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: shard-${{ matrix.group }}-${{ matrix.shard_index }}
-          path: ${{ runner.temp }}/shard/
-          if-no-files-found: error
+          label: ${{ matrix.name }}
+          publish-shard: "true"
+          shard-group: ${{ matrix.group }}
+          shard-index: ${{ matrix.shard_index }}
 
       - name: Upload raw coverage shard
         if: always()

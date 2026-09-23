@@ -365,11 +365,10 @@ def test_matrix_enforces_the_ci_duration_budget() -> None:
     assert all("--timeout=60" in step["run"] for step in pytest_steps)
 
 
-def test_pr_matrix_is_pairwise_sharded_and_exactly_verified() -> None:
+def test_pr_compatibility_matrix_is_pairwise() -> None:
     workflow = _test_workflow()
     jobs = workflow["jobs"]
     entries = jobs["test"]["strategy"]["matrix"]["include"]
-    coverage_entries = jobs["coverage-shards"]["strategy"]["matrix"]["include"]
 
     assert sum(entry["mode"] == "shard" for entry in entries) == 4
     assert all(entry["mode"] != "coverage" for entry in entries)
@@ -383,6 +382,26 @@ def test_pr_matrix_is_pairwise_sharded_and_exactly_verified() -> None:
         ("windows-latest", "3.11", "compatibility"),
         ("windows-latest", "3.13", "compatibility"),
     }
+
+
+def test_windows_shards_are_exactly_verified() -> None:
+    jobs = _test_workflow()["jobs"]
+    test_verify_steps = jobs["test-verify"]["steps"]
+    test_verify_download = next(
+        step for step in test_verify_steps if "pattern" in step.get("with", {})
+    )
+    test_verifier = "\n".join(str(step) for step in test_verify_steps).replace("\n", " ")
+
+    assert test_verify_download["with"]["pattern"] == "shard-windows-*"
+    assert "--group windows --shard-count 4" in test_verifier
+    assert "--group coverage" not in test_verifier
+
+
+def test_coverage_shards_have_dedicated_matrix() -> None:
+    jobs = _test_workflow()["jobs"]
+    coverage_shards = jobs["coverage-shards"]
+    coverage_entries = coverage_shards["strategy"]["matrix"]["include"]
+
     assert coverage_entries == [
         {
             "name": f"ubuntu-3.13-coverage-{index + 1}-of-3",
@@ -393,16 +412,14 @@ def test_pr_matrix_is_pairwise_sharded_and_exactly_verified() -> None:
         }
         for index in range(3)
     ]
+    assert coverage_shards["needs"] == "changes"
+    assert coverage_shards["runs-on"] == "ubuntu-latest"
+    assert coverage_shards["timeout-minutes"] == 15
+    assert coverage_shards["strategy"]["fail-fast"] is False
 
-    test_verify_steps = jobs["test-verify"]["steps"]
-    test_verify_download = next(
-        step for step in test_verify_steps if "pattern" in step.get("with", {})
-    )
-    test_verifier = "\n".join(str(step) for step in test_verify_steps).replace("\n", " ")
-    assert test_verify_download["with"]["pattern"] == "shard-windows-*"
-    assert "--group windows --shard-count 4" in test_verifier
-    assert "--group coverage" not in test_verifier
 
+def test_coverage_job_exactly_verifies_before_combining() -> None:
+    jobs = _test_workflow()["jobs"]
     coverage = jobs["coverage"]
     coverage_steps = coverage["steps"]
     manifest_download = next(
@@ -427,10 +444,6 @@ def test_pr_matrix_is_pairwise_sharded_and_exactly_verified() -> None:
         if step.get("name") == "Combine raw coverage and enforce global ratchet"
     )
 
-    assert jobs["coverage-shards"]["needs"] == "changes"
-    assert jobs["coverage-shards"]["runs-on"] == "ubuntu-latest"
-    assert jobs["coverage-shards"]["timeout-minutes"] == 15
-    assert jobs["coverage-shards"]["strategy"]["fail-fast"] is False
     assert coverage["needs"] == ["changes", "coverage-shards"]
     assert "test" not in coverage["needs"]
     assert "test-verify" not in coverage["needs"]
@@ -443,6 +456,32 @@ def test_pr_matrix_is_pairwise_sharded_and_exactly_verified() -> None:
     assert coverage_steps.index(coverage_verifier) < coverage_steps.index(install)
     assert coverage_steps.index(coverage_verifier) < coverage_steps.index(raw_download)
     assert coverage_steps.index(raw_download) < coverage_steps.index(combine)
+
+
+def test_primary_pytest_jobs_share_evidence_publishing() -> None:
+    jobs = _test_workflow()["jobs"]
+    evidence_steps = {
+        job_name: next(
+            step
+            for step in jobs[job_name]["steps"]
+            if step.get("name") == "Publish pytest evidence"
+        )
+        for job_name in ("test", "coverage-shards")
+    }
+
+    assert all(step["if"] == "always()" for step in evidence_steps.values())
+    assert all(
+        step["uses"] == "./.github/actions/publish-pytest-evidence"
+        for step in evidence_steps.values()
+    )
+    assert evidence_steps["test"]["with"]["publish-shard"] == "${{ matrix.mode == 'shard' }}"
+    assert evidence_steps["coverage-shards"]["with"]["publish-shard"] == "true"
+
+    action_path = REPOSITORY_ROOT / ".github/actions/publish-pytest-evidence/action.yml"
+    rendered_action = action_path.read_text(encoding="utf-8")
+    assert rendered_action.count("actions/upload-artifact@") == 2
+    assert ".github/scripts/assert_junit.py" in rendered_action
+    assert "always() && inputs.publish-shard == 'true'" in rendered_action
 
 
 def test_ci_records_queue_and_runner_minutes() -> None:
