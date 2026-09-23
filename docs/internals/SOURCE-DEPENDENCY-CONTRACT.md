@@ -632,12 +632,13 @@ mechanics, while B-Wave cannot regain Flow execution or evidence policy.
 
 Issue [#659](https://github.com/boldaxolotl/booley/issues/659) moved the resolved
 Ticket-to-Criteria projection from `booley.criteria` to `booley.ticket_board` and
-added D30. Comparing exact source/analyzer revisions `46ad1684` and `b774b7cc`,
-the Criteria-to-Ticket-Board edge count fell from one to zero and direct mutual
-package pairs fell from ten to nine. The removed edge is
+added D30. Comparing current-main source/analyzer revision `ee8ec7d7` with the
+rebased implementation revision `ffd262c7`, the Criteria-to-Ticket-Board edge
+count fell from one to zero and direct mutual package pairs fell from nine to
+eight. The removed edge is
 `booley.criteria.ticket_projection -> booley.ticket_board.ticket_document`.
 
-Both revisions contain 547 Python modules, 2,830 dependency facts, and 2,345
+Both revisions contain 547 Python modules, 2,818 dependency facts, and 2,340
 unique edges. The measured cyclic groups remain the 11-member execution group
 and the separate Target/FuseSoC pair, so approved SCC metadata is unchanged.
 The two redirected callers retain their fan-out:

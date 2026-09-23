@@ -10,6 +10,13 @@ diagnostic evidence from the normative
 
 ## Exact comparison
 
+The feature-isolated comparison below retains the revisions on which the change
+was developed. After rebasing onto `ee8ec7d7`, the integrated tree contains 547
+modules, 2,818 dependency facts, 2,340 unique edges, and eight direct mutual
+package pairs. The Criteria-to-Ticket-Board edge is the only difference between
+that current-main revision and the rebased implementation revision `ffd262c7`;
+the cyclic groups and affected caller fan-out remain unchanged.
+
 | Diagnostic | Before `46ad1684` | After `b774b7cc` |
 | --- | ---: | ---: |
 | Parsed Python modules | 547 | 547 |
