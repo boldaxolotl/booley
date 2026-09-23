@@ -21,11 +21,11 @@ The package layout maps to the canonical concepts indexed by the
 | Sandbox | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment`, `booley.runtime.inspection` | Inspect and own shared execution records, processes, paths, and runtime lifecycle. |
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
-| Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
+| Criteria | `booley.criteria` | Define and evaluate reusable acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
 | Criterion evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, reviewer receipts/dispositions, and per-clock timing values shared by Criteria and evidence-producing Flows. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
 | Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Drive the Developer Agent toward accepted Criteria. |
-| Ticket Board | `booley.ticket_board` | Persist tickets, transitions, Criteria state, execution records, and the complete ticket-review lifecycle. |
+| Ticket Board | `booley.ticket_board` | Persist Tickets, transitions, Criteria state, execution records, and the complete ticket-review lifecycle; project resolved Ticket documents into generic Criteria declarations. |
 | MCP | `booley.mcp` | Expose Flows and Specialists to calling agents. |
 | B-Wave | `booley.bwave` | Inspect, convert, discover, and query waveform stores; own the B-Wave half of streaming and control human viewing. |
 
@@ -234,6 +234,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 | D29 | Prefix `booley.bwave` | Prefix `booley.flows` | Forbid | B-Wave owns reusable waveform mechanics without Flow execution or Simulation evidence policy. |
+| D30 | Prefix `booley.criteria` | Prefix `booley.ticket_board` | Forbid | Generic Criteria policy and state evaluation must not depend on Ticket document, persistence, or lifecycle ownership. |
 
 ## Ticket review lifecycle boundary
 
@@ -600,7 +601,7 @@ Target/FuseSoC rules are numbered D26 and D27 to preserve those rule identities.
 Full before-and-after reports and exact revisions are recorded in
 [the #530 integration evidence](../research/target-fusesoc-530-evidence.md).
 
-## Current snapshot: 15 SEP 2026 — Doctor integration
+## Historical snapshot: 15 SEP 2026 — Doctor integration
 
 Compared source/analyzer `8d1af171` (main) with `41eeebf7` (integration).
 After integrating #532 and the B-Wave guidance update, the source has 505 Python
@@ -613,7 +614,7 @@ D26 retains Doctor's diagnostic-owner boundary. Target/FuseSoC use D27 and D28;
 all three rules have no waiver or composition exception. Exact revisions and
 full archived reports are in [the #530 evidence](../research/target-fusesoc-530-evidence.md).
 
-## Current snapshot: 23 SEP 2026 — B-Wave waveform ownership
+## Historical snapshot: 23 SEP 2026 — B-Wave waveform ownership
 
 Compared source/analyzer `46ad1684` with the issue #658 implementation. Python
 module count remains 547; normalized dependency facts decrease from 2,830 to
@@ -626,6 +627,25 @@ unchanged because other paths still connect both packages through that approved
 legacy SCC. All top-30 and named composition-hotspot fan-out values are unchanged.
 D29 makes the new direction executable: Flows may consume B-Wave waveform-store
 mechanics, while B-Wave cannot regain Flow execution or evidence policy.
+
+## Current snapshot: 23 SEP 2026 — Ticket Criteria projection
+
+Issue [#659](https://github.com/boldaxolotl/booley/issues/659) moved the resolved
+Ticket-to-Criteria projection from `booley.criteria` to `booley.ticket_board` and
+added D30. Comparing current-main source/analyzer revision `ee8ec7d7` with the
+rebased implementation revision `ffd262c7`, the Criteria-to-Ticket-Board edge
+count fell from one to zero and direct mutual package pairs fell from nine to
+eight. The removed edge is
+`booley.criteria.ticket_projection -> booley.ticket_board.ticket_document`.
+
+Both revisions contain 547 Python modules, 2,818 dependency facts, and 2,340
+unique edges. The measured cyclic groups remain the 11-member execution group
+and the separate Target/FuseSoC pair, so approved SCC metadata is unchanged.
+The two redirected callers retain their fan-out:
+`booley.harness.setup.intake` remains at 27 and
+`booley.ticket_board.amendment` remains at 19. Full archived reports, edge
+inventory, and reproduction commands are in
+[the #659 evidence](../research/ticket-criteria-projection-659-evidence.md).
 
 ## Required gate
 

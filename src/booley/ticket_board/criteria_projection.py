@@ -13,7 +13,7 @@ from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.targets.domain import TARGET_IDENTITY_PARAM
 
 if TYPE_CHECKING:
-    from booley.ticket_board.ticket_document import TicketCriterion, TicketSpec
+    from .ticket_document import TicketCriterion, TicketSpec
 
 
 _FLOW_FAMILIES = {
