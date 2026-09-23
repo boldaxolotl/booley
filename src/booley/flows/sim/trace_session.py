@@ -16,6 +16,7 @@ from booley.bwave.waveform_store import (
     ConversionResult,
     ExistingStorePolicy,
     StreamingConversion,
+    conversion_failure_messages,
     convert_vcd,
     discover_waveform,
     inspect_store,
@@ -340,11 +341,12 @@ class TraceSession:
         result = discover_waveform(self._work_dir, cache_dir=self.cache_dir)
         if result.failure_kind == "ambiguous":
             raise SystemExit(result.detail)
+        selected = result.selected
         if result.conversion is not None:
             self._record_conversion("vcd_convert", result.conversion)
             if result.conversion.success:
-                self.record_event("bwave_published", str(self.work_bwave_path))
-        return result.selected
+                selected = self._publish_bwave(result.selected) if result.selected else None
+        return selected or result.selected
 
     def inspect(self, path: Path | None = None) -> TraceInspection:
         """Prove that a retained store has a hierarchy and at least one signal.
@@ -480,55 +482,52 @@ class TraceSession:
         """
         import threading
 
-        def _monitor():
-            import time
-
-            bpath = self.bwave_path
-            last_size = -1
-            stall_start: float | None = None
-            stall_count = 0
-
-            while sim_proc.poll() is None and bwave_proc.poll() is None:
-                time.sleep(poll_interval)
-                sz = bwave_proc.progress_size()
-
-                if sz != last_size:
-                    last_size = sz
-                    stall_start = None
-                    stall_count = 0
-                    continue
-
-                if stall_start is None:
-                    stall_start = time.monotonic()
-                    continue
-                if time.monotonic() - stall_start < stall_timeout:
-                    continue
-
-                stall_count += 1
-                stalled_for = stall_timeout * stall_count
-                self._log_stall_window(
-                    bpath,
-                    sz,
-                    stalled_for,
-                    stall_count,
-                    kill_after_stalls,
-                    sim_proc,
-                    bwave_proc,
-                )
-
-                if stall_count >= kill_after_stalls:
-                    self._kill_stalled_pipeline(
-                        sz,
-                        stalled_for,
-                        sim_proc,
-                        bwave_proc,
-                    )
-                    return
-
-                stall_start = None  # re-arm for the next window
-
-        t = threading.Thread(target=_monitor, daemon=True)
+        t = threading.Thread(
+            target=self._monitor_stalls,
+            args=(bwave_proc, sim_proc, stall_timeout, poll_interval, kill_after_stalls),
+            daemon=True,
+        )
         t.start()
+
+    def _monitor_stalls(
+        self,
+        bwave_proc: StreamingConversion,
+        sim_proc: subprocess.Popen,
+        stall_timeout: float,
+        poll_interval: float,
+        kill_after_stalls: int,
+    ) -> None:
+        import time
+
+        last_size = -1
+        stall_start: float | None = None
+        stall_count = 0
+        while sim_proc.poll() is None and bwave_proc.poll() is None:
+            time.sleep(poll_interval)
+            size = bwave_proc.progress_size()
+            if size != last_size:
+                last_size, stall_start, stall_count = size, None, 0
+                continue
+            if stall_start is None:
+                stall_start = time.monotonic()
+                continue
+            if time.monotonic() - stall_start < stall_timeout:
+                continue
+            stall_count += 1
+            stalled_for = stall_timeout * stall_count
+            self._log_stall_window(
+                self.bwave_path,
+                size,
+                stalled_for,
+                stall_count,
+                kill_after_stalls,
+                sim_proc,
+                bwave_proc,
+            )
+            if stall_count >= kill_after_stalls:
+                self._kill_stalled_pipeline(size, stalled_for, sim_proc, bwave_proc)
+                return
+            stall_start = None
 
     def _log_stall_window(
         self,
@@ -680,7 +679,5 @@ class TraceSession:
     def _render_conversion(result: ConversionResult) -> None:
         for event in result.events:
             print(f"[bwave] {event}")
-        if not result.success and result.detail:
-            print(result.detail)
-            last_rc = result.attempts[-1].return_code if result.attempts else None
-            print(f"[bwave] WARNING: post-process failed (rc={last_rc})")
+        for message in conversion_failure_messages(result, warning="post-process failed"):
+            print(message)

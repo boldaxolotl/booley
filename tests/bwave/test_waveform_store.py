@@ -174,5 +174,45 @@ def test_invalid_newer_cache_does_not_short_circuit_vcd_conversion(
 
     assert result.conversion is not None
     assert result.conversion.success is True
-    assert result.selected == tmp_path / "trace.fst"
+    assert result.selected == cache / "trace.fst"
     assert result.selected.read_bytes() == MINIMAL_FST_BYTES
+
+
+def test_discovery_returns_cache_store_without_publishing_to_work_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    vcd = tmp_path / "trace.vcd"
+    vcd.write_text("$date now $end\n$scope module tb $end\n", encoding="utf-8")
+    monkeypatch.setattr(stores, "native_bwave_binary", lambda: "bwave")
+
+    def run(command, **_kwargs):
+        destination = cache / "trace.fst"
+        destination.write_bytes(MINIMAL_FST_BYTES)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(stores.subprocess, "run", run)
+
+    result = stores.discover_waveform(tmp_path, cache_dir=cache)
+
+    assert result.selected == cache / "trace.fst"
+    assert not (tmp_path / "trace.fst").exists()
+
+
+def test_discovery_reports_directory_errors(tmp_path: Path, monkeypatch) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    original_glob = Path.glob
+
+    def failing_glob(directory, pattern):
+        if directory == cache:
+            raise OSError("permission denied")
+        return original_glob(directory, pattern)
+
+    monkeypatch.setattr(Path, "glob", failing_glob)
+
+    result = stores.discover_waveform(tmp_path, cache_dir=cache)
+
+    assert result.failure_kind == "ambiguous"
+    assert "Unable to inspect waveform directory" in result.detail

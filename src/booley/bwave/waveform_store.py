@@ -29,6 +29,7 @@ _BWAVE_MIN_SIZE = 16
 _FST_VCDATA_BLOCKS = frozenset({1, 5, 8})
 _FST_MAX_BLOCK_SCAN = 4096
 _DIAGNOSTIC_LIMIT = 4000
+_BWAVE_BUILD_TIMEOUT_SECONDS = 900
 _BWAVE_EXIT_TIMEOUT_SECONDS = 15
 _BWAVE_KILL_TIMEOUT_SECONDS = 5
 
@@ -107,6 +108,7 @@ class ConversionResult:
             not self.failure_kind
             and self.inspection is not None
             and self.inspection.structurally_usable
+            and (not self.attempts or self.attempts[-1].return_code == 0)
         )
 
 
@@ -123,6 +125,16 @@ class DiscoveryResult:
     @property
     def success(self) -> bool:
         return self.selected is not None and not self.failure_kind
+
+
+def conversion_failure_messages(result: ConversionResult, *, warning: str) -> tuple[str, ...]:
+    """Render bounded conversion diagnostics consistently for callers."""
+    if result.success or not result.detail:
+        return ()
+    return (
+        result.detail,
+        f"[bwave] WARNING: {warning} (rc={result.attempts[-1].return_code if result.attempts else None})",
+    )
 
 
 def native_bwave_binary() -> str | None:
@@ -201,9 +213,7 @@ def convert_vcd(
             detail="native B-Wave binary is unavailable",
         )
     store_path.parent.mkdir(parents=True, exist_ok=True)
-    scopes = [scope]
-    if scope and allow_unscoped_fallback:
-        scopes.append(None)
+    scopes = _conversion_scopes(scope, allow_unscoped_fallback)
     attempts: list[ConversionAttempt] = []
     events = ["post-processing VCD -> .fst"]
     for attempt_scope in scopes:
@@ -220,6 +230,23 @@ def convert_vcd(
             return ConversionResult(store_path, tuple(attempts), inspection, events=tuple(events))
     inspection = inspect_store(store_path, probe_reader=False)
     detail = _conversion_detail(vcd_path, store_path, scope, attempts)
+    return _conversion_failure(store_path, attempts, inspection, detail, events)
+
+
+def _conversion_scopes(scope: str | None, allow_fallback: bool) -> list[str | None]:
+    scopes = [scope]
+    if scope and allow_fallback:
+        scopes.append(None)
+    return scopes
+
+
+def _conversion_failure(
+    store_path: Path,
+    attempts: list[ConversionAttempt],
+    inspection: StoreInspection,
+    detail: str,
+    events: list[str],
+) -> ConversionResult:
     return ConversionResult(
         store_path,
         tuple(attempts),
@@ -277,9 +304,8 @@ def discover_waveform(
     *,
     cache_dir: Path,
     convert_raw_vcd: bool = True,
-    materialize_converted_store: bool = True,
 ) -> DiscoveryResult:
-    """Discover a store or raw VCD without writing Simulation-owned state."""
+    """Discover a store or raw VCD without publishing into the work directory."""
     cached, cached_invalid, cached_error = _stores_in(cache_dir)
     published, published_invalid, published_error = _stores_in(work_dir)
     skipped = (*cached_invalid, *published_invalid)
@@ -305,16 +331,7 @@ def discover_waveform(
     )
     if not conversion.success:
         return DiscoveryResult(vcd, skipped, conversion=conversion)
-    selected = destination
-    if materialize_converted_store:
-        published_path = work_dir / "trace.fst"
-        try:
-            if destination.resolve() != published_path.resolve():
-                shutil.copy2(destination, published_path)
-            selected = published_path
-        except OSError:
-            selected = destination
-    return DiscoveryResult(selected, skipped, conversion=conversion)
+    return DiscoveryResult(destination, skipped, conversion=conversion)
 
 
 class StreamingConversion:
@@ -393,7 +410,9 @@ class StreamingConversion:
             self.store_path,
             (attempt,),
             inspection,
-            failure_kind="" if inspection.structurally_usable else "conversion_failed",
+            failure_kind=(
+                "" if return_code == 0 and inspection.structurally_usable else "conversion_failed"
+            ),
             detail=stderr,
             events=tuple(events),
         )
@@ -531,8 +550,8 @@ def _stores_in(
     invalid: list[StoreInspection] = []
     try:
         candidates = sorted(directory.glob("*.fst"))
-    except OSError:
-        return [], (), ""
+    except OSError as exc:
+        return [], (), f"ERROR: Unable to inspect waveform directory {directory}: {exc}"
     for candidate in candidates:
         inspection = inspect_store(candidate, probe_reader=False)
         if inspection.structurally_usable:
@@ -591,7 +610,23 @@ def _run_build(
     if scope:
         command.extend(["--scope", scope])
     with vcd_path.open("rb") as stream:
-        return subprocess.run(command, stdin=stream, capture_output=True, check=False)
+        try:
+            return subprocess.run(
+                command,
+                stdin=stream,
+                capture_output=True,
+                check=False,
+                timeout=_BWAVE_BUILD_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr = _decode_output(exc.stderr)
+            timeout_note = f"bwave build timed out after {_BWAVE_BUILD_TIMEOUT_SECONDS}s"
+            return subprocess.CompletedProcess(
+                command,
+                124,
+                stdout=exc.stdout or b"",
+                stderr=f"{stderr}\n{timeout_note}".strip(),
+            )
 
 
 def _decode_output(value: bytes | str | None) -> str:

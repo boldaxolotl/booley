@@ -220,7 +220,8 @@ class TestTraceStatusManifest:
         bwave = tmp_path / "trace.fst"
         calls: list[list[str]] = []
 
-        def fake_run(cmd, stdin, capture_output, check):
+        def fake_run(cmd, stdin, capture_output, check, timeout):
+            assert timeout == 900
             calls.append(list(cmd))
             if "--scope" in cmd:
                 bwave.write_bytes(b"")
@@ -278,6 +279,32 @@ class TestTraceStatusManifest:
         data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
         assert any(event["kind"] == "bwave_published" for event in data["events"])
         assert data["attempts"][-1]["status"] == "success"
+
+    def test_cleanup_fifo_does_not_publish_failed_conversion(self, tmp_path, monkeypatch):
+        ts = TraceSession(work_dir=tmp_path, cache_key="cleanup_failed")
+
+        from booley.bwave.waveform_store import (
+            ConversionAttempt,
+            ConversionResult,
+            inspect_store,
+        )
+
+        ts.bwave_path.parent.mkdir(parents=True, exist_ok=True)
+        ts.bwave_path.write_bytes(MINIMAL_FST_BYTES)
+
+        class FakeConversion:
+            def finish(self):
+                return ConversionResult(
+                    ts.bwave_path,
+                    attempts=(ConversionAttempt(None, 7),),
+                    inspection=inspect_store(ts.bwave_path, probe_reader=False),
+                )
+
+        ts.cleanup_fifo(FakeConversion())
+
+        assert not ts.work_bwave_path.exists()
+        data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
+        assert data["attempts"][-1]["status"] == "no_artifact"
 
     def test_incident_manifest_records_failure_and_return_codes(self, tmp_path):
         ts = TraceSession(work_dir=tmp_path, cache_key="manifest_incident")

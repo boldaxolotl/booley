@@ -387,6 +387,19 @@ def _finalize_icarus_trace(
         roots = [run.run_cwd, run.work_dir, run.build_dir]
         found = adopt_declared_trace_files(run.trace, trace_files, roots)
     if found is not None:
+        inspection = run.trace.inspect(found)
+        if not inspection.usable:
+            reason = (
+                "trace requested but retained waveform is not queryable: "
+                f"{inspection.failure_reason}"
+            )
+            incident = run.trace.write_incident(reason, sim_proc=proc)
+            print(f"ERROR: {reason}")
+            print(f"TRACE_INCIDENT: {incident}")
+            return (
+                f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}",
+                AdapterTraceResult("incident", path=str(incident), detail=reason),
+            )
         print(f"TRACE_OK: {found}")
         return f"\nTRACE_OK: {found}", AdapterTraceResult("ok", path=str(found))
     reason = "trace requested but no queryable .fst store or .vcd was produced"

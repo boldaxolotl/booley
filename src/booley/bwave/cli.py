@@ -47,7 +47,11 @@ from typing import NamedTuple, NoReturn
 from booley.bwave import wcp as bwave_wcp
 from booley.bwave.contract import NO_MATCH_MARKER
 from booley.bwave.contract import exit_usage as _exit_usage
-from booley.bwave.waveform_store import discover_waveform, waveform_cache_dir
+from booley.bwave.waveform_store import (
+    conversion_failure_messages,
+    discover_waveform,
+    waveform_cache_dir,
+)
 from booley.runtime import runtime_context, vaporview
 
 # ---------------------------------------------------------------------------
@@ -92,23 +96,31 @@ def _bwave_cmd() -> list[str]:
 
 
 def find_trace(work_dir: Path) -> Path | None:
-    """Find and, when needed, convert a waveform without mutating sim state."""
+    """Find and, when needed, convert a waveform for CLI registration."""
     result = discover_waveform(work_dir, cache_dir=waveform_cache_dir(work_dir))
     if result.failure_kind == "ambiguous":
         sys.exit(result.detail)
     if result.conversion is not None:
         for event in result.conversion.events:
             print(f"[bwave] {event}")
-        if not result.conversion.success and result.conversion.detail:
-            print(result.conversion.detail, file=sys.stderr)
-            return_code = (
-                result.conversion.attempts[-1].return_code if result.conversion.attempts else None
-            )
-            print(
-                f"[bwave] WARNING: VCD conversion failed (rc={return_code})",
-                file=sys.stderr,
-            )
+        for message in conversion_failure_messages(
+            result.conversion, warning="VCD conversion failed"
+        ):
+            print(message, file=sys.stderr)
+    if result.conversion is not None and result.conversion.success and result.selected:
+        return _publish_discovered_store(work_dir, result.selected)
     return result.selected
+
+
+def _publish_discovered_store(work_dir: Path, selected: Path) -> Path:
+    """Materialize a converted result for the CLI's legacy registration path."""
+    published = work_dir / "trace.fst"
+    try:
+        if selected.resolve() != published.resolve():
+            shutil.copy2(selected, published)
+        return published
+    except OSError:
+        return selected
 
 
 def _trace_diagnostics(target: Path) -> str:
