@@ -243,6 +243,29 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
     assert registry.is_terminal(child_id)
 
 
+def test_child_permit_checks_lease_loss_before_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
+    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    child_id = ExecutionId("b" * 32)
+    capacity = HeavyCapacity(
+        _managed(store, outer),
+        terminal_proof=lambda _execution_id: True,
+        recover_child=lambda _id: True,
+    )
+    monkeypatch.setattr(HeavyCapacity, "_watch_lease", lambda _self, _permit, stop: stop.wait())
+    try:
+        with (
+            capacity.outer_permit(),
+            pytest.raises(HeavyCapacityError, match="lease lost"),
+            capacity.child_permit("item", child_id) as permit,
+        ):
+            permit.token.path.unlink()
+    finally:
+        store.release(outer)
+
+
 def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child() -> None:
     capacity = HeavyCapacity(
         _unmanaged(), terminal_proof=lambda _execution_id: True, recover_child=lambda _id: True

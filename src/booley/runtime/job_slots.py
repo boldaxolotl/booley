@@ -634,6 +634,9 @@ class SlotStore:
         for attempt in range(_ENTRY_IO_ATTEMPTS):
             try:
                 tmp.write_text(json.dumps(self._token_payload(token)) + "\n", encoding="utf-8")
+                if not token.path.exists():
+                    tmp.unlink(missing_ok=True)
+                    return False
                 tmp.replace(token.path)
             except PermissionError:
                 if attempt + 1 < _ENTRY_IO_ATTEMPTS:
