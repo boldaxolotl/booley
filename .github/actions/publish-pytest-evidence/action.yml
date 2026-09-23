@@ -1,0 +1,46 @@
+name: Publish pytest evidence
+description: Validate and upload pytest JUnit and optional shard-selection evidence.
+
+inputs:
+  label:
+    description: Human-readable test leg label used in the execution summary.
+    required: true
+  publish-shard:
+    description: Whether to upload shard-selection and timing evidence.
+    required: false
+    default: "false"
+  shard-group:
+    description: Shard group used in the evidence artifact name.
+    required: false
+    default: ""
+  shard-index:
+    description: Zero-based shard index used in the evidence artifact name.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Summarize pytest execution and skips
+      if: always()
+      shell: bash
+      run: >-
+        python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
+        --label "${{ inputs.label }}"
+        --min-tests 1 --summary "${GITHUB_STEP_SUMMARY}"
+
+    - name: Upload test timing data
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: junit-${{ inputs.label }}
+        path: ${{ runner.temp }}/junit.xml
+        if-no-files-found: error
+
+    - name: Upload shard selection and timing evidence
+      if: always() && inputs.publish-shard == 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: shard-${{ inputs.shard-group }}-${{ inputs.shard-index }}
+        path: ${{ runner.temp }}/shard/
+        if-no-files-found: error

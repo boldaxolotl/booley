@@ -250,6 +250,7 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
         "lint",
         "test",
         "test-verify",
+        "coverage-shards",
         "coverage",
         "package-artifacts",
         "bwave-smoke",
@@ -267,6 +268,10 @@ def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Pa
     assert _required(outputs) == {"changes", "release-semantic", "docs-check"}
     assert _jobs(outputs)["docs-check"] is True
     assert _jobs(outputs)["test"] is False
+    assert _jobs(outputs)["coverage-shards"] is False
+    assert _jobs(outputs)["coverage"] is False
+    assert "coverage-shards" not in _required(outputs)
+    assert "coverage" not in _required(outputs)
 
 
 @pytest.mark.parametrize(
@@ -416,7 +421,38 @@ def test_ordinary_python_source_skips_release_image_smoke(tmp_path: Path) -> Non
     assert outputs["release_sensitive"] == "false"
     assert outputs["standard_image"] == "false"
     assert outputs["riscv_image"] == "false"
+    assert _jobs(outputs)["coverage-shards"] is True
+    assert _jobs(outputs)["coverage"] is True
+    assert {"coverage-shards", "coverage"} <= _required(outputs)
     assert "bwave-smoke" not in _required(outputs)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/architecture.md",
+        "src/booley/example.py",
+        "tests/unit/test_example.py",
+        ".github/workflows/example.yml",
+        "README.md",
+        "VERSION",
+        "crates/bwave/src/lib.rs",
+        "unclassified.input",
+    ],
+)
+def test_coverage_jobs_are_always_selected_and_required_as_a_pair(
+    tmp_path: Path, path: str
+) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, path)
+    head = _commit(repo, "representative change")
+
+    outputs = _classify(repo, base, head)
+    jobs = _jobs(outputs)
+    required = _required(outputs)
+
+    assert jobs["coverage-shards"] is jobs["coverage"]
+    assert ("coverage-shards" in required) is ("coverage" in required)
 
 
 @pytest.mark.parametrize(
@@ -520,6 +556,7 @@ def test_readme_and_version_are_packaging_and_release_inputs(tmp_path: Path) -> 
         "lint",
         "test",
         "test-verify",
+        "coverage-shards",
         "coverage",
         "rust-test",
         "bwave-integration",
@@ -556,6 +593,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "lint",
         "test",
         "test-verify",
+        "coverage-shards",
         "coverage",
         "rust-test",
         "bwave-integration",

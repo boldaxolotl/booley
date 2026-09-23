@@ -99,6 +99,45 @@ for complete in [False,True]:
     assert json.loads((tmp_path / "progress.json").read_text()) == {"complete": False}
 
 
+def test_progress_gate_uses_source_bytes_from_event_time(tmp_path, library, monkeypatch):
+    script = """import json,os,sys
+from pathlib import Path
+p=Path(sys.argv[1])
+for complete in [False,True]:
+ (p/'temp').write_text(json.dumps({'complete':complete}))
+ try: os.replace(p/'temp',p/'progress.json')
+ except OSError as e: assert complete and e.errno==5
+ else: assert not complete
+"""
+    original_service = controller.service
+    mutated = False
+
+    def mutate_original_after_event(*args, **kwargs):
+        nonlocal mutated
+        control = args[0]
+        if not mutated and next(control.glob("event-*"), None) is not None:
+            (tmp_path / "temp").write_text(json.dumps({"complete": True}))
+            mutated = True
+        return original_service(*args, **kwargs)
+
+    monkeypatch.setattr(controller, "service", mutate_original_after_event)
+
+    assert (
+        controller.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            tmp_path,
+            tmp_path / "control",
+            library,
+            "rename",
+            "/progress.json",
+            "complete",
+            set(),
+            20,
+        )
+        == 0
+    )
+
+
 def test_unlinkat_directory_fd_is_intercepted(tmp_path, library):
     (tmp_path / "payload").write_text("retained")
     script = """import os,sys
