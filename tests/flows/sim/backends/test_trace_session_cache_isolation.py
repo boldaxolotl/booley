@@ -12,6 +12,7 @@ ticket wrote there last answered for everyone, silently.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -21,8 +22,19 @@ from tests.conftest import MINIMAL_FST_BYTES
 from booley.flows.sim.trace_session import TraceSession
 
 
+def _cache_patch(cache_root: Path):
+    def cache_dir(work_dir: Path, cache_key: str | None = None) -> Path:
+        resolved = str(work_dir.resolve())
+        digest = hashlib.sha256(resolved.encode("utf-8", "replace")).hexdigest()[:12]
+        path = cache_root / (cache_key or f"{work_dir.name}-{digest}")
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    return patch("booley.flows.sim.trace_session.waveform_cache_dir", side_effect=cache_dir)
+
+
 def _session(work_dir: Path, cache_root: Path) -> TraceSession:
-    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
+    with _cache_patch(cache_root):
         session = TraceSession(work_dir)
         # Touch cache_dir inside the patch so the bucket is created there.
         _ = session.cache_dir
@@ -36,7 +48,7 @@ def test_same_named_work_dirs_get_distinct_cache_buckets(tmp_path):
     a.mkdir(parents=True)
     b.mkdir(parents=True)
 
-    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
+    with _cache_patch(cache_root):
         bucket_a = TraceSession(a).cache_dir
         bucket_b = TraceSession(b).cache_dir
 
@@ -53,7 +65,7 @@ def test_other_tickets_trace_is_not_served(tmp_path):
     a.mkdir(parents=True)
     b.mkdir(parents=True)
 
-    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
+    with _cache_patch(cache_root):
         # Ticket B ran first and left a store in its cache bucket.
         (TraceSession(b).cache_dir / "trace.fst").write_bytes(MINIMAL_FST_BYTES)
         # Ticket A has produced nothing at all.
@@ -65,28 +77,8 @@ def test_explicit_cache_key_still_wins(tmp_path):
     cache_root = tmp_path / "bwave"
     work = tmp_path / "sim"
     work.mkdir()
-    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
+    with _cache_patch(cache_root):
         assert TraceSession(work, cache_key="deadbeef").cache_dir.name == "deadbeef"
-
-
-def test_setup_bwave_paths_defaults_to_the_session_bucket(tmp_path):
-    """Writer and checker must derive the same store path (F-24).
-
-    ``setup_bwave_paths`` used to rebuild the bucket as
-    ``_bwave_cache_root() / work_dir.name``, i.e. the pre-digest name, so the
-    FIFO streamer wrote ``/tmp/bwave/sim/trace.fst`` while every reader probed
-    ``/tmp/bwave/sim-<digest>/trace.fst`` and reported it missing.
-    """
-    from booley.flows.sim.bwave_fifo import setup_bwave_paths
-
-    cache_root = tmp_path / "bwave"
-    work = tmp_path / "sim"
-    work.mkdir()
-
-    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
-        _fifo, bwave_path, _proc, _use_fifo, _fd = setup_bwave_paths(work, False, None)
-        assert bwave_path == TraceSession(work).bwave_path
-    assert bwave_path.parent != cache_root / "sim", "bare work_dir.name bucket is the F-24 bug"
 
 
 def test_start_fifo_streams_into_the_session_store_path(tmp_path):
@@ -96,14 +88,16 @@ def test_start_fifo_streams_into_the_session_store_path(tmp_path):
     work.mkdir()
     seen: list[Path] = []
 
-    def _fake_start(work_dir, bwave_path, trace_scope):
-        seen.append(bwave_path)
-        return None, True, None
+    def _fake_start(_fifo_path, store_path, **_kwargs):
+        seen.append(store_path)
+        return object()
 
     with (
-        patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root),
-        patch("booley.flows.sim.bwave_fifo.can_stream_bwave_fifo", return_value=True),
-        patch("booley.flows.sim.bwave_fifo.start_bwave_fifo", side_effect=_fake_start),
+        _cache_patch(cache_root),
+        patch(
+            "booley.flows.sim.trace_session.start_streaming_conversion",
+            side_effect=_fake_start,
+        ),
     ):
         session = TraceSession(work)
         session.start_fifo()
@@ -116,7 +110,7 @@ def test_fresher_published_store_beats_stale_cache(tmp_path):
     work = tmp_path / "sim"
     work.mkdir()
 
-    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
+    with _cache_patch(cache_root):
         session = TraceSession(work)
         cached = session.cache_dir / "trace.fst"
         cached.write_bytes(MINIMAL_FST_BYTES)
@@ -135,7 +129,7 @@ def test_equal_mtime_prefers_host_visible_published_store(tmp_path):
     work = tmp_path / "sim"
     work.mkdir()
 
-    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
+    with _cache_patch(cache_root):
         session = TraceSession(work)
         cached = session.cache_dir / "trace.fst"
         cached.write_bytes(MINIMAL_FST_BYTES)
@@ -155,7 +149,7 @@ def test_reset_for_run_removes_every_candidate_from_an_earlier_attempt(tmp_path)
     work.mkdir()
     run_dir.mkdir()
 
-    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
+    with _cache_patch(cache_root):
         session = TraceSession(work)
         old_paths = (
             session.bwave_path,
@@ -182,14 +176,19 @@ def test_successful_postprocess_consumes_raw_vcd_outside_work_dir(tmp_path):
     raw_vcd = run_dir / "dump.vcd"
     raw_vcd.write_text("$date\n$end\n", encoding="utf-8")
 
-    def _build(_vcd_path: Path, bwave_path: Path, _scope: str) -> bool:
+    def _build(_vcd_path: Path, bwave_path: Path, **_kwargs):
+        from booley.bwave.waveform_store import ConversionResult, inspect_store
+
         bwave_path.write_bytes(MINIMAL_FST_BYTES)
-        return True
+        return ConversionResult(
+            bwave_path,
+            inspection=inspect_store(bwave_path, probe_reader=False),
+        )
 
     with (
-        patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root),
+        _cache_patch(cache_root),
         patch(
-            "booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave",
+            "booley.flows.sim.trace_session.convert_vcd",
             side_effect=_build,
         ),
     ):
@@ -211,14 +210,19 @@ def test_failed_postprocess_moves_raw_vcd_and_diagnostic_into_work_dir(tmp_path)
     raw_vcd.write_text("$date\n$end\n", encoding="utf-8")
     leaked_diagnostic = run_dir / "trace.fst.stderr"
 
-    def _fail(_vcd_path: Path, _bwave_path: Path, _scope: str) -> bool:
-        leaked_diagnostic.write_text("conversion failed\n", encoding="utf-8")
-        return False
+    def _fail(_vcd_path: Path, bwave_path: Path, **_kwargs):
+        from booley.bwave.waveform_store import ConversionResult
+
+        return ConversionResult(
+            bwave_path,
+            failure_kind="conversion_failed",
+            detail="conversion failed",
+        )
 
     with (
-        patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root),
+        _cache_patch(cache_root),
         patch(
-            "booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave",
+            "booley.flows.sim.trace_session.convert_vcd",
             side_effect=_fail,
         ),
     ):

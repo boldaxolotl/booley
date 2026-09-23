@@ -13,6 +13,11 @@ Criteria, renders reports, and chooses the public exit code. Adapter composition
 continues to own Verilator, Icarus, and Cocotb command shaping; leaf adapters own
 simulator launch, verdict normalization, and trace finalization.
 
+Here, trace finalization means current-attempt orchestration and final evidence:
+leaf adapters consume B-Wave's waveform-store interface for inspection,
+conversion, discovery, and converter-process mechanics. They do not own or
+duplicate those B-Wave-specific mechanics.
+
 `SimulationExecution.ordinary_group(handle, selection)` owns compilation and
 launch mechanics for an ordinary-HDL selection and returns immutable normalized
 evidence. `OrdinaryHdlSerialExecutor` owns the surrounding Simulation Attempt,

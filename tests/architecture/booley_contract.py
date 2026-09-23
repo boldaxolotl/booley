@@ -91,6 +91,12 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D29",
+        (prefix("booley.bwave"),),
+        (prefix("booley.flows"),),
+        "B-Wave owns reusable waveform mechanics without Flow execution or evidence policy",
+    ),
+    DirectionRule(
         "D27",
         (prefix("booley.targets"),),
         (prefix("booley.flows"), prefix("booley.runtime")),

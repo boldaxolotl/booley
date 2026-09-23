@@ -1372,7 +1372,10 @@ def _assert_queryable_trace(outcome: SimulationTargetOutcome, cache_root: Path) 
     assert len(traces) == 1 and Path(traces[0].path).is_file()
     trace_path = Path(traces[0].path)
     assert trace_path.suffix in {".fst", ".vcd"}
-    with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root):
+    with patch(
+        "booley.flows.sim.trace_session.waveform_cache_dir",
+        side_effect=lambda work_dir, cache_key=None: cache_root / (cache_key or work_dir.name),
+    ):
         session = TraceSession(trace_path.parent)
         if trace_path.suffix == ".vcd":
             session.postprocess(trace_path)
