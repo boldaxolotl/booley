@@ -19,8 +19,13 @@ combination before merge.
 
 `.github/scripts/ci_pytest_shard.py` collects the eligible tests on every
 runner. Historical timings influence balance only: a new or unknown test is
-always assigned to a shard. `test-verify` compares exact node-ID sets and fails
-if a test is omitted, duplicated, or collected differently by two shards.
+always assigned to a shard. The `test` job owns compatibility execution, with
+`test-verify` checking the exact node-ID sets from its four Windows shards. The
+independent `coverage-shards` job owns coverage execution; `coverage` verifies
+its three exact shard selections before combining their raw data and enforcing
+the global and changed-line thresholds. `ci-required` waits for and validates
+both branches. Each verifier fails if a test is omitted, duplicated, or
+collected differently by two shards.
 
 The checked-in Windows timing model contains the slow observations from a
 successful `main` run. Every shard emits fresh exact-node timing evidence for
