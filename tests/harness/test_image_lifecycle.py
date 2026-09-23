@@ -382,6 +382,17 @@ def test_incremental_adapter_build_inputs_cover_each_image_role(
         )
         assert build_context
 
+    assert adapter._role_build_inputs(
+        SimpleNamespace(),
+        node(lifecycle.ImageRole.RISCV_SUBSTRATE),
+        build_root,
+        "parent",
+    ) == (
+        harness_lifecycle.docker_data_dir(),
+        (("booley-standard-substrate", "docker-image://parent"),),
+        (),
+    )
+
     _context, contexts, args = adapter._role_build_inputs(
         SimpleNamespace(), node(lifecycle.ImageRole.WHEEL_OVERLAY, "wheel"), build_root, "parent"
     )
@@ -503,6 +514,32 @@ def test_incremental_adapter_build_role_records_result_and_wheel_labels(
     assert context.results[-1].detail == "wheel-overlay build failed"
     spec = captured[0]
     assert (harness_lifecycle.runtime_lifecycle.LABEL_WHEEL_SHA256, "f" * 64) in spec.labels
+
+
+def test_incremental_riscv_build_spec_preserves_context_and_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image
+
+    parent_id = "sha256:" + "a" * 64
+    docker = FakeDocker({"parent": (parent_id, {})})
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.RISCV_SUBSTRATE)
+    captured = []
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: tmp_path / "docker")
+    monkeypatch.setattr(
+        docker_image,
+        "_docker_build_image",
+        lambda _context, spec: captured.append(spec) or 0,
+    )
+
+    adapter._build_role(
+        SimpleNamespace(record=lambda *_args: None), node, "candidate", "parent", parent_id
+    )
+
+    assert len(captured) == 1
+    assert captured[0].build_contexts == (("booley-standard-substrate", "docker-image://parent"),)
+    assert captured[0].parent_artifact == parent_id
 
 
 @pytest.mark.parametrize("wheel_count", [0, 2])
@@ -1581,6 +1618,107 @@ def _wire_source_builds(
     monkeypatch.setattr(init_docker_image, "_docker_local_build", build_base)
     monkeypatch.setattr(init_docker_image, "_flavor_build", build_flavor)
     return builds
+
+
+def _install_current_legacy_base(docker: FakeDocker) -> str:
+    payload = lifecycle.PayloadProvenance(
+        lifecycle.PROVENANCE_SCHEMA,
+        "0.2.6",
+        "payload-new",
+    )
+    node = lifecycle._base_node(payload)
+    parent_id = docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or ""
+    labels = dict(node.expected_labels)
+    labels.update(
+        {
+            lifecycle.LABEL_BUILD_ORIGIN: "local",
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID,
+            lifecycle.LABEL_PARENT_ARTIFACT: parent_id,
+        }
+    )
+    image_id = "sha256:" + "b" * 64
+    docker.images[lifecycle.BASE_IMAGE] = (image_id, labels)
+    return image_id
+
+
+def test_legacy_reconcile_builds_riscv_with_managed_parent_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image as init_docker_image
+
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    docker_dir = _set_source_installation(tmp_path, monkeypatch)
+    docker, pulls = _wire_source_docker(docker_dir, monkeypatch)
+    parent_id = _install_current_legacy_base(docker)
+    captured = []
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_image_id",
+        docker.image_id,
+    )
+    monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
+
+    def build_flavor(_context, spec) -> int:
+        captured.append(spec)
+        node = lifecycle._nodes(root, spec.image, docker)[-1]
+        labels = dict(node.expected_labels)
+        labels.update(
+            {
+                lifecycle.LABEL_BUILD_ORIGIN: "local",
+                lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID),
+                lifecycle.LABEL_PARENT_ARTIFACT: parent_id,
+            }
+        )
+        docker.images[spec.image] = ("sha256:" + "c" * 64, labels)
+        return 0
+
+    monkeypatch.setattr(init_docker_image, "_docker_build_image", build_flavor)
+
+    result = harness_lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE
+    )
+
+    assert pulls == []
+    assert result.status is lifecycle.Status.CHANGED
+    assert len(captured) == 1
+    assert captured[0].build_contexts == (
+        ("booley-standard-substrate", "docker-image://booley-sandbox"),
+    )
+    assert captured[0].parent_artifact == parent_id
+
+
+def test_legacy_reconcile_restores_riscv_tag_after_real_flavor_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image as init_docker_image
+
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    docker_dir = _set_source_installation(tmp_path, monkeypatch)
+    docker, _pulls = _wire_source_docker(docker_dir, monkeypatch)
+    parent_id = _install_current_legacy_base(docker)
+    old_flavor_id = "sha256:" + "d" * 64
+    docker.images["booley-sandbox-riscv"] = (
+        old_flavor_id,
+        _labels(payload="payload-old", recipe="old-flavor", parent=parent_id),
+    )
+    captured = []
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_image_id",
+        docker.image_id,
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_build_image",
+        lambda _context, spec: captured.append(spec) or 1,
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="build failed"):
+        harness_lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
+
+    assert len(captured) == 1
+    assert captured[0].parent_artifact == parent_id
+    assert docker.image_id("booley-sandbox-riscv") == old_flavor_id
 
 
 def test_source_host_then_project_builds_one_exact_local_chain(

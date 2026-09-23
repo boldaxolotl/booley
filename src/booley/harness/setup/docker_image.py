@@ -851,10 +851,11 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     for name, value in spec.labels:
         build_cmd += ["--label", f"{name}={value}"]
     if spec.image in FLAVOR_IMAGES:
-        base_image_id = _docker_image_id(DOCKER_IMAGE)
+        base_image_id = spec.parent_artifact or _docker_image_id(DOCKER_IMAGE)
         if base_image_id:
             build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
-            build_cmd += _local_parent_label_args(base_image_id)
+            if spec.parent_artifact is None:
+                build_cmd += _local_parent_label_args(base_image_id)
     if spec.image == DOCKER_IMAGE:
         build_cmd += _image_build_metadata_args(spec.context)
     build_cmd += spec.build_args
@@ -919,6 +920,11 @@ def _flavor_build(
     fingerprint: str | None,
 ) -> bool:
     """``docker build`` a flavor from its shipped Dockerfile; True once it exists."""
+    parent_image_id = _docker_image_id(DOCKER_IMAGE)
+    if parent_image_id is None:
+        err(f"verified standard parent {DOCKER_IMAGE} could not be resolved")
+        ctx.record("project_image", "err", "verified standard parent could not be resolved")
+        return False
     docker_dir = dockerfile.parent
     build = _DockerBuildSpec(
         dockerfile=dockerfile,
@@ -933,6 +939,11 @@ def _flavor_build(
         image=image,
         record_key="project_image",
         build_note="this can take 10-20 minutes",
+        # BuildKit resolves this local tag independently from the immutable ID
+        # captured for provenance. Both observations assume the default Docker
+        # builder and a stable managed tag for the duration of this build.
+        build_contexts=(("booley-standard-substrate", f"docker-image://{DOCKER_IMAGE}"),),
+        parent_artifact=parent_image_id,
     )
     returncode = _docker_build_image(ctx, build)
     if returncode is None:

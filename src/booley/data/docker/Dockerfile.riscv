@@ -5,10 +5,13 @@
 # (ibex, picorv32, biriscv, …) whose flows compile firmware/tests with a
 # RISC-V cross-compiler before simulating the RTL.
 #
-# BuildKit maps `booley-standard-substrate` to a verified immutable local ID or
-# registry digest. Keep this file COPY-free: installed Booley distributions
-# always pull the complete published image, while source convergence may build
-# this substrate with data/docker/ as its otherwise-unused context.
+# BuildKit maps `booley-standard-substrate` through an explicit named context.
+# Source convergence binds it to the prepared wheel-free standard substrate;
+# legacy Project Initialization binds it to the verified standard Sandbox
+# Image. Both adapters use a local tag as the context source and record its
+# separately inspected immutable image ID as provenance. Keep this file
+# COPY-free: installed Booley distributions always pull the complete published
+# image, while local builds use data/docker/ as their otherwise-unused context.
 
 FROM booley-standard-substrate
 
