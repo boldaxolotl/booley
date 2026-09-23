@@ -389,6 +389,13 @@ def _finalize_icarus_trace(
     if found is not None:
         inspection = run.trace.inspect(found)
         if not inspection.usable:
+            if found.suffix.lower() == ".vcd":
+                reason = f"native FST conversion unavailable: {inspection.failure_reason}"
+                print(f"TRACE_FALLBACK: {found}")
+                return (
+                    f"\nTRACE_FALLBACK: {found}",
+                    AdapterTraceResult("ok", path=str(found), detail=reason),
+                )
             reason = (
                 "trace requested but retained waveform is not queryable: "
                 f"{inspection.failure_reason}"

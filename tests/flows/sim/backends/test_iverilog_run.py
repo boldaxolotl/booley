@@ -122,7 +122,7 @@ def test_run_icarus_image_missing_image_returns_error(tmp_path: Path):
     assert "no vvp image" in out
 
 
-def test_icarus_rejects_raw_trace_after_postprocess(tmp_path: Path, capsys):
+def test_icarus_marks_raw_trace_as_fallback_after_postprocess(tmp_path: Path, capsys):
     raw_trace = tmp_path / "dump.vcd"
     raw_trace.write_text("$enddefinitions $end\n", encoding="utf-8")
 
@@ -150,10 +150,11 @@ def test_icarus_rejects_raw_trace_after_postprocess(tmp_path: Path, capsys):
         trace=NonQueryableTrace(),
     )
 
-    _output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=0), [])
+    output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=0), [])
 
     assert result is not None
-    assert result.status == "incident"
+    assert result.status == "ok"
+    assert "TRACE_FALLBACK" in output
     assert "TRACE_OK" not in capsys.readouterr().out
 
 
