@@ -179,7 +179,7 @@ def test_bwave_integration_prebuilds_and_runs_native_tests_without_skips() -> No
 def test_primary_pytest_commands_emit_timing_and_junit_data() -> None:
     """CI retains test-level evidence for later scheduling decisions."""
     workflow = _test_workflow()
-    primary_jobs = ("test", "bwave-integration")
+    primary_jobs = ("test", "coverage-shards", "bwave-integration")
 
     for job_name in primary_jobs:
         pytest_commands = [
@@ -201,7 +201,7 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     workflow = _test_workflow()
     coverage_step = next(
         step
-        for step in workflow["jobs"]["test"]["steps"]
+        for step in workflow["jobs"]["coverage-shards"]["steps"]
         if step.get("name") == "Run duration-balanced coverage shard"
     )
     command = coverage_step["run"]
@@ -369,9 +369,10 @@ def test_pr_matrix_is_pairwise_sharded_and_exactly_verified() -> None:
     workflow = _test_workflow()
     jobs = workflow["jobs"]
     entries = jobs["test"]["strategy"]["matrix"]["include"]
+    coverage_entries = jobs["coverage-shards"]["strategy"]["matrix"]["include"]
 
     assert sum(entry["mode"] == "shard" for entry in entries) == 4
-    assert sum(entry["mode"] == "coverage" for entry in entries) == 3
+    assert all(entry["mode"] != "coverage" for entry in entries)
     assert {
         (entry["os"], entry["python"], entry["mode"])
         for entry in entries
@@ -382,9 +383,66 @@ def test_pr_matrix_is_pairwise_sharded_and_exactly_verified() -> None:
         ("windows-latest", "3.11", "compatibility"),
         ("windows-latest", "3.13", "compatibility"),
     }
-    verifier = "\n".join(str(step) for step in jobs["test-verify"]["steps"])
-    assert "--group windows --shard-count 4" in verifier.replace("\n", " ")
-    assert "--group coverage --shard-count 3" in verifier.replace("\n", " ")
+    assert coverage_entries == [
+        {
+            "name": f"ubuntu-3.13-coverage-{index + 1}-of-3",
+            "python": "3.13",
+            "group": "coverage",
+            "shard_index": index,
+            "shard_count": 3,
+        }
+        for index in range(3)
+    ]
+
+    test_verify_steps = jobs["test-verify"]["steps"]
+    test_verify_download = next(
+        step for step in test_verify_steps if "pattern" in step.get("with", {})
+    )
+    test_verifier = "\n".join(str(step) for step in test_verify_steps).replace("\n", " ")
+    assert test_verify_download["with"]["pattern"] == "shard-windows-*"
+    assert "--group windows --shard-count 4" in test_verifier
+    assert "--group coverage" not in test_verifier
+
+    coverage = jobs["coverage"]
+    coverage_steps = coverage["steps"]
+    manifest_download = next(
+        step
+        for step in coverage_steps
+        if step.get("with", {}).get("pattern") == "shard-coverage-*"
+    )
+    raw_download = next(
+        step
+        for step in coverage_steps
+        if step.get("with", {}).get("pattern") == "coverage-shard-*"
+    )
+    coverage_verifier = next(
+        step for step in coverage_steps if step.get("name") == "Verify coverage shards"
+    )
+    install = next(
+        step for step in coverage_steps if step.get("name") == "Install coverage gate dependencies"
+    )
+    combine = next(
+        step
+        for step in coverage_steps
+        if step.get("name") == "Combine raw coverage and enforce global ratchet"
+    )
+
+    assert jobs["coverage-shards"]["needs"] == "changes"
+    assert jobs["coverage-shards"]["runs-on"] == "ubuntu-latest"
+    assert jobs["coverage-shards"]["timeout-minutes"] == 15
+    assert jobs["coverage-shards"]["strategy"]["fail-fast"] is False
+    assert coverage["needs"] == ["changes", "coverage-shards"]
+    assert "test" not in coverage["needs"]
+    assert "test-verify" not in coverage["needs"]
+    assert manifest_download["with"]["path"] == "${{ runner.temp }}/shards"
+    assert manifest_download["with"].get("merge-multiple", False) is False
+    assert "--group coverage --shard-count 3" in coverage_verifier["run"].replace("\n", " ")
+    assert raw_download["with"]["path"] == "${{ runner.temp }}/coverage"
+    assert raw_download["with"]["merge-multiple"] is True
+    assert coverage_steps.index(manifest_download) < coverage_steps.index(coverage_verifier)
+    assert coverage_steps.index(coverage_verifier) < coverage_steps.index(install)
+    assert coverage_steps.index(coverage_verifier) < coverage_steps.index(raw_download)
+    assert coverage_steps.index(raw_download) < coverage_steps.index(combine)
 
 
 def test_ci_records_queue_and_runner_minutes() -> None:
