@@ -24,6 +24,14 @@ replace it. Capture client claims in the supported client. Visual claims also re
 timestamped evidence from a qualified observer. Diagnostic text is authoritative only
 when the text is the contract.
 
+Before appending any Check Result, finish every referenced file beneath the Scenario
+Run's `evidence/` directory. When the source is external, copy its bytes to a
+deterministic run-owned path, record source and destination digests (or equivalent
+byte-identity proof), and make the destination immutable under the Scenario's evidence
+procedure before invoking `record_check.py`. This applies to top-level, deviation,
+borrowed-preservation, and recovery evidence. The recorder rejects external paths and
+never performs an implicit copy.
+
 A failed prerequisite blocks dependent work until the required state is restored.
 Independent work may continue while authority, evidence, and resources remain
 controlled.

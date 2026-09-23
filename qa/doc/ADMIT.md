@@ -76,6 +76,10 @@ After every gate passes, generate a fresh Scenario Run ID and create the version
 admission-reconciliation outputs as initial identities. State produced after
 admission belongs to its producing Step.
 
+After the initial empty cleanup ledger exists, publish every transfer or other change
+as a complete candidate through `python3 qa/record_cleanup.py <run-root>
+<candidate.json>`. Do not edit the ledger directly or submit a partial row update.
+
 Admission is complete only when `run.json` contains every required initial identity
 and selected Check ID, every created JSON/JSONL object declares
 `run_record_format_version: 2`, and the durable checkpoint names the first Step and

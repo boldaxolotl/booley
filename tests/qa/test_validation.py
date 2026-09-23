@@ -116,6 +116,22 @@ def test_prerequisites_reject_later_checks_and_step_ids(tmp_path):
     assert "earlier check" in result.stderr
 
 
+def test_firmware_cannot_follow_dependent_doctor_step(tmp_path):
+    scenario = write_suite(tmp_path)
+    firmware = scenario["steps"].pop(0)
+    firmware["id"] = "firmware-step"
+    firmware["checks"][0]["id"] = "firmware"
+    doctor = scenario["steps"][0]
+    doctor["requires"] = ["firmware"]
+    scenario["steps"].insert(1, firmware)
+    write_scenario(tmp_path, scenario)
+
+    result = run_validator(tmp_path)
+
+    assert result.returncode == 1
+    assert "firmware is not an earlier check" in result.stderr
+
+
 def test_recovery_cannot_depend_transitively_on_negative_pass(tmp_path):
     import yaml
 

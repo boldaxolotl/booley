@@ -16,12 +16,12 @@ check_sets:
   - stealth.native-no-symlink
   - stealth.commit-sanitation
   - stealth.attribution-removal
+  - baseline.firmware
   - doctor.first-product-exercise
   - doctor.plain
   - doctor.deep
   - doctor.plain-recheck
   - baseline.source-unchanged
-  - baseline.firmware
   - baseline.targets
   - baseline.icarus-main-core
   - baseline.icarus-axi
@@ -836,6 +836,23 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.project.separate-repository
   requires:
   - inputs.project-pin
+- id: baseline.firmware
+  phase: prepare
+  action: |-
+    Build the declared demo firmware input with recorded RISC-V compiler and image identity. This is preparation for Doctor Target resolution, not a Booley product invocation.
+  checks:
+  - id: baseline.firmware
+    capabilities:
+    - SIMULATION-FLOW
+    stimulus: |-
+      Build the declared demo firmware input with recorded RISC-V compiler and image identity before invoking Doctor. Treat this as preparation, not a Booley product invocation.
+    expected: |-
+      The exact `firmware/firmware.hex` consumed by Doctor exists before Doctor resolves its simulation Target, with the compiler, command, image, and hash identities recorded.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
+    evidence: Firmware build command/log and image hashes; retain xPack GCC 15.2 calibration context.
+    capture: evidence/picorv32-published-demo-continuity.baseline.firmware
+  requires:
+  - project.separate-repository
 - id: stealth.enabled
   phase: prepare
   action: Enable Stealth and set `ignore_native_cores = true`.
@@ -945,18 +962,18 @@ steps:
     sha256: 4d62024c198631f68990eea0676bd4c33ec4ea094d84b955647dde2c3f69761f
 - id: doctor.first-product-exercise
   phase: prepare
-  action: Initialization/host preparation are setup; plain Doctor is the first Booley product exercise.
+  action: Initialization, host preparation, and the declared firmware build are setup; plain Doctor is the first Booley product exercise.
   checks:
   - id: doctor.first-product-exercise
     capabilities:
     - DOCTOR-DIAGNOSTICS
-    stimulus: Initialization/host preparation are setup; plain Doctor is the first Booley product exercise.
-    expected: Initialization/host preparation are setup; plain Doctor is the first Booley product exercise.
+    stimulus: Initialization, host preparation, and the declared firmware build are setup; plain Doctor is the first Booley product exercise.
+    expected: Initialization, host preparation, and the declared firmware build occur before any Booley product invocation; plain Doctor is the first Booley product exercise.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Ordered command record through first Doctor invocation.
     capture: evidence/picorv32-published-demo-continuity.doctor.first-product-exercise
   requires:
-  - inputs.project-pin
+  - baseline.firmware
 - id: doctor.plain
   phase: prepare
   action: Run plain Doctor; require warning-free result.
@@ -970,7 +987,8 @@ steps:
     evidence: Doctor report and underlying diagnostics.
     capture: evidence/picorv32-published-demo-continuity.doctor.plain
   requires:
-  - inputs.project-pin
+  - baseline.firmware
+  - doctor.first-product-exercise
 - id: doctor.deep
   phase: prepare
   action: |-
@@ -988,7 +1006,7 @@ steps:
       Separate unmodified pre-waiver and final `last.json`/`last.log` copies with command exits and all selected deep checks; the installed waiver text/hash, exact `check` and `subject`, reason, expiry and proof it is unexpired; complete `synth_core` diagnostics and `doctor-warning-comparison` fixture output proving stable warning signatures, no changed or additional warning, and a tested rejection of a genuinely changed warning; pinned Project/upstream commits plus Booley, sv2v, Yosys and OpenROAD identities; before/after Project configuration and clean final report.
     capture: evidence/picorv32-published-demo-continuity.doctor.deep
   requires:
-  - inputs.project-pin
+  - doctor.plain
   assets:
   - path: fixtures/doctor-synth-warning-waiver.toml
     audience: scenario-operator
@@ -1009,7 +1027,7 @@ steps:
     evidence: Recheck report; warning-free Doctor recovery point.
     capture: evidence/picorv32-published-demo-continuity.doctor.plain-recheck
   requires:
-  - inputs.project-pin
+  - doctor.deep
 - id: inventory.PRODUCT-ARTIFACT-INSTALLATION.prerequisite
   phase: prepare
   action: |-
@@ -1395,21 +1413,6 @@ steps:
   - inputs.project-pin
   - doctor.plain-recheck
   - project.separate-repository
-- id: baseline.firmware
-  phase: baseline
-  action: Prepare demo firmware with recorded RISC-V compiler/image identity.
-  checks:
-  - id: baseline.firmware
-    capabilities:
-    - SIMULATION-FLOW
-    stimulus: Prepare demo firmware with recorded RISC-V compiler/image identity.
-    expected: Prepare demo firmware with recorded RISC-V compiler/image identity.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Firmware build command/log and image hashes; retain xPack GCC 15.2 calibration context.
-    capture: evidence/picorv32-published-demo-continuity.baseline.firmware
-  requires:
-  - inputs.project-pin
-  - doctor.plain-recheck
 - id: baseline.targets
   phase: baseline
   action: Inventory the configured Targets before invoking them.

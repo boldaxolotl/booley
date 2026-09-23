@@ -44,7 +44,9 @@ python3 qa/record_check.py <run-root> <result.json> --suite-root <frozen-suite-r
 ```
 
 The recorder checks the schema, run and Check identity, earlier result links,
-correction chain, and direct Scenario prerequisite direction before appending. A
+correction chain, direct Scenario prerequisite direction, and every evidence path
+before appending. `evidence_refs`, deviation evidence, borrowed-preservation setup,
+end, and pre-run-absence evidence, and `recovery_refs` all name evidence paths. A
 rejected candidate remains outside `check-results.jsonl`; fix the candidate and
 retry. Do not edit or replace an appended row. To correct an accepted recording
 error before sealing, append a new Check Result with a new `check_result_id`, the
@@ -58,19 +60,30 @@ Append unexpected behavior, incidental facts, friction, impressions, and wins to
 and link any producing Step, Check Result, cause, correction, and evidence. The Human
 Maintainer owns their later Triage Dispositions.
 
-Bind identities created by a Step to that Step and its evidence. Before creating an
-owned resource, add its planned identity, ownership, and intended disposition to
-`cleanup-ledger.json`. When its exact identity is unknowable in advance, record it
-immediately after acquisition and before dependent work. Keep the ledger sufficient
-for another operator to safely shut down and clean up run-owned resources without
-touching unrelated state.
-For each new ledger row, record `identity` and `active_authority_possible` (`true`,
-`false`, or `null` when unknown). Record `actual_disposition` separately from the
-intended disposition; null is valid while cleanup is uncertain. When shutdown is
-confirmed independently of disposition, put its evidence paths in
-`safe_shutdown_evidence_refs`. Record `cleanup_reason` for failed or uncertain rows.
-Legacy rows without these fields remain readable, with a positional identity shown
-by triage when no usable identity field exists.
+Bind identities created by a Step to that Step and its evidence. Publish every
+cleanup-ledger change as a complete candidate document:
+
+```sh
+python3 qa/record_cleanup.py <run-root> <candidate.json>
+```
+
+The recorder validates the entire candidate and replaces the unsealed run's ledger
+under a bounded lock. It does not accept a row patch. Before creating an owned
+resource, publish its planned string identity; when the exact identity is unknowable
+in advance, publish the exact identity immediately after acquisition and before
+dependent work. The only supported resource fields for new writes are `identity`
+(required and nonblank), `actual_disposition`, `active_authority_possible`,
+`safe_shutdown_evidence_refs`, and `cleanup_reason`. Null, empty, or whitespace-only
+`cleanup_reason` is omitted. `updated_at` and every other undeclared resource field
+are unsupported. Legacy sealed rows remain readable but are not valid new writes.
+
+An evidence reference is publishable only after its destination exists as a regular
+file beneath the Scenario Run's `evidence/` directory. For evidence produced outside
+the run, copy the source bytes to a deterministic run-owned evidence path, record the
+source and destination digests (or equivalent byte-identity proof), finish the file
+under the Scenario's immutable-evidence procedure, and only then submit the Check
+Result or cleanup-ledger candidate. The recorders reject outside, traversing, missing,
+directory, and escaping-symlink paths and never copy or rewrite external evidence.
 
 Keep immutable evidence outside mutable Project state; retained workspace state cannot
 be the only evidence for a claim. The Scenario Operator does not create
