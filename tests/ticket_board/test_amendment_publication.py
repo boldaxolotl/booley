@@ -100,9 +100,7 @@ def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -
     )
 
 
-def test_numeric_amendment_rebuilds_only_the_relaxed_atomic_criterion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _numeric_amendment_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root, blocked, tio = _blocked_ticket(tmp_path)
     basis = tio.load_basis("blocked-again")
     fields, body = _v2_fields(blocked.read_text(encoding="utf-8"))
@@ -147,6 +145,13 @@ def test_numeric_amendment_rebuilds_only_the_relaxed_atomic_criterion(
         },
     )
     state.save()
+    return tio, fmax, area
+
+
+def test_numeric_amendment_rebuilds_only_the_relaxed_atomic_criterion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tio, fmax, area = _numeric_amendment_setup(tmp_path, monkeypatch)
     request = {
         "actor": "QA Human",
         "reason": "Accept the measured clock",

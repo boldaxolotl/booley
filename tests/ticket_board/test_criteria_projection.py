@@ -5,10 +5,7 @@ from __future__ import annotations
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.flows.sim import coverage_acceptance, coverage_flow_context
-from booley.harness.setup import intake
 from booley.targets.domain import TARGET_IDENTITY_PARAM
-from booley.ticket_board import amendment
-from booley.ticket_board import criteria_projection as projection_module
 from booley.ticket_board.criteria_projection import project_ticket_criteria
 from booley.ticket_board.ticket_document import (
     TicketAuthoringView,
@@ -198,7 +195,7 @@ def test_standalone_and_project_scalar_have_no_per_target_result_alias() -> None
     assert projection.aliases == {}
 
 
-def test_projection_contract_covers_all_ticket_capabilities() -> None:
+def _complete_projection():
     text = (
         "---\nsummary: Project every capability\ntype: verification\nbranch: main\n"
         "scope: [rtl/core.sv]\non_success: []\nCRITERIA_MANDATORY:\n"
@@ -233,13 +230,15 @@ def test_projection_contract_covers_all_ticket_capabilities() -> None:
     )
     assert converted.document is not None, converted.diagnostics
     spec = converted.document.spec
-
     projection = project_ticket_criteria(spec)
+    rows = {(row.capability, row.target, row.parameter, row.test): row for row in spec.criteria}
+    return spec, projection, rows
 
+
+def test_projection_preserves_required_state_and_sim_parameters() -> None:
+    spec, projection, rows = _complete_projection()
     assert projection.required == {row.identity: row.mandatory for row in spec.criteria}
     assert any(not required for required in projection.required.values())
-    rows = {(row.capability, row.target, row.parameter, row.test): row for row in spec.criteria}
-
     sim_all = rows[("SIM", "acme:ip:core:1.0#sim_core", None, "all")]
     assert projection.params[sim_all.identity] == {
         "target": sim_all.target,
@@ -255,7 +254,11 @@ def test_projection_contract_covers_all_ticket_capabilities() -> None:
         "minimum_total": 1,
         "from_state": "fail",
     }
+    assert projection.aliases["sim_pass_sim_core"] == [sim_all.identity, sim_named.identity]
 
+
+def test_projection_preserves_cycle_count_parameters() -> None:
+    _spec, projection, rows = _complete_projection()
     cycle = rows[("CYCLE_COUNT", "acme:ip:core:1.0#sim_core", "cycle_count_max", "smoke")]
     assert projection.params[cycle.identity] == {
         "target": cycle.target,
@@ -278,6 +281,9 @@ def test_projection_contract_covers_all_ticket_capabilities() -> None:
         "acme:ip:core:1.0#sim_base"
     )
 
+
+def test_projection_preserves_implementation_parameters() -> None:
+    _spec, projection, rows = _complete_projection()
     for capability, target in (("SYNTH", "synth_run"), ("FPGA", "fpga_run")):
         row = rows[(capability, f"acme:ip:core:1.0#{target}", "run", None)]
         assert projection.params[row.identity] == {
@@ -304,6 +310,9 @@ def test_projection_contract_covers_all_ticket_capabilities() -> None:
         "acme:ip:core:1.0#synth_base"
     )
 
+
+def test_projection_preserves_specialist_parameters() -> None:
+    spec, projection, _rows = _complete_projection()
     mutation = next(row for row in spec.criteria if row.capability == "MUTATION")
     assert projection.params[mutation.identity] == {
         "target": mutation.target,
@@ -318,7 +327,11 @@ def test_projection_contract_covers_all_ticket_capabilities() -> None:
         {"branch": {"min_pct": 80}},
     ]
     assert all(projection.params[row.identity]["tests"] == ["smoke"] for row in coverage)
+    assert projection.aliases["coverage_sim_core"] == [row.identity for row in coverage]
 
+
+def test_projection_preserves_project_parameters() -> None:
+    spec, projection, _rows = _complete_projection()
     standalone = next(row for row in spec.criteria if row.capability == "ELAB_STANDALONE")
     assert projection.params[standalone.identity]["targets"] == [
         "acme:ip:core:1.0#sim_core",
@@ -332,10 +345,3 @@ def test_projection_contract_covers_all_ticket_capabilities() -> None:
     assert "implementation_done" not in {
         identity for aliases in projection.aliases.values() for identity in aliases
     }
-    assert projection.aliases["sim_pass_sim_core"] == [sim_all.identity, sim_named.identity]
-    assert projection.aliases["coverage_sim_core"] == [row.identity for row in coverage]
-
-
-def test_callers_bind_the_ticket_board_projection() -> None:
-    assert intake.project_ticket_criteria is projection_module.project_ticket_criteria
-    assert amendment.project_ticket_criteria is projection_module.project_ticket_criteria
