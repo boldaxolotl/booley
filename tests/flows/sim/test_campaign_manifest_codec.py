@@ -363,6 +363,23 @@ def test_manifest_exact_codec_recomputes_all_component_digests() -> None:
     assert encode_simulation_campaign_manifest(value) == raw
 
 
+def test_finalize_manifest_accepts_immutable_mapping_inputs() -> None:
+    document = _manifest()
+    document.pop("fingerprints")
+    workload = document["workload"]
+    assert isinstance(workload, dict)
+    document["workload"] = MappingProxyType(
+        {
+            **workload,
+            "eda": MappingProxyType(workload["eda"]),
+        }
+    )
+
+    manifest = finalize_manifest(document)
+
+    assert manifest.document["workload"]["eda"]["kind"] == "icarus"
+
+
 def test_campaign_plan_is_derived_only_from_a_validated_manifest() -> None:
     manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
     plan = create_simulation_campaign_plan(manifest)

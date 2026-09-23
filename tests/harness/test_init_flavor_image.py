@@ -59,6 +59,11 @@ def _stub_flavor_env(
     """Stub the flavor's docker probes; returns the list built images land in."""
     built: list[str] = []
     monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: exists)
+    monkeypatch.setattr(
+        idi,
+        "_docker_image_id",
+        lambda image: "sha256:standard-parent" if image == idi.DOCKER_IMAGE else None,
+    )
     monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: fingerprint)
     monkeypatch.setattr(
         idi,
@@ -74,6 +79,56 @@ def _stub_flavor_env(
 
     monkeypatch.setattr(idi, "_docker_build_image", _fake_build)
     return built
+
+
+def test_missing_flavor_binds_verified_standard_parent(flavor_repo, monkeypatch):
+    parent_id = "sha256:" + "a" * 64
+    captured = []
+    monkeypatch.setattr(idi, "_docker_image_exists", lambda _image=idi.DOCKER_IMAGE: False)
+    monkeypatch.setattr(idi, "_image_build_fingerprint", lambda _root: "abc123")
+    monkeypatch.setattr(idi, "_expected_version", lambda _root: "0.2.0")
+    monkeypatch.setattr(idi, "_try_pull_image", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        idi,
+        "_docker_image_id",
+        lambda image: parent_id if image == idi.DOCKER_IMAGE else None,
+    )
+    monkeypatch.setattr(
+        idi,
+        "_docker_build_image",
+        lambda _context, spec: captured.append(spec) or 0,
+    )
+    monkeypatch.setattr(idi, "_report_build_cache", lambda: None)
+
+    idi.ensure_flavor_image(InitContext(project_root=flavor_repo), FLAVOR)
+
+    assert len(captured) == 1
+    spec = captured[0]
+    assert spec.image == FLAVOR
+    assert spec.build_contexts == (("booley-standard-substrate", "docker-image://booley-sandbox"),)
+    assert spec.parent_artifact == parent_id
+    command = idi._docker_build_command(spec)
+    assert "booley-standard-substrate=docker-image://booley-sandbox" in command
+    assert f"{idi.LABEL_BASE_IMAGE_ID}={parent_id}" in command
+    assert f"{idi.LABEL_PARENT_ARTIFACT_KIND}={idi.PARENT_ARTIFACT_LOCAL_IMAGE_ID}" in command
+    assert f"{idi.LABEL_PARENT_ARTIFACT}={parent_id}" in command
+
+
+def test_missing_standard_parent_stops_flavor_build(flavor_repo, monkeypatch):
+    _stub_flavor_env(monkeypatch, exists=False, stale=False)
+    monkeypatch.setattr(idi, "_try_pull_image", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(idi, "_docker_image_id", lambda _image: None)
+    monkeypatch.setattr(
+        idi,
+        "_docker_build_image",
+        lambda *_args, **_kwargs: pytest.fail("build must not start without its parent"),
+    )
+    ctx = InitContext(project_root=flavor_repo)
+
+    assert idi.ensure_flavor_image(ctx, FLAVOR) is False
+
+    assert ctx.results[-1].status == "err"
+    assert "standard parent" in ctx.results[-1].detail
 
 
 class TestFlavorDispatch:
