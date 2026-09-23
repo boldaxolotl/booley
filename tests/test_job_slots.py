@@ -173,6 +173,22 @@ class TestSingleProcess:
         assert attempts == 3
         assert store.snapshot(CLASS_HEAVY)[0][0].lease_generation == 1
 
+    def test_renew_does_not_resurrect_a_deleted_holder(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        original_rewrite = store._rewrite_token
+
+        def delete_before_rewrite(current):
+            current.path.unlink()
+            return original_rewrite(current)
+
+        monkeypatch.setattr(store, "_rewrite_token", delete_before_rewrite)
+
+        assert store.renew(token) is False
+        assert not token.path.exists()
+
     def test_release_frees_the_slot(self, root, world):
         spawn(world, 100)
         store = make_store(root, world)
