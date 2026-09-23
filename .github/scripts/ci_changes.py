@@ -48,6 +48,7 @@ CONDITIONAL_JOBS = (
 ALWAYS_JOBS = ("changes", "release-semantic")
 ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
 WINDOWS_SHARD_COUNTS = (4, 6, 8)
+DEFAULT_WINDOWS_SHARD_COUNT = 6
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
     "src/booley/data/docker/stable-base-inputs.txt",
@@ -387,7 +388,12 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--github-output", type=Path, required=True)
     parser.add_argument("--force-all", type=_boolean, default=False)
-    parser.add_argument("--windows-shard-count", type=int, choices=WINDOWS_SHARD_COUNTS, default=4)
+    parser.add_argument(
+        "--windows-shard-count",
+        type=int,
+        choices=WINDOWS_SHARD_COUNTS,
+        default=DEFAULT_WINDOWS_SHARD_COUNT,
+    )
     parser.add_argument("--windows-shard-benchmark", type=_boolean, default=False)
     parser.add_argument(
         "--event-name",

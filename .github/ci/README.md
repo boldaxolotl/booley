@@ -43,9 +43,9 @@ setup and package-install time around those pytest phases.
 Manual `Tests` workflow runs accept four, six, or eight Windows shards. The
 `windows_shard_benchmark` option selects the same required jobs as an ordinary
 Python source change, avoiding unrelated image work in required-gate timing. Pull
-requests, pushes, and reusable-workflow calls retain four shards unless the
-production policy is changed after measurement. The generated matrix keeps the
-same Linux and Windows compatibility legs, marker selection, four-worker
+requests, pushes, and reusable-workflow calls use the selected six-shard
+production policy. The generated matrix keeps the same Linux and Windows
+compatibility legs, marker selection, four-worker
 work-stealing scheduler, timing model, and exact-union verification for every
 candidate count.
 
@@ -53,6 +53,10 @@ The current timing-model refresh uses ten complete four-shard artifact sets,
 from runs `35614218828` through `35850009708`, with run `35850009708` as the
 13,107-test reference set. Benchmark comparisons must record setup, collection,
 execution, job queueing, required-gate elapsed time, and total runner minutes.
+
+The September 23, 2026 experiment selected six shards as the production
+default. See [the experiment record](windows-shard-experiment.md) for the raw
+comparison and the post-change validation requirement.
 
 ## Exhaustive recovery policy
 

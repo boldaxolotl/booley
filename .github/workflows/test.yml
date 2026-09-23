@@ -13,7 +13,7 @@ on:
         description: Windows Python 3.14 shard count for CI benchmarking
         required: true
         type: choice
-        default: "4"
+        default: "6"
         options:
           - "4"
           - "6"
@@ -80,7 +80,7 @@ jobs:
           python .github/scripts/ci_changes.py
           --repo . --base "${BASE_SHA}" --head "${HEAD_SHA}"
           --event-name "${EVENT_NAME}"
-          --windows-shard-count "${{ inputs.windows_shard_count || '4' }}"
+          --windows-shard-count "${{ inputs.windows_shard_count || '6' }}"
           --windows-shard-benchmark "${{ inputs.windows_shard_benchmark || false }}"
           --github-output "${GITHUB_OUTPUT}" --force-all "${FORCE_ALL}"
 
@@ -407,7 +407,7 @@ jobs:
 
       - name: Prove every sharded test ran exactly once
         env:
-          WINDOWS_SHARD_COUNT: ${{ inputs.windows_shard_count || '4' }}
+          WINDOWS_SHARD_COUNT: ${{ inputs.windows_shard_count || '6' }}
         run: >-
           python .github/scripts/ci_test_shards.py
           --root "${RUNNER_TEMP}/shards"

@@ -377,7 +377,7 @@ def test_pr_compatibility_matrix_is_pairwise() -> None:
     assert workflow["jobs"]["changes"]["outputs"]["test_matrix"] == (
         "${{ steps.classify.outputs.test_matrix }}"
     )
-    assert shard_input["default"] == "4"
+    assert shard_input["default"] == "6"
     assert shard_input["options"] == ["4", "6", "8"]
     assert benchmark_input["default"] is False
     classify_step = next(
@@ -403,7 +403,7 @@ def test_windows_shards_are_exactly_verified() -> None:
         if step.get("name") == "Prove every sharded test ran exactly once"
     )
     assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == (
-        "${{ inputs.windows_shard_count || '4' }}"
+        "${{ inputs.windows_shard_count || '6' }}"
     )
 
 
