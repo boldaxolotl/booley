@@ -452,6 +452,20 @@ def _campaign_recovery_detail(status: CampaignRecoveryStatus) -> dict[str, objec
     }
 
 
+def _fresh_campaign_recovery_detail(
+    validated: ValidatedResumeManifest,
+    observed: CampaignRecoveryStatus,
+) -> dict[str, object]:
+    """Refresh failure presentation without treating the pre-run view as authority."""
+    try:
+        status = SimulationCampaign().inspect_resume(validated)
+    except (OSError, ValueError) as exc:
+        detail = _campaign_recovery_detail(observed)
+        detail["recovery_refresh_error"] = str(exc)
+        return detail
+    return _campaign_recovery_detail(status)
+
+
 def _campaign_observation_preview(
     observations: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
@@ -1968,16 +1982,23 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
         if not isinstance(admission, AdmissionContext):
-            return EndpointOutcome(exit_code=EXIT_ERROR, report_text="sim: no admission context")
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text="sim: no admission context",
+                detail=_campaign_recovery_detail(observed),
+            )
         try:
             outcome = self._execute_validated_resume(validated, invocation, admission)
         except SimulationCampaignCancellationError as exc:
-            return self._campaign_cancelled_outcome(exc, _campaign_recovery_detail(observed))
+            return self._campaign_cancelled_outcome(
+                exc,
+                _fresh_campaign_recovery_detail(validated, observed),
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign resume failed: {exc}",
-                detail=_campaign_recovery_detail(observed),
+                detail=_fresh_campaign_recovery_detail(validated, observed),
             )
         result = self._campaign_endpoint_outcome([outcome])
         result.detail.update(_campaign_recovery_detail(outcome.recovery))

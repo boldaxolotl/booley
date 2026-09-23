@@ -38,6 +38,7 @@ from booley.flows.sim.campaign.coordinator import (
     ResumeCampaignPreviewRequest,
     ResumeCampaignRunRequest,
     SimulationCampaign,
+    SimulationCampaignCancellationError,
     WorkExecutionRequest,
     _acceptance_ready,
 )
@@ -46,6 +47,8 @@ from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+from booley.flows.sim.flow import SimulateFlow
+from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
 from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
@@ -390,6 +393,58 @@ def test_campaign_previews_expose_the_complete_public_contract(tmp_path: Path) -
     store.publish_manifest(manifest)
     resumed = SimulationCampaign().preview(_resume_request(store, tmp_path))
     assert resumed.manifest == manifest.document
+
+
+def test_resume_inspection_rejects_manifest_replaced_after_validation(tmp_path: Path) -> None:
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    validated = _resume_request(store, tmp_path).validated
+
+    store.manifest_path.unlink()
+    store.publish_manifest(_manifest_for(("replacement",)))
+
+    with pytest.raises(
+        SimulationCampaignIntegrityError,
+        match="changed after resume validation",
+    ):
+        SimulationCampaign().inspect_resume(validated)
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_resume_endpoint_refreshes_recovery_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cancelled: bool,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    validated = _resume_request(store, project).validated
+    observed = SimulationCampaign().inspect_resume(validated)
+    work_item_id = observed.pending[0]
+    invocation = tmp_path / "reports" / "sim" / "2"
+    invocation.mkdir(parents=True)
+    flow = SimulateFlow()
+    flow.context._args = SimpleNamespace(report_dir=tmp_path / "reports", work_dir=project)
+    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
+
+    def fail_after_attempt(*_args: object) -> None:
+        store.allocate_attempt_directory(work_item_id, str(uuid.uuid4()))
+        if cancelled:
+            raise SimulationCampaignCancellationError("cancelled")
+        raise OSError("failed")
+
+    monkeypatch.setattr(flow, "_execute_validated_resume", fail_after_attempt)
+    with flow.context.publication_resources:
+        result = flow._execute_campaign_resume(validated, _admission(), observed)
+
+    assert result.exit_code == (EXIT_CANCELLED if cancelled else EXIT_ERROR)
+    assert result.detail["completed"] == []
+    assert result.detail["interrupted"] == [work_item_id]
+    assert result.detail["pending"] == []
 
 
 def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> None:

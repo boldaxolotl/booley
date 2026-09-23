@@ -198,7 +198,7 @@ class SimulationCampaign:
     def preview(self, request: CampaignPreviewRequest) -> CampaignPreview:
         if isinstance(request, NewCampaignPreviewRequest):
             return _new_preview(request)
-        _store, recovery, status = self._inspect_resume(request.validated)
+        recovery, status = self._inspect_resume(request.validated)
         mismatches = compare_manifests(request.validated.manifest, request.current_plan.manifest)
         needed = _required_variants(request.validated.manifest, recovery)
         return ResumeCampaignPreview(
@@ -211,16 +211,16 @@ class SimulationCampaign:
 
     def inspect_resume(self, validated: ValidatedResumeManifest) -> CampaignRecoveryStatus:
         """Return an observational recovery status for one validated manifest."""
-        _store, _recovery, status = self._inspect_resume(validated)
+        _recovery, status = self._inspect_resume(validated)
         return status
 
     @staticmethod
     def _inspect_resume(
         validated: ValidatedResumeManifest,
-    ) -> tuple[CampaignStore, CampaignRecovery, CampaignRecoveryStatus]:
+    ) -> tuple[CampaignRecovery, CampaignRecoveryStatus]:
         store = CampaignStore(validated.path.parent)
-        recovery = store.scan()
-        return store, recovery, _recovery_status(store, recovery)
+        recovery = store.scan_validated(validated.manifest, validated.sha256)
+        return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
     def run(self, request: CampaignRunRequest) -> CampaignOutcome:
         if self._executor is None:
@@ -234,6 +234,7 @@ class SimulationCampaign:
                     "campaign path already contains another manifest"
                 )
             manifest = request.plan.manifest
+            authenticated_manifest_sha256 = None
         else:
             store = CampaignStore(request.validated.path.parent)
             mismatches = compare_manifests(
@@ -243,17 +244,34 @@ class SimulationCampaign:
                 detail = "; ".join(item.message for item in mismatches)
                 raise SimulationCampaignIntegrityError(f"campaign workload mismatch: {detail}")
             manifest = request.validated.manifest
+            authenticated_manifest_sha256 = request.validated.sha256
         with store.mutation_lock():
             self._raise_if_cancelled(request)
             self._run_prerequisites(store, manifest, request, set())
-            recovery = store.scan()
+            recovery = _scan_recovery(
+                store,
+                manifest,
+                authenticated_manifest_sha256,
+            )
             self._run_pending(store, manifest, recovery, request)
             self._raise_if_cancelled(request)
             self._publication_checkpoint("before:summary_replace")
-            summary = store.regenerate_summary()
+            summary = _regenerate_summary(
+                store,
+                manifest,
+                authenticated_manifest_sha256,
+            )
             self._publication_checkpoint("after:summary_replace")
-            coverage_reference = self._publish_coverage_reference(store, manifest)
-            final_recovery = store.scan()
+            coverage_reference = self._publish_coverage_reference(
+                store,
+                manifest,
+                authenticated_manifest_sha256,
+            )
+            final_recovery = _scan_recovery(
+                store,
+                manifest,
+                authenticated_manifest_sha256,
+            )
             return _outcome(store, manifest, summary, final_recovery, coverage_reference)
 
     @staticmethod
@@ -262,12 +280,15 @@ class SimulationCampaign:
             raise SimulationCampaignCancellationError("Simulation Campaign cancelled")
 
     def _publish_coverage_reference(
-        self, store: CampaignStore, manifest: SimulationCampaignManifest
+        self,
+        store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        authenticated_manifest_sha256: str | None,
     ) -> CoverageCampaignReference | None:
         workload = cast(Mapping[str, object], manifest.document["workload"])
         if workload["coverage"] is not True:
             return None
-        recovery = store.scan()
+        recovery = _scan_recovery(store, manifest, authenticated_manifest_sha256)
         completed = [item for item in recovery.items if item.result is not None]
         if len(completed) != 1:
             raise SimulationCampaignIntegrityError(
@@ -672,18 +693,42 @@ def _outcome(
         coverage_reference.document if coverage_reference is not None else None,
         facts,
         _acceptance_ready(manifest, observations, complete, grade),
-        _recovery_status(store, recovery),
+        _recovery_status(store.manifest_path, manifest_digest(manifest), recovery),
     )
 
 
-def _recovery_status(store: CampaignStore, recovery: CampaignRecovery) -> CampaignRecoveryStatus:
+def _recovery_status(
+    manifest_path: Path,
+    manifest_sha256: str,
+    recovery: CampaignRecovery,
+) -> CampaignRecoveryStatus:
     return CampaignRecoveryStatus(
-        manifest_path=store.manifest_path,
-        manifest_sha256=store.manifest_sha256(),
+        manifest_path=manifest_path,
+        manifest_sha256=manifest_sha256,
         completed=recovery.complete,
         interrupted=recovery.interrupted,
         pending=recovery.pending,
     )
+
+
+def _scan_recovery(
+    store: CampaignStore,
+    manifest: SimulationCampaignManifest,
+    authenticated_manifest_sha256: str | None,
+) -> CampaignRecovery:
+    if authenticated_manifest_sha256 is None:
+        return store.scan()
+    return store.scan_validated(manifest, authenticated_manifest_sha256)
+
+
+def _regenerate_summary(
+    store: CampaignStore,
+    manifest: SimulationCampaignManifest,
+    authenticated_manifest_sha256: str | None,
+) -> Mapping[str, object]:
+    if authenticated_manifest_sha256 is None:
+        return store.regenerate_summary()
+    return store.regenerate_summary_validated(manifest, authenticated_manifest_sha256)
 
 
 def _acceptance_ready(
