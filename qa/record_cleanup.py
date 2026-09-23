@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -31,15 +32,35 @@ def canonicalize_cleanup_ledger(candidate: dict[str, Any], source: Path) -> None
             resource.pop("cleanup_reason", None)
 
 
+def validate_retained_resources(
+    current: dict[str, Any], candidate: dict[str, Any], ledger_path: Path
+) -> None:
+    """Reject a strict candidate that drops an identity from the current ledger."""
+    try:
+        triage.validate_definition(
+            current, "run-record.schema.json", "cleanupLedgerWrite", str(ledger_path)
+        )
+    except triage.TriageError:
+        return
+    current_identities = Counter(resource["identity"] for resource in current["resources"])
+    candidate_identities = Counter(resource["identity"] for resource in candidate["resources"])
+    if missing := current_identities - candidate_identities:
+        raise triage.TriageError(
+            f"{ledger_path}: candidate drops existing resource identities {sorted(missing.elements())}"
+        )
+
+
 def replace_cleanup_ledger(run_root: Path, source: Path) -> None:
     """Publish a complete valid candidate without exposing partial state."""
-    with exclusive_file_lock(run_root / ".cleanup-ledger.lock"):
+    with exclusive_file_lock(run_root / ".run-records.lock"):
         if (run_root / "run-manifest.json").exists():
             raise triage.TriageError(f"{run_root}: sealed Scenario Run is immutable")
         run_path = run_root / "run.json"
         run = triage.read_json(run_path)
         triage.validate_definition(run, "run-record.schema.json", "run", str(run_path))
         candidate = triage.read_json(source)
+        if not isinstance(candidate, dict):
+            raise triage.TriageError(f"{source}: cleanup ledger must be a JSON object")
         if candidate.get("run_id") != run["run_id"]:
             raise triage.TriageError(f"{source}: cleanup ledger belongs to a different run")
         canonicalize_cleanup_ledger(candidate, source)
@@ -50,7 +71,13 @@ def replace_cleanup_ledger(run_root: Path, source: Path) -> None:
             triage.validate_preseal_evidence_refs(
                 run_root, resource.get("safe_shutdown_evidence_refs", [])
             )
-        triage.atomic_json(run_root / "cleanup-ledger.json", candidate)
+        ledger_path = run_root / "cleanup-ledger.json"
+        current = triage.read_json(ledger_path)
+        triage.validate_definition(
+            current, "run-record.schema.json", "cleanupLedger", str(ledger_path)
+        )
+        validate_retained_resources(current, candidate, ledger_path)
+        triage.atomic_json(ledger_path, candidate)
 
 
 def main() -> int:

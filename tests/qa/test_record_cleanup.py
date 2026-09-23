@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from tests.qa.test_triage import write_run
+from tests.qa.test_triage import write_run, write_suite
 
 from qa import record_cleanup, triage
 
@@ -86,6 +86,17 @@ def test_invalid_document_preserves_original_bytes(tmp_path, change, message):
     assert_unchanged(ledger, before)
 
 
+@pytest.mark.parametrize("value", [[], "ledger", 7, None])
+def test_non_object_candidate_preserves_original_bytes(tmp_path, value):
+    root = write_run(tmp_path, "run-1", "required", [], seal=False)
+    ledger = root / "cleanup-ledger.json"
+    before = ledger.read_bytes()
+
+    with pytest.raises(triage.TriageError, match="JSON object"):
+        record_cleanup.replace_cleanup_ledger(root, source(tmp_path, value))
+    assert_unchanged(ledger, before)
+
+
 @pytest.mark.parametrize("field", ["updated_at", "private_note"])
 def test_unknown_resource_field_preserves_original_bytes(tmp_path, field):
     root = write_run(tmp_path, "run-1", "required", [], seal=False)
@@ -159,7 +170,7 @@ def test_invalid_shutdown_evidence_preserves_original_bytes(tmp_path):
     assert_unchanged(ledger, before)
 
 
-def test_concurrent_publications_are_serialized(tmp_path, monkeypatch):
+def test_stale_concurrent_candidate_cannot_drop_published_resource(tmp_path, monkeypatch):
     root = write_run(tmp_path, "run-1", "required", [], seal=False)
     entered = threading.Event()
     release = threading.Event()
@@ -184,6 +195,34 @@ def test_concurrent_publications_are_serialized(tmp_path, monkeypatch):
         assert not pending_second.done()
         release.set()
         pending_first.result(timeout=5)
-        pending_second.result(timeout=5)
+        with pytest.raises(triage.TriageError, match="drops existing resource"):
+            pending_second.result(timeout=5)
 
-    assert triage.read_json(root / "cleanup-ledger.json")["resources"] == [{"identity": "second"}]
+    assert triage.read_json(root / "cleanup-ledger.json")["resources"] == [{"identity": "first"}]
+
+
+def test_sealing_waits_for_cleanup_publication(tmp_path, monkeypatch):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [], seal=False)
+    entered = threading.Event()
+    release = threading.Event()
+    original = triage.atomic_json
+
+    def controlled_write(path, value):
+        if path == root / "cleanup-ledger.json":
+            entered.set()
+            assert release.wait(timeout=5)
+        original(path, value)
+
+    monkeypatch.setattr(triage, "atomic_json", controlled_write)
+    value = source(tmp_path, candidate(resources=[{"identity": "published"}]))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending_write = pool.submit(record_cleanup.replace_cleanup_ledger, root, value)
+        assert entered.wait(timeout=5)
+        pending_seal = pool.submit(triage.seal_run, root, suite)
+        assert not pending_seal.done()
+        release.set()
+        pending_write.result(timeout=5)
+        sealed = pending_seal.result(timeout=5)
+
+    assert sealed.cleanup["resources"] == [{"identity": "published"}]

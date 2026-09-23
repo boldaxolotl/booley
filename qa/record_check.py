@@ -17,7 +17,7 @@ except ImportError:
 
 def append_check_result(run_root: Path, suite_root: Path, source: Path) -> None:
     """Reject an invalid row without changing the existing result log."""
-    with exclusive_file_lock(run_root / ".check-results.lock"):
+    with exclusive_file_lock(run_root / ".run-records.lock"):
         if (run_root / "run-manifest.json").exists():
             raise triage.TriageError(f"{run_root}: sealed Scenario Run is immutable")
         run = triage.read_json(run_root / "run.json")

@@ -188,6 +188,24 @@ def test_evidence_symlink_escape_is_rejected_before_append(tmp_path):
     assert_log_unchanged(log, before)
 
 
+@pytest.mark.parametrize("reference", ["evidence/./log.txt", "evidence//log.txt"])
+def test_noncanonical_evidence_path_is_rejected_before_append(tmp_path, reference):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [], seal=False)
+    (root / "evidence/log.txt").write_text("evidence\n")
+    log = root / "check-results.jsonl"
+    before = log.read_bytes()
+    result = check_result("run-1", "result-1", "check", "pass")
+    result["evidence_refs"] = [reference]
+    run = triage.read_json(root / "run.json")
+    run["selected_check_ids"] = ["check"]
+    write_json(root / "run.json", run)
+
+    with pytest.raises(triage.TriageError, match="noncanonical evidence"):
+        record_check.append_check_result(root, suite, append_source(tmp_path, result))
+    assert_log_unchanged(log, before)
+
+
 @pytest.mark.parametrize(
     ("field", "nested"),
     [

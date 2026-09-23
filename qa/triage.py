@@ -189,6 +189,8 @@ def validate_evidence_reference(run_root: Path, reference: str) -> Path:
     evidence_root = run_root / "evidence"
     if relative.is_absolute() or not relative.parts or relative.parts[0] != "evidence":
         raise TriageError(f"{run_root}: invalid evidence reference {reference}")
+    if reference != relative.as_posix():
+        raise TriageError(f"{run_root}: noncanonical evidence reference {reference}")
     if ".." in relative.parts:
         raise TriageError(f"{run_root}: invalid evidence traversal {reference}")
     path = run_root / relative
@@ -706,6 +708,12 @@ def publish_seal(
 def seal_run(run_root: Path, suite_root: Path | None = None) -> RunRecords:
     if suite_root is None:
         raise TriageError(f"{run_root}: seal-run requires --suite-root")
+    with exclusive_file_lock(run_root / ".run-records.lock"):
+        return _seal_run_unlocked(run_root, suite_root)
+
+
+def _seal_run_unlocked(run_root: Path, suite_root: Path) -> RunRecords:
+    """Validate and seal one run while its mutable-record lock is held."""
     manifest_path = run_root / "run-manifest.json"
     if manifest_path.exists():
         return validate_run(run_root)
