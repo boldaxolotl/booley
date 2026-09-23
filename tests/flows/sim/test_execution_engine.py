@@ -826,7 +826,10 @@ def test_declared_staged_runtime_input_is_available_at_run_cwd(
         _subprocess_invoker(handle.project_root),
         ("dhry",),
         cocotb=False,
-        options=SimulationOptions(timeout_ms=5_000),
+        # Hosted Windows runners can spend more than five seconds starting the
+        # real shell and Python adapter under load. This test exercises staged
+        # input visibility, not timeout classification.
+        options=SimulationOptions(timeout_ms=30_000),
     )
 
     assert outcome.passed is True
