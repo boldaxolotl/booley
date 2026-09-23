@@ -36,6 +36,7 @@ from booley.flows.sim.campaign.coordinator import (
     NewCampaignPreviewRequest,
     NewCampaignRunRequest,
     ResumeCampaignPreviewRequest,
+    ResumeCampaignRunRequest,
     SimulationCampaign,
     WorkExecutionRequest,
     _acceptance_ready,
@@ -342,6 +343,7 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
         998,
     )
     request = _resume_request(store, project)
+    status = SimulationCampaign().inspect_resume(request.validated)
 
     before_rss = _peak_rss()
     started = time.monotonic()
@@ -353,7 +355,16 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
     second = store.regenerate_summary()
 
     assert executor.calls == 2
-    assert (len(preview.completed), len(preview.interrupted), len(preview.pending)) == (
+    assert status.manifest_path == store.manifest_path
+    assert status.manifest_sha256 == store.manifest_sha256()
+    assert status.completed == recovery.complete
+    assert status.interrupted == recovery.interrupted
+    assert status.pending == recovery.pending
+    assert (
+        len(preview.recovery.completed),
+        len(preview.recovery.interrupted),
+        len(preview.recovery.pending),
+    ) == (
         1,
         1,
         998,
@@ -379,6 +390,50 @@ def test_campaign_previews_expose_the_complete_public_contract(tmp_path: Path) -
     store.publish_manifest(manifest)
     resumed = SimulationCampaign().preview(_resume_request(store, tmp_path))
     assert resumed.manifest == manifest.document
+
+
+def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    first_invocation = tmp_path / "reports" / "sim" / "1"
+    store = CampaignStore(first_invocation / "targets" / "sim" / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    preview_request = _resume_request(store, project)
+
+    preview = SimulationCampaign().preview(preview_request)
+    assert preview.recovery.pending
+
+    first_executor = _NoEdaExecutor()
+    first_outcome = SimulationCampaign(first_executor).run(
+        ResumeCampaignRunRequest(
+            preview_request.validated,
+            preview_request.current_plan,
+            project,
+            None,
+            CampaignPolicy(),
+            tmp_path / "reports" / "sim" / "2",
+            _admission(),
+        )
+    )
+    assert first_executor.calls == 1
+    assert first_outcome.recovery.pending == ()
+
+    second_executor = _NoEdaExecutor()
+    second_outcome = SimulationCampaign(second_executor).run(
+        ResumeCampaignRunRequest(
+            preview_request.validated,
+            preview_request.current_plan,
+            project,
+            None,
+            CampaignPolicy(),
+            tmp_path / "reports" / "sim" / "3",
+            _admission(),
+        )
+    )
+
+    assert second_executor.calls == 0
+    assert second_outcome.recovery.completed == first_outcome.recovery.completed
 
 
 def test_acceptance_readiness_requires_strict_superset_grade() -> None:
@@ -459,6 +514,9 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
     outcome, invocation = _one_item_outcome(tmp_path)
     assert outcome.complete is True
+    assert outcome.recovery.completed
+    assert outcome.recovery.interrupted == ()
+    assert outcome.recovery.pending == ()
 
     state_path = tmp_path / "state.json"
     state = DevelopmentState.load(state_path)

@@ -22,7 +22,7 @@ from booley.flows.sim.campaign.codec import (
     canonical_json_bytes,
     decode_simulator_bundle,
 )
-from booley.flows.sim.campaign.coordinator import CampaignOutcome
+from booley.flows.sim.campaign.coordinator import CampaignOutcome, CampaignRecoveryStatus
 from booley.flows.sim.campaign.facts import AcceptanceFacts, decode_acceptance_facts
 from booley.flows.sim.campaign.run_directory import (
     claimed_run_directory,
@@ -36,6 +36,16 @@ from booley.runtime.endpoint_execution import EXIT_CANCELLED, EndpointOutcome
 
 def _sha(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _recovery_status(tmp_path: Path) -> CampaignRecoveryStatus:
+    return CampaignRecoveryStatus(
+        tmp_path / "manifest.json",
+        "sha256:" + "1" * 64,
+        (),
+        (),
+        (),
+    )
 
 
 def _facts() -> dict[str, object]:
@@ -111,6 +121,7 @@ def _cycle_outcome(
         None,
         facts,
         True,
+        _recovery_status(tmp_path),
     )
 
 
@@ -352,6 +363,7 @@ def test_acceptance_coordinator_uses_record_or_verify(tmp_path: Path) -> None:
         None,
         facts,
         True,
+        _recovery_status(tmp_path),
     )
     result = SimulationAcceptanceCoordinator().reconcile(
         outcome,
@@ -401,6 +413,7 @@ def test_passing_subset_does_not_change_target_level_simulation_criterion(
         None,
         facts,
         False,
+        _recovery_status(tmp_path),
     )
 
     result = SimulationAcceptanceCoordinator().reconcile(
@@ -452,6 +465,7 @@ def test_absolute_cycle_acceptance_does_not_require_baseline(tmp_path: Path) -> 
         outcome.coverage_reference,
         facts,
         outcome.acceptance_ready,
+        outcome.recovery,
     )
     _result, changes = _cycle_reconciliation(
         tmp_path,
