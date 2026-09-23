@@ -47,6 +47,7 @@ CONDITIONAL_JOBS = (
 )
 ALWAYS_JOBS = ("changes", "release-semantic")
 ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
+WINDOWS_SHARD_COUNTS = (4, 6, 8)
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
     "src/booley/data/docker/stable-base-inputs.txt",
@@ -270,6 +271,43 @@ def required_jobs(categories: set[str]) -> set[str]:
     return jobs
 
 
+def build_test_matrix(windows_shard_count: int) -> dict[str, list[dict[str, object]]]:
+    """Build the compatibility matrix for one supported Windows shard count."""
+    if windows_shard_count not in WINDOWS_SHARD_COUNTS:
+        raise ValueError(
+            f"Windows shard count must be one of {', '.join(map(str, WINDOWS_SHARD_COUNTS))}"
+        )
+    include: list[dict[str, object]] = [
+        {"name": "ubuntu-3.11-full", "os": "ubuntu-latest", "python": "3.11", "mode": "full"},
+        {"name": "ubuntu-3.14-full", "os": "ubuntu-latest", "python": "3.14", "mode": "full"},
+        {
+            "name": "windows-3.11-compatibility",
+            "os": "windows-latest",
+            "python": "3.11",
+            "mode": "compatibility",
+        },
+        {
+            "name": "windows-3.13-compatibility",
+            "os": "windows-latest",
+            "python": "3.13",
+            "mode": "compatibility",
+        },
+    ]
+    include.extend(
+        {
+            "name": f"windows-3.14-shard-{index + 1}-of-{windows_shard_count}",
+            "os": "windows-latest",
+            "python": "3.14",
+            "mode": "shard",
+            "group": "windows",
+            "shard_index": index,
+            "shard_count": windows_shard_count,
+        }
+        for index in range(windows_shard_count)
+    )
+    return {"include": include}
+
+
 def _git_diff(repo: Path, base: str, head: str) -> bytes:
     result = subprocess.run(
         [
@@ -322,13 +360,19 @@ def _diff_base(repo: Path, base: str, head: str, event_name: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else head
 
 
-def _write_outputs(destination: Path, categories: set[str], base: str) -> None:
+def _write_outputs(
+    destination: Path, categories: set[str], base: str, windows_shard_count: int
+) -> None:
     jobs = required_jobs(categories)
     with destination.open("a", encoding="utf-8") as stream:
         for category in CATEGORIES:
             print(f"{category}={'true' if category in categories else 'false'}", file=stream)
         job_policy = {job: job in jobs for job in CONDITIONAL_JOBS}
         print(f"jobs={json.dumps(job_policy, separators=(',', ':'))}", file=stream)
+        print(
+            f"test_matrix={json.dumps(build_test_matrix(windows_shard_count), separators=(',', ':'))}",
+            file=stream,
+        )
         print(
             f"build_stable_base={'true' if 'stable_base' in categories else 'false'}", file=stream
         )
@@ -343,6 +387,7 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--github-output", type=Path, required=True)
     parser.add_argument("--force-all", type=_boolean, default=False)
+    parser.add_argument("--windows-shard-count", type=int, choices=WINDOWS_SHARD_COUNTS, default=4)
     parser.add_argument(
         "--event-name",
         choices=("", "pull_request", "push", "workflow_call", "workflow_dispatch"),
@@ -353,7 +398,7 @@ def main() -> int:
         base = _diff_base(args.repo, args.base, args.head, args.event_name)
         paths = _changed_paths(_git_diff(args.repo, base, args.head))
         categories = classify(paths, force_all=args.force_all)
-        _write_outputs(args.github_output, categories, base)
+        _write_outputs(args.github_output, categories, base, args.windows_shard_count)
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

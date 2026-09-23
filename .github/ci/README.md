@@ -28,9 +28,29 @@ both branches. Each verifier fails if a test is omitted, duplicated, or
 collected differently by two shards.
 
 The checked-in Windows timing model contains the slow observations from a
-successful `main` run. Every shard emits fresh exact-node timing evidence for
-future model refreshes. Stale entries are harmless and missing entries use the
-conservative default weight.
+recent set of `main` runs. Each stored weight is the median of available
+observations for a currently eligible test whose median exceeds the
+conservative one-second default. Every shard emits fresh exact-node timing
+evidence for future model refreshes. Stale entries are harmless and missing or
+unobserved tests use the default weight.
+
+The timing evidence also separates the slowest worker's collection time from
+controller and execution wall time. GitHub job-step timestamps supply runner
+setup and package-install time around those pytest phases.
+
+## Windows shard-count experiment
+
+Manual `Tests` workflow runs accept four, six, or eight Windows shards. Pull
+requests, pushes, and reusable-workflow calls retain four shards unless the
+production policy is changed after measurement. The generated matrix keeps the
+same Linux and Windows compatibility legs, marker selection, four-worker
+work-stealing scheduler, timing model, and exact-union verification for every
+candidate count.
+
+The current timing-model refresh uses ten complete four-shard artifact sets,
+from runs `35614218828` through `35850009708`, with run `35850009708` as the
+13,107-test reference set. Benchmark comparisons must record setup, collection,
+execution, job queueing, required-gate elapsed time, and total runner minutes.
 
 ## Exhaustive recovery policy
 
