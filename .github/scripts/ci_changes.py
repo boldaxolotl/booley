@@ -388,6 +388,7 @@ def main() -> int:
     parser.add_argument("--github-output", type=Path, required=True)
     parser.add_argument("--force-all", type=_boolean, default=False)
     parser.add_argument("--windows-shard-count", type=int, choices=WINDOWS_SHARD_COUNTS, default=4)
+    parser.add_argument("--windows-shard-benchmark", type=_boolean, default=False)
     parser.add_argument(
         "--event-name",
         choices=("", "pull_request", "push", "workflow_call", "workflow_dispatch"),
@@ -397,7 +398,12 @@ def main() -> int:
     try:
         base = _diff_base(args.repo, args.base, args.head, args.event_name)
         paths = _changed_paths(_git_diff(args.repo, base, args.head))
-        categories = classify(paths, force_all=args.force_all)
+        if args.windows_shard_benchmark:
+            if args.event_name != "workflow_dispatch":
+                raise ValueError("Windows shard benchmarking requires workflow_dispatch")
+            categories = {"python_source"}
+        else:
+            categories = classify(paths, force_all=args.force_all)
         _write_outputs(args.github_output, categories, base, args.windows_shard_count)
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

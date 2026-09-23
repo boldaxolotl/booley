@@ -369,6 +369,7 @@ def test_pr_compatibility_matrix_is_pairwise() -> None:
     workflow = _test_workflow()
     jobs = workflow["jobs"]
     shard_input = workflow[True]["workflow_dispatch"]["inputs"]["windows_shard_count"]
+    benchmark_input = workflow[True]["workflow_dispatch"]["inputs"]["windows_shard_benchmark"]
 
     assert jobs["test"]["strategy"]["matrix"] == (
         "${{ fromJSON(needs.changes.outputs.test_matrix) }}"
@@ -378,6 +379,11 @@ def test_pr_compatibility_matrix_is_pairwise() -> None:
     )
     assert shard_input["default"] == "4"
     assert shard_input["options"] == ["4", "6", "8"]
+    assert benchmark_input["default"] is False
+    classify_step = next(
+        step for step in jobs["changes"]["steps"] if step.get("name") == "Classify changed paths"
+    )
+    assert "--windows-shard-benchmark" in classify_step["run"]
 
 
 def test_windows_shards_are_exactly_verified() -> None:

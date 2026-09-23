@@ -77,6 +77,7 @@ def _run_classifier(
     force_all: bool = False,
     event_name: str | None = None,
     windows_shard_count: int = 4,
+    windows_shard_benchmark: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     output = repo / "github-output.txt"
     command = [
@@ -94,6 +95,8 @@ def _run_classifier(
         str(force_all).lower(),
         "--windows-shard-count",
         str(windows_shard_count),
+        "--windows-shard-benchmark",
+        str(windows_shard_benchmark).lower(),
     ]
     if event_name is not None:
         command.extend(("--event-name", event_name))
@@ -109,6 +112,7 @@ def _classify(
     force_all: bool = False,
     event_name: str | None = None,
     windows_shard_count: int = 4,
+    windows_shard_benchmark: bool = False,
 ) -> dict[str, str]:
     result, output = _run_classifier(
         repo,
@@ -117,6 +121,7 @@ def _classify(
         force_all=force_all,
         event_name=event_name,
         windows_shard_count=windows_shard_count,
+        windows_shard_benchmark=windows_shard_benchmark,
     )
     assert result.returncode == 0, result.stderr
     return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
@@ -156,6 +161,48 @@ def test_classifier_emits_requested_windows_shard_matrix(tmp_path: Path) -> None
     entries = json.loads(outputs["test_matrix"])["include"]
 
     assert sum(entry["mode"] == "shard" for entry in entries) == 6
+
+
+def test_windows_shard_benchmark_matches_ordinary_python_change(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, ".github/workflows/test.yml")
+    head = _commit(repo, "benchmark workflow")
+
+    outputs = _classify(
+        repo,
+        base,
+        head,
+        event_name="workflow_dispatch",
+        windows_shard_benchmark=True,
+    )
+
+    assert _required(outputs) == {
+        "changes",
+        "release-semantic",
+        "lint",
+        "test",
+        "test-verify",
+        "coverage-shards",
+        "coverage",
+        "package-artifacts",
+    }
+
+
+def test_windows_shard_benchmark_rejects_other_events(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "source change")
+
+    result, _output = _run_classifier(
+        repo,
+        base,
+        head,
+        event_name="push",
+        windows_shard_benchmark=True,
+    )
+
+    assert result.returncode == 2
+    assert "requires workflow_dispatch" in result.stderr
 
 
 def test_pull_request_uses_matching_merge_parent_instead_of_stale_event_base(

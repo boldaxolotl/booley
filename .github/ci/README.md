@@ -40,7 +40,9 @@ setup and package-install time around those pytest phases.
 
 ## Windows shard-count experiment
 
-Manual `Tests` workflow runs accept four, six, or eight Windows shards. Pull
+Manual `Tests` workflow runs accept four, six, or eight Windows shards. The
+`windows_shard_benchmark` option selects the same required jobs as an ordinary
+Python source change, avoiding unrelated image work in required-gate timing. Pull
 requests, pushes, and reusable-workflow calls retain four shards unless the
 production policy is changed after measurement. The generated matrix keeps the
 same Linux and Windows compatibility legs, marker selection, four-worker
