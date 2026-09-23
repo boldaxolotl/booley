@@ -339,7 +339,7 @@ steps:
   - path: coverage/faults/boundary.c
     base: shared
     audience: scenario-operator
-    sha256: d08e19ec246b05e4d2642f20cbfad5915bcfd82d9f5b938d0ef74b6f1fb56f17
+    sha256: a06656330c6a3b0d4df62af8b39771815ff4e9095e931b454702fd7d7247da64
   - path: coverage/faults/approvals.py
     base: shared
     audience: scenario-operator

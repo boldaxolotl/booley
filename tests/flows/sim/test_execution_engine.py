@@ -13,7 +13,7 @@ from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -43,7 +43,7 @@ from booley.flows.sim.execution import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.execution.engine import _preview_work
+from booley.flows.sim.execution.engine import PreparedOrdinaryGroup, _preview_work
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
 from booley.fusesoc import fusesoc_registry, selftest_overlay
@@ -90,6 +90,27 @@ def _prepared(handle: TargetHandle, *, cocotb: bool) -> PreparedSimulationBuild:
         eda_tool="icarus",
         toplevel="tb_demo",
         make_argv=("make", "-C", str(build_root)),
+    )
+
+
+def _prepared_group_with_source(handle: TargetHandle, source: Path) -> PreparedOrdinaryGroup:
+    prepared = _prepared(handle, cocotb=False)
+    prepared = replace(
+        prepared,
+        resolved=replace(
+            prepared.resolved,
+            files=(ResolvedFile(str(source), "systemVerilogSource"),),
+        ),
+    )
+    return PreparedOrdinaryGroup(
+        MagicMock(),
+        handle,
+        cast(Any, SimpleNamespace(prepared=prepared)),
+        MagicMock(),
+        0.0,
+        {},
+        {},
+        {},
     )
 
 
@@ -756,6 +777,33 @@ def test_adapter_programmer_value_error_propagates(tmp_path: Path) -> None:
         _run_execution(handle, prepared, MagicMock(), ("smoke",), cocotb=False)
 
 
+def test_prepared_source_entries_accept_absolute_project_source(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    source = tmp_path / "top.sv"
+    source.write_bytes(b"module top; endmodule\n")
+    group = _prepared_group_with_source(handle, source)
+
+    assert group.prepared_source_entries() == (
+        {
+            "path": "top.sv",
+            "bytes": len(source.read_bytes()),
+            "sha256": "sha256:bbfca2afc8562f8675a4e3f474a685b4f47d7728ae08df9a2f1a2a8bb77826e7",
+            "kind": "generated_input",
+        },
+    )
+
+
+def test_prepared_source_entries_reject_absolute_source_outside_project(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    handle = _handle(project)
+    source = tmp_path / "outside.sv"
+    source.write_bytes(b"module outside; endmodule\n")
+    group = _prepared_group_with_source(handle, source)
+
+    with pytest.raises(SimulationBuildSlotError, match="unsafe prepared Simulation source"):
+        group.prepared_source_entries()
+
+
 def test_declared_staged_runtime_input_is_available_at_run_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -778,7 +826,10 @@ def test_declared_staged_runtime_input_is_available_at_run_cwd(
         _subprocess_invoker(handle.project_root),
         ("dhry",),
         cocotb=False,
-        options=SimulationOptions(timeout_ms=5_000),
+        # Hosted Windows runners can spend more than five seconds starting the
+        # real shell and Python adapter under load. This test exercises staged
+        # input visibility, not timeout classification.
+        options=SimulationOptions(timeout_ms=30_000),
     )
 
     assert outcome.passed is True

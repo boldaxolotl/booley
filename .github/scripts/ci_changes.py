@@ -37,6 +37,7 @@ CONDITIONAL_JOBS = (
     "lint",
     "test",
     "test-verify",
+    "coverage-shards",
     "coverage",
     "rust-test",
     "bwave-integration",
@@ -253,7 +254,7 @@ def required_jobs(categories: set[str]) -> set[str]:
     if "docs" in categories:
         jobs.add("docs-check")
     if categories & {"python_source", "python_tests"}:
-        jobs.update({"lint", "test", "test-verify", "coverage"})
+        jobs.update({"lint", "test", "test-verify", "coverage-shards", "coverage"})
     if "rust" in categories:
         jobs.update({"rust-test", "bwave-integration", "package-artifacts", "bwave-smoke"})
     if "native_bwave" in categories:
