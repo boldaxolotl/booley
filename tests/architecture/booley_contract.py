@@ -97,6 +97,13 @@ DIRECTION_RULES = (
         "B-Wave owns reusable waveform mechanics without Flow execution or evidence policy",
     ),
     DirectionRule(
+        "D30",
+        (prefix("booley.criteria"),),
+        (prefix("booley.ticket_board"),),
+        "generic Criteria policy and state evaluation must not depend on Ticket document, "
+        "persistence, or lifecycle ownership",
+    ),
+    DirectionRule(
         "D27",
         (prefix("booley.targets"),),
         (prefix("booley.flows"), prefix("booley.runtime")),

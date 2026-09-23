@@ -15,8 +15,8 @@ from typing import Any
 
 import yaml
 
-from booley.criteria.ticket_projection import project_ticket_criteria
 from booley.runtime.project_dir import runtime_dir
+from booley.ticket_board.criteria_projection import project_ticket_criteria
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
 from .acceptance_path_policy import is_static_acceptance_path

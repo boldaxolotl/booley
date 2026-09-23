@@ -45,6 +45,7 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D15", "booley.flows.base", "booley.mcp.base", "flows/base.py"),
         ("D15", "booley.flows.sim.flow", "booley.mcp.schema_extractor", "seed.py"),
         ("D16", "booley.criteria.policy", "booley.flows.execution", "seed.py"),
+        ("D30", "booley.criteria.policy", "booley.ticket_board.io", "seed.py"),
         ("D17", "booley.flows.base", "booley.ticket_board.io", "seed.py"),
         ("D1", "booley.audit.policy", "booley.mcp.registry", "seed.py"),
         ("D1", "booley.config.settings", "booley.harness.cli", "seed.py"),
@@ -181,6 +182,50 @@ def test_target_separation_catches_all_source_import_locations(
     (package / source).write_text(statement.format(module=module))
     problems = evaluate_contract(analyze_imports(package), _directions_only())
     assert rule in {problem.rule for problem in problems}
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import booley.ticket_board.io\n",
+        "from booley.ticket_board.io import TicketIO\n",
+        "def deferred():\n    from booley.ticket_board.io import TicketIO\n",
+        "if enabled:\n    from booley.ticket_board.io import TicketIO\n",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
+        "    from booley.ticket_board.io import TicketIO\n",
+        "from booley import ticket_board\n",
+        "from ..ticket_board import io\n",
+    ],
+)
+def test_d30_catches_every_ticket_board_import_form(tmp_path: Path, statement: str) -> None:
+    package = tmp_path / "booley"
+    for relative in (
+        "__init__.py",
+        "criteria/__init__.py",
+        "criteria/policy.py",
+        "ticket_board/__init__.py",
+        "ticket_board/io.py",
+    ):
+        path = package / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+    source = package / "criteria/policy.py"
+    source.write_text(statement)
+
+    problems = evaluate_contract(analyze_imports(package), _directions_only())
+
+    d30 = [problem for problem in problems if problem.rule == "D30"]
+    assert d30
+    dependencies = [problem.dependency for problem in d30]
+    assert all(dependency is not None for dependency in dependencies)
+    assert all(
+        dependency is not None and dependency.source == "booley.criteria.policy"
+        for dependency in dependencies
+    )
+    assert all(
+        dependency is not None and dependency.target.startswith("booley.ticket_board")
+        for dependency in dependencies
+    )
 
 
 def test_target_separation_allows_downward_mechanisms() -> None:
