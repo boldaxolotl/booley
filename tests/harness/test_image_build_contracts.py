@@ -153,8 +153,6 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
             "-m",
             "build",
             "--wheel",
-            "--no-isolation",
-            "--skip-dependency-check",
             "--outdir",
             str(wheel_dir),
         ],
