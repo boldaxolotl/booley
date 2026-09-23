@@ -1628,6 +1628,13 @@ def _install_current_legacy_base(docker: FakeDocker) -> str:
     )
     node = lifecycle._base_node(payload)
     parent_id = docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or ""
+    labels = _local_build_labels(node, parent_id)
+    image_id = "sha256:" + "b" * 64
+    docker.images[lifecycle.BASE_IMAGE] = (image_id, labels)
+    return image_id
+
+
+def _local_build_labels(node: lifecycle.ImageNode, parent_id: str) -> dict[str, str]:
     labels = dict(node.expected_labels)
     labels.update(
         {
@@ -1636,9 +1643,7 @@ def _install_current_legacy_base(docker: FakeDocker) -> str:
             lifecycle.LABEL_PARENT_ARTIFACT: parent_id,
         }
     )
-    image_id = "sha256:" + "b" * 64
-    docker.images[lifecycle.BASE_IMAGE] = (image_id, labels)
-    return image_id
+    return labels
 
 
 def test_legacy_reconcile_builds_riscv_with_managed_parent_context(
@@ -1661,14 +1666,7 @@ def test_legacy_reconcile_builds_riscv_with_managed_parent_context(
     def build_flavor(_context, spec) -> int:
         captured.append(spec)
         node = lifecycle._nodes(root, spec.image, docker)[-1]
-        labels = dict(node.expected_labels)
-        labels.update(
-            {
-                lifecycle.LABEL_BUILD_ORIGIN: "local",
-                lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID),
-                lifecycle.LABEL_PARENT_ARTIFACT: parent_id,
-            }
-        )
+        labels = _local_build_labels(node, parent_id)
         docker.images[spec.image] = ("sha256:" + "c" * 64, labels)
         return 0
 
