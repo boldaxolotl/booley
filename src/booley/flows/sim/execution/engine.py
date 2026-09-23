@@ -223,10 +223,15 @@ class PreparedOrdinaryGroup:
         """Return the canonical staged source closure produced by setup."""
         entries: list[dict[str, object]] = []
         root = self._attempt.prepared.build_root.resolve()
+        project_root = self._handle.project_root.resolve()
         for item in self._attempt.prepared.resolved.files:
             source = item.absolute(root)
             try:
-                if source.is_symlink() or not source.is_file() or not source.is_relative_to(root):
+                if (
+                    source.is_symlink()
+                    or not source.is_file()
+                    or not source.is_relative_to(project_root)
+                ):
                     raise SimulationBuildSlotError(
                         f"unsafe prepared Simulation source: {item.name}"
                     )
@@ -235,7 +240,8 @@ class PreparedOrdinaryGroup:
                 raise SimulationBuildSlotError(
                     f"cannot authenticate prepared Simulation source: {item.name}: {exc}"
                 ) from exc
-            relative = Path(item.name)
+            declared = Path(item.name)
+            relative = source.relative_to(project_root) if declared.is_absolute() else declared
             if relative.is_absolute() or ".." in relative.parts:
                 raise SimulationBuildSlotError(
                     f"prepared Simulation source has unsafe name: {item.name}"
