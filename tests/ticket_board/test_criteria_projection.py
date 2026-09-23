@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
-from booley.criteria.ticket_projection import project_ticket_criteria
 from booley.flows.sim import coverage_acceptance, coverage_flow_context
+from booley.targets.domain import TARGET_IDENTITY_PARAM
+from booley.ticket_board.criteria_projection import project_ticket_criteria
 from booley.ticket_board.ticket_document import (
     TicketAuthoringView,
     TicketConversionContext,
@@ -192,3 +193,155 @@ def test_standalone_and_project_scalar_have_no_per_target_result_alias() -> None
     assert projection.params["elaborate_standalone"]["targets"] == ["core_a", "core_b"]
     assert projection.params["implementation_done"] == {}
     assert projection.aliases == {}
+
+
+def _complete_projection():
+    text = (
+        "---\nsummary: Project every capability\ntype: verification\nbranch: main\n"
+        "scope: [rtl/core.sv]\non_success: []\nCRITERIA_MANDATORY:\n"
+        "  LINT: {lint_core: clean}\n"
+        "  SIM: {sim_core: {all: pass, smoke: fail -> pass}}\n"
+        "  CYCLE_COUNT:\n"
+        "    sim_core: {smoke: {cycle_count_max: 100}}\n"
+        "    sim_relative: {smoke: {baseline: sim_base, cycle_count_increase_at_most: '10%'}}\n"
+        "  SYNTH:\n"
+        "    synth_run: pass\n"
+        "    synth_metrics: {area_um2_max: 10000, fmax_mhz_min: 400}\n"
+        "    synth_relative: {baseline: synth_base, area_increase_at_most: '5%'}\n"
+        "  FPGA:\n"
+        "    fpga_run: pass\n"
+        "    fpga_metrics: {lut_count_max: 1000, fmax_mhz_min: 200}\n"
+        "  MUTATION: {sim_core: {scope: [rtl/core.sv], min_detected: 8, total: 10}}\n"
+        "  COVERAGE:\n"
+        "    sim_core: {tests: [smoke], metrics: {line: {min_pct: 90}, branch: {min_pct: 80}}}\n"
+        "  ELAB_STANDALONE: [sim_core, sim_relative]\n"
+        "  REVIEW: {rtl: {bugs: clean}, tb: {quality: clean}}\n"
+        "  IMPLEMENTATION_DONE: true\n"
+        "CRITERIA_OPTIONAL:\n  LINT: {lint_optional: clean}\n"
+        "---\n\n## Description\n\nProject every capability.\n"
+    )
+    view = TicketAuthoringView(
+        lambda selector, _flow: f"acme:ip:core:1.0#{selector}",
+        lambda _target: ("smoke",),
+        frozenset({"IMPLEMENTATION_DONE"}),
+    )
+    converted = convert_ticket_document(
+        text, TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert converted.document is not None, converted.diagnostics
+    spec = converted.document.spec
+    projection = project_ticket_criteria(spec)
+    rows = {(row.capability, row.target, row.parameter, row.test): row for row in spec.criteria}
+    return spec, projection, rows
+
+
+def test_projection_preserves_required_state_and_sim_parameters() -> None:
+    spec, projection, rows = _complete_projection()
+    assert projection.required == {row.identity: row.mandatory for row in spec.criteria}
+    assert any(not required for required in projection.required.values())
+    sim_all = rows[("SIM", "acme:ip:core:1.0#sim_core", None, "all")]
+    assert projection.params[sim_all.identity] == {
+        "target": sim_all.target,
+        TARGET_IDENTITY_PARAM: sim_all.target,
+        "test_selector": "all",
+    }
+    sim_named = rows[("SIM", "acme:ip:core:1.0#sim_core", None, "smoke")]
+    assert projection.params[sim_named.identity] == {
+        "target": sim_named.target,
+        TARGET_IDENTITY_PARAM: sim_named.target,
+        "test_selector": "smoke",
+        "required_tests": ["smoke"],
+        "minimum_total": 1,
+        "from_state": "fail",
+    }
+    assert projection.aliases["sim_pass_sim_core"] == [sim_all.identity, sim_named.identity]
+
+
+def test_projection_preserves_cycle_count_parameters() -> None:
+    _spec, projection, rows = _complete_projection()
+    cycle = rows[("CYCLE_COUNT", "acme:ip:core:1.0#sim_core", "cycle_count_max", "smoke")]
+    assert projection.params[cycle.identity] == {
+        "target": cycle.target,
+        TARGET_IDENTITY_PARAM: cycle.target,
+        "test": "smoke",
+        "test_selector": "smoke",
+        "required_tests": ["smoke"],
+        "minimum_total": 1,
+        "cycle_count_max": 100,
+    }
+    relative_cycle = rows[
+        (
+            "CYCLE_COUNT",
+            "acme:ip:core:1.0#sim_relative",
+            "cycle_count_increase_at_most",
+            "smoke",
+        )
+    ]
+    assert projection.params[relative_cycle.identity][BASELINE_TARGET_PARAM] == (
+        "acme:ip:core:1.0#sim_base"
+    )
+
+
+def test_projection_preserves_implementation_parameters() -> None:
+    _spec, projection, rows = _complete_projection()
+    for capability, target in (("SYNTH", "synth_run"), ("FPGA", "fpga_run")):
+        row = rows[(capability, f"acme:ip:core:1.0#{target}", "run", None)]
+        assert projection.params[row.identity] == {
+            "target": row.target,
+            TARGET_IDENTITY_PARAM: row.target,
+        }
+    for capability, target, parameter, threshold in (
+        ("SYNTH", "synth_metrics", "area_um2_max", 10000),
+        ("SYNTH", "synth_metrics", "fmax_mhz_min", 400),
+        ("FPGA", "fpga_metrics", "lut_count_max", 1000),
+        ("FPGA", "fpga_metrics", "fmax_mhz_min", 200),
+    ):
+        row = rows[(capability, f"acme:ip:core:1.0#{target}", parameter, None)]
+        assert projection.params[row.identity][parameter] == threshold
+    relative_synth = rows[
+        (
+            "SYNTH",
+            "acme:ip:core:1.0#synth_relative",
+            "area_increase_at_most",
+            None,
+        )
+    ]
+    assert projection.params[relative_synth.identity][BASELINE_TARGET_PARAM] == (
+        "acme:ip:core:1.0#synth_base"
+    )
+
+
+def test_projection_preserves_specialist_parameters() -> None:
+    spec, projection, _rows = _complete_projection()
+    mutation = next(row for row in spec.criteria if row.capability == "MUTATION")
+    assert projection.params[mutation.identity] == {
+        "target": mutation.target,
+        TARGET_IDENTITY_PARAM: mutation.target,
+        "scope": ["rtl/core.sv"],
+        "min_detected": 8,
+        "total": 10,
+    }
+    coverage = [row for row in spec.criteria if row.capability == "COVERAGE"]
+    assert [projection.params[row.identity]["metrics"] for row in coverage] == [
+        {"line": {"min_pct": 90}},
+        {"branch": {"min_pct": 80}},
+    ]
+    assert all(projection.params[row.identity]["tests"] == ["smoke"] for row in coverage)
+    assert projection.aliases["coverage_sim_core"] == [row.identity for row in coverage]
+
+
+def test_projection_preserves_project_parameters() -> None:
+    spec, projection, _rows = _complete_projection()
+    standalone = next(row for row in spec.criteria if row.capability == "ELAB_STANDALONE")
+    assert projection.params[standalone.identity]["targets"] == [
+        "acme:ip:core:1.0#sim_core",
+        "acme:ip:core:1.0#sim_relative",
+    ]
+    assert standalone.identity not in {
+        identity for aliases in projection.aliases.values() for identity in aliases
+    }
+    assert set(projection.categories.values()) == {"rtl", "tb"}
+    assert projection.params["implementation_done"] == {}
+    assert "implementation_done" not in {
+        identity for aliases in projection.aliases.values() for identity in aliases
+    }

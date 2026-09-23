@@ -16,9 +16,9 @@ from typing import Any
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
-from booley.criteria.ticket_projection import project_ticket_criteria
 from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
+from booley.ticket_board.criteria_projection import project_ticket_criteria
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import (

@@ -16,11 +16,13 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
 from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
 from booley.harness.setup.intake import _zero_mandatory_amendment_basis
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
+from booley.ticket_board.paths import existing_runtime_file
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     TicketBaseline,
@@ -52,6 +54,113 @@ _TEST_BASIS = TicketBaseline(
         ),
     )
 )
+
+
+def _converted_spec(criteria: str, *, optional: bool = False):
+    from booley.ticket_board.ticket_document import (
+        TicketAuthoringView,
+        TicketConversionContext,
+        convert_ticket_document,
+    )
+
+    sections = (
+        f"CRITERIA_MANDATORY: {{}}\nCRITERIA_OPTIONAL:\n{criteria}"
+        if optional
+        else f"CRITERIA_MANDATORY:\n{criteria}"
+    )
+    text = (
+        "---\nsummary: Projection integration\ntype: verification\nbranch: main\n"
+        f"scope: [rtl/core.sv]\non_success: []\n{sections}"
+        "---\n\n## Description\n\nProjection integration.\n"
+    )
+    view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ("smoke",))
+    converted = convert_ticket_document(
+        text, TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert converted.document is not None, converted.diagnostics
+    return converted.document.spec
+
+
+def test_real_projection_initializes_state_and_detects_new_mandatory_criterion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import intake
+
+    spec = _converted_spec("  LINT: {lint_core: clean}\n  REVIEW: {rtl: {bugs: clean}}\n")
+    ctx = TicketContext(
+        slug="projection-integration",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="verification",
+        branch="main",
+        summary="Projection integration",
+        scope_raw=["rtl/core.sv"],
+        ticket_spec=spec,
+        project_root=tmp_path,
+    )
+    monkeypatch.setattr(
+        "booley.fusesoc.fusesoc_registry.classified_sources",
+        lambda _root: SimpleNamespace(rtl_source_files=("rtl/core.sv",), tb_files=()),
+    )
+    monkeypatch.setattr(intake, "_seed_run_report_criterion", lambda _expanded: None)
+
+    intake._init_criteria_state(ctx)
+
+    state = DevelopmentState.load(
+        existing_runtime_file(ctx._tickets_dir / "logs", ctx.slug, "booley_state.json")
+    )
+    lint = next(name for name in state.criteria if name.startswith("lint_clean_"))
+    review = next(name for name in state.criteria if name.startswith("review_rtl_"))
+    assert state.criteria[lint].mandatory is True
+    assert state.criteria[lint].params["target"] == "lint_core"
+    assert state.criteria[review].params["scope"] == ["rtl/core.sv"]
+    assert state.category_map[review] == "rtl"
+    assert state.flow_key_aliases["lint_clean_lint_core"] == [lint]
+    assert intake._criteria_state_needs_reinit(ctx) is False
+
+    ctx.ticket_spec = _converted_spec(
+        "  LINT: {lint_core: clean}\n"
+        "  SIM: {sim_core: {smoke: pass}}\n"
+        "  REVIEW: {rtl: {bugs: clean}}\n"
+    )
+    assert intake._criteria_state_needs_reinit(ctx) is True
+
+
+def test_real_optional_projection_requires_current_zero_mandatory_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import intake
+
+    basis = TicketBaseline(
+        _TEST_BASIS.participants,
+        machine={"amendment": {"optional_conversions": ["review_rtl_bugs_clean"]}},
+    )
+    ctx = TicketContext(
+        slug="optional-projection",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="verification",
+        branch="main",
+        summary="Optional projection",
+        scope_raw=["rtl/core.sv"],
+        ticket_spec=_converted_spec("  REVIEW: {rtl: {bugs: clean}}\n", optional=True),
+        project_root=tmp_path,
+        ticket_baseline=basis,
+    )
+    monkeypatch.setattr(
+        "booley.fusesoc.fusesoc_registry.classified_sources",
+        lambda _root: SimpleNamespace(rtl_source_files=("rtl/core.sv",), tb_files=()),
+    )
+    monkeypatch.setattr(intake, "_seed_run_report_criterion", lambda _expanded: None)
+
+    intake._init_criteria_state(ctx)
+
+    state_path = existing_runtime_file(ctx._tickets_dir / "logs", ctx.slug, "booley_state.json")
+    state = DevelopmentState.load(state_path)
+    assert state.authorized_zero_mandatory_basis_id == basis.basis_id
+    assert intake._criteria_state_needs_reinit(ctx) is False
+    for invalid in ("", "stale-basis"):
+        state.authorized_zero_mandatory_basis_id = invalid
+        state.save()
+        assert intake._criteria_state_needs_reinit(ctx) is True
 
 
 def test_zero_mandatory_state_requires_committed_human_conversion(

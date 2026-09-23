@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from booley.ticket_board.ticket_baseline import (
     ticket_baseline_from_machine,
     worktree_for_ref,
 )
+from booley.ticket_board.ticket_document import TicketAuthoringView, TicketConversionContext
 from booley.ticket_board.validation import validate_ticket_spec
 
 from .test_ticket_baseline import _blocked_ticket, _create_v2_ticket, _git, _paired_basis_project
@@ -96,6 +98,76 @@ def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -
     assert (
         "## Amendment" in human_log_file(tio.logs_dir, "blocked-again", "blocked.md").read_text()
     )
+
+
+def _numeric_amendment_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root, blocked, tio = _blocked_ticket(tmp_path)
+    basis = tio.load_basis("blocked-again")
+    fields, body = _v2_fields(blocked.read_text(encoding="utf-8"))
+    fields["CRITERIA_MANDATORY"] = {
+        "SYNTH": {"synth_core": {"area_um2_max": 100, "fmax_mhz_min": 500}}
+    }
+    blocked.write_bytes(amendment._render_ticket(fields, body).encode("utf-8"))
+
+    @contextmanager
+    def conversion_context(_root: Path, _slug: str, mode: str):
+        view = TicketAuthoringView(
+            resolve_target=lambda selector, _flow: selector,
+            tests_for_target=lambda _target: (),
+        )
+        yield TicketConversionContext(mode, lambda _generated: view)
+
+    monkeypatch.setattr(amendment, "ticket_conversion_context", conversion_context)
+    monkeypatch.setattr(
+        amendment,
+        "load_ticket_baseline_from_document",
+        lambda _root, _slug, document: (
+            ticket_baseline_from_machine(document.generated["machine"])
+            if "amendment" in document.generated.get("machine", {})
+            else basis
+        ),
+    )
+    monkeypatch.setattr(amendment, "validate_ticket_spec", lambda *_args, **_kwargs: [])
+    document = amendment._convert_ticket(root, "blocked-again", blocked.read_text())
+    fields["machine"]["authored_sha256"] = document.spec.semantic_digest()
+    blocked.write_bytes(amendment._render_ticket(fields, body).encode("utf-8"))
+    document = amendment._convert_ticket(root, "blocked-again", blocked.read_text())
+    rows = {row.parameter: row for row in document.spec.criteria}
+    fmax = rows["fmax_mhz_min"]
+    area = rows["area_um2_max"]
+    state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
+    state.slug = "blocked-again"
+    state.init_criteria(
+        {fmax.identity: True, area.identity: True},
+        criterion_params={
+            fmax.identity: {"target": "synth_core", "fmax_mhz_min": 500},
+            area.identity: {"target": "synth_core", "area_um2_max": 100},
+        },
+    )
+    state.save()
+    return tio, fmax, area
+
+
+def test_numeric_amendment_rebuilds_only_the_relaxed_atomic_criterion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tio, fmax, area = _numeric_amendment_setup(tmp_path, monkeypatch)
+    request = {
+        "actor": "QA Human",
+        "reason": "Accept the measured clock",
+        "feedback": "Continue with the relaxed frequency threshold.",
+        "criteria": [{"criterion": fmax.identity, "thresholds": {"fmax_mhz_min": 430}}],
+    }
+
+    preview = preview_amendment(tio, "blocked-again", request)
+    result = apply_amendment(tio, "blocked-again", request, preview["digest"])
+
+    assert result["status"] == "queued"
+    rebuilt = DevelopmentState.load(
+        runtime_file(tio.logs_dir, "blocked-again", "booley_state.json")
+    )
+    assert rebuilt.criteria[fmax.identity].params["fmax_mhz_min"] == 430
+    assert rebuilt.criteria[area.identity].params["area_um2_max"] == 100
 
 
 def test_repeated_amendment_preserves_ticket_only_authority(tmp_path: Path) -> None:
