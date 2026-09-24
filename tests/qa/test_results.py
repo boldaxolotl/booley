@@ -26,44 +26,27 @@ def sample_result(run_id: str, completed_at: str, checks: dict[str, str]) -> dic
     }
 
 
+def compact_attempt(
+    result_id: str, check_id: str, status: str, attempt: int, corrects: str | None = None
+) -> dict:
+    """Build the fields consumed by compact result projection."""
+    return {
+        "check_result_id": result_id,
+        "check_id": check_id,
+        "status": status,
+        "corrects_result_id": corrects,
+        "attempt": attempt,
+    }
+
+
 def sealed_run(tmp_path: Path) -> RunRecords:
     """Build a minimal already-validated record object for reduction tests."""
     attempts = (
-        {
-            "check_result_id": "a",
-            "check_id": "first",
-            "status": "fail",
-            "corrects_result_id": None,
-            "attempt": 1,
-        },
-        {
-            "check_result_id": "b",
-            "check_id": "first",
-            "status": "pass",
-            "corrects_result_id": None,
-            "attempt": 2,
-        },
-        {
-            "check_result_id": "c",
-            "check_id": "second",
-            "status": "fail",
-            "corrects_result_id": None,
-            "attempt": 1,
-        },
-        {
-            "check_result_id": "d",
-            "check_id": "second",
-            "status": "pass",
-            "corrects_result_id": "c",
-            "attempt": 2,
-        },
-        {
-            "check_result_id": "e",
-            "check_id": "third",
-            "status": "blocked",
-            "corrects_result_id": None,
-            "attempt": 1,
-        },
+        compact_attempt("a", "first", "fail", 1),
+        compact_attempt("b", "first", "pass", 2),
+        compact_attempt("c", "second", "fail", 1),
+        compact_attempt("d", "second", "pass", 2, "c"),
+        compact_attempt("e", "third", "blocked", 1),
     )
     return RunRecords(
         tmp_path,

@@ -57,6 +57,37 @@ def test_borrowed_preservation_pass_is_rejected_before_append(tmp_path):
     assert_log_unchanged(log, before)
 
 
+def test_valid_initial_borrowed_preservation_pass_appends_and_seals(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [], seal=False)
+    run = triage.read_json(root / "run.json")
+    run["selected_check_ids"] = ["cleanup.preserve-borrowed"]
+    write_json(root / "run.json", run)
+
+    record_check.append_check_result(
+        root, suite, append_source(tmp_path, borrowed_pass("preserved"))
+    )
+
+    sealed = triage.seal_run(root, suite)
+    assert sealed.results[-1]["check_result_id"] == "preserved"
+
+
+def test_unselected_check_result_is_rejected_before_append(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [], seal=False)
+    run = triage.read_json(root / "run.json")
+    run["selected_check_ids"] = ["check"]
+    write_json(root / "run.json", run)
+    log = root / "check-results.jsonl"
+    before = log.read_bytes()
+    result = check_result("run-1", "unselected", "one", "pass")
+
+    with pytest.raises(triage.TriageError, match="unselected Checks"):
+        record_check.append_check_result(root, suite, append_source(tmp_path, result))
+
+    assert_log_unchanged(log, before)
+
+
 def test_nested_borrowed_preservation_claim_is_rejected_before_append(tmp_path):
     suite = write_suite(tmp_path, [("required", True)])
     root = write_run(tmp_path, "run-1", "required", [], seal=False)

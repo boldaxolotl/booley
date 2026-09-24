@@ -16,9 +16,15 @@ def selected_run(tmp_path: Path) -> tuple[Path, Path]:
     scenario_path = suite / "scenarios/sample/scenario.yaml"
     scenario = yaml.safe_load(scenario_path.read_text())
     scenario["steps"] = [
-        {"id": "setup", "requires": [], "checks": [{"id": "setup-check"}]},
+        {
+            "id": "setup",
+            "action": "Prepare the environment.",
+            "requires": [],
+            "checks": [{"id": "setup-check"}],
+        },
         {
             "id": "mixed",
+            "action": "Run the selected behavior.\nKeep its evidence.",
             "requires": ["setup"],
             "checks": [{"id": "wanted"}, {"id": "unselected"}],
         },
@@ -38,7 +44,12 @@ def test_projection_for_run_renders_deterministically_without_unselected_checks(
 
     rendered = selected_execution.render_projection(projection)
     assert rendered == (
-        "- setup [supporting Step]\n- mixed [selected Step]\n  - capture Check: wanted\n"
+        "- setup [supporting Step]\n"
+        "  - action: Prepare the environment.\n"
+        "- mixed [selected Step]\n"
+        "  - action: Run the selected behavior.\n"
+        "    Keep its evidence.\n"
+        "  - capture Check: wanted\n"
     )
     assert "unselected" not in rendered
 

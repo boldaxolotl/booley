@@ -17,14 +17,21 @@ def binding(selected):
 def test_selected_execution_suppresses_unselected_branch_and_mixed_checks():
     scenario = {
         "steps": [
-            {"id": "setup", "requires": [], "checks": [{"id": "setup-check"}]},
+            {
+                "id": "setup",
+                "action": "Prepare the selected execution.",
+                "requires": [],
+                "checks": [{"id": "setup-check"}],
+            },
             {
                 "id": "selected",
+                "action": "Run the selected behavior.",
                 "requires": ["setup"],
                 "checks": [{"id": "wanted"}, {"id": "paid-license"}],
             },
             {
                 "id": "unselected-branch",
+                "action": "Use the paid license.",
                 "requires": [],
                 "checks": [{"id": "paid-only"}],
             },
@@ -35,8 +42,18 @@ def test_selected_execution_suppresses_unselected_branch_and_mixed_checks():
     projection = run_suite.selected_execution(run, scenario, binding(["wanted"]), "run-1")
 
     assert projection == (
-        {"step_id": "setup", "supporting": True, "selected_check_ids": ()},
-        {"step_id": "selected", "supporting": False, "selected_check_ids": ("wanted",)},
+        {
+            "step_id": "setup",
+            "action": "Prepare the selected execution.",
+            "supporting": True,
+            "selected_check_ids": (),
+        },
+        {
+            "step_id": "selected",
+            "action": "Run the selected behavior.",
+            "supporting": False,
+            "selected_check_ids": ("wanted",),
+        },
     )
 
 
@@ -59,5 +76,7 @@ def test_picorv32_claude_cli_projection_excludes_paid_license_capture_points():
     )
 
     projected_checks = {check_id for step in projection for check_id in step["selected_check_ids"]}
+    projected_steps = {step["step_id"] for step in projection}
     assert projected_checks == set(selected)
     assert all("license" not in check_id for check_id in projected_checks)
+    assert all("license" not in step_id for step_id in projected_steps)

@@ -351,8 +351,8 @@ def test_corrected_failure_and_observation_remain_candidates(tmp_path):
     assert any(item["kind"] == "observation-chain" for item in candidates)
 
 
-def test_branched_correction_preserves_every_surviving_head_in_candidate_and_summary(tmp_path):
-    suite = write_suite(tmp_path, [("required", True)])
+def branched_correction_results():
+    """Build a correction graph with two surviving heads."""
     results = [
         check_result("run-1", "root", "check", "fail", observed="historical failure"),
         check_result(
@@ -377,15 +377,12 @@ def test_branched_correction_preserves_every_surviving_head_in_candidate_and_sum
     results[1]["review_reasons"] = ["correction-chain"]
     results[1]["recovery_refs"] = ["evidence/recovery.txt"]
     results[2]["review_reasons"].append("correction-chain")
-    run_root = write_run(tmp_path, "run-1", "required", results, seal=False)
-    (run_root / "evidence/recovery.txt").write_text("recovery evidence\n")
-    triage.seal_run(run_root, suite)
+    return results
 
-    projection = admit(init_triage(tmp_path, suite), run_root)
 
-    candidate = next(iter(projection["candidates"].values()))
-    assert candidate["surviving_head_ids"] == ["pass-head", "blocked-head"]
-    assert candidate["surviving_heads"] == [
+def expected_surviving_heads():
+    """Describe the reviewable projection of both correction heads."""
+    return [
         {
             "check_result_id": "pass-head",
             "status": "pass",
@@ -405,6 +402,20 @@ def test_branched_correction_preserves_every_surviving_head_in_candidate_and_sum
             "evidence_refs": ["evidence/log.txt"],
         },
     ]
+
+
+def test_branched_correction_preserves_every_surviving_head_in_candidate_and_summary(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    results = branched_correction_results()
+    run_root = write_run(tmp_path, "run-1", "required", results, seal=False)
+    (run_root / "evidence/recovery.txt").write_text("recovery evidence\n")
+    triage.seal_run(run_root, suite)
+
+    projection = admit(init_triage(tmp_path, suite), run_root)
+
+    candidate = next(iter(projection["candidates"].values()))
+    assert candidate["surviving_head_ids"] == ["pass-head", "blocked-head"]
+    assert candidate["surviving_heads"] == expected_surviving_heads()
     assert candidate["effective_status"] == "pass"
     assert "clerical correction" in candidate["text"]
     assert "independent blocked assessment" in candidate["text"]

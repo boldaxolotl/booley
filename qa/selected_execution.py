@@ -35,11 +35,14 @@ def projection_for_run(run_root: Path, suite_root: Path) -> tuple[dict[str, Any]
 
 
 def render_projection(projection: tuple[dict[str, Any], ...]) -> str:
-    """Render deterministic operator navigation without exposing unselected Checks."""
+    """Render deterministic Scenario Operator navigation without unselected Checks."""
     lines = []
     for item in projection:
         role = "supporting Step" if item["supporting"] else "selected Step"
         lines.append(f"- {item['step_id']} [{role}]")
+        action_lines = str(item["action"]).splitlines()
+        lines.append(f"  - action: {action_lines[0]}")
+        lines.extend(f"    {line}" for line in action_lines[1:])
         lines.extend(f"  - capture Check: {check}" for check in item["selected_check_ids"])
     return "\n".join(lines) + "\n"
 

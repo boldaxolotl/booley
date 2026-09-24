@@ -44,6 +44,7 @@ def selected_execution(
     return tuple(
         {
             "step_id": step["id"],
+            "action": step["action"],
             "supporting": step["id"] not in selected_steps,
             "selected_check_ids": tuple(
                 check["id"] for check in step.get("checks", []) if check["id"] in selected

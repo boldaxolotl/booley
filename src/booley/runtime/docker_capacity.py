@@ -124,8 +124,8 @@ def _failure_message(
         f"({_gib(headroom)} {cache_state} headroom + {_gib(SAFETY_RESERVE)} safety "
         f"reserve).{usage} Free unused build cache with `docker builder prune`; Booley "
         "will not delete images, volumes, Project artifacts, or user data. Retry after "
-        f"cleanup, or bypass once with {SKIP_PREFLIGHT_ENV}=1 only when Docker's "
-        "reported root is not the filesystem that actually stores its data."
+        f"cleanup, or bypass once with {SKIP_PREFLIGHT_ENV}=1 when Docker storage is "
+        "reported elsewhere."
     )
 
 
