@@ -339,7 +339,7 @@ configured_scenarios:
   - >-
     Pre-approved Project Setup policy: enable sim, lint, synth and fpga;
     merge-refresh Project guidance; keep all compatible Specialists enabled;
-    skip native parity; and use file-only feedback. Preserve the hidden
+    and skip native parity. Preserve the hidden
     footprint, stealth-authored cores, native-core isolation and RISC-V
     sandbox; use this Configured Scenario's declared provider/auth policy. Do
     not repeat the setup interview. After initialization, create the paired

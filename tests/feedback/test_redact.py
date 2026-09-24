@@ -1,7 +1,7 @@
 """Tests for redaction.
 
-This is the module whose failures are irreversible: it sits on the path to a
-public GitHub issue. So the tests come in two halves — *does it scrub what it
+This is the module whose failures can become irreversible when a user shares an
+exported file. So the tests come in two halves — *does it scrub what it
 promises* (a miss is a leak), and *does it leave everything else alone* (an
 over-eager denylist shreds the report into uselessness, and people then turn
 redaction off entirely).

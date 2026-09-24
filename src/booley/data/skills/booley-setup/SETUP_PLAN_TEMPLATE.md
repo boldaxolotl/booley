@@ -53,12 +53,11 @@
 | 18 | Parity check (optional): native EDA-tool match per phase → tier, else `none` | | | | | |
 | 19 | Agent backend: preserve the `[agent] provider` + `auth` selected by `booley init`; ask only for a legacy missing field | | | | | |
 | 20 | `[stealth]`: history scrub plus hidden-core projection; required by row 16 when hidden cores are authored | | | | | |
-| 21 | `[feedback] mode`: `ask` (default, public issue) / `email` (private, to the maintainer) / `file-only` / `off` — always ask | | | | | |
-| 22 | Setup artifact retention: `minimal` (recommended) or `diagnostic` | | | | | |
-| 23 | Flow-cache disposition: `preserve` (recommended) or `evict-setup-touched` | | | | | |
-| 24 | Tech Cell Replacement: one Project-wide mapping shared by enabled synthesis Targets; `evidence-forced: not applicable` when synthesis is disabled | | | | | |
+| 21 | Setup artifact retention: `minimal` (recommended) or `diagnostic` | | | | | |
+| 22 | Flow-cache disposition: `preserve` (recommended) or `evict-setup-touched` | | | | | |
+| 23 | Tech Cell Replacement: one Project-wide mapping shared by enabled synthesis Targets; `evidence-forced: not applicable` when synthesis is disabled | | | | | |
 
-<!-- Repo-specific rows: continue numbering from 25 (git submodules, generator
+<!-- Repo-specific rows: continue numbering from 24 (git submodules, generator
      steps, env-var-parameterized TBs, scope exclusions such as a VHDL twin, …).
      The standard list is the floor, not the ceiling.
      Resolution column: `evidence-forced` (the repo determines it — no star, no
@@ -66,12 +65,12 @@
      `user-confirmed`, `inferred`, or `review` (user judgment, or a
      low-confidence inference — starred for the user to audit).
      Confidence column: high/medium/low for `inferred` rows; `—` otherwise.
-     Rows 16/17/19/20/21 are never evidence-forced. A row covering several
+     Rows 16/17/19/20 are never evidence-forced. A row covering several
      independent items (row 1's four flows) resolves per item or splits. -->
 
 ### Tech Cell Replacement
 
-<!-- Synthesis-disabled Projects resolve row 24 as evidence-forced: not
+<!-- Synthesis-disabled Projects resolve row 23 as evidence-forced: not
      applicable and omit this subsection. Otherwise, a cell-name list alone is
      not a decision or validation record. Keep one authoritative mapping here;
      Targets reference its sources and record only their covered subset. -->

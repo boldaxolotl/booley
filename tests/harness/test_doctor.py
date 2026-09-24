@@ -1506,12 +1506,10 @@ def test_validate_known_tables_warns_on_unknown_and_retired():
     assert any("[toolz]" in item.message and "ignored" in item.message for item in audit.findings)
 
 
-@pytest.mark.parametrize("mode", ["ask", "email", "file-only", "off"])
-def test_validate_feedback_table_accepts_live_settings(mode):
+def test_validate_feedback_table_accepts_live_settings():
     audit = project_schema.audit_feedback_table(
         {
             "feedback": {
-                "mode": mode,
                 "redact_extra": ["codename"],
                 "redact_identifiers": False,
             }
@@ -1527,8 +1525,6 @@ def test_validate_feedback_table_accepts_live_settings(mode):
 @pytest.mark.parametrize(
     "feedback",
     [
-        {"mode": "sometimes"},
-        {"mode": []},
         {"redact_extra": "codename"},
         {"redact_identifiers": "false"},
     ],
@@ -1538,6 +1534,12 @@ def test_validate_feedback_table_rejects_invalid_settings(feedback):
 
     assert not audit.is_valid
     assert audit.findings
+
+
+def test_validate_feedback_table_ignores_removed_mode_setting():
+    audit = project_schema.audit_feedback_table({"feedback": {"mode": ["anything"]}})
+
+    assert audit.is_valid
 
 
 @pytest.mark.parametrize(

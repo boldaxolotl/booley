@@ -100,7 +100,7 @@ def _project_warning(message: str) -> ConfigFinding:
 
 
 def audit_feedback_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Audit the live feedback disclosure and redaction settings."""
+    """Audit the live feedback redaction settings."""
     raw_feedback = data.get("feedback")
     if raw_feedback is None:
         return ConfigTableAudit()
@@ -113,12 +113,11 @@ def audit_feedback_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     findings = _feedback_field_findings(feedback)
     if findings:
         return ConfigTableAudit(tuple(findings))
-    mode = as_str(feedback.get("mode"), "ask")
     return ConfigTableAudit(
         (
             ConfigFinding(
                 ConfigFindingSeverity.PASS,
-                f"booley.toml [feedback] settings valid (mode={mode})",
+                "booley.toml [feedback] redaction settings valid",
             ),
         )
     )
@@ -126,15 +125,6 @@ def audit_feedback_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 def _feedback_field_findings(feedback: Mapping[str, Any]) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
-    raw_mode = feedback.get("mode", "ask")
-    mode = as_str(raw_mode)
-    if mode not in {"ask", "email", "file-only", "off"}:
-        findings.append(
-            fail_finding(
-                f"booley.toml [feedback].mode is invalid: {raw_mode!r}",
-                "use one of: ask, email, file-only, off",
-            )
-        )
     extra = feedback.get("redact_extra")
     if extra is not None and not is_str_list(extra):
         findings.append(

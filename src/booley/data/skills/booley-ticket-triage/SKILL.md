@@ -51,8 +51,8 @@ For each step, read ONLY that step's file before executing it. Do NOT preload al
   contradiction, invoke `/booley-feedback` by default after handling the
   ticket's immediate unblock/review decision. Do not merely bury it in the
   incident log or ask whether the user knows how to report it. The feedback
-  skill verifies and captures the finding locally, then owns the separate
-  preview and explicit approval gate for any external submission. Project RTL,
+  skill verifies and captures the finding locally, then prepares an inspected
+  redacted export for the user to share manually. Project RTL,
   ticket, configuration, and environment defects do not take this route.
 - Show diffs for human-authored source, tests, configuration, and documentation,
   including changes inside submodules. Never show or open diffs for compiled

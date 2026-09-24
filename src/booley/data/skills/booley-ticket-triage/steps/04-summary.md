@@ -38,5 +38,4 @@ Say "none" when there were none.
 
 Also list confirmed Booley-side bugs found during triage and whether each was
 captured through `/booley-feedback`. A ticket-local incident without that
-handoff is unfinished triage unless feedback mode is off or the feedback skill
-explicitly withheld it.
+handoff is unfinished triage unless the feedback skill explicitly withheld it.
