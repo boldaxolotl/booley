@@ -1023,7 +1023,7 @@ class SimulationExecution:
             test_names=attempt.test_names,
             build_root=attempt.prepared.build_root,
             eda_tool=attempt.prepared.eda_tool,
-            timeout_s=attempt.wrapper_timeout_s,
+            timeout_s=DEFAULT_TIMEOUT_S,
             simulator_environment=dict(attempt.simulator_environment),
             commands=attempt.pre_sim_commands,
             run_cwd=attempt.work.run_cwd,

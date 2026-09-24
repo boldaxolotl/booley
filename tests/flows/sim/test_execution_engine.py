@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.core.build_paths import work_root_for
-from booley.flows.base import SubprocessResult
+from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
@@ -1434,6 +1434,25 @@ def test_missing_new_image_is_build_infrastructure_and_never_launches(
     assert outcome.infrastructure_failure is not None
     assert outcome.infrastructure_failure.kind == "build"
     assert launched is False
+
+
+def test_pre_sim_commands_have_an_independent_timeout(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    attempt = SimpleNamespace(
+        test_names=("smoke",),
+        prepared=prepared,
+        wrapper_timeout_s=1,
+        simulator_environment=(),
+        pre_sim_commands=("true",),
+        work=SimpleNamespace(run_cwd="run"),
+    )
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(timeout_ms=1000))
+
+    with patch("booley.flows.sim.execution.engine.run_pre_sim_commands") as run_pre_sim:
+        execution._run_pre_sim(handle, cast(Any, attempt))
+
+    assert run_pre_sim.call_args.kwargs["timeout_s"] == DEFAULT_TIMEOUT_S
 
 
 def test_each_pre_sim_hook_runs_in_its_launched_generation(

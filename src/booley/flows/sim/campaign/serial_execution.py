@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
+from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim.backends.cocotb_results import (
     COCOTB_RESULTS_PREFIX,
     parse_results_line,
@@ -717,7 +718,7 @@ def _run_hook(
     handle: object,
     build_root: Path,
     names: tuple[str, ...],
-    options: SimulationOptions,
+    _options: SimulationOptions,
     run_cwd: Path | None,
     expose_build_root: bool,
 ):
@@ -726,7 +727,7 @@ def _run_hook(
         test_names=names,
         build_root=build_root,
         eda_tool=cast(str, getattr(handle, "eda_tool", "")),
-        timeout_s=max(1, (options.timeout_ms or 600_000) // 1000),
+        timeout_s=DEFAULT_TIMEOUT_S,
         simulator_environment=simulation_target_environment(handle),  # type: ignore[arg-type]
         run_cwd=str(run_cwd) if run_cwd is not None else None,
         working_directory=run_cwd,

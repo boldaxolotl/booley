@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign import serial_execution
 from booley.flows.sim.campaign.codec import (
@@ -27,7 +28,11 @@ from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
+from booley.flows.sim.execution.contract import (
+    SimulationOptions,
+    SimulationTargetOutcome,
+    SimulationTestOutcome,
+)
 from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
 
 
@@ -90,6 +95,29 @@ def _handle(project: Path) -> SimpleNamespace:
         selector="sim",
         eda_tool="icarus",
     )
+
+
+def test_campaign_pre_sim_commands_have_an_independent_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def capture(*_args: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(serial_execution, "run_pre_sim_commands", capture)
+    monkeypatch.setattr(serial_execution, "simulation_target_environment", lambda _handle: {})
+
+    serial_execution._run_hook(
+        SimpleNamespace(eda_tool="icarus"),
+        tmp_path,
+        ("smoke",),
+        SimulationOptions(timeout_ms=1000),
+        None,
+        True,
+    )
+
+    assert captured["timeout_s"] == DEFAULT_TIMEOUT_S
 
 
 class _Group:
