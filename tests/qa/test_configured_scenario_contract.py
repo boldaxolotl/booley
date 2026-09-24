@@ -93,6 +93,10 @@ def test_picorv32_ticket_destinations_include_applicable_project_setup():
     assert "flows.fpga.enabled = true" in expected
     assert "configurations that exclude FPGA preserve their declared opt-out" in expected
     assert "Both repositories are clean" in expected
+    assert "publish the intended command and pre-state checkpoint" in setup["action"]
+    assert "publish the complete cleanup-ledger candidate" in setup["action"]
+    assert "then execute" in setup["action"]
+    assert "exact acquired identities" in setup["action"]
 
     for step_id in (
         "create.dhrystone-self-checking-cycle-contract.payload",

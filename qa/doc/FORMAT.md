@@ -54,7 +54,12 @@ and evidence. Observations always carry the `observation` review reason and may 
 carry `correction-chain`.
 
 Append corrections and preserve their targets. Before sealing, a Check Result or
-Observation correction names an earlier record in the same log. After sealing, only a
+Observation correction names an earlier record in the same log. A Check Result may
+correct any earlier compatible row; branches, corrections of superseded ancestors,
+and independent attempts remain valid. The effective projection retains every
+surviving head rather than selecting the last append. Structural and immutable
+evidence validation applies to all history, while correctable semantic claims apply
+to every surviving head. After sealing, only a
 Human Maintainer may record a clerical interpretation correction during triage, using
 evidence already in the sealed evidence manifest. New behavioral evidence requires a
 new Scenario Run.

@@ -1,7 +1,16 @@
 # Execute a Scenario Run
 
-Execute the selected Checks and supporting Steps in Scenario order. The Scenario's
-`prepare` phase runs here.
+Before each Step, render the frozen run's selected-execution projection and navigate
+that projection rather than the raw Scenario order:
+
+```sh
+python3 qa/selected_execution.py <run-root> --suite-root <frozen-suite-root>
+```
+
+Execute only the selected Check capture points and their displayed supporting Steps,
+in projection order. A supporting Step remains required even when its own Checks are
+unselected; do not capture those unselected Checks. The Scenario's `prepare` phase
+runs here.
 
 When the selected production Scenario's shared pre-run requirements permit it,
 Project Initialization, including `booley init`, is ordinary authorized Scenario
@@ -17,6 +26,13 @@ whether they are Findings.
 Record active sub-agent assignments in `operator-state.json` and reconcile them before
 finishing execution. Sub-agents cannot change authority or acceptance requirements.
 Literal commands or prose are mandatory only when their form is under test.
+
+Before every mutating command, apply the mutation gate in this order: atomically
+publish the intended command and relevant pre-state in `operator-state.json`; publish
+the complete cleanup-ledger candidate through `qa/record_cleanup.py`, including a
+planned identity for every resource that may be acquired; only then execute the
+command. Immediately after acquisition, replace each planned identity with the exact
+identity and publish the post-state before any dependent command.
 
 Preserve evidence identity, freshness, underlying grades, and artifact meaning. Reuse
 an artifact only when it independently supports every linked claim; agent prose cannot
