@@ -40,6 +40,13 @@ from .facts import (
     decode_acceptance_facts,
     encode_acceptance_facts,
 )
+from .inspection import (
+    CampaignWorkItemEvidence,
+    RetainedCampaignStatus,
+    SimulationCampaignWorkItemError,
+    authenticate_work_item,
+    inspect_retained_campaign,
+)
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
@@ -63,6 +70,7 @@ __all__ = [
     "CampaignPreviewRequest",
     "CampaignRecoveryStatus",
     "CampaignRunRequest",
+    "CampaignWorkItemEvidence",
     "ExecutableSnapshot",
     "NewCampaignPreview",
     "NewCampaignPreviewRequest",
@@ -70,16 +78,19 @@ __all__ = [
     "ResumeCampaignPreview",
     "ResumeCampaignPreviewRequest",
     "ResumeCampaignRunRequest",
+    "RetainedCampaignStatus",
     "SimulationAttempt",
     "SimulationCampaign",
     "SimulationCampaignCancellationError",
     "SimulationCampaignIntegrityError",
     "SimulationCampaignManifest",
     "SimulationCampaignPlan",
+    "SimulationCampaignWorkItemError",
     "SimulationResult",
     "SimulatorBundle",
     "ValidatedResumeManifest",
     "acceptance_facts_sha256",
+    "authenticate_work_item",
     "create_simulation_campaign_plan",
     "decode_acceptance_facts",
     "decode_bundle_build_attempt",
@@ -98,5 +109,6 @@ __all__ = [
     "encode_simulation_campaign_manifest",
     "encode_simulation_result",
     "encode_simulator_bundle",
+    "inspect_retained_campaign",
     "validate_resume_manifest",
 ]

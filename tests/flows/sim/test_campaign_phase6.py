@@ -22,6 +22,11 @@ except ImportError:  # pragma: no cover - Windows compatibility
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.acceptance import record_campaign_acceptance
+from booley.flows.sim.campaign import (
+    SimulationCampaignWorkItemError,
+    authenticate_work_item,
+    inspect_retained_campaign,
+)
 from booley.flows.sim.campaign.codec import (
     RECORD_MAX_BYTES,
     SimulationCampaignIntegrityError,
@@ -272,6 +277,135 @@ def test_terminal_authority_defect_matrix_fails_closed(tmp_path: Path, defect: s
 
     with pytest.raises(SimulationCampaignIntegrityError):
         completed.store.scan()
+
+
+def test_public_campaign_inspection_returns_typed_evidence_without_writes(
+    tmp_path: Path,
+) -> None:
+    completed = _completed(tmp_path)
+    completed.store.regenerate_summary()
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in completed.store.root.rglob("*")
+        if path.is_file()
+    }
+
+    evidence = authenticate_work_item(completed.store.manifest_path, completed.item_id)
+    status = inspect_retained_campaign(completed.store.manifest_path)
+
+    assert evidence.manifest_path == completed.store.manifest_path
+    assert evidence.manifest_sha256 == completed.store.manifest_sha256()
+    assert evidence.work_item_id == completed.item_id
+    assert evidence.work_item["work_item_id"] == completed.item_id
+    assert evidence.result.document["work_item_id"] == completed.item_id
+    assert status.manifest_path == completed.store.manifest_path
+    assert status.summary_path == completed.store.summary_path
+    assert status.completed == (completed.item_id,)
+    assert status.pending == status.interrupted == ()
+    assert status.summary_complete
+    assert status.summary_completed_matches
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before} == before
+
+
+def test_public_work_item_authentication_rejects_unknown_and_unfinished_items(
+    tmp_path: Path,
+) -> None:
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    item = cast(tuple[Mapping[str, object], ...], store.load_manifest().document["work_items"])[0]
+    work_item_id = cast(str, item["work_item_id"])
+
+    with pytest.raises(SimulationCampaignWorkItemError, match="no exact terminal"):
+        authenticate_work_item(store.manifest_path, "item:9999:0000000000000000")
+    with pytest.raises(SimulationCampaignWorkItemError, match="no exact terminal"):
+        authenticate_work_item(store.manifest_path, work_item_id)
+
+
+def test_public_campaign_inspection_distinguishes_recovery_and_summary_status(
+    tmp_path: Path,
+) -> None:
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    store.regenerate_summary()
+    pending = inspect_retained_campaign(store.manifest_path)
+    assert pending.pending and not pending.interrupted
+    assert not pending.summary_complete and pending.summary_completed_matches
+
+    work_item_id = pending.pending[0]
+    store.allocate_attempt_directory(work_item_id, str(uuid.uuid4()))
+    store.regenerate_summary()
+    interrupted = inspect_retained_campaign(store.manifest_path)
+    assert interrupted.interrupted == (work_item_id,)
+    assert not interrupted.pending
+
+
+def test_public_campaign_inspection_rejects_malformed_summary_but_reports_mismatch(
+    tmp_path: Path,
+) -> None:
+    completed = _completed(tmp_path)
+    completed.store.regenerate_summary()
+    summary = json.loads(completed.store.summary_path.read_bytes())
+    summary["complete"] = False
+    completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
+
+    status = inspect_retained_campaign(completed.store.manifest_path)
+    assert not status.summary_complete
+    assert status.summary_completed_matches
+
+    summary["complete"] = True
+    summary["completed"] = []
+    completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
+    status = inspect_retained_campaign(completed.store.manifest_path)
+    assert status.summary_complete
+    assert not status.summary_completed_matches
+
+    del summary["complete"]
+    completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
+    with pytest.raises(SimulationCampaignIntegrityError, match="retention fields"):
+        inspect_retained_campaign(completed.store.manifest_path)
+
+
+@pytest.mark.parametrize("defect", ["symlink", "hardlink", "oversize"])
+def test_public_work_item_authentication_retains_store_file_rejections(
+    tmp_path: Path, defect: str
+) -> None:
+    completed = _completed(tmp_path)
+    result = completed.store.work_item_directory(completed.item_id) / "result.json"
+    original = result.with_name("original-result.json")
+    result.rename(original)
+    if defect == "symlink":
+        result.symlink_to(original.name)
+    elif defect == "hardlink":
+        result.hardlink_to(original)
+    else:
+        result.write_bytes(b"x" * (RECORD_MAX_BYTES + 1))
+
+    with pytest.raises(SimulationCampaignIntegrityError):
+        authenticate_work_item(completed.store.manifest_path, completed.item_id)
+
+
+def test_public_work_item_authentication_rejects_file_changed_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    completed = _completed(tmp_path)
+    manifest = completed.store.manifest_path
+    original_read = os.read
+    swapped = False
+
+    def swap_after_read(descriptor: int, count: int) -> bytes:
+        nonlocal swapped
+        raw = original_read(descriptor, count)
+        if not swapped:
+            swapped = True
+            replacement = manifest.with_name("original-manifest.json")
+            manifest.rename(replacement)
+            manifest.write_bytes(replacement.read_bytes())
+        return raw
+
+    monkeypatch.setattr(os, "read", swap_after_read)
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="changed during read"):
+        authenticate_work_item(manifest, completed.item_id)
 
 
 def _seed_authenticated_states(

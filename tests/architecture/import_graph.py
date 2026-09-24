@@ -7,6 +7,19 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+NAMED_HOTSPOTS = (
+    "booley.harness.doctor",
+    "booley.harness.booley",
+    "booley.harness.init_cmd",
+    "booley.harness.developer",
+    "booley.flows.sim.flow",
+    "booley.flows.synth.flow",
+    "booley.mcp.server",
+    "booley.flows.fpga.flow",
+    "booley.specialists.mutation_tester",
+    "booley.specialists.coverage_analyst",
+)
+
 
 @dataclass(frozen=True)
 class Dependency:
@@ -32,6 +45,56 @@ class ModuleFanOut:
 
 
 @dataclass(frozen=True)
+class DependencyGraphSnapshot:
+    """Immutable diagnostics for one exact package source tree."""
+
+    modules: tuple[str, ...]
+    dependency_fact_count: int
+    edges: tuple[tuple[str, str], ...]
+    mutual_pairs: tuple[tuple[str, str], ...]
+    scc_membership: tuple[tuple[str, tuple[str, ...]], ...]
+    hotspot_fan_out: tuple[tuple[str, int], ...]
+
+    @property
+    def parsed_module_count(self) -> int:
+        return len(self.modules)
+
+
+@dataclass(frozen=True)
+class SccMembershipTransition:
+    """One package's before/after strongly connected component membership."""
+
+    package: str
+    before: tuple[str, ...] | None
+    after: tuple[str, ...] | None
+
+
+@dataclass(frozen=True)
+class FanOutTransition:
+    """One named importer's changed unique-module fan-out."""
+
+    source: str
+    before: int
+    after: int
+
+    @property
+    def delta(self) -> int:
+        return self.after - self.before
+
+
+@dataclass(frozen=True)
+class DependencyGraphDiff:
+    """Deterministic informational differences between two graph snapshots."""
+
+    added_edges: tuple[tuple[str, str], ...]
+    removed_edges: tuple[tuple[str, str], ...]
+    added_mutual_pairs: tuple[tuple[str, str], ...]
+    removed_mutual_pairs: tuple[tuple[str, str], ...]
+    scc_transitions: tuple[SccMembershipTransition, ...]
+    fan_out_transitions: tuple[FanOutTransition, ...]
+
+
+@dataclass(frozen=True)
 class _ModuleSource:
     name: str
     path: Path
@@ -52,6 +115,60 @@ def analyze_imports(source_root: Path) -> tuple[Dependency, ...]:
                 for target in targets
             )
     return tuple(sorted(dependencies, key=_dependency_key))
+
+
+def dependency_graph_snapshot(
+    source_root: Path,
+    *,
+    named_hotspots: tuple[str, ...] = NAMED_HOTSPOTS,
+) -> DependencyGraphSnapshot:
+    """Analyze one package tree into immutable comparison diagnostics."""
+    modules = tuple(sorted(_discover_modules(source_root)))
+    dependencies = analyze_imports(source_root)
+    edges = tuple(sorted({(item.source, item.target) for item in dependencies}))
+    memberships = _scc_memberships(modules, dependencies)
+    fan_out = {item.source: item.count for item in file_fan_out(dependencies)}
+    return DependencyGraphSnapshot(
+        modules=modules,
+        dependency_fact_count=len(dependencies),
+        edges=edges,
+        mutual_pairs=mutual_package_pairs(dependencies),
+        scc_membership=tuple(sorted(memberships.items())),
+        hotspot_fan_out=tuple((source, fan_out.get(source, 0)) for source in named_hotspots),
+    )
+
+
+def compare_dependency_graphs(
+    before: DependencyGraphSnapshot,
+    after: DependencyGraphSnapshot,
+) -> DependencyGraphDiff:
+    """Return a pure, deterministic comparison of two graph snapshots."""
+    before_membership = dict(before.scc_membership)
+    after_membership = dict(after.scc_membership)
+    transitions = tuple(
+        SccMembershipTransition(
+            package,
+            before_membership.get(package),
+            after_membership.get(package),
+        )
+        for package in sorted(before_membership.keys() | after_membership.keys())
+        if before_membership.get(package) != after_membership.get(package)
+    )
+    before_fan_out = dict(before.hotspot_fan_out)
+    after_fan_out = dict(after.hotspot_fan_out)
+    fan_out_transitions = tuple(
+        FanOutTransition(source, before_fan_out.get(source, 0), after_fan_out.get(source, 0))
+        for source in dict.fromkeys((*before_fan_out, *after_fan_out))
+        if before_fan_out.get(source, 0) != after_fan_out.get(source, 0)
+    )
+    return DependencyGraphDiff(
+        added_edges=tuple(sorted(set(after.edges) - set(before.edges))),
+        removed_edges=tuple(sorted(set(before.edges) - set(after.edges))),
+        added_mutual_pairs=tuple(sorted(set(after.mutual_pairs) - set(before.mutual_pairs))),
+        removed_mutual_pairs=tuple(sorted(set(before.mutual_pairs) - set(after.mutual_pairs))),
+        scc_transitions=transitions,
+        fan_out_transitions=fan_out_transitions,
+    )
 
 
 def select_dependencies(
@@ -196,6 +313,19 @@ def _package_adjacency(dependencies: tuple[Dependency, ...]) -> dict[str, set[st
         if source != target:
             adjacency[source].add(target)
     return dict(adjacency)
+
+
+def _scc_memberships(
+    modules: tuple[str, ...], dependencies: tuple[Dependency, ...]
+) -> dict[str, tuple[str, ...]]:
+    packages = {
+        package for module in modules if (package := top_level_package(module)) is not None
+    }
+    memberships = {package: (package,) for package in packages}
+    for group in top_level_package_sccs(dependencies):
+        for package in group:
+            memberships[package] = group
+    return memberships
 
 
 def _finishing_order(adjacency: dict[str, set[str]]) -> list[str]:

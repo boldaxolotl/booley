@@ -7,6 +7,8 @@ import pytest
 from tests.architecture.import_graph import (
     Dependency,
     analyze_imports,
+    compare_dependency_graphs,
+    dependency_graph_snapshot,
     file_fan_out,
     mutual_package_pairs,
     select_dependencies,
@@ -187,8 +189,120 @@ def test_fan_out_counts_unique_targets_deterministically(tmp_path: Path) -> None
     ]
 
 
+def test_graph_diff_uses_unique_edges_not_locations_or_fact_counts(tmp_path: Path) -> None:
+    before = tmp_path / "before" / "booley"
+    after = tmp_path / "after" / "booley"
+    _write_package(before, {"alpha": ("booley.beta",), "beta": (), "gamma": ()})
+    _write_package(after, {"alpha": ("booley.gamma",), "beta": (), "gamma": ()})
+    before_edge = before / "alpha" / "edge.py"
+    before_edge.write_text(before_edge.read_text() + "import booley.beta.edge\n")
+
+    diff = compare_dependency_graphs(
+        dependency_graph_snapshot(before, named_hotspots=()),
+        dependency_graph_snapshot(after, named_hotspots=()),
+    )
+
+    assert diff.added_edges == (("booley.alpha.edge", "booley.gamma.edge"),)
+    assert diff.removed_edges == (("booley.alpha.edge", "booley.beta.edge"),)
+
+
+def test_graph_diff_reveals_mutual_pair_inside_unchanged_scc(tmp_path: Path) -> None:
+    before = tmp_path / "before" / "booley"
+    after = tmp_path / "after" / "booley"
+    edges = {
+        "alpha": ("booley.beta",),
+        "beta": ("booley.gamma",),
+        "gamma": ("booley.alpha",),
+    }
+    _write_package(before, edges)
+    _write_package(after, {**edges, "beta": ("booley.gamma", "booley.alpha")})
+
+    diff = compare_dependency_graphs(
+        dependency_graph_snapshot(before, named_hotspots=()),
+        dependency_graph_snapshot(after, named_hotspots=()),
+    )
+
+    assert diff.added_mutual_pairs == (("booley.alpha", "booley.beta"),)
+    assert diff.scc_transitions == ()
+
+
+def test_graph_diff_reports_scc_split_per_package(tmp_path: Path) -> None:
+    before = tmp_path / "before" / "booley"
+    after = tmp_path / "after" / "booley"
+    _write_package(
+        before,
+        {
+            "alpha": ("booley.beta",),
+            "beta": ("booley.gamma",),
+            "gamma": ("booley.alpha",),
+        },
+    )
+    _write_package(
+        after,
+        {
+            "alpha": ("booley.beta",),
+            "beta": ("booley.alpha",),
+            "gamma": (),
+        },
+    )
+
+    diff = compare_dependency_graphs(
+        dependency_graph_snapshot(before, named_hotspots=()),
+        dependency_graph_snapshot(after, named_hotspots=()),
+    )
+
+    assert [(item.package, item.before, item.after) for item in diff.scc_transitions] == [
+        (
+            "booley.alpha",
+            ("booley.alpha", "booley.beta", "booley.gamma"),
+            ("booley.alpha", "booley.beta"),
+        ),
+        (
+            "booley.beta",
+            ("booley.alpha", "booley.beta", "booley.gamma"),
+            ("booley.alpha", "booley.beta"),
+        ),
+        (
+            "booley.gamma",
+            ("booley.alpha", "booley.beta", "booley.gamma"),
+            ("booley.gamma",),
+        ),
+    ]
+
+
+def test_graph_diff_reports_only_changed_named_hotspots(tmp_path: Path) -> None:
+    before = tmp_path / "before" / "booley"
+    after = tmp_path / "after" / "booley"
+    _write_package(
+        before,
+        {"alpha": ("booley.beta", "booley.gamma"), "beta": (), "gamma": ()},
+    )
+    _write_package(
+        after,
+        {
+            "alpha": ("booley.beta",),
+            "beta": (),
+            "gamma": (),
+            "new": ("booley.beta",),
+        },
+    )
+    hotspots = ("booley.alpha.edge", "booley.beta.edge", "booley.new.edge")
+
+    diff = compare_dependency_graphs(
+        dependency_graph_snapshot(before, named_hotspots=hotspots),
+        dependency_graph_snapshot(after, named_hotspots=hotspots),
+    )
+
+    assert [
+        (item.source, item.before, item.after, item.delta) for item in diff.fan_out_transitions
+    ] == [
+        ("booley.alpha.edge", 2, 1, -1),
+        ("booley.new.edge", 0, 1, 1),
+    ]
+
+
 def _write_package(package: Path, edges: dict[str, tuple[str, ...]]) -> None:
-    package.mkdir()
+    package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     for owner, targets in edges.items():
         owner_package = package / owner
