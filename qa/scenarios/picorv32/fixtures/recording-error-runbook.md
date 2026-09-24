@@ -33,6 +33,16 @@ The Project path and refs come from this run's ledger, not from a copied run.
   must resolve before invoking the Ticket Create skill. Retain an exact ref and
   topology snapshot. Recreate the intended topology between synth and Ticket
   Create; do not repair it by changing a borrowed Project.
+  Both arguments are required full `refs/heads/...` values from the retained
+  `project.separate-repository` resource ledger. Render `outer_destination_branch`
+  by removing only the `refs/heads/` prefix from the prepared outer ref; render
+  `project_destination_ref` as the exact prepared nested ref.
+* `ticket-routing ROOT CREATED_TICKET --outer-ref REF --inner-ref REF`: after
+  Ticket Create, parse the retained Ticket and prove that `branch` equals the
+  normalized outer ref while `project_destination_ref` equals the exact nested
+  ref. Retain the field-to-ref mapping and the independently resolved commit in
+  each owning repository. A swapped mapping blocks the Check even when both
+  repositories happen to contain both names.
 * Build `fixtures/riscv/spike-probe.S` with `spike-probe.ld` using the selected
   runtime's RISC-V compiler. Run `spike-elf ELF --ram-start START --ram-end END`
   with the RAM bounds documented for that runtime before invoking Spike. Every

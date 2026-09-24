@@ -16,6 +16,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import yaml
+
 _GENERATED_INSTANCE_RE = re.compile(r"(?<![A-Za-z0-9])_[0-9a-f]+_p_Instance\b")
 _GENERATED_INSTANCE_RUN_RE = re.compile(r"(?:<generated-instance>\s*)+")
 _TRUNCATED_GENERATED_TAIL_RE = re.compile(r"(<generated-instance-list>).*…$")
@@ -48,7 +50,27 @@ def _git_root(path: Path) -> Path:
     return Path(result.stdout.strip()).resolve()
 
 
-def git_topology(root: Path, mode: str, outer_ref: str = "HEAD", inner_ref: str = "HEAD") -> dict:
+def _local_branch_ref(ref: str | None, role: str) -> str:
+    _require(ref is not None, "Ticket mode requires explicit --outer-ref and --inner-ref")
+    _require(ref.startswith("refs/heads/"), f"{role} ref must be a full refs/heads/... name")
+    return ref
+
+
+def _resolved_ref(checkout: Path, ref: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "--verify", ref + "^{commit}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    _require(result.returncode == 0, f"{checkout}: destination ref {ref} missing")
+    return result.stdout.strip()
+
+
+def git_topology(
+    root: Path, mode: str, outer_ref: str | None = None, inner_ref: str | None = None
+) -> dict:
     """Verify the real outer and nested Git topology before a Check attempt."""
     root = root.resolve()
     inner = root / ".booley_project"
@@ -59,26 +81,52 @@ def git_topology(root: Path, mode: str, outer_ref: str = "HEAD", inner_ref: str 
     _require(marker.exists(), "nested Project .git marker missing")
     _require(_git_root(inner) == inner, "nested .git resolves to another checkout")
     if mode == "ticket":
+        outer_ref = _local_branch_ref(outer_ref, "outer")
+        inner_ref = _local_branch_ref(inner_ref, "inner")
         _require(marker.is_dir(), "Ticket Create requires standalone nested .git directory")
     elif mode == "synth":
         _require(marker.is_file(), "paired synthesis fixture requires linked nested .git file")
     else:
         _require(mode == "inventory", f"unknown topology mode: {mode}")
+    outer_ref = outer_ref or "HEAD"
+    inner_ref = inner_ref or "HEAD"
     for checkout, ref in ((root, outer_ref), (inner, inner_ref)):
-        result = subprocess.run(
-            ["git", "-C", str(checkout), "rev-parse", "--verify", ref + "^{commit}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        _require(result.returncode == 0, f"{checkout}: destination ref {ref} missing")
+        _resolved_ref(checkout, ref)
     return {
         "outer": str(root),
         "nested": str(inner),
         "mode": mode,
         "outer_ref": outer_ref,
         "inner_ref": inner_ref,
+    }
+
+
+def _ticket_fields(ticket: Path) -> dict:
+    text = ticket.read_text(encoding="utf-8")
+    _require(text.startswith("---\n"), "Ticket lacks YAML frontmatter")
+    end = text.find("\n---\n", 4)
+    _require(end >= 0, "Ticket frontmatter is not closed")
+    return _mapping(yaml.safe_load(text[4:end]), "Ticket frontmatter")
+
+
+def ticket_routing(root: Path, ticket: Path, outer_ref: str, inner_ref: str) -> dict:
+    """Prove that a created Ticket preserves both prepared destination roles."""
+    topology = git_topology(root, "ticket", outer_ref=outer_ref, inner_ref=inner_ref)
+    fields = _ticket_fields(ticket)
+    expected_branch = outer_ref.removeprefix("refs/heads/")
+    _require(fields.get("branch") == expected_branch, "Ticket branch does not match outer ref")
+    _require(
+        fields.get("project_destination_ref") == inner_ref,
+        "Ticket project_destination_ref does not match inner ref",
+    )
+    return {
+        "branch": fields["branch"],
+        "project_destination_ref": fields["project_destination_ref"],
+        "outer_ref": outer_ref,
+        "outer_commit": _resolved_ref(root.resolve(), outer_ref),
+        "project_ref": inner_ref,
+        "project_commit": _resolved_ref(root.resolve() / ".booley_project", inner_ref),
+        "topology": topology["mode"],
     }
 
 
@@ -627,8 +675,13 @@ def _parser() -> argparse.ArgumentParser:
     topology = sub.add_parser("git-topology")
     topology.add_argument("root", type=Path)
     topology.add_argument("mode", choices=("inventory", "synth", "ticket"))
-    topology.add_argument("--outer-ref", default="HEAD")
-    topology.add_argument("--inner-ref", default="HEAD")
+    topology.add_argument("--outer-ref")
+    topology.add_argument("--inner-ref")
+    routing = sub.add_parser("ticket-routing")
+    routing.add_argument("root", type=Path)
+    routing.add_argument("ticket", type=Path)
+    routing.add_argument("--outer-ref", required=True)
+    routing.add_argument("--inner-ref", required=True)
     elf = sub.add_parser("spike-elf")
     elf.add_argument("path", type=Path)
     elf.add_argument("--ram-start", type=lambda x: int(x, 0), required=True)
@@ -656,6 +709,8 @@ def _execute(args: argparse.Namespace) -> dict:
     """Dispatch one validated preflight operation."""
     if args.kind == "git-topology":
         result = git_topology(args.root, args.mode, args.outer_ref, args.inner_ref)
+    elif args.kind == "ticket-routing":
+        result = ticket_routing(args.root, args.ticket, args.outer_ref, args.inner_ref)
     elif args.kind == "spike-elf":
         result = spike_elf(args.path, args.ram_start, args.ram_end)
     elif args.kind == "lint-command":
@@ -686,6 +741,7 @@ def main() -> None:
         KeyError,
         TypeError,
         subprocess.TimeoutExpired,
+        yaml.YAMLError,
     ) as error:
         parser.exit(2, f"fixture preflight failed: {error}\n")
     print(json.dumps(result, sort_keys=True))

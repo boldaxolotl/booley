@@ -473,6 +473,111 @@ def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Pat
     assert not (project_dir / "tickets/board/drafts/missing-paired-destination.md").exists()
 
 
+def test_distinct_paired_destinations_are_preserved_through_enqueue(tmp_path: Path) -> None:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    _git(root, "branch", "outer-release")
+    _git(project_dir, "branch", "project-data")
+    outer_sha = _git(root, "rev-parse", "refs/heads/outer-release")
+    project_sha = _git(project_dir, "rev-parse", "refs/heads/project-data")
+
+    ticket = _create_v2_ticket(
+        tio,
+        "distinct-paired-destinations",
+        TicketFileSpec(
+            summary="Preserve distinct paired destinations",
+            ticket_type="feature",
+            branch="outer-release",
+            project_destination_ref="refs/heads/project-data",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+
+    assert ticket is not None
+    outer_workspace = project_dir / "worktrees/distinct-paired-destinations"
+    project_workspace = outer_workspace / ".booley_project"
+    assert _git(outer_workspace, "rev-parse", "HEAD") == outer_sha
+    assert _git(project_workspace, "rev-parse", "HEAD") == project_sha
+    outer_ticket_ref = _git(outer_workspace, "symbolic-ref", "HEAD")
+    assert outer_ticket_ref.startswith("refs/heads/booley-generation/")
+    assert outer_ticket_ref != "refs/heads/outer-release"
+    assert _git(project_workspace, "rev-parse", "--symbolic-full-name", "@{upstream}") == (
+        "refs/heads/project-data"
+    )
+
+    assert tio.enqueue_ticket("distinct-paired-destinations") is True
+    basis = tio.load_basis("distinct-paired-destinations")
+    assert basis.participant("outer").destination_ref == "refs/heads/outer-release"
+    assert basis.participant("outer").destination_sha == outer_sha
+    assert basis.participant("project").destination_ref == "refs/heads/project-data"
+    assert basis.participant("project").destination_sha == project_sha
+    assert _git(root, "rev-parse", "refs/heads/outer-release") == outer_sha
+    assert _git(project_dir, "rev-parse", "refs/heads/project-data") == project_sha
+    assert (
+        "refs/heads/project-data"
+        not in _git(root, "for-each-ref", "--format=%(refname)", "refs/heads").splitlines()
+    )
+    assert (
+        "refs/heads/outer-release"
+        not in _git(project_dir, "for-each-ref", "--format=%(refname)", "refs/heads").splitlines()
+    )
+    assert (project_dir / "tickets/board/queue/distinct-paired-destinations.md").is_file()
+
+
+def test_create_rejects_missing_explicit_project_destination_before_draft(
+    tmp_path: Path,
+) -> None:
+    _root, project_dir, tio = _paired_basis_project(tmp_path)
+
+    ticket = _create_v2_ticket(
+        tio,
+        "missing-explicit-project-destination",
+        TicketFileSpec(
+            summary="Reject a missing explicit project destination",
+            ticket_type="feature",
+            branch="main",
+            project_destination_ref="refs/heads/project-data",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+
+    assert ticket is None
+    assert not (
+        project_dir / "tickets/board/drafts/missing-explicit-project-destination.md"
+    ).exists()
+
+
+def test_missing_outer_destination_retains_draft_but_blocks_enqueue(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+
+    ticket = _create_v2_ticket(
+        tio,
+        "missing-outer-destination",
+        TicketFileSpec(
+            summary="Reject a missing outer destination",
+            ticket_type="feature",
+            branch="outer-release",
+            project_destination_ref="refs/heads/main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+
+    assert ticket == project_dir / "tickets/board/drafts/missing-outer-destination.md"
+    assert "workspace could not be materialized" in capsys.readouterr().err
+    assert tio.enqueue_ticket("missing-outer-destination") is False
+    assert (
+        "outer `branch` 'outer-release' does not exist in the outer repository"
+        in capsys.readouterr().err
+    )
+    assert basis_publication.load_basis_publication(root, "missing-outer-destination") is None
+    assert not (project_dir / "tickets/board/queue/missing-outer-destination.md").exists()
+    assert not (project_dir / "tickets/board/waiting/missing-outer-destination.md").exists()
+
+
 def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(
     tmp_path: Path,
 ) -> None:

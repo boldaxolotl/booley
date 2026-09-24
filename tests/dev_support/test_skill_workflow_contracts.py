@@ -345,6 +345,25 @@ def test_ticket_create_reconciles_scope_and_provider_dependencies() -> None:
         assert required in contract
 
 
+def test_ticket_create_distinguishes_paired_repository_destinations() -> None:
+    skill = _skill_text("booley-ticket-create")
+    template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")
+    contract = " ".join(skill.split())
+
+    for required in (
+        "`branch` is a branch name in the outer repository, without `refs/heads/`",
+        "`project_destination_ref` is the canonical full local branch ref in the paired Project repository",
+        "Agent mode requires `branch` explicitly",
+        "never obtains it from `git branch --show-current`",
+        "treat the supplied pair as authoritative",
+        "which repository rejected which Ticket field",
+        "workspace-materialization warning is a blocker",
+    ):
+        assert required in contract
+    assert "project_destination_ref: refs/heads/<project destination>" in template
+    assert "required when the paired Project repository destination differs" in template
+
+
 def test_ticket_creation_template_is_packaged_free_form_markdown():
     template = _skill_text("booley-ticket-create", "TICKET_CREATION_TEMPLATE.md")
 

@@ -2,6 +2,8 @@
 summary: <one-line description>
 type: feature | bugfix | refactor | verification
 branch: <destination branch>
+project_destination_ref: refs/heads/<project destination>
+# Optional for an embedded Project; required when the paired Project repository destination differs.
 scope:
   - rtl/existing.sv
   - rtl/new_file.sv [new]   # Scope [new] marks a file, not a Target
