@@ -4,33 +4,31 @@ Recorded: 24 SEP 2026.
 
 Issue [#661](https://github.com/boldaxolotl/booley/issues/661) adds an
 informational dependency-diff diagnostic and protects Simulation Campaign
-storage behind the public Campaign package. This report records the exact
-working-tree implementation evidence; no implementation commit was created
-because repository policy requires explicit commit authorization.
+storage behind the public Campaign package. This report records the exact clean
+implementation evidence used for the pull request. The later evidence-only
+documentation commit does not change the analyzed production or analyzer files.
 
 ## Identities and reproduction
 
 - Base source: `8063cb870c312df9dbde5976e451dddbaf908b89`
 - Base source digest:
   `sha256:465a2a42d0d54d73531c29968ccb7e41e2313c8377f6d851e32ea880c921c25d`
-- Implementation source label: `codex/issue-661-implementation-working-tree`
+- Implementation source: `ccf34bfc0b46bbf7f6599de4a7c6af716a79ceb1`
 - Implementation source digest:
   `sha256:046078e03fed9a24b93332b5a352529929bbfe572b232821628ed52a32d5c83a`
 - Analyzer repository commit:
-  `8063cb870c312df9dbde5976e451dddbaf908b89`
+  `ccf34bfc0b46bbf7f6599de4a7c6af716a79ceb1`
 - Analyzer/comparison semantics digest:
   `sha256:d7349b67a2b80a9b77f8a31a143ddac1d95fd8692d4a951984a5b6d8b9522297`
 
-Materialize the exact base revision to `BASE_ARCHIVE` and run from the
-implementation worktree. Both roots are analyzed in one process with the same
-uncommitted analyzer bytes:
+Both exact commits are archived and analyzed in one process with the same
+analyzer bytes:
 
 ```console
 python3 tests/architecture/compare_report.py \
-  --before-root BASE_ARCHIVE/src/booley \
-  --before-label 8063cb870c312df9dbde5976e451dddbaf908b89 \
-  --after-root src/booley \
-  --after-label codex/issue-661-implementation-working-tree
+  --before-ref 8063cb870c312df9dbde5976e451dddbaf908b89 \
+  --after-ref ccf34bfc0b46bbf7f6599de4a7c6af716a79ceb1 \
+  --repo-root .
 ```
 
 ## Graph result

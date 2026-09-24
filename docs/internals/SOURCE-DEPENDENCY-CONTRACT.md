@@ -700,12 +700,10 @@ inventory, and reproduction commands are in
 
 Issue [#661](https://github.com/boldaxolotl/booley/issues/661) added the
 informational comparison above and D31. The implementation base is exact commit
-`8063cb870c312df9dbde5976e451dddbaf908b89`; because implementation work is not
-committed without explicit authorization, the current implementation source is
-identified by label `codex/issue-661-implementation-working-tree` and exact
-source digest
+`8063cb870c312df9dbde5976e451dddbaf908b89`; the analyzed implementation source
+is exact commit `ccf34bfc0b46bbf7f6599de4a7c6af716a79ceb1` with source digest
 `sha256:046078e03fed9a24b93332b5a352529929bbfe572b232821628ed52a32d5c83a`.
-The analyzer reports repository commit `8063cb870c312df9dbde5976e451dddbaf908b89`
+The analyzer reports repository commit `ccf34bfc0b46bbf7f6599de4a7c6af716a79ceb1`
 and exact semantics digest
 `sha256:d7349b67a2b80a9b77f8a31a143ddac1d95fd8692d4a951984a5b6d8b9522297`.
 
