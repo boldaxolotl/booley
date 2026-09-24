@@ -23,8 +23,11 @@ from typing import TypeVar, cast
 from booley.core.boundary import (
     BoundaryError,
     require_bool_value,
+    require_dict,
     require_finite_number,
     require_int,
+    require_list,
+    require_str_value,
 )
 from booley.flows.sim.campaign_durability import (
     durable_create,
@@ -239,19 +242,25 @@ class CampaignStore:
         _require_safe_parents(self.summary_path, self.root)
         raw = _read_regular(self.summary_path, limit=SUMMARY_MAX_BYTES)
         try:
-            document = json.loads(raw)
+            document = require_dict(json.loads(raw), field="campaign summary")
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise SimulationCampaignIntegrityError("campaign summary is invalid JSON") from exc
-        if not isinstance(document, dict):
-            raise SimulationCampaignIntegrityError("campaign summary is not an object")
-        completed = document.get("completed")
-        if (
-            document.get("$schema") != _SUMMARY_SCHEMA
-            or type(document.get("complete")) is not bool
-            or not isinstance(completed, list)
-            or any(not isinstance(item, str) or not item for item in completed)
-            or len(set(completed)) != len(completed)
-        ):
+        except BoundaryError as exc:
+            raise SimulationCampaignIntegrityError("campaign summary is not an object") from exc
+        try:
+            schema = require_str_value(document.get("$schema"), field="campaign summary schema")
+            require_bool_value(document.get("complete"), field="campaign summary complete")
+            completed = tuple(
+                require_str_value(item, field="campaign summary completed item")
+                for item in require_list(
+                    document.get("completed"), field="campaign summary completed"
+                )
+            )
+        except BoundaryError as exc:
+            raise SimulationCampaignIntegrityError(
+                "campaign summary retention fields are invalid"
+            ) from exc
+        if schema != _SUMMARY_SCHEMA or len(set(completed)) != len(completed):
             raise SimulationCampaignIntegrityError("campaign summary retention fields are invalid")
         return document
 
