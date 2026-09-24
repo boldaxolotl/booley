@@ -103,6 +103,33 @@ _NO_WAVEFORM = "the simulation passed, but --trace produced no queryable wavefor
 _PACKAGED_DUMP_IDENTITY = Path("booley-package/refs/booley_vcd_dump.sv")
 
 
+def _is_packaged_dump_source(attempt: _Attempt, source: Path, project_root: Path) -> bool:
+    if source.is_relative_to(project_root):
+        return False
+    if not (attempt.trace_requested and attempt.prepared.eda_tool == "icarus"):
+        return False
+    try:
+        return source == trace_overlay.packaged_vcd_dump_source()
+    except fusesoc_registry.FuseSocError as exc:
+        raise SimulationBuildSlotError(str(exc)) from exc
+
+
+def _prepared_source_identity(
+    name: str, source: Path, project_root: Path, *, is_packaged_dump: bool
+) -> Path:
+    declared = Path(name)
+    relative = (
+        _PACKAGED_DUMP_IDENTITY
+        if is_packaged_dump
+        else source.relative_to(project_root)
+        if declared.is_absolute()
+        else declared
+    )
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SimulationBuildSlotError(f"prepared Simulation source has unsafe name: {name}")
+    return relative
+
+
 @dataclass(frozen=True)
 class _Attempt:
     prepared: PreparedSimulationBuild
@@ -226,16 +253,10 @@ class PreparedOrdinaryGroup:
         identities: set[Path] = set()
         root = self._attempt.prepared.build_root.resolve()
         project_root = self._handle.project_root.resolve()
-        packaged_dump: Path | None = None
-        if self._attempt.trace_requested and self._attempt.prepared.eda_tool == "icarus":
-            try:
-                packaged_dump = trace_overlay.packaged_vcd_dump_source()
-            except fusesoc_registry.FuseSocError as exc:
-                raise SimulationBuildSlotError(str(exc)) from exc
         for item in self._attempt.prepared.resolved.files:
             source = item.absolute(root)
             try:
-                is_packaged_dump = packaged_dump is not None and source == packaged_dump
+                is_packaged_dump = _is_packaged_dump_source(self._attempt, source, project_root)
                 if not source.is_file() or not (
                     is_packaged_dump or source.is_relative_to(project_root)
                 ):
@@ -247,18 +268,12 @@ class PreparedOrdinaryGroup:
                 raise SimulationBuildSlotError(
                     f"cannot authenticate prepared Simulation source: {item.name}: {exc}"
                 ) from exc
-            declared = Path(item.name)
-            relative = (
-                _PACKAGED_DUMP_IDENTITY
-                if is_packaged_dump
-                else source.relative_to(project_root)
-                if declared.is_absolute()
-                else declared
+            relative = _prepared_source_identity(
+                item.name,
+                source,
+                project_root,
+                is_packaged_dump=is_packaged_dump,
             )
-            if relative.is_absolute() or ".." in relative.parts:
-                raise SimulationBuildSlotError(
-                    f"prepared Simulation source has unsafe name: {item.name}"
-                )
             if relative in identities:
                 raise SimulationBuildSlotError(
                     f"duplicate prepared Simulation source identity: {relative.as_posix()}"

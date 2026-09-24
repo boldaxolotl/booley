@@ -8,7 +8,20 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.campaign.coordinator import (
+    CampaignPolicy,
+    NewCampaignRunRequest,
+    SimulationCampaign,
+)
+from booley.flows.sim.campaign.flow_planning import (
+    plan_coarse_simulation_campaign,
+    plan_ordinary_hdl_campaign,
+)
+from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.execution import SimulationExecution, SimulationOptions
+from booley.flows.sim.execution.contract import NamedTests
+from booley.flows.sim.execution.engine import PreparedOrdinaryGroup
 from booley.flows.sim.trace_overlay import (
     _target_includes_dump_module,
     packaged_vcd_dump_source,
@@ -33,6 +46,67 @@ from tests.fusesoc_test_support import write_core as _write_core
 def enumerate_targets(project_root: Path | str):
     """Return adapter-discovered Targets for overlay-discovery assertions."""
     return {name: refs[0] for name, refs in _enumerate_all(project_root).items()}
+
+
+class _PlanningDisclosureAuthenticatedError(RuntimeError):
+    pass
+
+
+def _isolated_icarus_target(tmp_path: Path, core_text: str, *, cocotb: bool):
+    project = tmp_path / "project"
+    cores = project / ".booley_project" / "cores"
+    cores.mkdir(parents=True)
+    (project / ".booley_project" / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n",
+        encoding="utf-8",
+    )
+    (project / ".booley_project" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    (project / "rtl").mkdir()
+    (project / "tb").mkdir()
+    (project / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+    (project / "tb" / "tb_dut.sv").write_text(
+        "module tb_dut; dut dut(); endmodule\n", encoding="utf-8"
+    )
+    core = core_text.replace(
+        "      - sim/booley_vcd_dump.sv: {file_type: systemVerilogSource}\n", ""
+    )
+    if cocotb:
+        core = core.replace(
+            "      tool: icarus\n", "      tool: icarus\n      cocotb_module: test_demo\n"
+        )
+    _write_core(cores, core, create_sources=False)
+    return TargetCatalog.build(project).select("sim")
+
+
+def _trace_campaign_plan(handle, execution: SimulationExecution, *, cocotb: bool):
+    names = ("smoke",)
+    catalog = TargetCatalog.build(handle.project_root)
+    inspection = catalog.inspect(handle)
+    preview = execution.preview(handle, NamedTests(names))
+    disclosure = execution.plan_campaign_group(handle, names)
+    common = {
+        "handle": handle,
+        "inspection": inspection,
+        "preview": preview,
+        "required_suite": (),
+        "revision": "abc123",
+        "invocation_id": 1,
+        "execution_id": "",
+        "trace": True,
+        "planning_disclosures": (disclosure,),
+        "required_suite_catalog_backed": False,
+    }
+    if cocotb:
+        return plan_coarse_simulation_campaign(**common, selected_tests=names, kind="cocotb_batch")
+    return plan_ordinary_hdl_campaign(**common, groups=(names,))
+
+
+def _stop_after_planning_authentication(_group: PreparedOrdinaryGroup):
+    raise _PlanningDisclosureAuthenticatedError
+
+
+def _admission() -> AdmissionContext:
+    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
 
 
 # ---------------------------------------------------------------------------
@@ -386,40 +460,16 @@ class TestWriteTraceOverlay:
     def test_native_core_isolation_discloses_packaged_dump_source_for_campaign(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
         cocotb: bool,
     ) -> None:
         pytest.importorskip("fusesoc")
-        project = tmp_path / "project"
-        cores = project / ".booley_project" / "cores"
-        cores.mkdir(parents=True)
-        (project / ".booley_project" / "booley.toml").write_text(
-            "[stealth]\nenabled = true\nignore_native_cores = true\n",
-            encoding="utf-8",
+        handle = _isolated_icarus_target(tmp_path, self._ICARUS_CORE, cocotb=cocotb)
+        execution = SimulationExecution(
+            invoke=lambda *_args, **_kwargs: None, options=SimulationOptions(trace=True)
         )
-        (project / ".booley_project" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        (project / "rtl").mkdir()
-        (project / "tb").mkdir()
-        (project / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-        (project / "tb" / "tb_dut.sv").write_text(
-            "module tb_dut; dut dut(); endmodule\n",
-            encoding="utf-8",
-        )
-        core = self._ICARUS_CORE.replace(
-            "      - sim/booley_vcd_dump.sv: {file_type: systemVerilogSource}\n",
-            "",
-        )
-        if cocotb:
-            core = core.replace(
-                "      tool: icarus\n",
-                "      tool: icarus\n      cocotb_module: test_demo\n",
-            )
-        _write_core(cores, core, create_sources=False)
-        handle = TargetCatalog.build(project).select("sim")
-
-        disclosure = SimulationExecution(
-            invoke=lambda *_args, **_kwargs: None,
-            options=SimulationOptions(trace=True),
-        ).plan_campaign_group(handle, ("smoke",))
+        plan = _trace_campaign_plan(handle, execution, cocotb=cocotb)
+        disclosure = plan.manifest.document["planning_disclosures"][0]
 
         raw = packaged_vcd_dump_source().read_bytes()
         dump_entries = [
@@ -436,6 +486,27 @@ class TestWriteTraceOverlay:
             }
         ]
         assert packaged_vcd_dump_source().is_file()
+        monkeypatch.setattr(PreparedOrdinaryGroup, "compile", _stop_after_planning_authentication)
+        executor = OrdinaryHdlSerialExecutor(
+            invoke=lambda *_args, **_kwargs: None,
+            execution_factory=lambda options: SimulationExecution(
+                invoke=lambda *_args, **_kwargs: None, options=options
+            ),
+        )
+        invocation = tmp_path / "reports" / "000001"
+        invocation.mkdir(parents=True)
+
+        with pytest.raises(_PlanningDisclosureAuthenticatedError):
+            SimulationCampaign(executor).run(
+                NewCampaignRunRequest(
+                    plan,
+                    handle.project_root,
+                    invocation.parent,
+                    CampaignPolicy(),
+                    invocation,
+                    _admission(),
+                )
+            )
 
     def test_projected_icarus_overlay_rebases_injected_dump(self, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"

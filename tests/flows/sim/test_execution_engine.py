@@ -904,6 +904,27 @@ def test_prepared_source_entries_accept_exact_packaged_trace_source(
     )
 
 
+def test_prepared_source_entries_do_not_require_package_for_project_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "sim" / "booley_vcd_dump.sv"
+    source.parent.mkdir()
+    source.write_bytes(b"module booley_vcd_dump; endmodule\n")
+    monkeypatch.setattr(
+        "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
+        MagicMock(
+            side_effect=fusesoc_registry.FuseSocError(
+                "packaged trace dump module is not a regular file"
+            )
+        ),
+    )
+    group = _prepared_group_with_sources(_handle(project), source, trace_requested=True)
+
+    assert group.prepared_source_entries()[0]["path"] == "sim/booley_vcd_dump.sv"
+
+
 def test_prepared_source_entries_fail_closed_when_packaged_authority_is_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
