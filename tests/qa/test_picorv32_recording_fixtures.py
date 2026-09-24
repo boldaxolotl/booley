@@ -19,6 +19,7 @@ from qa.scenarios.picorv32.fixture_validation import (
     lint_dedupe,
     lint_waiver,
     oracle,
+    packet_input,
     required_subjects,
     same_bwave_mode,
     spike_elf,
@@ -110,6 +111,113 @@ def test_ticket_topology_requires_full_local_branch_refs(tmp_path):
     )
     assert result.returncode == 2
     assert "requires explicit --outer-ref and --inner-ref" in result.stderr
+
+
+def test_packet_input_stages_exact_bytes_and_detects_drift(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = tmp_path / "resolved.md"
+    source.write_bytes(b"exact packet\n")
+    staged = project / "tmp/qa-inputs/run-1/ticket-2/packet.md"
+
+    result = packet_input(project, source, staged)
+
+    assert staged.read_bytes() == b"exact packet\n"
+    assert result["byte_count"] == 13
+    assert result["sha256"] == hashlib.sha256(b"exact packet\n").hexdigest()
+    staged.write_bytes(b"changed\n")
+    with pytest.raises(FixtureError, match="staged packet differs"):
+        packet_input(project, source, staged, verify_only=True)
+
+
+def test_packet_input_staging_keeps_initialized_project_clean(tmp_path):
+    project = tmp_path / "project"
+    _checkout(project)
+    (project / ".gitignore").write_text("tmp/\n")
+    _git("-C", str(project), "add", ".gitignore")
+    _git(
+        "-C",
+        str(project),
+        "-c",
+        "user.name=QA",
+        "-c",
+        "user.email=qa@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "ignore runtime",
+    )
+    source = tmp_path / "resolved.md"
+    source.write_text("exact packet\n")
+
+    packet_input(project, source, project / "tmp/qa-inputs/run/step/packet.md")
+
+    status = subprocess.run(
+        ["git", "-C", str(project), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    assert status.stdout == ""
+
+
+def test_packet_input_rejects_paths_outside_project_and_unresolved_tokens(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = tmp_path / "resolved.md"
+    source.write_text("{{ unresolved }}\n")
+
+    with pytest.raises(FixtureError, match="unresolved substitution"):
+        packet_input(project, source, project / "tmp/qa-inputs/packet.md")
+    source.write_text("resolved\n")
+    with pytest.raises(FixtureError, match="beneath the Project directory"):
+        packet_input(project, source, tmp_path / "outside.md")
+
+
+def test_packet_input_rejects_retired_vocabulary_and_wrong_routing(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = tmp_path / "resolved.md"
+    staged = project / "tmp/qa-inputs/packet.md"
+    packet = (
+        "```markdown\n---\nsummary: exact\ntype: feature\nbranch: outer\n"
+        "project_destination_ref: refs/heads/project\nscope: [README.md]\n"
+        "dependencies: []\npriority: medium\non_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n---\nbody\n```\n"
+    )
+    source.write_text(packet)
+
+    result = packet_input(
+        project,
+        source,
+        staged,
+        outer_ref="refs/heads/outer",
+        inner_ref="refs/heads/project",
+    )
+    assert result["branch"] == "outer"
+    assert result["project_destination_ref"] == "refs/heads/project"
+
+    source.write_text(packet.replace("branch: outer", "branch: project"))
+    with pytest.raises(FixtureError, match="branch does not match"):
+        packet_input(
+            project,
+            source,
+            staged,
+            outer_ref="refs/heads/outer",
+            inner_ref="refs/heads/project",
+        )
+    source.write_text(
+        packet.replace("CRITERIA_MANDATORY:", "target_plan: []\nCRITERIA_MANDATORY:")
+    )
+    with pytest.raises(FixtureError, match="retired Ticket vocabulary"):
+        packet_input(
+            project,
+            source,
+            staged,
+            outer_ref="refs/heads/outer",
+            inner_ref="refs/heads/project",
+        )
 
 
 def test_ticket_routing_proves_distinct_mapping_and_rejects_swap(tmp_path):
