@@ -3,7 +3,7 @@
 Pull requests use pairwise compatibility coverage so the required gate can run
 horizontally:
 
-- Python 3.14 runs the complete suite on Windows in four duration-balanced
+- Python 3.14 runs the complete suite on Windows in six duration-balanced
   shards.
 - Python 3.13 runs complete branch coverage on Ubuntu in three shards.
 - Python 3.11 and 3.14 run the complete suite on Ubuntu.
@@ -20,7 +20,7 @@ combination before merge.
 `.github/scripts/ci_pytest_shard.py` collects the eligible tests on every
 runner. Historical timings influence balance only: a new or unknown test is
 always assigned to a shard. The `test` job owns compatibility execution, with
-`test-verify` checking the exact node-ID sets from its four Windows shards. The
+`test-verify` checking the exact node-ID sets from its six Windows shards. The
 independent `coverage-shards` job owns coverage execution; `coverage` verifies
 its three exact shard selections before combining their raw data and enforcing
 the global and changed-line thresholds. `ci-required` waits for and validates

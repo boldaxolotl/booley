@@ -145,8 +145,25 @@ def _jobs(outputs: dict[str, str]) -> dict[str, bool]:
 def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> None:
     entries = build_test_matrix(shard_count)["include"]
     shards = [entry for entry in entries if entry["mode"] == "shard"]
+    compatibility = [entry for entry in entries if entry["mode"] != "shard"]
 
     assert len(entries) == 4 + shard_count
+    assert compatibility == [
+        {"name": "ubuntu-3.11-full", "os": "ubuntu-latest", "python": "3.11", "mode": "full"},
+        {"name": "ubuntu-3.14-full", "os": "ubuntu-latest", "python": "3.14", "mode": "full"},
+        {
+            "name": "windows-3.11-compatibility",
+            "os": "windows-latest",
+            "python": "3.11",
+            "mode": "compatibility",
+        },
+        {
+            "name": "windows-3.13-compatibility",
+            "os": "windows-latest",
+            "python": "3.13",
+            "mode": "compatibility",
+        },
+    ]
     assert [entry["shard_index"] for entry in shards] == list(range(shard_count))
     assert all(entry["shard_count"] == shard_count for entry in shards)
     assert len({entry["name"] for entry in entries}) == len(entries)
