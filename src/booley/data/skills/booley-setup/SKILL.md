@@ -36,7 +36,7 @@ without interruption.
 | 3 | **AGENTS.md** — Project-level guidance for RTL agents. | container; file edits only | yes | `steps/3-agents-md.md` |
 | 4 | **Doctor** — final audit; resolve every failure and warning, then the deep gate. | container terminal (+ one host run) | yes | `steps/4-doctor.md` |
 | 5 | **Parity** — diff Booley vs the repo's native flow, where EDA tools match. | container | no (only if plan row 18 ≠ `none`) | `steps/5-parity.md` |
-| 6 | **Findings** — report, triage, optional bug report to Booley. | container (host to submit) | yes | `steps/6-findings.md` |
+| 6 | **Findings** — report, triage, optional redacted export. | container | yes | `steps/6-findings.md` |
 | 7 | **Cleanup** — preview and apply bounded current-run retention. | container | yes | `steps/7-cleanup.md` |
 
 Step 4 is the gate: setup is not complete until plain `booley doctor` and
@@ -246,9 +246,8 @@ plain-English reason it matters.
    native flow's is about as unambiguous as evidence gets — so log every
    discrepancy with `booley feedback add`, not just the ones you can explain.
 7. **Step 6 — findings.** Always: `steps/6-findings.md` triages the log, writes
-   `.booley_project/SETUP-REPORT.md`, and asks once whether to send the
-   Booley-side findings upstream. Post-gate, non-blocking, and a decline is a
-   normal outcome.
+   `.booley_project/SETUP-REPORT.md`, and creates a redacted export only when the
+   user explicitly requests one. Post-gate and non-blocking.
 8. **Step 7 — cleanup.** Always: `steps/7-cleanup.md` previews and applies the
    approved retention mode after the report exists. It uses only the current
    run's manifest, materializes structured Feedback attachments before source

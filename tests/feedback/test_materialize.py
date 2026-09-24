@@ -83,8 +83,8 @@ def test_materialize_requires_both_render_proofs_to_match(tmp_path: Path, monkey
     source = tmp_path / "attached.log"
     source.write_text("attached\n", encoding="utf-8")
     append(Finding(title="finding", attachments=[str(source)]), project_dir)
-    proofs = iter([("before", "preview"), ("after", "preview")])
+    proofs = iter([("before", "export"), ("after", "export")])
     monkeypatch.setattr(materialize, "_render_proofs", lambda *_args: next(proofs))
 
-    with pytest.raises(materialize.MaterializationError, match="report or preview"):
+    with pytest.raises(materialize.MaterializationError, match="report or export"):
         materialize.materialize_attachments(project_dir, [source])

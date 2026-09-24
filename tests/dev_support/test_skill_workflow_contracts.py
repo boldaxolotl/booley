@@ -19,7 +19,7 @@ def test_triage_routes_confirmed_booley_bugs_to_feedback_skill_by_default():
     assert "invoke `/booley-feedback` by default" in main
     assert "invoke\n`/booley-feedback`" in blocked
     assert "invoke `/booley-feedback`" in review
-    assert "explicit approval" in main
+    assert "redacted export for the user to share manually" in main
 
 
 def test_feedback_routes_private_project_bugs_through_verified_synthetic_reproducer():
@@ -48,7 +48,7 @@ def test_feedback_exports_offline_for_manual_github_or_email_submission():
 
     for required in (
         "runs offline in the Sandbox",
-        "local commands, not `submit`",
+        "use local commands only",
         "booley feedback export F-8 F-9",
         "Read the entire exported file",
         "**Submit on GitHub:**",
@@ -59,6 +59,27 @@ def test_feedback_exports_offline_for_manual_github_or_email_submission():
         "No verified workaround was found",
     ):
         assert required in skill
+
+
+def test_feedback_requires_an_explicit_request_before_redacted_export():
+    skill = _compact_skill_text("booley-feedback")
+
+    assert "Do not create a sanitized report by default" in skill
+    assert "export only on explicit request" in skill
+    assert "Stop here unless the user explicitly requested a sanitized file" in skill
+    assert "Without an explicit export request" in skill
+
+
+def test_setup_does_not_offer_removed_feedback_submission_workflow():
+    main = _compact_skill_text("booley-setup")
+    findings = _compact_skill_text("booley-setup", "steps/6-findings.md")
+    cleanup = _compact_skill_text("booley-setup", "steps/7-cleanup.md")
+
+    assert "creates a redacted export only when the user explicitly requests one" in main
+    assert "asks once whether to send" not in main
+    assert "A separate redacted export is created only when the user explicitly" in findings
+    assert "only when the user explicitly asks" in findings
+    assert "one-time Feedback offer" not in cleanup
 
 
 def test_triage_leads_with_explicit_blockers_and_evidence_links():
@@ -492,7 +513,7 @@ def test_heal_preserves_scope_and_routes_exceptional_findings():
         "Do not create a Doctor waiver merely to make the output green",
         "Do not execute an action outside the current Sandbox",
         "invoke\n`/booley-feedback` yourself",
-        "public issue or email submission still requires",
+        "Booley never transmits the report",
         "Never describe one of those partial outcomes as healed",
     ):
         assert required in skill
@@ -526,11 +547,11 @@ def test_setup_plans_one_project_wide_tech_cell_replacement():
 
     assert "one Project-wide **Tech Cell Replacement** mapping" in plan
     assert "per-Target coverage matrix" in plan
-    assert "| 24 | Tech Cell Replacement" in template
-    assert "continue numbering from 25" in template
+    assert "| 23 | Tech Cell Replacement" in template
+    assert "continue numbering from 24" in template
     assert "evidence-forced: not applicable" in template
     assert (
-        "Synthesis-disabled Projects resolve row 24 as evidence-forced: not applicable "
+        "Synthesis-disabled Projects resolve row 23 as evidence-forced: not applicable "
         "and omit this subsection"
     ) in template
     assert (

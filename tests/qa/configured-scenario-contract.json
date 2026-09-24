@@ -3,7 +3,7 @@
   "configured_scenarios": {
     "picorv32-ubuntu-codex-cli": {
       "required": true,
-      "semantics": "2d2d69734fab55e43316d4e76d4fd3a7f46e7b94429f4162129299d98f69da18",
+      "semantics": "130da6317beabeeae60f2b8e299dd543487ae6109fd0dc93b73fad69b41e4c47",
       "checks": "a836d1657a99eb32aa719ba1a6c384db370d783baa4153e0bc459435b46aff12",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
@@ -16,7 +16,7 @@
     "uart-ubuntu-codex-cli": {
       "required": true,
       "semantics": "8d6dfeb02870aa3a0201c33cac498fd2f4fdc1683de921a2b8d997aa88e0d35a",
-      "checks": "c4fa59a74e04290a920c6f554f503865e093b09063e193ee02a4ff4ad5aa2e1f",
+      "checks": "d6d2ee7c77dacd618270155f13ae3a890617b3200fe6129b4abf6d8b31cd946f",
       "exclusions": "e99903eebfd639b392acd2c057974542a4f667c41b6e49def86a0539bbc9d46d"
     },
     "picorv32-ubuntu-codex-vscode": {
@@ -34,7 +34,7 @@
     "uart-ubuntu-codex-vscode": {
       "required": true,
       "semantics": "0a87436503dc83321ede4a27f5541f6148e62c6af3796d2c59458b1dc060f924",
-      "checks": "860a2bbda22b3e407d259d1c77d1891b7cb95de783bf0af9908c0b53c3af4623",
+      "checks": "bb2bc45ff91647b5435120e8d019c980de6b4b38ae42c54026fdda56a2e5e7de",
       "exclusions": "e99903eebfd639b392acd2c057974542a4f667c41b6e49def86a0539bbc9d46d"
     },
     "picorv32-windows-codex-cli": {
@@ -52,7 +52,7 @@
     "uart-windows-codex-cli": {
       "required": true,
       "semantics": "4d070bd00fc544e9c26105e0a638bec50dc42329d6ab0c495fcf706b61c41552",
-      "checks": "c0045b872f669795ef95f473106745cdc4d86fc840641bdfb32f6ad92988badd",
+      "checks": "d9cb000b19c60856c870b2bb371c97415fec7e25984f5e1c41953b19efceb60e",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-windows-claude-cli": {
@@ -70,7 +70,7 @@
     "uart-windows-claude-cli": {
       "required": true,
       "semantics": "11b1f0a08f169111cdba1c425e6e727273524ab0b231c55362862a35bb2c153c",
-      "checks": "c0045b872f669795ef95f473106745cdc4d86fc840641bdfb32f6ad92988badd",
+      "checks": "d9cb000b19c60856c870b2bb371c97415fec7e25984f5e1c41953b19efceb60e",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-windows-codex-vscode": {
@@ -88,7 +88,7 @@
     "uart-windows-codex-vscode": {
       "required": true,
       "semantics": "4fe74a8bf0a53da3da25108426d7d1d07364f56a8653df8699d0c2c3812d9ed7",
-      "checks": "04e2fd424b084d6b7c1e5daed32ffe522dc0a5ada454860c7868bfa77a0c69e0",
+      "checks": "5dd938768dbbb5fae82bec84d704d901d76f4c6be67985d6d7f0d4b39ee4327a",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-ubuntu-claude-cli": {

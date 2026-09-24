@@ -1,6 +1,6 @@
 """Deterministic redaction of project identifiers from a findings report.
 
-Why this is code and not a prompt: the destination is a **public** GitHub issue,
+Why this is code and not a prompt: an exported file may be shared publicly,
 where a miss cannot be taken back. An agent asserting "I anonymized it" is an
 unverifiable claim; a denylist with unit tests is a reviewable one. The contract
 this module offers is therefore narrow and honest — *best-effort scrubbing of the
@@ -25,7 +25,7 @@ What is deliberately *not* scrubbed, because a report without it is unusable:
 EDA tool names and versions, Booley's own vocabulary, error text, and Python
 tracebacks. Two of those leak real signal — which EDA tools you have licensed,
 and any design identifier that appears inside a quoted log line we did not
-enumerate — so the preview says so out loud instead of pretending otherwise.
+enumerate — so the exported report says so out loud instead of pretending otherwise.
 """
 
 from __future__ import annotations
@@ -124,7 +124,7 @@ class RedactionPlan:
     patterns: list[tuple[re.Pattern[str], str]] = field(default_factory=list)
 
     def mapping(self) -> dict[str, str]:
-        """Everything being replaced → its placeholder, for the local preview.
+        """Everything being replaced → its placeholder, for local inspection.
 
         Never write this to anything leaving the machine: it is precisely the
         secret-to-placeholder key.
@@ -163,7 +163,7 @@ def _core_identifiers(project_root: Path) -> set[str]:
 
     Deliberately textual rather than a YAML parse: FuseSoC ``.core`` files carry
     tag-bearing YAML that a plain loader chokes on, and all we need are the
-    names — a scrape that misses one is a redaction gap the preview will show,
+    names — a scrape that misses one is a redaction gap the export will show,
     while a parse error would be a hard failure on the privacy path.
     """
     names: set[str] = set()
@@ -371,7 +371,7 @@ def redact(
 
 
 def residual_risks(text: str, plan: RedactionPlan) -> list[str]:
-    """Leak surfaces a denylist structurally cannot close, for the preview.
+    """Leak surfaces a denylist structurally cannot close, for the export.
 
     Named explicitly because the honest version of this feature is "here is what
     I could not check for you", not a green tick. Each entry is only listed when

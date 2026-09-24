@@ -1,9 +1,8 @@
-"""``booley feedback`` — the findings log, its reports, and the opt-in bug report.
+"""``booley feedback`` — the findings log and its local reports.
 
-Split from the skill on purpose. Anything an agent could get subtly wrong on a
-path that ends in a public URL lives here as tested code: which findings are
-filable, what gets redacted, whether submission is even allowed. The skill's job
-shrinks to calling these subcommands and talking to the user.
+Split from the skill on purpose. The tested code decides which findings are
+exportable and what gets redacted. Booley never transmits the result; the
+skill's job shrinks to calling these subcommands and talking to the user.
 
     booley feedback add --title … --severity … --repro …   # something broke
     booley feedback friction --title … --expected …        # nothing broke, but…
@@ -12,10 +11,7 @@ shrinks to calling these subcommands and talking to the user.
     booley feedback triage F-3 --bucket booley             # whose problem is it
     booley feedback list                                   # what's logged so far
     booley feedback report                                 # render the user report
-    booley feedback preview F-3                            # consent text for this batch
     booley feedback export F-3                             # optional redacted Markdown
-    booley feedback submit F-3 --yes                       # host only, after preview
-                                                           # (issue, or mail per [feedback] mode)
     booley feedback filed F-3 --url …                      # posted it by hand
     booley feedback redact --file notes.md                 # scrub anything by hand
 """
@@ -25,13 +21,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 from booley.feedback import redact as redact_mod
 from booley.feedback import render
-from booley.feedback import submit as submit_mod
 from booley.feedback.findings import (
     BUCKETS,
     KINDS,
@@ -206,7 +200,7 @@ def _add_logging_subcommands(fb: argparse._SubParsersAction) -> None:
 
     filed_p = fb.add_parser(
         "filed",
-        help="Mark findings as already reported upstream, so they are never re-filed",
+        help="Mark findings as already shared, so later exports exclude them",
     )
     filed_p.add_argument("finding_ids", metavar="F-N", nargs="+", help="Findings to stamp")
     filed_p.add_argument(
@@ -217,7 +211,7 @@ def _add_logging_subcommands(fb: argparse._SubParsersAction) -> None:
 
 
 def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
-    """The read side: inspect the log, render/export views, offer feedback."""
+    """The read side: inspect the log and render or export local views."""
     list_p = fb.add_parser("list", help="Show the findings logged so far")
     list_p.add_argument("--json", action="store_true", help="Machine-readable output")
     list_p.add_argument("--bucket", choices=BUCKETS, help="Only this bucket")
@@ -232,44 +226,13 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
         "(maintainer dogfood runs only — a real project keeps it out of the tracked tree)",
     )
 
-    preview_p = fb.add_parser(
-        "preview", help="Print the exact transient text that would go upstream"
-    )
-    _add_finding_selection(preview_p)
-
-    export_p = fb.add_parser("export", help="Explicitly write the redacted outbound Markdown")
+    export_p = fb.add_parser("export", help="Explicitly write redacted Markdown for sharing")
     _add_finding_selection(export_p)
     export_p.add_argument(
         "--output",
         metavar="PATH",
         help="Write here instead of the feedback state directory",
     )
-
-    submit_p = fb.add_parser(
-        "submit",
-        help="Send the redacted report upstream — a public GitHub issue, or a mail to "
-        'the maintainer when [feedback] mode = "email"',
-    )
-    _add_finding_selection(submit_p)
-    submit_p.add_argument(
-        "--yes",
-        action="store_true",
-        help="Assert that the user agreed to send it. Required, and not sufficient — "
-        "see --confirm.",
-    )
-    submit_p.add_argument(
-        "--confirm",
-        default="",
-        metavar="TOKEN",
-        help="The token printed by `booley feedback preview`. Proves the approval "
-        "covers the exact text on disk.",
-    )
-    submit_p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be filed and stop. Use this to rehearse the path.",
-    )
-    submit_p.add_argument("--repo", default=submit_mod.UPSTREAM_REPO, help=argparse.SUPPRESS)
 
     redact_p = fb.add_parser("redact", help="Scrub project identifiers out of a file or stdin")
     redact_p.add_argument("--file", metavar="PATH", help="File to scrub (default: stdin)")
@@ -281,7 +244,7 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
 
 
 def _add_finding_selection(parser: argparse.ArgumentParser) -> None:
-    """Add the outbound batch selector shared by preview/export/submit."""
+    """Add the finding selector used by explicit redacted exports."""
     parser.add_argument(
         "finding_ids",
         metavar="F-N",
@@ -370,7 +333,7 @@ def _cmd_say(args: argparse.Namespace, project_dir: Path) -> int:
             kind="impression",
             # Bucketed as Booley's by construction: an opinion about Booley is
             # not the project's problem to fix, and leaving it "unknown" would
-            # park it in the untriaged pile nobody sends anywhere.
+            # park it in the untriaged pile excluded from exports.
             bucket="booley",
             sentiment=args.sentiment,
             component=args.component,
@@ -382,10 +345,7 @@ def _cmd_say(args: argparse.Namespace, project_dir: Path) -> int:
         project_dir,
     )
     print(f"{finding.id} logged ({finding.marker} {finding.sentiment}). Thanks — that helps.")
-    print(
-        "It goes upstream only if you send it: `booley feedback preview`, then "
-        "`submit` from the host."
-    )
+    print("Use `booley feedback export` when you want a redacted file to share manually.")
     return 0
 
 
@@ -503,14 +463,10 @@ def _cmd_report(args: argparse.Namespace, project_root: Path, project_dir: Path)
     )
     print(f"Wrote {user_path}")
     if not report.has_content:
-        print(
-            "No Booley-attributable findings with enough evidence to file — "
-            "nothing to offer upstream."
-        )
+        print("No Booley-attributable findings with enough evidence to export.")
     else:
         print(
-            f"{len(report.filable)} filable finding(s) available to preview; "
-            "no second report was written."
+            f"{len(report.filable)} finding(s) available to export; no redacted file was written."
         )
         print(f"  redaction: {redact_mod.diff_summary(report.redaction_hits)}")
     old_export = project_dir / render.BOOLEY_REPORT_NAME
@@ -528,15 +484,11 @@ def _cmd_report(args: argparse.Namespace, project_root: Path, project_dir: Path)
                 for f in report.withheld
             )
         )
-    if report.has_content:
-        check = submit_mod.preflight(project_dir)
-        if not check.ok:
-            print(f"\nSubmission not available here: {check.reason}")
     return 0
 
 
 class _UnknownFindingIdsError(ValueError):
-    """An outbound batch named findings that do not exist in this project."""
+    """An export batch named findings that do not exist in this project."""
 
     def __init__(self, finding_ids: list[str], path: Path):
         self.finding_ids = finding_ids
@@ -544,7 +496,7 @@ class _UnknownFindingIdsError(ValueError):
 
 
 def _select_findings(log: FindingsLog, finding_ids: list[str]) -> FindingsLog:
-    """Return the requested outbound batch after CLI boundary validation."""
+    """Return the requested export batch after CLI boundary validation."""
     by_id = {entry.id: entry for entry in log.entries}
     missing = list(dict.fromkeys(fid for fid in finding_ids if fid not in by_id))
     if missing:
@@ -553,18 +505,18 @@ def _select_findings(log: FindingsLog, finding_ids: list[str]) -> FindingsLog:
     return FindingsLog(path=log.path, entries=selected, corrupt_lines=log.corrupt_lines)
 
 
-def _outbound_report(
+def _export_report(
     project_root: Path,
     project_dir: Path,
     finding_ids: list[str],
     *,
     all_findings: bool,
 ) -> tuple[FindingsLog, render.BooleyReport] | None:
-    """Read, validate, select, and render one outbound batch."""
+    """Read, validate, select, and render one export batch."""
     log = read_log(project_dir)
     if bool(finding_ids) == all_findings:
         choice = "finding IDs or --all, not both" if finding_ids else "finding IDs or --all"
-        print(f"Error: choose {choice} for the outbound batch.", file=sys.stderr)
+        print(f"Error: choose {choice} for the export batch.", file=sys.stderr)
         return None
     try:
         selected = log if all_findings else _select_findings(log, finding_ids)
@@ -576,7 +528,7 @@ def _outbound_report(
 
 
 def _cmd_export(args: argparse.Namespace, project_root: Path, project_dir: Path) -> int:
-    prepared = _outbound_report(
+    prepared = _export_report(
         project_root, project_dir, args.finding_ids, all_findings=args.all_findings
     )
     if prepared is None:
@@ -589,90 +541,9 @@ def _cmd_export(args: argparse.Namespace, project_root: Path, project_dir: Path)
         Path(args.output).resolve() if args.output else project_dir / render.BOOLEY_REPORT_NAME
     )
     path = render.export_booley_report(report, output)
-    print(f"Wrote {path} ({len(report.filable)} filable finding(s), redacted)")
+    print(f"Wrote {path} ({len(report.filable)} finding(s), redacted)")
     print(f"  redaction: {redact_mod.diff_summary(report.redaction_hits)}")
     return 0
-
-
-def _cmd_preview(args: argparse.Namespace, project_root: Path, project_dir: Path) -> int:
-    prepared = _outbound_report(
-        project_root, project_dir, args.finding_ids, all_findings=args.all_findings
-    )
-    if prepared is None:
-        return 1
-    _, report = prepared
-    if not report.has_content:
-        print("Nothing filable — nothing to preview.")
-        return 0
-    print(
-        submit_mod.preview(
-            report.body,
-            report.risks,
-            redact_mod.diff_summary(report.redaction_hits),
-            # The consent text names the destination, so it has to read the same
-            # config `submit` will: previewing a public issue and then mailing it
-            # (or the reverse) is consent for the wrong thing.
-            route=submit_mod.route_for(submit_mod.read_mode(project_dir)),
-            finding_ids=args.finding_ids,
-            all_findings=args.all_findings,
-        )
-    )
-    return 0
-
-
-def _cmd_submit(args: argparse.Namespace, project_root: Path, project_dir: Path) -> int:
-    prepared = _outbound_report(
-        project_root, project_dir, args.finding_ids, all_findings=args.all_findings
-    )
-    if prepared is None:
-        return 1
-    log, report = prepared
-    if log.corrupt_lines:
-        return _refuse_lossy_rewrite(log)
-    if not report.has_content:
-        print("Nothing filable — nothing to submit.")
-        return 0
-    with tempfile.TemporaryDirectory(prefix="booley-feedback-") as temp_dir:
-        body_path = Path(temp_dir) / render.BOOLEY_REPORT_NAME
-        body_path.write_text(report.body, encoding="utf-8")
-        outcome = submit_mod.submit(
-            report.issue_title(),
-            body_path,
-            project_dir,
-            approved=args.yes,
-            confirm=args.confirm,
-            dry_run=args.dry_run,
-            repo=args.repo,
-            label=report.label,
-        )
-    print(outcome.message)
-    if outcome.posted:
-        # Stamp what just went out, so the next report on this project — a bug
-        # hit months later — starts from an empty batch instead of re-publishing
-        # this one. Done here rather than in submit() because the log is the
-        # CLI's business, and a failed stamp must not un-file a live issue.
-        for finding in report.filable:
-            finding.mark_filed(outcome.url or "manual")
-        rewrite(log.entries, project_dir)
-        print(f"Marked {len(report.filable)} finding(s) as filed; they will not be sent again.")
-    elif outcome.handed_off:
-        # Nothing is stamped here: Booley handed the user a mailto: link and has
-        # no way of knowing whether they ever hit send. Stamping optimistically
-        # would bury the batch — never re-offered, never actually reported.
-        ids = " ".join(f.id for f in report.filable)
-        print(
-            f"\nOnce you have actually sent it, run:\n"
-            f"    booley feedback filed {ids} --url email\n"
-            "Nothing is marked as filed until you do, so an unsent mail is not lost."
-        )
-    # Not-posted is a legitimate outcome (declined, disabled, wrong runtime, no gh,
-    # dry run, or an email hand-off) and the message always names the manual
-    # route — not an error. A *rejected* approval is different: the caller asked
-    # to send and it did not happen, so exit non-zero rather than let a script
-    # read that as success.
-    if outcome.posted or outcome.handed_off or not args.yes or args.dry_run:
-        return 0
-    return 1
 
 
 def _cmd_redact(args: argparse.Namespace, project_root: Path, project_dir: Path) -> int:
@@ -703,9 +574,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace, Path, Path], int]] = {
     "filed": lambda args, _root, pdir: _cmd_filed(args, pdir),
     "list": lambda args, _root, pdir: _cmd_list(args, pdir),
     "report": _cmd_report,
-    "preview": _cmd_preview,
     "export": _cmd_export,
-    "submit": _cmd_submit,
     "redact": _cmd_redact,
 }
 

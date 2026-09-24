@@ -342,7 +342,7 @@ do not need these files.
 | `/booley-ticket-create <desc>` | You want to create a ticket | Apply guidance; preview and enqueue |
 | `/booley-ticket-triage` | Tickets are blocked or awaiting review | Unblock/reset or approve/reject |
 | `/booley-heal` | Doctor or Flow health has drifted | Repair safe findings; verify Doctor |
-| `/booley-feedback` | Report bugs, friction, praise, or ideas | Redact evidence; submit after approval |
+| `/booley-feedback` | Report bugs, friction, praise, or ideas | Redact evidence; export for manual sharing |
 
 ### Artifacts
 

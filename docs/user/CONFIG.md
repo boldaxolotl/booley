@@ -1057,7 +1057,7 @@ the sentiment without making you learn a reporting interface.
 The skill keeps one persistent report from that log:
 
 - **`.booley_project/SETUP-REPORT.md`** — yours. Local, unredacted, never
-  published, written in every mode. On a project that never ran setup it is
+  published, and always written. On a project that never ran setup it is
   called `FEEDBACK-REPORT.md` instead.
 
 The skill derives the maintainer-facing view from the same log: only entries
@@ -1066,50 +1066,23 @@ with project identifiers redacted. It is not saved as a second report. Ask the
 skill for a redacted export only when you explicitly want that view persisted as
 `.booley_project/BOOLEY-FEEDBACK.md` for manual sharing.
 
-`mode` decides whether Booley may *offer* to send that view, and where:
+Booley never transmits feedback. The `[feedback]` table contains only redaction
+settings used by an explicit export:
 
 ```toml
 [feedback]
-# mode = "ask"                  # default: offer once, after showing you the text
-# mode = "email"                # same offer, by mail to the maintainer, not a public issue
-# mode = "file-only"            # never submit; allow only an explicit redacted export
-# mode = "off"                  # local report only, no offer
-# redact_extra = ["codename"]   # extra terms to scrub from anything outgoing
+# redact_extra = ["codename"]   # extra terms to scrub from exported feedback
 # redact_identifiers = false    # keep module/Target names (default: replace them)
 ```
 
-Setup's plan (Step 0, row 21) asks for this value up front, while you are already
-thinking about disclosure rather than at the end of a long session. Unattended
-runs resolve it to `file-only` — an agent may not accept the offer for you.
+The former `mode` setting has been removed. Delete it from existing Projects;
+Doctor reports it as retired instead of silently accepting a setting that no
+longer controls any behavior.
 
-#### What the offer looks like (`ask` and `email`)
-
-Once per setup run, at the very end, after the gate has already passed — or once
-per report, when you asked the skill for one. You are shown the **exact text**
-that would go out, what was substituted, and what redaction cannot catch. Three
-answers are all fine: yes, "just give me the file", or no. A no is final for
-that run; `mode = "off"` makes it permanent.
-
-Nothing can be sent without the **confirmation token** printed with that preview.
-The token is a digest of the report, so it only works for text that was actually
-displayed, and re-rendering invalidates it — a guard against an agent approving
-on your behalf. The skill passes the token only after you approve the exact text.
-
-A filed issue is **public** and carries your GitHub account name. If that is the
-sticking point, use `file-only`, ask the skill for the redacted Markdown file,
-and post it yourself from whatever account you like. Tell the skill where you
-posted it so those entries are marked filed and excluded from later batches; a
-bug you file in July must not drag along March's setup findings.
-
-`mode = "email"` swaps the destination for `boldaxolotl@proton.me`, Booley's
-maintainer intake — nothing published, no GitHub account needed, same redaction,
-preview and token. It is a pure hand-off: Booley builds a prefilled `mailto:`
-link and stops. No SMTP, no password, no outbound connection; your client sends
-it from your mailbox, so the last look is yours. Long reports get abbreviated in
-the link because mail clients silently drop oversized ones; ask the skill for a
-redacted export and attach it when prompted. Booley cannot see whether you ever
-hit send, so tell the skill afterwards. Otherwise the batch is offered again
-next time, which is the safe direction to be wrong in.
+Ask `/booley-feedback` when you want a redacted Markdown file to inspect and
+share manually. Normal reporting never creates the export as a side effect.
+After you share it, tell the skill where it went so those Findings are marked
+filed and excluded from later exports.
 
 #### What redaction does and does not do
 
@@ -1124,18 +1097,18 @@ terms; a project that overrode `[stealth] banned_words` gets those scrubbed too.
 names and versions, error text, tracebacks, and performance/area numbers. Two of
 those carry real signal — which commercial EDA tools you license, and any
 identifier sitting inside a quoted log line that was never in a `.core`. The
-preview says so before you decide.
+export says so before you share it.
 
 **It is a denylist, not a proof.** The honest promise is "best-effort scrubbing,
-and here is the diff" — which is why you read the text before it goes anywhere.
+and here is the diff" — which is why you read the exported file before sharing it.
 For an open-source design whose module names are already public,
 `redact_identifiers = false` produces a much more useful report.
 
 That caveat bites hardest on **attachments**. A report can inline the tail of a
 run log or a doctor transcript, which is usually what makes a bug diagnosable —
 and a log line is arbitrary text no denylist can vet. Give the path to the skill;
-attachments are redacted with the rest of the body and shown in full in the
-preview. Read them there.
+attachments are redacted with the rest of the body and included in the exported
+file. Read them there.
 
 ### Agent provider (`[agent]`)
 

@@ -135,12 +135,11 @@ def test_project_metadata_is_advisory_and_preserves_warning_identity() -> None:
     assert {finding.check_id for finding in audit.findings} == {"config.project-metadata"}
 
 
-def test_valid_project_and_feedback_settings_produce_pass_findings() -> None:
+def test_valid_project_and_feedback_redaction_settings_produce_pass_findings() -> None:
     project = project_schema.audit_project_table({"project": {"name": "demo"}})
     feedback = project_schema.audit_feedback_table(
         {
             "feedback": {
-                "mode": "file-only",
                 "redact_extra": ["codename"],
                 "redact_identifiers": True,
             }
@@ -154,14 +153,13 @@ def test_valid_project_and_feedback_settings_produce_pass_findings() -> None:
         ),
     )
     assert feedback.is_valid
-    assert feedback.findings[0].message.endswith("(mode=file-only)")
+    assert feedback.findings[0].message.endswith("redaction settings valid")
 
 
 def test_feedback_audit_collects_independent_field_failures() -> None:
     audit = project_schema.audit_feedback_table(
         {
             "feedback": {
-                "mode": "sometimes",
                 "redact_extra": "codename",
                 "redact_identifiers": "false",
             }
@@ -169,10 +167,19 @@ def test_feedback_audit_collects_independent_field_failures() -> None:
     )
 
     assert not audit.is_valid
-    assert len(audit.findings) == 3
+    assert len(audit.findings) == 2
     assert all(
         finding.severity is config_common.ConfigFindingSeverity.FAIL for finding in audit.findings
     )
+
+
+def test_feedback_audit_rejects_retired_mode_with_migration_guidance() -> None:
+    audit = project_schema.audit_feedback_table({"feedback": {"mode": "file-only"}})
+
+    assert not audit.is_valid
+    assert audit.findings[0].message == "booley.toml [feedback].mode was removed and is ignored"
+    assert "delete [feedback].mode" in audit.findings[0].fix
+    assert "explicit export" in audit.findings[0].fix
 
 
 def test_stealth_audit_enforces_native_core_isolation_contract() -> None:

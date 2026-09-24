@@ -592,10 +592,10 @@ capabilities:
 - id: FEEDBACK-REPORTING
   title: Feedback reporting
   sources:
-  - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#what-the-offer-looks-like-ask-and-email
+  - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
   contract: |-
-    `feedback-file-only`: unattended report generation → file only/no outbound send. `feedback-redact`: benign planted private-like fixture → exact intended redaction in preview. `feedback-token`: approved preview token then rerender changed content → old token rejected. `feedback-export`: explicit local export → preview-equivalent file. `feedback-block-submit`: dry-run/unconfirmed submission → nothing sent. `feedback-off`: off mode → no outbound offer.
-    Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these Checks.
+    `feedback-redact`: benign planted private-like fixture → exact intended redaction in the exported file. `feedback-export`: explicit local export → sanitized file, while ordinary report generation creates no redacted companion.
+    Exact sanitized export and before/after local filesystem evidence without secrets; Booley has no feedback transmission path.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: DOCUMENTATION-USABILITY

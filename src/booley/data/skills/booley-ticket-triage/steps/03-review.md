@@ -106,4 +106,4 @@ Review never resumes through an ordinary move to `queued`. It finishes in
 explicit full reset above.
 
 After the decision, invoke `/booley-feedback` for every confirmed Booley defect.
-External submission remains behind that skill's explicit approval gate.
+The skill never submits externally; the user controls any manual sharing.

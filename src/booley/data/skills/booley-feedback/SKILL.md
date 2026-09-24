@@ -5,11 +5,12 @@ description: Prepare sanitized Booley feedback for manual submission from an off
 
 # Prepare Booley feedback
 
-Deliver an inspected sanitized report for manual submission and the blocked
-task's next step (see §5). This skill runs offline in the Sandbox: use
-local commands, not `submit`, authentication probes, confirmation tokens,
-browser launches, or mail sending. Generate the report by default without a
-separate approval question or publication decision.
+Capture and diagnose the feedback, update its local unredacted report, and give
+the blocked task's next step when applicable. This skill runs offline in the
+Sandbox: use local commands only, without authentication probes, browser
+launches, or mail sending. Do not create a sanitized report by default. Export
+one only when the user explicitly asks for a sanitized file or a report for
+manual submission.
 
 Check the installed CLI with `booley feedback --help`; run its commands for the
 user rather than asking them to choose subcommands.
@@ -122,19 +123,27 @@ original evidence locally; do not mark it filed or edit the log by hand.
 Finish with safe finding IDs and reasons for withholding evidence, without
 exposing the withheld material.
 
-## 4. Write and inspect the reports
+## 4. Write the local report; export only on explicit request
 
 ```console
 booley feedback report
 booley feedback list
+```
+
+The local unredacted report is `SETUP-REPORT.md` for a setup-origin log or
+`FEEDBACK-REPORT.md` otherwise. Use the paths printed by the CLI in the directory
+resolved by `booley.runtime.project_dir`; keep reports and reproducer scratch
+work outside the RTL repository's tracked tree.
+
+Stop here unless the user explicitly requested a sanitized file or a report for
+manual submission. For that request, export exactly this interaction's safe IDs;
+`--all` includes unrelated pending findings:
+
+```console
 booley feedback export F-8 F-9
 ```
 
-Use exactly this interaction's safe IDs; `--all` includes unrelated pending
-findings. The local unredacted report is `SETUP-REPORT.md` for a setup-origin log
-or `FEEDBACK-REPORT.md` otherwise. Export writes `BOOLEY-FEEDBACK.md`. Use the
-paths printed by the CLI in the directory resolved by `booley.runtime.project_dir`;
-keep reports and reproducer scratch work outside the RTL repository's tracked tree.
+Export writes `BOOLEY-FEEDBACK.md`.
 
 Read the entire exported file, including its environment section and attachment
 blocks. Check for private identifiers, semantic disclosure, stale notes, clipped
@@ -151,16 +160,16 @@ status, and explicit unknowns, with no private reproduction. Inspect it as above
 Project-only configuration mistakes stay local unless there is distinct Booley
 feedback to send.
 
-## 5. Hand off the report and the next step
+## 5. Hand off an explicitly requested export and the next step
 
-Link the sanitized report with a host-accessible path when available. If the
-container path is not directly accessible, explain how to retrieve it using the
-session's supported artifact transfer. Keep the unredacted local report clearly
-separate from the file intended for sharing.
+When the user requested an export, link the sanitized report with a
+host-accessible path when available. If the container path is not directly
+accessible, explain how to retrieve it using the session's supported artifact
+transfer. Keep the unredacted local report clearly separate from the file
+intended for sharing. Without an explicit export request, report only the local
+capture and task outcome; do not present submission options.
 
-Present two clean, highlighted submission options, using the installed source's
-`NEW_ISSUE_URL` and `INTAKE_EMAIL` in `booley.feedback.submit` as the destination
-source of truth. Current destinations are:
+Present two clean, highlighted manual submission options. Current destinations are:
 
 - **Submit on GitHub:** [Open a Booley issue](https://github.com/boldaxolotl/Booley/issues/new).
   Paste the sanitized report, review it, and submit. Explain briefly that the
@@ -172,8 +181,8 @@ source of truth. Current destinations are:
 
 Keep report bodies out of URLs; use a normal issue link and separate file, with
 at most a subject prefilled in the email link. Offer both routes unless one is
-already chosen. Omit unsolicited options after refusal or when `[feedback] mode`
-is `"off"` or `"file-only"`; explicit requests for submission instructions take precedence.
+already chosen. Omit unsolicited options after refusal; explicit requests for
+submission instructions take precedence.
 
 End with the report ready to send, not submitted, and the task outcome:
 

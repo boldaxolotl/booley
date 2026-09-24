@@ -148,12 +148,10 @@ class TestImpressions:
         assert "Impressions (what you think of Booley): **1**" in out
         assert read_log(project_dir).counts() == {"blocker": 0, "workaround": 0, "note": 0}
 
-    def test_an_all_impression_batch_is_tagged_feedback_not_bug(self, project, project_dir):
+    def test_an_all_impression_batch_is_framed_as_feedback_not_bug(self, project, project_dir):
         self._say(project_dir, "saved me a week on the AXI port", "praise")
         self._say(project_dir, "the setup grill is too long", "gripe")
         report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
-        assert report.tag == "feedback"
-        assert report.issue_title() == "[feedback] 2 impressions from a Booley user"
         assert "booley-feedback" in report.body
         assert "booley feedback say" not in report.body
         assert "## What they said" in report.body
@@ -174,7 +172,6 @@ class TestImpressions:
             project_dir,
         )
         report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
-        assert report.tag == "bug"
         assert "## Findings" in report.body
         # The impression still rides along — it just does not set the framing.
         assert "love the waveform viewer" in report.body
@@ -235,22 +232,6 @@ class TestBooleyReport:
         append(Finding(title="my own problem", bucket="project"), project_dir)
         report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
         assert not report.has_content
-
-    def test_issue_title_names_the_single_finding(self, project, project_dir):
-        append(
-            Finding(
-                title="doctor is wrong", bucket="booley", repro="a", observed="b", expected="c"
-            ),
-            project_dir,
-        )
-        report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
-        assert report.issue_title() == "[setup] doctor is wrong"
-
-    def test_issue_title_summarizes_a_batch(self, project, project_dir):
-        _populate(project_dir)
-        report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
-        assert "2 findings" in report.issue_title()
-        assert "1 blocking" in report.issue_title()
 
     def test_the_environment_fingerprint_is_present(self, project, project_dir):
         _populate(project_dir)

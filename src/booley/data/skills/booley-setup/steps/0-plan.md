@@ -773,33 +773,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     on. With the scrub off, a hidden-footprint project dir is versioned nowhere
     until someone `git init`s it — flag that for Step 4's footprint work rather
     than letting the combination pass silently.
-21. **Feedback mode (`[feedback] mode`)** — whether Step 6 may *offer* to send
-    the run's Booley-side findings upstream, and to where. Asked here, at
-    planning time, so the answer is on record before anyone is tired at the end
-    of a long setup — and so Step 6 never has to guess. **Never
-    evidence-forced**: no codebase signal says what a team's disclosure rules
-    are. Four values:
-    - `ask` (**default**) — Step 6 shows the transient redacted view and asks once, for
-      a **public** issue on Booley's tracker. A decline is final for the run.
-    - `email` — the same offer, the same preview, but the destination is a
-      private mail to Booley's maintainer (`boldaxolotl@proton.me`) instead of a
-      public issue. Booley builds a `mailto:` link; the user's own client sends
-      it. No GitHub account needed, and nothing is published.
-    - `file-only` — Step 6 never offers to send anything. The user may later run
-      `booley feedback export` if they want a redacted file to route through
-      their own review.
-    - `off` — Step 6 writes only the local report and stays quiet.
-    **Ask it neutrally and do not sell it.** Say what it is (an optional bug
-    report that helps Booley get fixed), and say the two things that decide it:
-    where it lands and under whose name (public issue + **GitHub account name**,
-    or a maintainer's inbox + their **email return address**), and that
-    redaction is a best-effort denylist over paths, remotes, and design
-    identifiers — not a guarantee. Whatever they pick, they see the exact text
-    before anything is sent. Unattended: `file-only`, never `ask` or `email` — an
-    unattended run has nobody to read a preview, and the offer is not one an
-    agent may accept on a user's behalf.
-
-24. **Tech Cell Replacement** — one Project-wide mapping shared by all enabled
+23. **Tech Cell Replacement** — one Project-wide mapping shared by all enabled
     synthesis Targets, with each Target recording only the subset it reaches.
     Record the Flow-supplied physical-library family and verified Liberty/LEF
     inputs, the authoritative replacement location, the classified Project
@@ -810,7 +784,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     `evidence-forced: not applicable` and omit the replacement subsection.
     Never satisfy this row with a list of cell names alone.
 
-Immediately after the decision sheet, write the row-24 subsection in the plan
+Immediately after the decision sheet, write the row-23 subsection in the plan
 with these headings: **Flow/library and authoritative location**, **Project
 inventory**, **per-Target coverage matrix**, **replacement table and semantic
 decisions**, **approved Project-owned inputs**, **incomplete/Yellow Targets and
@@ -819,7 +793,7 @@ name each entry's RTL intent, cell, mechanism, source location, frontend
 definition, semantic evidence, and validation layers; the coverage matrix must
 retain hierarchy and dependency-core provenance.
 
-Then add the **repo-specific rows**, numbering on from 25 — everything Part A
+Then add the **repo-specific rows**, numbering on from 24 — everything Part A
 surfaced that the standard list doesn't name: generator steps, **git
 submodules** (a row whenever either participating repository's
 `git submodule status` is non-empty: the host-side
@@ -862,8 +836,8 @@ Refine the decision sheet with the user, ticket-creation style:
   leave unanswered decisions open rather than silently inferring them. Settled
   roots expose their downstream questions for the next round.
 - **The mandatory rows are non-negotiable.** Rows 4 (TB flavor), 16 (git
-  footprint), 17 (specialists), 18 (parity), 20
-  (commit-message scrub), and 21 (feedback mode) are marked *always a grill
+  footprint), 17 (specialists), 18 (parity), and 20
+  (commit-message scrub) are marked *always a grill
   question* — none may be
   silently defaulted, even for a clean three-question repo. Row 19 is normally
   `pre-set` by init; if a legacy config leaves a field absent, add that missing
@@ -872,7 +846,7 @@ Refine the decision sheet with the user, ticket-creation style:
   *state* them with their evidence: "all 8 test modules are cocotb, so the
   flavor is cocotb" is a confirmation line, not a question), and **`pre-set`**
   (the value is already hand-set on disk — confirm it in one line, don't
-  re-litigate it). Rows 16, 17, 20, and 21 are never evidence-forced.
+  re-litigate it). Rows 16, 17, and 20 are never evidence-forced.
 - **Codebase first**: never ask what the repo can answer. Ask to *confirm*
   low-confidence inferences, to *choose* where evidence genuinely
   under-determines (TB flavor, the Target set / config variants, style lint,
