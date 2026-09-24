@@ -112,6 +112,7 @@ def _ticket_fields(ticket: Path) -> dict:
 def ticket_routing(root: Path, ticket: Path, outer_ref: str, inner_ref: str) -> dict:
     """Prove that a created Ticket preserves both prepared destination roles."""
     topology = git_topology(root, "ticket", outer_ref=outer_ref, inner_ref=inner_ref)
+    _require(outer_ref != inner_ref, "outer and inner destination refs must be distinct")
     fields = _ticket_fields(ticket)
     expected_branch = outer_ref.removeprefix("refs/heads/")
     _require(fields.get("branch") == expected_branch, "Ticket branch does not match outer ref")

@@ -201,14 +201,12 @@ def _full_commit(repository: Path, ref: str) -> str:
 
 
 def _outer_destination_commit(repository: Path, branch: str) -> str:
-    try:
-        return _full_commit(repository, branch)
-    except TicketBaselineOperationError as exc:
-        if _strict_branch_sha(repository, branch) is None:
-            raise TicketBaselineOperationError(
-                f"outer `branch` {branch!r} does not exist in the outer repository"
-            ) from exc
-        raise
+    sha = _strict_branch_sha(repository, branch)
+    if sha is None:
+        raise TicketBaselineOperationError(
+            f"outer `branch` {branch!r} does not exist in the outer repository"
+        )
+    return sha
 
 
 def _branch_sha(repository: Path, branch: str) -> str:
@@ -504,7 +502,7 @@ def _validate_open_bases(
     outer_sha: str,
     project: _ProjectOpenPlan | None,
 ) -> None:
-    if _full_commit(root, outer_branch) != outer_sha:
+    if _strict_branch_sha(root, outer_branch) != outer_sha:
         raise TicketBaselineOperationError(
             f"destination branch {outer_branch!r} moved during preflight"
         )

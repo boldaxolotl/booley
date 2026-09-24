@@ -888,10 +888,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: stealth.native-no-copy
   phase: prepare
@@ -1013,7 +1013,7 @@ steps:
     sha256: c5d014145e5ec88ec343f90e8f07270ec927b6505a56a8580687db9a8d624ca9
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 - id: doctor.plain-recheck
   phase: prepare
   action: Run final plain Doctor; require warning-free result before baseline.
@@ -1157,10 +1157,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: inventory.PROJECT-INVENTORY.inventory-missing
   phase: prepare
@@ -1219,7 +1219,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: state_probe.py
     audience: scenario-operator
     sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
@@ -1245,7 +1245,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixtures/riscv/spike-probe.S
     audience: scenario-operator
     sha256: a9664bae1216cba860889de4a5798db4bc228c29f1f286cd684cde8496214b03
@@ -1254,7 +1254,7 @@ steps:
     sha256: fcd15b2cc2d205f2f17d09b3f79a94ef6723474e77e52b4c6a1115e8dee76573
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: inventory.RISC-V-TOOLCHAIN.riscv-tools
   phase: prepare
@@ -1277,10 +1277,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: inventory.STEALTH-MODE.stealth-history
   phase: prepare
@@ -1562,10 +1562,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: vivado.project-grant
   phase: baseline
@@ -1590,7 +1590,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: state_probe.py
     audience: scenario-operator
     sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
@@ -1618,10 +1618,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: vivado.license-create
   phase: baseline
@@ -1740,10 +1740,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: vivado.license-delete
   phase: baseline
@@ -1799,13 +1799,13 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixtures/lint/qa_lint_fixture.sv
     audience: scenario-operator
     sha256: 6a37dff1d8a64930821e835c76fb7f06587e00b23a5ce6c38ecd3b146260319c
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: inventory.LINT-FLOW.lint-hard
   phase: baseline
@@ -1828,10 +1828,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: inventory.LINT-FLOW.lint-infra
   phase: baseline
@@ -1872,7 +1872,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixtures/lint/qa_lint_fixture.sv
     audience: scenario-operator
     sha256: 6a37dff1d8a64930821e835c76fb7f06587e00b23a5ce6c38ecd3b146260319c
@@ -1887,7 +1887,7 @@ steps:
     sha256: c20181db627a85cfc4da3a700c30c92338468cbf9c0c4a4306add24b4f017240
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: inventory.LINT-FLOW.lint-nonfatal-warning
   phase: baseline
@@ -2000,10 +2000,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: inventory.SYNTHESIS-FLOW.synth-frontend-incompatible
   phase: baseline
@@ -2190,7 +2190,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: state_probe.py
     audience: scenario-operator
     sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
@@ -2222,7 +2222,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: state_probe.py
     audience: scenario-operator
     sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
@@ -2384,10 +2384,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
   - path: state_probe.py
     audience: scenario-operator
     sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
@@ -2610,13 +2610,13 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixtures/virtual-signals.md
     audience: scenario-operator
     sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: bwave.semantic-value
   phase: interactive
@@ -2875,10 +2875,10 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: interactive.repair
   phase: interactive
@@ -2901,7 +2901,7 @@ steps:
   assets:
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 - id: interactive.rerun-simulation
   phase: interactive
   action: Child reruns relevant simulation after repair; require fresh passing result.
@@ -3309,7 +3309,7 @@ steps:
     stimulus: |-
       Before Ticket Create, run `git-topology ... ticket --outer-ref ... --inner-ref ...` with the two explicit full destination refs from the resource ledger. Render `outer_destination_branch` and `project_destination_ref` into the complete literal annex, then invoke the Ticket Create skill with `--agent --no-confirm`.
     expected: |-
-      The skill accepts the declared complete payload and materializes the draft against the exact paired refs. The post-create `ticket-routing` oracle proves `branch` maps to the normalized outer ref and `project_destination_ref` maps to the exact nested ref. Unsupported topology, a missing declared ref, or a swapped mapping blocks the attempted Check.
+      The skill accepts the declared complete payload and materializes the draft against the exact paired refs. The post-create `ticket-routing` oracle proves `branch` maps to the normalized outer ref and `project_destination_ref` maps to the exact nested ref. Unsupported topology, a missing declared ref, or a swapped or collapsed mapping blocks the attempted Check.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
     evidence: |-
       Exact invocation, rendered full prompt and hash, payload, topology snapshot, resolved field-to-ref mapping, and post-create oracle output with independently resolved outer and Project commits. This is a skill invocation, not ordinary CLI.
@@ -3321,7 +3321,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: tickets/continuity.md
     audience: Developer Agent
     sha256: 48106b5389e64de6fd9fedd69e5728699dc00af281a6f3aad6f4ee374064c269
@@ -3330,7 +3330,7 @@ steps:
     - project_destination_ref
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 
 - id: create.dhrystone-self-checking-cycle-contract.board
   phase: create
@@ -3376,7 +3376,7 @@ steps:
     stimulus: |-
       Run `git-topology ... ticket --outer-ref ... --inner-ref ...` with the two explicit full destination refs from the resource ledger. Render `outer_destination_branch` and `project_destination_ref` into the complete literal annex, then invoke Ticket Create for `rv32-zbb-pcpi` with `--agent --no-confirm` and the declared provider spelling.
     expected: |-
-      The post-create `ticket-routing` oracle proves `branch` maps to the normalized outer ref and `project_destination_ref` maps to the exact nested ref. Unsupported topology, a missing declared ref, or a swapped mapping blocks the attempted Check. Where the selected Configured Scenario includes `fpga_impl_ok`, Ticket Create evaluates it against the already-prepared immutable project-data destination where `flows.fpga.enabled = true`; no live-worktree or Ticket-authoring change to `booley.toml` is needed. Configurations that exclude FPGA do not acquire an FPGA setup requirement from this Check.
+      The post-create `ticket-routing` oracle proves `branch` maps to the normalized outer ref and `project_destination_ref` maps to the exact nested ref. Unsupported topology, a missing declared ref, or a swapped or collapsed mapping blocks the attempted Check. Where the selected Configured Scenario includes `fpga_impl_ok`, Ticket Create evaluates it against the already-prepared immutable project-data destination where `flows.fpga.enabled = true`; no live-worktree or Ticket-authoring change to `booley.toml` is needed. Configurations that exclude FPGA do not acquire an FPGA setup requirement from this Check.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
     evidence: Exact invocation, rendered full prompt and hash, payload, topology snapshot, resolved field-to-ref mapping, and post-create oracle output with independently resolved outer and Project commits; this is a skill invocation, not ordinary CLI.
     capture: evidence/picorv32-published-demo-continuity.create.rv32-zbb-pcpi.payload
@@ -3387,7 +3387,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
   - path: tickets/evolution.md
     audience: Developer Agent
     sha256: d3184c9c7d424d9c8746eb060a604418fa4c3593cf3460d201cac2f351b1aeda
@@ -3396,7 +3396,7 @@ steps:
     - project_destination_ref
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: c95009bf56803ec16e5d457613abfc1b2e9501c110e686285c312e4de90e9b63
+    sha256: 4d78dc4cd0f685d8ff457143fa3dc1627c727379e2f5c4a0ef55268cc427c3c4
 - id: create.rv32-zbb-pcpi.board
   phase: create
   action: Creation returns board path and `waiting` state for `rv32-zbb-pcpi`.
@@ -6062,7 +6062,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
 - id: cleanup.processes
   phase: cleanup
   action: Release every run-owned process and prove no descendants remain.
@@ -6094,7 +6094,7 @@ steps:
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
-    sha256: 61d25c983f6e6a8fd7ebfaf7fb6c903fe6e15628fe529c3bef07720160d79d05
+    sha256: 4e69094917d88b46aededa70b9055e9a2e0bb31c7a0db169938c42b798c8ea44
 - id: cleanup.license-profiles
   phase: cleanup
   action: Release every run-owned License Profile and prove its absence.

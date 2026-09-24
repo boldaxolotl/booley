@@ -41,8 +41,8 @@ The Project path and refs come from this run's ledger, not from a copied run.
   Ticket Create, parse the retained Ticket and prove that `branch` equals the
   normalized outer ref while `project_destination_ref` equals the exact nested
   ref. Retain the field-to-ref mapping and the independently resolved commit in
-  each owning repository. A swapped mapping blocks the Check even when both
-  repositories happen to contain both names.
+  each owning repository. A swapped or collapsed mapping blocks the Check even
+  when both repositories happen to contain both names.
 * Build `fixtures/riscv/spike-probe.S` with `spike-probe.ld` using the selected
   runtime's RISC-V compiler. Run `spike-elf ELF --ram-start START --ram-end END`
   with the RAM bounds documented for that runtime before invoking Spike. Every

@@ -147,6 +147,33 @@ def test_ticket_routing_proves_distinct_mapping_and_rejects_swap(tmp_path):
         )
 
 
+def test_ticket_routing_rejects_collapsed_mapping(tmp_path):
+    root = tmp_path / "outer"
+    inner = root / ".booley_project"
+    _checkout(root)
+    _checkout(inner)
+    ticket = tmp_path / "ticket.md"
+    branch = subprocess.run(
+        ["git", "-C", str(root), "branch", "--show-current"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.strip()
+    ticket.write_text(
+        f"---\nbranch: {branch}\n"
+        f"project_destination_ref: refs/heads/{branch}\n---\n\n## Description\n"
+    )
+
+    with pytest.raises(FixtureError, match="must be distinct"):
+        ticket_routing(
+            root,
+            ticket,
+            f"refs/heads/{branch}",
+            f"refs/heads/{branch}",
+        )
+
+
 def _elf32(path: Path, address: int) -> None:
     data = bytearray(128)
     data[:16] = b"\x7fELF\x01\x01\x01" + bytes(9)

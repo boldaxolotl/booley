@@ -578,6 +578,37 @@ def test_missing_outer_destination_retains_draft_but_blocks_enqueue(
     assert not (project_dir / "tickets/board/waiting/missing-outer-destination.md").exists()
 
 
+def test_outer_destination_tag_does_not_replace_missing_branch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    _git(root, "tag", "outer-release")
+
+    ticket = _create_v2_ticket(
+        tio,
+        "tag-only-outer-destination",
+        TicketFileSpec(
+            summary="Reject a tag in place of the outer destination branch",
+            ticket_type="feature",
+            branch="outer-release",
+            project_destination_ref="refs/heads/main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+
+    assert ticket == project_dir / "tickets/board/drafts/tag-only-outer-destination.md"
+    assert "workspace could not be materialized" in capsys.readouterr().err
+    assert tio.enqueue_ticket("tag-only-outer-destination") is False
+    assert (
+        "outer `branch` 'outer-release' does not exist in the outer repository"
+        in capsys.readouterr().err
+    )
+    assert basis_publication.load_basis_publication(root, "tag-only-outer-destination") is None
+    assert not (project_dir / "tickets/board/queue/tag-only-outer-destination.md").exists()
+    assert not (project_dir / "tickets/board/waiting/tag-only-outer-destination.md").exists()
+
+
 def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(
     tmp_path: Path,
 ) -> None:
