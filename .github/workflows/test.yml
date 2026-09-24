@@ -941,6 +941,20 @@ jobs:
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
+      # Default-branch caches are readable from feature branches, while caches
+      # saved by a pull request remain scoped to that branch and cannot replace
+      # the trusted default-branch entry. A miss seeds a later warm rerun but is
+      # recorded as non-representative measurement evidence.
+      - name: Restore warm RISC-V tooling cache
+        if: >-
+          needs.changes.outputs.riscv_image == 'true' &&
+          inputs.riscv_measurement == 'warm'
+        id: riscv-warm-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/riscv-buildkit-cache
+          key: riscv-tooling-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-contract.outputs.contract }}-${{ hashFiles('src/booley/data/docker/Dockerfile.riscv') }}
+
       # GitHub's native parallel group retains a separate log and exit status
       # for every validation while sharing the already-loaded candidate image.
       - parallel:
@@ -948,12 +962,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/openroad
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/openroad.json"
-              --name openroad --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/openroad.json"
-              --exit-code "${status}"' EXIT &&
+              --name openroad --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-openroad
               docker run --rm --init --network none --user agent
@@ -974,10 +985,26 @@ jobs:
             run: |
               evidence="${RUNNER_TEMP}/riscv-image-evidence"
               records="${evidence}/records"
-              cache_args=()
-              if test "${{ inputs.riscv_measurement || 'automatic' }}" = cold; then
-                cache_args+=(--no-cache)
-              fi
+              measurement_arm="${{ inputs.riscv_measurement || 'automatic' }}"
+              substrate_cache_args=()
+              wheel_cache_args=()
+              case "${measurement_arm}" in
+                cold)
+                  substrate_cache_args+=(--no-cache)
+                  wheel_cache_args+=(--no-cache)
+                  ;;
+                warm)
+                  if test "${{ steps.riscv-warm-cache.outputs.cache-hit }}" = true; then
+                    substrate_cache_args+=(
+                      --cache-from "type=local,src=${RUNNER_TEMP}/riscv-buildkit-cache"
+                    )
+                  else
+                    substrate_cache_args+=(
+                      --cache-to "type=local,dest=${RUNNER_TEMP}/riscv-buildkit-cache,mode=max"
+                    )
+                  fi
+                  ;;
+              esac
               mkdir -p "${records}"
               lane_status=1
               python .github/scripts/riscv_phase_metrics.py start \
@@ -996,7 +1023,7 @@ jobs:
                 --name riscv_tool_substrate --topology nested
               set +e
               docker buildx build --builder default --load \
-                "${cache_args[@]}" \
+                "${substrate_cache_args[@]}" \
                 --progress rawjson \
                 --metadata-file "${evidence}/riscv-tool-substrate-metadata.json" \
                 --file src/booley/data/docker/Dockerfile.riscv \
@@ -1023,7 +1050,7 @@ jobs:
                 --name wheel_overlay --topology nested
               set +e
               docker buildx build --builder default --load \
-                "${cache_args[@]}" \
+                "${wheel_cache_args[@]}" \
                 --progress rawjson \
                 --metadata-file "${evidence}/wheel-overlay-metadata.json" \
                 --file src/booley/data/docker/Dockerfile.wheel \
@@ -1060,12 +1087,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/agent-policy
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/agent-policy.json"
-              --name agent_policy --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/agent-policy.json"
-              --exit-code "${status}"' EXIT &&
+              --name agent_policy --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-agent-policy
               docker run --rm --init --network none --user agent
@@ -1084,12 +1108,9 @@ jobs:
               TMPDIR: ${{ runner.temp }}/bwave-smoke/verible
               BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-verible
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/verible.json"
-              --name verible --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/verible.json"
-              --exit-code "${status}"' EXIT &&
+              --name verible --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               "${BOOLEY_DOCKER_NAME_PREFIX}"
               pytest tests/docker/test_sandbox_verible_e2e.py
@@ -1101,12 +1122,9 @@ jobs:
               TMPDIR: ${{ runner.temp }}/bwave-smoke/isolation
               BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-isolation
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/isolation.json"
-              --name isolation --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/isolation.json"
-              --exit-code "${status}"' EXIT &&
+              --name isolation --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               "${BOOLEY_DOCKER_NAME_PREFIX}"
               python -m tests.docker.isolation.run_isolation_tests
@@ -1115,12 +1133,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/fifo
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/fifo.json"
-              --name fifo --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/fifo.json"
-              --exit-code "${status}"' EXIT &&
+              --name fifo --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-fifo
               docker run --rm --init
@@ -1136,12 +1151,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/verilator
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/verilator.json"
-              --name verilator --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/verilator.json"
-              --exit-code "${status}"' EXIT &&
+              --name verilator --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-verilator
               docker run --rm --init --network none
@@ -1155,12 +1167,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/coverage-release
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/coverage-release.json"
-              --name coverage_release --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/coverage-release.json"
-              --exit-code "${status}"' EXIT &&
+              --name coverage_release --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-coverage-release
               docker run --rm --init
@@ -1183,12 +1192,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/native-fst
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/native-fst.json"
-              --name native_fst --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/native-fst.json"
-              --exit-code "${status}"' EXIT &&
+              --name native_fst --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-native-fst
               docker run --rm --init
@@ -1202,12 +1208,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/simulator
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/simulator.json"
-              --name simulator --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/simulator.json"
-              --exit-code "${status}"' EXIT &&
+              --name simulator --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-simulator
               docker run --rm --init
@@ -1223,12 +1226,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/cocotb
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/cocotb.json"
-              --name cocotb --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/cocotb.json"
-              --exit-code "${status}"' EXIT &&
+              --name cocotb --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-cocotb
               docker run --rm --init
@@ -1245,12 +1245,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/ticket-mode
             run: >-
-              python .github/scripts/riscv_phase_metrics.py start
+              python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/ticket-mode.json"
-              --name ticket_mode --topology parallel &&
-              trap 'status=$?; python .github/scripts/riscv_phase_metrics.py finish
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/ticket-mode.json"
-              --exit-code "${status}"' EXIT &&
+              --name ticket_mode --topology parallel --
               install -d -m 0777
               "${VALIDATION_TMP}/alias-project"
               "${VALIDATION_TMP}/alias-project/.booley_project" &&
@@ -1320,13 +1317,21 @@ jobs:
       - name: Finalize RISC-V phase evidence
         if: always() && needs.changes.outputs.riscv_image == 'true'
         run: |
+          cache_state=not-requested
+          if test "${{ inputs.riscv_measurement || 'automatic' }}" = warm; then
+            cache_state=miss
+            if test "${{ steps.riscv-warm-cache.outputs.cache-hit }}" = true; then
+              cache_state=hit
+            fi
+          fi
           python .github/scripts/riscv_phase_metrics.py finalize \
             --directory "${RUNNER_TEMP}/riscv-image-evidence" \
             --output "${RUNNER_TEMP}/riscv-image-evidence/phases.json" \
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --candidate-sha "${{ github.sha }}" \
-            --measurement-arm "${{ inputs.riscv_measurement || 'automatic' }}"
+            --measurement-arm "${{ inputs.riscv_measurement || 'automatic' }}" \
+            --cache-state "${cache_state}"
 
       - name: Upload candidate RISC-V evidence
         if: always() && needs.changes.outputs.riscv_image == 'true'

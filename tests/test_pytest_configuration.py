@@ -316,6 +316,9 @@ def test_riscv_image_lane_is_path_gated() -> None:
     ibex_prepare = next(
         step for step in steps if step.get("name") == "Prepare exact reviewed Ibex candidate"
     )
+    warm_cache = next(
+        step for step in steps if step.get("name") == "Restore warm RISC-V tooling cache"
+    )
     ibex_run = next(step for step in steps if step.get("name") == "Run pinned Ibex lint demo")
     restore = next(
         step for step in steps if step.get("name") == "Restore RISC-V demo checkout ownership"
@@ -327,6 +330,9 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert steps.index(prepare) < group_index
     assert ibex_prepare["if"] == gate
     assert steps.index(ibex_prepare) < group_index
+    assert "inputs.riscv_measurement == 'warm'" in warm_cache["if"]
+    assert warm_cache["uses"].startswith("actions/cache@")
+    assert steps.index(warm_cache) < group_index
     assert riscv["if"] == gate
     assert "Dockerfile.riscv" in riscv["run"]
     assert "--progress rawjson" in riscv["run"]
@@ -336,6 +342,9 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert "wheel-overlay-metadata.json" in riscv["run"]
     assert "verify_riscv_image_contract.sh" in riscv["run"]
     assert "run_picorv32_ci_demo.sh" in riscv["run"]
+    assert "--cache-from" in riscv["run"]
+    assert "--cache-to" in riscv["run"]
+    assert "--no-cache" in riscv["run"]
     assert ibex_run["if"] == gate
     assert steps.index(ibex_run) > group_index
     assert "--network none" in ibex_run["run"]
@@ -357,6 +366,15 @@ def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None
     )
 
     assert rendered_lanes.count("--topology parallel") == len(group["parallel"])
+    timed_lanes = [
+        step
+        for step in group["parallel"]
+        if step.get("name") != "Run RISC-V candidate image contract"
+    ]
+    assert all(
+        step["run"].startswith("python .github/scripts/riscv_phase_metrics.py timed-run")
+        for step in timed_lanes
+    )
     assert "--name riscv_tool_substrate --topology nested" in rendered_lanes
     assert "--name wheel_overlay --topology nested" in rendered_lanes
     assert "--name image_contract_size_resources --topology nested" in rendered_lanes
@@ -374,6 +392,7 @@ def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None
     assert "--name ibex_runtime --topology post-group" in ibex["run"]
     assert "riscv_phase_metrics.py finalize" in finalizer["run"]
     assert "phases.json" in finalizer["run"]
+    assert '--cache-state "${cache_state}"' in finalizer["run"]
     assert steps.index(finalizer) < steps.index(upload)
 
 
