@@ -44,7 +44,7 @@ Read the §3 **Execution ledger** in `SETUP-PLAN.md`.
 
 ## 2. Preview before mutation
 
-Read rows 22 and 23 from the approved plan. Unattended setup uses
+Read rows 21 and 22 from the approved plan. Unattended setup uses
 `minimal` + `preserve`; the plan's explicit deviation rule applies if either
 value changes.
 
@@ -63,7 +63,7 @@ grouped as:
 - **Remove:** only manifest-owned current-run captures, exit-code sidecars,
   probes, bytecode, duplicate conversions, and terminal Doctor scratch under a
   bounded leaf subtree. The shared `tmp/` root is never a candidate.
-- **Evict-cache:** only when row 23 explicitly says
+- **Evict-cache:** only when row 22 explicitly says
   `evict-setup-touched`; this is delegated to the Flow cache owner with its
   lease, generation, and retention rules and includes the rebuild consequence.
 - **Unresolved:** pre-existing or unmanifested residue, active-use claims,
@@ -76,8 +76,8 @@ deletion of anything that was present before this run.
 
 ## 3. Materialize Feedback attachments
 
-`findings.jsonl` attachments are live paths: report, preview, export, and
-submit re-read them later. Before removing an attached raw log, the helper's
+`findings.jsonl` attachments are live paths: report and export re-read them
+later. Before removing an attached raw log, the helper's
 Feedback operation snapshots exactly the bounded rendered evidence, including
 source digest, original path, line/byte counts, and clipping metadata, under
 `.booley_project/setup-evidence/`. It then atomically retargets only the
@@ -86,7 +86,7 @@ structured attachment field.
 The operation preserves every Finding ID, semantic field, ordering, filed
 state, and unattached byte. A corrupt Findings Log blocks migration and the
 referenced source's deletion, but does not block unrelated safe candidates.
-The helper verifies equivalent local report and maintainer-preview attachment
+The helper verifies equivalent local report and maintainer-export attachment
 renders before and after materialization. Free-text path-like prose in
 `repro`, `observed`, notes, or reports is never treated as a dependency.
 

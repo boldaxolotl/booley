@@ -36,7 +36,7 @@ without interruption.
 | 3 | **AGENTS.md** — Project-level guidance for RTL agents. | container; file edits only | yes | `steps/3-agents-md.md` |
 | 4 | **Doctor** — final audit; resolve every failure and warning, then the deep gate. | container terminal (+ one host run) | yes | `steps/4-doctor.md` |
 | 5 | **Parity** — diff Booley vs the repo's native flow, where EDA tools match. | container | no (only if plan row 18 ≠ `none`) | `steps/5-parity.md` |
-| 6 | **Findings** — report, triage, optional bug report to Booley. | container (host to submit) | yes | `steps/6-findings.md` |
+| 6 | **Findings** — report, triage, optional redacted export. | container | yes | `steps/6-findings.md` |
 | 7 | **Cleanup** — preview and apply bounded current-run retention. | container | yes | `steps/7-cleanup.md` |
 
 Step 4 is the gate: setup is not complete until plain `booley doctor` and

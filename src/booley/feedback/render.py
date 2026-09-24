@@ -9,9 +9,8 @@ One findings log serves two audiences without creating two reports by default:
   log that only ever held ad-hoc bug reports gets the neutral name.
 - The outbound feedback view is for **Booley's maintainers**. It contains only
   findings that are Booley's fault, actionable, and not already filed, put
-  through :mod:`redact`. Preview and submission render it transiently;
-  ``booley feedback export`` is the explicit escape hatch that persists it as
-  ``BOOLEY-FEEDBACK.md``.
+  through :mod:`redact`. ``booley feedback export`` explicitly persists it as
+  ``BOOLEY-FEEDBACK.md`` for manual sharing.
 
 The user report lives in ``<project_dir>/`` — inside Booley's state dir, never
 in the RTL repo's tracked tree (the setup footprint guardrail). An explicit
@@ -331,8 +330,8 @@ def render_user_report(
         elif bucket == "booley":
             out += [
                 "Booley's problem, not yours. Where a workaround is in place, it is noted",
-                "in the finding. These are candidates for the transient redacted view shown",
-                "by `booley feedback preview` (or an explicit `feedback export`).",
+                "in the finding. These are candidates for the redacted view written only",
+                "by an explicit `booley feedback export`.",
                 "",
             ]
         elif bucket == "docs":
@@ -351,7 +350,7 @@ def render_user_report(
             "## What you told Booley",
             "",
             "Your own words about Booley — nothing broken here, just what you think.",
-            "These go upstream with the rest only if you send the report.",
+            "These are included in the redacted export for you to share manually.",
             "",
         ]
         for impression in log.impressions:
@@ -391,45 +390,6 @@ class BooleyReport:
     @property
     def has_content(self) -> bool:
         return bool(self.filable)
-
-    @property
-    def tag(self) -> str:
-        """Issue-title prefix: what a maintainer should expect before reading.
-
-        An all-friction batch is tagged ``[ux]`` whatever the origin — it says
-        "nothing is broken here" up front, which is exactly the triage signal
-        that keeps friction reports from being read as failed bug reports. An
-        all-impression batch is ``[feedback]`` for the same reason, one step
-        further: there is not even a confusion to fix, and a maintainer who
-        opens it expecting a defect has been mislabelled to.
-        """
-        if not self.filable:
-            return "setup" if self.origin == "setup" else "bug"
-        if all(f.kind == "impression" for f in self.filable):
-            return "feedback"
-        if all(f.kind == "friction" for f in self.filable):
-            return "ux"
-        return "setup" if self.origin == "setup" else "bug"
-
-    @property
-    def label(self) -> str:
-        """GitHub label to file under, when the repo has one."""
-        return "setup-feedback" if self.origin == "setup" else "user-feedback"
-
-    def issue_title(self) -> str:
-        """A GitHub issue title for the whole batch.
-
-        One issue per batch, not per finding: the entries share an environment
-        and often a root cause, and splitting them loses that.
-        """
-        if len(self.filable) == 1:
-            return f"[{self.tag}] {self.filable[0].title}"
-        if self.tag == "feedback":
-            return f"[feedback] {len(self.filable)} impressions from a Booley user"
-        blockers = sum(1 for f in self.filable if f.severity == "blocker")
-        suffix = f", {blockers} blocking" if blockers else ""
-        where = "a project setup run" if self.origin == "setup" else "normal use"
-        return f"[{self.tag}] {len(self.filable)} findings from {where}{suffix}"
 
 
 def render_booley_report(
@@ -511,8 +471,8 @@ def render_booley_report(
         "---",
         "",
         "Project identifiers (paths, remotes, module and Target names) were replaced",
-        "with placeholders by the feedback workflow before this report was shown to",
-        "the reporter for approval. EDA-tool names, versions, and error text were kept — a",
+        "with placeholders by the feedback workflow before this report was exported.",
+        "EDA-tool names, versions, and error text were kept — a",
         "report without them is not actionable. Ask if you need a detail that was",
         "scrubbed; the reporter holds the unredacted original.",
         "",
@@ -566,11 +526,10 @@ def write_user_report(
 
 
 def export_booley_report(report: BooleyReport, output_path: Path) -> Path:
-    """Persist an explicitly requested redacted outbound report.
+    """Persist an explicitly requested redacted report for manual sharing.
 
-    Preview and submission do not call this function. Keeping export separate is
-    what makes a normal setup produce one report while retaining a manual-share
-    path for users who want a sanitized Markdown file.
+    Keeping export separate makes a normal setup produce one report while
+    retaining a manual-share path for users who want sanitized Markdown.
     """
     if not report.has_content:
         raise ValueError("cannot export an empty Booley feedback report")

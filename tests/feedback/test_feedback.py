@@ -6,8 +6,8 @@ Three things separate it from a setup run, and each one is load-bearing:
   Booley wants, so it clears a different evidence bar than a crash does.
 - **Nothing is filed twice.** The log outlives the run. Without the already-filed
   stamp, a bug reported in July re-publishes March's setup findings.
-- **The report knows which flow it came from.** File name, issue title, label and
-  framing all follow, because a maintainer triages the two differently.
+- **The report knows which flow it came from.** File name and framing follow,
+  because a maintainer triages the two differently.
 """
 
 from __future__ import annotations
@@ -123,17 +123,16 @@ class TestFriction:
         report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
         assert "Not verified against Booley's source" not in report.body
 
-    def test_an_all_friction_batch_is_tagged_ux(self, project, project_dir):
+    def test_an_all_friction_batch_is_framed_as_friction(self, project, project_dir):
         append(_friction(), project_dir)
         report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
-        assert report.tag == "ux"
-        assert report.issue_title().startswith("[ux]")
+        assert "*(friction)*" in report.body
 
     def test_one_bug_in_the_batch_makes_it_a_bug_report(self, project, project_dir):
         append(_friction(), project_dir)
         append(_bug(), project_dir)
         report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
-        assert report.tag == "bug"
+        assert "## Findings" in report.body
 
 
 class TestAlreadyFiled:
@@ -214,14 +213,11 @@ class TestOrigin:
         report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
         assert "booley-feedback" in report.body
         assert "booley-setup` run" not in report.body
-        assert report.label == "user-feedback"
 
     def test_a_setup_report_is_unchanged(self, project, project_dir):
         append(_bug(origin="setup"), project_dir)
         report = render_booley_report(read_log(project_dir), project, project_dir=project_dir)
         assert "`booley-setup` run" in report.body
-        assert report.label == "setup-feedback"
-        assert report.issue_title().startswith("[bug]") is False
 
 
 class TestAttachments:
@@ -255,7 +251,7 @@ class TestAttachments:
     def test_an_identifier_buried_in_a_longer_one_survives(self, project, project_dir, tmp_path):
         """Pins the known limit rather than pretending it isn't there: identifiers
         are replaced on word boundaries, so a name that appears only as part of a
-        longer one an attached log invented is not caught. The preview says so —
+        longer one an attached log invented is not caught. The export says so —
         see the attachment risk line — and that warning is the actual mitigation."""
         log_file = tmp_path / "run.log"
         log_file.write_text("error in rocketwidget_alu_stage3\n", encoding="utf-8")

@@ -1,4 +1,4 @@
-# Step 6 — Findings: report, triage, and the optional bug report
+# Step 6 — Findings: report, triage, and optional redacted export
 
 The last step of setup. Everything logged with `booley feedback add` during
 Steps 0–5 gets turned into a report for the user, sorted by whose problem each
@@ -81,8 +81,8 @@ booley feedback say "I want a dry-run that fakes the EDA tools" --sentiment wish
 Rules: no reproduction is asked for, ever. Do not upgrade a complaint into a bug
 report they did not make, do not soften a blunt one, and do not fish for praise
 — "it was fine" is a complete answer, and "nothing comes to mind" ends this
-section. An impression rides the same preview and consent as everything else, so
-logging one commits them to nothing.
+section. An impression stays local unless the user explicitly requests a
+redacted export and shares that file themselves.
 
 ## 2. Write the one report
 
@@ -91,9 +91,8 @@ booley feedback report --project-name <name>
 ```
 
 Writes `.booley_project/SETUP-REPORT.md` — the user's copy, unredacted and never
-published. The maintainer-facing redacted view is derived transiently by
-`preview`/`submit`, not saved as a second report. `booley feedback export`
-persists it only when the user explicitly asks for a sanitized file.
+published. `booley feedback export` creates the separate redacted view only
+when the user explicitly asks for a sanitized file.
 
 The report stays inside `.booley_project/`. **Do not** put it in the RTL repo's
 tracked tree; that is the footprint guardrail. The enclosing maintainer dogfood
@@ -118,54 +117,22 @@ In the onboarding voice — they may still be new to all of this:
 - **What went right.** Not padding: it is the denominator that makes the
   findings count mean anything.
 
-## 4. Offer the bug report — once, honestly, and take no for an answer
+## 4. Export only on explicit request
 
-Only if `booley feedback report` says filable findings are available. Skip the
-whole step silently when `[feedback] mode` is `off` or `file-only`.
+Do not offer to transmit findings: Booley has no submission path. If the user
+explicitly asks for a sanitized file, export exactly the Finding IDs from this
+setup run:
 
 ```console
-booley feedback preview F-2 F-6 F-7
+booley feedback export F-2 F-6 F-7
 ```
 
-Pass exactly the IDs included in the offer you just walked through. Bare
-`preview` is refused; `--all` intentionally includes older runs and
-conversations, so do not use it here.
-
-Show the user **the entire preview output, verbatim**. Do not summarize it, do
-not paraphrase the redaction warnings, and do not oversell the contribution.
-It already contains what they need to decide: the exact text, what was
-substituted, what redaction structurally cannot catch, and who ends up seeing it
-under whose name — a public issue carrying their GitHub name, or, under
-`[feedback] mode = "email"`, a mail to the maintainer carrying their return
-address. The preview says which; do not assert one when it says the other.
-
-Then ask, plainly. Three answers, all fine:
-
-1. **Yes** → pass the token the preview printed:
-   ```console
-   booley feedback submit F-2 F-6 F-7 --yes --confirm <token>
-   ```
-   Use the same IDs as `preview`; a different selection invalidates the token.
-   `--yes` without the token is refused by design; the token proves the approval
-   covers the exact text they read. **Never invent, guess, or scrape a token
-   from an error message** — if you did not just show the user the preview, you
-   have no business submitting.
-
-   Under `mode = "email"` this prints a `mailto:` link and stops — **you** cannot
-   send it and must not pretend it went anywhere. Give the user the link, and the
-   `booley feedback filed … --url email` command it prints, for after they send.
-2. **Not now / just give me the file** → export the same IDs, tell them the
-   path, and stop. They can post it whenever, from any account.
-3. **No** → stop. Do not re-ask, do not re-frame it as a smaller ask, do not
-   bring it up again later in the run. Offer `[feedback] mode = "off"` if they'd
-   rather never be asked again.
-
-A submit that files an issue stamps everything it sent as filed, and filed
-findings are excluded from every later report. The email route never stamps —
-whether the mail was sent is not something Booley can see. Either way, if the
-user sends it by hand, record that (`booley feedback filed F-3 F-7 --url <issue>`,
-or `--url email`) — otherwise the next bug they report months from now drags this
-whole batch along with it.
+Do not use `--all`; it intentionally includes older runs and conversations.
+Read the entire exported file with the user, including attachment blocks and
+redaction caveats, then give them its path for manual sharing. Creating the file
+does not prove that it was shared. Only after the user confirms actual delivery,
+record it with `booley feedback filed F-3 F-7 --url <destination>` so later
+exports do not repeat those Findings.
 
 Later feedback is not this step's job: `/booley-feedback` handles anything that
 turns up after setup is done, using the same log.
@@ -173,18 +140,9 @@ turns up after setup is done, using the same log.
 **If they want changes to the redaction** — a module name they'd rather keep, a
 term that got missed — add it to `[feedback] redact_extra` (or set
 `redact_identifiers = false` for an open-source project whose names are already
-public), and preview the same IDs again. The token changes
-with the text, which is the point.
-
-**Submission is host-only.** Steps 2–5 run in the Sandbox, whose egress
-proxy allowlists model APIs and not github.com — and which has no mail client, so
-`mode = "email"` is host-only for the same reason. If you are in-container,
-`submit` will tell you so: finish the user report here, and either hand the user
-the host command or export the same IDs (`booley feedback export F-2 F-6 F-7`).
+public), then export and inspect the same IDs again.
 
 ## 5. Close out
 
 Record in the final report: findings by severity, the top few called out, what
-was triaged where, and what the user decided about the bug report — including a
-decline. "The user declined to share findings upstream" is a normal line in a
-successful setup.
+was triaged where, and whether the user explicitly requested a redacted export.

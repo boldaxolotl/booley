@@ -997,17 +997,14 @@ A Booley Flow exits 2 with nothing useful on stderr, a doc describes a knob that
 there, a message reads like a crash when nothing crashed. Run the
 **`/booley-feedback`** skill in the agent chat while the failure is still on
 screen — it captures the reproduction, checks the claim against Booley's own
-source before blaming it, scrubs your project's identifiers, and shows you the
-exact text before anything is sent. Nothing leaves your machine unless you say
-yes to that text.
+source before blaming it, scrubs your project's identifiers, and writes a
+redacted Markdown file for you to inspect and share manually. Booley does not
+transmit it.
 
 Nothing broke but something was confusing? That is worth reporting too. Tell
 the skill where it happened and what you expected instead; it will not ask for
-a reproduction. Submission is host-only (the sandbox's egress proxy doesn't
-allowlist github.com, and there is no mail client in there either), and
-`[feedback] mode` in `booley.toml` decides where the offer points: a public
-GitHub issue by default, a private mail to the maintainer with `"email"`, or
-nothing at all — see [CONFIG.md](CONFIG.md#feedback-feedback).
+a reproduction. Export is explicit and local; see
+[CONFIG.md](CONFIG.md#feedback-feedback).
 
 ## Telling Booley what you think
 
@@ -1015,9 +1012,8 @@ Nothing has to be broken. Tell `/booley-feedback` what you liked, what grated,
 what you wish existed, or whether Booley earned its keep on your project.
 
 One sentence is a complete report — there is no reproduction to give and none is
-asked for. It lands in the same log, gets the same redaction, and is offered
-upstream through the same preview-and-confirm path as a bug, so nothing leaves
-your machine until you have read the exact text and agreed to it.
+asked for. It lands in the same log and gets the same redaction when you
+explicitly export it. Nothing leaves your machine unless you share that file.
 
 Why bother: bug reports say what is broken, never whether the thing is worth
 using. Which parts earn their keep, which cost more than they give, what you

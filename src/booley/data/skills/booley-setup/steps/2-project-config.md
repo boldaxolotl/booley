@@ -606,13 +606,10 @@ What goes here:
   legacy project, write only the missing field settled during planning. Preserve
   an existing `[agent.git]` identity unchanged; it controls the default author
   and committer for Interactive and Ticket Mode checkouts.
-- **Feedback mode — write what row 21 settled**, whenever it is anything other
-  than the `ask` default: `[feedback] mode = "email"`, `"file-only"`, or
-  `"off"`. Writing it
-  down is what makes the answer stick, so Step 6 (and every later re-run) honours
-  it instead of asking again. If the user named terms they want scrubbed from any
-  outgoing report, add them here too: `redact_extra = ["…"]`. See CONFIG.md →
-  "Feedback".
+- **Feedback redaction — preserve it when present.** Booley never transmits
+  feedback. Keep any user-supplied `redact_extra = ["…"]` and
+  `redact_identifiers` settings; they affect only an explicit local export. See
+  CONFIG.md → "Feedback".
 - **MCP tool availability — exactly what the plan decided.** Every installed
   built-in and every valid MCP tool under `.booley_project/mcp_tools/` is discovered
   automatically. Write `[flows.<name>].enabled = false` for an explicit Flow

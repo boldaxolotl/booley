@@ -99,12 +99,8 @@ check_sets:
   - inventory.FINDINGS-LOG.feedback-list
   - inventory.FINDINGS-LOG.feedback-regenerate
   - inventory.FINDINGS-LOG.feedback-triage
-  - inventory.FEEDBACK-REPORTING.feedback-block-submit
   - inventory.FEEDBACK-REPORTING.feedback-export
-  - inventory.FEEDBACK-REPORTING.feedback-file-only
-  - inventory.FEEDBACK-REPORTING.feedback-off
   - inventory.FEEDBACK-REPORTING.feedback-redact
-  - inventory.FEEDBACK-REPORTING.feedback-token
   - inventory.DOCUMENTATION-USABILITY.docs-contract
   - inventory.DOCUMENTATION-USABILITY.docs-recovery
   - inventory.INTERACTIVE-MODE.bare-launch
@@ -2897,24 +2893,6 @@ steps:
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FINDINGS-LOG.feedback-triage
   requires:
   - published-release
-- id: inventory.FEEDBACK-REPORTING.feedback-block-submit
-  phase: interactive
-  action: |-
-    Exercise `feedback-block-submit`: dry-run/unconfirmed submission.
-  checks:
-  - id: inventory.FEEDBACK-REPORTING.feedback-block-submit
-    capabilities:
-    - FEEDBACK-REPORTING
-    stimulus: |-
-      Exercise `feedback-block-submit`: dry-run/unconfirmed submission.
-    expected: |-
-      Nothing sent.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#what-the-offer-looks-like-ask-and-email
-    evidence: |-
-      Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these Checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FEEDBACK-REPORTING.feedback-block-submit
-  requires:
-  - published-release
 - id: inventory.FEEDBACK-REPORTING.feedback-export
   phase: interactive
   action: |-
@@ -2926,47 +2904,11 @@ steps:
     stimulus: |-
       Exercise `feedback-export`: explicit local export.
     expected: |-
-      Preview-equivalent file.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#what-the-offer-looks-like-ask-and-email
+      Sanitized file; ordinary report generation creates no redacted companion.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
     evidence: |-
-      Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these Checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact sanitized export and before/after local filesystem evidence without secrets; Booley has no feedback transmission path. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FEEDBACK-REPORTING.feedback-export
-  requires:
-  - published-release
-- id: inventory.FEEDBACK-REPORTING.feedback-file-only
-  phase: interactive
-  action: |-
-    Exercise `feedback-file-only`: unattended report generation.
-  checks:
-  - id: inventory.FEEDBACK-REPORTING.feedback-file-only
-    capabilities:
-    - FEEDBACK-REPORTING
-    stimulus: |-
-      Exercise `feedback-file-only`: unattended report generation.
-    expected: |-
-      File only/no outbound send.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#what-the-offer-looks-like-ask-and-email
-    evidence: |-
-      Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these Checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FEEDBACK-REPORTING.feedback-file-only
-  requires:
-  - published-release
-- id: inventory.FEEDBACK-REPORTING.feedback-off
-  phase: interactive
-  action: |-
-    Exercise `feedback-off`: off mode.
-  checks:
-  - id: inventory.FEEDBACK-REPORTING.feedback-off
-    capabilities:
-    - FEEDBACK-REPORTING
-    stimulus: |-
-      Exercise `feedback-off`: off mode.
-    expected: |-
-      No outbound offer.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#what-the-offer-looks-like-ask-and-email
-    evidence: |-
-      Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these Checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FEEDBACK-REPORTING.feedback-off
   requires:
   - published-release
 - id: inventory.FEEDBACK-REPORTING.feedback-redact
@@ -2980,29 +2922,11 @@ steps:
     stimulus: |-
       Exercise `feedback-redact`: benign planted private-like fixture.
     expected: |-
-      Exact intended redaction in preview.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#what-the-offer-looks-like-ask-and-email
+      Exact intended redaction in the exported file.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
     evidence: |-
-      Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these Checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact sanitized export and before/after local filesystem evidence without secrets; Booley has no feedback transmission path. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FEEDBACK-REPORTING.feedback-redact
-  requires:
-  - published-release
-- id: inventory.FEEDBACK-REPORTING.feedback-token
-  phase: interactive
-  action: |-
-    Exercise `feedback-token`: approved preview token then rerender changed content.
-  checks:
-  - id: inventory.FEEDBACK-REPORTING.feedback-token
-    capabilities:
-    - FEEDBACK-REPORTING
-    stimulus: |-
-      Exercise `feedback-token`: approved preview token then rerender changed content.
-    expected: |-
-      Old token rejected.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#what-the-offer-looks-like-ask-and-email
-    evidence: |-
-      Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these Checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FEEDBACK-REPORTING.feedback-token
   requires:
   - published-release
 - id: inventory.DOCUMENTATION-USABILITY.docs-contract

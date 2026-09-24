@@ -15,14 +15,13 @@ friction sample stays honest — a report with 40 findings and no wins reads as
 Impressions are the one kind with no evidence bar at all. "I want X", "the
 waveform flow is the best part", "the setup skill is exhausting" are not bugs
 and cannot be reproduced, but they are the only signal saying which of the
-fixable things is worth fixing — so they are logged, redacted and offered
-upstream through exactly the same path as everything else.
+fixable things is worth fixing — so they are logged and included in explicitly
+requested redacted exports through the same path as everything else.
 
 The log outlives the run that started it. A project set up in March and hit by a
 bug in July appends to the same file, which is why entries carry an ``origin``
-(which flow logged them) and a ``filed`` stamp (whether they already went
-upstream) — without the latter, every later bug report re-files the whole
-backlog.
+(which flow logged them) and a ``filed`` stamp (whether the user already shared
+them) — without the latter, every later export repeats the whole backlog.
 """
 
 from __future__ import annotations
@@ -108,11 +107,11 @@ class Finding:
     verified_against_source: bool = False
     #: Which flow logged this — a setup run, or an ad-hoc bug report.
     origin: Origin = "setup"
-    #: Files whose contents get inlined (and, outgoing, redacted) into the
+    #: Files whose contents get inlined (and, when exported, redacted) into the
     #: reports: a run log, a doctor transcript, a traceback dump.
     attachments: list[str] = field(default_factory=list)
-    #: Issue URL once this went upstream, or ``"manual"`` when the user posted it
-    #: themselves. Non-empty means "do not file again".
+    #: Destination once the user shared it, or ``"manual"`` when no URL applies.
+    #: Non-empty means "do not include in another export".
     filed: str = ""
     filed_at: str = ""
     id: str = ""
@@ -188,15 +187,15 @@ class Finding:
         ]
 
     def is_filable(self) -> bool:
-        """Does this entry carry enough evidence to become a GitHub issue?
+        """Does this entry carry enough evidence for a maintainer-facing export?
 
         Docs findings are exempt from the reproduction requirement: "CONFIG.md
         says X, the code does Y" is fully actionable, and demanding a command
         line for it would drop the single largest class of real findings.
 
         An entry that has already been filed is never filable again. The log is
-        append-only and long-lived, so without this every bug report filed months
-        after setup would re-publish that setup run's entire batch.
+        append-only and long-lived, so without this a later export would repeat
+        the setup run's entire batch.
         """
         if self.kind not in ("finding", "friction", "impression") or self.bucket not in (
             "booley",
@@ -208,7 +207,7 @@ class Finding:
         return not self.missing_evidence()
 
     def mark_filed(self, where: str) -> None:
-        """Stamp this entry as already reported upstream (URL, or ``"manual"``)."""
+        """Stamp this entry as already shared (URL, or ``"manual"``)."""
         self.filed = where.strip()
         self.filed_at = utc_now_rfc3339()
 

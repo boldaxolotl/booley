@@ -6,9 +6,9 @@ description: Prepare sanitized Booley feedback for manual submission from an off
 # Prepare Booley feedback
 
 Deliver an inspected sanitized report for manual submission and the blocked
-task's next step (see §5). This skill runs offline in the Sandbox: use
-local commands, not `submit`, authentication probes, confirmation tokens,
-browser launches, or mail sending. Generate the report by default without a
+task's next step (see §5). This skill runs offline in the Sandbox: use local
+commands only, without authentication probes, browser launches, or mail
+sending. Generate the report by default without a
 separate approval question or publication decision.
 
 Check the installed CLI with `booley feedback --help`; run its commands for the
@@ -158,9 +158,7 @@ container path is not directly accessible, explain how to retrieve it using the
 session's supported artifact transfer. Keep the unredacted local report clearly
 separate from the file intended for sharing.
 
-Present two clean, highlighted submission options, using the installed source's
-`NEW_ISSUE_URL` and `INTAKE_EMAIL` in `booley.feedback.submit` as the destination
-source of truth. Current destinations are:
+Present two clean, highlighted manual submission options. Current destinations are:
 
 - **Submit on GitHub:** [Open a Booley issue](https://github.com/boldaxolotl/Booley/issues/new).
   Paste the sanitized report, review it, and submit. Explain briefly that the
@@ -172,8 +170,8 @@ source of truth. Current destinations are:
 
 Keep report bodies out of URLs; use a normal issue link and separate file, with
 at most a subject prefilled in the email link. Offer both routes unless one is
-already chosen. Omit unsolicited options after refusal or when `[feedback] mode`
-is `"off"` or `"file-only"`; explicit requests for submission instructions take precedence.
+already chosen. Omit unsolicited options after refusal; explicit requests for
+submission instructions take precedence.
 
 End with the report ready to send, not submitted, and the task outcome:
 

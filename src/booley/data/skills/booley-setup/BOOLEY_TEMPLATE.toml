@@ -17,14 +17,10 @@ name = "<project>"
 enabled = false
 # ignore_native_cores = true # ask when the repository already ships .core files
 
-# Setup's Step 6 always writes you a local findings report. This knob is only
-# about whether it may *offer* to send the Booley-side findings to Booley's
-# public issue tracker (plan row 21). Omit for the default, "ask" — one offer,
-# with the exact redacted text shown first, and a decline is final.
+# Setup's Step 6 always writes a local findings report. Booley never transmits
+# feedback; these optional settings affect only an explicit redacted export.
 # [feedback]
-# mode = "file-only"          # never post; redacted file only via explicit export
-# mode = "off"                # local report only, no offer at all
-# redact_extra = ["codename"]  # extra terms to scrub from anything outgoing
+# redact_extra = ["codename"]  # extra terms to scrub from exported feedback
 # redact_identifiers = false   # keep module/Target names (open-source projects)
 
 [flows]

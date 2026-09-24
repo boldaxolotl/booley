@@ -147,14 +147,14 @@ def _render_proofs(project_dir: Path, entries: list[Finding]) -> tuple[str, str]
     environment = render.collect_environment(project_dir)
     origin = render.report_origin(log)
     local = render.render_user_report(log, env=environment, origin=origin)
-    preview = render.render_booley_report(
+    export_view = render.render_booley_report(
         log,
         project_dir.parent,
         project_dir=project_dir,
         env=environment,
         origin=origin,
     ).body
-    return local, preview
+    return local, export_view
 
 
 def materialize_attachments(project_dir: Path, sources: Iterable[Path]) -> tuple[Path, ...]:
@@ -172,7 +172,7 @@ def materialize_attachments(project_dir: Path, sources: Iterable[Path]) -> tuple
     if not changed:
         return ()
     if before_proof != _render_proofs(project_dir, log.entries):
-        raise MaterializationError("attachment report or preview changed during materialization")
+        raise MaterializationError("attachment report or export changed during materialization")
     _rewrite_attachments_only(project_dir, log.entries)
     return tuple(sorted(changed))
 

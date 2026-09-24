@@ -194,9 +194,9 @@ Capture the evidence before applying a workaround, then invoke
 the reproduction, observed behavior, expected behavior, Doctor transcript or
 log, affected component, and whether source inspection confirmed the defect.
 
-Follow `booley-feedback`'s redaction and approval rules. Logging is local and
-must not block healing; public issue or email submission still requires the
-user to see and approve the exact outgoing text. If a safe workaround exists,
+Follow `booley-feedback`'s redaction and inspection rules. Logging and export
+are local and must not block healing; Booley never transmits the report. If a
+safe workaround exists,
 apply it after capture and continue the Doctor loop without calling the
 workaround a Booley success.
 
