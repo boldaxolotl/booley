@@ -280,6 +280,36 @@ def test_disk_preflight_override_accepts_only_one(tmp_path: Path, monkeypatch) -
     assert not marker.exists()
 
 
+def test_disk_preflight_bypass_guidance_keeps_the_narrow_storage_condition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    _set_free_space(monkeypatch, 1)
+
+    with pytest.raises(OSError) as raised:
+        run_docker_build(
+            [docker, "build", "-t", "booley-sandbox", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
+
+    message = str(raised.value)
+    assert "reported root is not the filesystem that actually stores its data" in message
+    assert "BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1" in message
+    assert not marker.exists()
+
+    root = Path(__file__).resolve().parents[2]
+    troubleshooting = (root / "docs/user/TROUBLESHOOTING.md").read_text()
+    packaged = (root / "src/booley/data/refs/TROUBLESHOOTING.md").read_text()
+    setup = (root / "docs/user/SETUP.md").read_text()
+    narrow = "reported root is not the filesystem that actually stores its data"
+    assert narrow in troubleshooting
+    assert narrow in packaged
+    assert "real storage is external to the filesystem Docker reports" in " ".join(setup.split())
+
+
 def test_redirected_silent_build_emits_bounded_heartbeat(tmp_path: Path, monkeypatch) -> None:
     release = tmp_path / "release"
     child = (

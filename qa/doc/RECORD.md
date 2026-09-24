@@ -52,8 +52,14 @@ retry. Do not edit or replace an appended row. To correct an accepted recording
 error before sealing, append a new Check Result with a new `check_result_id`, the
 same `check_id`, a higher `attempt`, `corrects_result_id` naming the earlier row,
 and `correction-chain` in `review_reasons`. Retain the earlier row and any
-evidence it cites. A new product execution is a new attempt, not a clerical
-rewrite. After sealing, follow [Format](FORMAT.md) for human triage corrections.
+evidence it cites. A correction may name any earlier compatible row, including a
+superseded ancestor. A **surviving head** is a Check Result not named by a later
+row's `corrects_result_id`; branches and independent attempts can therefore leave
+several surviving heads. Schema, evidence, identity, ordering, and link validation
+apply to every historical row. Effective semantic claims, including required
+borrowed-preservation claims, apply to every surviving head. A new product execution
+is a new attempt, not a clerical rewrite. After sealing, follow [Format](FORMAT.md)
+for human triage corrections.
 
 Append unexpected behavior, incidental facts, friction, impressions, and wins to
 `observations.jsonl` without classifying them as Findings. Preserve the original text

@@ -22,6 +22,144 @@ def assert_log_unchanged(log, before):
     assert list(log.parent.glob(".check-results.jsonl-*")) == []
 
 
+def borrowed_pass(result_id, *, corrects=None, attempt=1):
+    result = check_result(
+        "run-1",
+        result_id,
+        "cleanup.preserve-borrowed",
+        "pass",
+        corrects=corrects,
+        attempt=attempt,
+    )
+    result["borrowed_preservation"] = {
+        "scoped_resource_identities": ["borrowed-image@sha256:1234"],
+        "setup_evidence_refs": ["evidence/log.txt"],
+        "end_evidence_refs": ["evidence/log.txt"],
+    }
+    if corrects is not None:
+        result["review_reasons"] = ["correction-chain"]
+    return result
+
+
+def test_borrowed_preservation_pass_is_rejected_before_append(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [], seal=False)
+    run = triage.read_json(root / "run.json")
+    run["selected_check_ids"] = ["cleanup.preserve-borrowed"]
+    write_json(root / "run.json", run)
+    log = root / "check-results.jsonl"
+    before = log.read_bytes()
+    result = check_result("run-1", "bad", "cleanup.preserve-borrowed", "pass")
+
+    with pytest.raises(triage.TriageError, match="borrowed preservation pass lacks"):
+        record_check.append_check_result(root, suite, append_source(tmp_path, result))
+
+    assert_log_unchanged(log, before)
+
+
+def test_nested_borrowed_preservation_claim_is_rejected_before_append(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [], seal=False)
+    run = triage.read_json(root / "run.json")
+    run["selected_check_ids"] = ["cleanup.preserve-borrowed"]
+    write_json(root / "run.json", run)
+    log = root / "check-results.jsonl"
+    before = log.read_bytes()
+    result = borrowed_pass("bad")
+    result["producing_step_identities"]["borrowed_preservation"] = result.pop(
+        "borrowed_preservation"
+    )
+
+    with pytest.raises(triage.TriageError, match="borrowed preservation pass lacks"):
+        record_check.append_check_result(root, suite, append_source(tmp_path, result))
+
+    assert_log_unchanged(log, before)
+
+
+def test_borrowed_preservation_unavailable_requires_admission_assessment_before_append(
+    tmp_path,
+):
+    suite = write_suite(tmp_path, [("required", True)])
+    root = write_run(tmp_path, "run-1", "required", [], seal=False)
+    run = triage.read_json(root / "run.json")
+    run["selected_check_ids"] = ["cleanup.preserve-borrowed"]
+    run["admission_evidence"] = ["evidence/log.txt"]
+    write_json(root / "run.json", run)
+    log = root / "check-results.jsonl"
+    before = log.read_bytes()
+    result = check_result("run-1", "absence", "cleanup.preserve-borrowed", "unavailable")
+
+    with pytest.raises(triage.TriageError, match="unavailable lacks"):
+        record_check.append_check_result(root, suite, append_source(tmp_path, result))
+    assert_log_unchanged(log, before)
+
+    result["borrowed_preservation"] = {
+        "pre_run_absence_assessment": "No borrowed resource existed at admission",
+        "pre_run_absence_evidence_refs": ["evidence/log.txt"],
+    }
+    record_check.append_check_result(root, suite, append_source(tmp_path, result))
+    assert triage.seal_run(root, suite).results[-1]["status"] == "unavailable"
+
+
+def test_valid_correction_can_supersede_malformed_historical_claim(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    malformed = check_result("run-1", "bad", "cleanup.preserve-borrowed", "pass")
+    root = write_run(tmp_path, "run-1", "required", [malformed], seal=False)
+
+    record_check.append_check_result(
+        root, suite, append_source(tmp_path, borrowed_pass("fixed", corrects="bad", attempt=2))
+    )
+
+    sealed = triage.seal_run(root, suite)
+    assert [item["check_result_id"] for item in sealed.results] == ["bad", "fixed"]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"check_id": "one"}, "changed Check identity"),
+        ({"attempt": 1}, "attempt did not advance"),
+    ],
+)
+def test_correction_identity_and_attempt_are_rejected_before_append(tmp_path, change, message):
+    suite = write_suite(tmp_path, [("required", True)])
+    first = check_result("run-1", "first", "check", "blocked")
+    root = write_run(tmp_path, "run-1", "required", [first], seal=False)
+    run = triage.read_json(root / "run.json")
+    run["selected_check_ids"] = ["check", "one"]
+    write_json(root / "run.json", run)
+    correction = check_result(
+        "run-1", "correction", "check", "blocked", corrects="first", attempt=2
+    )
+    correction["review_reasons"].append("correction-chain")
+    correction.update(change)
+    log = root / "check-results.jsonl"
+    before = log.read_bytes()
+
+    with pytest.raises(triage.TriageError, match=message):
+        record_check.append_check_result(root, suite, append_source(tmp_path, correction))
+
+    assert_log_unchanged(log, before)
+
+
+def test_every_surviving_correction_head_must_be_semantically_valid(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    malformed = check_result("run-1", "bad", "cleanup.preserve-borrowed", "pass")
+    valid_branch = borrowed_pass("valid", corrects="bad", attempt=2)
+    root = write_run(tmp_path, "run-1", "required", [malformed, valid_branch], seal=False)
+    invalid_branch = check_result(
+        "run-1",
+        "invalid",
+        "cleanup.preserve-borrowed",
+        "pass",
+        corrects="bad",
+        attempt=3,
+    )
+    invalid_branch["review_reasons"] = ["correction-chain"]
+    with pytest.raises(triage.TriageError, match=r"invalid.*borrowed preservation pass lacks"):
+        record_check.append_check_result(root, suite, append_source(tmp_path, invalid_branch))
+
+
 def test_invalid_review_reason_is_rejected_before_append(tmp_path):
     suite = write_suite(tmp_path, [("required", True)])
     root = write_run(tmp_path, "run-1", "required", [], seal=False)

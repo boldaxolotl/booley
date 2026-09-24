@@ -351,6 +351,115 @@ def test_corrected_failure_and_observation_remain_candidates(tmp_path):
     assert any(item["kind"] == "observation-chain" for item in candidates)
 
 
+def test_branched_correction_preserves_every_surviving_head_in_candidate_and_summary(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    results = [
+        check_result("run-1", "root", "check", "fail", observed="historical failure"),
+        check_result(
+            "run-1",
+            "pass-head",
+            "check",
+            "pass",
+            corrects="root",
+            attempt=2,
+            observed="clerical correction",
+        ),
+        check_result(
+            "run-1",
+            "blocked-head",
+            "check",
+            "blocked",
+            corrects="root",
+            attempt=3,
+            observed="independent blocked assessment",
+        ),
+    ]
+    results[1]["review_reasons"] = ["correction-chain"]
+    results[1]["recovery_refs"] = ["evidence/recovery.txt"]
+    results[2]["review_reasons"].append("correction-chain")
+    run_root = write_run(tmp_path, "run-1", "required", results, seal=False)
+    (run_root / "evidence/recovery.txt").write_text("recovery evidence\n")
+    triage.seal_run(run_root, suite)
+
+    projection = admit(init_triage(tmp_path, suite), run_root)
+
+    candidate = next(iter(projection["candidates"].values()))
+    assert candidate["surviving_head_ids"] == ["pass-head", "blocked-head"]
+    assert candidate["surviving_heads"] == [
+        {
+            "check_result_id": "pass-head",
+            "status": "pass",
+            "expected": "expected behavior",
+            "observed": "clerical correction",
+            "caused_by_result_ids": [],
+            "review_reasons": ["correction-chain"],
+            "evidence_refs": ["evidence/log.txt", "evidence/recovery.txt"],
+        },
+        {
+            "check_result_id": "blocked-head",
+            "status": "blocked",
+            "expected": "expected behavior",
+            "observed": "independent blocked assessment",
+            "caused_by_result_ids": [],
+            "review_reasons": ["nonpass", "correction-chain"],
+            "evidence_refs": ["evidence/log.txt"],
+        },
+    ]
+    assert candidate["effective_status"] == "pass"
+    assert "clerical correction" in candidate["text"]
+    assert "independent blocked assessment" in candidate["text"]
+    summary = (run_root / "run-summary.md").read_text()
+    assert "Surviving heads: `pass-head`, `blocked-head`" in summary
+
+
+def test_clerical_pass_correction_stays_distinct_from_pass_to_blocked_chain(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    results = [
+        check_result("run-1", "wording", "check", "pass", observed="incomplete prose"),
+        check_result(
+            "run-1",
+            "wording-fixed",
+            "check",
+            "pass",
+            corrects="wording",
+            attempt=2,
+            observed="complete prose",
+        ),
+        check_result("run-1", "finalize", "one", "pass"),
+        check_result(
+            "run-1", "finalize-blocked", "one", "blocked", corrects="finalize", attempt=2
+        ),
+    ]
+    results[1]["review_reasons"] = ["correction-chain"]
+    results[3]["review_reasons"].append("correction-chain")
+    run_root = write_run(tmp_path, "run-1", "required", results)
+
+    candidates = admit(init_triage(tmp_path, suite), run_root)["candidates"].values()
+    statuses = {item["candidate_id"]: item["effective_status"] for item in candidates}
+    assert statuses == {
+        "run-1:check:finalize": "blocked",
+        "run-1:check:wording": "pass",
+    }
+
+
+def test_correction_of_superseded_ancestor_keeps_both_branch_heads(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    results = [
+        check_result("run-1", "root", "check", "blocked"),
+        check_result("run-1", "child", "check", "pass", corrects="root", attempt=2),
+        check_result("run-1", "grandchild", "check", "pass", corrects="child", attempt=3),
+        check_result("run-1", "ancestor-branch", "check", "fail", corrects="root", attempt=4),
+    ]
+    for result in results[1:]:
+        result["review_reasons"].append("correction-chain")
+    run_root = write_run(tmp_path, "run-1", "required", results)
+
+    candidate = next(iter(admit(init_triage(tmp_path, suite), run_root)["candidates"].values()))
+
+    assert candidate["surviving_head_ids"] == ["grandchild", "ancestor-branch"]
+    assert candidate["effective_status"] == "fail"
+
+
 def test_partial_triage_has_no_qualification_projection(tmp_path):
     suite = write_suite(tmp_path, [("required", True)])
     run_root = write_run(

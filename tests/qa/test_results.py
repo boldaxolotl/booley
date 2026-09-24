@@ -34,30 +34,35 @@ def sealed_run(tmp_path: Path) -> RunRecords:
             "check_id": "first",
             "status": "fail",
             "corrects_result_id": None,
+            "attempt": 1,
         },
         {
             "check_result_id": "b",
             "check_id": "first",
             "status": "pass",
             "corrects_result_id": None,
+            "attempt": 2,
         },
         {
             "check_result_id": "c",
             "check_id": "second",
             "status": "fail",
             "corrects_result_id": None,
+            "attempt": 1,
         },
         {
             "check_result_id": "d",
             "check_id": "second",
             "status": "pass",
             "corrects_result_id": "c",
+            "attempt": 2,
         },
         {
             "check_result_id": "e",
             "check_id": "third",
             "status": "blocked",
             "corrects_result_id": None,
+            "attempt": 1,
         },
     )
     return RunRecords(

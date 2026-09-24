@@ -43,6 +43,7 @@ def append_check_result(run_root: Path, suite_root: Path, source: Path) -> None:
             proposed,
             {"configured_scenarios": configured, "scenario_files": scenario_files},
         )
+        triage.validate_borrowed_preservation_claims(run, proposed, run_root)
         if (
             result["corrects_result_id"] is not None
             and "correction-chain" not in result["review_reasons"]

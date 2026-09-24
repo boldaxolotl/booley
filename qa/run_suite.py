@@ -23,6 +23,37 @@ def transitive_requirements(steps: dict[str, dict[str, Any]], step_id: str) -> s
     return requirements
 
 
+def selected_execution(
+    run: dict[str, Any],
+    scenario: dict[str, Any],
+    configured: dict[str, Any],
+    context: str,
+) -> tuple[dict[str, Any], ...]:
+    """Render selected Checks and required supporting Steps in Scenario order."""
+    validate_run_suite(run, [], scenario, configured, context)
+    selected = set(run["selected_check_ids"])
+    steps = {item["id"]: item for item in scenario["steps"]}
+    selected_steps = {
+        step_id
+        for step_id, step in steps.items()
+        if any(check["id"] in selected for check in step.get("checks", []))
+    }
+    required_steps = set(selected_steps)
+    for step_id in selected_steps:
+        required_steps.update(transitive_requirements(steps, step_id))
+    return tuple(
+        {
+            "step_id": step["id"],
+            "supporting": step["id"] not in selected_steps,
+            "selected_check_ids": tuple(
+                check["id"] for check in step.get("checks", []) if check["id"] in selected
+            ),
+        }
+        for step in scenario["steps"]
+        if step["id"] in required_steps
+    )
+
+
 def validate_run_suite(
     run: dict[str, Any],
     results: tuple[dict[str, Any], ...] | list[dict[str, Any]],
