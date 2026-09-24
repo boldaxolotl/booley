@@ -368,20 +368,22 @@ def test_matrix_enforces_the_ci_duration_budget() -> None:
 def test_pr_compatibility_matrix_is_pairwise() -> None:
     workflow = _test_workflow()
     jobs = workflow["jobs"]
-    entries = jobs["test"]["strategy"]["matrix"]["include"]
+    shard_input = workflow[True]["workflow_dispatch"]["inputs"]["windows_shard_count"]
+    benchmark_input = workflow[True]["workflow_dispatch"]["inputs"]["windows_shard_benchmark"]
 
-    assert sum(entry["mode"] == "shard" for entry in entries) == 4
-    assert all(entry["mode"] != "coverage" for entry in entries)
-    assert {
-        (entry["os"], entry["python"], entry["mode"])
-        for entry in entries
-        if entry["mode"] in {"full", "compatibility"}
-    } == {
-        ("ubuntu-latest", "3.11", "full"),
-        ("ubuntu-latest", "3.14", "full"),
-        ("windows-latest", "3.11", "compatibility"),
-        ("windows-latest", "3.13", "compatibility"),
-    }
+    assert jobs["test"]["strategy"]["matrix"] == (
+        "${{ fromJSON(needs.changes.outputs.test_matrix) }}"
+    )
+    assert workflow["jobs"]["changes"]["outputs"]["test_matrix"] == (
+        "${{ steps.classify.outputs.test_matrix }}"
+    )
+    assert shard_input["default"] == "6"
+    assert shard_input["options"] == ["4", "6", "8"]
+    assert benchmark_input["default"] is False
+    classify_step = next(
+        step for step in jobs["changes"]["steps"] if step.get("name") == "Classify changed paths"
+    )
+    assert "--windows-shard-benchmark" in classify_step["run"]
 
 
 def test_windows_shards_are_exactly_verified() -> None:
@@ -393,8 +395,16 @@ def test_windows_shards_are_exactly_verified() -> None:
     test_verifier = "\n".join(str(step) for step in test_verify_steps).replace("\n", " ")
 
     assert test_verify_download["with"]["pattern"] == "shard-windows-*"
-    assert "--group windows --shard-count 4" in test_verifier
+    assert '--group windows --shard-count "${WINDOWS_SHARD_COUNT}"' in test_verifier
     assert "--group coverage" not in test_verifier
+    verify_step = next(
+        step
+        for step in test_verify_steps
+        if step.get("name") == "Prove every sharded test ran exactly once"
+    )
+    assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == (
+        "${{ inputs.windows_shard_count || '6' }}"
+    )
 
 
 def test_coverage_shards_have_dedicated_matrix() -> None:
