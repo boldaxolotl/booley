@@ -146,6 +146,11 @@ mechanics require no further user confirmation.
 8. Approval gate (2f) applies unless the caller passed `--no-confirm`; validation never does
 9. After all inferred Criteria and Target annotations are resolved, rerun §A and reject
    any missing provider dependency before the approval gate or `--no-confirm` creation
+10. Agent mode requires `branch` explicitly and never obtains it from
+    `git branch --show-current`. For a standalone paired Project repository, require
+    `project_destination_ref` explicitly when it differs from the outer destination.
+    In agent mode, treat the supplied pair as authoritative: reject a missing or ambiguous member
+    instead of consulting either live checkout.
 
 ## Step 4: Author and Enqueue
 
@@ -159,6 +164,9 @@ confirmation. New-Target authoring is part of ticket creation, never deferred to
 developer. If authoring or validation requires changing an approved Target definition,
 return to 2f. If it requires implementation code or a mechanical failure cannot be
 repaired, report the actionable error without turning basis internals into user choices.
+Report which repository rejected which Ticket field. A workspace-materialization
+warning is a blocker: retain the diagnostic draft, and do not rewrite either destination
+to make validation or enqueue pass.
 
 ## Step 5: Report
 
@@ -194,7 +202,8 @@ conversation and the Project, then show the complete document at the approval ga
 |---|---|
 | `summary` | Concise one-line intent; used to generate the slug |
 | `type` | `bugfix` for a reproduced bug, `refactor` for restructuring, `verification` for TB/coverage work, otherwise `feature` |
-| `branch` | The requested destination, or `git branch --show-current` |
+| `branch` | `branch` is a branch name in the outer repository, without `refs/heads/`; human mode may infer it from `git branch --show-current` |
+| `project_destination_ref` | `project_destination_ref` is the canonical full local branch ref in the paired Project repository; omit it only for same-name inference when that inferred ref exists |
 | `scope` | Files the developer may change; mark a new file `[new]` |
 | `spec` | Include an existing architecture spec when relevant |
 | `dependencies` | Resolve from §A and the requested work |

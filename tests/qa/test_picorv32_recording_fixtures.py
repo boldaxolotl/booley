@@ -24,6 +24,7 @@ from qa.scenarios.picorv32.fixture_validation import (
     spike_elf,
     stealth_native,
     synth_baseline,
+    ticket_routing,
     vivado_executable,
     vivado_implementation,
 )
@@ -60,7 +61,8 @@ def test_outer_marker_is_required_before_inventory_import(tmp_path):
         git_topology(root, "inventory")
     _checkout(root)
     assert git_topology(root, "inventory")["mode"] == "inventory"
-    assert git_topology(root, "ticket")["mode"] == "ticket"
+    with pytest.raises(FixtureError, match="requires explicit --outer-ref and --inner-ref"):
+        git_topology(root, "ticket")
 
 
 def test_synth_requires_linked_nested_worktree_and_ticket_requires_standalone(tmp_path):
@@ -68,12 +70,108 @@ def test_synth_requires_linked_nested_worktree_and_ticket_requires_standalone(tm
     _checkout(root)
     source = tmp_path / "nested-source"
     _checkout(source)
+    _git("-C", str(root), "branch", "outer-release")
+    _git("-C", str(source), "branch", "project-data")
     _git("-C", str(source), "worktree", "add", "--detach", str(root / ".booley_project"))
     assert git_topology(root, "synth")["mode"] == "synth"
     with pytest.raises(FixtureError, match="standalone"):
-        git_topology(root, "ticket")
+        git_topology(
+            root,
+            "ticket",
+            outer_ref="refs/heads/outer-release",
+            inner_ref="refs/heads/project-data",
+        )
     with pytest.raises(FixtureError, match="destination ref"):
         git_topology(root, "synth", inner_ref="missing-ref")
+
+
+def test_ticket_topology_requires_full_local_branch_refs(tmp_path):
+    root = tmp_path / "outer"
+    inner = root / ".booley_project"
+    _checkout(root)
+    _checkout(inner)
+
+    with pytest.raises(FixtureError, match="outer ref must be a full refs/heads"):
+        git_topology(root, "ticket", outer_ref="main", inner_ref="refs/heads/main")
+    with pytest.raises(FixtureError, match="inner ref must be a full refs/heads"):
+        git_topology(root, "ticket", outer_ref="refs/heads/main", inner_ref="main")
+    result = subprocess.run(
+        [
+            "python3",
+            str(FIXTURES.parent / "fixture_validation.py"),
+            "git-topology",
+            str(root),
+            "ticket",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "requires explicit --outer-ref and --inner-ref" in result.stderr
+
+
+def test_ticket_routing_proves_distinct_mapping_and_rejects_swap(tmp_path):
+    root = tmp_path / "outer"
+    inner = root / ".booley_project"
+    _checkout(root)
+    _checkout(inner)
+    _git("-C", str(root), "branch", "outer-release")
+    _git("-C", str(root), "branch", "project-data")
+    _git("-C", str(inner), "branch", "project-data")
+    _git("-C", str(inner), "branch", "outer-release")
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text(
+        "---\nbranch: outer-release\n"
+        "project_destination_ref: refs/heads/project-data\n---\n\n## Description\n"
+    )
+
+    result = ticket_routing(
+        root,
+        ticket,
+        "refs/heads/outer-release",
+        "refs/heads/project-data",
+    )
+
+    assert result["branch"] == "outer-release"
+    assert result["project_destination_ref"] == "refs/heads/project-data"
+    assert len(result["outer_commit"]) == 40
+    assert len(result["project_commit"]) == 40
+    with pytest.raises(FixtureError, match="branch does not match"):
+        ticket_routing(
+            root,
+            ticket,
+            "refs/heads/project-data",
+            "refs/heads/outer-release",
+        )
+
+
+def test_ticket_routing_rejects_collapsed_mapping(tmp_path):
+    root = tmp_path / "outer"
+    inner = root / ".booley_project"
+    _checkout(root)
+    _checkout(inner)
+    ticket = tmp_path / "ticket.md"
+    branch = subprocess.run(
+        ["git", "-C", str(root), "branch", "--show-current"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.strip()
+    ticket.write_text(
+        f"---\nbranch: {branch}\n"
+        f"project_destination_ref: refs/heads/{branch}\n---\n\n## Description\n"
+    )
+
+    with pytest.raises(FixtureError, match="must be distinct"):
+        ticket_routing(
+            root,
+            ticket,
+            f"refs/heads/{branch}",
+            f"refs/heads/{branch}",
+        )
 
 
 def _elf32(path: Path, address: int) -> None:

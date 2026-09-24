@@ -485,7 +485,9 @@
                       "ticket_id",
                       "commit_id",
                       "product_revision",
-                      "provider"
+                      "provider",
+                      "outer_destination_branch",
+                      "project_destination_ref"
                     ]
                   },
                   "minItems": 0,
