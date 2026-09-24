@@ -13,6 +13,7 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -132,10 +133,8 @@ def ticket_routing(root: Path, ticket: Path, outer_ref: str, inner_ref: str) -> 
     }
 
 
-def _packet_fields(packet: bytes, outer_ref: str | None, inner_ref: str | None) -> dict | None:
+def _packet_fields(packet: bytes, outer_ref: str, inner_ref: str) -> dict:
     """Validate only the caller-owned static v2 packet contract."""
-    if outer_ref is None and inner_ref is None:
-        return None
     outer_ref = _local_branch_ref(outer_ref, "outer")
     inner_ref = _local_branch_ref(inner_ref, "inner")
     _require(
@@ -181,14 +180,38 @@ def _packet_destination(project: Path, staged: Path) -> Path:
     return staged
 
 
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Durably publish complete packet bytes with one atomic replacement."""
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def packet_input(
     project: Path,
     source: Path,
     staged: Path,
     *,
     verify_only: bool = False,
-    outer_ref: str | None = None,
-    inner_ref: str | None = None,
+    outer_ref: str,
+    inner_ref: str,
 ) -> dict:
     """Stage or recheck one exact Ticket Create packet inside Project data."""
     project = project.resolve(strict=True)
@@ -214,7 +237,7 @@ def packet_input(
         _require(staged.read_bytes() == packet, "staged packet differs from resolved packet")
     else:
         staged.parent.mkdir(parents=True, exist_ok=True)
-        staged.write_bytes(packet)
+        _atomic_write_bytes(staged, packet)
     digest = hashlib.sha256(packet).hexdigest()
     result = {
         "source": str(source),
@@ -223,11 +246,10 @@ def packet_input(
         "byte_count": len(packet),
         "verified": verify_only,
     }
-    if fields is not None:
-        result.update(
-            branch=fields["branch"],
-            project_destination_ref=fields["project_destination_ref"],
-        )
+    result.update(
+        branch=fields["branch"],
+        project_destination_ref=fields["project_destination_ref"],
+    )
     return result
 
 
@@ -788,8 +810,8 @@ def _parser() -> argparse.ArgumentParser:
     packet.add_argument("source", type=Path)
     packet.add_argument("staged", type=Path)
     packet.add_argument("--verify-only", action="store_true")
-    packet.add_argument("--outer-ref")
-    packet.add_argument("--inner-ref")
+    packet.add_argument("--outer-ref", required=True)
+    packet.add_argument("--inner-ref", required=True)
     elf = sub.add_parser("spike-elf")
     elf.add_argument("path", type=Path)
     elf.add_argument("--ram-start", type=lambda x: int(x, 0), required=True)

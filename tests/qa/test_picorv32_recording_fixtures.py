@@ -31,6 +31,17 @@ from qa.scenarios.picorv32.fixture_validation import (
 )
 
 FIXTURES = Path(__file__).resolve().parents[2] / "qa/scenarios/picorv32/fixtures"
+OUTER_REF = "refs/heads/outer"
+INNER_REF = "refs/heads/project"
+
+
+def _ticket_packet() -> bytes:
+    return (
+        b"```markdown\n---\nsummary: exact\ntype: feature\nbranch: outer\n"
+        b"project_destination_ref: refs/heads/project\nscope: [README.md]\n"
+        b"dependencies: []\npriority: medium\non_success: [review]\n"
+        b"CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n---\nbody\n```\n"
+    )
 
 
 def _git(*args: str) -> None:
@@ -117,17 +128,49 @@ def test_packet_input_stages_exact_bytes_and_detects_drift(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
     source = tmp_path / "resolved.md"
-    source.write_bytes(b"exact packet\n")
+    packet = _ticket_packet()
+    source.write_bytes(packet)
     staged = project / "tmp/qa-inputs/run-1/ticket-2/packet.md"
 
-    result = packet_input(project, source, staged)
+    result = packet_input(project, source, staged, outer_ref=OUTER_REF, inner_ref=INNER_REF)
 
-    assert staged.read_bytes() == b"exact packet\n"
-    assert result["byte_count"] == 13
-    assert result["sha256"] == hashlib.sha256(b"exact packet\n").hexdigest()
+    assert staged.read_bytes() == packet
+    assert result["byte_count"] == len(packet)
+    assert result["sha256"] == hashlib.sha256(packet).hexdigest()
     staged.write_bytes(b"changed\n")
     with pytest.raises(FixtureError, match="staged packet differs"):
-        packet_input(project, source, staged, verify_only=True)
+        packet_input(
+            project,
+            source,
+            staged,
+            verify_only=True,
+            outer_ref=OUTER_REF,
+            inner_ref=INNER_REF,
+        )
+
+
+def test_packet_input_replacement_failure_preserves_existing_packet(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = tmp_path / "resolved.md"
+    source.write_bytes(_ticket_packet())
+    staged = project / "tmp/qa-inputs/packet.md"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"previous complete packet\n")
+    real_replace = Path.replace
+
+    def fail_publication(path: Path, target: Path) -> Path:
+        if target == staged:
+            raise OSError("injected publication interruption")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_publication)
+
+    with pytest.raises(OSError, match="injected publication interruption"):
+        packet_input(project, source, staged, outer_ref=OUTER_REF, inner_ref=INNER_REF)
+
+    assert staged.read_bytes() == b"previous complete packet\n"
+    assert list(staged.parent.glob(".packet.md.*.tmp")) == []
 
 
 def test_packet_input_staging_keeps_initialized_project_clean(tmp_path):
@@ -148,9 +191,15 @@ def test_packet_input_staging_keeps_initialized_project_clean(tmp_path):
         "ignore runtime",
     )
     source = tmp_path / "resolved.md"
-    source.write_text("exact packet\n")
+    source.write_bytes(_ticket_packet())
 
-    packet_input(project, source, project / "tmp/qa-inputs/run/step/packet.md")
+    packet_input(
+        project,
+        source,
+        project / "tmp/qa-inputs/run/step/packet.md",
+        outer_ref=OUTER_REF,
+        inner_ref=INNER_REF,
+    )
 
     status = subprocess.run(
         ["git", "-C", str(project), "status", "--porcelain"],
@@ -169,10 +218,49 @@ def test_packet_input_rejects_paths_outside_project_and_unresolved_tokens(tmp_pa
     source.write_text("{{ unresolved }}\n")
 
     with pytest.raises(FixtureError, match="unresolved substitution"):
-        packet_input(project, source, project / "tmp/qa-inputs/packet.md")
+        packet_input(
+            project,
+            source,
+            project / "tmp/qa-inputs/packet.md",
+            outer_ref=OUTER_REF,
+            inner_ref=INNER_REF,
+        )
     source.write_text("resolved\n")
     with pytest.raises(FixtureError, match="beneath the Project directory"):
-        packet_input(project, source, tmp_path / "outside.md")
+        packet_input(
+            project,
+            source,
+            tmp_path / "outside.md",
+            outer_ref=OUTER_REF,
+            inner_ref=INNER_REF,
+        )
+
+
+def test_ticket_packet_cli_requires_both_routing_refs(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = tmp_path / "resolved.md"
+    source.write_bytes(_ticket_packet())
+    staged = project / "tmp/qa-inputs/packet.md"
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(FIXTURES.parent / "fixture_validation.py"),
+            "ticket-packet",
+            str(project),
+            str(source),
+            str(staged),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "--outer-ref" in result.stderr
+    assert "--inner-ref" in result.stderr
 
 
 def test_packet_input_rejects_retired_vocabulary_and_wrong_routing(tmp_path):

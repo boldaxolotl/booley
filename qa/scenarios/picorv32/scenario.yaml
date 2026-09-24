@@ -893,7 +893,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: stealth.native-no-copy
   phase: prepare
@@ -1015,7 +1015,7 @@ steps:
     sha256: c5d014145e5ec88ec343f90e8f07270ec927b6505a56a8580687db9a8d624ca9
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 - id: doctor.plain-recheck
   phase: prepare
   action: Run final plain Doctor; require warning-free result before baseline.
@@ -1162,7 +1162,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: inventory.PROJECT-INVENTORY.inventory-missing
   phase: prepare
@@ -1256,7 +1256,7 @@ steps:
     sha256: fcd15b2cc2d205f2f17d09b3f79a94ef6723474e77e52b4c6a1115e8dee76573
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: inventory.RISC-V-TOOLCHAIN.riscv-tools
   phase: prepare
@@ -1282,7 +1282,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: inventory.STEALTH-MODE.stealth-history
   phase: prepare
@@ -1567,7 +1567,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: vivado.project-grant
   phase: baseline
@@ -1623,7 +1623,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: vivado.license-create
   phase: baseline
@@ -1745,7 +1745,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: vivado.license-delete
   phase: baseline
@@ -1807,7 +1807,7 @@ steps:
     sha256: 6a37dff1d8a64930821e835c76fb7f06587e00b23a5ce6c38ecd3b146260319c
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: inventory.LINT-FLOW.lint-hard
   phase: baseline
@@ -1833,7 +1833,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: inventory.LINT-FLOW.lint-infra
   phase: baseline
@@ -1889,7 +1889,7 @@ steps:
     sha256: c20181db627a85cfc4da3a700c30c92338468cbf9c0c4a4306add24b4f017240
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: inventory.LINT-FLOW.lint-nonfatal-warning
   phase: baseline
@@ -2005,7 +2005,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: inventory.SYNTHESIS-FLOW.synth-frontend-incompatible
   phase: baseline
@@ -2389,7 +2389,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
   - path: state_probe.py
     audience: scenario-operator
     sha256: 131c44fb78e93266e6707305f53807970adf7baa58380fc18e52f96b557fff62
@@ -2618,7 +2618,7 @@ steps:
     sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: bwave.semantic-value
   phase: interactive
@@ -2880,7 +2880,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: interactive.repair
   phase: interactive
@@ -2903,7 +2903,7 @@ steps:
   assets:
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 - id: interactive.rerun-simulation
   phase: interactive
   action: Child reruns relevant simulation after repair; require fresh passing result.
@@ -3333,7 +3333,7 @@ steps:
     - project_destination_ref
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 
 - id: create.dhrystone-self-checking-cycle-contract.board
   phase: create
@@ -3350,6 +3350,7 @@ steps:
   requires:
   - inputs.project-pin
   - interactive.restore
+  - create.dhrystone-self-checking-cycle-contract.payload
 - id: create.dhrystone-self-checking-cycle-contract.basis
   phase: create
   action: |-
@@ -3368,6 +3369,8 @@ steps:
   requires:
   - inputs.project-pin
   - interactive.restore
+  - create.dhrystone-self-checking-cycle-contract.payload
+  - create.dhrystone-self-checking-cycle-contract.board
 - id: create.rv32-zbb-pcpi.payload
   phase: create
   action: |-
@@ -3388,6 +3391,7 @@ steps:
   - inputs.project-pin
   - project.separate-repository
   - interactive.restore
+  - create.dhrystone-self-checking-cycle-contract.basis
   assets:
   - path: fixtures/recording-error-runbook.md
     audience: scenario-operator
@@ -3401,7 +3405,7 @@ steps:
     - configured_fpga_criterion
   - path: fixture_validation.py
     audience: scenario-operator
-    sha256: 48047dfd3d69f1ad2f420dd6a878ba6d0dbe80d5431195055405162b9e3cf99b
+    sha256: 9c17cf7bc301ab7e8bab479d649e3cee2453273c51ebab267b54ee16201a9614
 - id: create.rv32-zbb-pcpi.board
   phase: create
   action: Creation returns board path and `waiting` state for `rv32-zbb-pcpi`.
@@ -3417,6 +3421,7 @@ steps:
   requires:
   - inputs.project-pin
   - interactive.restore
+  - create.rv32-zbb-pcpi.payload
 - id: create.rv32-zbb-pcpi.basis
   phase: create
   action: Enqueue of `rv32-zbb-pcpi` automatically publishes immutable Ticket Baseline; no manual seal or second
@@ -3435,6 +3440,8 @@ steps:
   requires:
   - inputs.project-pin
   - interactive.restore
+  - create.rv32-zbb-pcpi.payload
+  - create.rv32-zbb-pcpi.board
 - id: create.barrier
   phase: create
   action: Create both Tickets before running either; Ticket 2 declares Ticket 1 dependency.

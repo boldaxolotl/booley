@@ -172,6 +172,30 @@ def test_picorv32_ticket_create_attempts_are_file_backed_bounded_and_not_retried
     assert "never applies to either Ticket Create attempt" in developer_retry["action"]
 
 
+def test_picorv32_ticket_create_dependencies_propagate_failed_attempts():
+    scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
+    required_edges = {
+        "create.dhrystone-self-checking-cycle-contract.board": {
+            "create.dhrystone-self-checking-cycle-contract.payload",
+        },
+        "create.dhrystone-self-checking-cycle-contract.basis": {
+            "create.dhrystone-self-checking-cycle-contract.payload",
+            "create.dhrystone-self-checking-cycle-contract.board",
+        },
+        "create.rv32-zbb-pcpi.payload": {
+            "create.dhrystone-self-checking-cycle-contract.basis",
+        },
+        "create.rv32-zbb-pcpi.board": {"create.rv32-zbb-pcpi.payload"},
+        "create.rv32-zbb-pcpi.basis": {
+            "create.rv32-zbb-pcpi.payload",
+            "create.rv32-zbb-pcpi.board",
+        },
+    }
+
+    for step_id, dependencies in required_edges.items():
+        assert dependencies <= set(scenario_step(scenario, step_id)["requires"])
+
+
 def test_picorv32_ticket_two_packet_uses_current_v2_static_vocabulary():
     packet = (ROOT / "scenarios/picorv32/tickets/evolution.md").read_text()
     assert "CRITERIA_MANDATORY:" in packet
