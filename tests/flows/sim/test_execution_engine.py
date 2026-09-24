@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -68,7 +69,7 @@ def _handle(root: Path, *, selector: str = "sim") -> TargetHandle:
 
 def _prepared(handle: TargetHandle, *, cocotb: bool) -> PreparedSimulationBuild:
     build_root = handle.project_root / "build" / handle.selector
-    build_root.mkdir(parents=True)
+    build_root.mkdir(parents=True, exist_ok=True)
     resolved = ResolvedTarget(
         name=handle.selector,
         vlnv=handle.vlnv,
@@ -93,19 +94,23 @@ def _prepared(handle: TargetHandle, *, cocotb: bool) -> PreparedSimulationBuild:
     )
 
 
-def _prepared_group_with_source(handle: TargetHandle, source: Path) -> PreparedOrdinaryGroup:
+def _prepared_group_with_sources(
+    handle: TargetHandle,
+    *sources: Path,
+    trace_requested: bool = False,
+) -> PreparedOrdinaryGroup:
     prepared = _prepared(handle, cocotb=False)
     prepared = replace(
         prepared,
         resolved=replace(
             prepared.resolved,
-            files=(ResolvedFile(str(source), "systemVerilogSource"),),
+            files=tuple(ResolvedFile(str(source), "systemVerilogSource") for source in sources),
         ),
     )
     return PreparedOrdinaryGroup(
         MagicMock(),
         handle,
-        cast(Any, SimpleNamespace(prepared=prepared)),
+        cast(Any, SimpleNamespace(prepared=prepared, trace_requested=trace_requested)),
         MagicMock(),
         0.0,
         {},
@@ -155,7 +160,7 @@ def test_prepared_source_entries_accept_project_absolute_sources(tmp_path: Path)
     )
     group = object.__new__(PreparedOrdinaryGroup)
     group._handle = handle
-    group._attempt = SimpleNamespace(prepared=prepared)
+    group._attempt = SimpleNamespace(prepared=prepared, trace_requested=False)
 
     assert group.prepared_source_entries()[0]["path"] == "picorv32.v"
 
@@ -190,7 +195,7 @@ def test_prepared_source_entries_reject_project_external_sources(tmp_path: Path)
     )
     group = object.__new__(PreparedOrdinaryGroup)
     group._handle = handle
-    group._attempt = SimpleNamespace(prepared=prepared)
+    group._attempt = SimpleNamespace(prepared=prepared, trace_requested=False)
 
     with pytest.raises(SimulationBuildSlotError, match="unsafe prepared Simulation source"):
         group.prepared_source_entries()
@@ -852,7 +857,7 @@ def test_prepared_source_entries_accept_absolute_project_source(tmp_path: Path) 
     handle = _handle(tmp_path)
     source = tmp_path / "top.sv"
     source.write_bytes(b"module top; endmodule\n")
-    group = _prepared_group_with_source(handle, source)
+    group = _prepared_group_with_sources(handle, source)
 
     assert group.prepared_source_entries() == (
         {
@@ -869,9 +874,121 @@ def test_prepared_source_entries_reject_absolute_source_outside_project(tmp_path
     handle = _handle(project)
     source = tmp_path / "outside.sv"
     source.write_bytes(b"module outside; endmodule\n")
-    group = _prepared_group_with_source(handle, source)
+    group = _prepared_group_with_sources(handle, source)
 
     with pytest.raises(SimulationBuildSlotError, match="unsafe prepared Simulation source"):
+        group.prepared_source_entries()
+
+
+def test_prepared_source_entries_accept_exact_packaged_trace_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    packaged = tmp_path / "package" / "refs" / "booley_vcd_dump.sv"
+    packaged.parent.mkdir(parents=True)
+    packaged.write_bytes(b"module booley_vcd_dump; endmodule\n")
+    monkeypatch.setattr(
+        "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
+        MagicMock(return_value=packaged.resolve()),
+    )
+    group = _prepared_group_with_sources(_handle(project), packaged, trace_requested=True)
+
+    assert group.prepared_source_entries() == (
+        {
+            "path": "booley-package/refs/booley_vcd_dump.sv",
+            "bytes": len(packaged.read_bytes()),
+            "sha256": "sha256:" + hashlib.sha256(packaged.read_bytes()).hexdigest(),
+            "kind": "generated_input",
+        },
+    )
+
+
+def test_prepared_source_entries_fail_closed_when_packaged_authority_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    missing = tmp_path / "package" / "refs" / "booley_vcd_dump.sv"
+    monkeypatch.setattr(
+        "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
+        MagicMock(
+            side_effect=fusesoc_registry.FuseSocError(
+                f"packaged trace dump module is not a regular file: {missing}"
+            )
+        ),
+    )
+    group = _prepared_group_with_sources(_handle(project), missing, trace_requested=True)
+
+    with pytest.raises(
+        SimulationBuildSlotError,
+        match="packaged trace dump module is not a regular file",
+    ):
+        group.prepared_source_entries()
+
+
+def test_prepared_source_entries_reject_packaged_sibling_and_external_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    package = tmp_path / "package" / "refs"
+    package.mkdir(parents=True)
+    packaged = package / "booley_vcd_dump.sv"
+    packaged.write_bytes(b"trusted")
+    sibling = package / "other.sv"
+    sibling.write_bytes(b"untrusted")
+    external = tmp_path / "external.sv"
+    external.write_bytes(b"external")
+    alias = tmp_path / "external-alias.sv"
+    alias.symlink_to(external)
+    monkeypatch.setattr(
+        "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
+        MagicMock(return_value=packaged.resolve()),
+    )
+
+    for source in (sibling, alias):
+        group = _prepared_group_with_sources(_handle(project), source, trace_requested=True)
+        with pytest.raises(SimulationBuildSlotError, match="unsafe prepared Simulation source"):
+            group.prepared_source_entries()
+
+
+def test_prepared_source_entries_treat_packaged_alias_as_same_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    packaged = tmp_path / "package" / "refs" / "booley_vcd_dump.sv"
+    packaged.parent.mkdir(parents=True)
+    packaged.write_bytes(b"trusted")
+    alias = tmp_path / "dump-alias.sv"
+    alias.symlink_to(packaged)
+    monkeypatch.setattr(
+        "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
+        MagicMock(return_value=packaged.resolve()),
+    )
+
+    group = _prepared_group_with_sources(_handle(project), alias, trace_requested=True)
+    assert group.prepared_source_entries()[0]["path"] == ("booley-package/refs/booley_vcd_dump.sv")
+
+
+def test_prepared_source_entries_reject_duplicate_mapped_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    packaged = tmp_path / "package" / "refs" / "booley_vcd_dump.sv"
+    packaged.parent.mkdir(parents=True)
+    packaged.write_bytes(b"trusted")
+    alias = tmp_path / "dump-alias.sv"
+    alias.symlink_to(packaged)
+    monkeypatch.setattr(
+        "booley.flows.sim.execution.engine.trace_overlay.packaged_vcd_dump_source",
+        MagicMock(return_value=packaged.resolve()),
+    )
+    group = _prepared_group_with_sources(_handle(project), packaged, alias, trace_requested=True)
+
+    with pytest.raises(SimulationBuildSlotError, match="duplicate prepared Simulation source"):
         group.prepared_source_entries()
 
 
