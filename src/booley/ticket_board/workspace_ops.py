@@ -200,6 +200,15 @@ def _full_commit(repository: Path, ref: str) -> str:
     return resolve_commit(repository, sha)
 
 
+def _outer_destination_commit(repository: Path, branch: str) -> str:
+    sha = _strict_branch_sha(repository, branch)
+    if sha is None:
+        raise TicketBaselineOperationError(
+            f"outer `branch` {branch!r} does not exist in the outer repository"
+        )
+    return sha
+
+
 def _branch_sha(repository: Path, branch: str) -> str:
     result = _git(repository, "rev-parse", "--verify", f"refs/heads/{branch}")
     return result.stdout.strip() if result.returncode == 0 else ""
@@ -493,7 +502,7 @@ def _validate_open_bases(
     outer_sha: str,
     project: _ProjectOpenPlan | None,
 ) -> None:
-    if _full_commit(root, outer_branch) != outer_sha:
+    if _strict_branch_sha(root, outer_branch) != outer_sha:
         raise TicketBaselineOperationError(
             f"destination branch {outer_branch!r} moved during preflight"
         )
@@ -596,7 +605,7 @@ def open_authoring_generation(
     project_plan = _preflight_project_repository(
         root, branch, fields.get("project_destination_ref")
     )
-    outer_base = _full_commit(root, branch)
+    outer_base = _outer_destination_commit(root, branch)
     if outer.is_dir() and _worktree_owns_branch(root, outer, ticket_branch):
         paired = _resume_project_attachment(root, ticket, slug, outer, ticket_branch, project_plan)
         return AuthoringWorkspace(

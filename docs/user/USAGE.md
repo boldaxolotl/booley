@@ -498,6 +498,16 @@ disregards the former scaffold's strict-format instructions.
 
 Queuing a ticket doesn't start it. Tickets sit in `board/queue/` until you start Ticket Mode with `booley run` in a container terminal; that loop then pulls tickets off the queue one after another without further input. Use `/booley-ticket-triage` to work through blocked, failed, and finished ones.
 
+For a Project whose `.booley_project` directory is a standalone Git repository, Ticket
+creation routes two destinations independently. `branch` is the outer repository branch
+name without the `refs/heads/` prefix. `project_destination_ref` is the paired Project
+repository's canonical full local branch ref, including `refs/heads/`. The Project ref may
+be omitted for the existing same-name workflow only when the inferred ref exists. Agent
+mode requires `branch` explicitly, and it also requires `project_destination_ref` when the
+two destinations differ. A supplied pair is authoritative: a missing or ambiguous member
+blocks creation rather than being replaced from either live checkout, created, or changed
+to `main`.
+
 **Amending a blocked Ticket.** During triage, the agent may propose relaxing an
 existing acceptance Criterion or expanding file Scope when the recorded blocker
 supports that change. It shows the exact before-and-after proposal for Human

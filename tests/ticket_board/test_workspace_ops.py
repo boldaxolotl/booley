@@ -372,11 +372,18 @@ def test_ensure_workspace_rejects_moved_branch_and_existing_path(
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: project_data)
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
-    monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "a" * 40)
-    monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: "b" * 40)
+
+    def moved_generation_branch(_repository: Path, branch: str) -> str:
+        return "a" * 40 if branch == "main" else "b" * 40
+
+    monkeypatch.setattr(workspace_ops, "_strict_branch_sha", moved_generation_branch)
     with pytest.raises(workspace_ops.TicketBaselineOperationError, match="already points"):
         workspace_ops.ensure_ticket_workspace(root, ticket, "ticket")
-    monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: None)
+
+    def only_destination_branch(_repository: Path, branch: str) -> str | None:
+        return "a" * 40 if branch == "main" else None
+
+    monkeypatch.setattr(workspace_ops, "_strict_branch_sha", only_destination_branch)
     existing = project_data / "worktrees/ticket"
     existing.parent.mkdir(parents=True)
     existing.symlink_to("missing")
@@ -1158,15 +1165,12 @@ def test_branch_preflight_rejects_git_failure_and_conflicting_worktree(
 def test_open_preflight_rejects_moved_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "changed")
+    monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: "changed")
     with pytest.raises(workspace_ops.TicketBaselineOperationError, match="destination branch"):
         workspace_ops._validate_open_bases(tmp_path, "main", "original", None)
     project = workspace_ops._ProjectOpenPlan(tmp_path / "project", "main", "original")
-    monkeypatch.setattr(
-        workspace_ops,
-        "_full_commit",
-        lambda repository, _ref: "original" if repository == tmp_path else "changed",
-    )
+    monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: "original")
+    monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "changed")
     with pytest.raises(
         workspace_ops.TicketBaselineOperationError, match="paired project destination"
     ):
