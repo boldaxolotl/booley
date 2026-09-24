@@ -3,7 +3,7 @@
 Pull requests use pairwise compatibility coverage so the required gate can run
 horizontally:
 
-- Python 3.14 runs the complete suite on Windows in four duration-balanced
+- Python 3.14 runs the complete suite on Windows in six duration-balanced
   shards.
 - Python 3.13 runs complete branch coverage on Ubuntu in three shards.
 - Python 3.11 and 3.14 run the complete suite on Ubuntu.
@@ -20,7 +20,7 @@ combination before merge.
 `.github/scripts/ci_pytest_shard.py` collects the eligible tests on every
 runner. Historical timings influence balance only: a new or unknown test is
 always assigned to a shard. The `test` job owns compatibility execution, with
-`test-verify` checking the exact node-ID sets from its four Windows shards. The
+`test-verify` checking the exact node-ID sets from its six Windows shards. The
 independent `coverage-shards` job owns coverage execution; `coverage` verifies
 its three exact shard selections before combining their raw data and enforcing
 the global and changed-line thresholds. `ci-required` waits for and validates
@@ -28,9 +28,35 @@ both branches. Each verifier fails if a test is omitted, duplicated, or
 collected differently by two shards.
 
 The checked-in Windows timing model contains the slow observations from a
-successful `main` run. Every shard emits fresh exact-node timing evidence for
-future model refreshes. Stale entries are harmless and missing entries use the
-conservative default weight.
+recent set of `main` runs. Each stored weight is the median of available
+observations for a currently eligible test whose median exceeds the
+conservative one-second default. Every shard emits fresh exact-node timing
+evidence for future model refreshes. Stale entries are harmless and missing or
+unobserved tests use the default weight.
+
+The timing evidence also separates the slowest worker's collection time from
+controller and execution wall time. GitHub job-step timestamps supply runner
+setup and package-install time around those pytest phases.
+
+## Windows shard-count experiment
+
+Manual `Tests` workflow runs accept four, six, or eight Windows shards. The
+`windows_shard_benchmark` option selects the same required jobs as an ordinary
+Python source change, avoiding unrelated image work in required-gate timing. Pull
+requests, pushes, and reusable-workflow calls use the selected six-shard
+production policy. The generated matrix keeps the same Linux and Windows
+compatibility legs, marker selection, four-worker
+work-stealing scheduler, timing model, and exact-union verification for every
+candidate count.
+
+The current timing-model refresh uses ten complete four-shard artifact sets,
+from runs `35614218828` through `35850009708`, with run `35850009708` as the
+13,107-test reference set. Benchmark comparisons must record setup, collection,
+execution, job queueing, required-gate elapsed time, and total runner minutes.
+
+The September 23, 2026 experiment selected six shards as the production
+default. See [the experiment record](windows-shard-experiment.md) for the raw
+comparison and the post-change validation requirement.
 
 ## Exhaustive recovery policy
 

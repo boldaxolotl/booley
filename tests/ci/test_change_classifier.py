@@ -13,6 +13,7 @@ import pytest
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
+from ci_changes import build_test_matrix
 from picorv32_ci_inputs import RISCV_IMAGE_FILES
 
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
@@ -75,6 +76,8 @@ def _run_classifier(
     *,
     force_all: bool = False,
     event_name: str | None = None,
+    windows_shard_count: int = 4,
+    windows_shard_benchmark: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     output = repo / "github-output.txt"
     command = [
@@ -90,6 +93,10 @@ def _run_classifier(
         str(output),
         "--force-all",
         str(force_all).lower(),
+        "--windows-shard-count",
+        str(windows_shard_count),
+        "--windows-shard-benchmark",
+        str(windows_shard_benchmark).lower(),
     ]
     if event_name is not None:
         command.extend(("--event-name", event_name))
@@ -104,6 +111,8 @@ def _classify(
     *,
     force_all: bool = False,
     event_name: str | None = None,
+    windows_shard_count: int = 4,
+    windows_shard_benchmark: bool = False,
 ) -> dict[str, str]:
     result, output = _run_classifier(
         repo,
@@ -111,6 +120,8 @@ def _classify(
         head,
         force_all=force_all,
         event_name=event_name,
+        windows_shard_count=windows_shard_count,
+        windows_shard_benchmark=windows_shard_benchmark,
     )
     assert result.returncode == 0, result.stderr
     return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
@@ -128,6 +139,87 @@ def _required(outputs: dict[str, str]) -> set[str]:
 
 def _jobs(outputs: dict[str, str]) -> dict[str, bool]:
     return json.loads(outputs["jobs"])
+
+
+@pytest.mark.parametrize("shard_count", [4, 6, 8])
+def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> None:
+    entries = build_test_matrix(shard_count)["include"]
+    shards = [entry for entry in entries if entry["mode"] == "shard"]
+    compatibility = [entry for entry in entries if entry["mode"] != "shard"]
+
+    assert len(entries) == 4 + shard_count
+    assert compatibility == [
+        {"name": "ubuntu-3.11-full", "os": "ubuntu-latest", "python": "3.11", "mode": "full"},
+        {"name": "ubuntu-3.14-full", "os": "ubuntu-latest", "python": "3.14", "mode": "full"},
+        {
+            "name": "windows-3.11-compatibility",
+            "os": "windows-latest",
+            "python": "3.11",
+            "mode": "compatibility",
+        },
+        {
+            "name": "windows-3.13-compatibility",
+            "os": "windows-latest",
+            "python": "3.13",
+            "mode": "compatibility",
+        },
+    ]
+    assert [entry["shard_index"] for entry in shards] == list(range(shard_count))
+    assert all(entry["shard_count"] == shard_count for entry in shards)
+    assert len({entry["name"] for entry in entries}) == len(entries)
+
+
+def test_classifier_emits_requested_windows_shard_matrix(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "source change")
+
+    outputs = _classify(repo, base, head, windows_shard_count=6)
+    entries = json.loads(outputs["test_matrix"])["include"]
+
+    assert sum(entry["mode"] == "shard" for entry in entries) == 6
+
+
+def test_windows_shard_benchmark_matches_ordinary_python_change(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, ".github/workflows/test.yml")
+    head = _commit(repo, "benchmark workflow")
+
+    outputs = _classify(
+        repo,
+        base,
+        head,
+        event_name="workflow_dispatch",
+        windows_shard_benchmark=True,
+    )
+
+    assert _required(outputs) == {
+        "changes",
+        "release-semantic",
+        "lint",
+        "test",
+        "test-verify",
+        "coverage-shards",
+        "coverage",
+        "package-artifacts",
+    }
+
+
+def test_windows_shard_benchmark_rejects_other_events(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "source change")
+
+    result, _output = _run_classifier(
+        repo,
+        base,
+        head,
+        event_name="push",
+        windows_shard_benchmark=True,
+    )
+
+    assert result.returncode == 2
+    assert "requires workflow_dispatch" in result.stderr
 
 
 def test_pull_request_uses_matching_merge_parent_instead_of_stale_event_base(
