@@ -456,6 +456,13 @@ def test_setup_reserves_deep_doctor_for_one_final_gate():
     assert "Reuse a successful setup/heal deep result" in agents
 
 
+def test_setup_agents_template_advertises_supported_specialists():
+    agents = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
+
+    for specialist in ("`coverage_analyst`", "`reviewer`", "`mutation_tester`"):
+        assert specialist in agents
+
+
 def test_heal_preserves_scope_and_routes_exceptional_findings():
     skill = _skill_text("booley-heal")
 
