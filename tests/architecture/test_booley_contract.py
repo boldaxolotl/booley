@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from tests.architecture.booley_contract import BOOLEY_SOURCE_DEPENDENCY_CONTRACT
-from tests.architecture.contract import ArchitectureContract, evaluate_contract
+from tests.architecture.contract import ArchitectureContract, evaluate_contract, format_problems
 from tests.architecture.import_graph import Dependency, analyze_imports
 
 
@@ -149,6 +149,92 @@ def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
     assert rule in {problem.rule for problem in problems}
 
 
+@pytest.mark.parametrize(
+    ("statement", "target"),
+    [
+        (
+            "import booley.flows.sim.campaign.store\n",
+            "booley.flows.sim.campaign.store",
+        ),
+        (
+            "from booley.flows.sim.campaign import store\n",
+            "booley.flows.sim.campaign.store",
+        ),
+        (
+            "from booley.flows.sim.campaign.store import CampaignStore\n",
+            "booley.flows.sim.campaign.store",
+        ),
+        (
+            "def deferred():\n    import booley.flows.sim.campaign.store\n",
+            "booley.flows.sim.campaign.store",
+        ),
+        (
+            "if enabled:\n    import booley.flows.sim.campaign.store\n",
+            "booley.flows.sim.campaign.store",
+        ),
+        (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n    from booley.flows.sim.campaign.store import CampaignStore\n",
+            "booley.flows.sim.campaign.store",
+        ),
+        (
+            "from booley.flows.sim.campaign.inspection import authenticate_work_item\n",
+            "booley.flows.sim.campaign.inspection",
+        ),
+    ],
+)
+def test_campaign_storage_rule_catches_every_external_import_form(
+    tmp_path: Path, statement: str, target: str
+) -> None:
+    root = _campaign_rule_seed(tmp_path, "flows/sim/rogue.py", statement)
+
+    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    report = format_problems(problems)
+
+    assert "D31" in report
+    assert "booley.flows.sim.rogue" in report
+    assert target in report
+
+
+def test_campaign_storage_rule_allows_public_facade_import(tmp_path: Path) -> None:
+    root = _campaign_rule_seed(
+        tmp_path,
+        "flows/sim/rogue.py",
+        "from booley.flows.sim import campaign\n",
+    )
+
+    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+
+    assert not [problem for problem in problems if problem.rule == "D31"]
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [
+        ("booley.flows.sim.campaign.coordinator", "booley.flows.sim.campaign.store"),
+        ("booley.flows.sim.campaign.child_protocol", "booley.flows.sim.campaign.store"),
+        ("booley.flows.sim.campaign.inspection", "booley.flows.sim.campaign.store"),
+        ("booley.flows.sim.campaign", "booley.flows.sim.campaign.inspection"),
+    ],
+)
+def test_campaign_storage_permissions_allow_only_their_exact_edges(
+    source: str, target: str
+) -> None:
+    allowed = _dependency(source, target)
+    displaced = _dependency(source + "_other", target)
+
+    assert not [
+        problem
+        for problem in evaluate_contract((allowed,), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+        if problem.rule == "D31"
+    ]
+    assert [
+        problem
+        for problem in evaluate_contract((displaced,), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+        if problem.rule == "D31"
+    ]
+
+
 def _directions_only() -> ArchitectureContract:
     return ArchitectureContract(rules=BOOLEY_SOURCE_DEPENDENCY_CONTRACT.rules)
 
@@ -287,3 +373,22 @@ def test_approved_target_group_cannot_recombine_with_execution() -> None:
 
 def _dependency(source: str, target: str, *, line: int = 1, path: str = "seed.py") -> Dependency:
     return Dependency(source, target, Path(path), line, 0)
+
+
+def _campaign_rule_seed(tmp_path: Path, source: str, statement: str) -> Path:
+    root = tmp_path / "booley"
+    files = (
+        "__init__.py",
+        "flows/__init__.py",
+        "flows/sim/__init__.py",
+        "flows/sim/campaign/__init__.py",
+        "flows/sim/campaign/store.py",
+        "flows/sim/campaign/inspection.py",
+        source,
+    )
+    for relative in files:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+    (root / source).write_text(statement)
+    return root

@@ -1,14 +1,14 @@
 """Read canonical Campaign identity and verify optional source snapshots."""
 
+from __future__ import annotations
+
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import BoundaryError, require_dict
-from booley.flows.sim.campaign.planning import manifest_digest
-from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_reports import is_report_link, target_report_directory
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
@@ -25,6 +25,9 @@ from booley.flows.sim.coverage_reference import (
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
 )
+
+if TYPE_CHECKING:
+    from booley.flows.sim.campaign import CampaignWorkItemEvidence
 
 
 class CoverageAnalysisError(ValueError):
@@ -65,8 +68,8 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
             raise CoverageAnalysisError("Campaign identity disagrees with its exact path")
         projection = _projection(path.parent / "simulation.json", campaign)
         if resolved is not None:
-            authenticate_coverage_campaign_owner(resolved)
-            _reference_projection(path, projection, resolved)
+            authenticated = authenticate_coverage_campaign_owner(resolved)
+            _reference_projection(path, projection, resolved, authenticated)
         return loaded
     except (OSError, ValueError, BoundaryError) as exc:
         raise CoverageAnalysisError(
@@ -104,6 +107,7 @@ def _reference_projection(
     public_path: Path,
     projection: Mapping[str, object],
     resolved: ResolvedCoverageCampaign,
+    authenticated: CampaignWorkItemEvidence,
 ) -> None:
     """Authenticate a Simulation-owned projection through its exact manifest."""
     manifest_pointer = projection.get("campaign_manifest")
@@ -116,14 +120,15 @@ def _reference_projection(
     ):
         raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
     _safe_path(expected_manifest)
-    manifest = CampaignStore(expected_manifest.parent).load_manifest()
+    manifest = authenticated.manifest
     document = resolved.reference.document
     target = manifest.document["target"]
     if not isinstance(target, Mapping):
         raise CoverageAnalysisError("Simulation Campaign Target is invalid")
     if (
         manifest.document["campaign_id"] != document["simulation_campaign_id"]
-        or manifest_digest(manifest) != document["simulation_manifest_sha256"]
+        or authenticated.manifest_path != expected_manifest.absolute()
+        or authenticated.manifest_sha256 != document["simulation_manifest_sha256"]
         or target["selector"] != resolved.loaded.campaign.target.selector
         or f"{target['vlnv']}#{target['name']}" != resolved.loaded.campaign.target.identity
     ):

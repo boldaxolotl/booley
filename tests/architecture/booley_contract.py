@@ -91,6 +91,16 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D31",
+        (prefix("booley"),),
+        (
+            exact("booley.flows.sim.campaign.store"),
+            exact("booley.flows.sim.campaign.inspection"),
+        ),
+        "Simulation Campaign durable storage is private implementation behind the "
+        "public Campaign interface",
+    ),
+    DirectionRule(
         "D29",
         (prefix("booley.bwave"),),
         (prefix("booley.flows"),),
@@ -349,6 +359,34 @@ DIRECTION_RULES = (
 )
 
 COMPOSITION_PERMISSIONS = (
+    CompositionPermission(
+        "C10",
+        "D31",
+        "booley.flows.sim.campaign.coordinator",
+        "booley.flows.sim.campaign.store",
+        "Campaign execution composes durable transaction, recovery, and publication.",
+    ),
+    CompositionPermission(
+        "C11",
+        "D31",
+        "booley.flows.sim.campaign.child_protocol",
+        "booley.flows.sim.campaign.store",
+        "Campaign-owned child linkage validates and publishes durable Campaign paths.",
+    ),
+    CompositionPermission(
+        "C12",
+        "D31",
+        "booley.flows.sim.campaign.inspection",
+        "booley.flows.sim.campaign.store",
+        "Public read capabilities inspect storage through the private Campaign store.",
+    ),
+    CompositionPermission(
+        "C13",
+        "D31",
+        "booley.flows.sim.campaign",
+        "booley.flows.sim.campaign.inspection",
+        "The Campaign package facade publishes the storage-backed read capabilities.",
+    ),
     CompositionPermission(
         "C9",
         "D22",

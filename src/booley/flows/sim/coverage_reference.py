@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str_value
 from booley.flows.sim.campaign_durability import durable_create
@@ -22,6 +22,9 @@ from booley.flows.sim.coverage_campaign_store import (
     load_coverage_campaign_bytes,
 )
 from booley.runtime.regular_file import open_regular_nofollow
+
+if TYPE_CHECKING:
+    from booley.flows.sim.campaign import CampaignWorkItemEvidence
 
 REFERENCE_SCHEMA = "booley.coverage-campaign-reference/v1"
 MAX_REFERENCE_BYTES = 1024 * 1024
@@ -201,36 +204,37 @@ def build_coverage_campaign_reference(
 
 def authenticate_coverage_campaign_owner(
     resolved: ResolvedCoverageCampaign,
-) -> None:
+) -> CampaignWorkItemEvidence:
     """Authenticate the enclosing Simulation manifest, result, and nested evidence."""
-    from booley.flows.sim.campaign.planning import manifest_digest
-    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.campaign import (
+        SimulationCampaignIntegrityError,
+        SimulationCampaignWorkItemError,
+        authenticate_work_item,
+    )
 
     document = resolved.reference.document
     nested = cast(Mapping[str, object], document["coverage_campaign"])
-    store = CampaignStore(resolved.reference_path.parent / "campaign")
     try:
-        manifest = store.load_manifest()
-        recovery = store.scan()
-    except (OSError, ValueError) as exc:
+        authenticated = authenticate_work_item(
+            resolved.reference_path.parent / "campaign" / "manifest.json",
+            cast(str, document["simulation_work_item_id"]),
+        )
+    except SimulationCampaignWorkItemError as exc:
+        raise CoverageCampaignReferenceError(
+            "reference has no exact enclosing Simulation result"
+        ) from exc
+    except SimulationCampaignIntegrityError as exc:
         raise CoverageCampaignReferenceError(
             "enclosing Simulation Campaign cannot be authenticated"
         ) from exc
+    manifest = authenticated.manifest
     target = cast(Mapping[str, str], manifest.document["target"])
-    matching = [
-        item
-        for item in recovery.items
-        if item.work_item_id == document["simulation_work_item_id"] and item.result is not None
-    ]
-    if len(matching) != 1:
-        raise CoverageCampaignReferenceError("reference has no exact enclosing Simulation result")
-    result = matching[0].result
-    assert result is not None
+    result = authenticated.result
     evidence = cast(tuple[Mapping[str, object], ...], result.document["evidence"])
     nested_evidence = [item for item in evidence if item["kind"] == "coverage_campaign_manifest"]
     if (
         manifest.document["campaign_id"] != document["simulation_campaign_id"]
-        or manifest_digest(manifest) != document["simulation_manifest_sha256"]
+        or authenticated.manifest_sha256 != document["simulation_manifest_sha256"]
         or target["selector"] != cast(Mapping[str, str], document["target"])["selector"]
         or f"{target['vlnv']}#{target['name']}"
         != cast(Mapping[str, str], document["target"])["identity"]
@@ -245,6 +249,7 @@ def authenticate_coverage_campaign_owner(
         raise CoverageCampaignReferenceError(
             "enclosing Simulation Campaign disagrees with reference"
         )
+    return authenticated
 
 
 def _validate_reference(value: Mapping[str, object]) -> None:

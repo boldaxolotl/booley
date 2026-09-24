@@ -23,8 +23,11 @@ from typing import TypeVar, cast
 from booley.core.boundary import (
     BoundaryError,
     require_bool_value,
+    require_dict,
     require_finite_number,
     require_int,
+    require_list,
+    require_str_value,
 )
 from booley.flows.sim.campaign_durability import (
     durable_create,
@@ -37,6 +40,7 @@ from booley.runtime.regular_file import open_regular_nofollow
 from .codec import (
     MANIFEST_MAX_BYTES,
     RECORD_MAX_BYTES,
+    SUMMARY_MAX_BYTES,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -163,24 +167,11 @@ def _replace_projection(path: Path, raw: bytes) -> None:
 def _read_regular(path: Path, *, limit: int) -> bytes:
     if _is_link(path):
         raise SimulationCampaignIntegrityError(f"authoritative path is a link: {path}")
+    descriptor: int | None = None
+    current_descriptor: int | None = None
     try:
         descriptor = open_regular_nofollow(path)
-    except OSError as exc:
-        raise SimulationCampaignIntegrityError(
-            f"cannot read authoritative file {path}: {exc}"
-        ) from exc
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise SimulationCampaignIntegrityError(f"authoritative path is not a file: {path}")
-        if info.st_nlink != 1:
-            raise SimulationCampaignIntegrityError(
-                f"authoritative file has multiple filesystem links: {path}"
-            )
-        if info.st_size > limit:
-            raise SimulationCampaignIntegrityError(
-                f"authoritative file exceeds size ceiling: {path}"
-            )
+        initial = _regular_identity(os.fstat(descriptor), path, limit)
         raw = bytearray()
         while len(raw) <= limit:
             chunk = os.read(descriptor, min(64 * 1024, limit + 1 - len(raw)))
@@ -191,9 +182,37 @@ def _read_regular(path: Path, *, limit: int) -> bytes:
             raise SimulationCampaignIntegrityError(
                 f"authoritative file exceeds size ceiling: {path}"
             )
+        final = _regular_identity(os.fstat(descriptor), path, limit)
+        current_descriptor = open_regular_nofollow(path)
+        current = _regular_identity(os.fstat(current_descriptor), path, limit)
+        if initial != final or final != current or len(raw) != final[2]:
+            raise SimulationCampaignIntegrityError(
+                f"authoritative file changed during read: {path}"
+            )
         return bytes(raw)
+    except OSError as exc:
+        raise SimulationCampaignIntegrityError(
+            f"cannot read authoritative file {path}: {exc}"
+        ) from exc
     finally:
-        os.close(descriptor)
+        if current_descriptor is not None:
+            os.close(current_descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _regular_identity(
+    info: os.stat_result, path: Path, limit: int
+) -> tuple[int, int, int, int, int]:
+    if not stat.S_ISREG(info.st_mode):
+        raise SimulationCampaignIntegrityError(f"authoritative path is not a file: {path}")
+    if info.st_nlink != 1:
+        raise SimulationCampaignIntegrityError(
+            f"authoritative file has multiple filesystem links: {path}"
+        )
+    if info.st_size > limit:
+        raise SimulationCampaignIntegrityError(f"authoritative file exceeds size ceiling: {path}")
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
 class CampaignStore:
@@ -221,6 +240,33 @@ class CampaignStore:
         return decode_simulation_campaign_manifest(
             _read_regular(self.manifest_path, limit=MANIFEST_MAX_BYTES)
         )
+
+    def load_summary(self) -> Mapping[str, object]:
+        """Load the bounded retention fields from the existing summary projection."""
+        _require_safe_parents(self.summary_path, self.root)
+        raw = _read_regular(self.summary_path, limit=SUMMARY_MAX_BYTES)
+        try:
+            document = require_dict(json.loads(raw), field="campaign summary")
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SimulationCampaignIntegrityError("campaign summary is invalid JSON") from exc
+        except BoundaryError as exc:
+            raise SimulationCampaignIntegrityError("campaign summary is not an object") from exc
+        try:
+            schema = require_str_value(document.get("$schema"), field="campaign summary schema")
+            require_bool_value(document.get("complete"), field="campaign summary complete")
+            completed = tuple(
+                require_str_value(item, field="campaign summary completed item")
+                for item in require_list(
+                    document.get("completed"), field="campaign summary completed"
+                )
+            )
+        except BoundaryError as exc:
+            raise SimulationCampaignIntegrityError(
+                "campaign summary retention fields are invalid"
+            ) from exc
+        if schema != _SUMMARY_SCHEMA or len(set(completed)) != len(completed):
+            raise SimulationCampaignIntegrityError("campaign summary retention fields are invalid")
+        return document
 
     def manifest_sha256(self) -> str:
         return _manifest_sha256(self.load_manifest())
