@@ -61,6 +61,16 @@ _VCD_DUMP_MODULE = "booley_vcd_dump"
 _INJECTED_DUMP_FILESET = "booley_trace_dump"
 
 
+def packaged_vcd_dump_source() -> Path:
+    """Return the one canonical packaged source trusted by traced Icarus builds."""
+    from booley.runtime.paths import refs_dir
+
+    source = (refs_dir() / f"{_VCD_DUMP_MODULE}.sv").resolve()
+    if not source.is_file():
+        raise FuseSocError(f"packaged trace dump module is not a regular file: {source}")
+    return source
+
+
 def _inject_dump_module(
     overlay_doc: MutableMapping[str, Any],
     target: str,
@@ -79,9 +89,7 @@ def _inject_dump_module(
     directly so cleanup cannot delete a later Makefile dependency. Returns the
     ephemeral copy to clean, or ``None`` for the packaged-source branch.
     """
-    from booley.runtime.paths import refs_dir
-
-    src = refs_dir() / f"{_VCD_DUMP_MODULE}.sv"
+    src = packaged_vcd_dump_source()
     try:
         content = src.read_text(encoding="utf-8")
     except OSError as exc:

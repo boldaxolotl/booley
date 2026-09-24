@@ -343,6 +343,63 @@ def _legacy_disclosures():
     }
 
 
+def _packaged_source_disclosure(raw: bytes) -> dict[str, object]:
+    return {
+        "planner": "fusesoc_setup",
+        "scratch_inputs": [],
+        "generated_files": [
+            {
+                "path": "booley-package/refs/booley_vcd_dump.sv",
+                "bytes": len(raw),
+                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "kind": "generated_input",
+            }
+        ],
+        "tool_provenance": {
+            "kind": "fusesoc",
+            "version": "2.4.6",
+            "contract_version": "1",
+        },
+        "cleanup": {"removed": True},
+    }
+
+
+def test_changed_packaged_source_fails_disclosure_equality_before_compile(
+    tmp_path: Path,
+) -> None:
+    planned = _packaged_source_disclosure(b"planned wheel bytes")
+    execution = _packaged_source_disclosure(b"different execution wheel bytes")
+    base_manifest = _manifest_for(("alpha",))
+    document = json.loads(canonical_json_bytes(base_manifest.document))
+    document.pop("fingerprints")
+    document["planning_disclosures"] = [planned]
+    manifest = finalize_manifest(document)
+    project = tmp_path / "project"
+    project.mkdir()
+    build_root = tmp_path / "engine-build"
+    build_root.mkdir()
+    (build_root / "simv").write_bytes(b"image")
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    counters = {"compile": 0, "memory_reuse": 0, "durable_reuse": 0, "launch": 0}
+
+    with pytest.raises(
+        SimulationCampaignIntegrityError,
+        match="prepared generator source closure disagrees with campaign plan",
+    ):
+        _executor(build_root, counters, disclosures={"alpha": execution}).execute(
+            _request(
+                store,
+                manifest,
+                manifest.document["work_items"][0],
+                project,
+                invocation=1,
+            )
+        )
+
+    assert counters["compile"] == 0
+
+
 def _assert_private_legacy_results(outcome, counters, hooks, invocation) -> None:
     assert outcome.complete is True
     assert counters["compile"] == 2
