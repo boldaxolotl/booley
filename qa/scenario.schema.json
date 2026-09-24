@@ -487,7 +487,8 @@
                       "product_revision",
                       "provider",
                       "outer_destination_branch",
-                      "project_destination_ref"
+                      "project_destination_ref",
+                      "configured_fpga_criterion"
                     ]
                   },
                   "minItems": 0,

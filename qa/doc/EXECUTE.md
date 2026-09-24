@@ -52,6 +52,19 @@ A failed prerequisite blocks dependent work until the required state is restored
 Independent work may continue while authority, evidence, and resources remain
 controlled.
 
+For a Step with a declared timeout, start its clock when the already-preflighted exact
+invocation is submitted. The clock does not pause for clarification. When the timeout
+fires while the Scenario Operator retains control, record the affected Check, reconcile
+partial resources, block dependent Checks, and continue only independent projected work.
+There is no retry unless that Step declares one. An unscheduled operator stop or loss of
+control starts Finish immediately; start no new product work.
+
+Record the last declared milestone for an agent-driven attempt and distinguish a terminal
+product result, client/provider terminal error, declared timeout, operator stop, and loss
+of control. Missing later milestones locate the last observed phase but do not establish a
+product failure. A clarification question in response to a valid non-interactive packet is
+a terminal product contradiction; an invalid or unprovable packet is invalid execution.
+
 An expected seeded failure passes its negative Check. Preserve unexpected product
 failures after workarounds or retries; later success does not turn them into passes.
 

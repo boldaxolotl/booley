@@ -14,6 +14,22 @@ A capability lost after admission is `fail` or `blocked`. Exclusions are fixed b
 Configured Scenario and are not passes. Preserve every trustworthy failed attempt;
 later success does not erase it.
 
+For an interrupted attempt, classify the evidence boundary rather than the operator's
+expectation:
+
+- A valid stimulus followed by a completed product rejection or other trustworthy
+  contradiction may be `fail`, even when later operator work is interrupted.
+- An operator stop, loss of control, or declared timeout before a trustworthy behavioral
+  result is `blocked`.
+- Absence of an expected output after an operator stop is not contradictory evidence.
+- A missing prompt or payload hash required by the Check makes the evidence incomplete,
+  even when the Scenario Operator believes the full text was supplied.
+
+Retain the last declared milestone and the terminal-boundary category with the Check
+evidence. These categories do not change the four statuses above. Apply the execution
+continuation rules in [Execute](EXECUTE.md); do not infer interruption semantics from
+free-form prose or rewrite an earlier trustworthy failure as blocked.
+
 For the selected borrowed-resource preservation Checks (`cleanup.preserve-borrowed`
 and `cleanup-preservation`), a `pass` Check Result also records
 `borrowed_preservation.scoped_resource_identities`, `setup_evidence_refs`, and
