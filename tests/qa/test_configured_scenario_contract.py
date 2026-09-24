@@ -115,6 +115,7 @@ def test_picorv32_ticket_assets_bind_both_destination_roles():
     substitutions = asset["properties"]["substitutions"]["items"]["enum"]
     assert "outer_destination_branch" in substitutions
     assert "project_destination_ref" in substitutions
+    assert "configured_fpga_criterion" in substitutions
 
     scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
     expected_assets = {
@@ -124,10 +125,13 @@ def test_picorv32_ticket_assets_bind_both_destination_roles():
     for step_id, asset_path in expected_assets.items():
         step = scenario_step(scenario, step_id)
         ticket_asset = next(item for item in step["assets"] if item["path"] == asset_path)
-        assert ticket_asset["substitutions"] == [
+        expected_substitutions = [
             "outer_destination_branch",
             "project_destination_ref",
         ]
+        if asset_path == "tickets/evolution.md":
+            expected_substitutions.append("configured_fpga_criterion")
+        assert ticket_asset["substitutions"] == expected_substitutions
         ticket_text = (ROOT / "scenarios/picorv32" / asset_path).read_text()
         assert "branch: {{ outer_destination_branch }}" in ticket_text
         assert "project_destination_ref: {{ project_destination_ref }}" in ticket_text
@@ -136,6 +140,106 @@ def test_picorv32_ticket_assets_bind_both_destination_roles():
         assert "ticket-routing" in check["expected"]
         assert "field-to-ref mapping" in check["evidence"]
         assert check["authority_ref"].endswith("docs/user/USAGE.md#creating-tickets")
+
+
+def test_picorv32_ticket_create_attempts_are_file_backed_bounded_and_not_retried():
+    scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
+    create_phase = next(phase for phase in scenario["phases"] if phase["id"] == "create")
+    create_steps = [
+        scenario_step(scenario, "create.dhrystone-self-checking-cycle-contract.payload"),
+        scenario_step(scenario, "create.rv32-zbb-pcpi.payload"),
+    ]
+
+    assert sum(step["timeout_minutes"] for step in create_steps) <= create_phase["minutes"]
+    assert (
+        sum(phase["minutes"] for phase in scenario["phases"])
+        + scenario["budget"]["contingency_minutes"]
+        <= scenario["budget"]["deadline_minutes"]
+    )
+    for step in create_steps:
+        assert "retry" not in step
+        check = step["checks"][0]
+        assert "--input-file" in check["stimulus"]
+        assert "staged" in check["evidence"]
+        assert "post-attempt" in check["evidence"]
+
+    developer_retry = scenario_step(scenario, "retry.exact-allowance")
+    assert developer_retry["retry"] == {
+        "max_attempts": 1,
+        "signature": "API Error: Response stalled mid-stream",
+    }
+    assert "Developer Agent" in developer_retry["action"]
+    assert "never applies to either Ticket Create attempt" in developer_retry["action"]
+
+
+def test_picorv32_ticket_create_dependencies_propagate_failed_attempts():
+    scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
+    required_edges = {
+        "create.dhrystone-self-checking-cycle-contract.board": {
+            "create.dhrystone-self-checking-cycle-contract.payload",
+        },
+        "create.dhrystone-self-checking-cycle-contract.basis": {
+            "create.dhrystone-self-checking-cycle-contract.payload",
+            "create.dhrystone-self-checking-cycle-contract.board",
+        },
+        "create.rv32-zbb-pcpi.payload": {
+            "create.dhrystone-self-checking-cycle-contract.basis",
+        },
+        "create.rv32-zbb-pcpi.board": {"create.rv32-zbb-pcpi.payload"},
+        "create.rv32-zbb-pcpi.basis": {
+            "create.rv32-zbb-pcpi.payload",
+            "create.rv32-zbb-pcpi.board",
+        },
+    }
+
+    for step_id, dependencies in required_edges.items():
+        assert dependencies <= set(scenario_step(scenario, step_id)["requires"])
+
+
+def test_picorv32_ticket_two_packet_uses_current_v2_static_vocabulary():
+    packet = (ROOT / "scenarios/picorv32/tickets/evolution.md").read_text()
+    assert "CRITERIA_MANDATORY:" in packet
+    assert "on_success: [triage_report, review, merge, cleanup]" in packet
+    assert "sim_core_zbb (temp)" in packet
+    assert "target_plan:" not in packet
+    assert "role: ephemeral" not in packet
+    assert "elab_pass:" not in packet
+    assert "sim_pass:" not in packet
+
+    rendered = (
+        packet.replace("{{ outer_destination_branch }}", "outer-release")
+        .replace("{{ project_destination_ref }}", "refs/heads/project-data")
+        .replace(
+            "{{ configured_fpga_criterion }}",
+            "  FPGA:\n    fpga_core_zbb (temp): pass",
+        )
+    )
+    frontmatter = rendered.split("```markdown\n---\n", 1)[1].split("\n---\n", 1)[0]
+    fields = yaml.safe_load(frontmatter)
+    assert fields["branch"] == "outer-release"
+    assert fields["project_destination_ref"] == "refs/heads/project-data"
+    assert fields["CRITERIA_MANDATORY"]["FPGA"] == {"fpga_core_zbb (temp)": "pass"}
+
+
+def test_ticket_create_interruption_guidance_preserves_evidence_status_boundary():
+    execute = (ROOT / "doc/EXECUTE.md").read_text()
+    record = (ROOT / "doc/RECORD.md").read_text()
+    run_skill = (ROOT / "booley-qa-run/SKILL.md").read_text()
+    record_contract = " ".join(record.split())
+
+    for category in (
+        "terminal product failure",
+        "client/provider error",
+        "declared timeout",
+        "operator stop",
+        "lost control",
+    ):
+        assert category in run_skill
+    assert "Missing later milestones" in execute
+    assert "starts Finish immediately" in execute
+    assert "before a trustworthy behavioral result is `blocked`" in record_contract
+    assert "not contradictory evidence" in record_contract
+    assert "missing prompt or payload hash" in record_contract
 
 
 def test_picorv32_public_qa_corrections_are_explicitly_contractual():

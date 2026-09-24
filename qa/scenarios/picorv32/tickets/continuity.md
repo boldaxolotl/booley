@@ -1,82 +1,62 @@
-### Ticket Create invocations
+# Ticket 1 creation packet
 
-The scenario itself is the source of both Tickets. Do not ask Ticket Create to infer missing semantics. Pass the complete field sets below in one creation phase:
+Render the declared substitutions into this asset, retain the resolved bytes, and stage
+those exact bytes under the ignored Project-data path
+`tmp/qa-inputs/<run-id>/ticket-1/packet.md`. Retain the resolved and staged SHA-256 and
+byte count before submission, then recheck the staged hash after the attempt.
 
-- Codex form: `$booley-ticket-create --agent --no-confirm <complete structured scenario payload>`
-- Claude form: `/booley-ticket-create --agent --no-confirm <complete structured scenario payload>`
+Invoke exactly one supported client form with that Sandbox path:
 
-These are skill invocations, not ordinary CLI commands. Enqueue automatically publishes the immutable Ticket Baseline; there is no manual seal, Target Contract, `base_sha`, or second confirmation. Ticket creation may author only the approved Target definitions, owned `tests.toml` tables, and empty `[new]` placeholders. The Developer Agent authors the implementation.
+- Codex: `$booley-ticket-create --agent --no-confirm --input-file <project-data-path>`
+- Claude: `/booley-ticket-create --agent --no-confirm --input-file <project-data-path>`
 
-The retained `project.separate-repository` resource ledger supplies both routing values.
-Before sending the prompt, require the preceding preflight to match them exactly:
+These are skill invocations, not shell commands. Retain the literal invocation separately
+from the packet. Ticket Create owns deriving and authoring the New Target definition and
+its owned test table from the live Project.
 
-```text
-git-topology ROOT ticket --outer-ref refs/heads/{{ outer_destination_branch }} --inner-ref {{ project_destination_ref }}
-```
-
-Include this routing block in the complete payload:
-
-```yaml
+```markdown
+---
+summary: Add a self-checking Dhrystone cycle contract
+type: verification
 branch: {{ outer_destination_branch }}
 project_destination_ref: {{ project_destination_ref }}
-```
-
-The live checkout is evidence, not routing authority. After creation, run `ticket-routing`
-with the created Ticket path and the same two full refs; retain its field-to-ref mapping
-and independently resolved commits.
-
-Both Tickets use:
-
-```yaml
-on_success:
-  destination: done
-  merge: true
-  cleanup: true
-  triage_report: true
+scope:
+  - dhrystone/dhry_1.c
+  - dhrystone/testbench.v
+spec: ""
+dependencies: []
 priority: medium
+on_success: [triage_report, review, merge, cleanup]
+CRITERIA_MANDATORY:
+  ELAB:
+    sim_dhry_checked (new): pass
+  SIM:
+    sim_dhry_checked (new): {dhry: pass}
+  CYCLE_COUNT:
+    sim_dhry_checked (new): {dhry: {cycle_count_max: 110000}}
+  REVIEW:
+    tb: {quality: done}
+---
+
+## Description
+
+### Coverage Gaps
+
+The fixed 100-iteration Dhrystone demo can report success without checking its final
+result, and its calibrated cycle count is not an acceptance condition.
+
+### Verification Strategy
+
+Validate the deterministic final result in firmware. A mismatch prints an error and
+traps before success or cycle reporting. Preserve success magic `123456789` at MMIO
+address `0x20000000`; only the validated path may pass. Emit exactly
+`[SIM_CYCLES] dhry <User_Time>` after validation with a deterministic timeout. The
+xPack GCC 15.2 calibration is 109734 cycles; acceptance uses the inclusive 110000 cap.
+Create the New Target `sim_dhry_checked` and register its `dhry` test. It remains
+selectable after acceptance and is exported to the dependent Ticket.
+
+### RTL Boundary
+
+Do not modify RTL. Limit changes to `dhrystone/dhry_1.c` and
+`dhrystone/testbench.v`.
 ```
-
-Only one automatic retry is permitted, with `max_attempts: 1`, and only when the exact recognized error is `API Error: Response stalled mid-stream`. Ordinary crashes, test failures, timeouts, context exhaustion, and usage-limit failures are not retried.
-
-### Ticket 1 — `dhrystone-self-checking-cycle-contract`
-
-Type: `verification`.
-
-Scope:
-
-```yaml
-- dhrystone/dhry_1.c
-- dhrystone/testbench.v
-```
-
-Required implementation:
-
-- Keep the fixed 100-iteration demo.
-- Validate the deterministic final Dhrystone result in firmware. A mismatch prints an error and traps before success or cycle reporting.
-- Preserve success magic `123456789` to MMIO address `0x20000000`; the testbench recognizes it and only the validated success path may pass.
-- Emit exactly `[SIM_CYCLES] dhry <User_Time>` after validation, with a deterministic timeout.
-- The pinned calibration uses xPack GCC 15.2 and has `User_Time = 109734` cycles. Acceptance uses the absolute inclusive cap `110000`; it does not require a baseline cycle count.
-
-Ticket creation authors this Target Plan entry and its owned test registration:
-
-```yaml
-target_plan:
-  - target: sim_dhry_checked
-    role: persistent
-```
-
-Register `[sim_dhry_checked] dhry`. Criteria are mandatory:
-
-```yaml
-elab_pass: [sim_dhry_checked]
-sim_pass:
-  - dhrystone/testbench.v @ sim_dhry_checked @ dhry @ pass -> pass
-cycle_count:
-  - target: sim_dhry_checked
-    test: dhry
-    cycle_count_max: 110000
-review_tb_quality_done:
-  target: sim_dhry_checked
-```
-
-The persistent Target remains selectable after acceptance and is the provider exported to Ticket 2.
