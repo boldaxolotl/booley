@@ -143,7 +143,7 @@ def _packet_fields(packet: bytes, outer_ref: str, inner_ref: str) -> dict:
         and b"on_success:\n" not in packet,
         "resolved packet uses retired Ticket vocabulary",
     )
-    text = packet.decode("utf-8")
+    text = packet.decode("utf-8").replace("\r\n", "\n")
     marker = "```markdown\n---\n"
     start = text.find(marker)
     _require(start >= 0, "resolved packet lacks the current-v2 Markdown document")

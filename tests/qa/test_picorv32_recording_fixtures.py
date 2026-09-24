@@ -308,6 +308,26 @@ def test_packet_input_rejects_retired_vocabulary_and_wrong_routing(tmp_path):
         )
 
 
+def test_packet_input_accepts_crlf_packet_bytes(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = tmp_path / "resolved.md"
+    packet = _ticket_packet().replace(b"\n", b"\r\n")
+    source.write_bytes(packet)
+    staged = project / "tmp/qa-inputs/packet.md"
+
+    result = packet_input(
+        project,
+        source,
+        staged,
+        outer_ref=OUTER_REF,
+        inner_ref=INNER_REF,
+    )
+
+    assert staged.read_bytes() == packet
+    assert result["sha256"] == hashlib.sha256(packet).hexdigest()
+
+
 def test_ticket_routing_proves_distinct_mapping_and_rejects_swap(tmp_path):
     root = tmp_path / "outer"
     inner = root / ".booley_project"
