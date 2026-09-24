@@ -823,12 +823,14 @@ steps:
   phase: prepare
   action: |-
     Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain. Create paired run-owned outer and project-data Ticket destination branches from that initialized state. Before Ticket authoring, commit every authorized acceptance-input change produced by the applicable Configured Scenario's Project Setup—including its Flow enablement, EDA provisioning and Doctor Targets—to the project-data destination branch; prove both destination branches clean.
+    Before each mutation, publish the intended command and pre-state checkpoint, publish the complete cleanup-ledger candidate through `qa/record_cleanup.py` with planned resource identities, then execute. Replace planned identities with exact acquired identities and publish post-state before dependent work.
   checks:
   - id: project.separate-repository
     capabilities:
     - DOCUMENTATION-USABILITY
     stimulus: |-
       Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain. Create paired run-owned outer and project-data Ticket destination branches from that initialized state. Before Ticket authoring, commit every authorized acceptance-input change produced by the applicable Configured Scenario's Project Setup—including its Flow enablement, EDA provisioning and Doctor Targets—to the project-data destination branch; prove both destination branches clean.
+      Before each mutation, publish the intended command and pre-state checkpoint, publish the complete cleanup-ledger candidate through `qa/record_cleanup.py` with planned resource identities, then execute. Replace planned identities with exact acquired identities and publish post-state before dependent work.
     expected: |-
       Project Initialization succeeds and creates or reuses the declared managed RISC-V image/toolchain without requiring it to pre-exist admission. The paired destination refs exist before Ticket Create. The outer ref preserves the pinned upstream source, while the project-data ref contains the initialized, authorized setup for the selected Configured Scenario. Where provisioned Vivado and the FPGA Criterion apply, that commit has `flows.fpga.enabled = true`, `[eda.vivado]` provisioning set to `host`, and the FPGA Doctor Target; configurations that exclude FPGA preserve their declared opt-out. Both repositories are clean, so Ticket Baseline creation needs no live-worktree configuration change.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md

@@ -20,10 +20,12 @@ from booley.core.boundary import as_dict, as_str, is_str_list
 from booley.runtime.timefmt import utc_now_rfc3339
 
 try:
+    from .result_projection import effective_status, project_results
     from .run_suite import RunSuiteError as TriageError
     from .run_suite import transitive_requirements, validate_run_suite
     from .triage_lock import exclusive_file_lock
 except ImportError:
+    from result_projection import effective_status, project_results
     from run_suite import RunSuiteError as TriageError
     from run_suite import transitive_requirements, validate_run_suite
     from triage_lock import exclusive_file_lock
@@ -236,23 +238,13 @@ def validate_evidence(run_root: Path, manifest: dict[str, Any]) -> frozenset[str
 
 def validate_result_links(results: list[dict[str, Any]], run_root: Path) -> None:
     seen = set()
-    by_id = {}
     for result in results:
         result_id = result["check_result_id"]
         for cause in result["caused_by_result_ids"]:
             if cause not in seen:
                 raise TriageError(f"{run_root}: {result_id}: cause must be an earlier result")
-        corrected = result["corrects_result_id"]
-        if corrected is not None and corrected not in seen:
-            raise TriageError(f"{run_root}: {result_id}: correction must name an earlier result")
-        if corrected is not None:
-            previous = by_id[corrected]
-            if previous["check_id"] != result["check_id"]:
-                raise TriageError(f"{run_root}: {result_id}: correction changed Check identity")
-            if previous["attempt"] >= result["attempt"]:
-                raise TriageError(f"{run_root}: {result_id}: correction attempt did not advance")
         seen.add(result_id)
-        by_id[result_id] = result
+    project_results(results, str(run_root))
 
 
 def validate_observation_links(
@@ -290,7 +282,7 @@ def validate_evidence_refs(
 def validate_borrowed_preservation_claims(
     run: dict[str, Any], results: list[dict[str, Any]], run_root: Path
 ) -> None:
-    for result in results:
+    for result in project_results(results, str(run_root)).surviving_heads:
         if result["check_id"] not in BORROWED_PRESERVATION_CHECK_IDS:
             continue
         status = result["status"]
@@ -582,6 +574,14 @@ def render_run_summary(
         "",
     ]
     lines.extend(result_summary(item) for item in results)
+    projection = project_results(results, f"Scenario Run {run['run_id']}")
+    lines.extend(["", "## Effective Check Result projection", ""])
+    for group in projection.groups:
+        heads = ", ".join(f"`{item['check_result_id']}`" for item in group.surviving_heads)
+        status = effective_status(group.surviving_heads)
+        lines.append(
+            f"- Root `{group.root_id}`. Surviving heads: {heads}. Effective status: `{status}`."
+        )
     lines.extend(["", "## Observations", ""])
     lines.extend(observation_summary(item) for item in observations)
     if not observations:
@@ -771,15 +771,13 @@ def correction_roots(
 
 
 def result_candidates(run: RunRecords) -> list[dict[str, Any]]:
-    roots = correction_roots(run.results, "check_result_id", "corrects_result_id")
-    chains: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    projection = project_results(run.results, str(run.root))
     referenced_causes = {
         cause for result in run.results for cause in result["caused_by_result_ids"]
     }
-    for result in run.results:
-        chains[roots[result["check_result_id"]]].append(result)
     candidates = []
-    for root_id, chain in chains.items():
+    for group in projection.groups:
+        chain = list(group.members)
         review = any(
             item["status"] in NONPASS
             or item["review_reasons"]
@@ -789,7 +787,15 @@ def result_candidates(run: RunRecords) -> list[dict[str, Any]]:
             for item in chain
         )
         if review:
-            candidates.append(build_result_candidate(run.run_id, root_id, chain, roots))
+            candidates.append(
+                build_result_candidate(
+                    run.run_id,
+                    group.root_id,
+                    chain,
+                    list(group.surviving_heads),
+                    projection.roots,
+                )
+            )
     return candidates
 
 
@@ -797,9 +803,9 @@ def build_result_candidate(
     run_id: str,
     root_id: str,
     chain: list[dict[str, Any]],
+    heads: list[dict[str, Any]],
     roots: dict[str, str],
 ) -> dict[str, Any]:
-    effective = chain[-1]
     causes = {
         f"{run_id}:check:{roots[cause]}"
         for item in chain
@@ -810,14 +816,38 @@ def build_result_candidate(
         "run_id": run_id,
         "kind": "check-result-chain",
         "source_ids": [item["check_result_id"] for item in chain],
-        "check_id": effective["check_id"],
-        "effective_status": effective["status"],
+        "surviving_head_ids": [item["check_result_id"] for item in heads],
+        "surviving_heads": [head_presentation(item) for item in heads],
+        "check_id": chain[0]["check_id"],
+        "effective_status": effective_status(heads),
         "historical_statuses": [item["status"] for item in chain],
-        "expected": effective["expected"],
-        "text": effective["observed"],
-        "evidence_refs": sorted({ref for item in chain for ref in item["evidence_refs"]}),
+        "expected": head_presentations(heads, "expected"),
+        "text": head_presentations(heads, "observed"),
+        "evidence_refs": sorted(
+            {reference for item in chain for reference in check_result_evidence_refs(item)}
+        ),
         "caused_by_candidate_ids": sorted(causes),
         "review_reasons": sorted({reason for item in chain for reason in item["review_reasons"]}),
+    }
+
+
+def head_presentations(heads: list[dict[str, Any]], field: str) -> str:
+    """Keep legacy single-head prose while labeling every branch head."""
+    if len(heads) == 1:
+        return str(heads[0][field])
+    return "\n".join(f"[{item['check_result_id']}] {item[field]}" for item in heads)
+
+
+def head_presentation(item: dict[str, Any]) -> dict[str, Any]:
+    """Retain one effective head's reviewable claims without flattening ownership."""
+    return {
+        "check_result_id": item["check_result_id"],
+        "status": item["status"],
+        "expected": item["expected"],
+        "observed": item["observed"],
+        "caused_by_result_ids": list(item["caused_by_result_ids"]),
+        "review_reasons": list(item["review_reasons"]),
+        "evidence_refs": sorted(set(check_result_evidence_refs(item))),
     }
 
 
@@ -857,7 +887,7 @@ def observation_candidates(run: RunRecords) -> list[dict[str, Any]]:
 def candidates_for_run(run: RunRecords) -> list[dict[str, Any]]:
     candidates = [*result_candidates(run), *observation_candidates(run)]
     ids = {candidate["candidate_id"] for candidate in candidates}
-    result_roots = correction_roots(run.results, "check_result_id", "corrects_result_id")
+    result_roots = project_results(run.results, str(run.root)).roots
     for candidate in candidates:
         normalized = []
         for cause in candidate["caused_by_candidate_ids"]:
@@ -1116,6 +1146,7 @@ def helper_revision() -> str:
     root = Path(__file__).parent
     names = [
         "triage.py",
+        "result_projection.py",
         "run_suite.py",
         "triage_cli.py",
         "triage_lock.py",

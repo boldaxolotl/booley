@@ -27,3 +27,9 @@ a replacement may enter [Finish](FINISH.md) for reconciliation only. Terminal st
 without a valid manifest permits cleanup-status reconciliation and sealing, never new product
 work. Further product work requires a fresh Scenario Run ID; Check Results from the
 interrupted run do not satisfy the new run.
+
+The mutation gate is non-waivable: publish the intended command and relevant
+pre-state checkpoint, publish the complete cleanup-ledger candidate through
+`record_cleanup.py`, and only then execute the command. Publish planned resource
+identities before acquisition, then replace them with exact identities and publish
+post-state before dependent work.

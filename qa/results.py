@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from qa.result_projection import STATUS_PRECEDENCE, effective_status, project_results
 from qa.triage import RunRecords, validate_run
 from qa.validate import load_scenarios, resolved_configured_checks
 
@@ -15,7 +16,7 @@ from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 RESULTS = Path(__file__).with_name("results")
 SCENARIOS = Path(__file__).with_name("scenarios")
-STATUSES = ("fail", "pass", "blocked", "unavailable")
+STATUSES = STATUS_PRECEDENCE
 IDENTIFIER = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]*\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 FIELDS = {
@@ -45,12 +46,8 @@ def canonical_time(stamp: str) -> str:
 
 def check_status(results: list[dict]) -> str:
     """Reduce surviving attempts, preserving every uncorrected failure."""
-    corrected = {item["corrects_result_id"] for item in results if item["corrects_result_id"]}
-    surviving = {item["status"] for item in results if item["check_result_id"] not in corrected}
-    for status in STATUSES:
-        if status in surviving:
-            return status
-    raise ValueError("selected Check has no surviving result")
+    projection = project_results(results)
+    return effective_status(projection.surviving_heads)
 
 
 def from_sealed_run(run: RunRecords) -> dict:
