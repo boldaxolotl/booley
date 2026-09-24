@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from booley.flows.sim.execution import SimulationExecution, SimulationOptions
 from booley.flows.sim.trace_overlay import (
     _target_includes_dump_module,
+    packaged_vcd_dump_source,
     trace_overlay_vlnv,
     write_trace_overlay,
 )
@@ -51,6 +54,22 @@ class TestTraceOverlayVlnv:
 
 
 class TestWriteTraceOverlay:
+    @pytest.mark.parametrize("resource_kind", ["missing", "directory"])
+    def test_packaged_dump_source_must_resolve_to_regular_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        resource_kind: str,
+    ) -> None:
+        refs = tmp_path / "refs"
+        refs.mkdir()
+        if resource_kind == "directory":
+            (refs / "booley_vcd_dump.sv").mkdir()
+        monkeypatch.setattr("booley.runtime.paths.refs_dir", lambda: refs)
+
+        with pytest.raises(FuseSocError, match="packaged trace dump module is not a regular file"):
+            packaged_vcd_dump_source()
+
     def test_writes_colocated_overlay_with_trace_options(self, tmp_path: Path):
         base = _write_core(tmp_path / "ip")  # sim target: verilator, flow sim
         base_vlnv = read_core(base)["name"]
@@ -362,6 +381,61 @@ class TestWriteTraceOverlay:
         assert len(dumps) == 1
         assert dumps[0].is_file()
         assert not (cores / f"booley_vcd_dump{TRACE_OVERLAY_MARKER}.sv").exists()
+
+    @pytest.mark.parametrize("cocotb", [False, True], ids=["ordinary", "cocotb"])
+    def test_native_core_isolation_discloses_packaged_dump_source_for_campaign(
+        self,
+        tmp_path: Path,
+        cocotb: bool,
+    ) -> None:
+        pytest.importorskip("fusesoc")
+        project = tmp_path / "project"
+        cores = project / ".booley_project" / "cores"
+        cores.mkdir(parents=True)
+        (project / ".booley_project" / "booley.toml").write_text(
+            "[stealth]\nenabled = true\nignore_native_cores = true\n",
+            encoding="utf-8",
+        )
+        (project / ".booley_project" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (project / "rtl").mkdir()
+        (project / "tb").mkdir()
+        (project / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+        (project / "tb" / "tb_dut.sv").write_text(
+            "module tb_dut; dut dut(); endmodule\n",
+            encoding="utf-8",
+        )
+        core = self._ICARUS_CORE.replace(
+            "      - sim/booley_vcd_dump.sv: {file_type: systemVerilogSource}\n",
+            "",
+        )
+        if cocotb:
+            core = core.replace(
+                "      tool: icarus\n",
+                "      tool: icarus\n      cocotb_module: test_demo\n",
+            )
+        _write_core(cores, core, create_sources=False)
+        handle = TargetCatalog.build(project).select("sim")
+
+        disclosure = SimulationExecution(
+            invoke=lambda *_args, **_kwargs: None,
+            options=SimulationOptions(trace=True),
+        ).plan_campaign_group(handle, ("smoke",))
+
+        raw = packaged_vcd_dump_source().read_bytes()
+        dump_entries = [
+            item
+            for item in disclosure["generated_files"]
+            if item["path"] == "booley-package/refs/booley_vcd_dump.sv"
+        ]
+        assert dump_entries == [
+            {
+                "path": "booley-package/refs/booley_vcd_dump.sv",
+                "bytes": len(raw),
+                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "kind": "generated_input",
+            }
+        ]
+        assert packaged_vcd_dump_source().is_file()
 
     def test_projected_icarus_overlay_rebases_injected_dump(self, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"
