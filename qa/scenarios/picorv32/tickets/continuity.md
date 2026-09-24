@@ -7,6 +7,24 @@ The scenario itself is the source of both Tickets. Do not ask Ticket Create to i
 
 These are skill invocations, not ordinary CLI commands. Enqueue automatically publishes the immutable Ticket Baseline; there is no manual seal, Target Contract, `base_sha`, or second confirmation. Ticket creation may author only the approved Target definitions, owned `tests.toml` tables, and empty `[new]` placeholders. The Developer Agent authors the implementation.
 
+The retained `project.separate-repository` resource ledger supplies both routing values.
+Before sending the prompt, require the preceding preflight to match them exactly:
+
+```text
+git-topology ROOT ticket --outer-ref refs/heads/{{ outer_destination_branch }} --inner-ref {{ project_destination_ref }}
+```
+
+Include this routing block in the complete payload:
+
+```yaml
+branch: {{ outer_destination_branch }}
+project_destination_ref: {{ project_destination_ref }}
+```
+
+The live checkout is evidence, not routing authority. After creation, run `ticket-routing`
+with the created Ticket path and the same two full refs; retain its field-to-ref mapping
+and independently resolved commits.
+
 Both Tickets use:
 
 ```yaml

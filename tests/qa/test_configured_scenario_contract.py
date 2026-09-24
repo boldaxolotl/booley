@@ -105,6 +105,35 @@ def test_picorv32_ticket_destinations_include_applicable_project_setup():
     assert "Configurations that exclude FPGA" in zbb["expected"]
 
 
+def test_picorv32_ticket_assets_bind_both_destination_roles():
+    schema = json.loads((ROOT / "scenario.schema.json").read_text())
+    asset = schema["properties"]["steps"]["items"]["properties"]["assets"]["items"]
+    substitutions = asset["properties"]["substitutions"]["items"]["enum"]
+    assert "outer_destination_branch" in substitutions
+    assert "project_destination_ref" in substitutions
+
+    scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
+    expected_assets = {
+        "create.dhrystone-self-checking-cycle-contract.payload": "tickets/continuity.md",
+        "create.rv32-zbb-pcpi.payload": "tickets/evolution.md",
+    }
+    for step_id, asset_path in expected_assets.items():
+        step = scenario_step(scenario, step_id)
+        ticket_asset = next(item for item in step["assets"] if item["path"] == asset_path)
+        assert ticket_asset["substitutions"] == [
+            "outer_destination_branch",
+            "project_destination_ref",
+        ]
+        ticket_text = (ROOT / "scenarios/picorv32" / asset_path).read_text()
+        assert "branch: {{ outer_destination_branch }}" in ticket_text
+        assert "project_destination_ref: {{ project_destination_ref }}" in ticket_text
+        check = step["checks"][0]
+        assert "git-topology" in check["stimulus"]
+        assert "ticket-routing" in check["expected"]
+        assert "field-to-ref mapping" in check["evidence"]
+        assert check["authority_ref"].endswith("docs/user/USAGE.md#creating-tickets")
+
+
 def test_picorv32_public_qa_corrections_are_explicitly_contractual():
     scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
     for name in ("wave", "find", "sample", "distance", "value"):
