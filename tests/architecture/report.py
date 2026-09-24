@@ -6,23 +6,11 @@ import argparse
 from pathlib import Path
 
 from import_graph import (
+    NAMED_HOTSPOTS,
     analyze_imports,
     file_fan_out,
     mutual_package_pairs,
     top_level_package_sccs,
-)
-
-_NAMED_HOTSPOTS = (
-    "booley.harness.doctor",
-    "booley.harness.booley",
-    "booley.harness.init_cmd",
-    "booley.harness.developer",
-    "booley.flows.sim.flow",
-    "booley.flows.synth.flow",
-    "booley.mcp.server",
-    "booley.flows.fpga.flow",
-    "booley.specialists.mutation_tester",
-    "booley.specialists.coverage_analyst",
 )
 
 
@@ -52,7 +40,7 @@ def main() -> None:
         print(f"- {item.source}: {item.count}")
     fan_out_by_source = {item.source: item.count for item in fan_out}
     print("\nNamed composition hotspot fan-out (diagnostic only):")
-    for source in _NAMED_HOTSPOTS:
+    for source in NAMED_HOTSPOTS:
         print(f"- {source}: {fan_out_by_source.get(source, 0)}")
 
 

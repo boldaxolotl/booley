@@ -13,6 +13,15 @@ Criteria, renders reports, and chooses the public exit code. Adapter composition
 continues to own Verilator, Icarus, and Cocotb command shaping; leaf adapters own
 simulator launch, verdict normalization, and trace finalization.
 
+The public `booley.flows.sim.campaign` package also owns storage-backed read
+capabilities. External Simulation, Coverage, and retention callers authenticate
+one terminal work item or inspect retention eligibility through that package and
+receive immutable typed evidence. Durable store construction, path layout,
+manifest/result recovery scanning, and summary decoding remain private to the
+Campaign implementation. Campaign coordination and child linkage retain direct
+store access because they own the durable transaction; callers do not receive a
+store, recovery collection, or storage-relative helper to interpret themselves.
+
 Here, trace finalization means current-attempt orchestration and final evidence:
 leaf adapters consume B-Wave's waveform-store interface for inspection,
 conversion, discovery, and converter-process mechanics. They do not own or
@@ -89,3 +98,9 @@ uses a private build per work item and runs the command before compilation.
 Cocotb retains one command per batch until it gains finer durable work-item
 isolation. Elaboration Check does not enter this adapter seam and continues to
 share only build preparation and classification with full Simulation.
+
+Read-only Campaign inspection never regenerates projections. It preserves the
+existing distinction between incomplete recovery, an incomplete summary or
+projection, and corrupt storage while normalizing storage I/O failures at the
+public Campaign boundary. A source-dependency rule and named-type ownership gate
+enforce this refined seam for production code.

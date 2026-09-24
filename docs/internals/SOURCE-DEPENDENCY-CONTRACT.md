@@ -197,6 +197,30 @@ The cycle diagnostic projects each edge to its immediate `booley.<package>` owne
 and discards same-package edges. An approved legacy SCC lists an exact member set at
 that projection. It does not approve every edge within the set.
 
+### Informational graph comparison
+
+`tests/architecture/compare_report.py` compares two explicit source trees without
+changing the normative gate. Both trees are analyzed in one process by the same
+identified analyzer implementation. The report compares unique `(source, target)`
+module edges rather than located dependency facts, so different archive paths,
+line numbers, repeated imports, and columns do not create false graph changes.
+
+The comparison reports added and removed edges, direct mutual-package pairs,
+per-package SCC membership transitions, and changed named-hotspot fan-out. A
+discovered package outside a cross-package cycle has singleton membership; a
+package found on only one side is absent on the other. Inputs are either two Git
+refs, each resolved to a full commit before `src/booley` is archived, or two
+already-materialized package roots with required human-readable labels. Each
+source has a deterministic SHA-256 digest over its sorted relative Python paths
+and exact bytes. One analyzer commit, when available, and one digest of the
+analyzer/comparison sources identify the semantics used for both sides.
+
+All sections have deterministic ordering and explicitly print `(none)` when
+empty. A successful comparison is informational and exits zero even when changes
+exist. Invalid modes, refs, archives, roots, source reads, and syntax fail
+nonzero. The normative direction, metadata, stale-waiver, and SCC gates remain
+the only architecture failures.
+
 ## Direction rules
 
 Each rule has its own design justification. The production-tree gate in
@@ -235,6 +259,27 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 | D29 | Prefix `booley.bwave` | Prefix `booley.flows` | Forbid | B-Wave owns reusable waveform mechanics without Flow execution or Simulation evidence policy. |
 | D30 | Prefix `booley.criteria` | Prefix `booley.ticket_board` | Forbid | Generic Criteria policy and state evaluation must not depend on Ticket document, persistence, or lifecycle ownership. |
+| D31 | Prefix `booley` | Exact modules `booley.flows.sim.campaign.store`, `booley.flows.sim.campaign.inspection` | Forbid, subject only to C10-C13 | Simulation Campaign durable storage is private implementation behind the public Campaign interface. |
+
+## Simulation Campaign storage boundary
+
+External Simulation, Coverage, and retention callers use the public
+`booley.flows.sim.campaign` package. `authenticate_work_item()` returns immutable
+manifest and exact terminal-result evidence; `inspect_retained_campaign()`
+returns immutable recovery and existing-summary consistency status. These deep
+operations hide store construction, Campaign path layout, recovery scanning,
+summary decoding, and storage error normalization.
+
+Durable transaction and child-linkage owners retain exact internal store access.
+The inspection implementation alone supplies the public read capabilities, and
+only the Campaign package facade publishes them. D31 rejects direct production
+imports of both private modules in ordinary, deferred, conditional, and
+type-only positions. A companion AST ownership gate rejects static access to
+`CampaignStore`, `CampaignRecovery`, `WorkItemRecovery`, and
+`SharedBuildRecovery` through any Campaign module outside the exact store owners.
+Tests, arbitrary dynamic-name access, and dynamic-import expressions remain
+outside this production static gate. A live-edge ratchet requires every C10-C13
+permission to correspond to a current exact production edge.
 
 ## Ticket review lifecycle boundary
 
@@ -312,6 +357,10 @@ named rule and gives no source module a blanket exemption.
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
 | C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
 | C9 | D22 | `booley.ticket_board.review_preparation -> booley.review.generation` | Ticket Board supplies resolved immutable inputs to the Review artifact generator. |
+| C10 | D31 | `booley.flows.sim.campaign.coordinator -> booley.flows.sim.campaign.store` | Campaign execution composes durable transaction, recovery, and publication. |
+| C11 | D31 | `booley.flows.sim.campaign.child_protocol -> booley.flows.sim.campaign.store` | Campaign-owned child linkage validates and publishes durable Campaign paths. |
+| C12 | D31 | `booley.flows.sim.campaign.inspection -> booley.flows.sim.campaign.store` | Public read capabilities inspect storage through the private Campaign store. |
+| C13 | D31 | `booley.flows.sim.campaign -> booley.flows.sim.campaign.inspection` | The Campaign package facade publishes the storage-backed read capabilities. |
 
 ## Exact legacy waivers
 
@@ -647,11 +696,34 @@ The two redirected callers retain their fan-out:
 inventory, and reproduction commands are in
 [the #659 evidence](../research/ticket-criteria-projection-659-evidence.md).
 
+## Current snapshot: 24 SEP 2026 — Campaign storage seam
+
+Issue [#661](https://github.com/boldaxolotl/booley/issues/661) added the
+informational comparison above and D31. The implementation base is exact commit
+`8063cb870c312df9dbde5976e451dddbaf908b89`; the analyzed implementation source
+is exact commit `ccf34bfc0b46bbf7f6599de4a7c6af716a79ceb1` with source digest
+`sha256:046078e03fed9a24b93332b5a352529929bbfe572b232821628ed52a32d5c83a`.
+The analyzer reports repository commit `ccf34bfc0b46bbf7f6599de4a7c6af716a79ceb1`
+and exact semantics digest
+`sha256:d7349b67a2b80a9b77f8a31a143ddac1d95fd8692d4a951984a5b6d8b9522297`.
+
+The source changes from 548 modules, 2,828 located facts, and 2,344 unique edges
+to 549 modules, 2,832 facts, and 2,347 edges. The eight direct mutual pairs and
+the nontrivial SCCs of 11 and 2 packages are unchanged. The three external
+`campaign.store` edges—from `campaign_retention`, `coverage_reference`, and
+`coverage_analysis_input`—are removed; total direct store importers fall from
+five to the three private owners authorized by C10-C12. Coverage reference and
+analysis fan-out fall from 6 to 5 and 11 to 10 respectively; retention remains
+at 6 after redirecting to the public facade. No named-hotspot fan-out changes.
+The exact edge diff, identities, reproduction command, caller behavior, and
+verification are in [the #661 evidence](../research/simulation-campaign-storage-661-evidence.md).
+
 ## Required gate
 
 The pytest gate checks every normalized production dependency against the direction
 rules, exact composition permissions, and exact legacy waivers. It rejects missing
-waiver metadata and stale waivers whose exact edges are absent. Its SCC ratchet
+waiver metadata and stale waivers whose exact edges are absent. D31 additionally
+ratchets its exact permissions and named storage-type ownership. Its SCC ratchet
 rejects any current multi-package SCC that is not a subset of an approved legacy
 member set. Approved groups may split; new acyclic singletons need no baseline
 entry.
@@ -674,4 +746,6 @@ Run the complete architecture check and its report from the repository root:
 ```console
 pytest -q tests/architecture/
 python3 tests/architecture/report.py --source-root src/booley --top 30
+python3 tests/architecture/compare_report.py \
+  --before-ref <exact-base> --after-ref <exact-head> --repo-root .
 ```

@@ -282,25 +282,23 @@ def _validate_invocation_targets(root: Path) -> None:
 
 
 def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
-    from .campaign.store import CampaignStore
+    from .campaign import inspect_retained_campaign
 
     try:
-        store = CampaignStore(campaign)
-        recovery = store.scan()
-        summary = _read_object(store.summary_path)
+        status = inspect_retained_campaign(campaign / "manifest.json")
         projection = _read_object(target / "simulation.json")
     except (OSError, ValueError) as exc:
         raise CampaignRetentionError(
             f"Simulation Campaign is invalid and cannot be pruned: {exc}"
         ) from exc
-    if recovery.pending or recovery.interrupted:
+    if status.pending or status.interrupted:
         raise CampaignRetentionError("Incomplete Simulation Campaigns cannot be pruned")
     if (
-        summary.get("complete") is not True
-        or summary.get("completed") != list(recovery.complete)
+        not status.summary_complete
+        or not status.summary_completed_matches
         or projection.get("complete") is not True
-        or projection.get("campaign_manifest") != str(store.manifest_path)
-        or projection.get("campaign_summary") != str(store.summary_path)
+        or projection.get("campaign_manifest") != str(status.manifest_path)
+        or projection.get("campaign_summary") != str(status.summary_path)
     ):
         raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
 

@@ -11,6 +11,19 @@ from tests.architecture.import_graph import analyze_imports
 
 _SOURCE_ROOT = Path(__file__).parents[2] / "src" / "booley"
 
+_CAMPAIGN_STORAGE_TYPES = frozenset(
+    {"CampaignStore", "CampaignRecovery", "WorkItemRecovery", "SharedBuildRecovery"}
+)
+_CAMPAIGN_STORAGE_OWNERS = frozenset(
+    {
+        "booley.flows.sim.campaign.store",
+        "booley.flows.sim.campaign.coordinator",
+        "booley.flows.sim.campaign.child_protocol",
+        "booley.flows.sim.campaign.inspection",
+    }
+)
+_CAMPAIGN_PREFIX = "booley.flows.sim.campaign"
+
 
 def test_production_source_dependencies_obey_approved_contract() -> None:
     dependencies = analyze_imports(_SOURCE_ROOT)
@@ -18,6 +31,129 @@ def test_production_source_dependencies_obey_approved_contract() -> None:
     problems = evaluate_contract(dependencies, BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
 
     assert not problems, "Source dependency contract failures:\n" + format_problems(problems)
+
+
+def test_every_campaign_storage_permission_is_a_current_exact_edge() -> None:
+    dependencies = analyze_imports(_SOURCE_ROOT)
+    edges = {(item.source, item.target) for item in dependencies}
+    permissions = tuple(
+        item for item in BOOLEY_SOURCE_DEPENDENCY_CONTRACT.permissions if item.rule == "D31"
+    )
+
+    assert permissions
+    assert all((item.source, item.target) in edges for item in permissions)
+
+
+def test_campaign_storage_types_do_not_escape_their_exact_owners() -> None:
+    violations: list[str] = []
+    for path in sorted(_SOURCE_ROOT.rglob("*.py")):
+        module = _source_module(path)
+        violations.extend(_campaign_storage_violations_for_source(path, module))
+
+    assert not violations, "Campaign storage types escaped their owners:\n" + "\n".join(violations)
+
+
+def _campaign_storage_violations_for_source(path: Path, module: str) -> list[str]:
+    if module in _CAMPAIGN_STORAGE_OWNERS:
+        return []
+    return _campaign_storage_type_violations(path, module)
+
+
+def _campaign_storage_type_violations(path: Path, module: str) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    aliases: dict[str, str] = {"booley": "booley"}
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith(_CAMPAIGN_PREFIX):
+                    bound = alias.asname or alias.name.split(".", maxsplit=1)[0]
+                    aliases[bound] = alias.name if alias.asname else bound
+        elif isinstance(node, ast.ImportFrom):
+            imported_from = _resolved_import_from(module, path.name == "__init__.py", node)
+            if imported_from is None or not imported_from.startswith(_CAMPAIGN_PREFIX):
+                continue
+            for alias in node.names:
+                if alias.name in _CAMPAIGN_STORAGE_TYPES or alias.name == "*":
+                    violations.append(f"{module}:{node.lineno}: {alias.name}")
+                else:
+                    aliases[alias.asname or alias.name] = f"{imported_from}.{alias.name}"
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute) or node.attr not in _CAMPAIGN_STORAGE_TYPES:
+            continue
+        dotted = _dotted_name(node)
+        root, separator, suffix = dotted.partition(".")
+        resolved = aliases.get(root)
+        if (
+            resolved is not None
+            and separator
+            and f"{resolved}.{suffix}".startswith(_CAMPAIGN_PREFIX)
+        ):
+            violations.append(f"{module}:{node.lineno}: {node.attr}")
+    return violations
+
+
+def _resolved_import_from(module: str, is_package: bool, node: ast.ImportFrom) -> str | None:
+    if node.level == 0:
+        return node.module
+    package = module if is_package else module.rpartition(".")[0]
+    parts = package.split(".")
+    parents = node.level - 1
+    if parents >= len(parts):
+        return None
+    base = parts[: len(parts) - parents]
+    if node.module:
+        base.extend(node.module.split("."))
+    return ".".join(base)
+
+
+def _source_module(path: Path) -> str:
+    relative = path.relative_to(_SOURCE_ROOT)
+    suffix = (
+        relative.parent.parts
+        if path.name == "__init__.py"
+        else (
+            *relative.parent.parts,
+            path.stem,
+        )
+    )
+    return ".".join(("booley", *suffix))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from booley.flows.sim.campaign.coordinator import CampaignStore\n",
+        "from booley.flows.sim.campaign.coordinator import CampaignStore as Store\n",
+        "import booley.flows.sim.campaign.coordinator\n"
+        "booley.flows.sim.campaign.coordinator.CampaignRecovery\n",
+        "import booley.flows.sim.campaign.coordinator as coordinator\n"
+        "coordinator.WorkItemRecovery\n",
+        "from booley.flows.sim.campaign import coordinator\ncoordinator.SharedBuildRecovery\n",
+        "def deferred():\n    from booley.flows.sim.campaign.coordinator import CampaignStore\n",
+        "if enabled:\n    from booley.flows.sim.campaign.coordinator import CampaignRecovery\n",
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from booley.flows.sim.campaign.coordinator import WorkItemRecovery\n",
+    ],
+)
+def test_campaign_storage_type_gate_resolves_static_escape_forms(
+    tmp_path: Path, source: str
+) -> None:
+    path = tmp_path / "rogue.py"
+    path.write_text(source)
+
+    assert _campaign_storage_type_violations(path, "booley.flows.sim.rogue")
+
+
+@pytest.mark.parametrize("owner", sorted(_CAMPAIGN_STORAGE_OWNERS))
+def test_campaign_storage_type_gate_allows_exact_owners(tmp_path: Path, owner: str) -> None:
+    path = tmp_path / "owner.py"
+    path.write_text("from booley.flows.sim.campaign.store import CampaignStore\n")
+
+    violations = _campaign_storage_violations_for_source(path, owner)
+
+    assert violations == []
 
 
 def test_eda_runtime_spec_compatibility_module_is_deleted() -> None:
