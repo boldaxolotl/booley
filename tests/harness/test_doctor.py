@@ -1536,10 +1536,12 @@ def test_validate_feedback_table_rejects_invalid_settings(feedback):
     assert audit.findings
 
 
-def test_validate_feedback_table_ignores_removed_mode_setting():
-    audit = project_schema.audit_feedback_table({"feedback": {"mode": ["anything"]}})
+def test_validate_feedback_table_rejects_removed_mode_setting():
+    audit = project_schema.audit_feedback_table({"feedback": {"mode": "off"}})
 
-    assert audit.is_valid
+    assert not audit.is_valid
+    assert audit.findings[0].message == "booley.toml [feedback].mode was removed and is ignored"
+    assert "delete [feedback].mode" in audit.findings[0].fix
 
 
 @pytest.mark.parametrize(

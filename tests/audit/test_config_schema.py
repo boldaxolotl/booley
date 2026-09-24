@@ -173,6 +173,15 @@ def test_feedback_audit_collects_independent_field_failures() -> None:
     )
 
 
+def test_feedback_audit_rejects_retired_mode_with_migration_guidance() -> None:
+    audit = project_schema.audit_feedback_table({"feedback": {"mode": "file-only"}})
+
+    assert not audit.is_valid
+    assert audit.findings[0].message == "booley.toml [feedback].mode was removed and is ignored"
+    assert "delete [feedback].mode" in audit.findings[0].fix
+    assert "explicit export" in audit.findings[0].fix
+
+
 def test_stealth_audit_enforces_native_core_isolation_contract() -> None:
     audit = project_schema.audit_stealth_table(
         {"stealth": {"enabled": False, "ignore_native_cores": True}}

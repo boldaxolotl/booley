@@ -1,7 +1,7 @@
 # Step 7 — Cleanup: bounded retention after the report
 
 > Part of the `booley-setup` skill. Run after Step 6 has rendered
-> `SETUP-REPORT.md` and completed its one-time Feedback offer. This step is
+> `SETUP-REPORT.md` and any explicitly requested Feedback export. This step is
 > post-gate: incomplete or unsafe cleanup is reported plainly and never turns
 > a healthy Doctor result into a failed setup.
 

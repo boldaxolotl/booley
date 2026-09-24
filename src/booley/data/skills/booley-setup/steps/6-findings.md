@@ -2,7 +2,8 @@
 
 The last step of setup. Everything logged with `booley feedback add` during
 Steps 0–5 gets turned into a report for the user, sorted by whose problem each
-finding is, and — only if the user agrees — a bug report to Booley.
+finding is. A separate redacted export is created only when the user explicitly
+requests a sanitized file for manual sharing.
 
 **This step never blocks completion.** Step 4 is the gate; setup is already
 finished by the time you get here. A user who declines everything in this step

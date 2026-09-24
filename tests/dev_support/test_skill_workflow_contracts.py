@@ -61,6 +61,27 @@ def test_feedback_exports_offline_for_manual_github_or_email_submission():
         assert required in skill
 
 
+def test_feedback_requires_an_explicit_request_before_redacted_export():
+    skill = _compact_skill_text("booley-feedback")
+
+    assert "Do not create a sanitized report by default" in skill
+    assert "export only on explicit request" in skill
+    assert "Stop here unless the user explicitly requested a sanitized file" in skill
+    assert "Without an explicit export request" in skill
+
+
+def test_setup_does_not_offer_removed_feedback_submission_workflow():
+    main = _compact_skill_text("booley-setup")
+    findings = _compact_skill_text("booley-setup", "steps/6-findings.md")
+    cleanup = _compact_skill_text("booley-setup", "steps/7-cleanup.md")
+
+    assert "creates a redacted export only when the user explicitly requests one" in main
+    assert "asks once whether to send" not in main
+    assert "A separate redacted export is created only when the user explicitly" in findings
+    assert "only when the user explicitly asks" in findings
+    assert "one-time Feedback offer" not in cleanup
+
+
 def test_triage_leads_with_explicit_blockers_and_evidence_links():
     blocked = _skill_text("booley-ticket-triage", "steps/02-blocked.md")
 

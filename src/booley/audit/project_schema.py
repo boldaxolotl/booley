@@ -125,6 +125,14 @@ def audit_feedback_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 def _feedback_field_findings(feedback: Mapping[str, Any]) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
+    if "mode" in feedback:
+        findings.append(
+            fail_finding(
+                "booley.toml [feedback].mode was removed and is ignored",
+                "delete [feedback].mode; feedback stays local and redacted files are "
+                "created only by an explicit export",
+            )
+        )
     extra = feedback.get("redact_extra")
     if extra is not None and not is_str_list(extra):
         findings.append(

@@ -1075,6 +1075,10 @@ settings used by an explicit export:
 # redact_identifiers = false    # keep module/Target names (default: replace them)
 ```
 
+The former `mode` setting has been removed. Delete it from existing Projects;
+Doctor reports it as retired instead of silently accepting a setting that no
+longer controls any behavior.
+
 Ask `/booley-feedback` when you want a redacted Markdown file to inspect and
 share manually. Normal reporting never creates the export as a side effect.
 After you share it, tell the skill where it went so those Findings are marked
