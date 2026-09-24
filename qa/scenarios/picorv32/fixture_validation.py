@@ -13,6 +13,7 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -22,6 +23,7 @@ _GENERATED_INSTANCE_RE = re.compile(r"(?<![A-Za-z0-9])_[0-9a-f]+_p_Instance\b")
 _GENERATED_INSTANCE_RUN_RE = re.compile(r"(?:<generated-instance>\s*)+")
 _TRUNCATED_GENERATED_TAIL_RE = re.compile(r"(<generated-instance-list>).*…$")
 _PARTIAL_GENERATED_INSTANCE_TAIL_RE = re.compile(r"(?<![A-Za-z0-9])_[0-9a-f]+(?:_[A-Za-z_]*)?…$")
+_UNRESOLVED_SUBSTITUTION_RE = re.compile(rb"{{\s*[^{}]+\s*}}")
 
 
 class FixtureError(ValueError):
@@ -129,6 +131,126 @@ def ticket_routing(root: Path, ticket: Path, outer_ref: str, inner_ref: str) -> 
         "project_commit": _resolved_ref(root.resolve() / ".booley_project", inner_ref),
         "topology": topology["mode"],
     }
+
+
+def _packet_fields(packet: bytes, outer_ref: str, inner_ref: str) -> dict:
+    """Validate only the caller-owned static v2 packet contract."""
+    outer_ref = _local_branch_ref(outer_ref, "outer")
+    inner_ref = _local_branch_ref(inner_ref, "inner")
+    _require(
+        b"target_plan:" not in packet
+        and b"role: ephemeral" not in packet
+        and b"on_success:\n" not in packet,
+        "resolved packet uses retired Ticket vocabulary",
+    )
+    text = packet.decode("utf-8").replace("\r\n", "\n")
+    marker = "```markdown\n---\n"
+    start = text.find(marker)
+    _require(start >= 0, "resolved packet lacks the current-v2 Markdown document")
+    start += len(marker)
+    end = text.find("\n---\n", start)
+    _require(end >= 0, "resolved packet frontmatter is not closed")
+    fields = _mapping(yaml.safe_load(text[start:end]), "resolved packet frontmatter")
+    _require("CRITERIA_MANDATORY" in fields, "resolved packet lacks CRITERIA_MANDATORY")
+    _require(
+        isinstance(fields.get("on_success"), list), "resolved packet on_success is not a list"
+    )
+    _require(
+        fields.get("branch") == outer_ref.removeprefix("refs/heads/"),
+        "resolved packet branch does not match outer ref",
+    )
+    _require(
+        fields.get("project_destination_ref") == inner_ref,
+        "resolved packet project_destination_ref does not match inner ref",
+    )
+    return fields
+
+
+def _packet_destination(project: Path, staged: Path) -> Path:
+    """Resolve the ignored Project-data packet destination."""
+    staged = staged.resolve(strict=False)
+    try:
+        relative = staged.relative_to(project)
+    except ValueError as error:
+        raise FixtureError("staged packet must be beneath the Project directory") from error
+    _require(
+        relative.parts[:2] == ("tmp", "qa-inputs"),
+        "staged packet must use the ignored tmp/qa-inputs Project-data directory",
+    )
+    return staged
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Durably publish complete packet bytes with one atomic replacement."""
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def packet_input(
+    project: Path,
+    source: Path,
+    staged: Path,
+    *,
+    verify_only: bool = False,
+    outer_ref: str,
+    inner_ref: str,
+) -> dict:
+    """Stage or recheck one exact Ticket Create packet inside Project data."""
+    project = project.resolve(strict=True)
+    _require(project.is_dir(), "Project directory missing")
+    _require(source.is_file() and not source.is_symlink(), "resolved packet is not a regular file")
+    source = source.resolve(strict=True)
+    staged = _packet_destination(project, staged)
+    before = source.stat()
+    packet = source.read_bytes()
+    after = source.stat()
+    _require(
+        (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
+        "resolved packet changed while it was read",
+    )
+    _require(
+        not _UNRESOLVED_SUBSTITUTION_RE.search(packet),
+        "resolved packet has unresolved substitution",
+    )
+    fields = _packet_fields(packet, outer_ref, inner_ref)
+    if verify_only:
+        _require(staged.is_file(), "staged packet is missing")
+        _require(staged.read_bytes() == packet, "staged packet differs from resolved packet")
+    else:
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_bytes(staged, packet)
+    digest = hashlib.sha256(packet).hexdigest()
+    result = {
+        "source": str(source),
+        "staged": str(staged),
+        "sha256": digest,
+        "byte_count": len(packet),
+        "verified": verify_only,
+    }
+    result.update(
+        branch=fields["branch"],
+        project_destination_ref=fields["project_destination_ref"],
+    )
+    return result
 
 
 def spike_elf(path: Path, ram_start: int, ram_end: int) -> dict:
@@ -683,6 +805,13 @@ def _parser() -> argparse.ArgumentParser:
     routing.add_argument("ticket", type=Path)
     routing.add_argument("--outer-ref", required=True)
     routing.add_argument("--inner-ref", required=True)
+    packet = sub.add_parser("ticket-packet")
+    packet.add_argument("project", type=Path)
+    packet.add_argument("source", type=Path)
+    packet.add_argument("staged", type=Path)
+    packet.add_argument("--verify-only", action="store_true")
+    packet.add_argument("--outer-ref", required=True)
+    packet.add_argument("--inner-ref", required=True)
     elf = sub.add_parser("spike-elf")
     elf.add_argument("path", type=Path)
     elf.add_argument("--ram-start", type=lambda x: int(x, 0), required=True)
@@ -712,6 +841,15 @@ def _execute(args: argparse.Namespace) -> dict:
         result = git_topology(args.root, args.mode, args.outer_ref, args.inner_ref)
     elif args.kind == "ticket-routing":
         result = ticket_routing(args.root, args.ticket, args.outer_ref, args.inner_ref)
+    elif args.kind == "ticket-packet":
+        result = packet_input(
+            args.project,
+            args.source,
+            args.staged,
+            verify_only=args.verify_only,
+            outer_ref=args.outer_ref,
+            inner_ref=args.inner_ref,
+        )
     elif args.kind == "spike-elf":
         result = spike_elf(args.path, args.ram_start, args.ram_end)
     elif args.kind == "lint-command":

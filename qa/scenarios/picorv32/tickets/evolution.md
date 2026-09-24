@@ -1,96 +1,109 @@
-### Ticket Create invocations
+# Ticket 2 creation packet
 
-The scenario itself is the source of both Tickets. Do not ask Ticket Create to infer missing semantics. Pass the complete field sets below in one creation phase:
+Render every declared typed substitution into this asset, retain the resolved bytes, and
+stage those exact bytes under the ignored Project-data path
+`tmp/qa-inputs/<run-id>/ticket-2/packet.md`. Retain the source asset, resolved packet,
+typed non-secret substitutions, staged Sandbox path, SHA-256, and byte count. The resolved
+and staged hashes must match immediately before submission; recheck the staged hash after
+the attempt.
 
-- Codex form: `$booley-ticket-create --agent --no-confirm <complete structured scenario payload>`
-- Claude form: `/booley-ticket-create --agent --no-confirm <complete structured scenario payload>`
+Invoke exactly one supported client form with that Sandbox path:
 
-These are skill invocations, not ordinary CLI commands. Enqueue automatically publishes the immutable Ticket Baseline; there is no manual seal, Target Contract, `base_sha`, or second confirmation. Ticket creation may author only the approved Target definitions, owned `tests.toml` tables, and empty `[new]` placeholders. The Developer Agent authors the implementation.
+- Codex: `$booley-ticket-create --agent --no-confirm --input-file <project-data-path>`
+- Claude: `/booley-ticket-create --agent --no-confirm --input-file <project-data-path>`
 
-The retained `project.separate-repository` resource ledger supplies both routing values.
-Before sending the prompt, require the preceding preflight to match them exactly:
+These are skill invocations, not shell commands. Retain the literal invocation separately
+from the packet. Ticket Create owns live dependency, guidance, selector, Target, test, and
+FPGA Flow resolution. It also owns deriving and authoring the applicable Temporal Target
+definitions and their owned test tables; this packet deliberately does not pre-author
+those definitions.
 
-```text
-git-topology ROOT ticket --outer-ref refs/heads/{{ outer_destination_branch }} --inner-ref {{ project_destination_ref }}
-```
-
-Include this routing block in the complete payload:
-
-```yaml
+```markdown
+---
+summary: Implement RV32 Zbb through registered PCPI execution
+type: feature
 branch: {{ outer_destination_branch }}
 project_destination_ref: {{ project_destination_ref }}
-```
-
-The live checkout is evidence, not routing authority. After creation, run `ticket-routing`
-with the created Ticket path and the same two full refs; retain its field-to-ref mapping
-and independently resolved commits.
-
-Both Tickets use:
-
-```yaml
-on_success:
-  destination: done
-  merge: true
-  cleanup: true
-  triage_report: true
+scope:
+  - picorv32.v
+  - testbench.v
+  - testbench_wb.v
+  - Makefile
+  - tests/zbb.S [new]
+spec: /opt/riscv-docs/riscv-isa-manual.html
+dependencies: [dhrystone-self-checking-cycle-contract]
 priority: medium
+on_success: [triage_report, review, merge, cleanup]
+CRITERIA_MANDATORY:
+  ELAB:
+    sim_core_zbb (temp): pass
+    sim_axi_zbb (temp): pass
+    sim_wb_zbb (temp): pass
+    sim_zbb_disabled (temp): pass
+  ELAB_STANDALONE:
+    - sim_core_zbb (temp)
+    - sim_axi_zbb (temp)
+    - sim_wb_zbb (temp)
+    - sim_zbb_disabled (temp)
+  LINT:
+    lint_core_zbb (temp): clean
+  SIM:
+    sim_core: {main: pass, axi: pass}
+    sim_wb: {wb: pass}
+    sim_dhry_checked: {dhry: pass}
+    sim_core_zbb (temp): {zbb_core: fail -> pass}
+    sim_axi_zbb (temp): {zbb_axi: fail -> pass}
+    sim_wb_zbb (temp): {zbb_wb: fail -> pass}
+    sim_zbb_disabled (temp): {zbb_disabled: fail -> pass}
+  MUTATION:
+    sim_core_zbb (temp): {scope: [picorv32.v], min_detected: 14, total: 15}
+  SYNTH:
+    synth_core_zbb (temp):
+      baseline: synth_core
+      cell_count_increase_at_most: 11%
+      critical_path_ps_increase_at_most: 3%
+{{ configured_fpga_criterion }}
+  REVIEW:
+    rtl:
+      bugs: [done, clean]
+      protocol: done
+      spec: done
+      code_style: done
+      optimization: done
+      security: done
+    tb: {quality: done}
+---
+
+## Description
+
+### Current State
+
+The pinned PicoRV32 Project lacks the agreed RV32 Zbb execution path and directed wrapper
+coverage. Ticket 1 provides the refreshed persistent `sim_dhry_checked` regression.
+
+### Required Changes
+
+Implement `ANDN`, `ORN`, `XNOR`, `CLZ`, `CTZ`, `CPOP`, `MIN`, `MINU`, `MAX`, `MAXU`,
+`SEXT.B`, `SEXT.H`, `ZEXT.H`, `ROL`, `ROR`, `RORI`, `ORC.B`, and `REV8`. Add
+`ENABLE_ZBB`, defaulting to `0`, across the core, AXI, and Wishbone wrappers. Use an
+internal registered PCPI implementation with a fixed one-cycle response.
+
+Exercise enabled execution through all three wrappers. In the disabled test, arm a
+distinct MMIO marker immediately before the first Zbb encoding and require the ensuing
+illegal-instruction trap; no unrelated trap may count. Preserve the existing `sim_core`
+`main` and `axi` tests, `sim_wb` `wb` test, lint and physical-synthesis behavior, and
+genuinely execute `sim_dhry_checked` `dhry`.
+
+Create the Temporal Targets named by the Criteria: `sim_core_zbb`, `sim_axi_zbb`,
+`sim_wb_zbb`, `sim_zbb_disabled`, `lint_core_zbb`, and `synth_core_zbb`, plus
+`fpga_core_zbb` only when the rendered FPGA Criterion is present. Register the owned tests
+named by the Criteria. `sim_axi_zbb` uses the existing `testbench` top whose wrapper
+instantiates `picorv32_axi`. The mutation set targets Zbb decode, result generation, PCPI
+handshake, and enable gating. The applicable Target definitions and their unambiguously
+owned test tables remain through execution and are removed at acceptance.
+
+### Affected Interfaces
+
+The `ENABLE_ZBB` parameter is added consistently to the core, AXI wrapper, and Wishbone
+wrapper. Existing behavior remains unchanged when it is `0`.
 ```
-
-Only one automatic retry is permitted, with `max_attempts: 1`, and only when the exact recognized error is `API Error: Response stalled mid-stream`. Ordinary crashes, test failures, timeouts, context exhaustion, and usage-limit failures are not retried.
-
-### Ticket 2 — `rv32-zbb-pcpi`
-
-Type: `feature`. Dependency: `dhrystone-self-checking-cycle-contract`. Technical authority: `/opt/riscv-docs/riscv-isa-manual.html`.
-
-Scope:
-
-```yaml
-- picorv32.v
-- testbench.v
-- testbench_wb.v
-- Makefile
-- tests/zbb.S [new]
-```
-
-Required implementation:
-
-- Implement all 18 agreed RV32 Zbb operations: `ANDN`, `ORN`, `XNOR`, `CLZ`, `CTZ`, `CPOP`, `MIN`, `MINU`, `MAX`, `MAXU`, `SEXT.B`, `SEXT.H`, `ZEXT.H`, `ROL`, `ROR`, `RORI`, `ORC.B`, and `REV8`.
-- Add `ENABLE_ZBB`, defaulting to `0`, across core, AXI, and Wishbone wrappers.
-- Use an internal registered PCPI implementation with a fixed one-cycle response.
-- Test enabled execution through all three wrappers.
-- In the disabled test, arm a distinct MMIO marker immediately before the first Zbb encoding and require the ensuing illegal-instruction trap. No unrelated trap may count as success.
-- Preserve passing behavior on the existing default main/core, AXI, Wishbone, lint, and physical-synthesis Targets.
-- Consume and genuinely execute the refreshed persistent `sim_dhry_checked` Target from Ticket 1.
-
-Ticket creation authors seven candidate Targets and their owned test tables, all ephemeral:
-
-```yaml
-target_plan:
-  - {target: sim_core_zbb, role: ephemeral}
-  - {target: sim_axi_zbb, role: ephemeral}
-  - {target: sim_wb_zbb, role: ephemeral}
-  - {target: sim_zbb_disabled, role: ephemeral}
-  - {target: lint_core_zbb, role: ephemeral}
-  - {target: synth_core_zbb, role: ephemeral}
-  - {target: fpga_core_zbb, role: ephemeral}
-```
-
-They remain available through execution and acceptance, then their definitions and unambiguously owned test tables are removed automatically. Do not use the retired `on_success.remove_targets` mechanism.
-
-Mandatory Criteria exercise all remaining catalog families:
-
-- `elab_pass` for `sim_core_zbb`, `sim_axi_zbb`, `sim_wb_zbb`, and `sim_zbb_disabled`.
-- `elaborate_standalone: true`.
-- `lint_clean: [lint_core_zbb]`.
-- `sim_pass` for existing main/core, AXI, and Wishbone regressions (`pass -> pass`); all four new Zbb simulation Targets (`fail -> pass`); and refreshed `sim_dhry_checked` (`pass -> pass`).
-- `mutation_score` on `picorv32.v` through `sim_core_zbb`, with `min_detected: 14` and `total: 15`. Mutations should target the new Zbb decode, result generation, PCPI handshake, and enable gating.
-- `synthesis_ok` using the directed pair `{baseline: synth_core, candidate: synth_core_zbb}`, with `cell_count_increase_at_most: 11%` and `critical_path_ps_increase_at_most: 3%`. These exact limits were measured with Zbb enabled and must not be relaxed.
-- `fpga_impl_ok` for `fpga_core_zbb`, requiring successful completion and a fresh artifact but no LUT threshold. It is mandatory only where the exact Vivado profile is runnable.
-- Advisory completion reviews `review_rtl_bugs_done`, `review_rtl_protocol_done`, `review_rtl_spec_done`, `review_rtl_code_style_done`, `review_rtl_optimization_done`, `review_rtl_security_done`, and a Target-bound `review_tb_quality_done`.
-- In addition, corrective `review_rtl_bugs_clean` is mandatory, so at least one review family exercises the clean disposition.
-
-Across the two Tickets, the suite must exercise all 15 agreed Criterion families: elaboration, standalone elaboration, lint, six RTL review focuses, TB-quality review, simulation, cycle count, mutation, synthesis, and FPGA implementation.
-
-### Enabled AXI Target
-
-Add seventh ephemeral Target `sim_axi_zbb` to Ticket2 Target Plan. The [pinned `testbench.v`](https://github.com/YosysHQ/picorv32/blob/a473fc8fca393771d83b0ffcf0b14db3393339d8/testbench.v#L11) declares top `testbench`, instantiates `picorv32_wrapper`, and that wrapper instantiates `picorv32_axi` (line 163). Bind `sim_axi_zbb` to this existing AXI testbench top, approved Zbb firmware/test source, and `ENABLE_ZBB=1` propagated through the already-authorized `testbench.v` scope. Preserve the original existing-target AXI regression separately. Require `elab_pass` and explicit Zbb `fail -> pass` simulation for this Target. It follows the same ephemeral retention/removal rules as the original six Targets, so all seven remain until acceptance and are removed afterwards with their unambiguously owned test tables.
