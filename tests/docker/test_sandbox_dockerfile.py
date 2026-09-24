@@ -198,14 +198,16 @@ def test_published_runtime_images_include_sbom_attestations() -> None:
 
 def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    contract = Path(".github/scripts/verify_riscv_image_contract.sh").read_text(encoding="utf-8")
+    demo = Path(".github/scripts/run_picorv32_ci_demo.sh").read_text(encoding="utf-8")
     verifier = Path(".github/scripts/verify_picorv32_demo.sh").read_text(encoding="utf-8")
 
-    assert "--image booley-riscv-test" in workflow
-    assert "--base-image booley-standard-substrate:ci" in workflow
-    assert "--flavor riscv" in workflow
-    assert "--runtime-image riscv=booley-riscv-test" in workflow
-    assert "verify_picorv32_demo.sh" in workflow
-    assert "-e BOOLEY_RUN_PICORV32_FLOWS=1" in workflow
+    assert '--image "${IMAGE}"' in contract
+    assert '--base-image "${BASE_IMAGE}"' in contract
+    assert "--flavor riscv" in contract
+    assert '--runtime-image "riscv=${IMAGE}"' in contract
+    assert "verify_picorv32_demo.sh" in demo
+    assert "-e BOOLEY_RUN_PICORV32_FLOWS=1" in demo
     assert "python -m booley.flows.lint --work-dir /work --target lint_core" in verifier
     assert "python -m booley.flows.sim --work-dir /work --target sim_core" in verifier
     assert "riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
