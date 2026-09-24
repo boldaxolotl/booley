@@ -364,6 +364,16 @@ def test_public_campaign_inspection_rejects_malformed_summary_but_reports_mismat
     with pytest.raises(SimulationCampaignIntegrityError, match="retention fields"):
         inspect_retained_campaign(completed.store.manifest_path)
 
+    completed.store.summary_path.write_bytes(canonical_json_bytes([]))
+    with pytest.raises(SimulationCampaignIntegrityError, match="not an object"):
+        inspect_retained_campaign(completed.store.manifest_path)
+
+    summary["complete"] = True
+    summary["$schema"] = "wrong"
+    completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
+    with pytest.raises(SimulationCampaignIntegrityError, match="retention fields"):
+        inspect_retained_campaign(completed.store.manifest_path)
+
 
 @pytest.mark.parametrize("defect", ["symlink", "hardlink", "oversize"])
 def test_public_work_item_authentication_retains_store_file_rejections(

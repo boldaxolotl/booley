@@ -168,6 +168,7 @@ def _read_regular(path: Path, *, limit: int) -> bytes:
     if _is_link(path):
         raise SimulationCampaignIntegrityError(f"authoritative path is a link: {path}")
     descriptor: int | None = None
+    current_descriptor: int | None = None
     try:
         descriptor = open_regular_nofollow(path)
         initial = _regular_identity(os.fstat(descriptor), path, limit)
@@ -182,7 +183,8 @@ def _read_regular(path: Path, *, limit: int) -> bytes:
                 f"authoritative file exceeds size ceiling: {path}"
             )
         final = _regular_identity(os.fstat(descriptor), path, limit)
-        current = _regular_identity(path.stat(follow_symlinks=False), path, limit)
+        current_descriptor = open_regular_nofollow(path)
+        current = _regular_identity(os.fstat(current_descriptor), path, limit)
         if initial != final or final != current or len(raw) != final[2]:
             raise SimulationCampaignIntegrityError(
                 f"authoritative file changed during read: {path}"
@@ -193,6 +195,8 @@ def _read_regular(path: Path, *, limit: int) -> bytes:
             f"cannot read authoritative file {path}: {exc}"
         ) from exc
     finally:
+        if current_descriptor is not None:
+            os.close(current_descriptor)
         if descriptor is not None:
             os.close(descriptor)
 
