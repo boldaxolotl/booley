@@ -385,6 +385,28 @@ def test_ticket_create_distinguishes_paired_repository_destinations() -> None:
     assert "required when the paired Project repository destination differs" in template
 
 
+def test_ticket_create_agent_file_input_is_bounded_and_observable() -> None:
+    contract = " ".join(_skill_text("booley-ticket-create").split())
+
+    assert "--input-file" in contract
+    assert "readable regular file beneath the resolved Project directory" in contract
+    assert "before the initial dependency scan" in contract
+    assert "SHA-256" in contract and "byte count" in contract
+    for milestone in (
+        "input loaded",
+        "initial dependency and guidance resolution complete",
+        "Criteria, Target, and test resolution complete",
+        "mandatory final dependency rescan complete",
+        "draft/workspace created",
+        "Target definitions, test tables, and placeholders authored",
+        "validation complete",
+        "enqueue complete",
+    ):
+        assert milestone in contract
+    assert "retry the Ticket Create attempt" not in contract
+    assert "thinking-token" not in contract
+
+
 def test_ticket_creation_template_is_packaged_free_form_markdown():
     template = _skill_text("booley-ticket-create", "TICKET_CREATION_TEMPLATE.md")
 

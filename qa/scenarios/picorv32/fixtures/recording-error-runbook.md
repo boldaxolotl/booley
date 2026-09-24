@@ -43,6 +43,29 @@ The Project path and refs come from this run's ledger, not from a copied run.
   ref. Retain the field-to-ref mapping and the independently resolved commit in
   each owning repository. A swapped or collapsed mapping blocks the Check even
   when both repositories happen to contain both names.
+* `ticket-packet PROJECT RESOLVED_PACKET STAGED_PACKET --outer-ref REF --inner-ref REF`:
+  before submission,
+  stage the resolved packet under `PROJECT/tmp/qa-inputs/<run-id>/<step-id>/packet.md`
+  and retain its JSON SHA-256 and byte count. The initialized Project ignores `tmp/`,
+  so staging must leave both repositories clean. Run the same command with
+  `--verify-only` immediately before submission and again after the attempt; drift or
+  an unresolved template-substitution token blocks the attempted Check.
+  `configured_fpga_criterion` renders exactly two lines when the selected Configured
+  Scenario includes the FPGA Criterion:
+
+  ```yaml
+    FPGA:
+      fpga_core_zbb (temp): pass
+  ```
+
+  It renders as zero bytes for configurations that exclude FPGA. The routing
+  substitutions retain the meanings above. No other packet bytes vary by configuration.
+
+For both Ticket Create Steps, submit the staged packet once and retain the last declared
+milestone plus one terminal-boundary category: `terminal product failure`,
+`client/provider error`, `declared timeout`, `operator stop`, or `lost control`. Ticket
+Create has no retry allowance. The `retry.exact-allowance` Check applies only to the later
+Developer Agent `booley run` invocation.
 * Build `fixtures/riscv/spike-probe.S` with `spike-probe.ld` using the selected
   runtime's RISC-V compiler. Run `spike-elf ELF --ram-start START --ram-end END`
   with the RAM bounds documented for that runtime before invoking Spike. Every

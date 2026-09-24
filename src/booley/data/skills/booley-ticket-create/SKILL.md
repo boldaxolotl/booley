@@ -17,6 +17,7 @@ Lightweight tickets never need it.
 ```
 booley-ticket-create <fuzzy description>          # human mode (default)
 booley-ticket-create --agent <structured input>   # agent mode — no interaction
+booley-ticket-create --agent --no-confirm --input-file <project-data-path>
 ```
 
 ## Output Boundary
@@ -37,6 +38,14 @@ stop and report the blocker; creating that code is outside this skill.
 ## Step 1: Parse Input
 
 `--agent` in `$ARGUMENTS` → **agent mode** (Step 3). Otherwise → **human mode** (Step 2).
+
+In agent mode, `--input-file` names the complete packet and cannot be combined with an
+inline packet. Resolve the Project directory through `booley.runtime.project_dir`, then
+require a readable regular file beneath the resolved Project directory. Read it once as
+exact bytes before the initial dependency scan, reject an unreadable or changing file,
+and report its SHA-256 and byte count. Treat those bytes as the complete structured input;
+do not search elsewhere or reconstruct missing content. Any input error returns before
+draft or Ticket Workspace mutation.
 
 ## Step 2: Interactive Refinement
 
@@ -151,6 +160,21 @@ mechanics require no further user confirmation.
     `project_destination_ref` explicitly when it differs from the outer destination.
     In agent mode, treat the supplied pair as authoritative: reject a missing or ambiguous member
     instead of consulting either live checkout.
+
+Emit these concise progress milestones in order. Each milestone reports completion of the
+named work; it never substitutes for validation or a terminal result.
+
+1. `input loaded` with packet SHA-256 and byte count
+2. `initial dependency and guidance resolution complete`
+3. `Criteria, Target, and test resolution complete`
+4. `mandatory final dependency rescan complete`
+5. `draft/workspace created` — the exact mutation boundary
+6. `Target definitions, test tables, and placeholders authored`
+7. `validation complete`
+8. `enqueue complete`, or an actionable blocker returned
+
+One invocation is one Ticket Create attempt. Return its terminal result without an
+automatic retry or a token-based stopping rule.
 
 ## Step 4: Author and Enqueue
 
