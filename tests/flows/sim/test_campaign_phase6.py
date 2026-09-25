@@ -862,6 +862,8 @@ def _retained_invocation(tmp_path: Path) -> tuple[Path, Path, CampaignStore]:
         json.dumps(
             {
                 "flow": "sim",
+                "complete": True,
+                "phase": "complete",
                 "targets": ["sim"],
                 "completed_targets": ["sim"],
                 "pending_targets": [],
@@ -954,6 +956,33 @@ def test_detached_copy_pruning_never_releases_project_child_pair(tmp_path: Path)
     prune_invocation(reports, 1)
     assert not (project_children / "entries" / f"{execution_id}.json").exists()
     assert not (project_children / "retired" / f"{execution_id}.json").exists()
+
+
+def test_complete_campaign_pruning_accepts_windows_lock_sentinel(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    (store.root / ".lock").write_bytes(b"\0")
+
+    prune_invocation(reports, 1, project_data=project_data)
+
+    assert list((reports / "sim" / ".pruned-1").iterdir()) == []
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_complete_campaign_pruning_rejects_unrecognized_campaign_file(
+    tmp_path: Path, nested: bool
+) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    parent = store.root
+    if nested:
+        parent = next(store.root.glob("work-items/*/attempts/*")) / "evidence"
+    stray = parent / "stray.txt"
+    stray.write_text("do not delete", encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match=r"stray\.txt"):
+        prune_invocation(reports, 1, project_data=project_data)
+
+    assert stray.read_text(encoding="utf-8") == "do not delete"
+    assert (reports / "sim" / "1").is_dir()
 
 
 @pytest.mark.parametrize("defect", ["substituted", "missing"])
