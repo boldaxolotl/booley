@@ -3327,7 +3327,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: tickets/continuity.md
     audience: Developer Agent
-    sha256: fde779f59e39efd64ba7fc1de7b2b893c5f6831f4efa6a6df9149f00b7a8c510
+    sha256: af729685f8d512984403b98ae1eba99b787a236bcbad97e17094059aa917beab
     substitutions:
     - outer_destination_branch
     - project_destination_ref
@@ -3398,7 +3398,7 @@ steps:
     sha256: 1577c86d25354979bbfc24c83d3fd0eca593dc978232c7408fc1ede89207e716
   - path: tickets/evolution.md
     audience: Developer Agent
-    sha256: 78e03c85cbbf44a9b976b6422ea07b9972cdcb334ba1448ae2e43c5b9a9d93d7
+    sha256: 510ce5e3df975e8150f5d8e10ba0ef907ad95ff5d37aad13bff8db9699d2cfb2
     substitutions:
     - outer_destination_branch
     - project_destination_ref

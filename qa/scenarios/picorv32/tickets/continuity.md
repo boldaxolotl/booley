@@ -16,7 +16,7 @@ its owned test table from the live Project.
 
 ```markdown
 ---
-summary: Add a self-checking Dhrystone cycle contract
+summary: Dhrystone self-checking cycle contract
 type: verification
 branch: {{ outer_destination_branch }}
 project_destination_ref: {{ project_destination_ref }}
