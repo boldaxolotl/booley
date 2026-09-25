@@ -157,12 +157,26 @@ def _automatic_accepted_handoff(blocked, monkeypatch):
 )
 @pytest.mark.parametrize("no_merge", [False, True])
 def test_automatic_accepted_handoff_can_be_publicly_approved(blocked, monkeypatch, no_merge):
+    from booley.ticket_board import operations
     from booley.ticket_board.review_lifecycle import approve_review_command
 
     root, tio, _package = _automatic_accepted_handoff(blocked, monkeypatch)
+    merged = []
+    if not no_merge:
+
+        def complete_with_merge(tio, slug, policy, _snapshot):
+            merged.append(policy.merge)
+            assert operations._approve_transition(
+                tio, slug, actor="test", detail="configured merge"
+            )
+            operations._finish_completed_ticket(tio, slug, cleanup=False)
+            return True
+
+        monkeypatch.setattr(operations, "_complete_with_merge", complete_with_merge)
 
     assert approve_review_command(root, "demo", no_merge=no_merge)
     assert tio.find_ticket("demo")["status"] == "done"
+    assert merged == ([] if no_merge else [True])
 
 
 @pytest.mark.parametrize(

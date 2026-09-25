@@ -279,9 +279,7 @@ def _basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     _git(root, "config", "user.email", "test@example.invalid")
     project_dir = root / ".booley_project"
     (project_dir / "tickets" / "board" / "drafts").mkdir(parents=True)
-    (project_dir / ".gitignore").write_text(
-        "/worktrees/\n/.runtime/\n__pycache__/\n", encoding="utf-8"
-    )
+    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
     (root / "README.md").write_text("demo\n", encoding="utf-8")
     _git(root, "add", "-A")
