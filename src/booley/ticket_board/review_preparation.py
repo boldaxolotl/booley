@@ -1449,13 +1449,16 @@ async def prepare_review(
     )
 
 
-def verify_review_handoff(project_root: Path, slug: str) -> ReviewPrepOutcome:
+def verify_review_handoff(
+    project_root: Path, slug: str, *, locked_basis: TicketBaseline | None = None
+) -> ReviewPrepOutcome:
     """Return the current ready package or reject review handoff."""
     ctx = _resolve_context(
         project_root.resolve(),
         slug,
         require_review=False,
         allow_report_disabled=True,
+        locked_basis=locked_basis,
     )
     _prompt, prompt_sha = _review_prompt(ctx)
     source_sha = _source_fingerprint(ctx)

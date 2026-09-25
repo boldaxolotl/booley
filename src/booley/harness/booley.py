@@ -1307,6 +1307,9 @@ def _cmd_board_review(args: argparse.Namespace, project_root: Path) -> int:
             repair=args.repair,
         )
     )
+    if getattr(outcome, "status", "") == "accepted":
+        print(outcome.message)
+        return 0
     if not outcome.ready:
         print(f"ERROR: {outcome.message}", file=sys.stderr)
         return 2
@@ -1385,6 +1388,9 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
     outcome = asyncio.run(
         prepare_review_command(project_root, args.slug, force=getattr(args, "force", False))
     )
+    if getattr(outcome, "status", "") == "accepted":
+        print(outcome.message)
+        return 0
     if not outcome.ready:
         print(f"ERROR: {outcome.message}", file=sys.stderr)
         return 2

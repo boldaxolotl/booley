@@ -1115,6 +1115,8 @@ def _prepare_completion_request(
 def _completion_context(
     tio: Any, slug: str, no_merge: bool, no_cleanup: bool
 ) -> tuple[str, Any] | None:
+    from booley.core.models import OnSuccess
+
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
@@ -1123,6 +1125,13 @@ def _completion_context(
     # paired repository branches are keyed by the ticket filename stem.
     slug = Path(str(entry["file"])).stem
 
+    configured = OnSuccess.from_dict(entry.get("on_success"))
+    if no_merge and not no_cleanup and configured.merge and configured.cleanup:
+        print(
+            "Error: --no-merge must be paired with --no-cleanup when cleanup is configured",
+            file=sys.stderr,
+        )
+        return None
     on_success = _effective_on_success(entry, no_merge=no_merge, no_cleanup=no_cleanup)
     policy_errors = on_success.validate()
     if policy_errors:

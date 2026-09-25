@@ -139,7 +139,7 @@ def _validate_action(tio: TicketIO, slug: str, action: str, repair: bool) -> Non
     if accepted.kind == "corrupt":
         raise ReviewEntryError(f"Criteria Satisfaction Record is corrupt: {accepted.reason}")
     if accepted.kind == "accepted" and action != "regenerate":
-        raise ReviewEntryError("already accepted; use the accepted review/complete workflow")
+        raise ReviewEntryError(f"already accepted; run booley board approve {slug} to complete it")
     if action == "request":
         if board["status"] != "blocked" and not (repair and board["status"] == "review"):
             raise ReviewEntryError(
@@ -526,11 +526,18 @@ def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_clean
     with tio._ticket_lock(slug, review_operation=True):
         assert_idle(tio.logs_dir / slug)
         _quiescent(tio, slug)
-        ctx = _selected_context(tio, slug)
-        _require_selected_package(tio, ctx)
-        accepted = read_acceptance(ctx.log_dir)
+        board = tio.find_ticket(slug)
+        if board is None or board["status"] != "review":
+            status = "missing" if board is None else board["status"]
+            raise ReviewEntryError(f"approve requires a review ticket, got {status}")
+        log_dir = tio.logs_dir / slug
+        accepted = read_acceptance(log_dir)
         if accepted.kind == "corrupt":
             raise ReviewEntryError(f"Criteria Satisfaction Record is corrupt: {accepted.reason}")
+        selected = read_entry(log_dir)
+        if selected is not None or accepted.kind != "accepted":
+            ctx = _selected_context(tio, slug)
+            _require_selected_package(tio, ctx)
         if accepted.kind == "unavailable":
             _acceptance_ready(tio, ctx)
             _require_selected_package(tio, ctx)
@@ -546,6 +553,64 @@ def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_clean
             _write(operation_path(ctx.log_dir), operation)
             _commit(tio, ctx, operation)
     return op_complete(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
+
+
+def _verified_accepted_handoff(
+    project_root: Path, slug: str, tio: TicketIO, snapshot: Any
+) -> prep.ReviewPrepOutcome:
+    from .acceptance_ledger import validate_review_package_binding
+
+    guidance = (
+        f"Ticket {slug!r} is already accepted; run booley board approve {slug} to complete it."
+    )
+    if snapshot is None:
+        return prep.ReviewPrepOutcome(
+            "failed", "Criteria Satisfaction Record is unreadable; use acceptance recovery"
+        )
+    binding = tio.logs_dir / slug / "acceptance" / "review-package.json"
+    manifest = tio.logs_dir / slug / ".runtime" / "triage-prep" / "manifest.json"
+    if not binding.exists() and not manifest.exists():
+        return prep.ReviewPrepOutcome("accepted", guidance)
+    validate_review_package_binding(tio.logs_dir / slug, snapshot)
+    outcome = prep.verify_review_handoff(
+        project_root, slug, locked_basis=tio._load_basis_unlocked(slug)
+    )
+    return replace(outcome, message=guidance)
+
+
+def _accepted_unselected_handoff(
+    project_root: Path, slug: str, tio: TicketIO
+) -> prep.ReviewPrepOutcome | None:
+    """Return immutable handoff material for an accepted Ticket without selection."""
+    from .acceptance_ledger import AcceptanceLedgerError
+
+    try:
+        _recover(tio, slug)
+        with tio._ticket_lock(slug, review_operation=True):
+            assert_idle(tio.logs_dir / slug)
+            _quiescent(tio, slug)
+            board = tio.find_ticket(slug)
+            if board is None or board["status"] != "review":
+                status = "missing" if board is None else board["status"]
+                return prep.ReviewPrepOutcome(
+                    "failed", f"review requires a review ticket, got {status}"
+                )
+            accepted = read_acceptance(tio.logs_dir / slug)
+            if accepted.kind == "corrupt":
+                return prep.ReviewPrepOutcome(
+                    "failed", f"Criteria Satisfaction Record is corrupt: {accepted.reason}"
+                )
+            if accepted.kind != "accepted" or read_entry(tio.logs_dir / slug) is not None:
+                return None
+            return _verified_accepted_handoff(project_root, slug, tio, accepted.snapshot)
+    except (
+        ReviewEntryError,
+        prep.ReviewPrepError,
+        AcceptanceLedgerError,
+        OSError,
+        ValueError,
+    ) as exc:
+        return prep.ReviewPrepOutcome("failed", f"{exc}; use acceptance recovery")
 
 
 def approve_review_command(
@@ -626,6 +691,10 @@ async def review_command(  # noqa: PLR0911 — each Ticket state has a distinct 
         return prep.ReviewPrepOutcome("failed", f"ticket {slug!r} not found")
     slug = Path(board["file"]).stem
     status = board["status"]
+    if status == "review":
+        accepted = _accepted_unselected_handoff(project_root, slug, tio)
+        if accepted is not None:
+            return accepted
     if request:
         if status != "blocked" and not (repair and status == "review"):
             return prep.ReviewPrepOutcome("failed", "--request requires a blocked ticket")
@@ -645,6 +714,13 @@ async def prepare_review(
     project_root: Path, slug: str, *, force: bool = False
 ) -> prep.ReviewPrepOutcome:
     """Prepare artifacts through the Ticket Board lifecycle facade."""
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    board = tio.find_ticket(slug)
+    if board is not None and board["status"] == "review":
+        canonical = Path(board["file"]).stem
+        accepted = _accepted_unselected_handoff(project_root, canonical, tio)
+        if accepted is not None:
+            return accepted
     return await prep.prepare_review(project_root, slug, force=force)
 
 
@@ -657,6 +733,13 @@ async def prepare_review_command(
     project_root: Path, slug: str, *, force: bool = False
 ) -> prep.ReviewPrepOutcome:
     """Run manual artifact preparation through the lifecycle facade."""
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    board = tio.find_ticket(slug)
+    if board is not None and board["status"] == "review":
+        canonical = Path(board["file"]).stem
+        accepted = _accepted_unselected_handoff(project_root, canonical, tio)
+        if accepted is not None:
+            return accepted
     return await prep.prepare_review_command(project_root, slug, force=force)
 
 
