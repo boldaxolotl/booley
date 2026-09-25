@@ -40,8 +40,7 @@ def _apply_pre_state_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     result = endpoint._pre_state_gate()
     if result is None:
         return None
-    if result.report_text:
-        print(result.report_text, file=sys.stderr, flush=True)
+    endpoint._publish_console_report(result)
     return result
 
 
@@ -49,6 +48,7 @@ def prepare_execution(
     endpoint: EndpointState,
 ) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
+    endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:
         return early_outcome
     endpoint.read_state()
@@ -58,6 +58,7 @@ def prepare_execution(
     if endpoint.name == "sim" and hasattr(flow, "prepare_simulation_endpoint"):
         simulation = flow.prepare_simulation_endpoint()
         if isinstance(simulation, EndpointOutcome):
+            endpoint._publish_console_report(simulation)
             return simulation
     display_target = endpoint._resolve_display_config()
     display_label = endpoint._resolve_display_label()

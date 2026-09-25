@@ -50,6 +50,7 @@ class EndpointContext(EndpointState):
         self,
         argv: list[str] | None,
     ) -> PreparedExecution | EndpointOutcome:
+        self._console_publication_requested = True
         self.parse_args(argv)
         return endpoint_session.prepare_execution(self)
 
