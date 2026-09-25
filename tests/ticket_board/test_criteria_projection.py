@@ -151,6 +151,34 @@ def test_coverage_metrics_share_one_campaign_but_keep_separate_verdicts(
     assert {change.met for change in changes} == {True, False}
 
 
+def test_coverage_projection_merges_mandatory_and_optional_metrics() -> None:
+    text = (
+        "---\nsummary: Close coverage gap\ntype: verification\nbranch: main\n"
+        "scope: [rtl/core.sv]\non_success: []\nCRITERIA_MANDATORY:\n"
+        "  COVERAGE:\n    sim_custom:\n      tests: [gap]\n"
+        "      metrics: {line: {min_pct: 70}, expression: {min_pct: 66}}\n"
+        "CRITERIA_OPTIONAL:\n  COVERAGE:\n    sim_custom:\n      tests: [gap]\n"
+        "      metrics: {branch: {min_pct: 51}}\n"
+        "---\n\n## Description\n\nClose the coverage gap.\n"
+    )
+    view = TicketAuthoringView(
+        lambda selector, _flow: f"acme:ip:core:1.0#{selector}",
+        lambda _target: ("gap",),
+    )
+    converted = convert_ticket_document(
+        text, TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert converted.document is not None, converted.diagnostics
+
+    projection = project_ticket_criteria(converted.document.spec)
+    keys = projection.aliases["coverage_sim_custom"]
+    rows = {
+        next(iter(projection.params[key]["metrics"])): projection.required[key] for key in keys
+    }
+
+    assert rows == {"line": True, "expression": True, "branch": False}
+
+
 def test_cycle_and_synthesis_baselines_reach_flow_state() -> None:
     text = (
         "---\nsummary: Compare measured targets\ntype: verification\nbranch: main\n"
