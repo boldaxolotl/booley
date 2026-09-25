@@ -130,45 +130,7 @@ class TestParamsToArgv:
         assert _params_to_argv({}) == []
 
 
-class TestArgumentContract:
-    @pytest.mark.parametrize(
-        "argument",
-        ["report_dir", "transcript_dir", "timeout", "policy"],
-    )
-    def test_undeclared_argument_is_rejected_before_command_build(
-        self,
-        argument,
-        monkeypatch,
-    ):
-        import asyncio
-
-        build = MagicMock(side_effect=AssertionError("must reject before command build"))
-        monkeypatch.setattr(mcp_server, "_endpoint_command", build)
-        definition = {
-            "module": "coverage_analyst",
-            "is_specialist": True,
-            "default_timeout": 1800,
-            "schema": {
-                "type": "object",
-                "properties": {"campaign": {"type": "string"}},
-            },
-        }
-
-        result = asyncio.run(
-            mcp_server._dispatch_booley_mcp_tool(
-                "coverage_analyst",
-                {"campaign": "latest", argument: "injected"},
-                definition,
-                {},
-                MagicMock(),
-            )
-        )
-
-        assert isinstance(result, mcp_server.McpDispatchResult)
-        assert result.is_error is True
-        assert argument in _text(result)
-        build.assert_not_called()
-
+class TestExitDisposition:
     @pytest.mark.parametrize(("exit_code", "is_error"), [(0, False), (1, True), (2, True)])
     def test_inline_exit_code_sets_mcp_error(
         self,

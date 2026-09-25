@@ -26,6 +26,7 @@ numeric coercions require :func:`math.isfinite`.
 
 from __future__ import annotations
 
+import argparse
 import math
 from collections.abc import Mapping
 from typing import Any, cast
@@ -39,6 +40,7 @@ __all__ = [
     "as_str",
     "as_str_list",
     "is_str_list",
+    "parse_positive_int_arg",
     "require_bool",
     "require_bool_value",
     "require_dict",
@@ -53,6 +55,17 @@ __all__ = [
 
 class BoundaryError(ValueError):
     """Raised by the strict ``require_*`` helpers when a boundary value is invalid."""
+
+
+def parse_positive_int_arg(value: str) -> int:
+    """Parse one strictly positive integer for an argparse ``type`` hook."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 # ---------------------------------------------------------------------------

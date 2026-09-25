@@ -24,6 +24,7 @@ from typing import Any
 
 from booley.agent_workspace.isolation import remove_shadow_package
 from booley.commit_policy import ALLOWED_TYPES, banned_phrases, stealth_enabled, validate_message
+from booley.core.boundary import parse_positive_int_arg
 from booley.core.models import AgentCallParams
 
 # Also re-exported for backward compatibility: tb_coder + tests import
@@ -57,17 +58,6 @@ TIER_RANK: dict[str, int] = {
 }
 
 VALID_TIERS = tuple(TIER_RANK.keys())
-
-
-def _positive_turns(value: str) -> int:
-    """Parse one strictly positive Specialist conversation-turn limit."""
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("must be a positive integer") from exc
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("must be a positive integer")
-    return parsed
 
 
 class Specialist(McpTool):
@@ -137,7 +127,7 @@ class Specialist(McpTool):
         )
         parser.add_argument(
             "--max-turns",
-            type=_positive_turns,
+            type=parse_positive_int_arg,
             default=self.default_max_turns,
             help="Maximum agent conversation turns",
         )

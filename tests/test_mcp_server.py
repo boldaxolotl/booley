@@ -770,9 +770,10 @@ class TestTryReadReport:
             )
         )
 
-        assert isinstance(result, list)
-        assert '"flow": "lint"' in result[0].text
-        assert "Dry-run planning failed: invalid target" in result[0].text
+        assert isinstance(result, self.mcp_server.McpDispatchResult)
+        assert result.is_error is True
+        assert '"flow": "lint"' in result.value[0].text
+        assert "Dry-run planning failed: invalid target" in result.value[0].text
 
 
 class TestJobManagerResultText:

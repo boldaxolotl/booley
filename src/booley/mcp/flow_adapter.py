@@ -6,22 +6,17 @@ from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
 from booley.mcp.schema_extractor import extract_schema
 
-_PUBLIC_SPECIALIST_DESTS = frozenset({"model", "max_turns"})
-
 
 def _specialist_schema(endpoint: Any) -> dict[str, Any]:
     """Expose supported per-call controls while keeping infrastructure private."""
     hook = getattr(endpoint, "mcp_schema", None)
-    schema = (
-        hook()
-        if callable(hook)
-        else extract_schema(endpoint._parser, public_dests=_PUBLIC_SPECIALIST_DESTS)
-    )
-    extracted = extract_schema(endpoint._parser, public_dests=_PUBLIC_SPECIALIST_DESTS)
+    extracted = extract_schema(endpoint._parser)
+    if not callable(hook):
+        return extracted
+    schema = hook()
     properties = schema.setdefault("properties", {})
-    for dest in _PUBLIC_SPECIALIST_DESTS:
+    for dest in ("model", "max_turns"):
         properties[dest] = extracted["properties"][dest]
-    properties["max_turns"].update(type="integer", minimum=1)
     schema["additionalProperties"] = False
     return schema
 

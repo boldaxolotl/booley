@@ -132,14 +132,12 @@ class TestFiltering:
         p.add_argument("--timeout", type=int)
         p.add_argument("--keep-me")
         schema = extract_schema(p)
-        # Only --keep-me should survive
-        assert "keep_me" in schema["properties"]
+        assert {"keep_me", "model", "max_turns"} <= schema["properties"].keys()
+        assert schema["additionalProperties"] is False
         for filtered in (
             "report_dir",
-            "model",
             "instruction",
             "transcript_dir",
-            "max_turns",
             "timeout",
             "help",
         ):
@@ -212,10 +210,14 @@ class TestRequired:
     ],
 )
 def test_specialist_input_contracts_are_unified(specialist, required, removed) -> None:
-    schema = flow_schema(specialist())
+    schema = extract_schema(specialist()._parser)
     properties = schema["properties"]
 
+    assert schema["additionalProperties"] is False
     assert required <= set(schema["required"])
+    assert properties["max_turns"]["type"] == "integer"
+    assert properties["max_turns"]["minimum"] == 1
+    assert "model" in properties
     assert {"scope", "steer", "dry_run"} <= set(properties)
     assert properties["steer"]["type"] == "array"
     assert properties["dry_run"]["type"] == "boolean"

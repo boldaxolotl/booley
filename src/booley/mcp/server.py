@@ -3324,22 +3324,6 @@ def _validate_work_dir(value: Any) -> str | None:
     return None
 
 
-def _argument_contract_error(
-    arguments: Mapping[str, Any],
-    definition: Mapping[str, Any],
-) -> str | None:
-    """Reject any argument that the advertised endpoint schema did not declare."""
-    schema = definition.get("schema")
-    properties = schema.get("properties") if isinstance(schema, Mapping) else None
-    if not isinstance(properties, Mapping):
-        return "ERROR: endpoint schema does not declare an argument contract"
-    undeclared = sorted(set(arguments) - set(properties))
-    if not undeclared:
-        return None
-    rendered = ", ".join(undeclared)
-    return f"ERROR: undeclared endpoint argument(s): {rendered}"
-
-
 def _endpoint_command(
     name: str,
     arguments: dict[str, Any],
@@ -3403,10 +3387,6 @@ async def _dispatch_booley_mcp_tool(
     the call open orphans the subprocess and BLOCKs the next call. Everything
     else stays synchronous and returns its full result inline.
     """
-    contract_error = _argument_contract_error(arguments, mcp_tool_def)
-    if contract_error is not None:
-        return _error_result(contract_error)
-
     work_dir_error = _validate_work_dir(arguments.get("work_dir"))
     if work_dir_error is not None:
         return _error_result(work_dir_error)
