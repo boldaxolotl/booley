@@ -314,7 +314,7 @@ def test_full_pruning_refuses_only_unrecognized_content(tmp_path, defect, relati
     if expected_code == 0:
         assert not invocation.exists()
     else:
-        assert relative in result.stderr
+        assert str(Path(relative)) in result.stderr
         assert selected.read_text(encoding="utf-8") == "do not delete"
         assert invocation.is_dir()
 

@@ -930,6 +930,15 @@ def test_complete_campaign_pruning_releases_exact_project_child_pair(
     assert list((reports / "sim" / ".pruned-1").iterdir()) == []
 
 
+def test_complete_campaign_pruning_accepts_windows_lock_sentinel(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    (store.root / ".lock").write_bytes(b"\0")
+
+    prune_invocation(reports, 1, project_data=project_data)
+
+    assert list((reports / "sim" / ".pruned-1").iterdir()) == []
+
+
 @pytest.mark.parametrize("nested", [False, True])
 def test_complete_campaign_pruning_rejects_unrecognized_campaign_file(
     tmp_path: Path, nested: bool

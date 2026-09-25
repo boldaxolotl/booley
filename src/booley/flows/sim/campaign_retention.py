@@ -331,7 +331,7 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
             expected.update(_campaign_coverage_files(coverage))
         lock = campaign / ".lock"
         if lock.exists():
-            if lock.read_bytes() != b"":
+            if lock.read_bytes() not in {b"", b"\0"}:
                 raise CampaignRetentionError(f"Campaign lock content is invalid: {lock}")
             expected.add(lock.absolute())
         for registry in ("entries", "retired", "released"):
