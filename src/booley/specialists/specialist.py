@@ -59,6 +59,17 @@ TIER_RANK: dict[str, int] = {
 VALID_TIERS = tuple(TIER_RANK.keys())
 
 
+def _positive_turns(value: str) -> int:
+    """Parse one strictly positive Specialist conversation-turn limit."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 class Specialist(McpTool):
     """Base for Specialists that invoke an LLM agent.
 
@@ -126,7 +137,7 @@ class Specialist(McpTool):
         )
         parser.add_argument(
             "--max-turns",
-            type=int,
+            type=_positive_turns,
             default=self.default_max_turns,
             help="Maximum agent conversation turns",
         )
