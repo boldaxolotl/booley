@@ -104,9 +104,11 @@ def _staged_files() -> list[str]:
 def _is_forbidden(filepath: str, acceptance_controls: set[str] | None = None) -> bool:
     """True for harness bookkeeping the agent must never commit."""
     normalized = normalize_acceptance_path(filepath)
-    acceptance_path = normalized in (acceptance_controls or set()) or is_static_acceptance_path(
-        normalized
-    )
+    controls = acceptance_controls or set()
+    acceptance_path = any(
+        normalized == control or normalized.startswith(control.rstrip("/") + "/")
+        for control in controls
+    ) or is_static_acceptance_path(normalized)
     if acceptance_path:
         return True
     if normalized in _FORBIDDEN_EXACT:

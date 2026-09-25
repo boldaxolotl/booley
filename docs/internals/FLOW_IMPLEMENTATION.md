@@ -157,7 +157,11 @@ executable Ticket formats are beyond the hard cutoff and must be recreated.
 
 The protected-path policy covers FuseSoC-selected Target declarations, the test
 registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
-discovery sentinels and Project routing. Exact Git
+discovery sentinels, Project routing, and the configured
+[Approved Waiver Set](../../src/booley/flows/sim/CONTEXT.md) together with every
+formal proof artifact referenced by an approval. This project-wide approval
+policy is protected for every sealed Ticket, including a Ticket without a
+Coverage Criterion. Exact Git
 comparisons intentionally block formatting-only control changes. RTL and testbench
 contents remain editable when Scope permits them.
 
@@ -961,7 +965,10 @@ preserved in structured output. Progress is observational and never resumed.
 Project-wide waiver configuration is `[coverage.waivers]` in the project-data
 `booley.toml`, with explicit `anchor` (`rtl_repository` or
 `project_data_repository`) and safe relative `directory`. Target window/hook
-configuration remains under `flow_options.booley.coverage`.
+configuration remains under `flow_options.booley.coverage`. Once a Ticket is
+sealed, approving, editing, adding, deleting, or replacing an approval file or
+one of its referenced formal proof artifacts requires `return-to-draft`; the new
+Ticket generation records a fresh protected-input baseline.
 
 The canonical Target directory holds the V3 `coverage.json` manifest, required
 `coverage-points.jsonl.gz`, `simulation.json`, `native/raw/`, `native/merged/`,
