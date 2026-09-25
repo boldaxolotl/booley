@@ -35,6 +35,7 @@ from booley.flows.sim.campaign_durability import (
     fsync_directory,
 )
 from booley.runtime.file_lock import nonblocking_file_lock
+from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.regular_file import open_regular_nofollow
 
 from .codec import (
@@ -158,7 +159,7 @@ def _replace_projection(path: Path, raw: bytes) -> None:
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(path)
+        replace_file(temporary, path)
         fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)

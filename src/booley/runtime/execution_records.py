@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -121,7 +122,7 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(path)
+        replace_file(temporary, path)
         _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
