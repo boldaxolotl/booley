@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,27 @@ def test_partial_project_data_repository_is_repaired(tmp_path: Path) -> None:
     init_cmd._init_project_git_repo(project_dir, InitContext(project_root=root))
 
     assert _git(project_dir, "symbolic-ref", "HEAD") == "refs/heads/main"
+
+
+def test_project_data_initialization_failure_remains_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project_dir = _outer_project(tmp_path, "main")
+
+    def fail_init(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if "init" in command:
+            raise subprocess.TimeoutExpired(command, 30)
+        return subprocess.CompletedProcess(command, 0, "main\n", "")
+
+    monkeypatch.setattr(init_cmd.subprocess, "run", fail_init)
+
+    init_cmd._init_project_git_repo(project_dir, InitContext(project_root=root))
+
+    assert "could not `git init`" in capsys.readouterr().out
+    assert not (project_dir / ".git").exists()
 
 
 def test_detached_outer_checkout_defers_project_data_initialization(

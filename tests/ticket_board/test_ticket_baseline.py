@@ -25,6 +25,7 @@ from booley.ticket_board import (
     basis_refresh,
     draft_transition,
     enqueue_publication,
+    ticket_repositories,
     workspace_ops,
 )
 from booley.ticket_board import (
@@ -56,6 +57,7 @@ from booley.ticket_board.ticket_baseline import (
     validate_ticket_view,
     worktree_for_ref,
 )
+from tests.harness.git_support import git_stdout as _git
 
 
 @pytest.fixture(autouse=True)
@@ -269,18 +271,6 @@ def test_packaged_ticket_template_has_no_generated_basis_fields() -> None:
     assert "base_sha:" not in template
 
 
-def _git(repository: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
 def _basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     root = tmp_path / "project"
     root.mkdir()
@@ -296,6 +286,32 @@ def _basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "initial")
     return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
+
+
+def test_current_branch_reads_attached_branch(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-b", "release/next")
+
+    assert ticket_repositories._current_branch(root) == "release/next"
+
+
+def test_current_branch_rejects_detached_checkout(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    _git(root, "add", "README.md")
+    _git(root, "commit", "-m", "initial")
+    _git(root, "checkout", "--detach")
+
+    with pytest.raises(
+        ticket_repositories.TicketWorkspaceError,
+        match="must have a checked-out base branch",
+    ):
+        ticket_repositories._current_branch(root)
 
 
 def _paired_basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
