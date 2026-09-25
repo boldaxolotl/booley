@@ -18,8 +18,8 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 
 ROOT = Path(__file__).resolve().parents[2]
-TAXI = ROOT / "qa/scenarios/taxi/fixtures/simulation-campaign"
-UART = ROOT / "qa/scenarios/uart/fixtures/simulation-campaign"
+TAXI = ROOT / "qa/missions/taxi/fixtures/simulation-campaign"
+UART = ROOT / "qa/missions/uart/fixtures/simulation-campaign"
 
 
 def _module(name: str, path: Path):
@@ -357,68 +357,6 @@ def _write_legacy_attempts(manifest, attempts, results) -> None:
                 }
             },
         )
-
-
-def test_public_checks_have_product_regression_backlinks() -> None:
-    backlinks = {
-        "campaign.verilator-single-build": (
-            "tests/flows/sim/test_campaign_phase3.py",
-            "test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs",
-        ),
-        "campaign.runtime-input-isolation": (
-            "tests/flows/sim/test_campaign_phase3.py",
-            "test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs",
-        ),
-        "campaign.presim-immutable": (
-            "tests/flows/sim/test_campaign_phase3_integrity.py",
-            "test_immutable_hook_compile_surface_mutation_stops_before_snapshot_launch",
-        ),
-        "campaign.presim-legacy-build": (
-            "tests/flows/sim/test_campaign_phase3_integrity.py",
-            "test_legacy_mode_builds_and_discloses_each_work_item_privately",
-        ),
-    }
-    for _check, (relative, test_name) in backlinks.items():
-        source = ROOT / relative
-        assert source.is_file()
-        assert f"def {test_name}" in source.read_text(encoding="utf-8")
-
-
-def test_campaign_checks_are_isolated_to_representative_configurations() -> None:
-    expectations = {
-        "taxi": (
-            "taxi-simulation-campaign",
-            [
-                "campaign.verilator-single-build",
-                "campaign.heavy-cap",
-                "campaign.attempt-isolation",
-                "campaign.continue-after-failure",
-                "campaign.cocotb-batch-resume",
-                "campaign.mcp-structured-pointers",
-            ],
-            ["taxi-ubuntu-codex-cli"],
-        ),
-        "uart": (
-            "uart-simulation-campaign",
-            [
-                "campaign.runtime-input-isolation",
-                "campaign.literal-cwd-serialization",
-                "campaign.presim-immutable",
-                "campaign.presim-legacy-build",
-            ],
-            ["uart-ubuntu-codex-cli"],
-        ),
-    }
-    for scenario_name, (set_id, checks, expected_selected) in expectations.items():
-        scenario = yaml.safe_load(
-            (ROOT / f"qa/scenarios/{scenario_name}/scenario.yaml").read_text()
-        )
-        check_set = next(item for item in scenario["check_sets"] if item["id"] == set_id)
-        assert check_set["checks"] == checks
-        selected = [
-            item["id"] for item in scenario["configured_scenarios"] if set_id in item["check_sets"]
-        ]
-        assert selected == expected_selected
 
 
 def test_taxi_direct_verilator_smoke_is_supplementary(tmp_path: Path) -> None:

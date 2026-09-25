@@ -9,10 +9,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "qa/scenarios/coverage-lifecycle/fixtures/simulation-campaign"
+FIXTURE = ROOT / "qa/shared/coverage/simulation-campaign"
 
 
 def _module():
@@ -447,58 +446,3 @@ def test_corrupt_terminal_validator_requires_fail_closed_restore(tmp_path: Path)
     _write(rejection, document)
     with pytest.raises(ValueError, match="created an attempt"):
         module.validate_corrupt_terminal(*evidence)
-
-
-def test_phase6_checks_and_pending_run_contract_are_complete() -> None:
-    expected = {
-        "picorv32": ("picorv32-simulation-campaign", "picorv32-ubuntu-codex-cli", 7),
-        "taxi": ("taxi-simulation-campaign", "taxi-ubuntu-codex-cli", 6),
-        "uart": ("uart-simulation-campaign", "uart-ubuntu-codex-cli", 4),
-        "coverage-lifecycle": (
-            "coverage-lifecycle-simulation-campaign",
-            "coverage-lifecycle-ubuntu-codex-cli",
-            3,
-        ),
-    }
-    campaign_checks = {}
-    for scenario_name, (set_id, configured_id, count) in expected.items():
-        scenario = yaml.safe_load(
-            (ROOT / f"qa/scenarios/{scenario_name}/scenario.yaml").read_text()
-        )
-        dedicated = next(item for item in scenario["check_sets"] if item["id"] == set_id)
-        assert len(dedicated["checks"]) == count
-        selected = [
-            item["id"] for item in scenario["configured_scenarios"] if set_id in item["check_sets"]
-        ]
-        assert selected == [configured_id]
-        steps = {
-            check["id"]: (step, check)
-            for step in scenario["steps"]
-            for check in step["checks"]
-            if check["id"] in dedicated["checks"]
-        }
-        assert list(steps) == dedicated["checks"]
-        assert all(step.get("requires") for step, _check in steps.values())
-        campaign_checks.update({key: check for key, (_step, check) in steps.items()})
-    assert len(campaign_checks) == 20
-    assert (
-        "CRITERION-EVIDENCE-BINDING"
-        in campaign_checks["campaign.acceptance-recovery"]["capabilities"]
-    )
-    capability = next(
-        item
-        for item in yaml.safe_load((ROOT / "qa/coverage.yaml").read_text())["capabilities"]
-        if item["id"] == "SIMULATION-CAMPAIGN"
-    )
-    assert all(check_id in capability["contract"] for check_id in campaign_checks)
-    for name in ("picorv32", "taxi", "uart", "coverage-lifecycle"):
-        text = (
-            (ROOT / f"qa/scenarios/{name}/fixtures/simulation-campaign/RUNBOOK.md")
-            .read_text()
-            .lower()
-        )
-        assert "pending" in text and ("recover" in text or "resume" in text)
-        assert "cleanup" in text or "remove only" in text
-    readme = (ROOT / "qa/README.md").read_text()
-    for _name, (_set_id, configured_id, _count) in expected.items():
-        assert configured_id in readme

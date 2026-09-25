@@ -9,7 +9,7 @@ import pytest
 
 
 def test_transport_only_evidence_cannot_admit_candidate(monkeypatch):
-    evaluator = Path(__file__).resolve().parents[2] / "qa/scenarios/uart/evaluator"
+    evaluator = Path(__file__).resolve().parents[2] / "qa/missions/uart/evaluator"
     monkeypatch.syspath_prepend(str(evaluator))
     runner = importlib.import_module("run")
     results = {
@@ -25,7 +25,7 @@ def test_transport_only_evidence_cannot_admit_candidate(monkeypatch):
 
 @pytest.mark.parametrize("changed", [False, True])
 def test_control_publication_requires_stable_evaluator(monkeypatch, tmp_path, changed):
-    evaluator = Path(__file__).resolve().parents[2] / "qa/scenarios/uart/evaluator"
+    evaluator = Path(__file__).resolve().parents[2] / "qa/missions/uart/evaluator"
     monkeypatch.syspath_prepend(str(evaluator))
     controls = importlib.import_module("controls")
     identity = iter(["before", "after" if changed else "before"])
@@ -56,7 +56,7 @@ def test_control_publication_requires_stable_evaluator(monkeypatch, tmp_path, ch
 
 
 def test_successful_system_loopback_observations_are_serializable(monkeypatch):
-    evaluator = Path(__file__).resolve().parents[2] / "qa/scenarios/uart/evaluator"
+    evaluator = Path(__file__).resolve().parents[2] / "qa/missions/uart/evaluator"
     monkeypatch.syspath_prepend(str(evaluator))
     exercises = importlib.import_module("exercises")
 
@@ -93,7 +93,7 @@ def test_successful_system_loopback_observations_are_serializable(monkeypatch):
 
 
 def test_corrupt_control_sweep_retains_every_subcase(monkeypatch):
-    evaluator = Path(__file__).resolve().parents[2] / "qa/scenarios/uart/evaluator"
+    evaluator = Path(__file__).resolve().parents[2] / "qa/missions/uart/evaluator"
     monkeypatch.syspath_prepend(str(evaluator))
     exercises = importlib.import_module("exercises")
     calls = []
