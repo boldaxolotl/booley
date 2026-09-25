@@ -8,7 +8,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.targets.catalog import TargetCatalog
+from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, immutable_mapping
 
 from .coverage_acceptance import CoverageAcceptance
@@ -191,17 +191,18 @@ def prepare_coverage_invocation(
     request: CoverageInvocationRequest,
     project_context: CoverageProjectContext,
     *,
-    catalog: TargetCatalog | None = None,
-    handles: tuple[TargetHandle, ...] | None = None,
+    selection: PreparedTargetSelection | None = None,
 ) -> CoveragePreflightResult:
     """Resolve the complete invocation without EDA or artifact/build mutations."""
-    if (catalog is None) != (handles is None):
-        raise ValueError("prepared coverage selection requires both catalog and handles")
-    if catalog is None:
+    if selection is None:
         try:
             catalog = TargetCatalog.build(project_context.rtl_repository)
         except (FuseSocError, ValueError, OSError) as exc:
             return CoveragePreflightResult(None, (_finding("COV_TARGET_INVALID", str(exc)),))
+        handles = None
+    else:
+        catalog = selection.catalog
+        handles = selection.handles
     targets, findings, seen = [], [], set()
     selections = (
         tuple((handle.selector, handle) for handle in handles)

@@ -9,6 +9,7 @@ import re
 import sys
 from pathlib import Path
 
+from booley.core.boundary import require_str_value
 from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     ExecutionResult,
@@ -127,8 +128,8 @@ def normalize_target_arg(args: argparse.Namespace) -> None:
         args.target = ""
     elif isinstance(value, list):
         args.target = ",".join(value)
-    elif not isinstance(value, str):
-        raise ValueError("target must be a Target selector string")
+    else:
+        args.target = require_str_value(value, field="target", allow_empty=True)
 
 
 def execute_cli(endpoint, argv: list[str] | None = None) -> ExecutionResult:

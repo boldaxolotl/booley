@@ -42,6 +42,35 @@ class _OperationalState:
 
 
 @dataclass(frozen=True)
+class PreparedTargetSelection:
+    """One catalog snapshot and its ordered selection for an authored request."""
+
+    catalog: TargetCatalog
+    handles: tuple[TargetHandle, ...]
+    target_arg: str
+
+    @classmethod
+    def resolve(
+        cls,
+        project_root: Path | str,
+        target_arg: str,
+        *,
+        for_flow: str | None = None,
+    ) -> PreparedTargetSelection:
+        """Resolve an authored selection once against one catalog snapshot."""
+        catalog = TargetCatalog.build(project_root)
+        handles = catalog.select_many(target_arg, for_flow=for_flow)
+        return cls(catalog, handles, target_arg)
+
+    def matches(self, project_root: Path | str, target_arg: str) -> bool:
+        """Return whether this selection belongs to the same authored request."""
+        return (
+            self.catalog.project_root == Path(project_root).resolve()
+            and self.target_arg == target_arg
+        )
+
+
+@dataclass(frozen=True)
 class TargetCatalog:
     """One immutable Target declaration snapshot for one Project checkout."""
 

@@ -14,6 +14,7 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
+from booley.flows.endpoint_cli import normalize_target_arg
 from booley.flows.flow_session import FlowSession
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.invocation import BudgetPlan, resolve_timeout_ms
@@ -53,6 +54,13 @@ def test_optional_builtin_target_absence_and_authored_punctuation_stay_scalar() 
     assert SimulateFlow().parse_args([]).target == ""
     assert SimulateFlow().parse_args(["--target", ""]).target == ""
     assert SimulateFlow().parse_args(["--target", " ", "--target", ","]).target == " ,,"
+
+
+def test_target_normalization_uses_strict_boundary_validation() -> None:
+    args = argparse.Namespace(target=1)
+
+    with pytest.raises(BoundaryError, match="target must be a string"):
+        normalize_target_arg(args)
 
 
 @pytest.mark.parametrize(

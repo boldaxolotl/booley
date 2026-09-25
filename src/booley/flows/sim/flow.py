@@ -2246,7 +2246,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     else DevelopmentState()
                 ),
             )
-            handles = self._selected_target_handles()
+            selection = self._selected_target_selection()
             prepared = prepare_coverage_invocation(
                 CoverageInvocationRequest(
                     tuple(self._requested_targets()),
@@ -2254,8 +2254,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     trace=self.args.trace,
                 ),
                 context,
-                catalog=self._target_catalog,
-                handles=handles,
+                selection=selection,
             )
         except (ValueError, OSError, fusesoc_registry.FuseSocError) as exc:
             return EndpointOutcome(exit_code=2, report_text=f"Coverage Preflight: {exc}")
