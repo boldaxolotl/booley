@@ -24,11 +24,14 @@ on:
         type: boolean
         default: false
       riscv_measurement:
-        description: RISC-V timing arm (cold disables BuildKit cache)
+        description: >-
+          RISC-V timing arm (automatic = path-gated; baseline, warm, and cold
+          always build the RISC-V image; cold disables BuildKit cache)
         type: choice
         default: automatic
         options:
           - automatic
+          - baseline
           - warm
           - cold
 
@@ -90,6 +93,7 @@ jobs:
           --event-name "${EVENT_NAME}"
           --windows-shard-count "${{ inputs.windows_shard_count || '6' }}"
           --windows-shard-benchmark "${{ inputs.windows_shard_benchmark || false }}"
+          --riscv-measurement "${{ inputs.riscv_measurement || 'automatic' }}"
           --github-output "${GITHUB_OUTPUT}" --force-all "${FORCE_ALL}"
 
   release-semantic:

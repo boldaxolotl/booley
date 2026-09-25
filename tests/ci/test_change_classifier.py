@@ -78,6 +78,7 @@ def _run_classifier(
     event_name: str | None = None,
     windows_shard_count: int = 4,
     windows_shard_benchmark: bool = False,
+    riscv_measurement: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     output = repo / "github-output.txt"
     command = [
@@ -100,6 +101,8 @@ def _run_classifier(
     ]
     if event_name is not None:
         command.extend(("--event-name", event_name))
+    if riscv_measurement is not None:
+        command.extend(("--riscv-measurement", riscv_measurement))
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     return result, output
 
@@ -113,6 +116,7 @@ def _classify(
     event_name: str | None = None,
     windows_shard_count: int = 4,
     windows_shard_benchmark: bool = False,
+    riscv_measurement: str | None = None,
 ) -> dict[str, str]:
     result, output = _run_classifier(
         repo,
@@ -122,6 +126,7 @@ def _classify(
         event_name=event_name,
         windows_shard_count=windows_shard_count,
         windows_shard_benchmark=windows_shard_benchmark,
+        riscv_measurement=riscv_measurement,
     )
     assert result.returncode == 0, result.stderr
     return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
@@ -220,6 +225,54 @@ def test_windows_shard_benchmark_rejects_other_events(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "requires workflow_dispatch" in result.stderr
+
+
+@pytest.mark.parametrize("arm", ["baseline", "warm", "cold"])
+def test_dispatched_riscv_measurement_builds_riscv_image_without_riscv_changes(
+    tmp_path: Path, arm: str
+) -> None:
+    """A measurement dispatch on main must yield a sample even when HEAD^..HEAD is unrelated."""
+    repo, base = _repository(tmp_path)
+    _write(repo, "docs/unrelated.md")
+    head = _commit(repo, "unrelated docs change")
+
+    outputs = _classify(
+        repo, base, head, force_all=True, event_name="workflow_dispatch", riscv_measurement=arm
+    )
+
+    assert outputs["riscv_image"] == "true"
+    assert outputs["stable_base"] == "false"
+    assert _jobs(outputs)["bwave-smoke"] is True
+
+
+def test_automatic_riscv_measurement_keeps_path_gating(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "docs/unrelated.md")
+    head = _commit(repo, "unrelated docs change")
+
+    outputs = _classify(
+        repo,
+        base,
+        head,
+        force_all=True,
+        event_name="workflow_dispatch",
+        riscv_measurement="automatic",
+    )
+
+    assert outputs["riscv_image"] == "false"
+
+
+def test_riscv_measurement_arm_rejects_non_dispatch_events(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "docs/unrelated.md")
+    head = _commit(repo, "unrelated docs change")
+
+    result, _output = _run_classifier(
+        repo, base, head, event_name="push", riscv_measurement="cold"
+    )
+
+    assert result.returncode == 2
+    assert "require workflow_dispatch" in result.stderr
 
 
 def test_pull_request_uses_matching_merge_parent_instead_of_stale_event_base(

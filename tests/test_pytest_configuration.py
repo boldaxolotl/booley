@@ -293,6 +293,24 @@ def test_standard_size_ceiling_runs_without_riscv_gate() -> None:
     assert "--limits .github/contracts/image-size-limits.toml" in size_contract["run"]
 
 
+def test_riscv_measurement_dispatch_reaches_the_classifier() -> None:
+    """Explicit timing arms must force the RISC-V lane, not only tune its cache."""
+    workflow = _test_workflow()
+    dispatch = workflow[True]["workflow_dispatch"]["inputs"]["riscv_measurement"]
+    classify_step = next(
+        step
+        for step in workflow["jobs"]["changes"]["steps"]
+        if step.get("name") == "Classify changed paths"
+    )
+
+    assert dispatch["options"] == ["automatic", "baseline", "warm", "cold"]
+    assert dispatch["default"] == "automatic"
+    assert (
+        "--riscv-measurement \"${{ inputs.riscv_measurement || 'automatic' }}\""
+        in classify_step["run"]
+    )
+
+
 def test_riscv_image_lane_is_path_gated() -> None:
     """The slow derived-image contract runs only when its owning inputs change."""
     workflow = _test_workflow()
