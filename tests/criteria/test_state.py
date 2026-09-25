@@ -119,6 +119,20 @@ class TestDevelopmentStateLoadSave:
         assert st.slug == ""
         assert st.criteria == {}
 
+    def test_fresh_criteria_initialization_replaces_stale_flow_aliases(self):
+        state = DevelopmentState()
+        state.init_criteria(
+            {"old": True},
+            flow_key_aliases={"coverage_old": ["old"]},
+        )
+
+        state.init_criteria(
+            {"new": True},
+            flow_key_aliases={"coverage_new": ["new"]},
+        )
+
+        assert state.flow_key_aliases == {"coverage_new": ["new"]}
+
     def test_load_ignores_legacy_verification_lanes(self, tmp_path: Path):
         path = tmp_path / "state.json"
         path.write_text(

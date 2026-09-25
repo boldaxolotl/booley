@@ -9,10 +9,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.criteria.categories import verification_fingerprint_categories
-from booley.criteria.state import CriterionChange, DevelopmentState
+from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentState
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.flows.execution_persistence import AcceptanceRecorder
+
+from .coverage_projection import project_coverage_criterion
 
 if TYPE_CHECKING:
     from .coverage_campaign import CoverageCampaign
@@ -86,8 +88,16 @@ def _apply_coverage_criterion(
     }
     aliases = shadow.flow_key_aliases.get(plan.criterion_key, [])
     if not aliases:
+        met, projected_detail = project_coverage_criterion(
+            shadow.criteria.get(plan.criterion_key, CriterionEntry()),
+            detail["evaluation"],
+            detail,
+            atomic=False,
+        )
         return shadow.set_criterion(
-            plan.criterion_key, campaign.evaluation["status"] == "pass", detail=detail
+            plan.criterion_key,
+            met,
+            detail=projected_detail,
         )
     return _apply_coverage_aliases(shadow, aliases, detail)
 
@@ -95,25 +105,20 @@ def _apply_coverage_criterion(
 def _apply_coverage_aliases(
     shadow: DevelopmentState, aliases: list[str], detail: dict[str, Any]
 ) -> list[CriterionChange]:
-    metrics = {
-        item.get("metric"): item.get("verdict")
-        for item in detail["evaluation"].get("metrics", [])
-        if isinstance(item, dict)
-    }
-    valid_suite = detail["evaluation"].get("suite", {}).get("status") == "match" and not detail[
-        "evaluation"
-    ].get("diagnostics")
-    changes = []
+    evaluation = detail["evaluation"]
+    if not isinstance(evaluation, dict):
+        raise TypeError("Coverage Campaign evaluation is not a mapping")
+    changes: list[CriterionChange] = []
     for key in aliases:
         entry = shadow.criteria.get(key)
         if entry is None:
             continue
-        metric = next(iter(entry.params.get("metrics", {})), None)
+        met, projected_detail = project_coverage_criterion(entry, evaluation, detail, atomic=True)
         changes.extend(
             shadow.set_criterion(
                 key,
-                bool(valid_suite and metrics.get(metric) == "pass"),
-                detail={**detail, "criterion_metric": metric},
+                met,
+                detail=projected_detail,
             )
         )
     return changes

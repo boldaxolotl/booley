@@ -427,8 +427,9 @@ class DevelopmentState:
         }
         if category_overrides:
             self.category_map.update(category_overrides)
-        if flow_key_aliases:
-            self.flow_key_aliases.update(flow_key_aliases)
+        self.flow_key_aliases = {
+            key: list(aliases) for key, aliases in (flow_key_aliases or {}).items()
+        }
         if strict is not None:
             self.strict_criteria = strict
 

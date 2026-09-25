@@ -27,6 +27,7 @@ from booley.flows.sim.campaign_reports import (
     target_report_directory,
     write_compatibility_projection,
 )
+from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_reference import (
     ResolvedCoverageCampaign,
     authenticate_coverage_campaign_owner,
@@ -294,13 +295,20 @@ def _coverage_changes(
     if not keys:
         return []
     detail = _coverage_detail(outcome, resolved, public_path)
+    evaluation = campaign.evaluation
     changes: list[CriterionChange] = []
     for key in keys:
+        met, projected_detail = project_coverage_criterion(
+            shadow.criteria[key],
+            evaluation,
+            detail,
+            atomic=key != direct,
+        )
         changes.extend(
             shadow.set_criterion(
                 key,
-                campaign.evaluation["status"] == "pass",
-                detail=detail,
+                met,
+                detail=projected_detail,
             )
         )
     return changes
