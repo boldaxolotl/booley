@@ -74,7 +74,7 @@ quality = [
     "ruff==0.16.7",
 ]
 mutation = [
-    "mutmut==3.7.0",
+    "mutmut==3.8.0",
 ]
 dev = [
     # The repository-owned confidential vocabulary uses AES-GCM in its local
@@ -98,7 +98,7 @@ dev = [
     # the quality extra repeats these pins for a smaller hosted install.
     "diff-cover==10.5.1",
     "pyright==1.1.414",
-    "mutmut==3.7.0",
+    "mutmut==3.8.0",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
