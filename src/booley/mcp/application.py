@@ -45,6 +45,14 @@ class McpToolPayload:
     is_error: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class McpDispatchResult:
+    """Application-dispatch result with an explicit MCP error disposition."""
+
+    value: object
+    is_error: bool
+
+
 class UnknownMcpToolError(ValueError):
     """The caller named a tool outside the advertised catalog."""
 
@@ -151,6 +159,10 @@ def _format_validation_error(error: ValidationError) -> str:
 
 def _normalize_payload(result: object) -> McpToolPayload:
     """Normalize the server's historical list/tuple results at the application seam."""
+    is_error = False
+    if isinstance(result, McpDispatchResult):
+        is_error = result.is_error
+        result = result.value
     structured: dict[str, Any] | None = None
     blocks = result
     if isinstance(result, tuple):
@@ -165,4 +177,8 @@ def _normalize_payload(result: object) -> McpToolPayload:
         if not isinstance(text, str):
             raise TypeError("Booley MCP tools currently support text content only")
         normalized.append(McpTextBlock(text))
-    return McpToolPayload(content=tuple(normalized), structured_content=structured)
+    return McpToolPayload(
+        content=tuple(normalized),
+        structured_content=structured,
+        is_error=is_error,
+    )
