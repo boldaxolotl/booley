@@ -11,7 +11,9 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from booley.harness import init_cmd
 from booley.harness.models import TicketContext
+from booley.harness.setup.common import InitContext
 from booley.harness.setup.workspace import run as prepare_ticket_workspace
 from booley.runtime import worktree_relocation
 from booley.runtime.project_dir import reset_cache
@@ -319,6 +321,32 @@ def _paired_basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
 
 
+def _initialized_paired_basis_project(
+    tmp_path: Path,
+    branch: str,
+) -> tuple[Path, Path, TicketIO]:
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-b", branch)
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    (root / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "initial outer")
+
+    project_dir = root / ".booley_project"
+    (project_dir / "tickets" / "board" / "drafts").mkdir(parents=True)
+    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    init_cmd._init_project_git_repo(project_dir, InitContext(project_root=root))
+    _git(project_dir, "config", "user.name", "Test")
+    _git(project_dir, "config", "user.email", "test@example.invalid")
+    _git(project_dir, "add", "-A")
+    _git(project_dir, "commit", "-m", "initial project")
+    return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
+
+
 def test_basis_control_discovery_materializes_historical_submodule_pin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -423,6 +451,47 @@ def test_create_persists_inferred_paired_destination_ref(tmp_path: Path) -> None
     assert fields["project_destination_ref"] == "refs/heads/main"
 
 
+@pytest.mark.parametrize("branch", ["main", "release/next"])
+def test_first_paired_ticket_lifecycle_uses_initialized_project_data_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str,
+) -> None:
+    from booley.ticket_board.cli import main
+
+    root, project_dir, tio = _initialized_paired_basis_project(tmp_path, branch)
+    ticket = _create_v2_ticket(
+        tio,
+        "first-paired-ticket",
+        TicketFileSpec(
+            summary="Use initialized paired destination",
+            ticket_type="feature",
+            branch=branch,
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+
+    assert ticket is not None
+    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    assert fields["project_destination_ref"] == f"refs/heads/{branch}"
+    monkeypatch.chdir(root)
+    assert main(["validate-ticket", str(ticket), "--check-git"]) == 0
+    assert tio.enqueue_ticket("first-paired-ticket") is True
+    basis = tio.load_basis("first-paired-ticket")
+    assert basis.participant("outer").destination_ref == f"refs/heads/{branch}"
+    assert basis.participant("project").destination_ref == f"refs/heads/{branch}"
+    assert (
+        "refs/heads/master"
+        not in _git(
+            project_dir,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+        ).splitlines()
+    )
+
+
 def test_paired_ticket_load_ignores_authored_project_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -454,7 +523,10 @@ def test_paired_ticket_load_ignores_authored_project_override(
     ).ticket_identity() == (basis.ticket_identity())
 
 
-def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Path) -> None:
+def test_create_rejects_missing_inferred_paired_destination_branch(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     _root, project_dir, tio = _paired_basis_project(tmp_path)
 
     ticket = _create_v2_ticket(
@@ -471,6 +543,9 @@ def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Pat
 
     assert ticket is None
     assert not (project_dir / "tickets/board/drafts/missing-paired-destination.md").exists()
+    error = capsys.readouterr().err
+    assert "refs/heads/release" in error
+    assert "project_destination_ref" in error
 
 
 def test_distinct_paired_destinations_are_preserved_through_enqueue(tmp_path: Path) -> None:

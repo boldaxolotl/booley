@@ -429,19 +429,52 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
         return
     if (target / ".git").exists():
         return  # already its own repo — leave it be
-    if ctx.check_only:
-        warn(f"would `git init` {target} (stealth persistence, ADR 0036)")
+    branch, detail = _current_symbolic_branch(ctx.project_root)
+    if branch is None:
+        warn(
+            f"could not initialize inner git repo at {target}: outer Project "
+            f"branch is unavailable ({detail}); attach the outer checkout to a branch "
+            "and rerun `booley init`"
+        )
         return
-    result = subprocess.run(
-        ["git", "-C", str(target), "init", "-q"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    if ctx.check_only:
+        warn(f"would `git init -b {branch}` {target} (stealth persistence, ADR 0036)")
+        return
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(target), "init", "-q", "-b", branch],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        warn(f"could not `git init` {target} on {branch}: {exc}")
+        return
     if result.returncode == 0:
-        ok(f"initialized inner git repo at {target} (versions stealth config/cores)")
+        ok(f"initialized inner git repo at {target} on {branch} (versions stealth config/cores)")
     else:
         warn(f"could not `git init` {target}: {result.stderr.strip()}")
+
+
+def _current_symbolic_branch(project_root: Path) -> tuple[str | None, str]:
+    """Return the attached outer branch, or bounded Git failure detail."""
+    command = ["git", "-C", str(project_root), "symbolic-ref", "--quiet", "--short", "HEAD"]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, str(exc)
+    branch = result.stdout.strip()
+    if result.returncode == 0 and branch:
+        return branch, ""
+    detail = (result.stderr or result.stdout).strip()
+    return None, detail or "detached HEAD or non-Git directory"
 
 
 def _step_core_projections(ctx: InitContext) -> None:

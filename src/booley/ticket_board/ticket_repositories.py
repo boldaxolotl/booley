@@ -108,7 +108,8 @@ class TicketWorkspace:
             detail = (result.stderr or result.stdout).strip()
             suffix = f": {detail}" if detail else ""
             raise TicketWorkspaceError(
-                f"paired project destination {ref!r} does not exist as a local branch{suffix}"
+                f"paired project destination {ref!r} does not exist as a local branch{suffix}; "
+                "set project_destination_ref explicitly"
             )
         return ref
 

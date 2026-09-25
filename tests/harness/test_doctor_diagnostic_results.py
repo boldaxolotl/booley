@@ -106,6 +106,7 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     trace(readiness, "load_project", "config")
     trace(doctor, "_check_upgrade_review", "upgrade")
     trace(readiness, "check_guidance", "guidance")
+    trace(doctor, "_check_project_data_destination_branch", "project-data-branch")
     trace(doctor, "_check_worktree_prune_guard", "prune")
     trace(doctor, "_check_line_endings", "line-endings")
     trace(doctor, "_check_worktree_core_shadow_guard", "shadow")
@@ -116,6 +117,7 @@ def test_project_observations_and_repairs_keep_the_existing_order(
         "config",
         "upgrade",
         "guidance",
+        "project-data-branch",
         "prune",
         "line-endings",
         "shadow",
