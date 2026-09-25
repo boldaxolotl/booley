@@ -742,7 +742,7 @@ Issue [#660](https://github.com/boldaxolotl/booley/issues/660) gives commit poli
 shared dependency-light owner and moves Doctor-stamp resolution to Harness
 composition. Compared with `51a59016673f7c76d56efda8028ebcf932ce62f3`, the source
 changes from 548 modules, 2,830 dependency facts, and 2,345 unique edges to 552
-modules, 2,843 facts, and 2,353 edges. Direct mutual package pairs fall from eight
+modules, 2,842 facts, and 2,354 edges. Direct mutual package pairs fall from eight
 to six by removing only `dev_support <-> runtime` and `feedback <-> harness`.
 
 The nontrivial SCCs remain the 11-package execution group and the two-package

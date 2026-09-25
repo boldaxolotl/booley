@@ -192,7 +192,6 @@ def stealth_policy(project_root: Path | None = None) -> StealthPolicy:
             raw_words,
         )
         words = tuple(_DEFAULT_BANNED_PHRASES)
-
     raw_cap = section.get("max_body_lines")
     try:
         cap = (
@@ -207,7 +206,6 @@ def stealth_policy(project_root: Path | None = None) -> StealthPolicy:
             "[stealth] max_body_lines must be a non-negative integer, got %r — ignoring",
             raw_cap,
         )
-
     raw_authors = section.get("allowed_authors")
     if raw_authors is None:
         authors: tuple[str, ...] = ()

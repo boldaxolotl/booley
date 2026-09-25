@@ -107,4 +107,5 @@ def test_materialize_reuses_one_explicit_environment(tmp_path: Path, monkeypatch
     monkeypatch.setattr(materialize, "_render_proofs", record_environment)
 
     assert materialize.materialize_attachments(project_dir, [source], env=environment) == (source,)
-    assert observed == [environment, environment]
+    assert len(observed) == 2
+    assert all(item is environment for item in observed)
