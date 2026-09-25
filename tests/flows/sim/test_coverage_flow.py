@@ -182,16 +182,24 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     flow = SimulateFlow(
         coverage_execution=lambda handle, options: NativeExecution(missing=handle.name == "sim_1")
     )
-    result = flow.execute(
-        SimRequest(
-            target="sim_2,sim_0,sim_1",
-            work_dir=tmp_path,
-            coverage=True,
-            report_dir=tmp_path / "reports",
-        )
+    request = flow.parse_args(
+        [
+            "--target",
+            "sim_2",
+            "--target",
+            "sim_0,sim_1",
+            "--work-dir",
+            str(tmp_path),
+            "--coverage",
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
     )
+    result = flow.execute(request)
     assert result.exit_code == 2
-    assert list(result.outcome.detail["targets"]) == ["sim_0", "sim_1", "sim_2"]
+    assert request.target == "sim_2,sim_0,sim_1"
+    assert list(result.outcome.detail["targets"]) == ["sim_2", "sim_0", "sim_1"]
+    assert list(result.outcome.detail["campaigns"]) == ["sim_2", "sim_0", "sim_1"]
     assert result.outcome.detail["targets"]["sim_2"]["collection"] == "complete"
 
 
