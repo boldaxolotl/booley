@@ -71,6 +71,7 @@ Finding entry:
 - Area: <area slug>   Kind: bug | doc | friction | qa-bug | wish   Severity: high | medium | low
 - Repro: <exact commands / steps>
 - Expected: <what docs or common sense say>   Actual: <what happened>
+- Output: <short excerpt that demonstrates the actual behavior>
 - Workaround: <what you did to continue, or "none">
 - Evidence: `evidence/<area>/<file>`
 ```

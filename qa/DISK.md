@@ -10,8 +10,9 @@ one else can be relying on. Run it at the start of every QA run.
    - Dangling images: `docker image prune -f`.
    - Stopped containers that Booley created: list them with
      `docker ps -a --filter status=exited --filter status=created --filter status=dead --format '{{.ID}} {{.Image}} {{.Names}} {{.Labels}}'`
-     and remove only those whose labels or image carry an `io.booley.` or
-     `booley.` key, or that an earlier QA run's `resources.md` lists.
+     and remove only those whose container name begins with `booley-`, whose
+     labels or image carry an `io.booley.` or `booley.` key, or that an earlier
+     QA run's `resources.md` lists.
 3. **Report the rest.** Under the artifact root, list earlier QA run
    directories with their sizes in `log.md`. They may hold untriaged findings;
    the maintainer decides when to delete them.

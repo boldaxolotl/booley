@@ -12,7 +12,7 @@ the context that owns the work at hand.
 | B-Wave | [crates/bwave/CONTEXT.md](crates/bwave/CONTEXT.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
 | Simulation Coverage | [src/booley/flows/sim/CONTEXT.md](src/booley/flows/sim/CONTEXT.md) | Coverage campaigns, measurement points, evaluation policy, waivers, and analysis |
 | Feedback | [src/booley/feedback/CONTEXT.md](src/booley/feedback/CONTEXT.md) | Findings, friction, impressions, and their durable log |
-| Public QA | [qa/README.md](qa/README.md) | QA missions, runs, findings, smoke list, and triage |
+| Public QA | [qa/CONTEXT.md](qa/CONTEXT.md) | QA Missions, Mission Areas, QA Runs, Release Smoke List, and Capability Map |
 
 ## Relationships
 
@@ -37,8 +37,8 @@ the context that owns the work at hand.
 - Use the shared glossary for concepts that cross product capabilities. A
   context glossary may refer to shared terms with their shared meaning.
 - An unqualified term means the definition owned by the current context. When
-  writing across boundaries, qualify colliding terms such as **Scenario Run** and
-  **Capability Coverage**.
+  writing across boundaries, qualify colliding concepts; for example, Public
+  QA's **Capability Map** is not a Simulation Coverage **Coverage Campaign**.
 - Detailed behavior, schemas, commands, and implementation decisions belong in
   the relevant reference documentation rather than these glossaries.
 

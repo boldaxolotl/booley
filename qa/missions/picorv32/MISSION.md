@@ -295,4 +295,3 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 - Exit 125 from `booley session enter --` means your argv is missing the executable. It's not a lint
   verdict.
 - B-Wave replays must use the child's defaults. Explicit sampling flags aren't equivalent.
-

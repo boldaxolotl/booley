@@ -19,14 +19,15 @@ The maintainer decides what gets filed; you prepare the decision.
    cluster (`gh issue list --search`). Mark clusters `known #<n>`, `fixed #<n>`
    (and whether the run's build predates the fix), or `new`.
 4. **Present.** Show the maintainer one table: cluster, kind, severity, runs and
-   finding refs, tracker status, proposed action (`file`, `comment on #<n>`,
-   `fix mission`, `drop`). `qa-bug` clusters default to `fix mission`. Wait for
-   the maintainer's decisions.
+   finding refs, tracker status, and proposed action. For `qa-bug` clusters the
+   choices are `fix mission` or `drop`; never propose an issue or comment. For
+   every other kind the choices are `file`, `comment on #<n>`, or `drop`. Wait
+   for the maintainer's decisions.
 5. **Act on approved items only.**
-   - `file` / `comment`: draft each issue or comment in a local file with a
-     minimal repro, expected vs actual, build identity, and evidence excerpts.
-     Follow the repository's issue rules in `AGENTS.md` (confidential-content
-     scan before submitting) and the triage labels in
+   - `file` / `comment` (never for `qa-bug`): draft each issue or comment in a
+     local file with a minimal repro, expected vs actual, build identity, and
+     evidence excerpts. Follow the repository's issue rules in `AGENTS.md`
+     (confidential-content scan before submitting) and the triage labels in
      `docs/internals/agents/triage-labels.md`.
    - `fix mission`: edit the mission under `qa/missions/`, usually adding the
      trap to its **Known traps** section.
