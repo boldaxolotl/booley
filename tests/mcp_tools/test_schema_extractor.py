@@ -246,6 +246,20 @@ def test_specialist_schemas_expose_bounded_agent_controls(
     assert {"report_dir", "transcript_dir", "timeout"}.isdisjoint(properties)
 
 
+def test_specialist_custom_schema_keeps_public_agent_controls() -> None:
+    class CustomSchemaReviewer(ReviewerSpecialist):
+        def mcp_schema(self) -> dict[str, Any]:
+            return {
+                "type": "object",
+                "properties": {"custom": {"type": "string"}},
+            }
+
+    schema = flow_schema(CustomSchemaReviewer())
+
+    assert schema["additionalProperties"] is False
+    assert {"custom", "model", "max_turns"} <= schema["properties"].keys()
+
+
 @pytest.mark.parametrize(
     "specialist",
     [ReviewerSpecialist, MutationTesterSpecialist, CoverageAnalystSpecialist],

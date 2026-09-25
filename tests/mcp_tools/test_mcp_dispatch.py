@@ -131,6 +131,57 @@ class TestParamsToArgv:
 
 
 class TestExitDisposition:
+    def test_invalid_work_dir_is_mcp_error(self, tmp_path):
+        import asyncio
+
+        definition = {
+            "module": "lint",
+            "is_flow": True,
+            "default_timeout": 60,
+        }
+
+        result = asyncio.run(
+            mcp_server._dispatch_booley_mcp_tool(
+                "lint",
+                {"work_dir": str(tmp_path / "missing")},
+                definition,
+                {},
+                MagicMock(),
+            )
+        )
+
+        assert isinstance(result, mcp_server.McpDispatchResult)
+        assert result.is_error is True
+        assert "does not exist" in _text(result)
+
+    def test_invalid_flow_timeout_is_mcp_error(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr(
+            mcp_server,
+            "_mcp_tool_timeout_seconds",
+            MagicMock(side_effect=ValueError("bad timeout")),
+        )
+        definition = {
+            "module": "lint",
+            "is_flow": True,
+            "default_timeout": 60,
+        }
+
+        result = asyncio.run(
+            mcp_server._dispatch_booley_mcp_tool(
+                "lint",
+                {},
+                definition,
+                {},
+                MagicMock(),
+            )
+        )
+
+        assert isinstance(result, mcp_server.McpDispatchResult)
+        assert result.is_error is True
+        assert "invalid Flow timeout: bad timeout" in _text(result)
+
     @pytest.mark.parametrize(("exit_code", "is_error"), [(0, False), (1, True), (2, True)])
     def test_inline_exit_code_sets_mcp_error(
         self,
@@ -1411,6 +1462,29 @@ class TestAsyncJobDispatch:
         text = _text(out)
         assert "EXIT_CODE: 0" in text
         assert "RESULT: PASS" in text
+
+    def test_poll_reconnect_cancelled_job_is_error(self, _report_env):
+        import asyncio
+
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="simulate-x-cancelled",
+                endpoint="sim",
+                started_at="t",
+                timeout_s=60,
+                status=jobrec.STATUS_CANCELLED,
+                exit_code=130,
+            ),
+            root=session_jobs_dir(),
+        )
+        jobs = _JobManager(_FakeLifetime())
+
+        result = asyncio.run(_dispatch_poll({"run_id": "simulate-x-cancelled"}, jobs))
+
+        assert isinstance(result, mcp_server.McpDispatchResult)
+        assert result.is_error is True
+        assert "EXIT_CODE: 130" in _text(result)
+        assert "CANCELLED" in _text(result)
 
     def test_poll_reconnect_running_dead_pid_is_failed(self, _report_env):
         # A record left 'running' after a restart, whose PID is gone, resolves

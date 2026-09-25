@@ -1158,6 +1158,12 @@ class TestBooleyStatus:
         assert result.value[0].text.startswith("HEALTH WARNING:")
         assert result.value[1].text == "EXIT_CODE: 2"
 
+    def test_health_warning_rejects_invalid_content_shape(self):
+        block = SimpleNamespace(type="text", text="HEALTH WARNING")
+
+        with pytest.raises(TypeError, match="content that is not a list"):
+            self.mcp_server._prepend_health_block(object(), block)
+
 
 class TestBooleySleep:
     @pytest.fixture(autouse=True)
