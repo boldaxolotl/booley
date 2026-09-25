@@ -854,6 +854,8 @@ def _retained_invocation(tmp_path: Path) -> tuple[Path, Path, CampaignStore]:
         json.dumps(
             {
                 "flow": "sim",
+                "complete": True,
+                "phase": "complete",
                 "targets": ["sim"],
                 "completed_targets": ["sim"],
                 "pending_targets": [],
