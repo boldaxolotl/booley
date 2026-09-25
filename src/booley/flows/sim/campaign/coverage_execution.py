@@ -64,6 +64,14 @@ class _NoProgress:
         del outcome
 
 
+class _CoverageAggregateError(SimulationCampaignIntegrityError):
+    """A nested Coverage Campaign failed with a validated evaluation status."""
+
+    def __init__(self, message: str, evaluation_status: str) -> None:
+        super().__init__(message)
+        self.evaluation_status = evaluation_status
+
+
 @dataclass(slots=True)
 class _CapturedBuild:
     directory: Path
@@ -110,6 +118,26 @@ class _CapturingExecution:
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
         return self._delegate.command(request)
+
+
+def _raise_if_coverage_aborted(
+    outcome: CoverageTargetOutcome, build_result: SimulationBuildResult | None
+) -> None:
+    if not outcome.abort_remaining:
+        return
+    # A collector failure without its own error reports the simulator build output.
+    message = outcome.detail.get("error")
+    if message is None and build_result is not None:
+        message = build_result.output
+    status = outcome.detail.get("evaluation")
+    if status not in {"pass", "fail", "blocked", "not_requested"}:
+        raise SimulationCampaignIntegrityError(
+            "native coverage collection returned an invalid evaluation status"
+        )
+    raise _CoverageAggregateError(
+        str(message or "native coverage collection failed"),
+        cast(str, status),
+    )
 
 
 class CoverageAggregateExecutor(SerialWorkExecutor):
@@ -168,25 +196,12 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 ),
             )
             outcome = self._collect(request, capturing)
-        if capturing.captured is None:
-            result = _publish_coverage_build_failure(
-                request,
-                build_directory,
-                build_attempt,
-                outcome,
-                capturing.build_result,
-                capturing.build_elapsed,
-                self._publication_checkpoint,
-            )
-            if result is not None:
-                return result
-        if outcome.abort_remaining:
-            message = outcome.detail.get("error")
-            if message is None and capturing.build_result is not None:
-                message = capturing.build_result.output
-            raise SimulationCampaignIntegrityError(
-                str(message or "native coverage collection failed")
-            )
+        failure = self._publish_missing_build(
+            request, build_directory, build_attempt, outcome, capturing
+        )
+        if failure is not None:
+            return failure
+        _raise_if_coverage_aborted(outcome, capturing.build_result)
         if capturing.captured is None:
             detail = outcome.detail.get("error") or outcome.detail.get("collection")
             raise SimulationCampaignIntegrityError(
@@ -194,6 +209,26 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 f" (build={capturing.build_result!r}, detail={detail!r})"
             )
         return _completed_result(request, capturing.captured, outcome, capturing.bindings, started)
+
+    def _publish_missing_build(
+        self,
+        request: WorkExecutionRequest,
+        build_directory: Path,
+        build_attempt: BundleBuildAttempt,
+        outcome: CoverageTargetOutcome,
+        capturing: _CapturingExecution,
+    ) -> SimulationResult | None:
+        if capturing.captured is not None:
+            return None
+        return _publish_coverage_build_failure(
+            request,
+            build_directory,
+            build_attempt,
+            outcome,
+            capturing.build_result,
+            capturing.build_elapsed,
+            self._publication_checkpoint,
+        )
 
     def _collect(
         self, request: WorkExecutionRequest, execution: SimulationExecutionPort

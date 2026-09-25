@@ -110,6 +110,7 @@ from .build_session import (
     SimulationBuildSlotError,
     preview_generation_root,
     project_compile_surface,
+    resolve_target_compile_surface,
 )
 from .campaign import (
     CampaignOutcome,
@@ -132,7 +133,7 @@ from .campaign import (
     validate_resume_manifest,
 )
 from .campaign.codec import MANIFEST_MAX_BYTES
-from .campaign.coverage_execution import CoverageAggregateExecutor
+from .campaign.coverage_execution import CoverageAggregateExecutor, _CoverageAggregateError
 from .campaign.flow_planning import (
     plan_coarse_simulation_campaign,
     plan_ordinary_hdl_campaign,
@@ -440,6 +441,15 @@ def _campaign_structured_details(
         str(outcome.target["selector"]): _campaign_report_detail(outcome, report_invocation)
         for outcome in outcomes
     }
+
+
+def _coverage_request_target(request: NewCampaignRunRequest) -> Mapping[str, object]:
+    """Expose the typed Target projection from one immutable campaign request."""
+    return cast(Mapping[str, object], request.plan.manifest.document["target"])
+
+
+def _coverage_request_selector(request: NewCampaignRunRequest) -> str:
+    return str(_coverage_request_target(request)["selector"])
 
 
 def _campaign_report_detail(
@@ -2567,25 +2577,31 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             outcomes,
             self.context._reserved_invocation_dir,
         )
-        failed = str(
-            cast(Mapping[str, object], request.plan.manifest.document["target"])["selector"]
-        )
+        failed = _coverage_request_selector(request)
+        evaluation = self._coverage_failure_evaluation(request, error)
+        if evaluation is None:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                detail={
+                    "coverage": True,
+                    "campaigns": _campaign_structured_details(outcomes),
+                    "targets": targets,
+                },
+                report_text=(
+                    "Simulation Campaign coverage execution failed: cannot match failed "
+                    f"Target to the prepared Coverage plan ({error})"
+                ),
+            )
         targets[failed] = {
             "target": failed,
             "passed": None,
             "simulation": "not_run",
             "collection": "infrastructure_error",
-            "evaluation": "blocked",
+            "evaluation": evaluation,
             "error": str(error),
             "abort_remaining": True,
         }
-        pending = [
-            failed,
-            *[
-                str(cast(Mapping[str, object], item.plan.manifest.document["target"])["selector"])
-                for item in requests[index + 1 :]
-            ],
-        ]
+        pending = [failed, *[_coverage_request_selector(item) for item in requests[index + 1 :]]]
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             detail={
@@ -2598,6 +2614,21 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             },
             report_text=f"Simulation Campaign coverage execution failed: {error}",
         )
+
+    def _coverage_failure_evaluation(
+        self, request: NewCampaignRunRequest, error: Exception
+    ) -> str | None:
+        """Preserve nested evaluation or derive policy before an outcome exists."""
+        if isinstance(error, _CoverageAggregateError):
+            return error.evaluation_status
+        target = _coverage_request_target(request)
+        identity = f"{target['vlnv']}#{target['name']}"
+        matches = [
+            plan for plan in self._coverage_prepared.targets if plan.handle.identity == identity
+        ]
+        if len(matches) != 1:
+            return None
+        return "not_requested" if matches[0].criterion is None else "blocked"
 
     def _coverage_campaign_execution(
         self, plan: CoverageTargetPlan, options: SimulationOptions
@@ -3771,7 +3802,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         started = time.monotonic()
         handle = self._target_handle(target)
         try:
-            sources_before = project_compile_surface(handle.project_root)
+            compile_surface = resolve_target_compile_surface(handle)
+            sources_before = project_compile_surface(compile_surface)
             with SimulationBuildSession(handle) as session:
                 candidate = session.new_generation()
                 self._open_run_log(target, candidate)
@@ -3780,7 +3812,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
                 if isinstance(prepared, ElabOnlyTargetResult):
                     return prepared
-                if project_compile_surface(handle.project_root) != sources_before:
+                if project_compile_surface(compile_surface) != sources_before:
                     raise SimulationBuildSlotError(
                         "Project compile inputs changed during elaboration preparation"
                     )

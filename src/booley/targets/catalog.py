@@ -42,6 +42,16 @@ class _OperationalState:
 
 
 @dataclass(frozen=True)
+class TargetCompileSurface:
+    """A resolved Target's immutable authored and prepared compile paths."""
+
+    project_root: Path
+    authored_paths: tuple[Path, ...]
+    operational_paths: tuple[Path, ...]
+    optional_paths: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
 class PreparedTargetSelection:
     """One catalog snapshot and its ordered selection for an authored request."""
 
@@ -203,6 +213,41 @@ class TargetCatalog:
         self._require_fresh()
         return closure
 
+    def compile_inputs(self, handle: TargetHandle) -> TargetCompileSurface:
+        """Resolve one immutable Target-scoped compile-input set."""
+        self._require_handle(handle)
+        self._require_fresh()
+        inspection = self.inspect(handle)
+        closure = self.core_closure((handle,)) or frozenset()
+        inspector = self._state.inspector
+        assert inspector is not None, "inspection must prepare the shared library view"
+        operational = inspector.operational_cores(closure)
+        selected = tuple(
+            sorted(
+                {
+                    path if path.is_absolute() else self.project_root / path
+                    for item in inspection.inputs
+                    if (path := Path(item.path))
+                }
+            )
+        )
+        projection_config = self.project_root / ".booley_project" / "booley.toml"
+        self._require_fresh()
+        return TargetCompileSurface(
+            project_root=self.project_root,
+            authored_paths=tuple(sorted({*selected, *closure})),
+            operational_paths=tuple(
+                sorted(
+                    {
+                        operational_path
+                        for authored_path, operational_path in operational
+                        if operational_path != authored_path
+                    }
+                )
+            ),
+            optional_paths=(projection_config,),
+        )
+
     def _visible(self, refs: tuple[TargetRef, ...]) -> tuple[TargetRef, ...]:
         if self._doctor_private:
             return refs
@@ -269,4 +314,4 @@ def _canonical_flow(flow: str | None) -> str | None:
     return result
 
 
-__all__ = ["TargetCatalog"]
+__all__ = ["TargetCatalog", "TargetCompileSurface"]
