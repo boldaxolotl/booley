@@ -938,10 +938,13 @@ A Coverage Criterion never activates collection.
 `prepare_coverage_invocation(request, project_context)` resolves all selected
 Targets without EDA, build setup, report allocation, or state mutation. It
 aggregates invalid selections, rejects any non-Verilator Target, validates hook
-contracts, and freezes exact suites and source/build fingerprints. Selection is
-explicit invocation filtering first, then the Criterion suite, then all runnable
-registered tests. Configured/explicit skips remain visible as suite mismatch
-when a Criterion requires those tests. Execution is sorted and sequential.
+contracts, and freezes exact suites and source/build fingerprints. Suite
+selection has four cases: an explicit invocation suite and an exact Coverage
+Criterion suite each retain every registered name, overriding configured skips;
+the legacy internal substring filter and an unfiltered suite apply configured
+skips. A Criterion with `tests: all` uses the unfiltered case, so any names
+excluded by configuration remain visible as a suite mismatch during evaluation.
+Execution is sorted and sequential.
 
 `run_coverage_target(plan, execution, progress)` collects through
 `SimulationExecutionPort`, assembles and validates the canonical Campaign,

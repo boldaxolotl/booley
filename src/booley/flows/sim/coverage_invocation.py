@@ -33,7 +33,6 @@ class CoverageInvocationRequest:
     tests: tuple[str, ...] | None = None
     trace: bool = False
     test_filter: str | None = None
-    skip: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -110,13 +109,18 @@ def _suite(
         raise ValueError("Target binds more than one Coverage Criterion")
     key, criterion = matched[0] if matched else ("", None)
     required = criterion.tests if criterion and criterion.tests is not None else declared
-    selected = request.tests if request.tests is not None else required
-    if request.test_filter is not None:
-        selected = tuple(name for name in declared if request.test_filter in name)
     skipped = set(
         context.skipped_tests.get(handle.selector, context.skipped_tests.get(handle.name, ()))
-    ) | set(request.skip)
-    selected = tuple(name for name in selected if name not in skipped)
+    )
+    if request.test_filter is not None:
+        selected = tuple(name for name in declared if request.test_filter in name)
+        selected = tuple(name for name in selected if name not in skipped)
+    elif request.tests is not None:
+        selected = request.tests
+    elif criterion is not None and criterion.tests is not None:
+        selected = criterion.tests
+    else:
+        selected = tuple(name for name in declared if name not in skipped)
     if criterion is not None:
         metrics = [threshold.metric for threshold in criterion.thresholds]
         if (
