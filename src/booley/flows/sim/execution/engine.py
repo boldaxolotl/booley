@@ -39,8 +39,10 @@ from booley.flows.sim.build import (
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
     SimulationBuildSlotError,
+    TargetCompileSurface,
     preview_generation_root,
     project_compile_surface,
+    resolve_target_compile_surface,
     snapshot_build_inputs,
     verify_existing_build_inputs,
 )
@@ -193,6 +195,7 @@ class PreparedOrdinaryGroup:
         attempt: _Attempt,
         session: SimulationBuildSession,
         started: float,
+        compile_surface: TargetCompileSurface,
         sources_before: Mapping[str, str],
         prepared_surface: Mapping[str, str],
         prepared_inputs: Mapping[str, str],
@@ -202,6 +205,7 @@ class PreparedOrdinaryGroup:
         self._attempt = attempt
         self._session = session
         self._started = started
+        self._compile_surface = compile_surface
         self._sources_before = sources_before
         self._prepared_surface = prepared_surface
         self._prepared_inputs = prepared_inputs
@@ -214,6 +218,11 @@ class PreparedOrdinaryGroup:
     def build_root(self) -> Path:
         """Private generated build root available to a legacy pre-build hook."""
         return self._attempt.prepared.build_root
+
+    @property
+    def compile_surface(self) -> TargetCompileSurface:
+        """Return the surface resolved during the group's original preparation."""
+        return self._compile_surface
 
     @property
     def work(self) -> PreparedSimulationWork:
@@ -307,14 +316,12 @@ class PreparedOrdinaryGroup:
             raise SimulationBuildSlotError("ordinary Simulation group was already compiled")
         attempt = self._attempt
         verify_existing_build_inputs(attempt.prepared, self._prepared_inputs)
-        if project_compile_surface(self._handle.project_root) != self._sources_before:
+        if project_compile_surface(self._compile_surface) != self._sources_before:
             raise SimulationBuildSlotError(
                 "Project compile inputs changed during setup or Pre-Sim Commands; rerun the attempt"
             )
         if (
-            project_compile_surface(
-                self._handle.project_root, include_generated_isolated_cores=True
-            )
+            project_compile_surface(self._compile_surface, include_operational_cores=True)
             != self._prepared_surface
         ):
             raise SimulationBuildSlotError(
@@ -580,7 +587,8 @@ class SimulationExecution:
         if self._build_session is not None:
             raise SimulationBuildSlotError("Simulation execution already owns a build lease")
         started = time.monotonic()
-        sources_before = project_compile_surface(handle.project_root)
+        compile_surface = resolve_target_compile_surface(handle)
+        sources_before = project_compile_surface(compile_surface)
         policy = _build_policy(self._options.trace)
         with SimulationBuildSession(handle, policy.variant) as session:
             self._build_session = session
@@ -594,10 +602,9 @@ class SimulationExecution:
                     attempt,
                     session,
                     started,
+                    compile_surface,
                     sources_before,
-                    project_compile_surface(
-                        handle.project_root, include_generated_isolated_cores=True
-                    ),
+                    project_compile_surface(compile_surface, include_operational_cores=True),
                     snapshot_build_inputs(attempt.prepared),
                 )
                 yield group
@@ -695,11 +702,14 @@ class SimulationExecution:
         test_names: tuple[str, ...],
     ) -> SimulationTargetOutcome:
         started = time.monotonic()
-        sources_before = project_compile_surface(handle.project_root)
+        compile_surface = resolve_target_compile_surface(handle)
+        sources_before = project_compile_surface(compile_surface)
         attempt = self._prepare_attempt(handle, test_names)
         try:
             with self._runtime_view(handle, attempt):
-                return self._run_group_body(handle, attempt, sources_before, started)
+                return self._run_group_body(
+                    handle, attempt, compile_surface, sources_before, started
+                )
         except selftest_overlay.SelftestOverlayError as exc:
             raise SimulationBuildSlotError(str(exc)) from exc
 
@@ -707,6 +717,7 @@ class SimulationExecution:
         self,
         handle: TargetHandle,
         attempt: _Attempt,
+        compile_surface: TargetCompileSurface,
         sources_before: Mapping[str, str],
         started: float,
     ) -> SimulationTargetOutcome:
@@ -716,9 +727,7 @@ class SimulationExecution:
         except OSError as exc:
             detail = f"could not establish current run log: {exc}"
             return _artifact_failure(handle, attempt, None, None, detail, started)
-        prepared_surface = project_compile_surface(
-            handle.project_root, include_generated_isolated_cores=True
-        )
+        prepared_surface = project_compile_surface(compile_surface, include_operational_cores=True)
         prepared_inputs = snapshot_build_inputs(attempt.prepared)
         pre_sim = self._run_pre_sim(handle, attempt)
         if pre_sim is not None and pre_sim.status != "passed":
@@ -729,12 +738,12 @@ class SimulationExecution:
             )
             return failure(handle, attempt, pre_sim, started)
         verify_existing_build_inputs(attempt.prepared, prepared_inputs)
-        if project_compile_surface(handle.project_root) != sources_before:
+        if project_compile_surface(compile_surface) != sources_before:
             raise SimulationBuildSlotError(
                 "Project compile inputs changed during setup or Pre-Sim Commands; rerun the attempt"
             )
         if (
-            project_compile_surface(handle.project_root, include_generated_isolated_cores=True)
+            project_compile_surface(compile_surface, include_operational_cores=True)
             != prepared_surface
         ):
             raise SimulationBuildSlotError(

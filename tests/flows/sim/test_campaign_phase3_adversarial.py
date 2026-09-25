@@ -56,6 +56,9 @@ class _TestGroup:
         self.build_root = build_root
         self.name = name
         self.artifact_paths = (build_root / "simv", build_root / "helper.so")
+        self.compile_surface = SimpleNamespace(
+            project_root=build_root.parent.resolve(), authored_paths=(), operational_paths=()
+        )
 
     def planning_disclosure(self) -> dict[str, object]:
         return {}

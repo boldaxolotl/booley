@@ -644,9 +644,10 @@ def _immutable_hook_failure(
 ) -> SimulationResult | None:
     if access != "immutable":
         return None
-    surface = project_compile_surface(request.project_root)
+    compile_surface = group.compile_surface
+    surface = project_compile_surface(compile_surface)
     pre_sim = _run_hook(handle, group.build_root, names, options, run_cwd, False)
-    if project_compile_surface(request.project_root) != surface:
+    if project_compile_surface(compile_surface) != surface:
         raise SimulationCampaignIntegrityError(
             "Project compile inputs changed during immutable Pre-Sim Commands"
         )

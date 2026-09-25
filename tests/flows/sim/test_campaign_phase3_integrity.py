@@ -13,6 +13,7 @@ import pytest
 
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.build_session import TargetCompileSurface
 from booley.flows.sim.campaign import serial_execution
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
@@ -132,6 +133,9 @@ class _Group:
     ) -> None:
         self.names = names
         self.build_root = build_root
+        self.compile_surface = TargetCompileSurface(
+            build_root.parent, "acme:lib:dut:1#sim", (), ()
+        )
         self.artifact_paths = (build_root / "simv",)
         self._counters = counters
         self._mutate_snapshot = mutate_snapshot

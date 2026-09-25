@@ -41,6 +41,16 @@ class _OperationalState:
 
 
 @dataclass(frozen=True)
+class TargetCompileInputs:
+    """Explicit Target inputs and their prepared operational core views."""
+
+    selected: tuple[Path, ...]
+    authored_cores: tuple[Path, ...]
+    operational_cores: tuple[tuple[Path, Path], ...]
+    configuration: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
 class TargetCatalog:
     """One immutable Target declaration snapshot for one Project checkout."""
 
@@ -163,6 +173,33 @@ class TargetCatalog:
         self._require_fresh()
         return closure
 
+    def compile_inputs(self, handle: TargetHandle) -> TargetCompileInputs:
+        """Resolve one immutable Target-scoped compile-input set."""
+        self._require_handle(handle)
+        self._require_fresh()
+        inspection = self.inspect(handle)
+        closure = self.core_closure((handle,)) or frozenset()
+        inspector = self._state.inspector
+        assert inspector is not None, "inspection must prepare the shared library view"
+        operational = inspector.operational_cores(closure)
+        selected = tuple(
+            sorted(
+                {
+                    path if path.is_absolute() else self.project_root / path
+                    for item in inspection.inputs
+                    if (path := Path(item.path))
+                }
+            )
+        )
+        projection_config = self.project_root / ".booley_project" / "booley.toml"
+        self._require_fresh()
+        return TargetCompileInputs(
+            selected=selected,
+            authored_cores=tuple(sorted(closure)),
+            operational_cores=operational,
+            configuration=(projection_config,),
+        )
+
     def _visible(self, refs: tuple[TargetRef, ...]) -> tuple[TargetRef, ...]:
         if self._doctor_private:
             return refs
@@ -229,4 +266,4 @@ def _canonical_flow(flow: str | None) -> str | None:
     return result
 
 
-__all__ = ["TargetCatalog"]
+__all__ = ["TargetCatalog", "TargetCompileInputs"]
