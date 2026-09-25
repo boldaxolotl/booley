@@ -1,10 +1,16 @@
+from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
+import pytest
+
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     CoverageProjectContext,
     prepare_coverage_invocation,
 )
+from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
 
 
 def project(root: Path, tools: tuple[str, ...] = ("verilator",)) -> CoverageProjectContext:
@@ -56,12 +62,6 @@ def test_preflight_aggregates_invalid_targets_and_rejects_mixed_tools_atomically
 def test_selection_precedence_is_explicit_then_criterion_then_registered_suite(
     tmp_path: Path,
 ) -> None:
-    from dataclasses import replace
-    from fractions import Fraction
-
-    from booley.flows.sim.coverage_campaign import DurableTargetIdentity
-    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
-
     context = project(tmp_path)
     criterion = CoverageCriterion(
         DurableTargetIdentity("acme:demo:counter:1#sim_0"),
@@ -78,16 +78,11 @@ def test_selection_precedence_is_explicit_then_criterion_then_registered_suite(
     assert explicit.plan.targets[0].criterion == criterion
 
 
-import pytest
-
-
 @pytest.mark.parametrize(
     "tests,declared",
     [((), ("reset",)), (("unknown",), ("reset",)), (("reset", "reset"), ("reset",)), (None, ())],
 )
 def test_preflight_rejects_empty_duplicate_or_unregistered_tests(tmp_path, tests, declared):
-    from dataclasses import replace
-
     context = replace(project(tmp_path), test_names={"sim_0": declared})
     result = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",), tests), context)
     assert result.plan is None
@@ -117,13 +112,57 @@ def test_custom_main_hook_errors_are_atomic_preflight_errors(tmp_path, hooks, re
     assert any("HOOK" in item.code for item in result.findings)
 
 
-def test_configured_skips_and_explicit_filter_select_exact_runnable_suite(tmp_path):
-    from dataclasses import replace
-
+def test_unfiltered_suite_applies_configured_skips(tmp_path: Path) -> None:
     context = replace(project(tmp_path), skipped_tests={"sim_0": ("wrap",)})
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
     assert prepared.plan.targets[0].selected_tests == ("reset",)
+
+
+@pytest.mark.parametrize(
+    ("tests", "expected"),
+    [(("wrap",), ("wrap",)), (("reset", "wrap"), ("reset", "wrap"))],
+)
+def test_explicit_suite_overrides_configured_skips(tmp_path: Path, tests, expected) -> None:
+    context = replace(project(tmp_path), skipped_tests={"sim_0": ("wrap",)})
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), tests=tests), context
+    )
+    assert prepared.plan.targets[0].selected_tests == expected
+
+
+def test_exact_criterion_suite_overrides_configured_skips(tmp_path: Path) -> None:
+    criterion = CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        ("wrap",),
+    )
+    context = replace(
+        project(tmp_path),
+        criteria={"coverage_sim_0": criterion},
+        skipped_tests={"sim_0": ("wrap",)},
+    )
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    assert prepared.plan.targets[0].selected_tests == ("wrap",)
+
+
+def test_all_tests_criterion_applies_configured_skips(tmp_path: Path) -> None:
+    criterion = CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        None,
+    )
+    context = replace(
+        project(tmp_path),
+        criteria={"coverage_sim_0": criterion},
+        skipped_tests={"sim_0": ("wrap",)},
+    )
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    assert prepared.plan.targets[0].selected_tests == ("reset",)
+
+
+def test_legacy_filter_applies_configured_skips(tmp_path: Path) -> None:
+    context = replace(project(tmp_path), skipped_tests={"sim_0": ("wrap",)})
     filtered = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), test_filter="res"), context
+        CoverageInvocationRequest(("sim_0",), test_filter="r"), context
     )
     assert filtered.plan.targets[0].selected_tests == ("reset",)

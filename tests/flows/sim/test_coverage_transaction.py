@@ -128,6 +128,34 @@ def test_gated_verdicts_preserve_independent_truth(
     assert {run["simulation_verdict"] for run in document["tests"]["runs"]} == {verdict}
 
 
+def test_all_tests_criterion_reports_suite_mismatch_after_configured_skip(tmp_path):
+    from fractions import Fraction
+
+    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+
+    context = project(tmp_path)
+    criterion = CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        None,
+    )
+    context = replace(
+        context,
+        criteria={"coverage_sim_0": criterion},
+        skipped_tests={"sim_0": ("wrap",)},
+    )
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    assert prepared.plan.targets[0].selected_tests == ("reset",)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    outcome = run_coverage_target(plan, NativeExecution(), Progress())
+
+    assert outcome.exit_code == 2
+    evaluation = json.loads(outcome.campaign_path.read_text())["evaluation"]
+    assert evaluation["status"] == "blocked"
+    assert [item["code"] for item in evaluation["diagnostics"]] == ["COV_EVAL_SUITE_MISMATCH"]
+
+
 @pytest.mark.parametrize(
     "payload,missing",
     [

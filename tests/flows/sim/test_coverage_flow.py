@@ -9,6 +9,7 @@ from booley.flows.sim.coverage_reference import (
 )
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.mcp.flow_adapter import flow_schema
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
@@ -160,6 +161,37 @@ def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch)
     assert set(tmp_path.rglob("*")) == before
 
 
+@pytest.mark.parametrize(
+    ("selected", "expected_runs", "exit_code"),
+    [
+        (("wrap",), ["wrap"], 1),
+        (("reset", "wrap"), ["reset", "wrap"], 1),
+        (None, ["reset"], 0),
+    ],
+)
+def test_explicit_coverage_selection_executes_configured_skips(
+    tmp_path, monkeypatch, selected, expected_runs, exit_code
+):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\nskip = ["wrap"]\n')
+
+    class PerTestVerdict(NativeExecution):
+        def run(self, request):
+            super().run(request)
+            return SimulationRunResult("fail" if request.test.name == "wrap" else "pass")
+
+    execution = PerTestVerdict()
+    result = SimulateFlow(coverage_execution=lambda _handle, _options: execution).execute(
+        SimRequest(target="sim_0", test=selected, work_dir=tmp_path, coverage=True)
+    )
+
+    assert result.exit_code == exit_code
+    assert [request.test.name for request in execution.runs] == expected_runs
+
+
 def test_interactive_coverage_criterion_does_not_mutate_or_save_state(tmp_path, monkeypatch):
     from booley.criteria.state import CriterionEntry, DevelopmentState
 
@@ -254,7 +286,7 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
     assert "coverage_campaign" not in target
 
 
-def _interrupt_coverage_invocation(tmp_path, monkeypatch):
+def _interrupt_coverage_invocation(tmp_path, monkeypatch, *, selected=None, skipped=()):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     revision = "a" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
@@ -262,7 +294,9 @@ def _interrupt_coverage_invocation(tmp_path, monkeypatch):
     project(tmp_path)
     data = tmp_path / ".booley_project"
     data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
+    (data / "tests.toml").write_text(
+        f'[sim_0]\ntests = ["reset", "wrap"]\nskip = {json.dumps(list(skipped))}\n'
+    )
     reports = tmp_path / "reports"
 
     class Interrupted(NativeExecution):
@@ -270,7 +304,13 @@ def _interrupt_coverage_invocation(tmp_path, monkeypatch):
             super().run(request)
             raise KeyboardInterrupt("simulated process interruption")
 
-    request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+    request = SimRequest(
+        target="sim_0",
+        test=selected,
+        work_dir=tmp_path,
+        coverage=True,
+        report_dir=reports,
+    )
     with pytest.raises(KeyboardInterrupt):
         SimulateFlow(coverage_execution=lambda handle, options: Interrupted()).execute(request)
     return reports, request
@@ -315,6 +355,21 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     assert result.exit_code == 0
     assert (reports / "sim/2/targets/sim_0/coverage.json").is_file()
     prune_invocation(reports, 1)
+
+
+def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
+    reports, _request = _interrupt_coverage_invocation(
+        tmp_path, monkeypatch, selected=("wrap",), skipped=("wrap",)
+    )
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    execution = NativeExecution()
+
+    result = SimulateFlow(coverage_execution=lambda _handle, _options: execution).execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=tmp_path / "resumed")
+    )
+
+    assert result.exit_code == 0
+    assert [request.test.name for request in execution.runs] == ["wrap"]
 
 
 def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
