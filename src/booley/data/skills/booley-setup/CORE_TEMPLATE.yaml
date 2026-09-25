@@ -5,6 +5,16 @@
 # `.yaml` ON PURPOSE: `.core` discovery is a bare `rglob("*.core")`, so a
 # `*.core` template vendored under `.booley/` would be picked up as a real
 # project core. Copy the shape below into a `.core`, do not rename this file.
+#
+# Keep Targets that share design sources in this core. When the Project Config
+# guide justifies separate adapters, compose them through a dependency core;
+# the adapter-side syntax is:
+#
+#   design:
+#     depend: [vendor:library:shared-design:1]
+#
+# See `steps/2-project-config.md` for the dependency core's required `default`
+# Target and the compile-order and Target-identity preservation rules.
 
 CAPI=2:
 name: ::<project>:0          # a VLNV; the leading :: is fine for a leaf project

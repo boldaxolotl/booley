@@ -563,6 +563,22 @@ def test_setup_makes_stealth_an_explicit_opt_in():
     assert "enabled = false" in template
 
 
+def test_setup_dependency_core_refactors_preserve_order_and_target_identity() -> None:
+    project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+    core_template = _compact_skill_text("booley-setup", "CORE_TEMPLATE.yaml")
+
+    for required in (
+        "complete resolved file order",
+        "FuseSoC emits dependency-core files before adapter-core files",
+        "when that ordering cannot remain identical",
+        "declaring core's VLNV and the Target name",
+    ):
+        assert required in project_config
+    assert "compose them through a dependency core" in core_template
+    assert "depend: [vendor:library:shared-design:1]" in core_template
+    assert "steps/2-project-config.md" in core_template
+
+
 def test_setup_plans_one_project_wide_tech_cell_replacement():
     plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
     template = _compact_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
