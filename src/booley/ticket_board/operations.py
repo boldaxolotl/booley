@@ -1083,13 +1083,16 @@ def op_complete(
 
     Returns True on success, False on failure.
     """
-    request = _prepare_completion_request(
-        tio,
-        slug,
-        no_merge,
-        no_cleanup,
-        require_review_package_binding=require_review_package_binding,
-    )
+    if require_review_package_binding:
+        request = _prepare_completion_request(tio, slug, no_merge, no_cleanup)
+    else:
+        request = _prepare_completion_request(
+            tio,
+            slug,
+            no_merge,
+            no_cleanup,
+            require_review_package_binding=False,
+        )
     if request is None:
         return False
     slug, on_success, accepted_snapshot = request
