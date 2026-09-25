@@ -539,6 +539,44 @@ def stealth_native(paths: list[str]) -> dict:
     return {"raw_count": len(paths), "native_count": len(native), "native": native}
 
 
+def stealth_core_links(root: Path) -> dict:
+    """Grade symlinks only when they stand in for projected or native cores."""
+    root = root.resolve()
+    _require(root.is_dir(), f"Project root is not a directory: {root}")
+    projected = set(root.glob(".booley-projected-*.core"))
+    native = {
+        path
+        for path in root.rglob("*.core")
+        if all(not part.startswith(".") for part in path.relative_to(root).parts)
+    }
+    all_links = {path for path in root.rglob("*") if path.is_symlink()}
+    prohibited = sorted(all_links & (projected | native))
+    out_of_scope = sorted(all_links - set(prohibited))
+    matches = not prohibited
+    if matches:
+        observed = (
+            "No projected or native .core entries are symlinks; "
+            f"retained {len(out_of_scope)} out-of-scope symlinks."
+        )
+    else:
+        paths = ", ".join(str(path.relative_to(root)) for path in prohibited)
+        observed = f"Projected or native .core symlinks found: {paths}."
+    return {
+        "matches": matches,
+        "observed": observed,
+        "projected_core_count": len(projected),
+        "native_core_count": len(native),
+        "prohibited_core_symlinks": [
+            {"path": str(path.relative_to(root)), "target": str(path.readlink())}
+            for path in prohibited
+        ],
+        "out_of_scope_symlinks": [
+            {"path": str(path.relative_to(root)), "target": str(path.readlink())}
+            for path in out_of_scope
+        ],
+    }
+
+
 def same_bwave_mode(child: dict, replay: dict) -> dict:
     """Require an exact replay before declaring a child's B-Wave divergence."""
     child = _mapping(child, "B-Wave child query")
@@ -649,6 +687,8 @@ def _parser() -> argparse.ArgumentParser:
     registration = sub.add_parser("vivado-registration")
     registration.add_argument("requested", type=Path)
     registration.add_argument("registered", type=Path)
+    links = sub.add_parser("stealth-core-links")
+    links.add_argument("root", type=Path)
     return parser
 
 
@@ -668,6 +708,8 @@ def _execute(args: argparse.Namespace) -> dict:
         result = pdf_subjects(args.paths, args.subject)
     elif args.kind == "vivado-registration":
         result = canonical_registration(args.requested, args.registered)
+    elif args.kind == "stealth-core-links":
+        result = stealth_core_links(args.root)
     else:
         result = distance_rows(
             args.path.read_text(), [int(item) for item in args.expected.split(",")]

@@ -22,6 +22,7 @@ from qa.scenarios.picorv32.fixture_validation import (
     required_subjects,
     same_bwave_mode,
     spike_elf,
+    stealth_core_links,
     stealth_native,
     synth_baseline,
     vivado_executable,
@@ -236,6 +237,85 @@ def test_exact_result_oracles_reject_wrong_output(tmp_path):
         oracle({"kind": "verdict", "declared_expected": "denied", "observed": "pass"})["matches"]
         is False
     )
+
+
+def test_stealth_core_links_allow_managed_guidance_links(tmp_path):
+    (tmp_path / ".booley-projected-demo.core").write_text("projected\n")
+    native = tmp_path / "rtl/demo.core"
+    native.parent.mkdir()
+    native.write_text("native\n")
+    canonical = tmp_path / ".booley_project/AGENTS.md"
+    canonical.parent.mkdir()
+    canonical.write_text("# Project guidance\n")
+    (tmp_path / "AGENTS.md").symlink_to(".booley_project/AGENTS.md")
+    (tmp_path / "CLAUDE.md").symlink_to(".booley_project/AGENTS.md")
+
+    result = stealth_core_links(tmp_path)
+
+    assert result == {
+        "matches": True,
+        "observed": (
+            "No projected or native .core entries are symlinks; retained 2 out-of-scope symlinks."
+        ),
+        "projected_core_count": 1,
+        "native_core_count": 1,
+        "prohibited_core_symlinks": [],
+        "out_of_scope_symlinks": [
+            {"path": "AGENTS.md", "target": ".booley_project/AGENTS.md"},
+            {"path": "CLAUDE.md", "target": ".booley_project/AGENTS.md"},
+        ],
+    }
+
+
+def test_stealth_core_links_cli_rejects_projected_core_symlink(tmp_path):
+    target = tmp_path / ".booley_project/cores/demo.core"
+    target.parent.mkdir(parents=True)
+    target.write_text("authored\n")
+    (tmp_path / ".booley-projected-demo.core").symlink_to(target)
+    script = FIXTURES.parent / "fixture_validation.py"
+
+    result = subprocess.run(
+        ["python3", str(script), "stealth-core-links", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {
+        "matches": False,
+        "native_core_count": 0,
+        "observed": "Projected or native .core symlinks found: .booley-projected-demo.core.",
+        "out_of_scope_symlinks": [],
+        "prohibited_core_symlinks": [
+            {
+                "path": ".booley-projected-demo.core",
+                "target": str(target),
+            }
+        ],
+        "projected_core_count": 1,
+    }
+
+
+def test_stealth_core_links_reject_broken_native_core_symlink(tmp_path):
+    native = tmp_path / "rtl/demo.core"
+    native.parent.mkdir()
+    native.symlink_to("missing.core")
+    guidance = tmp_path / "AGENTS.md"
+    guidance.symlink_to(".booley_project/AGENTS.md")
+
+    result = stealth_core_links(tmp_path)
+
+    assert result["matches"] is False
+    assert result["projected_core_count"] == 0
+    assert result["native_core_count"] == 1
+    assert result["prohibited_core_symlinks"] == [
+        {"path": "rtl/demo.core", "target": "missing.core"}
+    ]
+    assert result["out_of_scope_symlinks"] == [
+        {"path": "AGENTS.md", "target": ".booley_project/AGENTS.md"}
+    ]
 
 
 def test_synth_baseline_requires_successful_numeric_comparison_and_identities():
