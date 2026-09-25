@@ -1034,7 +1034,9 @@ root explicitly; callers obtain project-data roots through
   removing its contents. Unknown files are named and refused without mutation;
   changed or missing recorded native payloads are accepted because full pruning
   removes the entire invocation. Interrupted attempts may be removed after their
-  process releases the lock. A pruning journal permits retry after partial cleanup.
+  process releases the lock. Authenticated pending/interrupted Campaigns, missing
+  summaries, and missing compatibility projections are abandoned rather than
+  invalid. A pruning journal permits retry after partial cleanup.
   The empty `.pruned-N` tombstone reserves the number permanently; it contains no
   Campaign or native evidence. Other invocations remain untouched.
 
@@ -1057,7 +1059,11 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 ```
 
 Full pruning releases matching retired child-execution index entries before it
-removes the invocation. The project-data root is inferred only when the report
+removes the invocation. Before release it performs bounded recovery/cancellation
+of exact Campaign-mirrored orphan process trees, proves them terminal, reconciles
+their heavy-slot tokens, publishes retirement mirrors, and marker-authenticates
+cleanup of owned templated run directories. Literal run directories are untouched.
+The project-data root is inferred only when the report
 root is exactly `<project-data>/.runtime/flow-reports`. A nonstandard report
 root therefore requires `--project-data <resolved-project-data>` for `--full`
 when Campaign child records exist. Native-only pruning does not inspect or
@@ -1066,6 +1072,13 @@ release those records and does not require the option.
 Selection, locking, validation, and filesystem failures exit 2. Both operations
 are retryable for their exact selections. Do not manually remove journals,
 quarantines, invocation locks, or number tombstones.
+
+Simulation acquires `.invocation-N.lock` before publishing `sim/N`. Full pruning
+holds that producer lock and every discovered Campaign mutation lock through a
+second inventory pass, external recovery, journal publication, and invocation
+rename. Producer contention reports that the invocation is still being produced;
+mutation-lock contention reports an exact resume. Neither lock is removed or
+rewritten by retention, and a Campaign lock never recreates a renamed Campaign root.
 
 ### Coverage Analysis after Simulation
 

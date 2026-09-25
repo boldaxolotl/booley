@@ -9,6 +9,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from booley.flows.sim.campaign_reports import is_report_link
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
@@ -145,8 +146,15 @@ def _cleanup_interrupted_run_directory(run: RunDirectory, *, identity: Mapping[s
     return True
 
 
-def restore_run_directory(document: Mapping[str, object], *, project_root: Path) -> RunDirectory:
+def restore_run_directory(
+    document: Mapping[str, object],
+    *,
+    project_root: Path | None = None,
+    project_data: Path | None = None,
+) -> RunDirectory:
     """Reconstruct and authenticate one persisted attempt run directory."""
+    if (project_root is None) == (project_data is None):
+        raise ValueError("select exactly one checkout root or Project-data root")
     path = Path(str(document["resolved"]))
     collision_key = os.path.normcase(str(path.resolve(strict=False)))
     if collision_key != document["collision_key"]:
@@ -154,11 +162,16 @@ def restore_run_directory(document: Mapping[str, object], *, project_root: Path)
             "persisted run-directory collision key disagrees with resolved path"
         )
     lock_name = hashlib.sha256(collision_key.encode("utf-8")).hexdigest() + ".lock"
+    runtime = (
+        checkout_runtime_dir(project_root)
+        if project_root is not None
+        else cast(Path, project_data) / ".runtime"
+    )
     return RunDirectory(
         path=path,
         collision_key=collision_key,
         owned=bool(document["owned"]),
-        lock_path=checkout_runtime_dir(project_root) / "simulation-run-locks" / lock_name,
+        lock_path=runtime / "simulation-run-locks" / lock_name,
     )
 
 

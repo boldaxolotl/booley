@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -36,9 +37,11 @@ class RetainedCampaignStatus:
     manifest_path: Path
     summary_path: Path
     manifest_sha256: str
+    manifest: SimulationCampaignManifest
     completed: tuple[str, ...]
     pending: tuple[str, ...]
     interrupted: tuple[str, ...]
+    summary_present: bool
     summary_complete: bool
     summary_completed_matches: bool
     retention_files: tuple[Path, ...]
@@ -88,24 +91,29 @@ def inspect_retained_campaign(manifest_path: Path) -> RetainedCampaignStatus:
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)
         recovery = store.scan_validated(manifest, digest)
-        summary = store.load_summary()
+        if not store.summary_path.exists() and not store.summary_path.is_symlink():
+            summary = None
+        else:
+            summary = store.load_summary()
     except SimulationCampaignIntegrityError:
         raise
     except OSError as exc:
         raise SimulationCampaignIntegrityError(
             f"cannot inspect Simulation Campaign storage: {exc}"
         ) from exc
-    completed = cast(list[str], summary["completed"])
+    completed = cast(list[str], summary["completed"]) if summary is not None else []
     retention_files, coverage_directories = _retention_inventory(store, recovery)
     return RetainedCampaignStatus(
         store.manifest_path,
         store.summary_path,
         digest,
+        manifest,
         recovery.complete,
         recovery.pending,
         recovery.interrupted,
-        summary["complete"] is True,
-        tuple(completed) == recovery.complete,
+        summary is not None,
+        summary is not None and summary["complete"] is True,
+        summary is None or tuple(completed) == recovery.complete,
         retention_files,
         coverage_directories,
     )
@@ -144,6 +152,62 @@ def _retention_inventory(
     return tuple(sorted(retention_files)), tuple(sorted(coverage_directories))
 
 
+@contextmanager
+def retained_campaign_lock(manifest_path: Path) -> Iterator[None]:
+    """Exclude mutation of one existing authenticated Campaign without recreating it."""
+    store = _store_for_manifest(manifest_path)
+    with store.mutation_lock():
+        yield
+
+
+def recover_retained_campaign_resources(
+    status: RetainedCampaignStatus, project_data: Path | None
+) -> None:
+    """Recover exact child records and interrupted owned run directories."""
+    from booley.runtime.job_slots import SlotStore
+
+    from .child_protocol import ChildExecutionRegistry
+    from .run_directory import cleanup_interrupted_run_directory, restore_run_directory
+
+    store = _store_for_manifest(status.manifest_path)
+    children = store.root / "child-executions" / "entries"
+    unretired = (
+        tuple(
+            path
+            for path in children.glob("*.json")
+            if not (store.root / "child-executions" / "retired" / path.name).is_file()
+        )
+        if children.is_dir()
+        else ()
+    )
+    if (unretired or status.interrupted) and project_data is None:
+        raise SimulationCampaignIntegrityError(
+            "Project data is required to recover retained Campaign resources"
+        )
+    if project_data is None:
+        return
+    if unretired:
+        registry = ChildExecutionRegistry(store, status.manifest, project_data=project_data)
+        registry.recover_selected_unretired(SlotStore(project_data / "runtime" / "jobs" / "slots"))
+    for work_item_id in status.interrupted:
+        attempt = store.latest_attempt(work_item_id)
+        if attempt is None:
+            continue
+        document = attempt.document
+        run = restore_run_directory(
+            cast(Mapping[str, object], document["run_directory"]),
+            project_data=project_data,
+        )
+        cleanup_interrupted_run_directory(
+            run,
+            identity={
+                "campaign_id": cast(str, document["campaign_id"]),
+                "work_item_id": work_item_id,
+                "attempt_id": cast(str, document["attempt_id"]),
+            },
+        )
+
+
 def _store_for_manifest(manifest_path: Path) -> CampaignStore:
     canonical = manifest_path.absolute()
     if canonical.name != "manifest.json" or canonical.parent.name != "campaign":
@@ -159,4 +223,6 @@ __all__ = [
     "SimulationCampaignWorkItemError",
     "authenticate_work_item",
     "inspect_retained_campaign",
+    "recover_retained_campaign_resources",
+    "retained_campaign_lock",
 ]

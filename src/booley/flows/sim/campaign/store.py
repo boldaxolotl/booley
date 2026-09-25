@@ -292,7 +292,8 @@ class CampaignStore:
     def mutation_lock(self) -> Iterator[None]:
         """Fail immediately when another scheduler owns this campaign."""
         _require_safe_parents(self.root, self.root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        if not self.root.is_dir():
+            raise SimulationCampaignIntegrityError("Simulation Campaign directory disappeared")
         path = self.root / ".lock"
         _require_safe_parents(path, self.root)
         with path.open("a+", encoding="utf-8") as stream, nonblocking_file_lock(stream):

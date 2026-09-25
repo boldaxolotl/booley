@@ -479,24 +479,16 @@ def _durable_create(path: Path, raw: bytes) -> None:
 def _validate_project_inventory(
     project_root: Path, records: dict[str, tuple[bytes, bytes]]
 ) -> None:
-    expected_entries = {json.loads(raw)["manifest_path"] for raw, _retired in records.values()}
-    expected_digests = {json.loads(raw)["manifest_sha256"] for raw, _retired in records.values()}
-    if len(expected_entries) != 1 or len(expected_digests) != 1:
-        raise ValueError("campaign child entries disagree on manifest authority")
-    manifest_path = next(iter(expected_entries))
-    manifest_digest = next(iter(expected_digests))
-    matching: set[str] = set()
     entries = project_root / "entries"
-    for name in sorted(_json_inventory(entries)):
-        raw, entry = _canonical_object(entries / name)
+    for name, (expected, _retired) in sorted(records.items()):
+        path = entries / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        raw, entry = _canonical_object(path)
         execution_id = ExecutionId(Path(name).stem)
         _validate_entry_schema(execution_id, entry)
-        if entry["manifest_path"] == manifest_path and entry["manifest_sha256"] == manifest_digest:
-            matching.add(name)
-            if name not in records or records[name][0] != raw:
-                raise ValueError("Project child entry has no exact campaign mirror")
-    if matching - set(records):
-        raise ValueError("Project child registry contains an orphan campaign entry")
+        if raw != expected:
+            raise ValueError("Project child entry disagrees with campaign mirror")
 
 
 def _fsync_registry_directories(project_root: Path) -> None:

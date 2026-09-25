@@ -90,15 +90,24 @@ class ChildExecutionRegistry:
         self,
         store: CampaignStore,
         manifest: SimulationCampaignManifest,
-        project_root: Path,
+        project_root: Path | None = None,
+        *,
+        project_data: Path | None = None,
     ) -> None:
+        if (project_root is None) == (project_data is None):
+            raise ValueError("select exactly one checkout root or Project-data root")
         self._store = store
         self._manifest = manifest
         self._checkout_root = project_root
+        self._explicit_project_data = project_data
         self._campaign_root = store.root / "child-executions"
 
     @property
     def _project_data(self) -> Path:
+        explicit = getattr(self, "_explicit_project_data", None)
+        if explicit is not None:
+            return explicit
+        assert self._checkout_root is not None
         return resolve_checkout_project_dir(self._checkout_root)
 
     @property
@@ -237,6 +246,39 @@ class ChildExecutionRegistry:
             self._validate_entry_identity(entry, _sha(raw))
             self._recover_entry(path, raw, entry, slot_store)
             recovered_ids.add(path.name)
+        self._verify_campaign_entries(recovered_ids, expected_manifest, expected_digest)
+
+    def recover_selected_unretired(self, slot_store: object | None) -> None:
+        """Recover only child IDs named by this Campaign's authenticated mirror."""
+        campaign_entries = self._campaign_root / "entries"
+        expected_manifest = str(self._store.manifest_path.resolve(strict=True))
+        expected_digest = manifest_digest(self._manifest)
+        recovered_ids: set[str] = set()
+        paths = sorted(campaign_entries.glob("*.json")) if campaign_entries.is_dir() else []
+        for campaign_path in paths:
+            if (self._campaign_root / "retired" / campaign_path.name).is_file():
+                recovered_ids.add(campaign_path.name)
+                continue
+            campaign_raw, campaign_entry = _read_protocol_record(
+                campaign_path, "campaign child entry"
+            )
+            _validate_entry(campaign_path, campaign_entry)
+            project_path = self._project_root / "entries" / campaign_path.name
+            project_raw, entry = _read_protocol_record(project_path, "child entry")
+            if project_raw != campaign_raw or entry != campaign_entry:
+                raise SimulationCampaignIntegrityError(
+                    "campaign child entry disagrees with Project-local authority"
+                )
+            if (
+                entry.get("manifest_path") != expected_manifest
+                or entry.get("manifest_sha256") != expected_digest
+            ):
+                raise SimulationCampaignIntegrityError(
+                    "campaign child entry disagrees with its Campaign manifest"
+                )
+            self._validate_entry_identity(entry, _sha(project_raw))
+            self._recover_entry(project_path, project_raw, entry, slot_store)
+            recovered_ids.add(project_path.name)
         self._verify_campaign_entries(recovered_ids, expected_manifest, expected_digest)
 
     def _verify_campaign_entries(

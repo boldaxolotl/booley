@@ -64,6 +64,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
 )
+from booley.runtime.file_lock import LockContentionError
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -1414,6 +1415,36 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Simulation is a heavy Sandbox workload."""
         return job_slots.CLASS_HEAVY
 
+    def _next_invocation_dir(self, report_dir: Path) -> Path:
+        """Acquire the Simulation producer lock before publishing its directory."""
+        from .campaign_reports import campaign_invocation_lock
+
+        endpoint_dir = report_dir / self.name
+        endpoint_dir.mkdir(parents=True, exist_ok=True)
+        existing = (
+            int(path.name.removeprefix(".pruned-"))
+            for path in endpoint_dir.iterdir()
+            if path.name.removeprefix(".pruned-").isdigit()
+        )
+        number = max(existing, default=0) + 1
+        while number <= 1_000_000:
+            invocation = endpoint_dir / str(number)
+            lock = campaign_invocation_lock(invocation)
+            try:
+                lock.__enter__()
+            except LockContentionError:
+                number += 1
+                continue
+            try:
+                invocation.mkdir()
+            except FileExistsError:
+                lock.__exit__(None, None, None)
+                number += 1
+                continue
+            self.context.publication_resources.callback(lock.__exit__, None, None, None)
+            return invocation
+        raise RuntimeError("Simulation invocation reservation ceiling exceeded")
+
     def record_campaign_acceptance(self, outcomes: tuple[object, ...]) -> None:
         """Own campaign-specific reconciliation behind the generic endpoint hook."""
         from .acceptance import record_campaign_acceptance
@@ -1977,9 +2008,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
-        from .campaign_reports import campaign_invocation_lock
-
-        self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
         if not isinstance(admission, AdmissionContext):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -2288,9 +2316,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
-        from .campaign_reports import campaign_invocation_lock
-
-        self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
         return self._run_coverage_invocation(invocation, prepared)
 
     def _run_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
@@ -2324,9 +2349,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
-        from .campaign_reports import campaign_invocation_lock
-
-        self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
         progress = CoverageProgress(
             invocation, tuple(plan.handle.selector for plan in prepared.targets)
         )

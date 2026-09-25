@@ -609,8 +609,7 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
 def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatch):
     from pathlib import Path
 
-    from booley.flows.sim.campaign_retention import prune_invocation
-    from booley.runtime.file_lock import LockContentionError
+    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -622,7 +621,7 @@ def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatc
 
     def check_lock(path, *args, **kwargs):
         if path.name == "report.json":
-            with pytest.raises(LockContentionError):
+            with pytest.raises(CampaignRetentionError, match="still being produced"):
                 prune_invocation(tmp_path / "reports", 1)
             checked.append(True)
         return write(path, *args, **kwargs)

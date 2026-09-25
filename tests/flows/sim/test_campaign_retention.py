@@ -73,17 +73,58 @@ def test_pruning_rejects_an_active_invocation(tmp_path):
     import pytest
 
     from booley.flows.sim.campaign_reports import campaign_invocation_lock
-    from booley.flows.sim.campaign_retention import prune_invocation, prune_native_payload
-    from booley.runtime.file_lock import LockContentionError
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        prune_invocation,
+        prune_native_payload,
+    )
 
     outcome = campaign(tmp_path)
     with campaign_invocation_lock(tmp_path / "reports/sim/1"):
-        with pytest.raises(LockContentionError):
+        with pytest.raises(CampaignRetentionError, match="invocation 1 is still being produced"):
             prune_native_payload(tmp_path / "reports", 1, "sim_0")
-        with pytest.raises(LockContentionError):
+        with pytest.raises(CampaignRetentionError, match="invocation 1 is still being produced"):
             prune_invocation(tmp_path / "reports", 1)
     assert outcome.campaign_path.is_file()
     assert (outcome.campaign_path.parent / "native").is_dir()
+
+
+def test_maintenance_cli_translates_active_invocation_contention(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import booley
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+
+    campaign(tmp_path)
+    invocation = tmp_path / "reports/sim/1"
+    command = [
+        sys.executable,
+        "-m",
+        "booley.flows.sim.campaign_retention",
+        "--reports-root",
+        str(tmp_path / "reports"),
+        "--invocation",
+        "1",
+        "--full",
+    ]
+    with campaign_invocation_lock(invocation):
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env={**os.environ, "PYTHONPATH": str(Path(booley.__file__).parent.parent)},
+            check=False,
+        )
+
+    assert result.returncode == 2
+    assert "invocation 1 is still being produced; retry after it finishes" in result.stderr
+    assert "Errno" not in result.stderr
+    assert invocation.is_dir()
+    assert not (tmp_path / "reports/sim/.pruned-1").exists()
 
 
 import pytest

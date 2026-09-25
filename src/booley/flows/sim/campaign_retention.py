@@ -9,8 +9,21 @@ import hashlib
 import json
 import shutil
 import stat
+from collections.abc import Iterator, Mapping
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
+from booley.runtime.file_lock import LockContentionError
+
+from .campaign import (
+    RetainedCampaignStatus,
+    SimulationCampaignIntegrityError,
+    inspect_retained_campaign,
+    recover_retained_campaign_resources,
+    retained_campaign_lock,
+)
 from .campaign_reports import (
     campaign_invocation_lock,
     is_report_link,
@@ -28,6 +41,24 @@ from .coverage_reference import (
 
 class CampaignRetentionError(ValueError):
     """A selection or filesystem tree cannot be safely pruned."""
+
+
+@dataclass(frozen=True, slots=True)
+class _CampaignEligibility:
+    status: RetainedCampaignStatus
+    abandoned: bool
+
+
+@contextmanager
+def _retention_invocation_lock(root: Path) -> Iterator[None]:
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(campaign_invocation_lock(root))
+        except LockContentionError as exc:
+            raise CampaignRetentionError(
+                f"invocation {root.name} is still being produced; retry after it finishes"
+            ) from exc
+        yield
 
 
 def _remove_tree(path: Path) -> None:
@@ -137,12 +168,13 @@ def _native_artifacts(campaign: CoverageCampaign) -> list[dict[str, object]]:
 def prune_native_payload(reports_root: Path, invocation: int, target: str) -> Path:
     """Remove one exact Target's native databases; return its availability sidecar."""
     root = _invocation(reports_root, invocation)
-    with campaign_invocation_lock(root):
+    with _retention_invocation_lock(root):
         return _prune_native(root, target)
 
 
 def _prune_native(root: Path, target: str) -> Path:
     _safe_tree(root)
+    _validate_native_pruning_eligibility(root, target)
     directory, loaded = _target(root, target)
     campaign = loaded.campaign
     _native_manifest(directory, campaign)
@@ -188,7 +220,7 @@ def prune_invocation(
 ) -> None:
     """Remove exactly one invocation, retaining only an empty number tombstone."""
     root = _invocation(reports_root, invocation)
-    with campaign_invocation_lock(root):
+    with _retention_invocation_lock(root):
         _prune_invocation(root, project_data=project_data)
 
 
@@ -201,11 +233,16 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
             raise CampaignRetentionError("Ambiguous invocation pruning state")
         _validate_invocation_targets(root)
         _validate_invocation_inventory(root)
-        _release_child_indexes(root, project_data)
-        write_campaign_json(
-            root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
-        )
-        root.rename(quarantine)
+        campaigns = _campaign_directories(root)
+        with _campaign_mutation_locks(campaigns):
+            _validate_invocation_targets(root)
+            _validate_invocation_inventory(root)
+            _recover_campaign_resources(root, campaigns, project_data)
+            _release_child_indexes(root, project_data)
+            write_campaign_json(
+                root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
+            )
+            root.rename(quarantine)
     elif not quarantine.is_dir():
         raise CampaignRetentionError("Invocation does not exist")
     children = list(quarantine.iterdir())
@@ -244,6 +281,41 @@ def _release_child_indexes(root: Path, project_data: Path | None) -> None:
             release_retired_campaign_children(resolved, children)
     except (OSError, ValueError) as exc:
         raise CampaignRetentionError(f"Campaign child retention is invalid: {exc}") from exc
+
+
+def _campaign_directories(root: Path) -> tuple[Path, ...]:
+    return tuple(
+        sorted(
+            path.parent for path in root.glob("targets/*/campaign/manifest.json") if path.is_file()
+        )
+    )
+
+
+@contextmanager
+def _campaign_mutation_locks(campaigns: tuple[Path, ...]) -> Iterator[None]:
+    with ExitStack() as stack:
+        for campaign in campaigns:
+            try:
+                stack.enter_context(retained_campaign_lock(campaign / "manifest.json"))
+            except LockContentionError as exc:
+                raise CampaignRetentionError(
+                    "Simulation Campaign is being resumed; retry after it finishes"
+                ) from exc
+        yield
+
+
+def _recover_campaign_resources(
+    root: Path, campaigns: tuple[Path, ...], project_data: Path | None
+) -> None:
+    resolved = project_data or _infer_project_data(root)
+    try:
+        for directory in campaigns:
+            status = inspect_retained_campaign(directory / "manifest.json")
+            recover_retained_campaign_resources(status, resolved)
+    except CampaignRetentionError:
+        raise
+    except (OSError, ValueError, SimulationCampaignIntegrityError) as exc:
+        raise CampaignRetentionError(f"Campaign recovery is invalid: {exc}") from exc
 
 
 def _infer_project_data(root: Path) -> Path | None:
@@ -286,7 +358,7 @@ def _validate_invocation_targets(root: Path) -> None:
             _target(root, selector, require_projection=False)
         campaign = directory / "campaign"
         if (campaign / "manifest.json").exists():
-            _validate_simulation_campaign(directory, campaign)
+            _inspect_simulation_campaign(directory, campaign)
 
 
 def _validate_invocation_inventory(root: Path) -> None:
@@ -323,8 +395,6 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
     campaign = target / "campaign"
     manifest = campaign / "manifest.json"
     if manifest.exists():
-        from .campaign import inspect_retained_campaign
-
         status = inspect_retained_campaign(manifest)
         expected.update(status.retention_files)
         for coverage in status.coverage_directories:
@@ -409,26 +479,70 @@ def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> di
     }
 
 
-def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
-    from .campaign import inspect_retained_campaign
-
+def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligibility:
     try:
         status = inspect_retained_campaign(campaign / "manifest.json")
-        projection = _read_object(target / "simulation.json")
     except (OSError, ValueError) as exc:
         raise CampaignRetentionError(
             f"Simulation Campaign is invalid and cannot be pruned: {exc}"
         ) from exc
-    if status.pending or status.interrupted:
-        raise CampaignRetentionError("Incomplete Simulation Campaigns cannot be pruned")
-    if (
-        not status.summary_complete
-        or not status.summary_completed_matches
-        or projection.get("complete") is not True
-        or projection.get("campaign_manifest") != str(status.manifest_path)
-        or projection.get("campaign_summary") != str(status.summary_path)
-    ):
+    incomplete_recovery = bool(status.pending or status.interrupted)
+    if status.summary_present and not status.summary_completed_matches:
         raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+    if status.summary_present and status.summary_complete == incomplete_recovery:
+        raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+    projection_path = target / "simulation.json"
+    projection = None
+    if projection_path.exists():
+        try:
+            projection = _read_object(projection_path)
+        except (OSError, ValueError) as exc:
+            raise CampaignRetentionError(
+                f"Simulation Campaign is invalid and cannot be pruned: {exc}"
+            ) from exc
+        if projection.get("campaign_manifest") != str(status.manifest_path) or projection.get(
+            "campaign_summary"
+        ) != str(status.summary_path):
+            raise CampaignRetentionError(
+                "Simulation Campaign acceptance projections are incomplete"
+            )
+    abandoned = incomplete_recovery or not status.summary_present or projection is None
+    if projection is not None and projection.get("complete") is (not abandoned):
+        return _CampaignEligibility(status, abandoned)
+    if projection is None and abandoned:
+        return _CampaignEligibility(status, True)
+    raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+
+
+def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
+    progress = _read_object(root / "progress.json")
+    targets = progress.get("targets")
+    if (
+        progress.get("flow") != "sim"
+        or not isinstance(targets, list)
+        or targets.count(selector) != 1
+    ):
+        raise CampaignRetentionError("Target does not resolve exactly in this invocation")
+    target = target_report_directory(root, selector)
+    manifest = target / "campaign" / "manifest.json"
+    if not manifest.exists():
+        if not (target / "coverage.json").exists():
+            raise CampaignRetentionError(
+                "native-only pruning requires a completed Target; use --full to discard "
+                "this abandoned invocation"
+            )
+        return
+    eligibility = _inspect_simulation_campaign(target, manifest.parent)
+    status = eligibility.status
+    workload = cast(Mapping[str, object], status.manifest.document["workload"])
+    if workload["coverage"] is not True:
+        raise CampaignRetentionError("--native-target has no native Coverage Campaign")
+    if eligibility.abandoned:
+        raise CampaignRetentionError(
+            "native-only pruning requires a completed Target; use --full to discard the "
+            f"abandoned invocation or booley flow sim --resume-from {manifest} to preserve "
+            "and complete it"
+        )
 
 
 def _validate_completed_targets(
@@ -470,7 +584,14 @@ def main() -> None:
     )
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--native-target", help="Exact Target selector for native-only pruning")
-    operation.add_argument("--full", action="store_true", help="Remove the full invocation")
+    operation.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "Remove the full invocation after bounded orphan-child recovery and "
+            "marker-checked cleanup of owned templated run directories"
+        ),
+    )
     args = parser.parse_args()
     try:
         if args.full:
