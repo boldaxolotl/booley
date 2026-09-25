@@ -1,6 +1,6 @@
 interface:
   display_name: "Triage Booley QA"
-  short_description: "Deduplicate QA findings and file approved issues"
+  short_description: "Triage QA findings one at a time and file approved issues"
   default_prompt: "Use $booley-qa-triage to triage these QA run directories."
 
 policy:
