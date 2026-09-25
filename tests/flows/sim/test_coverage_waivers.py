@@ -85,6 +85,7 @@ def test_windows_open_does_not_require_missing_pywin32_constant(
         CreateFile=create_file,
         GetFileInformationByHandle=lambda _handle: (0,),
     )
+    monkeypatch.setitem(sys.modules, "pywintypes", SimpleNamespace(error=OSError))
     monkeypatch.setitem(sys.modules, "win32con", constants)
     monkeypatch.setitem(sys.modules, "win32file", win32file)
 
@@ -94,6 +95,39 @@ def test_windows_open_does_not_require_missing_pywin32_constant(
 
     assert opened is handle
     assert observed["flags"] == 0x02200000
+
+
+def test_windows_open_normalizes_pywintypes_missing_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class FakePyWinError(Exception):
+        def __init__(self, winerror: int) -> None:
+            self.winerror = winerror
+
+    constants = SimpleNamespace(
+        FILE_ATTRIBUTE_DIRECTORY=0x10,
+        FILE_ATTRIBUTE_REPARSE_POINT=0x400,
+        FILE_FLAG_BACKUP_SEMANTICS=0x02000000,
+        FILE_SHARE_READ=1,
+        FILE_SHARE_WRITE=2,
+        GENERIC_READ=0x80000000,
+        OPEN_EXISTING=3,
+    )
+
+    def create_file(*_args: object) -> object:
+        raise FakePyWinError(2)
+
+    win32file = SimpleNamespace(CreateFile=create_file)
+    monkeypatch.setitem(sys.modules, "pywintypes", SimpleNamespace(error=FakePyWinError))
+    monkeypatch.setitem(sys.modules, "win32con", constants)
+    monkeypatch.setitem(sys.modules, "win32file", win32file)
+
+    with pytest.raises(coverage_waiver_files.SecurePathError) as raised:
+        coverage_waiver_files._WindowsSecureTree._open(
+            tmp_path / "missing", expected_directory=True
+        )
+
+    assert raised.value.kind == "missing"
 
 
 def _roots(tmp_path: Path) -> CoverageRepositoryRoots:

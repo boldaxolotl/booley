@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import tomllib
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
@@ -12,9 +11,14 @@ from pathlib import Path
 from types import MappingProxyType
 
 from booley.config.coverage_waiver_inputs import (
+    APPROVAL_DOCUMENT_FIELDS,
+    APPROVAL_RECORD_FIELDS,
+    REQUIRED_APPROVAL_RECORD_FIELDS,
     CoverageWaiverConfig,
+    approval_record_has_required_strings,
     formal_proof_references,
     is_safe_relative_posix,
+    is_sha256,
 )
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_list, require_str
 from booley.flows.sim.coverage_campaign import (
@@ -34,22 +38,6 @@ from booley.flows.sim.coverage_waiver_matching import ApprovedWaiver, ApprovedWa
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 _SET_SCHEMA = "booley.approved-waiver-set/v1"
-_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-_TOP_LEVEL_FIELDS = frozenset({"schema", "source", "source_sha256", "approval"})
-_APPROVAL_FIELDS = frozenset(
-    {
-        "id",
-        "target",
-        "point_id",
-        "reason",
-        "justification",
-        "approved_by",
-        "approved_at",
-        "approval_ref",
-        "proof",
-    }
-)
-_REQUIRED_APPROVAL_FIELDS = _APPROVAL_FIELDS - {"proof"}
 
 
 @dataclass(frozen=True)
@@ -196,7 +184,7 @@ def _proof_findings(proof: object, pointer: str) -> list[CoverageFinding]:
         return [_error("COV_WAIVER_PROOF_INVALID", pointer, "Proof must be a table.")]
     if set(document) != {"kind", "reference", "sha256"}:
         return [_error("COV_WAIVER_PROOF_INVALID", pointer, "Proof fields are closed.")]
-    valid = kind == "formal" and bool(reference) and _SHA256_RE.fullmatch(fingerprint) is not None
+    valid = kind == "formal" and bool(reference) and is_sha256(fingerprint)
     return [] if valid else [_error("COV_WAIVER_PROOF_INVALID", pointer, "Invalid proof.")]
 
 
@@ -226,15 +214,9 @@ def _record_shape_findings(
     record: Mapping[str, object], pointer: str, known_targets: frozenset[str]
 ) -> list[CoverageFinding]:
     findings: list[CoverageFinding] = []
-    unknown = set(record) - _APPROVAL_FIELDS
-    missing = _REQUIRED_APPROVAL_FIELDS - set(record)
-    try:
-        for key in _REQUIRED_APPROVAL_FIELDS:
-            require_str(record, key)
-    except BoundaryError:
-        empty = True
-    else:
-        empty = False
+    unknown = set(record) - APPROVAL_RECORD_FIELDS
+    missing = REQUIRED_APPROVAL_RECORD_FIELDS - set(record)
+    empty = not approval_record_has_required_strings(record)
     if unknown or missing or empty:
         findings.append(
             _error(
@@ -366,7 +348,7 @@ def _document_shape_findings(
                 "Expected booley.coverage-waivers/v1.",
             )
         )
-    if set(document) != _TOP_LEVEL_FIELDS:
+    if set(document) != APPROVAL_DOCUMENT_FIELDS:
         findings.append(
             _error(
                 "COV_WAIVER_FILE_FIELDS_INVALID",
@@ -378,7 +360,7 @@ def _document_shape_findings(
         findings.append(
             _error("COV_WAIVER_SOURCE_UNSAFE", f"{pointer}/source", "Unsafe RTL source path.")
         )
-    if _SHA256_RE.fullmatch(str(document.get("source_sha256"))) is None:
+    if not is_sha256(document.get("source_sha256")):
         findings.append(
             _error(
                 "COV_WAIVER_SOURCE_FINGERPRINT_INVALID",
