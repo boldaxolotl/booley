@@ -1,5 +1,14 @@
 """Public seam for durable Simulation Campaign execution and resume."""
 
+from .artifact_reference import (
+    ArtifactReference,
+    ArtifactReferenceError,
+    ResolvedArtifact,
+    build_artifact_reference,
+    encode_artifact_reference,
+    resolve_artifact_reference,
+    resolve_report_artifact_reference,
+)
 from .codec import (
     SimulationCampaignIntegrityError,
     decode_bundle_build_attempt,
@@ -58,10 +67,19 @@ from .model import (
     SimulatorBundle,
     create_simulation_campaign_plan,
 )
+from .projection import (
+    SIMULATION_PROJECTION_SCHEMA,
+    ProjectionTrust,
+    SimulationProjection,
+    decode_simulation_projection,
+)
 from .resume import ValidatedResumeManifest, validate_resume_manifest
 
 __all__ = [
+    "SIMULATION_PROJECTION_SCHEMA",
     "AcceptanceFacts",
+    "ArtifactReference",
+    "ArtifactReferenceError",
     "BundleBuildAttempt",
     "BundleBuildResult",
     "CampaignOutcome",
@@ -75,6 +93,8 @@ __all__ = [
     "NewCampaignPreview",
     "NewCampaignPreviewRequest",
     "NewCampaignRunRequest",
+    "ProjectionTrust",
+    "ResolvedArtifact",
     "ResumeCampaignPreview",
     "ResumeCampaignPreviewRequest",
     "ResumeCampaignRunRequest",
@@ -86,11 +106,13 @@ __all__ = [
     "SimulationCampaignManifest",
     "SimulationCampaignPlan",
     "SimulationCampaignWorkItemError",
+    "SimulationProjection",
     "SimulationResult",
     "SimulatorBundle",
     "ValidatedResumeManifest",
     "acceptance_facts_sha256",
     "authenticate_work_item",
+    "build_artifact_reference",
     "create_simulation_campaign_plan",
     "decode_acceptance_facts",
     "decode_bundle_build_attempt",
@@ -98,9 +120,11 @@ __all__ = [
     "decode_executable_snapshot",
     "decode_simulation_attempt",
     "decode_simulation_campaign_manifest",
+    "decode_simulation_projection",
     "decode_simulation_result",
     "decode_simulator_bundle",
     "encode_acceptance_facts",
+    "encode_artifact_reference",
     "encode_bundle_build_attempt",
     "encode_bundle_build_result",
     "encode_executable_snapshot",
@@ -110,5 +134,7 @@ __all__ = [
     "encode_simulation_result",
     "encode_simulator_bundle",
     "inspect_retained_campaign",
+    "resolve_artifact_reference",
+    "resolve_report_artifact_reference",
     "validate_resume_manifest",
 ]

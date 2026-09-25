@@ -127,10 +127,10 @@ def _apply_coverage_aliases(
 def _simulation_detail(
     plan: CoverageTargetPlan, campaign: CoverageCampaign, path: Path
 ) -> dict[str, Any]:
+    del path
     selected = list(plan.selected_tests)
     return {
-        "coverage_campaign": str(path),
-        "simulation_report": str(path.with_name("simulation.json")),
+        "campaign_id": getattr(campaign, "campaign_id", "unavailable"),
         "target": plan.handle.identity,
         "selected_tests": selected,
         "registry_tests": list(plan.declared_tests),

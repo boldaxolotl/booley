@@ -253,6 +253,26 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     if report_dir is None:
         return None
     report_dir.mkdir(parents=True, exist_ok=True)
+    _refresh_report_detail(endpoint, result)
+    report_json = json.dumps(_report_document(endpoint, result), indent=2)
+    inv_dir = endpoint._reserved_invocation_dir
+    endpoint._reserved_invocation_dir = None
+    if inv_dir is None:
+        inv_dir = endpoint._next_invocation_dir(report_dir)
+    inv_path = inv_dir / "report.json"
+    inv_path.write_text(report_json, encoding="utf-8")
+    flat_path = report_dir / f"{endpoint.name}.json"
+    flat_path.write_text(report_json, encoding="utf-8")
+    return inv_path
+
+
+def _refresh_report_detail(endpoint: EndpointState, result: EndpointOutcome) -> None:
+    refresh = getattr(getattr(endpoint, "flow", endpoint), "refresh_campaign_report_detail", None)
+    if callable(refresh):
+        refresh(result)
+
+
+def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[str, Any]:
     elapsed_s = round(time.monotonic() - endpoint._start_time, 2)
     passed = result.exit_code == EXIT_SUCCESS
     identity_key = "flow" if endpoint.endpoint_kind == "flow" else "mcp_tool"
@@ -268,6 +288,8 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
         "elapsed_s": elapsed_s,
         "passed": passed,
     }
+    if endpoint.name == "sim":
+        report["$schema"] = "booley.simulation-report/v2"
     mode = result.detail.get("mode")
     if isinstance(mode, str) and mode:
         report["mode"] = mode
@@ -284,27 +306,20 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     if endpoint._raw_argv is not None:
         report["argv"] = endpoint._raw_argv
     if result.input_tokens or result.output_tokens:
-        report["usage"] = {
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
-            "cached_tokens": result.cached_tokens,
-            "cache_create_tokens": result.cache_create_tokens,
-            "cost_usd": round(result.cost_usd, 4),
-        }
+        report["usage"] = _report_usage(result)
     if result.report_text:
         report["report_text"] = result.report_text
-    report_json = json.dumps(report, indent=2)
-    # Per-invocation numbered report
-    inv_dir = endpoint._reserved_invocation_dir
-    endpoint._reserved_invocation_dir = None
-    if inv_dir is None:
-        inv_dir = endpoint._next_invocation_dir(report_dir)
-    inv_path = inv_dir / "report.json"
-    inv_path.write_text(report_json, encoding="utf-8")
-    # Flat copy for backward compat
-    flat_path = report_dir / f"{endpoint.name}.json"
-    flat_path.write_text(report_json, encoding="utf-8")
-    return inv_path
+    return report
+
+
+def _report_usage(result: EndpointOutcome) -> dict[str, object]:
+    return {
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+        "cached_tokens": result.cached_tokens,
+        "cache_create_tokens": result.cache_create_tokens,
+        "cost_usd": round(result.cost_usd, 4),
+    }
 
 
 def _warn_no_report_artifact(endpoint: EndpointState) -> None:

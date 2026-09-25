@@ -405,7 +405,7 @@ def test_maintenance_cli_help_scopes_project_data_to_nonstandard_full_pruning():
     )
     assert result.returncode == 0
     help_text = " ".join(result.stdout.split()).replace("--reports- root", "--reports-root")
-    assert "for --full when --reports-root is outside" in help_text
+    assert "verify canonical ownership for --full" in help_text
     assert "not required for --native-target" in help_text
 
 
