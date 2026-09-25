@@ -854,11 +854,19 @@ def _retained_invocation(
     shutil.move(str(complete.store.root), target / "campaign")
     store = CampaignStore(target / "campaign")
     store.regenerate_summary()
+    manifest = store.load_manifest().document
+    manifest_target = manifest["target"]
     (target / "simulation.json").write_bytes(
         canonical_json_bytes(
             {
+                "flow": "sim",
+                "mode": "simulate",
                 "complete": True,
                 "target": "sim",
+                "target_identity": (f"{manifest_target['vlnv']}#{manifest_target['name']}"),
+                "passed": True,
+                "inconclusive": False,
+                "tests": [],
                 "campaign_manifest": str(store.manifest_path),
                 "campaign_summary": str(store.summary_path),
             }
@@ -944,6 +952,60 @@ def test_complete_campaign_pruning_releases_exact_project_child_pair(
     assert not (project_children / "entries" / f"{execution_id}.json").exists()
     assert not (project_children / "retired" / f"{execution_id}.json").exists()
     assert list((reports / "sim" / ".pruned-1").iterdir()) == []
+
+
+def test_detached_copy_pruning_never_releases_project_child_pair(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    execution_id = _publish_retired_child(project_data, store)
+    detached_reports = tmp_path / "copy-project/.runtime/flow-reports"
+    detached = detached_reports / "sim" / "1"
+    detached.parent.mkdir(parents=True)
+    shutil.copytree(reports / "sim" / "1", detached)
+
+    prune_invocation(detached_reports, 1, project_data=project_data)
+
+    project_children = project_data / ".runtime" / "campaign-child-executions"
+    assert (project_children / "entries" / f"{execution_id}.json").is_file()
+    assert (project_children / "retired" / f"{execution_id}.json").is_file()
+    prune_invocation(reports, 1)
+    assert not (project_children / "entries" / f"{execution_id}.json").exists()
+    assert not (project_children / "retired" / f"{execution_id}.json").exists()
+
+
+def test_detached_copy_pruning_never_recovers_producer_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim import campaign_retention
+
+    reports, project_data, store = _retained_invocation(tmp_path)
+    _publish_retired_child(project_data, store)
+    detached_reports = tmp_path / "copy-project/.runtime/flow-reports"
+    (detached_reports / "sim").mkdir(parents=True)
+    shutil.copytree(reports / "sim" / "1", detached_reports / "sim" / "1")
+    recovered: list[tuple[Path, Path | None]] = []
+    monkeypatch.setattr(
+        campaign_retention,
+        "recover_retained_campaign_resources",
+        lambda status, resolved: recovered.append((status.manifest_path, resolved)),
+    )
+
+    prune_invocation(detached_reports, 1, project_data=project_data)
+    assert recovered == []
+
+    prune_invocation(reports, 1)
+    assert recovered == [(store.manifest_path, project_data)]
+
+
+def test_canonical_recovery_rejects_disagreeing_project_data(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    _publish_retired_child(project_data, store)
+    other = tmp_path / "other-project"
+    other.mkdir()
+
+    with pytest.raises(CampaignRetentionError, match="disagrees with the canonical"):
+        prune_invocation(reports, 1, project_data=other)
+
+    assert (reports / "sim" / "1").is_dir()
 
 
 @pytest.mark.usefixtures("mandatory_file_locks")

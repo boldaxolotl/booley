@@ -333,6 +333,36 @@ def release_retired_campaign_children(
     return tuple(str(item[0]) for item in releases)
 
 
+def validate_retired_campaign_children(campaign_children: Path) -> tuple[str, ...]:
+    """Validate a detached Simulation Campaign mirror without mutating Project indexes."""
+    return tuple(sorted(Path(name).stem for name in _campaign_child_records(campaign_children)))
+
+
+def retained_campaign_child_manifests(campaign_children: Path) -> tuple[Path, ...]:
+    """Return validated producer manifest hints used only for ownership classification."""
+    records = _campaign_child_records(campaign_children)
+    paths = {
+        Path(json.loads(entry_raw)["manifest_path"])
+        for entry_raw, _retirement_raw in records.values()
+    }
+    return tuple(sorted(paths))
+
+
+def campaign_child_entry_manifests(campaign_children: Path) -> tuple[Path, ...]:
+    """Return validated producer manifest hints from entries, retired or not.
+
+    Recovery classifies ownership before unretired children are retired, so this
+    validates each entry alone instead of requiring the entry/retirement pairing.
+    """
+    entries = _json_inventory(campaign_children / "entries", missing=True)
+    paths = set()
+    for name in sorted(entries):
+        _raw, entry = _canonical_object(campaign_children / "entries" / name)
+        _validate_entry_schema(ExecutionId(Path(name).stem), entry)
+        paths.add(Path(entry["manifest_path"]))
+    return tuple(sorted(paths))
+
+
 def _campaign_child_records(
     campaign_children: Path,
 ) -> dict[str, tuple[bytes, bytes]]:

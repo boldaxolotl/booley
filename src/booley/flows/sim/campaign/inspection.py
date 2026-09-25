@@ -38,6 +38,9 @@ class RetainedCampaignStatus:
     summary_path: Path
     manifest_sha256: str
     manifest: SimulationCampaignManifest
+    campaign_id: str
+    target_selector: str
+    target_identity: str
     completed: tuple[str, ...]
     pending: tuple[str, ...]
     interrupted: tuple[str, ...]
@@ -102,12 +105,16 @@ def inspect_retained_campaign(manifest_path: Path) -> RetainedCampaignStatus:
             f"cannot inspect Simulation Campaign storage: {exc}"
         ) from exc
     completed = cast(list[str], summary["completed"]) if summary is not None else []
+    target = cast(Mapping[str, str], manifest.document["target"])
     retention_files, coverage_directories = _retention_inventory(store, recovery)
     return RetainedCampaignStatus(
         store.manifest_path,
         store.summary_path,
         digest,
         manifest,
+        cast(str, manifest.document["campaign_id"]),
+        target["selector"],
+        f"{target['vlnv']}#{target['name']}",
         recovery.complete,
         recovery.pending,
         recovery.interrupted,

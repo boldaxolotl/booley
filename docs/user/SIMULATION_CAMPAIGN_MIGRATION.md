@@ -26,17 +26,26 @@ presentation controls remain invocation-local.
 
 ## Report consumers
 
-Save the pointers returned for each Target instead of constructing filenames:
+New Simulation reports use `booley.simulation-report/v2`. Save the entries in
+each Target's `artifacts` map instead of constructing filenames. Every entry is
+a typed object containing `path_base`, `path`, `bytes`, `sha256`, `kind`, and
+`owner`:
 
 - `manifest` is the immutable resume authority;
-- `summary` is the ordered Campaign status and result projection;
-- `simulation` is the compatibility projection for existing consumers;
+- `simulation` is the versioned Target projection;
 - `coverage`, when present, is the canonical Target-level authenticated
   reference to the nested Coverage Campaign.
 
+Resolve `report_invocation` from the directory containing `report.json` and
+`reports_root` from the parent of that report's `sim` directory. Same-root resume
+reports use `reports_root`; cross-root resumes use `external_origin_target`, which
+the caller resolves from the separately supplied origin Target directory. Resume
+reports declare `external_origin_campaign`; they no longer copy a `simulation.json`
+into an invocation that does not contain the Simulation Campaign.
+
 The bounded MCP response exposes observation counts and at most 32 observation
-previews. Read the summary and bound result artifacts when complete evidence is
-needed. Existing `simulation.json` compatibility keys remain, with independent
+previews. Resolve the manifest and inspect its authenticated terminal results
+when complete evidence is needed. Existing `simulation.json` compatibility keys remain, with independent
 `execution`, `functional`, and `assertions` observations added for each test.
 
 Scripts must not discover a “latest” Campaign, edit Campaign JSON, or copy an
@@ -77,7 +86,8 @@ Campaign can be archived or pruned only through exact known-file retention;
 coverage retention follows the authenticated Target-level reference to its
 nested attempt-scoped Coverage Campaign. Full pruning infers the project-data
 root when reports use the standard
-`<project-data>/.runtime/flow-reports` location. If `--reports-root` points
-elsewhere and the invocation contains Campaign child records, pass
-`--project-data <resolved-project-data>` with `--full`; native-only pruning does
-not require it.
+`<project-data>/.runtime/flow-reports` location. A validated copy outside that
+canonical location is detached: full pruning removes only the copied bytes and
+never releases Project-wide child indexes, even when `--project-data` is
+supplied. The canonical invocation keeps the existing exact marker-first release
+transaction. Native-only pruning does not require Project data.

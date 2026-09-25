@@ -111,6 +111,7 @@ from .build_session import (
     SimulationBuildSlotError,
     preview_generation_root,
     project_compile_surface,
+    resolve_target_compile_surface,
 )
 from .campaign import (
     CampaignOutcome,
@@ -127,17 +128,20 @@ from .campaign import (
     SimulationCampaignManifest,
     SimulationCampaignPlan,
     ValidatedResumeManifest,
+    build_artifact_reference,
+    encode_artifact_reference,
     encode_simulation_campaign_manifest,
     validate_resume_manifest,
 )
-from .campaign.coverage_execution import CoverageAggregateExecutor
+from .campaign.codec import MANIFEST_MAX_BYTES
+from .campaign.coverage_execution import CoverageAggregateExecutor, _CoverageAggregateError
 from .campaign.flow_planning import (
     plan_coarse_simulation_campaign,
     plan_ordinary_hdl_campaign,
 )
 from .campaign.planning import manifest_digest
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
-from .coverage_reference import resolve_coverage_campaign_reference
+from .coverage_reference import MAX_REFERENCE_BYTES, resolve_coverage_campaign_reference
 from .execution import (
     DefaultSelection,
     NamedTests,
@@ -412,9 +416,12 @@ def _campaign_observation_counts(
 def _campaign_report_lines(outcomes: Sequence[CampaignOutcome]) -> list[str]:
     lines: list[str] = []
     for outcome in outcomes:
+        acceptance = getattr(outcome, "acceptance_facts", None)
+        facts = getattr(acceptance, "document", {})
+        campaign_id = facts.get("campaign_id", "unavailable")
         line = (
             f"{outcome.target['selector']}: {outcome.aggregate_grade.upper()} "
-            f"({outcome.manifest_path})"
+            f"(Simulation Campaign {campaign_id})"
         )
         reasons = []
         for observation in outcome.observations:
@@ -428,31 +435,141 @@ def _campaign_report_lines(outcomes: Sequence[CampaignOutcome]) -> list[str]:
 
 def _campaign_structured_details(
     outcomes: Sequence[CampaignOutcome],
+    report_invocation: Path | None = None,
 ) -> dict[str, object]:
-    """Expose bounded durable pointers instead of embedding campaign records."""
+    """Expose one canonical artifact map based on the containing report."""
     return {
-        str(outcome.target["selector"]): {
-            "manifest": str(outcome.manifest_path),
-            "summary": str(outcome.summary_path),
-            "simulation": str(outcome.manifest_path.parents[1] / "simulation.json"),
-            "coverage": (
-                str(outcome.manifest_path.parents[1] / "coverage.json")
-                if outcome.coverage_reference is not None
-                else None
-            ),
-            "grade": outcome.aggregate_grade,
-            "complete": outcome.complete,
-            "observation_counts": _campaign_observation_counts(outcome.observations),
-            **_campaign_observation_preview(outcome.observations),
-        }
+        str(outcome.target["selector"]): _campaign_report_detail(outcome, report_invocation)
         for outcome in outcomes
     }
+
+
+def _coverage_request_target(request: NewCampaignRunRequest) -> Mapping[str, object]:
+    """Expose the typed Target projection from one immutable campaign request."""
+    return cast(Mapping[str, object], request.plan.manifest.document["target"])
+
+
+def _coverage_request_selector(request: NewCampaignRunRequest) -> str:
+    return str(_coverage_request_target(request)["selector"])
+
+
+def _campaign_report_detail(
+    outcome: CampaignOutcome, report_invocation: Path | None
+) -> dict[str, object]:
+    acceptance = getattr(outcome, "acceptance_facts", None)
+    facts = getattr(acceptance, "document", {})
+    owner = str(facts.get("campaign_id", "unavailable"))
+    origin = facts.get("origin", {})
+    assert isinstance(origin, Mapping)
+    paths = _campaign_artifact_paths(outcome)
+    artifacts = _campaign_report_artifacts(
+        paths,
+        report_invocation=report_invocation,
+        external_origin_target=outcome.manifest_path.parents[1],
+        owner=owner,
+    )
+    local = report_invocation is not None and outcome.manifest_path.is_relative_to(
+        report_invocation
+    )
+    detail: dict[str, object] = {
+        "campaign_id": owner,
+        "manifest_sha256": facts.get("manifest_sha256"),
+        "origin_invocation_id": origin.get("invocation_id"),
+        "dependency": "local_campaign" if local else "external_origin_campaign",
+        "dependency_available": "manifest" in artifacts,
+        "artifacts": artifacts,
+        "grade": outcome.aggregate_grade,
+        "complete": outcome.complete,
+        "observation_counts": _campaign_observation_counts(outcome.observations),
+        **_campaign_observation_preview(outcome.observations),
+    }
+    if report_invocation is None:
+        detail["resolved_artifacts"] = {
+            name: str(path) for name, (path, _kind, _maximum) in paths.items()
+        }
+    return detail
+
+
+def _campaign_artifact_paths(
+    outcome: CampaignOutcome,
+) -> dict[str, tuple[Path, str, int]]:
+    paths = {
+        "manifest": (
+            outcome.manifest_path,
+            "simulation_campaign_manifest",
+            MANIFEST_MAX_BYTES,
+        ),
+        "simulation": (
+            outcome.manifest_path.parents[1] / "simulation.json",
+            "simulation_projection",
+            MANIFEST_MAX_BYTES,
+        ),
+    }
+    if outcome.coverage_reference is not None:
+        paths["coverage"] = (
+            outcome.manifest_path.parents[1] / "coverage.json",
+            "coverage_campaign_reference",
+            MAX_REFERENCE_BYTES,
+        )
+    return paths
+
+
+def _campaign_report_artifacts(
+    paths: Mapping[str, tuple[Path, str, int]],
+    *,
+    report_invocation: Path | None,
+    external_origin_target: Path,
+    owner: str,
+) -> dict[str, object]:
+    artifacts: dict[str, object] = {}
+    for name, (path, kind, maximum) in paths.items():
+        reference = _report_artifact_reference(
+            path,
+            report_invocation=report_invocation,
+            external_origin_target=external_origin_target,
+            kind=kind,
+            owner=owner,
+            maximum=maximum,
+        )
+        if reference is not None:
+            artifacts[name] = reference
+    return artifacts
+
+
+def _report_artifact_reference(
+    path: Path,
+    *,
+    report_invocation: Path | None,
+    external_origin_target: Path,
+    kind: str,
+    owner: str,
+    maximum: int,
+) -> dict[str, object] | None:
+    if report_invocation is None or not path.is_file():
+        return None
+    reports_root = report_invocation.parent.parent
+    if path.is_relative_to(report_invocation):
+        base_name, base = "report_invocation", report_invocation
+    elif path.is_relative_to(reports_root):
+        base_name, base = "reports_root", reports_root
+    elif path.is_relative_to(external_origin_target):
+        base_name, base = "external_origin_target", external_origin_target
+    else:
+        return None
+    reference = build_artifact_reference(
+        path,
+        base_name=base_name,
+        base=base,
+        kind=kind,
+        owner=owner,
+        maximum=maximum,
+    )
+    return encode_artifact_reference(reference)
 
 
 def _campaign_recovery_detail(status: CampaignRecoveryStatus) -> dict[str, object]:
     """Translate campaign-owned recovery state into the endpoint's flat shape."""
     return {
-        "manifest": str(status.manifest_path),
         "manifest_sha256": status.manifest_sha256,
         "completed": list(status.completed),
         "interrupted": list(status.interrupted),
@@ -506,7 +623,7 @@ def _structured_json(value: object) -> object:
 
 
 def _coverage_compatibility_targets(
-    outcomes: Sequence[CampaignOutcome], project_root: Path
+    outcomes: Sequence[CampaignOutcome], report_invocation: Path | None = None
 ) -> dict[str, object]:
     """Preserve bounded coverage endpoint fields while authority stays referenced."""
     targets: dict[str, object] = {}
@@ -516,6 +633,14 @@ def _coverage_compatibility_targets(
         public = outcome.manifest_path.parents[1] / "coverage.json"
         campaign = resolve_coverage_campaign_reference(public).loaded.campaign
         selector = str(outcome.target["selector"])
+        reference = _report_artifact_reference(
+            public,
+            report_invocation=report_invocation,
+            external_origin_target=public.parent,
+            kind="coverage_campaign_reference",
+            owner=str(outcome.acceptance_facts.document["campaign_id"]),
+            maximum=MAX_REFERENCE_BYTES,
+        )
         targets[selector] = {
             "target": selector,
             "passed": outcome.aggregate_grade == "pass",
@@ -523,7 +648,7 @@ def _coverage_compatibility_targets(
             "collection": campaign.collection["status"],
             "evaluation": campaign.evaluation["status"],
             "abort_remaining": False,
-            "coverage_campaign": posix_relpath(public, project_root),
+            "coverage_campaign": reference,
         }
     return targets
 
@@ -1457,6 +1582,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         from .acceptance import record_campaign_acceptance
 
         record_campaign_acceptance(self.context, outcomes)
+
+    def refresh_campaign_report_detail(self, result: EndpointOutcome) -> None:
+        """Bind final projection references after acceptance publication."""
+        outcomes = getattr(self.context, "_simulation_campaign_outcomes", ())
+        invocation = self.context._reserved_invocation_dir
+        if outcomes and invocation is not None:
+            result.detail["campaigns"] = _campaign_structured_details(outcomes, invocation)
 
     def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,
@@ -2467,36 +2599,62 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> EndpointOutcome:
         """Report a fatal aggregate without inventing a terminal Simulation result."""
         self.context._simulation_campaign_outcomes = tuple(outcomes)
-        targets = _coverage_compatibility_targets(outcomes, Path(self.args.work_dir))
-        failed = str(
-            cast(Mapping[str, object], request.plan.manifest.document["target"])["selector"]
+        targets = _coverage_compatibility_targets(
+            outcomes,
+            self.context._reserved_invocation_dir,
         )
+        failed = _coverage_request_selector(request)
+        evaluation = self._coverage_failure_evaluation(request, error)
+        if evaluation is None:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                detail={
+                    "coverage": True,
+                    "campaigns": _campaign_structured_details(outcomes),
+                    "targets": targets,
+                },
+                report_text=(
+                    "Simulation Campaign coverage execution failed: cannot match failed "
+                    f"Target to the prepared Coverage plan ({error})"
+                ),
+            )
         targets[failed] = {
             "target": failed,
             "passed": None,
             "simulation": "not_run",
             "collection": "infrastructure_error",
-            "evaluation": "blocked",
+            "evaluation": evaluation,
             "error": str(error),
             "abort_remaining": True,
         }
-        pending = [
-            failed,
-            *[
-                str(cast(Mapping[str, object], item.plan.manifest.document["target"])["selector"])
-                for item in requests[index + 1 :]
-            ],
-        ]
+        pending = [failed, *[_coverage_request_selector(item) for item in requests[index + 1 :]]]
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             detail={
                 "coverage": True,
-                "campaigns": _campaign_structured_details(outcomes),
+                "campaigns": _campaign_structured_details(
+                    outcomes, self.context._reserved_invocation_dir
+                ),
                 "targets": targets,
                 "pending_targets": pending,
             },
             report_text=f"Simulation Campaign coverage execution failed: {error}",
         )
+
+    def _coverage_failure_evaluation(
+        self, request: NewCampaignRunRequest, error: Exception
+    ) -> str | None:
+        """Preserve nested evaluation or derive policy before an outcome exists."""
+        if isinstance(error, _CoverageAggregateError):
+            return error.evaluation_status
+        target = _coverage_request_target(request)
+        identity = f"{target['vlnv']}#{target['name']}"
+        matches = [
+            plan for plan in self._coverage_prepared.targets if plan.handle.identity == identity
+        ]
+        if len(matches) != 1:
+            return None
+        return "not_requested" if matches[0].criterion is None else "blocked"
 
     def _coverage_campaign_execution(
         self, plan: CoverageTargetPlan, options: SimulationOptions
@@ -3319,8 +3477,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else EXIT_SUCCESS
         )
         lines = _campaign_report_lines(outcomes)
-        campaigns = _campaign_structured_details(outcomes)
-        coverage_targets = _coverage_compatibility_targets(outcomes, Path(self.args.work_dir))
+        campaigns = _campaign_structured_details(outcomes, self.context._reserved_invocation_dir)
+        coverage_targets = _coverage_compatibility_targets(
+            outcomes,
+            self.context._reserved_invocation_dir,
+        )
         detail: dict[str, object] = {"campaigns": campaigns}
         if coverage_targets:
             detail.update(
@@ -3667,7 +3828,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         started = time.monotonic()
         handle = self._target_handle(target)
         try:
-            sources_before = project_compile_surface(handle.project_root)
+            compile_surface = resolve_target_compile_surface(handle)
+            sources_before = project_compile_surface(compile_surface)
             with SimulationBuildSession(handle) as session:
                 candidate = session.new_generation()
                 self._open_run_log(target, candidate)
@@ -3676,7 +3838,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
                 if isinstance(prepared, ElabOnlyTargetResult):
                     return prepared
-                if project_compile_surface(handle.project_root) != sources_before:
+                if project_compile_surface(compile_surface) != sources_before:
                     raise SimulationBuildSlotError(
                         "Project compile inputs changed during elaboration preparation"
                     )

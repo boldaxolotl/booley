@@ -27,6 +27,7 @@ from booley.flows.sim.build_session import (
     SimulationBuildSession,
     SimulationBuildSlotError,
     project_compile_surface,
+    resolve_target_compile_surface,
 )
 from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
 from booley.flows.sim.execution.attempt import (
@@ -104,13 +105,14 @@ class VerilatorCoverageExecution:
         if identity is None:
             return SimulationBuildResult(False, version_output, infrastructure_error=True)
         try:
-            sources_before = project_compile_surface(self._handle.project_root)
+            compile_surface = resolve_target_compile_surface(self._handle)
+            sources_before = project_compile_surface(compile_surface)
             with SimulationBuildSession(self._handle, request.variant.name) as session:
                 candidate = session.new_generation()
                 prepared = self._prepare_build(request, build_root=candidate)
                 if isinstance(prepared, str):
                     return SimulationBuildResult(False, prepared)
-                if project_compile_surface(self._handle.project_root) != sources_before:
+                if project_compile_surface(compile_surface) != sources_before:
                     raise SimulationBuildSlotError(
                         "Project compile inputs changed during coverage preparation"
                     )

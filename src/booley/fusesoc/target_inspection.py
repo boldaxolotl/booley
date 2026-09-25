@@ -312,3 +312,11 @@ class _TargetSourceInspector:
             cached = replace(template, handle=handle)
             self._inspections[handle] = cached
         return cached
+
+    def operational_cores(self, authored_cores: Collection[Path]) -> tuple[tuple[Path, Path], ...]:
+        """Return the prepared operational path for each selected authored core."""
+        plan, _manager = self._prepare()
+        return tuple(
+            (authored.resolve(), plan.operational_core(authored).resolve())
+            for authored in sorted(authored_cores)
+        )
