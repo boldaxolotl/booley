@@ -33,7 +33,7 @@ PINNED_RUNNERS = {
     "pytest-xdist": "3.8.0",
     "pytest-timeout": "2.4.0",
     "pytest-cov": "7.1.0",
-    "ruff": "0.16.7",
+    "ruff": "0.16.8",
 }
 _BRANCH_RE = re.compile(r"^codex/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _STATUS_ORDER = {"ready": 0, "degraded": 1, "escalation-required": 2, "blocked": 3}
