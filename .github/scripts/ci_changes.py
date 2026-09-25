@@ -48,6 +48,10 @@ CONDITIONAL_JOBS = (
 ALWAYS_JOBS = ("changes", "release-semantic")
 ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
 WINDOWS_SHARD_COUNTS = (4, 6, 8)
+# Explicit RISC-V timing arms. "automatic" keeps path-gated selection; every
+# other arm is a controlled measurement sample and must build the RISC-V image
+# even when the dispatched commit does not touch its inputs.
+RISCV_MEASUREMENT_ARMS = ("automatic", "baseline", "warm", "cold")
 DEFAULT_WINDOWS_SHARD_COUNT = 6
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
@@ -230,7 +234,9 @@ def _path_categories(path: str) -> set[str]:
     return categories
 
 
-def classify(paths: Iterable[str], *, force_all: bool = False) -> set[str]:
+def classify(
+    paths: Iterable[str], *, force_all: bool = False, riscv_measurement: str = "automatic"
+) -> set[str]:
     categories: set[str] = set()
     for path in paths:
         path_categories = _path_categories(path)
@@ -246,6 +252,8 @@ def classify(paths: Iterable[str], *, force_all: bool = False) -> set[str]:
         # 57-minute runtime base or its 9-minute RISC-V extension when their
         # actual compatibility inputs changed.
         categories.update(set(CATEGORIES) - {"stable_base", "riscv_image"})
+    if riscv_measurement != "automatic":
+        categories.add("riscv_image")
     return categories
 
 
@@ -400,8 +408,15 @@ def main() -> int:
         choices=("", "pull_request", "push", "workflow_call", "workflow_dispatch"),
         default="",
     )
+    parser.add_argument("--riscv-measurement", choices=RISCV_MEASUREMENT_ARMS, default="automatic")
     args = parser.parse_args()
     try:
+        if args.riscv_measurement != "automatic" and args.event_name != "workflow_dispatch":
+            raise ValueError("RISC-V measurement arms require workflow_dispatch")
+        if args.windows_shard_benchmark and args.riscv_measurement != "automatic":
+            raise ValueError(
+                "Windows shard benchmarking cannot be combined with a RISC-V measurement arm"
+            )
         base = _diff_base(args.repo, args.base, args.head, args.event_name)
         paths = _changed_paths(_git_diff(args.repo, base, args.head))
         if args.windows_shard_benchmark:
@@ -409,7 +424,9 @@ def main() -> int:
                 raise ValueError("Windows shard benchmarking requires workflow_dispatch")
             categories = {"python_source"}
         else:
-            categories = classify(paths, force_all=args.force_all)
+            categories = classify(
+                paths, force_all=args.force_all, riscv_measurement=args.riscv_measurement
+            )
         _write_outputs(args.github_output, categories, base, args.windows_shard_count)
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

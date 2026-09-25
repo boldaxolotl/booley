@@ -293,6 +293,24 @@ def test_standard_size_ceiling_runs_without_riscv_gate() -> None:
     assert "--limits .github/contracts/image-size-limits.toml" in size_contract["run"]
 
 
+def test_riscv_measurement_dispatch_reaches_the_classifier() -> None:
+    """Explicit timing arms must force the RISC-V lane, not only tune its cache."""
+    workflow = _test_workflow()
+    dispatch = workflow[True]["workflow_dispatch"]["inputs"]["riscv_measurement"]
+    classify_step = next(
+        step
+        for step in workflow["jobs"]["changes"]["steps"]
+        if step.get("name") == "Classify changed paths"
+    )
+
+    assert dispatch["options"] == ["automatic", "baseline", "warm", "cold"]
+    assert dispatch["default"] == "automatic"
+    assert (
+        "--riscv-measurement \"${{ inputs.riscv_measurement || 'automatic' }}\""
+        in classify_step["run"]
+    )
+
+
 def test_riscv_image_lane_is_path_gated() -> None:
     """The slow derived-image contract runs only when its owning inputs change."""
     workflow = _test_workflow()
@@ -344,6 +362,7 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert "run_picorv32_ci_demo.sh" in riscv["run"]
     assert "--cache-from" in riscv["run"]
     assert "--cache-to" in riscv["run"]
+    assert "type=local" in riscv["run"]
     assert "--no-cache" in riscv["run"]
     assert ibex_run["if"] == gate
     assert steps.index(ibex_run) > group_index
@@ -351,6 +370,20 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert restore["if"] == f"always() && {gate}"
     assert upload["if"] == f"always() && {gate}"
     assert steps.index(restore) > group_index
+
+
+def test_warm_riscv_measurement_enables_cache_capable_image_store() -> None:
+    workflow = _test_workflow()
+    steps = workflow["jobs"]["bwave-smoke"]["steps"]
+    docker_setup = next(
+        step for step in steps if step.get("name") == "Enable cache-capable Docker image store"
+    )
+
+    assert "inputs.riscv_measurement == 'warm'" in docker_setup["if"]
+    assert docker_setup["uses"].startswith("docker/setup-docker-action@")
+    assert docker_setup["with"]["version"] == "v28.0.4"
+    assert docker_setup["with"]["set-host"] is True
+    assert "containerd-snapshotter" in docker_setup["with"]["daemon-config"]
 
 
 def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None:
