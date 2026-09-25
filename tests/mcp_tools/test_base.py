@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -101,6 +102,42 @@ def test_mcp_adapter_promotes_neutral_outcome_before_extension_hooks() -> None:
     assert endpoint.main([]) == EXIT_SUCCESS
     assert endpoint.finalized_type is McpToolResult
     assert endpoint.finalized_label == "target demo · 2 tests"
+
+
+def test_report_failure_is_returned_on_the_final_adapted_outcome(tmp_path: Path) -> None:
+    class RecoveringMcpTool(ConcreteMcpTool):
+        writes = 0
+
+        def _run(self) -> EndpointOutcome:
+            return EndpointOutcome(detail={"nested": {"fact": "kept"}}, report_text="PASS")
+
+        def write_report(self, result: EndpointOutcome) -> Path | None:
+            self.writes += 1
+            if self.writes == 1:
+                reserved = self.reserve_invocation_dir()
+                assert reserved is not None
+                path = reserved / "report.json"
+                raise OSError(errno.EIO, "injected publication failure", path)
+            return super().write_report(result)
+
+    endpoint = RecoveringMcpTool()
+    result = endpoint.execute_cli(["--report-dir", str(tmp_path / "reports")])
+
+    assert result.exit_code == EXIT_ERROR
+    assert type(result.outcome) is McpToolResult
+    assert result.outcome.detail["nested"] == {"fact": "kept"}
+    completion_error = result.outcome.detail["completion_error"]
+    assert {key: completion_error[key] for key in ("operation", "type", "path")} == {
+        "operation": "persist endpoint completion",
+        "type": "OSError",
+        "path": str(tmp_path / "reports/test_endpoint/1/report.json"),
+    }
+    assert "injected publication failure" in completion_error["message"]
+    report = json.loads(
+        (tmp_path / "reports/test_endpoint/1/report.json").read_text(encoding="utf-8")
+    )
+    assert report["detail"] == result.outcome.detail
+    assert not (tmp_path / "reports/test_endpoint/2").exists()
 
 
 def test_finalize_failure_propagates_without_persisting_replacement_result() -> None:
@@ -969,6 +1006,37 @@ class TestMcpToolWriteReport:
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["slug"] == ""
 
+    def test_report_retry_reuses_reserved_invocation_after_atomic_failure(
+        self, tmp_path: Path
+    ) -> None:
+        report_dir = tmp_path / "reports"
+        endpoint = ConcreteMcpTool()
+        endpoint.parse_args(["--report-dir", str(report_dir)])
+        reserved = endpoint.reserve_invocation_dir()
+        assert reserved is not None
+        report_path = reserved / "report.json"
+        original_replace = Path.replace
+        failed = False
+
+        def fail_numbered_once(source: Path, destination: Path) -> Path:
+            nonlocal failed
+            if destination == report_path and not failed:
+                failed = True
+                raise OSError("injected report publication failure")
+            return original_replace(source, destination)
+
+        with (
+            mock.patch.object(Path, "replace", fail_numbered_once),
+            pytest.raises(OSError, match="injected report publication failure"),
+        ):
+            endpoint.write_report(McpToolResult(exit_code=EXIT_SUCCESS))
+
+        path = endpoint.write_report(McpToolResult(exit_code=EXIT_ERROR))
+
+        assert path == report_path
+        assert json.loads(path.read_text(encoding="utf-8"))["exit_code"] == EXIT_ERROR
+        assert not (report_dir / endpoint.name / "2").exists()
+
 
 class TestMcpToolMain:
     @pytest.mark.parametrize(
@@ -1349,13 +1417,21 @@ class TestMainDisplayEvents:
         env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
         endpoint = AcceptanceFailingMcpTool()
 
-        with (
-            mock.patch.dict(os.environ, env),
-            pytest.raises(RuntimeError, match="acceptance failed"),
-        ):
-            endpoint.main([])
+        with mock.patch.dict(os.environ, env):
+            result = endpoint.execute_cli([])
 
+        assert result.exit_code == EXIT_ERROR
+        assert result.outcome.detail["completion_error"] == {
+            "operation": "record acceptance and projections",
+            "type": "RuntimeError",
+            "message": "acceptance failed",
+        }
         assert endpoint.post_run_called is False
+        reports = list((logs_dir / ".runtime" / "mcp-tool-reports").glob("*/1/report.json"))
+        assert len(reports) == 1
+        report = json.loads(reports[0].read_text(encoding="utf-8"))
+        assert report["exit_code"] == EXIT_ERROR
+        assert report["detail"] == result.outcome.detail
         events = [
             json.loads(line)
             for line in (logs_dir / ".runtime" / "display.jsonl")
@@ -1363,6 +1439,7 @@ class TestMainDisplayEvents:
             .splitlines()
         ]
         assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
+        assert events[-1]["exit_code"] == EXIT_ERROR
 
     def test_display_tag_overrides_config(self, tmp_path: Path):
         """display_tag property overrides config_aware in display events."""

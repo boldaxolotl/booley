@@ -8,6 +8,8 @@ and MCP-triggered processes.
 
 from __future__ import annotations
 
+import logging
+import os
 import time
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
@@ -17,6 +19,8 @@ EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_ERROR = 2
 EXIT_CANCELLED = 130
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,6 +58,36 @@ class EndpointRejectedError(RuntimeError):
     def __init__(self, outcome: EndpointOutcome) -> None:
         super().__init__(outcome.report_text)
         self.outcome = outcome
+
+
+def normalize_completion_error(
+    outcome: EndpointOutcome,
+    exc: Exception,
+    operation: str,
+    *,
+    path: str | os.PathLike[str] | None = None,
+) -> EndpointOutcome:
+    """Add one endpoint-completion failure without discarding known evidence."""
+    error_path = path
+    if error_path is None and isinstance(exc, OSError):
+        filename = exc.filename
+        if isinstance(filename, (str, os.PathLike)):
+            error_path = filename
+    completion_error = {
+        "operation": operation,
+        "type": type(exc).__name__,
+        "message": str(exc),
+    }
+    if error_path is not None:
+        completion_error["path"] = os.fspath(error_path)
+    outcome.exit_code = EXIT_ERROR
+    outcome.criterion_key = ""
+    outcome.criterion_met = False
+    outcome.detail = dict(outcome.detail)
+    outcome.detail["completion_error"] = completion_error
+    diagnosis = f"Completion failure ({operation}): {type(exc).__name__}: {exc}"
+    outcome.report_text = "\n".join(filter(None, (outcome.report_text, diagnosis)))
+    return outcome
 
 
 Prepared_contra = TypeVar("Prepared_contra", contravariant=True)
@@ -99,7 +133,7 @@ class ExecutableEndpoint(
         *,
         started: float | None,
         acceptance_recorded: bool,
-    ) -> int:
+    ) -> ExecutionResult:
         """Publish completion, persisting mutable state only after acceptance."""
         ...
 
@@ -115,14 +149,15 @@ def _record_and_finish(
     try:
         endpoint.record_acceptance(prepared, outcome)
         acceptance_recorded = True
-    finally:
-        exit_code = endpoint.finish_execution(
-            prepared,
-            outcome,
-            started=started,
-            acceptance_recorded=acceptance_recorded,
-        )
-    return ExecutionResult(exit_code=exit_code, outcome=outcome)
+    except Exception as exc:
+        logger.debug("Endpoint acceptance failed", exc_info=True)
+        normalize_completion_error(outcome, exc, "record acceptance and projections")
+    return endpoint.finish_execution(
+        prepared,
+        outcome,
+        started=started,
+        acceptance_recorded=acceptance_recorded,
+    )
 
 
 def execute_endpoint(

@@ -402,17 +402,17 @@ def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatc
     data = tmp_path / ".booley_project"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
-    write = Path.write_text
+    replace = Path.replace
     checked = []
 
-    def check_lock(path, *args, **kwargs):
-        if path.name == "report.json":
+    def check_lock(path, destination):
+        if destination.name == "report.json":
             with pytest.raises(LockContentionError):
                 prune_invocation(tmp_path / "reports", 1)
             checked.append(True)
-        return write(path, *args, **kwargs)
+        return replace(path, destination)
 
-    monkeypatch.setattr(Path, "write_text", check_lock)
+    monkeypatch.setattr(Path, "replace", check_lock)
     result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
         SimRequest(
             target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"

@@ -239,8 +239,13 @@ def test_acceptance_failures_keep_their_distinct_persistence_semantics(
         # standalone execution no longer persists a fallback error timeline.
         assert persisted == []
     else:
-        with pytest.raises(RuntimeError, match="acceptance append failed"):
-            flow.execute(request)
+        result = flow.execute(request)
+        assert result.exit_code == 2
+        assert result.outcome.detail["completion_error"] == {
+            "operation": "record acceptance and projections",
+            "type": "RuntimeError",
+            "message": "acceptance append failed",
+        }
         assert len(persisted) == 1  # Only the successful in-run update; no final save.
 
 
