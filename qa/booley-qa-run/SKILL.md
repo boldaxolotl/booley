@@ -82,15 +82,15 @@ Write each finding the moment you observe it, before any workaround or retry.
 
 1. **Disk.** Follow [DISK.md](../DISK.md). Low space after it is a warning in
    `log.md`, and the run continues.
-2. **Install the build.** For a commit: clone it cleanly into the run dir and
-   build a stamped wheel as CI does:
-   `PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.DEVELOPMENT_WHEEL)' && python -m build --wheel`.
-   For a published version, download that wheel. Install it into a fresh venv
-   under the run dir, put that venv first on `PATH` for the whole run, and
-   confirm `booley --version` names the expected commit. Run
-   `booley bootstrap --check-only`, then `booley bootstrap` if work is pending.
-   Record the identity header. This is the only step that can stop the run:
-   if Booley cannot be installed at all, write the finding and stop.
+2. **Confirm the canonical host install.** Run `git fetch origin main`, resolve
+   `git rev-parse origin/main`, and compare that commit with the source commit
+   reported by the canonical host `booley --version`. If they match, record the
+   identity header and continue. If they differ, ask the Human Maintainer to
+   choose one of these paths:
+   - test the installed build and record its identity in the header; or
+   - install `origin/main` as the canonical host install and run
+     `booley bootstrap`.
+   Record the choice in `log.md` before continuing.
 3. **Smoke** (when requested). Walk [SMOKE.md](../SMOKE.md) and put its table in
    `log.md`.
 4. **Mission.** Read `qa/missions/<mission>/MISSION.md` and work its areas in
