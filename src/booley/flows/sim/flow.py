@@ -63,6 +63,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_FAILURE,
     EXIT_SUCCESS,
     EndpointOutcome,
+    normalize_completion_error,
 )
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -550,9 +551,15 @@ def _coverage_campaign_exit_code(outcomes: Sequence[CampaignOutcome]) -> int:
 
 
 def _checkpoint_coverage_campaign(progress: CoverageProgress, outcome: CampaignOutcome) -> None:
+    _retain_coverage_campaign(progress, outcome)
+    progress.checkpoint()
+
+
+def _retain_coverage_campaign(progress: CoverageProgress, outcome: CampaignOutcome) -> None:
+    """Authenticate and retain one completed Target before observational writes."""
     public = outcome.manifest_path.parents[1] / "coverage.json"
     campaign = resolve_coverage_campaign_reference(public).loaded.campaign
-    progress.completed(
+    progress.outcomes.append(
         CoverageTargetOutcome(
             str(outcome.target["selector"]),
             _coverage_campaign_exit_code([outcome]),
@@ -1988,7 +1995,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 detail=_campaign_recovery_detail(observed),
             )
         try:
-            outcome = self._execute_validated_resume(validated, invocation, admission)
+            outcome, progress = self._execute_validated_resume(validated, invocation, admission)
         except SimulationCampaignCancellationError as exc:
             return self._campaign_cancelled_outcome(
                 exc,
@@ -2002,6 +2009,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         result = self._campaign_endpoint_outcome([outcome])
         result.detail.update(_campaign_recovery_detail(outcome.recovery))
+        if progress is not None:
+            _retain_coverage_campaign(progress, outcome)
+            try:
+                progress.checkpoint()
+                progress.checkpoint(complete=True)
+            except OSError as exc:
+                normalize_completion_error(
+                    result,
+                    exc,
+                    "publish coverage progress",
+                    path=progress.invocation_dir / "progress.json",
+                )
         return result
 
     def _execute_validated_resume(
@@ -2009,7 +2028,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         validated: ValidatedResumeManifest,
         invocation: Path,
         admission: AdmissionContext,
-    ) -> CampaignOutcome:
+    ) -> tuple[CampaignOutcome, CoverageProgress | None]:
         items = cast(tuple[Mapping[str, object], ...], validated.manifest.document["work_items"])
         coverage_plan = (
             self._resume_coverage_target_plan(validated)
@@ -2040,10 +2059,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 admission,
             )
         )
-        if progress is not None:
-            _checkpoint_coverage_campaign(progress, outcome)
-            progress.checkpoint(complete=True)
-        return outcome
+        return outcome, progress
 
     def _resume_campaign_executor(self, coverage_plan: CoverageTargetPlan | None):
         if coverage_plan is None:
@@ -2375,14 +2391,42 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         for index, request in enumerate(requests):
             try:
                 outcome = campaign.run(request)
-                outcomes.append(outcome)
-                _checkpoint_coverage_campaign(progress, outcome)
             except SimulationCampaignCancellationError as exc:
                 return self._campaign_cancelled_outcome(exc)
             except (OSError, ValueError, RuntimeError) as exc:
                 return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
-        progress.checkpoint(complete=True)
-        return self._campaign_endpoint_outcome(outcomes)
+            outcomes.append(outcome)
+            _retain_coverage_campaign(progress, outcome)
+            try:
+                progress.checkpoint()
+            except OSError as exc:
+                result = self._campaign_endpoint_outcome(outcomes)
+                result.detail = dict(result.detail)
+                result.detail["pending_targets"] = [
+                    str(
+                        cast(Mapping[str, object], item.plan.manifest.document["target"])[
+                            "selector"
+                        ]
+                    )
+                    for item in requests[index + 1 :]
+                ]
+                return normalize_completion_error(
+                    result,
+                    exc,
+                    "publish coverage progress",
+                    path=progress.invocation_dir / "progress.json",
+                )
+        result = self._campaign_endpoint_outcome(outcomes)
+        try:
+            progress.checkpoint(complete=True)
+        except OSError as exc:
+            normalize_completion_error(
+                result,
+                exc,
+                "publish coverage progress",
+                path=progress.invocation_dir / "progress.json",
+            )
+        return result
 
     def _coverage_campaign_failure(
         self,

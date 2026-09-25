@@ -85,12 +85,12 @@ class _Endpoint:
         *,
         started: float | None,
         acceptance_recorded: bool,
-    ) -> int:
+    ) -> ExecutionResult:
         assert prepared == "prepared"
         if outcome.report_text not in {"queue full", "unbound target"}:
             assert started is not None
         self.events.append(f"finish:{outcome.exit_code}:{acceptance_recorded}")
-        return outcome.exit_code
+        return ExecutionResult(exit_code=outcome.exit_code, outcome=outcome)
 
     def record_acceptance(self, prepared: object, outcome: EndpointOutcome) -> None:
         assert prepared == "prepared"
@@ -175,14 +175,25 @@ def test_unexpected_adapter_failure_propagates_and_releases_admission() -> None:
 def test_acceptance_failure_runs_non_persisting_finish_and_releases_admission() -> None:
     endpoint = _Endpoint(acceptance_failure=True)
 
-    with pytest.raises(RuntimeError, match="acceptance failed"):
-        execute_endpoint(endpoint, "prepared")
+    result = execute_endpoint(endpoint, "prepared")
 
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.criterion_key == ""
+    assert result.outcome.criterion_met is False
+    assert result.outcome.detail["completion_error"] == {
+        "operation": "record acceptance and projections",
+        "type": "RuntimeError",
+        "message": "acceptance failed",
+    }
+    assert result.outcome.report_text == (
+        "ok\nCompletion failure (record acceptance and projections): "
+        "RuntimeError: acceptance failed"
+    )
     assert endpoint.events == [
         "admit",
         "invoke",
         "acceptance:0",
-        "finish:0:False",
+        "finish:2:False",
         "release",
     ]
 

@@ -295,7 +295,7 @@ class EndpointState(ABC):
         *,
         started: float | None,
         acceptance_recorded: bool,
-    ) -> int:
+    ) -> ExecutionResult:
         return endpoint_session.finish_execution(
             self, prepared, outcome, started=started, acceptance_recorded=acceptance_recorded
         )
