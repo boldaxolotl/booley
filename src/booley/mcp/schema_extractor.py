@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import parse_positive_int_arg
+
 logger = logging.getLogger(__name__)
 
 # Args injected by McpTool._add_common_args() and Specialist._add_args() —
@@ -19,10 +21,8 @@ logger = logging.getLogger(__name__)
 _FILTERED_DESTS = frozenset(
     {
         "report_dir",  # McpTool._add_common_args()
-        "model",
         "instruction",  # Specialist._add_args()
         "transcript_dir",
-        "max_turns",  # Specialist._add_args()
         "timeout",  # Specialist._add_args()
         "help",  # standard argparse
     }
@@ -70,7 +70,7 @@ def _map_type_func(type_func: Any) -> str:
     """Map an argparse type= callable to a JSON schema type string."""
     if type_func is None:
         return "string"
-    if type_func is int:
+    if type_func in (int, parse_positive_int_arg):
         return "integer"
     if type_func is float:
         return "number"
@@ -88,10 +88,13 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
     Returns:
         ``{"type": "object", "properties": {...}, "required": [...]}``
     """
+    actions = list(parser._actions)
+    action_dests = {action.dest for action in actions}
+    is_specialist = {"model", "max_turns", "transcript_dir", "timeout"} <= action_dests
     properties: dict[str, Any] = {}
     required: list[str] = []
 
-    for action in parser._actions:
+    for action in actions:
         if isinstance(action, argparse._SubParsersAction):
             continue
 
@@ -108,6 +111,8 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
             continue
 
         prop = _argparse_type_to_schema(action)
+        if action.type is parse_positive_int_arg:
+            prop["minimum"] = 1
 
         # Add description from help text
         if action.help and action.help != argparse.SUPPRESS:
@@ -128,6 +133,8 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
             required.append(dest)
 
     schema: dict[str, Any] = {"type": "object", "properties": properties}
+    if is_specialist:
+        schema["additionalProperties"] = False
     if required:
         schema["required"] = required
     return schema

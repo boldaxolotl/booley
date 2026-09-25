@@ -16,7 +16,11 @@ if TYPE_CHECKING:
 
 
 def build_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=flow.name, description=flow.description)
+    parser = argparse.ArgumentParser(
+        prog=flow.name,
+        description=flow.description,
+        allow_abbrev=False,
+    )
     add_common_args(
         parser,
         target_required=flow.target_required,
