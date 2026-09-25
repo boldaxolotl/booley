@@ -318,6 +318,17 @@ def test_stealth_core_links_reject_broken_native_core_symlink(tmp_path):
     ]
 
 
+def test_stealth_core_links_rejects_empty_project_root(tmp_path):
+    result = stealth_core_links(tmp_path)
+
+    assert result["matches"] is False
+    assert result["observed"] == (
+        "Expected projected and native .core entries; missing projected and native core material."
+    )
+    assert result["projected_core_count"] == 0
+    assert result["native_core_count"] == 0
+
+
 def test_synth_baseline_requires_successful_numeric_comparison_and_identities():
     expected = {
         "candidate_target": "synth_core",

@@ -552,15 +552,21 @@ def stealth_core_links(root: Path) -> dict:
     all_links = {path for path in root.rglob("*") if path.is_symlink()}
     prohibited = sorted(all_links & (projected | native))
     out_of_scope = sorted(all_links - set(prohibited))
-    matches = not prohibited
-    if matches:
+    missing_scope = [
+        name for name, paths in (("projected", projected), ("native", native)) if not paths
+    ]
+    matches = not prohibited and not missing_scope
+    if prohibited:
+        paths = ", ".join(str(path.relative_to(root)) for path in prohibited)
+        observed = f"Projected or native .core symlinks found: {paths}."
+    elif missing_scope:
+        missing = " and ".join(missing_scope)
+        observed = f"Expected projected and native .core entries; missing {missing} core material."
+    else:
         observed = (
             "No projected or native .core entries are symlinks; "
             f"retained {len(out_of_scope)} out-of-scope symlinks."
         )
-    else:
-        paths = ", ".join(str(path.relative_to(root)) for path in prohibited)
-        observed = f"Projected or native .core symlinks found: {paths}."
     return {
         "matches": matches,
         "observed": observed,
