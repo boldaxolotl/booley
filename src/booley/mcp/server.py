@@ -1780,6 +1780,66 @@ def _with_structured_report(
     return content, structured
 
 
+def _append_stream_section(
+    parts: list[str],
+    *,
+    label: str,
+    stream: str,
+    limit: int,
+    mark_truncation: bool,
+) -> tuple[str, bool]:
+    """Append one displayed stream tail and return its dedupe inputs."""
+    if not stream:
+        return "", False
+    truncated = len(stream) > limit
+    shown = stream[-limit:] if truncated else stream
+    rendered = shown
+    if truncated and mark_truncation:
+        rendered = f"... (truncated, showing last {limit} bytes)\n{shown}"
+    parts.append(f"\n--- {label} ---\n{rendered}")
+    return shown, truncated
+
+
+def _append_report_section(
+    parts: list[str],
+    report: dict[str, Any] | None,
+    *,
+    shown_stdout: str,
+    stdout_truncated: bool,
+    shown_stderr: str,
+    stderr_truncated: bool,
+) -> None:
+    """Append durable report fields not already visible in displayed streams."""
+    if not report:
+        return
+    report_lines = []
+    for field in ("status", "summary", "errors", "report_text"):
+        if field not in report:
+            continue
+        if field == "report_text":
+            report_text = str(report[field]).strip()
+            shown_in_stdout = _contains_whole_line_block(
+                shown_stdout,
+                report_text,
+                leading_truncated=stdout_truncated,
+            )
+            shown_in_stderr = _contains_whole_line_block(
+                shown_stderr,
+                report_text,
+                leading_truncated=stderr_truncated,
+            )
+            if shown_in_stdout or shown_in_stderr:
+                continue
+        report_lines.append(f"{field}: {report[field]}")
+    detail = report.get("detail")
+    if isinstance(detail, dict):
+        for field in ("reason", "error"):
+            if detail.get(field):
+                report_lines.append(f"detail.{field}: {detail[field]}")
+    if report_lines:
+        parts.append("\n--- report ---\n" + "\n".join(report_lines))
+
+
 def _format_mcp_tool_result(
     exit_code: int,
     stdout: str,
@@ -1789,55 +1849,28 @@ def _format_mcp_tool_result(
     """Format hybrid MCP tool result (stdout + report fields)."""
     parts = [f"EXIT_CODE: {exit_code}"]
 
-    max_stdout = _max_stdout_bytes()
-    max_stderr = _max_stderr_bytes()
-
-    # The stdout text as actually shown (post-truncation) — the dedupe check
-    # below must run against this, not the full stdout.
-    shown_stdout = ""
-    stdout_truncated = False
-    if stdout:
-        stdout_truncated = len(stdout) > max_stdout
-        shown_stdout = stdout[-max_stdout:] if stdout_truncated else stdout
-        rendered = shown_stdout
-        if stdout_truncated:
-            rendered = f"... (truncated, showing last {max_stdout} bytes)\n" + rendered
-        parts.append(f"\n--- stdout ---\n{rendered}")
-
-    shown_stderr = ""
-    stderr_truncated = False
-    if stderr:
-        stderr_truncated = len(stderr) > max_stderr
-        shown_stderr = stderr[-max_stderr:] if stderr_truncated else stderr
-        parts.append(f"\n--- stderr ---\n{shown_stderr}")
-
-    if report:
-        report_lines = []
-        for field in ("status", "summary", "errors", "report_text"):
-            if field not in report:
-                continue
-            if field == "report_text":
-                report_text = str(report[field]).strip()
-                shown_in_stdout = _contains_whole_line_block(
-                    shown_stdout,
-                    report_text,
-                    leading_truncated=stdout_truncated,
-                )
-                shown_in_stderr = _contains_whole_line_block(
-                    shown_stderr,
-                    report_text,
-                    leading_truncated=stderr_truncated,
-                )
-                if shown_in_stdout or shown_in_stderr:
-                    continue
-            report_lines.append(f"{field}: {report[field]}")
-        detail = report.get("detail")
-        if isinstance(detail, dict):
-            for field in ("reason", "error"):
-                if detail.get(field):
-                    report_lines.append(f"detail.{field}: {detail[field]}")
-        if report_lines:
-            parts.append("\n--- report ---\n" + "\n".join(report_lines))
+    shown_stdout, stdout_truncated = _append_stream_section(
+        parts,
+        label="stdout",
+        stream=stdout,
+        limit=_max_stdout_bytes(),
+        mark_truncation=True,
+    )
+    shown_stderr, stderr_truncated = _append_stream_section(
+        parts,
+        label="stderr",
+        stream=stderr,
+        limit=_max_stderr_bytes(),
+        mark_truncation=False,
+    )
+    _append_report_section(
+        parts,
+        report,
+        shown_stdout=shown_stdout,
+        stdout_truncated=stdout_truncated,
+        shown_stderr=shown_stderr,
+        stderr_truncated=stderr_truncated,
+    )
 
     return "\n".join(parts)
 

@@ -106,9 +106,10 @@ verdict report. FuseSoC setup and declared generators may run when authoritative
 resolution requires them, using disposable scratch; this possibility is named
 in `planning_disclosures` and the scratch is removed afterward.
 
-The JSON plan remains the only dry-run content on stdout. A failing dry run
-also prints its concise planning-failure reason on stderr, while still writing
-no normal verdict report.
+The JSON plan is printed first on stdout. A successful dry run follows it with
+its concise verdict summary on stdout. A failing dry run instead prints its
+concise planning-failure reason on stderr, while still writing no normal
+verdict report.
 
 With an explicit `--report-dir`, dry-run atomically writes only the distinct
 `<report-dir>/<flow>/flow_plan.json` artifact. The

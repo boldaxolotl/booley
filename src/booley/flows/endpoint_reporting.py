@@ -431,8 +431,6 @@ def _publish_console_report(endpoint: EndpointState, result: EndpointOutcome) ->
     if result.exit_code != EXIT_SUCCESS:
         print(result.report_text, file=sys.stderr, flush=True)
         return
-    if endpoint._is_non_persisting_dry_run():
-        return
     if endpoint.endpoint_kind == "flow" or endpoint.announce_success_report:
         print(result.report_text, flush=True)
 

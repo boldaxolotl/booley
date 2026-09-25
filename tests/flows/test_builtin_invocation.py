@@ -394,6 +394,7 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
 def test_builtin_dry_run_skips_admission_and_normal_persistence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     state_file = tmp_path / "state.json"
     DevelopmentState.load(state_file).save()
@@ -431,6 +432,12 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
         )
 
     assert execution.exit_code == 0
+    captured = capsys.readouterr()
+    plan_text, separator, summary = captured.out.rpartition("\nDry run: 1 work unit(s)\n")
+    assert separator
+    assert summary == ""
+    assert json.loads(plan_text) == execution.outcome.detail
+    assert captured.err == ""
     assert state_file.read_bytes() == state_before
     assert [path.relative_to(report_dir).as_posix() for path in report_dir.rglob("*")] == [
         "dry_contract",
