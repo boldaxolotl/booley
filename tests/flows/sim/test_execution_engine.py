@@ -33,6 +33,7 @@ from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
     SimulationBuildSlotError,
+    TargetCompileSurface,
     simulation_build_slot,
 )
 from booley.flows.sim.execution import (
@@ -113,6 +114,7 @@ def _prepared_group_with_sources(
         cast(Any, SimpleNamespace(prepared=prepared, trace_requested=trace_requested)),
         MagicMock(),
         0.0,
+        TargetCompileSurface(handle.project_root, handle.identity, (), ()),
         {},
         {},
         {},
@@ -428,6 +430,12 @@ def _run_execution(
             patch(
                 "booley.flows.sim.execution.engine.TargetCatalog.build",
                 return_value=_inspection(cocotb=cocotb),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "booley.flows.sim.execution.engine.resolve_target_compile_surface",
+                return_value=TargetCompileSurface(handle.project_root, handle.identity, (), ()),
             )
         )
         if trace_mode is None:

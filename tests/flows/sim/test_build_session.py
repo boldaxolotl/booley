@@ -20,12 +20,74 @@ from booley.flows.sim import build_session
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
     SimulationBuildSlotError,
+    TargetCompileSurface,
     project_compile_surface,
+    resolve_target_compile_surface,
     simulation_build_slot,
 )
 from booley.fusesoc import selftest_overlay
 from booley.fusesoc.core_projection import isolated_core_path
+from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.test_coverage_invocation import project
+
+
+def test_resolved_compile_surface_is_target_scoped_and_snapshot_is_walk_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project(tmp_path)
+    header = tmp_path / "rtl" / "counter.svh"
+    header.write_text("`define COUNTER_WIDTH 8\n", encoding="utf-8")
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        .replace(
+            "files: [rtl/counter.sv]",
+            "files: [rtl/counter.sv, {rtl/counter.svh: {is_include_file: true}}]",
+        )
+        .replace("  rtl:\n", "  rtl:\n    depend: [acme:demo:dependency:1]\n"),
+        encoding="utf-8",
+    )
+    dependency = tmp_path / "dependency.core"
+    dependency.write_text("CAPI=2:\nname: acme:demo:dependency:1\n", encoding="utf-8")
+    unselected = tmp_path / "rtl" / "unselected.sv"
+    unselected.write_text("module unselected; endmodule\n", encoding="utf-8")
+    ticket_source = tmp_path / ".booley_project/worktrees/T-1/rtl/copy.sv"
+    ticket_source.parent.mkdir(parents=True)
+    ticket_source.write_text("module copy; endmodule\n", encoding="utf-8")
+    handle = TargetCatalog.build(tmp_path).select("sim_0", for_flow="sim")
+
+    surface = resolve_target_compile_surface(handle)
+    identities = {path.relative_to(tmp_path).as_posix() for path in surface.authored_paths}
+
+    assert {
+        "rtl/counter.sv",
+        "rtl/counter.svh",
+        "counter.core",
+        "dependency.core",
+    } <= identities
+    assert "rtl/unselected.sv" not in identities
+    assert ".booley_project/worktrees/T-1/rtl/copy.sv" not in identities
+    before = project_compile_surface(surface)
+    monkeypatch.setattr(os, "walk", lambda *_args, **_kwargs: pytest.fail("snapshot walked"))
+    unselected.write_text("module changed; endmodule\n", encoding="utf-8")
+    ticket_source.write_text("module changed_copy; endmodule\n", encoding="utf-8")
+    assert project_compile_surface(surface) == before
+    config = tmp_path / ".booley_project/booley.toml"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+    assert project_compile_surface(surface) != before
+
+
+def test_compile_surface_resolution_normalizes_a_stale_target(tmp_path: Path) -> None:
+    project(tmp_path)
+    catalog = TargetCatalog.build(tmp_path)
+    handle = catalog.select("sim_0", for_flow="sim")
+    core = tmp_path / "counter.core"
+    core.write_text(core.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+
+    with pytest.raises(SimulationBuildSlotError, match=r"cannot resolve compile inputs.*Target"):
+        resolve_target_compile_surface(handle)
 
 
 def test_slot_uses_durable_target_identity_not_selector_spelling(tmp_path: Path) -> None:
@@ -54,10 +116,13 @@ def test_compile_surface_does_not_require_project_initialization(tmp_path: Path)
     generated.parent.mkdir(parents=True)
     generated.write_text("module generated; endmodule\n", encoding="utf-8")
 
-    assert set(project_compile_surface(tmp_path)) == {"counter.sv"}
+    surface = TargetCompileSurface(tmp_path, "target", (source,), ())
+    assert set(project_compile_surface(surface)) == {"counter.sv"}
 
 
-def test_compile_surface_skips_only_owned_isolated_core_projections(tmp_path: Path) -> None:
+def test_compile_surface_includes_only_resolved_operational_core_projections(
+    tmp_path: Path,
+) -> None:
     authored = tmp_path / ".booley_project" / "cores" / "design.core"
     authored.parent.mkdir(parents=True)
     authored.write_text("CAPI=2:\nname: ::design:0\n", encoding="utf-8")
@@ -75,20 +140,24 @@ def test_compile_surface_skips_only_owned_isolated_core_projections(tmp_path: Pa
     linked = generated.parent / "booley-isolated-linked.core"
     linked.symlink_to(generated.name)
 
-    surface = project_compile_surface(tmp_path)
+    compile_surface = TargetCompileSurface(
+        tmp_path, "target", (authored, foreign, linked), (generated,)
+    )
+    surface = project_compile_surface(compile_surface)
     assert authored.relative_to(tmp_path).as_posix() in surface
     assert generated.relative_to(tmp_path).as_posix() not in surface
     assert foreign.relative_to(tmp_path).as_posix() in surface
     assert any(name.startswith(linked.relative_to(tmp_path).as_posix()) for name in surface)
 
     linked.unlink()
-    surface = project_compile_surface(tmp_path)
-    prepared_surface = project_compile_surface(tmp_path, include_generated_isolated_cores=True)
+    compile_surface = TargetCompileSurface(tmp_path, "target", (authored, foreign), (generated,))
+    surface = project_compile_surface(compile_surface)
+    prepared_surface = project_compile_surface(compile_surface, include_operational_cores=True)
     assert generated.relative_to(tmp_path).as_posix() in prepared_surface
     generated.write_text(generated.read_text(encoding="utf-8") + "# mutated\n", encoding="utf-8")
-    assert project_compile_surface(tmp_path) == surface
+    assert project_compile_surface(compile_surface) == surface
     assert (
-        project_compile_surface(tmp_path, include_generated_isolated_cores=True)
+        project_compile_surface(compile_surface, include_operational_cores=True)
         != prepared_surface
     )
 
@@ -103,7 +172,8 @@ def test_compile_surface_hashes_foreign_isolated_cores_without_decoding(tmp_path
         "CAPI=2:\n# Booley stealth core projection: outside.core\n", encoding="utf-8"
     )
 
-    surface = project_compile_surface(tmp_path)
+    compile_surface = TargetCompileSurface(tmp_path, "target", (invalid_utf8, invalid_source), ())
+    surface = project_compile_surface(compile_surface)
     assert invalid_utf8.relative_to(tmp_path).as_posix() in surface
     assert invalid_source.relative_to(tmp_path).as_posix() in surface
 
@@ -577,10 +647,11 @@ def test_compile_surface_tracks_symlinks_and_rejects_broken_inputs(tmp_path: Pat
     source.write_text("module source; endmodule", encoding="utf-8")
     link = tmp_path / "alias.sv"
     link.symlink_to(source.name)
-    assert "alias.sv -> source.sv" in project_compile_surface(tmp_path)
+    surface = TargetCompileSurface(tmp_path, "target", (link,), ())
+    assert "alias.sv -> source.sv" in project_compile_surface(surface)
     source.unlink()
     with pytest.raises(SimulationBuildSlotError, match="not a file"):
-        project_compile_surface(tmp_path)
+        project_compile_surface(surface)
 
 
 def test_fresh_verification_rejects_other_generation_and_symlinked_manifest(

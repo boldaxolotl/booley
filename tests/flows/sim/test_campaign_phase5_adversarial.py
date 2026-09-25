@@ -473,6 +473,9 @@ class _CocotbGroup:
         self.names = names
         self.build_root = harness.build_root
         self.artifact_paths = (self.build_root / "simv",)
+        self.compile_surface = SimpleNamespace(
+            project_root=self.build_root.parent.resolve(), authored_paths=(), operational_paths=()
+        )
 
     def planning_disclosure(self):
         return {}

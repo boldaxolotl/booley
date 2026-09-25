@@ -118,6 +118,9 @@ class _CrashGroup:
         self.run_log = run_log
         self.launches = launches
         self.artifact_paths = (build_root / "simv",)
+        self.compile_surface = SimpleNamespace(
+            project_root=build_root.parent.resolve(), authored_paths=(), operational_paths=()
+        )
 
     def compile(self):
         return SimpleNamespace(passed=True)

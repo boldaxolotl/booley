@@ -163,6 +163,9 @@ def _shared_executor(build_root, run_log, handle, launches, compile_count):
             self.names = names
             self.build_root = build_root
             self.artifact_paths = (build_root / "simv",)
+            self.compile_surface = SimpleNamespace(
+                project_root=build_root.parent.resolve(), authored_paths=(), operational_paths=()
+            )
             self.reused = False
 
         def planning_disclosure(self):

@@ -64,6 +64,14 @@ class _NoProgress:
         del outcome
 
 
+class _CoverageAggregateError(SimulationCampaignIntegrityError):
+    """A nested Coverage Campaign failed with a validated evaluation status."""
+
+    def __init__(self, message: str, evaluation_status: str) -> None:
+        super().__init__(message)
+        self.evaluation_status = evaluation_status
+
+
 @dataclass(slots=True)
 class _CapturedBuild:
     directory: Path
@@ -181,8 +189,14 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             if result is not None:
                 return result
         if outcome.abort_remaining:
-            raise SimulationCampaignIntegrityError(
-                str(outcome.detail.get("error", "native coverage collection failed"))
+            status = outcome.detail.get("evaluation")
+            if status not in {"pass", "fail", "blocked", "not_requested"}:
+                raise SimulationCampaignIntegrityError(
+                    "native coverage collection returned an invalid evaluation status"
+                )
+            raise _CoverageAggregateError(
+                str(outcome.detail.get("error", "native coverage collection failed")),
+                cast(str, status),
             )
         if capturing.captured is None:
             detail = outcome.detail.get("error") or outcome.detail.get("collection")
