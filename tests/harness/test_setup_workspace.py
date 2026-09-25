@@ -256,7 +256,8 @@ class TestStealthHookGating:
         # Worktree with a real .git DIRECTORY (so _resolve_worktree_git_dir
         # returns it directly and no worktree hooks-path git call runs).
         worktree = tmp_path / "wt"
-        (worktree / ".git").mkdir(parents=True)
+        worktree.mkdir()
+        _git(worktree, "init")
         return fake_dev_support, worktree
 
     def _project(self, tmp_path: Path, toml_body: bytes | None) -> Path:
@@ -338,6 +339,43 @@ class TestScopeJsonExclude:
         # So `git status` reads clean — .scope.json never surfaces as untracked.
         status = _git(repo, "status", "--porcelain")
         assert ".scope.json" not in status.stdout
+
+
+def test_hook_controls_translate_custom_project_directory(tmp_path: Path) -> None:
+    from booley.harness.setup.workspace import _hook_acceptance_controls
+
+    root = tmp_path / "outer"
+    project = root / "project-policy"
+    project.mkdir(parents=True)
+    (root / "booley.toml").write_text('[project]\ndir = "project-policy"\n', encoding="utf-8")
+    (project / "booley.toml").write_text(
+        '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "coverage-waivers"\n',
+        encoding="utf-8",
+    )
+    _git(root, "init")
+
+    controls = _hook_acceptance_controls(tmp_path / "project-worktree", root)
+
+    assert "booley.toml" in controls
+    assert "coverage-waivers" in controls
+
+
+def test_scope_guard_discovery_failure_aborts_without_writing_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup.workspace import _install_scope_hook
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    monkeypatch.setattr(
+        "booley.ticket_board.acceptance_targets.acceptance_control_paths",
+        lambda _root: (_ for _ in ()).throw(ValueError("unsafe waiver config")),
+    )
+
+    with pytest.raises(RuntimeError, match="unsafe waiver config"):
+        _install_scope_hook(worktree, ["rtl/"], acceptance_surface_root=tmp_path)
+
+    assert not (worktree / ".scope.json").exists()
 
 
 class TestWorktreeCreateScript:

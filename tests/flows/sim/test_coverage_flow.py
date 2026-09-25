@@ -680,6 +680,34 @@ def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatc
     prune_invocation(tmp_path / "reports", 1)
 
 
+def test_full_pruning_rejects_extra_nested_coverage_payload(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+    reports = tmp_path / "reports"
+    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
+        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+    )
+    assert result.exit_code == 0
+    native = next(
+        (reports / "sim/1/targets/sim_0/campaign").glob(
+            "work-items/*/attempts/*/coverage-campaign/native/raw"
+        )
+    )
+    stray = native / "999-extra.dat"
+    stray.write_text("do not delete", encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match=r"999-extra\.dat"):
+        prune_invocation(reports, 1)
+
+    assert stray.read_text(encoding="utf-8") == "do not delete"
+    assert (reports / "sim/1").is_dir()
+
+
 def test_pruning_during_allocation_does_not_reuse_campaign_number(tmp_path, monkeypatch):
     from pathlib import Path
 

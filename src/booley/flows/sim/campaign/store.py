@@ -221,6 +221,22 @@ class CampaignStore:
 
     def __init__(self, campaign_directory: Path) -> None:
         self.root = campaign_directory.absolute()
+        self._authenticated_files: set[Path] = set()
+
+    @property
+    def retention_files(self) -> tuple[Path, ...]:
+        """Authenticated files owned by this Campaign, in stable order."""
+        return tuple(sorted(self._authenticated_files))
+
+    def _read(self, path: Path, *, limit: int) -> bytes:
+        raw = _read_regular(path, limit=limit)
+        self._authenticated_files.add(path.absolute())
+        return raw
+
+    def _identity(self, path: Path) -> tuple[int, str]:
+        identity = _stream_identity(path)
+        self._authenticated_files.add(path.absolute())
+        return identity
 
     @property
     def manifest_path(self) -> Path:
@@ -239,13 +255,13 @@ class CampaignStore:
     def load_manifest(self) -> SimulationCampaignManifest:
         _require_safe_parents(self.manifest_path, self.root)
         return decode_simulation_campaign_manifest(
-            _read_regular(self.manifest_path, limit=MANIFEST_MAX_BYTES)
+            self._read(self.manifest_path, limit=MANIFEST_MAX_BYTES)
         )
 
     def load_summary(self) -> Mapping[str, object]:
         """Load the bounded retention fields from the existing summary projection."""
         _require_safe_parents(self.summary_path, self.root)
-        raw = _read_regular(self.summary_path, limit=SUMMARY_MAX_BYTES)
+        raw = self._read(self.summary_path, limit=SUMMARY_MAX_BYTES)
         try:
             document = require_dict(json.loads(raw), field="campaign summary")
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -381,12 +397,12 @@ class CampaignStore:
         attempt_path = directory / "build-attempt.json"
         if not attempt_path.exists():
             return None
-        attempt = decode_bundle_build_attempt(_read_regular(attempt_path, limit=RECORD_MAX_BYTES))
+        attempt = decode_bundle_build_attempt(self._read(attempt_path, limit=RECORD_MAX_BYTES))
         _validate_shared_attempt(attempt, ordinal, expected)
         result_path = directory / "build-result.json"
         if not result_path.exists():
             return None
-        result = decode_bundle_build_result(_read_regular(result_path, limit=RECORD_MAX_BYTES))
+        result = decode_bundle_build_result(self._read(result_path, limit=RECORD_MAX_BYTES))
         self._validate_shared_result(directory, attempt, result, expected)
         if attempt.document["producer_invocation_id"] != invocation_id:
             return None
@@ -427,7 +443,7 @@ class CampaignStore:
     def _load_shared_bundle(self, directory, attempt, result, expected) -> SimulatorBundle:
         binding = cast(Mapping[str, object], result.document["bundle"])
         path = directory / cast(str, binding["manifest_path"])
-        raw = _read_regular(path, limit=RECORD_MAX_BYTES)
+        raw = self._read(path, limit=RECORD_MAX_BYTES)
         if len(raw) != binding["manifest_bytes"] or _raw_digest(raw) != binding["manifest_sha256"]:
             raise SimulationCampaignIntegrityError("shared Build Result bundle digest disagrees")
         bundle = decode_simulator_bundle(raw)
@@ -446,14 +462,14 @@ class CampaignStore:
         if not attempts or not (attempts[-1] / "attempt.json").exists():
             return None
         return decode_simulation_attempt(
-            _read_regular(attempts[-1] / "attempt.json", limit=RECORD_MAX_BYTES)
+            self._read(attempts[-1] / "attempt.json", limit=RECORD_MAX_BYTES)
         )
 
     def verify_result_evidence(self, attempt_directory: Path, result: SimulationResult) -> None:
         """Authenticate private or shared build chains before result commit."""
         document = result.document
         attempt = decode_simulation_attempt(
-            _read_regular(attempt_directory / "attempt.json", limit=RECORD_MAX_BYTES)
+            self._read(attempt_directory / "attempt.json", limit=RECORD_MAX_BYTES)
         )
         _validate_result_attempt_binding(attempt, result)
         references: list[Mapping[str, object]] = list(
@@ -485,9 +501,7 @@ class CampaignStore:
     ) -> tuple[Mapping[str, object], BundleBuildResult, SimulatorBundle | None]:
         build_reference = cast(Mapping[str, object], simulation["build_result"])
         build_path = self._result_build_path(attempt_directory, build_reference)
-        build_result = decode_bundle_build_result(
-            _read_regular(build_path, limit=RECORD_MAX_BYTES)
-        )
+        build_result = decode_bundle_build_result(self._read(build_path, limit=RECORD_MAX_BYTES))
         build_document = build_result.document
         for field in ("campaign_id", "manifest_sha256", "workload_sha256"):
             if build_document[field] != simulation[field]:
@@ -507,6 +521,8 @@ class CampaignStore:
                 "Build Result variant disagrees with Simulation Attempt"
             )
         build_root, build_attempt = self._load_result_build_attempt(build_path, build_document)
+        for reference in cast(tuple[Mapping[str, object], ...], build_document["evidence"]):
+            self._authenticate_reference(build_root, reference)
         _validate_result_build_attempt(build_attempt, build_document, simulation, attempt)
         bundle = self._load_result_bundle(
             build_root, build_document, build_reference, simulation, attempt, build_attempt
@@ -524,7 +540,7 @@ class CampaignStore:
         reference = cast(Mapping[str, object], build_document["build_attempt"])
         self._authenticate_reference(root, reference)
         attempt = decode_bundle_build_attempt(
-            _read_regular(root / cast(str, reference["path"]), limit=RECORD_MAX_BYTES)
+            self._read(root / cast(str, reference["path"]), limit=RECORD_MAX_BYTES)
         )
         return root, attempt
 
@@ -540,7 +556,7 @@ class CampaignStore:
             )
         path = root / cast(str, binding["manifest_path"])
         _require_safe_parents(path, root)
-        raw = _read_regular(path, limit=RECORD_MAX_BYTES)
+        raw = self._read(path, limit=RECORD_MAX_BYTES)
         if len(raw) != binding["manifest_bytes"] or _raw_digest(raw) != binding["manifest_sha256"]:
             raise SimulationCampaignIntegrityError("Build Result bundle digest disagrees")
         bundle = decode_simulator_bundle(raw)
@@ -563,7 +579,7 @@ class CampaignStore:
             manifest_reference = cast(Mapping[str, object], snapshot_binding["manifest"])
             snapshot_path = attempt_directory / cast(str, manifest_reference["path"])
             snapshot = decode_executable_snapshot(
-                _read_regular(snapshot_path, limit=RECORD_MAX_BYTES)
+                self._read(snapshot_path, limit=RECORD_MAX_BYTES)
             )
             _validate_snapshot_identity(snapshot, simulation, build_reference, snapshot_binding)
             bundle_binding = build_result.document["bundle"]
@@ -589,11 +605,10 @@ class CampaignStore:
             for artifact in cast(tuple[Mapping[str, object], ...], snapshot.document["artifacts"]):
                 self._authenticate_reference(snapshot_path.parent, artifact)
 
-    @staticmethod
-    def _authenticate_reference(root: Path, reference: Mapping[str, object]) -> None:
+    def _authenticate_reference(self, root: Path, reference: Mapping[str, object]) -> None:
         path = root / cast(str, reference["path"])
         _require_safe_parents(path, root)
-        size, digest = _stream_identity(path)
+        size, digest = self._identity(path)
         if size != reference["bytes"] or digest != reference["sha256"]:
             raise SimulationCampaignIntegrityError(
                 f"result evidence reference does not authenticate {path}"
@@ -652,9 +667,7 @@ class CampaignStore:
             attempt_path = attempt_directory / "attempt.json"
             if not attempt_path.exists() and not _is_link(attempt_path):
                 continue
-            attempt = decode_simulation_attempt(
-                _read_regular(attempt_path, limit=RECORD_MAX_BYTES)
-            )
+            attempt = decode_simulation_attempt(self._read(attempt_path, limit=RECORD_MAX_BYTES))
             document = attempt.document
             if (
                 document["work_item_id"] != work_item_id
@@ -689,7 +702,7 @@ class CampaignStore:
         if child_id is None:
             return
         path = self.root / "child-executions" / "entries" / f"{child_id}.json"
-        raw = _read_regular(path, limit=RECORD_MAX_BYTES)
+        raw = self._read(path, limit=RECORD_MAX_BYTES)
         if _raw_digest(raw) != attempt["child_entry_sha256"]:
             raise SimulationCampaignIntegrityError(
                 "Simulation Attempt child entry digest disagrees"
@@ -725,7 +738,7 @@ class CampaignStore:
         attempts: tuple[Path, ...],
         decoded_attempts: list[SimulationAttempt],
     ) -> SimulationResult:
-        result = decode_simulation_result(_read_regular(path, limit=RECORD_MAX_BYTES))
+        result = decode_simulation_result(self._read(path, limit=RECORD_MAX_BYTES))
         document = result.document
         if (
             document["work_item_id"] != work_item_id

@@ -67,6 +67,93 @@ def test_typed_request_executes_without_constructing_a_parser(
     assert result.outcome.detail.get("acceptance_effect") == ("diagnostic" if diagnostic else None)
     assert not hasattr(flow.context, "_cli_parser")
     assert request.report_dir is None
+    report_root = runtime / "flow-reports"
+    assert flow.context.args.report_dir == report_root
+    assert (report_root / f"{flow.name}.json").is_file()
+    assert (report_root / flow.name / "1/report.json").is_file()
+
+
+def test_flow_report_root_precedence(runtime, monkeypatch):
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = LintFlow()
+    monkeypatch.setattr(flow, "_run", EndpointOutcome)
+    explicit = runtime / "explicit"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime / "runtime"))
+
+    flow.execute(flow.request_type(target="demo", work_dir=runtime, report_dir=explicit))
+    assert flow.context.args.report_dir == explicit
+
+    flow.execute(flow.request_type(target="demo", work_dir=runtime))
+    assert flow.context.args.report_dir == runtime / "runtime/flow-reports"
+
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR")
+    flow.execute(flow.request_type(target="demo", work_dir=runtime))
+    assert flow.context.args.report_dir == runtime / "flow-reports"
+
+
+def test_adapter_report_root_wins_over_direct_default(runtime, monkeypatch):
+    from booley.evidence.acceptance import ResolvedFlowAcceptance
+    from booley.flows.execution_persistence import StandaloneFlowExecution
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    selected = runtime / "logs/.runtime/flow-reports"
+
+    class RuntimeSelectingExecution(StandaloneFlowExecution):
+        def validate_and_resolve(self, request):
+            request.report_dir = selected
+            return ResolvedFlowAcceptance(ticket_backed=True)
+
+    flow = LintFlow()
+    monkeypatch.setattr(flow, "_run", EndpointOutcome)
+    result = flow.execute(
+        flow.request_type(target="demo", work_dir=runtime),
+        adapter=RuntimeSelectingExecution(),
+    )
+
+    assert result.exit_code == 0
+    assert flow.context.args.report_dir == selected
+
+
+def test_direct_simulation_invocations_share_report_numbering(runtime, monkeypatch):
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    reserved = []
+    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", lambda self: None)
+
+    def run(session):
+        reserved.append(session.reserve_invocation_dir())
+        return EndpointOutcome()
+
+    monkeypatch.setattr(FlowSession, "_run", run)
+    for _ in range(3):
+        flow = SimulateFlow()
+        result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
+        assert result.exit_code == 0
+
+    report_root = runtime / "flow-reports/sim"
+    assert reserved == [report_root / "1", report_root / "2", report_root / "3"]
+
+
+def test_uninitialized_flow_fails_before_state_or_execution(runtime, monkeypatch):
+    from booley.runtime.project_dir import reset_cache
+
+    uninitialized = runtime / "uninitialized"
+    uninitialized.mkdir()
+    monkeypatch.chdir(uninitialized)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR")
+    reset_cache()
+    flow = LintFlow()
+    monkeypatch.setattr(
+        FlowSession, "read_state", lambda self: pytest.fail("loaded state before report root")
+    )
+    monkeypatch.setattr(flow, "_run", lambda: pytest.fail("executed uninitialized Flow"))
+
+    result = flow.execute(flow.request_type(target="demo", work_dir=uninitialized))
+
+    assert result.exit_code == 2
+    assert "Run 'booley init'" in result.outcome.report_text
+    assert not (uninitialized / "flow-reports").exists()
 
 
 @pytest.mark.parametrize("flow_type", FLOWS)
@@ -329,7 +416,7 @@ class ProjectEndpoint(BASE):
         return schema
 
     def _run(self):
-        return EndpointOutcome(detail={"configured": self.configured, "timeout": self.args.timeout})
+        return EndpointOutcome(detail={"configured": self.configured, "timeout": self.args.timeout, "report_dir": str(self.args.report_dir) if self.args.report_dir else None})
 """.replace("BASE", base)
     extension.write_text(source)
     metadata = extract_mcp_tool_info(extension, builtin=False)
@@ -343,10 +430,15 @@ class ProjectEndpoint(BASE):
     assert "timeout_ms" not in schema["properties"]
     result = endpoint.execute_cli(["--target", "demo", "--timeout", "long"])
     assert result.exit_code == 0
-    assert result.outcome.detail == {
+    expected = {
         "configured": "initialized by the argument hook",
         "timeout": "long",
     }
+    if base == "BooleyFlow":
+        expected["report_dir"] = str(runtime / "flow-reports")
+    else:
+        expected["report_dir"] = None
+    assert result.outcome.detail == expected
 
 
 def test_ticket_runner_executes_project_local_flow(runtime, monkeypatch):

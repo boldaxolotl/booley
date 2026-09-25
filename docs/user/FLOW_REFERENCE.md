@@ -65,9 +65,8 @@ Agent-facing MCP calls carry the same grade in `EXIT_CODE:` and structured
 output; MCP `isError` is not the design verdict.
 
 The direct CLI always publishes the final human-readable Flow verdict,
-independently of whether Development State or a durable report directory is
-configured. Successful verdicts use stdout; failed and rejected diagnoses use
-stderr. If a Flow already printed the same complete verdict block during its
+independently of whether Development State is configured. Successful verdicts
+use stdout; failed and rejected diagnoses use stderr. If a Flow already printed the same complete verdict block during its
 run, Booley does not print a second copy.
 
 An agent-facing MCP call attaches its per-invocation report as
@@ -127,18 +126,19 @@ its concise verdict summary on stdout. A failing dry run instead prints its
 concise planning-failure reason on stderr, while still writing no normal
 verdict report.
 
-With an explicit `--report-dir`, dry-run atomically writes only the distinct
-`<report-dir>/<flow>/flow_plan.json` artifact. The
+Dry-run atomically writes only the distinct
+`<selected-report-root>/<flow>/flow_plan.json` artifact. It uses the same report
+root precedence as a real invocation and never reserves a numbered directory. The
 `semantic_plan_fingerprint` excludes scratch and invocation-local paths so the
 same prepared dry and real execution have the same semantic identity.
 
-Ticket and agent-driven runs configure
-`.booley_project/.runtime/flow-reports/` automatically. A direct CLI run writes
-durable JSON only when `--report-dir` or the corresponding runtime environment
-is configured; otherwise the verdict exists only in stdout/stderr and Booley
-prints a warning. The per-Flow fields below describe the Flow-specific durable
-reports written when a report directory is available. Each includes `flow` and
-`timestamp` in addition to the fields listed below.
+An explicit `--report-dir` is authoritative. Ticket and agent-driven runs use
+their configured `<runtime>/flow-reports` root. Otherwise, every direct built-in
+or Custom Flow writes beneath `<resolved-project-data>/flow-reports`. The selected
+checkout determines Project data, including configured external and stealth
+locations; Booley never falls back to writing `flow-reports/` in the RTL checkout.
+The per-Flow fields below describe the Flow-specific durable reports. Each includes
+`flow` and `timestamp` in addition to the fields listed below.
 
 The `synth` and `fpga` per-Target reports and Criteria detail additionally carry
 the shared versioned `implementation` envelope. It contains the policy-resolved
@@ -190,8 +190,9 @@ Ordinary HDL, Cocotb-batch, and native-coverage-aggregate executions publish
 their resume authority at
 `<report-root>/sim/<N>/targets/<encoded-target>/campaign/manifest.json`, with
 append-only attempts/results beneath it and an atomically regenerated
-`summary.json`. When no report root is supplied, Simulation Campaigns use
-`<project>/flow-reports`. A resume creates a new compatibility invocation but
+`summary.json`. Direct Simulation, native coverage, and resume all use
+`<resolved-project-data>/flow-reports` by default and reserve numbers from the
+same `sim/` sequence. A resume creates a new compatibility invocation but
 keeps authoritative Simulation Campaign writes beside the original manifest.
 Cocotb interruption retries its whole batch as one new Simulation Attempt while
 retaining independent XML-derived observations. Native coverage interruption
@@ -205,7 +206,7 @@ final card gives the strict grade and keeps the manifest path needed to resume:
 ```bash
 booley flow sim --target sim_soc --test reset --test interrupts
 booley flow sim --resume-from \
-  flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
+  "$PROJECT_DATA/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json"
 ```
 
 The MCP `sim` input deliberately uses an array, not the former scalar shape:
@@ -415,9 +416,11 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 ```
 
 Full pruning also retires the Campaign's Project-local child-execution records.
-When `REPORTS_ROOT` has the standard
-`<project-data>/.runtime/flow-reports` shape, Booley infers that project-data
-root. If reports live elsewhere and the invocation contains Campaign child
+When `REPORTS_ROOT` has either standard shape,
+`<project-data>/.runtime/flow-reports` for runtime-scoped execution or
+`<project-data>/flow-reports` for direct execution, Booley infers that project-data
+root. The direct layout is accepted only when its parent is the currently resolved
+Project data directory. If reports live elsewhere and the invocation contains Campaign child
 records, add `--project-data "$PROJECT_DATA"` to `--full`, where the value is
 the exact resolved project-data root. Native-only pruning never requires
 `--project-data`.
@@ -427,9 +430,13 @@ the immutable Campaign manifest and point store, Simulation, and hook evidence. 
 `availability.json` records `pruning` or `pruned`; normalized evidence remains
 analyzable. Full pruning removes the exact invocation's reports and native
 payloads; re-analysis is impossible. An empty `.pruned-N` tombstone reserves its
-number. Selection is validated before deletion; ambiguous, unsafe, changed, or
-active selections exit `2`. Retry an interrupted cleanup with the same exact
-selection. No age, size, or latest heuristic deletes evidence automatically.
+number. Selection is validated before deletion. Native-only pruning exits `2`
+for ambiguous, unsafe, changed, missing, or unrecognized payloads. Full pruning
+does not require recorded native payloads to remain unchanged or present, but it
+exits `2` and names any file the invocation did not produce; the invocation is
+left untouched. Active selections also exit `2`. Retry an interrupted cleanup
+with the same exact selection. No age, size, or latest heuristic deletes evidence
+automatically.
 
 ## `lint`
 

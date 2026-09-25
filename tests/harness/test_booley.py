@@ -631,6 +631,28 @@ def test_prepare_review_command_accepts_html_free_briefing(tmp_path, monkeypatch
     assert f"Review package ready: {tmp_path / 'briefing.json'}" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("command", ["review", "prepare-review"])
+def test_review_commands_print_package_free_accepted_guidance(
+    command, tmp_path, monkeypatch, capsys
+):
+    from booley.ticket_board import review_lifecycle
+
+    message = "Ticket 'demo' is already accepted; run booley board approve demo to complete it."
+
+    async def accepted(*_args, **_kwargs):
+        return review_lifecycle.ReviewPrepOutcome("accepted", message)
+
+    monkeypatch.setattr(review_lifecycle, "review_command", accepted)
+    monkeypatch.setattr(review_lifecycle, "prepare_review_command", accepted)
+    args = tlr._build_parser().parse_args(["board", command, "demo"])
+    handler = tlr._cmd_board_review if command == "review" else tlr._cmd_board_prepare_review
+
+    assert handler(args, tmp_path) == 0
+    output = capsys.readouterr().out
+    assert output.strip() == message
+    assert "Review package ready: None" not in output
+
+
 def test_review_briefing_board_parser():
     args = tlr._build_parser().parse_args(
         ["board", "review-briefing", "demo-ticket", "--no-open-diffs"]

@@ -181,7 +181,11 @@ executable Ticket formats are beyond the hard cutoff and must be recreated.
 
 The protected-path policy covers FuseSoC-selected Target declarations, the test
 registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
-discovery sentinels and Project routing. Exact Git
+discovery sentinels, Project routing, and the configured
+[Approved Waiver Set](../../src/booley/flows/sim/CONTEXT.md) together with every
+formal proof artifact referenced by an approval. This project-wide approval
+policy is protected for every sealed Ticket, including a Ticket without a
+Coverage Criterion. Exact Git
 comparisons intentionally block formatting-only control changes. RTL and testbench
 contents remain editable when Scope permits them.
 
@@ -985,7 +989,10 @@ preserved in structured output. Progress is observational and never resumed.
 Project-wide waiver configuration is `[coverage.waivers]` in the project-data
 `booley.toml`, with explicit `anchor` (`rtl_repository` or
 `project_data_repository`) and safe relative `directory`. Target window/hook
-configuration remains under `flow_options.booley.coverage`.
+configuration remains under `flow_options.booley.coverage`. Once a Ticket is
+sealed, approving, editing, adding, deleting, or replacing an approval file or
+one of its referenced formal proof artifacts requires `return-to-draft`; the new
+Ticket generation records a fresh protected-input baseline.
 
 The canonical Target directory holds the V3 `coverage.json` manifest, required
 `coverage-points.jsonl.gz`, `simulation.json`, `native/raw/`, `native/merged/`,
@@ -1057,11 +1064,14 @@ root explicitly; callers obtain project-data roots through
   and the full deletion set before mutation. Symlinks, unknown payloads, changed
   databases, unexplained missing databases, and ambiguous selections are errors.
 - `prune_invocation(reports_root, invocation)` validates every existing Target
-  before atomically moving that invocation to `.pruned-N` and removing its
-  contents. Interrupted attempts may be removed after their process releases the
-  lock. A pruning journal permits retry after partial cleanup. The empty
-  `.pruned-N` tombstone reserves the number permanently; it contains no Campaign
-  or native evidence. Other invocations remain untouched.
+  and compares every file with the authenticated invocation, Campaign, and
+  artifact inventory before atomically moving that invocation to `.pruned-N` and
+  removing its contents. Unknown files are named and refused without mutation;
+  changed or missing recorded native payloads are accepted because full pruning
+  removes the entire invocation. Interrupted attempts may be removed after their
+  process releases the lock. A pruning journal permits retry after partial cleanup.
+  The empty `.pruned-N` tombstone reserves the number permanently; it contains no
+  Campaign or native evidence. Other invocations remain untouched.
 
 Native pruning first deep-validates the Campaign pair, then writes Target-local
 `availability.json` with schema `booley.coverage-availability/v1`, the Campaign

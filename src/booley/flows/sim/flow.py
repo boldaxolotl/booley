@@ -1981,8 +1981,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         admission: object | None,
         observed: CampaignRecoveryStatus,
     ) -> EndpointOutcome:
-        if self.args.report_dir is None:
-            self.args.report_dir = Path(self.args.work_dir) / "flow-reports"
+        assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
         from .campaign_reports import campaign_invocation_lock
@@ -2329,8 +2328,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     "targets": [item.handle.selector for item in prepared.targets],
                 }
             )
-        if self.args.report_dir is None:
-            self.args.report_dir = self._coverage_context.project_data_repository / "flow-reports"
+        assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
         from .campaign_reports import campaign_invocation_lock
@@ -2349,8 +2347,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 report_text="sim: Coverage Campaign has no borrowed admission context",
             )
         prepared = self._coverage_prepared
-        if self.args.report_dir is None:
-            self.args.report_dir = self._coverage_context.project_data_repository / "flow-reports"
+        assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
         from .campaign_reports import campaign_invocation_lock
@@ -2628,8 +2625,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         if special_result is not None:
             return special_result
-        if self.args.report_dir is None:
-            self.args.report_dir = Path(self.args.work_dir) / "flow-reports"
+        assert self.args.report_dir is not None, "prepared Flow requires a report root"
 
         if prepared is not None:
             return self._run_ordinary_campaigns(targets, test_names_map, admission)

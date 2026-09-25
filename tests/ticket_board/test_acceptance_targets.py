@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -249,6 +250,82 @@ def test_acceptance_control_paths_ignore_verilator_timescale(
     assert acceptance_targets.acceptance_control_paths(tmp_path) == ("toy.core",)
 
 
+@pytest.mark.parametrize(
+    ("anchor", "prefix"),
+    [
+        ("rtl_repository", ""),
+        ("project_data_repository", ".booley_project/"),
+    ],
+)
+def test_acceptance_control_paths_include_approved_waiver_inputs(
+    tmp_path: Path, anchor: str, prefix: str
+) -> None:
+    project = tmp_path / ".booley_project"
+    policy_root = tmp_path if anchor == "rtl_repository" else project
+    approvals = policy_root / "coverage-waivers"
+    approval = approvals / "rtl/counter.sv.toml"
+    proof = policy_root / "proofs/counter.sby"
+    approval.parent.mkdir(parents=True)
+    proof.parent.mkdir(parents=True)
+    proof.write_text("[tasks]\ncover\n", encoding="utf-8")
+    project.mkdir(exist_ok=True)
+    (project / "pipeline.toml").write_text(
+        f'[coverage.waivers]\nanchor = "{anchor}"\ndirectory = "coverage-waivers"\n',
+        encoding="utf-8",
+    )
+    approval.write_text(
+        textwrap.dedent(
+            """
+            schema = "booley.coverage-waivers/v1"
+            source = "rtl/counter.sv"
+            source_sha256 = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+            [[approval]]
+            id = "counter-unreachable"
+            target = "acme:lib:counter:1#sim"
+            point_id = "cp1:point"
+            reason = "unreachable"
+            justification = "State is unreachable."
+            approved_by = "human@example.invalid"
+            approved_at = "2026-09-25T00:00:00Z"
+            approval_ref = "review-738"
+            proof = { kind = "formal", reference = "proofs/counter.sby#cover_17", sha256 = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    assert acceptance_targets.acceptance_control_paths(tmp_path) == tuple(
+        sorted(
+            {
+                ".booley_project/pipeline.toml",
+                f"{prefix}coverage-waivers",
+                f"{prefix}proofs/counter.sby",
+            }
+        )
+    )
+
+
+def test_acceptance_control_paths_reject_external_waiver_project_data(tmp_path: Path) -> None:
+    root = tmp_path / "checkout"
+    external = tmp_path / "external-project"
+    root.mkdir()
+    external.mkdir()
+    (root / "booley.toml").write_text(
+        f'[project]\ndir = "{external.as_posix()}"\n', encoding="utf-8"
+    )
+    (external / "booley.toml").write_text(
+        '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "coverage-waivers"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+    with pytest.raises(ValueError, match="outside checkout"):
+        acceptance_targets.acceptance_control_paths(root)
+
+
 def test_tracked_gitlinks_reports_git_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -282,6 +359,7 @@ def test_target_value_parser_handles_supported_and_invalid_shapes(
 ) -> None:
     bindings = acceptance_targets.criterion_targets({"mandatory": {"synthesis_ok": value}})
     assert [(item.target, item.baseline, item.relative) for item in bindings] == expected
+    assert all(item.family is None for item in bindings)
 
 
 def test_target_list_parser_handles_coverage_sim_and_invalid_items() -> None:
@@ -301,6 +379,7 @@ def test_target_list_parser_handles_coverage_sim_and_invalid_items() -> None:
         ("sim_text", "sim_text", False),
         ("lint_plain", "lint_plain", False),
     ]
+    assert {item.family for item in bindings} == {"coverage"}
 
 
 def test_target_list_parser_ignores_invalid_sim_expression() -> None:
