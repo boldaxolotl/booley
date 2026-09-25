@@ -181,8 +181,11 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             if result is not None:
                 return result
         if outcome.abort_remaining:
+            message = outcome.detail.get("error")
+            if message is None and capturing.build_result is not None:
+                message = capturing.build_result.output
             raise SimulationCampaignIntegrityError(
-                str(outcome.detail.get("error", "native coverage collection failed"))
+                str(message or "native coverage collection failed")
             )
         if capturing.captured is None:
             detail = outcome.detail.get("error") or outcome.detail.get("collection")

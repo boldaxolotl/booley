@@ -430,7 +430,9 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
         def build(self, request):
             built.append(request.target.identity)
             return SimulationBuildResult(
-                False, "Verilator identity unavailable", infrastructure_error=True
+                False,
+                "Verilator 5.050 is not the pinned coverage collector; refresh the Sandbox image",
+                infrastructure_error=True,
             )
 
     result = SimulateFlow(coverage_execution=lambda handle, options: Unavailable()).execute(
@@ -439,10 +441,17 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
         )
     )
     assert result.exit_code == 2
+    assert "Verilator 5.050 is not the pinned coverage collector" in result.outcome.report_text
     assert len(built) == 1
     assert result.outcome.detail["pending_targets"] == ["sim_1"]
     target = result.outcome.detail["targets"]["sim_0"]
     assert target["simulation"] == "not_run"
+    assert "Verilator 5.050 is not the pinned coverage collector" in target["error"]
+    report = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
+    assert (
+        "Verilator 5.050 is not the pinned coverage collector"
+        in (report["detail"]["targets"]["sim_0"]["error"])
+    )
     assert "coverage_campaign" not in target
 
 
