@@ -19,6 +19,7 @@ from booley.targets.domain import (
     # Intentional private construction key: only this catalog creates handles.
     _HANDLE_FACTORY_KEY,  # pyright: ignore[reportPrivateUsage]
     TARGET_AWARE_FLOWS,
+    DuplicateTargetError,
     ForeignTargetHandleError,
     IncompatibleTargetError,
     StaleTargetCatalogError,
@@ -38,6 +39,35 @@ def _doctor_private_authority() -> bool:
 class _OperationalState:
     inspector: _TargetSourceInspector | None = None
     documents: dict[Path, dict[str, Any]] = field(default_factory=lambda: {})
+
+
+@dataclass(frozen=True)
+class PreparedTargetSelection:
+    """One catalog snapshot and its ordered selection for an authored request."""
+
+    catalog: TargetCatalog
+    handles: tuple[TargetHandle, ...]
+    target_arg: str
+
+    @classmethod
+    def resolve(
+        cls,
+        project_root: Path | str,
+        target_arg: str,
+        *,
+        for_flow: str | None = None,
+    ) -> PreparedTargetSelection:
+        """Resolve an authored selection once against one catalog snapshot."""
+        catalog = TargetCatalog.build(project_root)
+        handles = catalog.select_many(target_arg, for_flow=for_flow)
+        return cls(catalog, handles, target_arg)
+
+    def matches(self, project_root: Path | str, target_arg: str) -> bool:
+        """Return whether this selection belongs to the same authored request."""
+        return (
+            self.catalog.project_root == Path(project_root).resolve()
+            and self.target_arg == target_arg
+        )
 
 
 @dataclass(frozen=True)
@@ -127,7 +157,17 @@ class TargetCatalog:
     ) -> tuple[TargetHandle, ...]:
         """Resolve a comma-separated endpoint Target argument."""
         tokens = [token.strip() for token in (target_arg or "").split(",") if token.strip()]
-        return tuple(self.select(token, for_flow=for_flow) for token in tokens)
+        handles = tuple(self.select(token, for_flow=for_flow) for token in tokens)
+        first_selector_by_identity: dict[str, str] = {}
+        for token, handle in zip(tokens, handles, strict=True):
+            first = first_selector_by_identity.get(handle.identity)
+            if first is not None:
+                raise DuplicateTargetError(
+                    f"Target selector {token!r} resolves to {handle.identity!r}, "
+                    f"which was already selected by {first!r}"
+                )
+            first_selector_by_identity[handle.identity] = token
+        return handles
 
     def declaration_count(self, name: str, *, include_private: bool = False) -> int:
         """Count declarations without granting handles to hidden Doctor Targets."""

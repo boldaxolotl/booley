@@ -280,7 +280,7 @@ Deterministic end-to-end orchestration; no LLM:
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `fpga_impl_ok` |
 
-Common controls: `--target <name,...>` selects Target(s); `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
+Common controls: repeat `--target` or use comma-separated values; `--target a --target b,c` preserves the order `a`, `b`, `c`, and duplicate resolved Targets are rejected. MCP keeps one comma-separated `target` string. `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
 
 Key Flow-specific controls:
 
@@ -334,7 +334,7 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 
 `--dry-run` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking an agent or simulator.
 
-Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
+Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses exactly one complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
 Booley validates each proposal as one exact replacement, compiles it in

@@ -143,9 +143,10 @@ def admission(endpoint: EndpointState, prepared: PreparedExecution) -> Iterator[
     slot_store: job_slots.SlotStore | None = None
     slot_token = None
     try:
-        rejection = endpoint._criterion_binding_gate()
-        if rejection is not None:
-            raise EndpointRejectedError(rejection)
+        if endpoint.endpoint_kind != "flow":
+            rejection = endpoint._criterion_binding_gate()
+            if rejection is not None:
+                raise EndpointRejectedError(rejection)
         if prepared.non_persisting_dry_run:
             yield None
             return
