@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from booley.dev_support.validate_commit_msg import validate_message
+from booley.commit_policy import stealth_enabled, validate_message
 from booley.runtime.filesystem_utils import copy_booley_tree, safe_rmtree
 from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
@@ -111,8 +111,6 @@ def _install_scope_hook(
     # The commit-msg hook rejects attribution and sanitizes other protected
     # terms — opt out via [stealth] enabled = false (scope enforcement above
     # stays unconditional).
-    from booley.dev_support.commit_msg_utils import stealth_enabled
-
     if stealth_enabled(project_root):
         commit_msg_hook = dev_support_dir() / "commit_msg_hook.py"
         if commit_msg_hook.exists():

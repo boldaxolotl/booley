@@ -33,7 +33,8 @@ def _vendor_scope_hook(hook_dir: Path) -> Path:
     sources = {
         "scope_precommit_hook.py": package / "dev_support" / "scope_precommit_hook.py",
         "commit_msg_utils.py": package / "dev_support" / "commit_msg_utils.py",
-        "checkout_role.py": package / "runtime" / "checkout_role.py",
+        "booley_commit_policy.py": package / "commit_policy" / "policy.py",
+        "checkout_role.py": package / "core" / "checkout_role.py",
         "boundary.py": package / "core" / "boundary.py",
         "acceptance_path_policy.py": package / "ticket_board" / "acceptance_path_policy.py",
     }

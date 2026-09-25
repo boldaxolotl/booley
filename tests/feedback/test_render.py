@@ -21,6 +21,16 @@ from booley.feedback.render import (
 )
 
 
+@pytest.mark.parametrize(
+    ("value", "rendered"),
+    [(True, "yes"), (False, "no"), (None, "not recorded")],
+)
+def test_environment_renders_resolved_doctor_observation(value, rendered):
+    environment = Environment(doctor_deep_clean=value)
+
+    assert ("doctor --deep clean", rendered) in environment.as_rows()
+
+
 @pytest.fixture
 def project(tmp_path):
     root = tmp_path / "rocketwidget"

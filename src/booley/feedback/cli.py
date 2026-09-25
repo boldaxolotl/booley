@@ -456,10 +456,20 @@ def _cmd_list(args: argparse.Namespace, project_dir: Path) -> int:
     return 0
 
 
-def _cmd_report(args: argparse.Namespace, project_root: Path, project_dir: Path) -> int:
+def _cmd_report(
+    args: argparse.Namespace,
+    project_root: Path,
+    project_dir: Path,
+    *,
+    env: render.Environment | None = None,
+) -> int:
     override = Path(args.user_report_path).resolve() if args.user_report_path else None
     user_path, report = render.write_user_report(
-        project_root, project_dir, project_name=args.project_name, user_report_path=override
+        project_root,
+        project_dir,
+        project_name=args.project_name,
+        user_report_path=override,
+        env=env,
     )
     print(f"Wrote {user_path}")
     if not report.has_content:
@@ -511,6 +521,7 @@ def _export_report(
     finding_ids: list[str],
     *,
     all_findings: bool,
+    env: render.Environment | None = None,
 ) -> tuple[FindingsLog, render.BooleyReport] | None:
     """Read, validate, select, and render one export batch."""
     log = read_log(project_dir)
@@ -523,13 +534,23 @@ def _export_report(
     except _UnknownFindingIdsError as error:
         print(f"Error: {error}", file=sys.stderr)
         return None
-    report = render.render_booley_report(selected, project_root, project_dir=project_dir)
+    report = render.render_booley_report(selected, project_root, project_dir=project_dir, env=env)
     return log, report
 
 
-def _cmd_export(args: argparse.Namespace, project_root: Path, project_dir: Path) -> int:
+def _cmd_export(
+    args: argparse.Namespace,
+    project_root: Path,
+    project_dir: Path,
+    *,
+    env: render.Environment | None = None,
+) -> int:
     prepared = _export_report(
-        project_root, project_dir, args.finding_ids, all_findings=args.all_findings
+        project_root,
+        project_dir,
+        args.finding_ids,
+        all_findings=args.all_findings,
+        env=env,
     )
     if prepared is None:
         return 1
@@ -573,19 +594,39 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace, Path, Path], int]] = {
     "triage": lambda args, _root, pdir: _cmd_triage(args, pdir),
     "filed": lambda args, _root, pdir: _cmd_filed(args, pdir),
     "list": lambda args, _root, pdir: _cmd_list(args, pdir),
-    "report": _cmd_report,
-    "export": _cmd_export,
     "redact": _cmd_redact,
 }
 
+_ENVIRONMENT_HANDLERS = {
+    "report": _cmd_report,
+    "export": _cmd_export,
+}
 
-def run(args: argparse.Namespace, project_root: Path) -> int:
+
+def requires_environment(args: argparse.Namespace) -> bool:
+    """Return whether a Feedback command renders environment observations."""
+    return getattr(args, "feedback_command", None) in _ENVIRONMENT_HANDLERS
+
+
+def run(
+    args: argparse.Namespace,
+    project_root: Path,
+    *,
+    env: render.Environment | None = None,
+) -> int:
     """Dispatch ``booley feedback <subcommand>``."""
-    handler = _HANDLERS.get(getattr(args, "feedback_command", None))
-    if handler is None:
+    command = getattr(args, "feedback_command", None)
+    handler = _HANDLERS.get(command)
+    environment_handler = _ENVIRONMENT_HANDLERS.get(command)
+    if handler is None and environment_handler is None:
+        commands = [*_HANDLERS, *_ENVIRONMENT_HANDLERS]
         print(
-            f"Usage: booley feedback {{{'|'.join(_HANDLERS)}}}\n       booley feedback --help",
+            f"Usage: booley feedback {{{'|'.join(commands)}}}\n       booley feedback --help",
             file=sys.stderr,
         )
         return 2
-    return handler(args, project_root, feedback_storage_dir(project_root))
+    project_dir = feedback_storage_dir(project_root)
+    if environment_handler is not None:
+        return environment_handler(args, project_root, project_dir, env=env)
+    assert handler is not None
+    return handler(args, project_root, project_dir)

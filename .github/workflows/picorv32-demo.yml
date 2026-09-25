@@ -21,6 +21,7 @@ on:
       - "src/booley/agent_workspace/**"
       - "src/booley/audit/**"
       - "src/booley/config/**"
+      - "src/booley/commit_policy/**"
       - "src/booley/core/**"
       - "src/booley/criteria/**"
       - "src/booley/data/__init__.py"

@@ -34,6 +34,8 @@ def test_bundle_is_deterministic_and_has_fixed_archive_metadata() -> None:
         assert manifest["members"] == names
         assert set(manifest["source_sha256"]) == {
             "boundary.py",
+            "booley_commit_policy.py",
+            "booley_commit_validation.py",
             "checkout_role.py",
             "run_command.py",
             "commit_msg_utils.py",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -18,13 +19,13 @@ from booley.dev_support.validate_commit_msg import (
 
 def _convention(enabled: bool = True):
     """Patch the [stealth] enforce_convention knob the validator reads."""
-    return patch("booley.dev_support.validate_commit_msg.enforce_convention", return_value=enabled)
+    return patch("booley.commit_policy.validation.enforce_convention", return_value=enabled)
 
 
 def test_stealth_disabled_skips_banned_phrase_validation():
     with (
         _convention(False),
-        patch("booley.dev_support.validate_commit_msg.stealth_enabled", return_value=False),
+        patch("booley.commit_policy.validation.stealth_enabled", return_value=False),
     ):
         assert validate_message("mention Booley intentionally") == []
 
@@ -258,7 +259,7 @@ class TestConventionOptIn:
 
 def _cap(value: int | None):
     """Patch the [stealth] max_body_lines knob the validator reads."""
-    return patch("booley.dev_support.validate_commit_msg.max_body_lines", return_value=value)
+    return patch("booley.commit_policy.validation.max_body_lines", return_value=value)
 
 
 class TestBodyLineCap:
@@ -516,6 +517,32 @@ def test_project_state_repository_config_detection(tmp_path):
     assert _has_project_config(state_repo)
 
 
+def test_absolute_source_script_recovers_canonical_package_under_isolation(tmp_path):
+    import subprocess
+    import sys
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nenforce_convention = true\n",
+        encoding="utf-8",
+    )
+    script = Path(__file__).resolve().parents[2] / "src/booley/dev_support/validate_commit_msg.py"
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(script), "fix(core): valid message"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Commit message OK." in result.stderr
+
+
 # ---------------------------------------------------------------------------
 # Vendored standalone import (SETUP-9): run as a script from a hooks dir that
 # has no core/ package. The package-relative unit tests above never exercise
@@ -532,9 +559,13 @@ class TestVendoredStandaloneImport:
 
         src = dev_support_dir()
         core = src.parent / "core"
+        policy = src.parent / "commit_policy"
         dst.mkdir(parents=True, exist_ok=True)
         for name in ("validate_commit_msg.py", "commit_msg_utils.py"):
             shutil.copy2(src / name, dst / name)
+        shutil.copy2(policy / "policy.py", dst / "booley_commit_policy.py")
+        shutil.copy2(policy / "validation.py", dst / "booley_commit_validation.py")
+        shutil.copy2(core / "boundary.py", dst / "boundary.py")
         if include_runner:
             shutil.copy2(core / "run_command.py", dst / "run_command.py")
 

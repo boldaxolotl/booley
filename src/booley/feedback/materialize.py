@@ -14,6 +14,7 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
+from booley.feedback import render
 from booley.feedback.findings import CorruptFindingsLogError, Finding, log_path, read_log
 
 MAX_ATTACHMENT_LINES = 120
@@ -138,13 +139,14 @@ def _rewrite_selected(
     return changed, before
 
 
-def _render_proofs(project_dir: Path, entries: list[Finding]) -> tuple[str, str]:
+def _render_proofs(
+    project_dir: Path,
+    entries: list[Finding],
+    environment: render.Environment,
+) -> tuple[str, str]:
     """Render both Feedback views so attachment migration proves equivalence."""
-    from booley.feedback import render
-
     log = read_log(project_dir)
     log.entries = entries
-    environment = render.collect_environment(project_dir)
     origin = render.report_origin(log)
     local = render.render_user_report(log, env=environment, origin=origin)
     export_view = render.render_booley_report(
@@ -157,7 +159,12 @@ def _render_proofs(project_dir: Path, entries: list[Finding]) -> tuple[str, str]
     return local, export_view
 
 
-def materialize_attachments(project_dir: Path, sources: Iterable[Path]) -> tuple[Path, ...]:
+def materialize_attachments(
+    project_dir: Path,
+    sources: Iterable[Path],
+    *,
+    env: render.Environment | None = None,
+) -> tuple[Path, ...]:
     """Retarget selected structured attachments after equivalent render proof."""
     selected = {Path(source).expanduser().resolve(strict=False) for source in sources}
     if not selected:
@@ -167,11 +174,12 @@ def materialize_attachments(project_dir: Path, sources: Iterable[Path]) -> tuple
         raise CorruptFindingsLogError(
             f"refusing attachment materialization: {log.corrupt_lines} corrupt Findings Log line(s)"
         )
-    before_proof = _render_proofs(project_dir, log.entries)
+    environment = env or render.collect_environment()
+    before_proof = _render_proofs(project_dir, log.entries, environment)
     changed, _ = _rewrite_selected(project_dir, selected, log.entries)
     if not changed:
         return ()
-    if before_proof != _render_proofs(project_dir, log.entries):
+    if before_proof != _render_proofs(project_dir, log.entries, environment):
         raise MaterializationError("attachment report or export changed during materialization")
     _rewrite_attachments_only(project_dir, log.entries)
     return tuple(sorted(changed))

@@ -8,6 +8,7 @@ import pytest
 
 from booley.feedback import materialize
 from booley.feedback.findings import Finding, append
+from booley.feedback.render import Environment
 
 
 def _project(tmp_path: Path) -> Path:
@@ -88,3 +89,23 @@ def test_materialize_requires_both_render_proofs_to_match(tmp_path: Path, monkey
 
     with pytest.raises(materialize.MaterializationError, match="report or export"):
         materialize.materialize_attachments(project_dir, [source])
+
+
+def test_materialize_reuses_one_explicit_environment(tmp_path: Path, monkeypatch) -> None:
+    project_dir = _project(tmp_path)
+    source = tmp_path / "attached.log"
+    source.write_text("attached\n", encoding="utf-8")
+    append(Finding(title="finding", attachments=[str(source)]), project_dir)
+    environment = Environment(doctor_deep_clean=True)
+    observed: list[Environment] = []
+    original = materialize._render_proofs
+
+    def record_environment(project_dir, entries, env):
+        observed.append(env)
+        return original(project_dir, entries, env)
+
+    monkeypatch.setattr(materialize, "_render_proofs", record_environment)
+
+    assert materialize.materialize_attachments(project_dir, [source], env=environment) == (source,)
+    assert len(observed) == 2
+    assert all(item is environment for item in observed)

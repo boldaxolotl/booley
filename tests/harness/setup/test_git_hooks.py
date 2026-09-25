@@ -530,7 +530,10 @@ class TestProjectGitHookMigration:
 
     def test_crlf_only_legacy_sources_are_not_backed_up(self, tmp_path: Path) -> None:
         from booley.harness.setup.git_hooks import _step_project_git_hooks
-        from booley.harness.setup.project_git_hook_reconcile import _current_source_bytes
+        from booley.harness.setup.project_git_hook_reconcile import (
+            _LEGACY_MANAGED_HOOKS,
+            _current_source_bytes,
+        )
         from booley.runtime.project_dir import resolve_project_dir
 
         _git_init(tmp_path)
@@ -542,7 +545,10 @@ class TestProjectGitHookMigration:
         _step_project_git_hooks(_ctx(tmp_path))
 
         assert not list(hooks.glob("*.pre-booley.*"))
-        assert not any((hooks / name).exists() for name in _current_source_bytes())
+        assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
+        new_members = set(_current_source_bytes()) - set(_LEGACY_MANAGED_HOOKS)
+        assert new_members
+        assert all((hooks / name).is_file() for name in new_members)
 
     def test_malformed_bundle_manifest_is_recovered(self, tmp_path: Path) -> None:
         from booley.harness.setup.git_hooks import _step_project_git_hooks
@@ -585,7 +591,10 @@ class TestProjectGitHookMigration:
 
     def test_legacy_sources_and_managed_bytecode_are_removed(self, tmp_path: Path) -> None:
         from booley.harness.setup.git_hooks import _step_project_git_hooks
-        from booley.harness.setup.project_git_hook_reconcile import _current_source_bytes
+        from booley.harness.setup.project_git_hook_reconcile import (
+            _LEGACY_MANAGED_HOOKS,
+            _current_source_bytes,
+        )
         from booley.runtime.project_dir import resolve_project_dir
 
         _git_init(tmp_path)
@@ -599,13 +608,17 @@ class TestProjectGitHookMigration:
         cache = hooks / "__pycache__"
         cache.mkdir()
         (cache / "boundary.cpython-314.pyc").write_bytes(b"managed")
+        (cache / "booley_commit_policy.cpython-314.pyc").write_bytes(b"foreign")
         (cache / "project.cpython-314.pyc").write_bytes(b"project-owned")
 
         _step_project_git_hooks(_ctx(tmp_path))
 
-        assert not any((hooks / name).exists() for name in _current_source_bytes())
+        assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
+        new_members = set(_current_source_bytes()) - set(_LEGACY_MANAGED_HOOKS)
+        assert all((hooks / name).is_file() for name in new_members)
         assert (hooks / "post-setup.sh").is_file()
         assert not (cache / "boundary.cpython-314.pyc").exists()
+        assert (cache / "booley_commit_policy.cpython-314.pyc").is_file()
         assert (cache / "project.cpython-314.pyc").is_file()
 
     def test_divergent_legacy_source_gets_collision_safe_backup(self, tmp_path: Path) -> None:
