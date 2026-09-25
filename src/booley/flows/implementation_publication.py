@@ -11,7 +11,7 @@ import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
@@ -80,7 +80,7 @@ class ImplementationProgressRun:
         )
         return self
 
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> Literal[False]:
         return self._lifecycle.__exit__(exc_type, exc, traceback)
 
     def complete(self, outcome: EndpointOutcome) -> EndpointOutcome:

@@ -2800,7 +2800,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         except SimulationCampaignCancellationError as exc:
             return self._campaign_cancelled_outcome(exc)
         except (OSError, ValueError, RuntimeError) as exc:
-            detail = {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
+            detail: dict[str, object] = (
+                {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
+            )
             if isinstance(exc, ProgressPublicationError):
                 detail["progress_error"] = str(exc)
             return EndpointOutcome(

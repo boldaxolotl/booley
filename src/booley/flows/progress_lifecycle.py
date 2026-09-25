@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.regular_file import open_regular_nofollow
@@ -73,14 +73,14 @@ class ProgressLifecycle:
                 self._publish("aborted")
             raise ProgressPublicationError(str(first)) from first
 
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> Literal[False]:
         del traceback
         if self._terminal_attempted:
             return False
         self._terminal_attempted = True
         try:
             self._publish("aborted")
-        except Exception as cleanup:
+        except Exception as cleanup:  # noqa: BLE001 — retry any publication failure
             try:
                 self._publish("aborted")
             except Exception as retry:  # noqa: BLE001 — preserve the original Flow failure
@@ -89,8 +89,6 @@ class ProgressLifecycle:
                     raise ProgressPublicationError(message) from cleanup
             else:
                 return False
-            if exc_type is None:
-                raise ProgressPublicationError(str(cleanup)) from cleanup
         return False
 
 

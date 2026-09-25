@@ -38,6 +38,13 @@ def test_coverage_progress_stamps_run_identity_and_timestamp(tmp_path, monkeypat
     assert progress["timestamp"].endswith("Z")
 
 
+def test_coverage_progress_rejects_inconsistent_terminal_phase(tmp_path):
+    progress = CoverageProgress(tmp_path / "reports/sim/1", ("sim_0",))
+
+    with pytest.raises(ValueError, match="complete and phase disagree"):
+        progress.checkpoint(phase="complete")
+
+
 def test_coverage_infrastructure_failure_remains_pending_in_terminal_progress(tmp_path):
     class Unavailable(NativeExecution):
         def build(self, request):
@@ -112,6 +119,16 @@ def test_full_pruning_accepts_terminal_partial_progress(tmp_path, phase):
     prune_invocation(tmp_path / "reports", 1)
     assert not invocation.exists()
     assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
+
+
+def test_full_pruning_rejects_nonterminal_progress(tmp_path):
+    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+
+    invocation = tmp_path / "reports/sim/1"
+    CoverageProgress(invocation, ("sim_0",)).checkpoint()
+
+    with pytest.raises(CampaignRetentionError, match="progress is not terminal"):
+        prune_invocation(tmp_path / "reports", 1)
 
 
 def test_pruning_rejects_an_active_invocation(tmp_path):
