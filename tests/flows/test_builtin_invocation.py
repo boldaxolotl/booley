@@ -118,6 +118,9 @@ def test_duplicate_target_fails_before_start_event_or_admission(
     assert result.exit_code == 2
     assert f"{flow.name} Target selection failed" in result.outcome.report_text
     assert "already selected" in result.outcome.report_text
+    report = json.loads((tmp_path / "reports" / f"{flow.name}.json").read_text())
+    assert report["exit_code"] == 2
+    assert "already selected" in report["report_text"]
 
 
 @pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)

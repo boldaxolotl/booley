@@ -84,6 +84,7 @@ def prepare_execution(
     if hasattr(endpoint, "prepare_target_endpoint"):
         target_error = endpoint.prepare_target_endpoint()
         if target_error is not None:
+            endpoint.write_report(target_error)
             endpoint._publish_console_report(target_error)
             return target_error
     simulation: object | None = None
