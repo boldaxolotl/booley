@@ -63,6 +63,7 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
+from booley.flows.endpoint_reporting import _contains_whole_line_block
 from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
 from booley.mcp.application import McpApplication, McpToolDefinition, UnknownMcpToolError
 from booley.runtime import job_records as jobrec
@@ -1794,16 +1795,21 @@ def _format_mcp_tool_result(
     # The stdout text as actually shown (post-truncation) — the dedupe check
     # below must run against this, not the full stdout.
     shown_stdout = ""
+    stdout_truncated = False
     if stdout:
-        shown_stdout = stdout[-max_stdout:] if len(stdout) > max_stdout else stdout
+        stdout_truncated = len(stdout) > max_stdout
+        shown_stdout = stdout[-max_stdout:] if stdout_truncated else stdout
         rendered = shown_stdout
-        if len(stdout) > max_stdout:
+        if stdout_truncated:
             rendered = f"... (truncated, showing last {max_stdout} bytes)\n" + rendered
         parts.append(f"\n--- stdout ---\n{rendered}")
 
+    shown_stderr = ""
+    stderr_truncated = False
     if stderr:
-        truncated = stderr[-max_stderr:] if len(stderr) > max_stderr else stderr
-        parts.append(f"\n--- stderr ---\n{truncated}")
+        stderr_truncated = len(stderr) > max_stderr
+        shown_stderr = stderr[-max_stderr:] if stderr_truncated else stderr
+        parts.append(f"\n--- stderr ---\n{shown_stderr}")
 
     if report:
         report_lines = []
@@ -1811,16 +1817,18 @@ def _format_mcp_tool_result(
             if field not in report:
                 continue
             if field == "report_text":
-                # Heavy endpoints print their report_text to stdout AND return it
-                # in report.json, so it would appear verbatim in both sections.
-                # Skip the report copy when it already survives in the stdout
-                # we actually show. Deliberate subtlety: containment is checked
-                # against the TRUNCATED stdout — if truncation cut the summary
-                # out of stdout, this check fails and the report section keeps
-                # it, so the summary survives truncation exactly when needed.
-                # Strip both sides so a trailing newline can't defeat the match.
                 report_text = str(report[field]).strip()
-                if report_text and report_text in shown_stdout.strip():
+                shown_in_stdout = _contains_whole_line_block(
+                    shown_stdout,
+                    report_text,
+                    leading_truncated=stdout_truncated,
+                )
+                shown_in_stderr = _contains_whole_line_block(
+                    shown_stderr,
+                    report_text,
+                    leading_truncated=stderr_truncated,
+                )
+                if shown_in_stdout or shown_in_stderr:
                     continue
             report_lines.append(f"{field}: {report[field]}")
         detail = report.get("detail")

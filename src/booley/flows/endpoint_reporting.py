@@ -68,8 +68,9 @@ class _StdoutWitness:
 
     Several Booley Flows end ``_run()`` with ``print(report_text)`` — the verdict
     block belongs on stdout, where a human running ``booley flow`` and an MCP
-    wrapper both see it. ``_post_run`` *also* prints ``report_text``, on stderr,
-    so a failure's reason is never trapped in a report.json that may not exist.
+    wrapper both see it. Completion publication also emits an otherwise unseen
+    failure ``report_text`` on stderr, so its reason is never trapped in a
+    report.json that may not exist.
     On any console that merges the two streams every FAIL path therefore
     rendered its whole verdict block twice (fpu F-28).
 
@@ -151,19 +152,32 @@ class _StdoutWitness:
         ``print(report_text)`` this exists for (F-28), while a mention inside a
         longer line no longer silences the diagnostic.
         """
-        needle = (text or "").strip()
-        if not needle:
-            return False
-        blob = "".join(self._chunks)
-        start = 0
-        while (idx := blob.find(needle, start)) >= 0:
-            starts_line = blob[idx - 1] == "\n" if idx else not self._truncated
-            end = idx + len(needle)
-            ends_line = end == len(blob) or blob[end] == "\n"
-            if starts_line and ends_line:
-                return True
-            start = idx + 1
+        return _contains_whole_line_block(
+            "".join(self._chunks),
+            text,
+            leading_truncated=self._truncated,
+        )
+
+
+def _contains_whole_line_block(
+    blob: str,
+    text: str,
+    *,
+    leading_truncated: bool = False,
+) -> bool:
+    """Return whether *text* appears in *blob* as complete lines."""
+    needle = (text or "").strip()
+    if not needle:
         return False
+    start = 0
+    while (idx := blob.find(needle, start)) >= 0:
+        starts_line = blob[idx - 1] == "\n" if idx else not leading_truncated
+        end = idx + len(needle)
+        ends_line = end == len(blob) or blob[end] == "\n"
+        if starts_line and ends_line:
+            return True
+        start = idx + 1
+    return False
 
 
 def emit_progress(endpoint: EndpointState, line: str) -> None:
@@ -394,7 +408,7 @@ def _resolve_display_label(endpoint: EndpointState) -> str | None:
 
 
 def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float) -> None:
-    """Persist mutable run state and publish the report.
+    """Persist mutable run state and the structured report.
 
     The execution coordinator calls ``record_acceptance`` first. That step
     also runs ``_pre_save_hook`` so this timeline sees the final rather than
@@ -404,27 +418,23 @@ def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float)
     _persist_run_state(endpoint, result, duration, criteria_set)
     if endpoint.write_report(result) is None:
         endpoint._warn_no_report_artifact()
-    # Human / standalone mode (no state file): the actionable diagnostic lives
-    # in report_text, which is only persisted to report.json when --report-dir
-    # is given. On failure that otherwise leaves a bare exit-1 with the real
-    # reason trapped in a file that may not exist. Surface it on stderr so a
-    # human — or an MCP wrapper that sees only stdout/stderr — gets the cause.
-    # Pre-state gate rejections exit before this point.
-    #
-    # Skip the echo whenever the endpoint already printed the same text on
-    # stdout. Callers commonly capture stdout/stderr separately and merge
-    # them afterward; keying suppression on a shared OS sink duplicated the
-    # complete verdict in that normal execution surface (Taxi F-32).
-    human_mode = endpoint._state is None or endpoint._state._file_path is None
+
+
+def _publish_console_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
+    """Publish one CLI verdict without coupling it to durable persistence."""
+    if not endpoint._console_publication_requested or not result.report_text:
+        return
     witness = endpoint._stdout_witness
     already_shown = witness is not None and witness.saw(result.report_text)
-    if human_mode and result.report_text and not already_shown:
-        failed = result.exit_code != EXIT_SUCCESS
-        if failed:
-            print(result.report_text, file=sys.stderr, flush=True)
-        elif endpoint.announce_success_report:
-            # A passing run: put the verdict on stdout so it is not silent.
-            print(result.report_text, flush=True)
+    if already_shown:
+        return
+    if result.exit_code != EXIT_SUCCESS:
+        print(result.report_text, file=sys.stderr, flush=True)
+        return
+    if endpoint._is_non_persisting_dry_run():
+        return
+    if endpoint.endpoint_kind == "flow" or endpoint.announce_success_report:
+        print(result.report_text, flush=True)
 
 
 def _persist_run_state(
@@ -477,16 +487,19 @@ def _finish_main(
         if acceptance_recorded and not non_persisting_dry_run:
             endpoint._post_run(result, duration)
     finally:
-        endpoint._pending_criteria_set = None
-        _write_display_event(
-            _endpoint_end_event(
-                endpoint.name,
-                display_target,
-                result,
-                duration,
-                display_label=display_label,
-                dry_run=dry_run,
-                identity=endpoint._display_identity,
-            ),
-        )
+        try:
+            endpoint._publish_console_report(result)
+        finally:
+            endpoint._pending_criteria_set = None
+            _write_display_event(
+                _endpoint_end_event(
+                    endpoint.name,
+                    display_target,
+                    result,
+                    duration,
+                    display_label=display_label,
+                    dry_run=dry_run,
+                    identity=endpoint._display_identity,
+                ),
+            )
     return result.exit_code

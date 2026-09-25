@@ -50,4 +50,5 @@ def execute_cli(
     flow.context = FlowSession(flow, adapter or StandaloneFlowExecution())
     flow.context._args = request
     flow.context._raw_argv = argv if argv is not None else sys.argv[1:]
+    flow.context._console_publication_requested = True
     return flow.context.execute_prepared()

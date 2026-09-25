@@ -64,6 +64,12 @@ means the Flow did not produce a trustworthy complete design result.
 Agent-facing MCP calls carry the same grade in `EXIT_CODE:` and structured
 output; MCP `isError` is not the design verdict.
 
+The direct CLI always publishes the final human-readable Flow verdict,
+independently of whether Development State or a durable report directory is
+configured. Successful verdicts use stdout; failed and rejected diagnoses use
+stderr. If a Flow already printed the same complete verdict block during its
+run, Booley does not print a second copy.
+
 An agent-facing MCP call attaches its per-invocation report as
 `structuredContent.reports[0]`. The report contains:
 
@@ -99,6 +105,10 @@ Criterion evidence, populates implementation caches, or writes a normal
 verdict report. FuseSoC setup and declared generators may run when authoritative
 resolution requires them, using disposable scratch; this possibility is named
 in `planning_disclosures` and the scratch is removed afterward.
+
+The JSON plan remains the only dry-run content on stdout. A failing dry run
+also prints its concise planning-failure reason on stderr, while still writing
+no normal verdict report.
 
 With an explicit `--report-dir`, dry-run atomically writes only the distinct
 `<report-dir>/<flow>/flow_plan.json` artifact. The

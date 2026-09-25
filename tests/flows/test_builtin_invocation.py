@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -18,6 +19,7 @@ from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.invocation import BudgetPlan, resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
 from booley.flows.plan import FlowPlan, WorkUnitPlan
+from booley.flows.request import FlowRequest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.base import EXIT_ERROR
@@ -268,6 +270,127 @@ class _DryLifecycleFlow(BuiltinFlow):
         return self._dry_run_result(_plan(self.name))
 
 
+class _VerdictLifecycleFlow(BuiltinFlow):
+    """Minimal Flow returning a verdict without owning console transport."""
+
+    name = "verdict_contract"
+
+    def __init__(self, outcome: EndpointOutcome, *, self_print: bool = False) -> None:
+        super().__init__()
+        self.outcome = outcome
+        self.self_print = self_print
+
+    def _pre_state_gate(self) -> EndpointOutcome | None:
+        return None
+
+    def _run(self) -> EndpointOutcome:
+        if self.self_print:
+            print(self.outcome.report_text)
+        return self.outcome
+
+
+def test_state_backed_flow_success_reaches_stdout_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    flow = _VerdictLifecycleFlow(EndpointOutcome(report_text="Simulation verdict: PASS"))
+
+    execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert execution.exit_code == 0
+    assert captured.out.count("Simulation verdict: PASS") == 1
+    assert "Simulation verdict: PASS" not in captured.err
+
+
+def test_state_backed_flow_failure_reaches_stderr_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    flow = _VerdictLifecycleFlow(
+        EndpointOutcome(exit_code=EXIT_ERROR, report_text="Simulation verdict: ERROR")
+    )
+
+    execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert execution.exit_code == EXIT_ERROR
+    assert captured.err.count("Simulation verdict: ERROR") == 1
+    assert "Simulation verdict: ERROR" not in captured.out
+
+
+def test_self_printing_flow_verdict_is_not_repeated(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    flow = _VerdictLifecycleFlow(
+        EndpointOutcome(exit_code=EXIT_ERROR, report_text="Simulation verdict: FAIL"),
+        self_print=True,
+    )
+
+    execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert execution.exit_code == EXIT_ERROR
+    assert captured.out.count("Simulation verdict: FAIL") == 1
+    assert "Simulation verdict: FAIL" not in captured.err
+
+
+def test_typed_flow_execution_does_not_publish_to_process_streams(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    flow = _VerdictLifecycleFlow(EndpointOutcome(report_text="Simulation verdict: PASS"))
+
+    execution = flow.execute(FlowRequest(target="demo", work_dir=tmp_path))
+
+    captured = capsys.readouterr()
+    assert execution.exit_code == 0
+    assert captured.out == ""
+    assert "Simulation verdict: PASS" not in captured.err
+
+
+def test_state_backed_simulation_coverage_verdict_reaches_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    flow = SimulateFlow()
+    prepared_campaign = object()
+    monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
+    monkeypatch.setattr(flow, "prepare_simulation_endpoint", lambda: prepared_campaign)
+    monkeypatch.setattr(
+        flow,
+        "run_prepared_simulation",
+        lambda prepared, admission: EndpointOutcome(
+            report_text="Coverage verdict: PASS",
+            detail={"coverage": True},
+        ),
+    )
+
+    with mock.patch.object(FlowSession, "admission", return_value=nullcontext(None)):
+        execution = flow.execute_cli(
+            ["--target", "demo", "--coverage", "--work-dir", str(tmp_path)]
+        )
+
+    captured = capsys.readouterr()
+    assert execution.exit_code == 0
+    assert execution.outcome.detail["coverage"] is True
+    assert captured.out.count("Coverage verdict: PASS") == 1
+    assert "Coverage verdict: PASS" not in captured.err
+
+
 def test_builtin_dry_run_skips_admission_and_normal_persistence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -324,3 +447,55 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
     assert all(event["dry_run"] is True for event in lifecycle)
     assert not (report_dir / "dry_contract.json").exists()
     assert not any(path.name == "report.json" for path in report_dir.rglob("*"))
+
+
+def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    state_before = state_file.read_bytes()
+    report_dir = tmp_path / "reports"
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    flow = _DryLifecycleFlow()
+    monkeypatch.setattr(
+        flow,
+        "_run",
+        lambda: flow._dry_run_result(_plan(flow.name, errors=("demo: invalid",))),
+    )
+
+    with (
+        mock.patch.object(
+            FlowSession,
+            "_acquire_job_slot",
+            side_effect=AssertionError("dry-run acquired a heavy slot"),
+        ),
+        mock.patch.object(
+            FlowSession,
+            "_post_run",
+            side_effect=AssertionError("dry-run entered normal persistence"),
+        ),
+    ):
+        execution = flow.execute_cli(
+            [
+                "--target",
+                "demo",
+                "--dry-run",
+                "--work-dir",
+                str(tmp_path),
+                "--report-dir",
+                str(report_dir),
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert execution.exit_code == EXIT_ERROR
+    assert json.loads(captured.out) == execution.outcome.detail
+    assert captured.err.count("Dry-run planning failed: demo: invalid") == 1
+    assert state_file.read_bytes() == state_before
+    assert [path.relative_to(report_dir).as_posix() for path in report_dir.rglob("*")] == [
+        "dry_contract",
+        "dry_contract/flow_plan.json",
+    ]
