@@ -202,6 +202,24 @@ commit-message scrub.
 `*.core` file — the template ships as `.yaml` only so `.core` discovery does
 not pick it up).
 
+Prefer one core with shared filesets and separate sim/lint/synth/fpga Targets.
+When separate project-owned cores are justified by different ownership or
+generation lifecycles, extract every repeated design file list into one
+dependency core instead of copying it. The dependency core owns the reusable
+filesets and a `default` Target that selects them; each adapter core declares a
+fileset with `depend: [<dependency-vlnv>]` and adds only its flow-specific
+testbench, wrapper, constraint, or waiver files. Before refactoring, record each
+affected Target's complete resolved file order and compare it with the result:
+FuseSoC emits dependency-core files before adapter-core files, so do not split a
+core when that ordering cannot remain identical. A standalone YAML fragment is
+not a CAPI2 composition mechanism, and YAML anchors do not cross files.
+
+Use this split only when there are at least two real adapters. For one core,
+local shared filesets keep the interface smaller. When refactoring an existing
+Project, preserve both parts of every selectable Target's durable identity: the
+declaring core's VLNV and the Target name. Criteria and durable evidence bind to
+that pair.
+
 Authoring rules:
 
 - **Tag the testbench.** Every TB fileset (or TB file) carries `tags: [tb]`.
