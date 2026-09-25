@@ -68,6 +68,12 @@ def _coverage_ticket() -> str:
     )
 
 
+def _copy_tests_registry(root: Path, workspace: Path) -> None:
+    tests = workspace / ".booley_project/tests.toml"
+    tests.parent.mkdir(parents=True, exist_ok=True)
+    tests.write_bytes((root / ".booley_project/tests.toml").read_bytes())
+
+
 def _provider(root: Path, board: TicketIO) -> Path:
     path = board.create_ticket_document("provider", _ticket("lint_future (new)"))
     assert path is not None
@@ -151,9 +157,7 @@ def test_coverage_rejects_icarus_target(project, capsys) -> None:
     )
     assert path is not None
     path.write_text(_coverage_ticket(), encoding="utf-8")
-    tests = root / ".booley_project/worktrees/coverage/.booley_project/tests.toml"
-    tests.parent.mkdir(parents=True, exist_ok=True)
-    tests.write_text("[sim_smoke]\ntests = ['smoke']\n", encoding="utf-8")
+    _copy_tests_registry(root, root / ".booley_project/worktrees/coverage")
 
     _assert_both_reject(root, path, capsys, "sim_smoke': coverage requires Verilator")
 
@@ -179,9 +183,7 @@ def test_coverage_accepts_verilator_target(project, capsys) -> None:
     )
     assert path is not None
     path.write_text(_coverage_ticket(), encoding="utf-8")
-    tests = root / ".booley_project/worktrees/coverage/.booley_project/tests.toml"
-    tests.parent.mkdir(parents=True, exist_ok=True)
-    tests.write_text("[sim_smoke]\ntests = ['smoke']\n", encoding="utf-8")
+    _copy_tests_registry(root, root / ".booley_project/worktrees/coverage")
 
     _assert_both_valid(root, path, capsys)
 
