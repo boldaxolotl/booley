@@ -229,7 +229,11 @@ experiment, not a setup requirement.
   and reconciles Git's cached metadata for only those paths. This preserves
   filesystem metadata, leaves the index content unchanged, and leaves untracked
   and unaffected tracked files alone. Init refuses dirty trees, Git-protected
-  affected paths, and hard-linked candidates. If reconciliation remains unsafe,
+  affected paths, and hard-linked candidates. The one exception is Booley's own
+  Windows guidance fallback: when the root `AGENTS.md`/`CLAUDE.md` are untracked
+  hardlinks to `.booley_project/AGENTS.md`, init releases them, normalizes the
+  canonical file, and recreates the links. Any other hardlink to a candidate
+  still blocks the repair. If reconciliation remains unsafe,
   normal init reports setup incomplete and names the affected repository and
   refusal; `--check-only` reports pending work without changing files. Commit
   or stash changes and rerun:
