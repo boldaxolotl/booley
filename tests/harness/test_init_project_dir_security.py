@@ -27,3 +27,18 @@ def test_existing_project_data_directory_is_tightened(
 def test_new_project_data_directory_is_private(tmp_path: Path) -> None:
     init_cmd._step_project_dir(InitContext(project_root=tmp_path))
     assert (tmp_path / ".booley_project").stat().st_mode & 0o777 == 0o700
+
+
+def test_project_data_scaffold_is_written_with_lf(tmp_path: Path) -> None:
+    """Windows text mode must not turn project-data scaffolds into CRLF (#609)."""
+    ctx = InitContext(project_root=tmp_path)
+    init_cmd._step_project_dir(ctx)
+    project_dir = tmp_path / ".booley_project"
+    gitignore = project_dir / ".gitignore"
+    gitignore.write_bytes(b"# user rules\n")
+    init_cmd._backfill_project_gitignore(project_dir, ctx)
+
+    written = [path for path in project_dir.iterdir() if path.is_file()]
+    assert {".gitignore", "booley.toml", "FUSESOC_IGNORE"} <= {path.name for path in written}
+    for path in written:
+        assert b"\r\n" not in path.read_bytes(), path.name

@@ -341,6 +341,18 @@ def _crlf_worktree_files(project_root: Path) -> list[str] | None:
     return _parse_crlf_mismatches(proc.stdout)
 
 
+def pending_normalization_paths(
+    project_root: Path, project_dir: Path | None = None
+) -> tuple[Path, ...]:
+    """Absolute tracked paths that a repair run would normalize to LF."""
+    discovery = discover_line_ending_repositories(project_root, project_dir)
+    paths: list[Path] = []
+    for repository in discovery.repositories:
+        names = _crlf_worktree_files(repository.root) or []
+        paths.extend(repository.root / name for name in names)
+    return tuple(paths)
+
+
 def read_autocrlf_setting(project_root: Path, *, local: bool = False) -> AutocrlfSetting | None:
     """Read effective or repo-local ``core.autocrlf`` and its presence."""
     command = ["git", "-C", str(project_root), "config"]

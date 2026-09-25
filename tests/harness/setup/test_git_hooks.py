@@ -1872,3 +1872,84 @@ class TestLineEndingsAutoFix:
         _step_line_endings(inspection, project_dir)
         assert inspection.results[-1].status == "warn"
         assert _print_summary(inspection) == 1
+
+    @staticmethod
+    def _hardlinked_guidance_project(tmp_path: Path) -> Path:
+        """Project whose CRLF canonical guidance carries Booley's root hardlinks."""
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        _run_git(project_dir, "config", "core.autocrlf", "true")
+        TestLineEndingsStep._add_file(project_dir, "AGENTS.md", b"guidance\n")
+        _git_commit(project_dir)
+        canonical = project_dir / "AGENTS.md"
+        canonical.unlink()
+        _run_git(project_dir, "checkout", "--", "AGENTS.md")
+        assert canonical.read_bytes() == b"guidance\r\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            os.link(canonical, tmp_path / name)
+        return project_dir
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_init_releases_own_guidance_hardlinks_for_normalization(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from booley.harness.init_cmd import (
+            _print_summary,
+            _release_guidance_for_line_endings,
+            _step_guidance_links,
+        )
+        from booley.harness.setup.git_hooks import _step_line_endings
+
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+        canonical = project_dir / "AGENTS.md"
+
+        ctx = _ctx(tmp_path)
+        assert _release_guidance_for_line_endings(ctx, project_dir)
+        _step_line_endings(ctx, project_dir)
+        _step_guidance_links(ctx)
+
+        assert [(r.name, r.status) for r in ctx.results] == [
+            ("line_endings", "ok"),
+            ("guidance_links", "ok"),
+        ]
+        assert canonical.read_bytes() == b"guidance\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
+        assert _print_summary(ctx) == 0
+        capsys.readouterr()
+
+        inspection = _ctx(tmp_path, check_only=True)
+        _step_line_endings(inspection, project_dir)
+        _step_guidance_links(inspection)
+        assert [r.status for r in inspection.results] == ["ok", "ok"]
+        assert _print_summary(inspection) == 0
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_check_only_leaves_guidance_hardlinks_in_place(self, tmp_path: Path) -> None:
+        from booley.harness.init_cmd import _release_guidance_for_line_endings
+
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+
+        assert not _release_guidance_for_line_endings(_ctx(tmp_path, check_only=True), project_dir)
+        assert (tmp_path / "AGENTS.md").samefile(project_dir / "AGENTS.md")
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_foreign_hardlink_to_guidance_still_blocks_normalization(self, tmp_path: Path) -> None:
+        from booley.harness.init_cmd import _release_guidance_for_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
+
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+        canonical = project_dir / "AGENTS.md"
+        foreign = tmp_path / "notes-mirror.md"
+        os.link(canonical, foreign)
+
+        ctx = _ctx(tmp_path)
+        assert _release_guidance_for_line_endings(ctx, project_dir)
+        _step_line_endings(ctx, project_dir)
+
+        assert ctx.results[-1].status == "err"
+        assert "hard-linked tracked path 'AGENTS.md'" in ctx.results[-1].detail
+        assert canonical.read_bytes() == b"guidance\r\n"
+        assert foreign.samefile(canonical)
