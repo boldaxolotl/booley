@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "qa/scenarios/picorv32/fixtures/simulation-campaign"
+FIXTURE = ROOT / "qa/missions/picorv32/fixtures/simulation-campaign"
 
 
 def _validator():
@@ -139,62 +139,3 @@ def test_validator_checks_resume_rejection_and_criteria_journal(tmp_path: Path) 
             simulator_started=False,
             diagnostic="workload mismatch",
         )
-
-
-def test_public_checks_have_automated_product_regression_backlinks() -> None:
-    backlinks = {
-        "campaign.exact-selection": (
-            "tests/flows/sim/test_campaign_flow_planning.py",
-            "test_resolved_target_plans_one_private_serial_item_per_exact_test",
-        ),
-        "campaign.tests-file-normalization": (
-            "tests/flows/sim/test_exact_selection.py",
-            "test_tests_file_ignores_comments_and_blanks",
-        ),
-        "campaign.duplicate-selection-rejection": (
-            "tests/flows/sim/test_exact_selection.py",
-            "test_invalid_selection_fails_in_cli_normalization",
-        ),
-        "campaign.manifest-authority": (
-            "tests/flows/sim/test_campaign_manifest_codec.py",
-            "test_manifest_exact_codec_recomputes_all_component_digests",
-        ),
-        "campaign.interrupted-resume": (
-            "tests/flows/sim/test_campaign_crash_matrix.py",
-            "test_serial_publication_boundary_resume_matrix",
-        ),
-        "campaign.workload-mismatch": (
-            "tests/flows/sim/test_campaign_manifest_codec.py",
-            "test_resume_preview_reports_all_workload_mismatches",
-        ),
-        "campaign.criteria-scope": (
-            "tests/flows/sim/test_campaign_phase2.py",
-            "test_passing_subset_does_not_change_target_level_simulation_criterion",
-        ),
-    }
-    for _check, (relative, test_name) in backlinks.items():
-        source = ROOT / relative
-        assert source.is_file()
-        assert f"def {test_name}" in source.read_text(encoding="utf-8")
-
-
-def test_campaign_checks_are_isolated_to_representative_configuration() -> None:
-    scenario = yaml.safe_load((ROOT / "qa/scenarios/picorv32/scenario.yaml").read_text())
-    campaign_set = next(
-        item for item in scenario["check_sets"] if item["id"] == "picorv32-simulation-campaign"
-    )
-    assert campaign_set["checks"] == [
-        "campaign.exact-selection",
-        "campaign.tests-file-normalization",
-        "campaign.duplicate-selection-rejection",
-        "campaign.manifest-authority",
-        "campaign.interrupted-resume",
-        "campaign.workload-mismatch",
-        "campaign.criteria-scope",
-    ]
-    selected = [
-        item["id"]
-        for item in scenario["configured_scenarios"]
-        if "picorv32-simulation-campaign" in item["check_sets"]
-    ]
-    assert selected == ["picorv32-ubuntu-codex-cli"]

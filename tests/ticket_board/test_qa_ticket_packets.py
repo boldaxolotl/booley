@@ -10,7 +10,7 @@ from booley.ticket_board.ticket_document import (
     convert_ticket_document,
 )
 
-ROOT = Path(__file__).resolve().parents[2] / "qa/scenarios/picorv32/tickets"
+ROOT = Path(__file__).resolve().parents[2] / "qa/missions/picorv32/tickets"
 TESTS = {
     "sim_core": ("main", "axi"),
     "sim_wb": ("wb",),

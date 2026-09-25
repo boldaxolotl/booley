@@ -49,6 +49,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   original attempt record remains byte-for-byte intact.
 - B-Wave ignores structurally invalid cached FST files during discovery, so a
   newer partial cache can no longer prevent conversion of an available VCD.
+- Public QA is now a set of timeboxed bug-hunt missions (picorv32, taxi, uart)
+  written as Markdown. Runs record `findings.md` and `log.md` and work around
+  failures instead of blocking later areas. Scenario YAML, sealed run records,
+  Qualification, and the QA helper scripts are removed; a ten-item release smoke
+  list replaces Qualification.
 
 ## 0.2.15 - 08 SEP 2026
 

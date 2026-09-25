@@ -1,8 +1,0 @@
-format_version: 1
-capabilities:
-- id: PRODUCT-ARTIFACT-INSTALLATION
-  title: Install
-  sources:
-  - https://example.com/release
-  contract: Exact released package
-  applicability: All reference hosts
