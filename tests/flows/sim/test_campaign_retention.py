@@ -3,6 +3,8 @@
 import json
 from dataclasses import replace
 
+import pytest
+
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
@@ -25,6 +27,44 @@ def campaign(tmp_path):
     progress.checkpoint(complete=True)
     assert outcome.exit_code == 0
     return outcome
+
+
+def test_coverage_progress_stamps_run_identity_and_timestamp(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_RUN_ID", "sim-run-1")
+    invocation = tmp_path / "reports/sim/1"
+    CoverageProgress(invocation, ("sim_0",)).checkpoint()
+    progress = json.loads((invocation / "progress.json").read_text())
+    assert progress["run_id"] == "sim-run-1"
+    assert progress["timestamp"].endswith("Z")
+
+
+def test_coverage_progress_rejects_inconsistent_terminal_phase(tmp_path):
+    progress = CoverageProgress(tmp_path / "reports/sim/1", ("sim_0",))
+
+    with pytest.raises(ValueError, match="complete and phase disagree"):
+        progress.checkpoint(phase="complete")
+
+
+def test_coverage_infrastructure_failure_remains_pending_in_terminal_progress(tmp_path):
+    class Unavailable(NativeExecution):
+        def build(self, request):
+            raise FileNotFoundError("Verilator disappeared")
+
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    invocation = tmp_path / "reports/sim/1"
+    plan = replace(prepared.plan.targets[0], invocation_dir=invocation)
+    progress = CoverageProgress(invocation, ("sim_0",))
+    progress.checkpoint()
+
+    outcome = run_coverage_target(plan, Unavailable(), progress)
+    progress.checkpoint(complete=True, phase="aborted")
+
+    document = json.loads((invocation / "progress.json").read_text())
+    assert outcome.abort_remaining is True
+    assert document["phase"] == "aborted"
+    assert document["completed_targets"] == []
+    assert document["pending_targets"] == ["sim_0"]
 
 
 def test_native_pruning_preserves_normalized_campaign_and_records_availability(tmp_path):
@@ -69,6 +109,28 @@ def test_full_pruning_removes_only_selected_invocation_and_keeps_number_reserved
     prune_invocation(tmp_path / "reports", 1)
 
 
+@pytest.mark.parametrize("phase", ["aborted", "superseded"])
+def test_full_pruning_accepts_terminal_partial_progress(tmp_path, phase):
+    from booley.flows.sim.campaign_retention import prune_invocation
+
+    invocation = tmp_path / "reports/sim/1"
+    progress = CoverageProgress(invocation, ("sim_0",))
+    progress.checkpoint(complete=True, phase=phase)
+    prune_invocation(tmp_path / "reports", 1)
+    assert not invocation.exists()
+    assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
+
+
+def test_full_pruning_rejects_nonterminal_progress(tmp_path):
+    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+
+    invocation = tmp_path / "reports/sim/1"
+    CoverageProgress(invocation, ("sim_0",)).checkpoint()
+
+    with pytest.raises(CampaignRetentionError, match="progress is not terminal"):
+        prune_invocation(tmp_path / "reports", 1)
+
+
 def test_pruning_rejects_an_active_invocation(tmp_path):
     import pytest
 
@@ -84,9 +146,6 @@ def test_pruning_rejects_an_active_invocation(tmp_path):
             prune_invocation(tmp_path / "reports", 1)
     assert outcome.campaign_path.is_file()
     assert (outcome.campaign_path.parent / "native").is_dir()
-
-
-import pytest
 
 
 @pytest.mark.parametrize(

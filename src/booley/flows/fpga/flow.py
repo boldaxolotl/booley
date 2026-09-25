@@ -86,6 +86,7 @@ from ..implementation_comparison import (
 )
 from ..implementation_publication import (
     ImplementationProgress,
+    ImplementationProgressRun,
     ImplementationPublisher,
     target_report_path,
 )
@@ -95,6 +96,7 @@ from ..implementation_report import (
     build_implementation_aggregate,
 )
 from ..invocation import resolve_timeout_ms
+from ..progress_lifecycle import ProgressPublicationError
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
@@ -288,38 +290,55 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         self._execution_role = "candidate"
         self._implementation_reports: dict[str, ImplementationReport] = {}
         self.reserve_invocation_dir()
-        self._write_progress_report(targets, {}, {}, phase="starting")
-        baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
-        if isinstance(baseline_results, EndpointOutcome):
-            return baseline_results
-        current_results = self._run_current_targets(targets, baseline_results, short_sha)
-        result = self._aggregate_results(targets, current_results, baseline_results, short_sha)
-        self._write_progress_report(
-            targets,
-            current_results,
-            baseline_results,
-            phase="complete",
-            baseline_ref=short_sha,
-            complete=True,
+        progress = ImplementationProgressRun(
+            self.name,
+            lambda current, baseline, phase, baseline_ref, complete: self._write_progress_report(
+                targets,
+                current,
+                baseline,
+                phase=phase,
+                baseline_ref=baseline_ref,
+                complete=complete,
+            ),
         )
-        return result
+        try:
+            with progress:
+                baseline_outcome, short_sha = self._run_baseline_configs(
+                    self._target_pairs, progress.baseline_results
+                )
+                if isinstance(baseline_outcome, EndpointOutcome):
+                    return baseline_outcome
+                progress.baseline_ref = short_sha
+                current_results = self._run_current_targets(
+                    targets,
+                    progress.baseline_results,
+                    short_sha,
+                    progress.current_results,
+                )
+                result = self._aggregate_results(
+                    targets, current_results, progress.baseline_results, short_sha
+                )
+                return progress.complete(result)
+        except ProgressPublicationError as exc:
+            return progress.publication_failure(exc)
 
     def _run_current_targets(
         self,
         targets: list[str],
         baseline_results: dict[str, FpgaMetrics],
         short_sha: str | None,
+        current_results: dict[str, FpgaMetrics] | None = None,
     ) -> dict[str, FpgaMetrics]:
-        current_results: dict[str, FpgaMetrics] = {}
+        current_results = current_results if current_results is not None else {}
         for tgt in targets:
             metrics = self._run_single_target(tgt)
-            current_results[tgt] = metrics
             self._persist_target_outcome(
                 tgt,
                 metrics,
                 baseline_results.get(tgt),
                 short_sha,
             )
+            current_results[tgt] = metrics
             self._write_progress_report(
                 targets,
                 current_results,
@@ -1010,6 +1029,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     def _run_baseline_configs(
         self,
         pairs: tuple[TargetPairPlan, ...],
+        results: dict[str, FpgaMetrics] | None = None,
     ) -> tuple[dict[str, FpgaMetrics] | EndpointOutcome, str | None]:
         """Implement *configs* at ``--baseline`` in a throwaway worktree.
 
@@ -1025,7 +1045,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         """
         baseline_ref = self.args.baseline
         if not baseline_ref:
-            return {}, None
+            return results or {}, None
 
         project_root = Path(self.args.work_dir)
         short_sha = git_short_sha(baseline_ref, project_root)
@@ -1047,7 +1067,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
                 )
                 self._execution_role = "baseline"
                 try:
-                    baseline_results = self._execute_baseline_pairs(pairs, short_sha)
+                    baseline_results = self._execute_baseline_pairs(pairs, short_sha, results)
                 finally:
                     self._target_handles = current_handles
                     self._target_execution_refs = current_refs
@@ -1065,8 +1085,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         self,
         pairs: tuple[TargetPairPlan, ...],
         short_sha: str,
+        results: dict[str, FpgaMetrics] | None = None,
     ) -> dict[str, FpgaMetrics]:
-        results: dict[str, FpgaMetrics] = {}
+        results = results if results is not None else {}
         executed: dict[str, FpgaMetrics] = {}
         targets = [plan.candidate.selector for plan in pairs]
         for plan in pairs:

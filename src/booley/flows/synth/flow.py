@@ -84,6 +84,7 @@ from ..implementation_comparison import (
 )
 from ..implementation_publication import (
     ImplementationProgress,
+    ImplementationProgressRun,
     ImplementationPublisher,
     target_report_slug,
 )
@@ -93,6 +94,7 @@ from ..implementation_report import (
     build_implementation_aggregate,
 )
 from ..invocation import resolve_timeout_ms
+from ..progress_lifecycle import ProgressPublicationError
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
@@ -2006,7 +2008,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             self._recipe_evidence = candidate_evidence
         return units, errors
 
-    def _run(self) -> EndpointOutcome:
+    def _run(self) -> EndpointOutcome:  # noqa: PLR0911 — linear guarded orchestration
         """Execute synthesis for all targets, optionally comparing to baseline."""
         # Populated by _run_baseline_configs when a stealth-cores self-compare is
         # detected; read by _aggregate_results. Reset per run so a stale value
@@ -2060,22 +2062,40 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 detail=detail,
             )
         self.reserve_invocation_dir()
-        self._write_progress_report(targets, {}, {}, phase="starting")
-        baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
-        if isinstance(baseline_results, EndpointOutcome):
-            return baseline_results
-        current_results = self._run_current_targets(targets, baseline_results, short_sha)
-        self._discard_stale_selfcompare(targets, current_results, baseline_results)
-        result = self._aggregate_results(targets, current_results, baseline_results, short_sha)
-        self._write_progress_report(
-            targets,
-            current_results,
-            baseline_results,
-            phase="complete",
-            baseline_ref=short_sha,
-            complete=True,
+        progress = ImplementationProgressRun(
+            self.name,
+            lambda current, baseline, phase, baseline_ref, complete: self._write_progress_report(
+                targets,
+                current,
+                baseline,
+                phase=phase,
+                baseline_ref=baseline_ref,
+                complete=complete,
+            ),
         )
-        return result
+        try:
+            with progress:
+                baseline_outcome, short_sha = self._run_baseline_configs(
+                    self._target_pairs, progress.baseline_results
+                )
+                if isinstance(baseline_outcome, EndpointOutcome):
+                    return baseline_outcome
+                progress.baseline_ref = short_sha
+                current_results = self._run_current_targets(
+                    targets,
+                    progress.baseline_results,
+                    short_sha,
+                    progress.current_results,
+                )
+                self._discard_stale_selfcompare(
+                    targets, current_results, progress.baseline_results
+                )
+                result = self._aggregate_results(
+                    targets, current_results, progress.baseline_results, short_sha
+                )
+                return progress.complete(result)
+        except ProgressPublicationError as exc:
+            return progress.publication_failure(exc)
 
     def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> EndpointOutcome | None:
         baseline_error = self._apply_ticket_baseline(handles)
@@ -2108,8 +2128,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         targets: list[str],
         baseline_results: dict[str, SynthMetrics],
         short_sha: str | None,
+        current_results: dict[str, SynthMetrics] | None = None,
     ) -> dict[str, SynthMetrics]:
-        current_results: dict[str, SynthMetrics] = {}
+        current_results = current_results if current_results is not None else {}
         for tgt in targets:
             try:
                 with edam.work_root_lease(
@@ -2157,13 +2178,13 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         baseline_ref: str | None,
     ) -> None:
         """Publish one Target while its mutable workspace is still owned."""
-        current_results[target] = metrics
         self._persist_target_outcome(
             target,
             metrics,
             baseline_results.get(target),
             baseline_ref,
         )
+        current_results[target] = metrics
         self._write_progress_report(
             targets,
             current_results,
@@ -2189,11 +2210,12 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     def _run_baseline_configs(
         self,
         pairs: Sequence[TargetPairPlan],
+        baseline_results: dict[str, SynthMetrics] | None = None,
     ) -> tuple[dict[str, SynthMetrics] | EndpointOutcome, str | None]:
         """Synthesize paired baseline Targets in an ephemeral worktree."""
         baseline_ref = self.args.baseline
         if not baseline_ref:
-            return {}, None
+            return baseline_results or {}, None
         targets = [plan.candidate.selector for plan in pairs]
         project_root = Path(self.args.work_dir)
         short_sha = git_short_sha(baseline_ref, project_root)
@@ -2220,7 +2242,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                         project_root, wt
                     )
                 try:
-                    result = self._execute_baseline_pairs(pairs, targets, project_root, short_sha)
+                    result = self._execute_baseline_pairs(
+                        pairs, targets, project_root, short_sha, baseline_results
+                    )
                 finally:
                     self._target_handles = current_handles
                     self._target_execution_refs = current_refs
@@ -2240,8 +2264,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         targets: list[str],
         project_root: Path,
         short_sha: str,
+        baseline_results: dict[str, SynthMetrics] | None = None,
     ) -> dict[str, SynthMetrics]:
-        baseline_results: dict[str, SynthMetrics] = {}
+        baseline_results = baseline_results if baseline_results is not None else {}
         executed: dict[str, SynthMetrics] = {}
         for plan in pairs:
             baseline = plan.baseline.selector
