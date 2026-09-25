@@ -34,6 +34,11 @@ Triage is a conversation, one **brief** per turn.
    - why it is a product defect, doc defect, or `qa-bug`, or why it is weaker than
      reported. Downgrade, reclassify, or narrow a finding when the code or the design
      supports it, and say what the design intends;
+   - **blast radius**: can the same defect live elsewhere in Booley, such as the
+     same path handling in the other Flows, or the same pattern in sibling
+     commands? Answer yes, no, or likely from the cause and a quick look at its
+     callers and siblings. Stop there: the audit belongs to the agent that works
+     the issue;
    - fix directions as lettered options with your recommendation.
 
    Wait for the maintainer's decision. Answer their questions with more code
@@ -42,13 +47,16 @@ Triage is a conversation, one **brief** per turn.
    next cluster.
    - `file` (a product or doc cluster, or a `qa-bug` the maintainer asks to file):
      draft the issue in a local file with problem, repro, build identity, the verified
-     cause, the **approved fix direction only**, and acceptance criteria. Follow the
-     issue rules in `AGENTS.md`: scan title and body with the confidential-content
-     guard, then `gh issue create`. Label with `bug`, `documentation`, or
-     `enhancement`, plus the triage role from
+     cause, the **approved fix direction only**, and acceptance criteria. When the
+     blast radius is yes or likely, the fix section starts with **Step 1: audit**,
+     naming the suspected places and the pattern to search for; the fix then
+     covers every affected place the audit finds. When the decision widens scope in
+     other ways (for example "add a Doctor check"), write that into the issue too.
+     Follow the issue rules in `AGENTS.md`: scan title and body with the
+     confidential-content guard, then `gh issue create`. Label with `bug`,
+     `documentation`, or `enhancement`, plus the triage role from
      `docs/internals/agents/triage-labels.md` (`ready-for-agent` when the fix is
-     decided, `needs-triage` for open design). When the decision widens scope ("audit
-     similar code", "add a Doctor check"), write that into the issue.
+     decided, `needs-triage` for open design).
    - `comment on #<n>`: same drafting and scan, then `gh issue comment`.
    - `fix mission`: record the exact change in `triage.md`; mission edits are
      batched in step 7.
