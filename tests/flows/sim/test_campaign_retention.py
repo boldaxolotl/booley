@@ -286,6 +286,20 @@ def test_maintenance_cli_help_scopes_project_data_to_nonstandard_full_pruning():
     assert "not required for --native-target" in help_text
 
 
+def test_project_data_inference_accepts_only_standard_report_roots(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import _infer_project_data
+    from booley.runtime.project_dir import reset_cache
+
+    project_data = tmp_path / "project-data"
+    project_data.mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_data))
+    reset_cache()
+
+    assert _infer_project_data(project_data / ".runtime/flow-reports/sim/1") == project_data
+    assert _infer_project_data(project_data / "flow-reports/sim/1") == project_data
+    assert _infer_project_data(tmp_path / "elsewhere/flow-reports/sim/1") is None
+
+
 def test_full_pruning_rejects_unresolved_completed_target(tmp_path):
     from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 

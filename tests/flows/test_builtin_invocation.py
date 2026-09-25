@@ -456,6 +456,26 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
     assert not any(path.name == "report.json" for path in report_dir.rglob("*"))
 
 
+def test_direct_dry_run_uses_project_data_default_without_numbering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    flow = _DryLifecycleFlow()
+
+    execution = flow.execute_cli(["--target", "demo", "--dry-run", "--work-dir", str(tmp_path)])
+
+    report_root = tmp_path / "flow-reports"
+    assert execution.exit_code == 0
+    assert (report_root / "dry_contract/flow_plan.json").is_file()
+    assert not (report_root / "dry_contract/1").exists()
+    assert not (report_root / "dry_contract.json").exists()
+    assert not any(path.name == "report.json" for path in report_root.rglob("*"))
+
+
 def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

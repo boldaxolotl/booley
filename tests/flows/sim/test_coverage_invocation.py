@@ -32,6 +32,31 @@ def project(root: Path, tools: tuple[str, ...] = ("verilator",)) -> CoverageProj
     )
 
 
+def test_coverage_context_prefers_checkout_local_project_data(tmp_path, monkeypatch):
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.sim import coverage_flow_context
+    from booley.runtime.project_dir import reset_cache, resolve_project_dir
+
+    checkout = tmp_path / "checkout"
+    local_project_data = checkout / ".booley_project"
+    local_project_data.mkdir(parents=True)
+    unrelated = tmp_path / "unrelated-project-data"
+    unrelated.mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(unrelated))
+    reset_cache()
+    assert resolve_project_dir() == unrelated.resolve()
+    monkeypatch.setattr(coverage_flow_context, "_coverage_policies", lambda *_args: {})
+    monkeypatch.setattr(
+        coverage_flow_context,
+        "load_test_configuration_field",
+        lambda *_args: {},
+    )
+
+    context = coverage_flow_context.coverage_project_context(checkout, DevelopmentState())
+
+    assert context.project_data_repository == local_project_data
+
+
 def test_preflight_resolves_full_suite_without_creating_artifacts(tmp_path: Path) -> None:
     context = project(tmp_path)
     before = set(tmp_path.rglob("*"))

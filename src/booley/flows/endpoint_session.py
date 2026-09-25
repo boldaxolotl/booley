@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.flows.endpoint_events import (
@@ -44,12 +45,33 @@ def _apply_pre_state_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     return result
 
 
+def _apply_default_flow_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
+    """Select durable Project data after adapters can supply a runtime root."""
+    if endpoint.endpoint_kind != "flow" or endpoint.args.report_dir is not None:
+        return None
+    from booley.runtime.project_dir import resolve_checkout_project_dir
+
+    try:
+        project_data = resolve_checkout_project_dir(Path(endpoint.args.work_dir))
+    except (OSError, RuntimeError, ValueError) as exc:
+        result = EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            report_text=f"Flow report directory could not be resolved: {exc}",
+        )
+        endpoint._publish_console_report(result)
+        return result
+    endpoint.args.report_dir = project_data / "flow-reports"
+    return None
+
+
 def prepare_execution(
     endpoint: EndpointState,
 ) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
     endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:
+        return early_outcome
+    if (early_outcome := _apply_default_flow_report_root(endpoint)) is not None:
         return early_outcome
     endpoint.read_state()
     endpoint._default_target_args()

@@ -560,7 +560,8 @@ Campaign, the public Target-level `coverage.json` is an authenticated reference
 to the selected attempt's nested Coverage Campaign; keep the reference and
 enclosing Simulation Campaign together. If full pruning reports that Project
 data is required, the supplied report root is outside the inferable
-`<project-data>/.runtime/flow-reports` layout; retry the same exact `--full`
+`<project-data>/.runtime/flow-reports` and `<project-data>/flow-reports` layouts;
+retry the same exact `--full`
 selection with `--project-data <resolved-project-data>`. Do not add that option
 to compensate for an incorrect project-data path or for native-only pruning.
 
