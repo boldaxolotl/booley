@@ -185,7 +185,10 @@ def render_flow_reference(
         lines.extend(
             [
                 "",
-                "Common controls: `--target <name,...>` selects Target(s); "
+                "Common controls: repeat `--target` or use comma-separated values; "
+                "`--target a --target b,c` preserves the order `a`, `b`, `c`, and "
+                "duplicate resolved Targets are rejected. MCP keeps one "
+                "comma-separated `target` string. "
                 "`--dry-run` returns a normalized plan without executing EDA; "
                 "`booley flow <name> --help` shows the full contract.",
                 "",
@@ -255,7 +258,7 @@ def _render_mutation_tester_reference() -> list[str]:
         "and proposed auto count without invoking an agent or simulator.",
         "",
         "Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; "
-        "`--target <sim-target>` chooses the complete runnable Target suite; "
+        "`--target <sim-target>` chooses exactly one complete runnable Target suite; "
         "`--steer <context>` biases mutation selection. A valid lock "
         "is reused on later runs, so new steering takes effect only with "
         "`--regen-lock`. The Target supplies the testbench top and complete RTL "

@@ -76,6 +76,17 @@ def prepare_execution(
     endpoint.read_state()
     endpoint._default_target_args()
     flow = getattr(endpoint, "flow", None)
+    if endpoint.endpoint_kind == "flow":
+        binding_error = endpoint._criterion_binding_gate()
+        if binding_error is not None:
+            endpoint._publish_console_report(binding_error)
+            return binding_error
+    if hasattr(endpoint, "prepare_target_endpoint"):
+        target_error = endpoint.prepare_target_endpoint()
+        if target_error is not None:
+            endpoint.write_report(target_error)
+            endpoint._publish_console_report(target_error)
+            return target_error
     simulation: object | None = None
     if endpoint.name == "sim" and hasattr(flow, "prepare_simulation_endpoint"):
         simulation = flow.prepare_simulation_endpoint()

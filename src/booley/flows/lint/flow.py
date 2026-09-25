@@ -438,12 +438,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         (``--target a,b``). An empty ``--target`` returns no selection rather
         than linting every core.
         """
-        catalog = TargetCatalog.build(self.args.work_dir)
-        self._target_catalog = catalog
-        return catalog.select_many(
-            self.args.target,
-            for_flow="lint",
-        )
+        return self._selected_target_handles()
 
     def _prepare_lint_command(
         self,
