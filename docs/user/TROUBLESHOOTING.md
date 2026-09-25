@@ -606,8 +606,12 @@ the Campaign-bound evidence tool.
   Target directory. Missing, stale, malformed, incompatible, or non-equivalent
   merged evidence is a command error. Re-run to create a new invocation.
 - `blocked` evaluation: inspect structured findings for suite mismatch, zero
-  eligible denominator, unavailable metrics, or an invalid/stale/unmatched
-  Approved Waiver Set. No subset of an invalid waiver set is applied.
+  eligible denominator, unavailable metrics, or invalid/stale/unmatched approvals
+  for that Target. Approval matching is transactional per Target: one invalid
+  point approval prevents all approvals for that Target from applying. Approvals
+  naming a known Target outside the invocation are not checked against points by
+  that run; unknown Target identities are rejected when the Approved Waiver Set
+  is loaded.
 - Legacy Criteria (`coverage_toggle`, `coverage_fsm`, `coverage_value`,
   `coverage_branch`, `coverage_expression`, `coverage_mean`) are rejected.
   Replace them with the `coverage` record in CONFIG.md; no silent translation
