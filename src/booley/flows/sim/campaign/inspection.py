@@ -10,7 +10,7 @@ from typing import cast
 from .codec import SimulationCampaignIntegrityError
 from .model import SimulationCampaignManifest, SimulationResult
 from .planning import manifest_digest
-from .store import CampaignStore
+from .store import CampaignRecovery, CampaignStore
 
 
 class SimulationCampaignWorkItemError(SimulationCampaignIntegrityError):
@@ -41,6 +41,8 @@ class RetainedCampaignStatus:
     interrupted: tuple[str, ...]
     summary_complete: bool
     summary_completed_matches: bool
+    retention_files: tuple[Path, ...]
+    coverage_directories: tuple[Path, ...]
 
 
 def authenticate_work_item(manifest_path: Path, work_item_id: str) -> CampaignWorkItemEvidence:
@@ -94,6 +96,7 @@ def inspect_retained_campaign(manifest_path: Path) -> RetainedCampaignStatus:
             f"cannot inspect Simulation Campaign storage: {exc}"
         ) from exc
     completed = cast(list[str], summary["completed"])
+    retention_files, coverage_directories = _retention_inventory(store, recovery)
     return RetainedCampaignStatus(
         store.manifest_path,
         store.summary_path,
@@ -103,7 +106,42 @@ def inspect_retained_campaign(manifest_path: Path) -> RetainedCampaignStatus:
         recovery.interrupted,
         summary["complete"] is True,
         tuple(completed) == recovery.complete,
+        retention_files,
+        coverage_directories,
     )
+
+
+def _retention_inventory(
+    store: CampaignStore, recovery: CampaignRecovery
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    retention_files = set(store.retention_files)
+    attempts = {
+        path.parent
+        for path in retention_files
+        if path.name == "attempt.json" and path.parent.parent.name == "attempts"
+    }
+    completed_attempts = {
+        cast(str, item.result.document["attempt_id"])
+        for item in recovery.items
+        if item.result is not None
+    }
+    coverage_directories = []
+    for attempt in attempts:
+        attempt_id = attempt.name.split("-", 1)[1]
+        if attempt_id in completed_attempts:
+            coverage_directories.append(attempt / "coverage-campaign")
+            continue
+        for name in (
+            "private-build",
+            "snapshot",
+            "runtime-inputs",
+            "evidence",
+            "coverage-campaign",
+        ):
+            retention_files.update(
+                path.absolute() for path in (attempt / name).rglob("*") if path.is_file()
+            )
+    return tuple(sorted(retention_files)), tuple(sorted(coverage_directories))
 
 
 def _store_for_manifest(manifest_path: Path) -> CampaignStore:

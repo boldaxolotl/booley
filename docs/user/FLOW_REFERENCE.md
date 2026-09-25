@@ -409,9 +409,13 @@ the immutable Campaign manifest and point store, Simulation, and hook evidence. 
 `availability.json` records `pruning` or `pruned`; normalized evidence remains
 analyzable. Full pruning removes the exact invocation's reports and native
 payloads; re-analysis is impossible. An empty `.pruned-N` tombstone reserves its
-number. Selection is validated before deletion; ambiguous, unsafe, changed, or
-active selections exit `2`. Retry an interrupted cleanup with the same exact
-selection. No age, size, or latest heuristic deletes evidence automatically.
+number. Selection is validated before deletion. Native-only pruning exits `2`
+for ambiguous, unsafe, changed, missing, or unrecognized payloads. Full pruning
+does not require recorded native payloads to remain unchanged or present, but it
+exits `2` and names any file the invocation did not produce; the invocation is
+left untouched. Active selections also exit `2`. Retry an interrupted cleanup
+with the same exact selection. No age, size, or latest heuristic deletes evidence
+automatically.
 
 ## `lint`
 

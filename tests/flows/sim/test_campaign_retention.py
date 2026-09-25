@@ -265,6 +265,60 @@ def test_maintenance_cli_requires_exact_selection_and_executes_both_modes(tmp_pa
     assert not outcome.campaign_path.exists()
 
 
+@pytest.mark.parametrize(
+    ("defect", "relative", "expected_code"),
+    [
+        ("changed", "targets/sim_0/native/raw/001-reset.dat", 0),
+        ("extra_native", "targets/sim_0/native/raw/999-extra.dat", 2),
+        ("missing", "targets/sim_0/native/raw/001-reset.dat", 0),
+        ("extra_invocation", "stray.txt", 2),
+    ],
+)
+def test_full_pruning_refuses_only_unrecognized_content(tmp_path, defect, relative, expected_code):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import booley
+
+    campaign(tmp_path)
+    invocation = tmp_path / "reports/sim/1"
+    selected = invocation / relative
+    if defect == "changed":
+        selected.write_bytes(selected.read_bytes() + b"changed")
+    elif defect == "missing":
+        selected.unlink()
+    else:
+        selected.parent.mkdir(parents=True, exist_ok=True)
+        selected.write_text("do not delete", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "booley.flows.sim.campaign_retention",
+            "--reports-root",
+            str(tmp_path / "reports"),
+            "--invocation",
+            "1",
+            "--full",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "PYTHONPATH": str(Path(booley.__file__).parent.parent)},
+        check=False,
+    )
+
+    assert result.returncode == expected_code, result.stderr
+    if expected_code == 0:
+        assert not invocation.exists()
+    else:
+        assert str(Path(relative)) in result.stderr
+        assert selected.read_text(encoding="utf-8") == "do not delete"
+        assert invocation.is_dir()
+
+
 def test_maintenance_cli_help_scopes_project_data_to_nonstandard_full_pruning():
     import os
     import subprocess
