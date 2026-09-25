@@ -254,11 +254,17 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
     execution_id = ExecutionId("1" * 32)
     paths = execution_paths(execution_id, project_dir=project_dir)
     heartbeat_path = tmp_path / "reaper-heartbeat"
+    child_starting = tmp_path / "child-starting"
+    child_ready = tmp_path / "child-ready"
     write_attachment_heartbeat(paths, generation=1)
     command = [
         sys.executable,
         "-c",
-        "import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(10)",
+        "import signal,sys,time; from pathlib import Path; "
+        "signal.signal(signal.SIGINT, lambda *_: sys.exit(1)); "
+        f"Path({str(child_starting)!r}).touch(); time.sleep(0.3); "
+        "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+        f"Path({str(child_ready)!r}).touch(); time.sleep(10)",
     ]
     supervisor = _start_supervisor_with_test_heartbeat(
         project_dir,
@@ -271,6 +277,8 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
             lambda: len(_heartbeat_generations(heartbeat_path)) >= 2,
             failure="supervisor did not start its reaper heartbeat",
         )
+        wait_for(child_starting.exists, failure="child did not begin startup")
+        wait_for(child_ready.exists, failure="child did not finish startup")
         before_cancel = len(_heartbeat_generations(heartbeat_path))
         request_cancellation(paths, signum=signal.SIGINT)
         assert supervisor.wait(timeout=5) == 130
