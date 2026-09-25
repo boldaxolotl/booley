@@ -33,6 +33,7 @@ from booley.flows.sim.coverage_waivers import (
     CoverageRepositoryRoots,
     CoverageWaiverConfig,
     CoverageWaiverValidationError,
+    discover_approved_waiver_inputs,
     load_approved_waiver_set,
 )
 from tests.conftest import symlink_or_skip
@@ -84,6 +85,7 @@ def test_windows_open_does_not_require_missing_pywin32_constant(
         CreateFile=create_file,
         GetFileInformationByHandle=lambda _handle: (0,),
     )
+    monkeypatch.setitem(sys.modules, "pywintypes", SimpleNamespace(error=OSError))
     monkeypatch.setitem(sys.modules, "win32con", constants)
     monkeypatch.setitem(sys.modules, "win32file", win32file)
 
@@ -93,6 +95,39 @@ def test_windows_open_does_not_require_missing_pywin32_constant(
 
     assert opened is handle
     assert observed["flags"] == 0x02200000
+
+
+def test_windows_open_normalizes_pywintypes_missing_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class FakePyWinError(Exception):
+        def __init__(self, winerror: int) -> None:
+            self.winerror = winerror
+
+    constants = SimpleNamespace(
+        FILE_ATTRIBUTE_DIRECTORY=0x10,
+        FILE_ATTRIBUTE_REPARSE_POINT=0x400,
+        FILE_FLAG_BACKUP_SEMANTICS=0x02000000,
+        FILE_SHARE_READ=1,
+        FILE_SHARE_WRITE=2,
+        GENERIC_READ=0x80000000,
+        OPEN_EXISTING=3,
+    )
+
+    def create_file(*_args: object) -> object:
+        raise FakePyWinError(2)
+
+    win32file = SimpleNamespace(CreateFile=create_file)
+    monkeypatch.setitem(sys.modules, "pywintypes", SimpleNamespace(error=FakePyWinError))
+    monkeypatch.setitem(sys.modules, "win32con", constants)
+    monkeypatch.setitem(sys.modules, "win32file", win32file)
+
+    with pytest.raises(coverage_waiver_files.SecurePathError) as raised:
+        coverage_waiver_files._WindowsSecureTree._open(
+            tmp_path / "missing", expected_directory=True
+        )
+
+    assert raised.value.kind == "missing"
 
 
 def _roots(tmp_path: Path) -> CoverageRepositoryRoots:
@@ -565,6 +600,61 @@ sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd
         "reference": "proofs/counter.sby#cover_17",
         "sha256": "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3",
     }
+
+
+def test_discovery_returns_lexical_missing_and_symlinked_directories(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    config = CoverageWaiverConfig("project_data_repository", "coverage-waivers")
+    expected = (roots.project_data_repository / "coverage-waivers",)
+
+    assert discover_approved_waiver_inputs(config, roots) == expected
+
+    outside = tmp_path / "outside-approvals"
+    outside.mkdir()
+    symlink_or_skip(expected[0], outside)
+    assert discover_approved_waiver_inputs(config, roots) == expected
+
+
+def test_discovery_protects_fragmentless_formal_proof_once(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    document = waiver_file.read_text(encoding="utf-8")
+    document = document.replace('reason = "excluded"', 'reason = "unreachable"')
+    document += """
+[approval.proof]
+kind = "formal"
+reference = "proofs/counter.sby#cover_17"
+sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3"
+"""
+    waiver_file.write_text(document, encoding="utf-8")
+
+    assert discover_approved_waiver_inputs(
+        CoverageWaiverConfig("project_data_repository", "coverage-waivers"), roots
+    ) == (
+        roots.project_data_repository / "coverage-waivers",
+        roots.project_data_repository / "proofs/counter.sby",
+    )
+
+
+def test_discovery_ignores_proofs_from_invalid_approval_document(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    document = waiver_file.read_text(encoding="utf-8")
+    document = document.replace('reason = "excluded"', 'reason = "unreachable"')
+    document += """
+[approval.proof]
+kind = "formal"
+reference = "proofs/counter.sby#cover_17"
+sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3"
+
+[[approval]]
+reason = "malformed"
+"""
+    waiver_file.write_text(document, encoding="utf-8")
+
+    assert discover_approved_waiver_inputs(
+        CoverageWaiverConfig("project_data_repository", "coverage-waivers"), roots
+    ) == (roots.project_data_repository / "coverage-waivers",)
 
 
 def test_duplicate_ids_and_target_point_bindings_invalidate_the_whole_set(tmp_path: Path) -> None:

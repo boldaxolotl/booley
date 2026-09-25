@@ -1771,6 +1771,77 @@ def test_gitignored_untracked_control_file_is_rejected(tmp_path: Path) -> None:
         assert_inputs_unchanged(basis, root)
 
 
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        ".booley_project/coverage-waivers/rtl/counter.sv.toml",
+        ".booley_project/proofs/counter.sby",
+    ],
+)
+def test_committed_approved_waiver_input_drift_names_changed_path(
+    tmp_path: Path, changed_path: str
+) -> None:
+    root = tmp_path / "project"
+    project = root / ".booley_project"
+    waiver = project / "coverage-waivers/rtl/counter.sv.toml"
+    proof = project / "proofs/counter.sby"
+    waiver.parent.mkdir(parents=True)
+    proof.parent.mkdir(parents=True)
+    (project / "booley.toml").write_text(
+        '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "coverage-waivers"\n',
+        encoding="utf-8",
+    )
+    waiver.write_text(
+        """schema = "booley.coverage-waivers/v1"
+source = "rtl/counter.sv"
+source_sha256 = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+[[approval]]
+id = "counter-unreachable"
+target = "acme:lib:counter:1#sim"
+point_id = "cp1:point"
+reason = "unreachable"
+justification = "Reviewed."
+approved_by = "human@example.invalid"
+approved_at = "2026-09-25T00:00:00Z"
+approval_ref = "review-738"
+[approval.proof]
+kind = "formal"
+reference = "proofs/counter.sby#cover_17"
+sha256 = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+""",
+        encoding="utf-8",
+    )
+    proof.write_text("proof\n", encoding="utf-8")
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "add", "-f", ".booley_project")
+    _git(root, "commit", "-m", "baseline")
+    baseline = _git(root, "rev-parse", "HEAD")
+    basis = TicketBaseline(
+        (
+            BasisParticipant(
+                "outer",
+                baseline,
+                "refs/heads/booley-generation/0123456789abcdef/waivers",
+                "refs/heads/main",
+                baseline,
+            ),
+        )
+    )
+    assert_inputs_unchanged(basis, root)
+
+    changed = root / changed_path
+    changed.write_text(changed.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+    _git(root, "add", "-f", changed_path)
+    _git(root, "commit", "-m", "change protected input")
+
+    with pytest.raises(TicketBaselineError, match="acceptance-input-change-required") as raised:
+        assert_inputs_unchanged(basis, root)
+
+    assert changed_path in str(raised.value)
+
+
 def test_protected_input_git_discovery_failure_is_loud(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

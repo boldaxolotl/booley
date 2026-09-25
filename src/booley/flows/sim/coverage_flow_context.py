@@ -6,6 +6,7 @@ import tomllib
 from fractions import Fraction
 from pathlib import Path
 
+from booley.config.coverage_waiver_inputs import parse_coverage_waiver_config
 from booley.config.project_config import load_test_configuration_field
 from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
@@ -19,7 +20,6 @@ from .coverage_acceptance import CoverageAcceptance
 from .coverage_campaign import DurableTargetIdentity
 from .coverage_invocation import CoverageProjectContext
 from .coverage_policy import CoverageCriterion, CoverageThreshold
-from .coverage_waivers import CoverageWaiverConfig
 
 _LEGACY = (
     "coverage_toggle",
@@ -41,13 +41,8 @@ def coverage_project_context(root: Path, state: DevelopmentState) -> CoveragePro
         raise ValueError(
             "Coverage Window/hook controls belong to Target flow_options.booley.coverage"
         )
-    coverage = require_dict(config.get("coverage", {}), field="coverage")
-    raw = coverage.get("waivers")
-    waivers = None
-    if raw is not None:
-        if not isinstance(raw, dict) or set(raw) != {"anchor", "directory"}:
-            raise ValueError("coverage.waivers requires anchor and directory")
-        waivers = CoverageWaiverConfig(**raw)
+    require_dict(config.get("coverage", {}), field="coverage")
+    waivers = parse_coverage_waiver_config(config)
     policies = _coverage_policies(root, state)
     return CoverageProjectContext(
         root,

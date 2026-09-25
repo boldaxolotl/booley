@@ -16,7 +16,7 @@ from booley.runtime.filesystem_utils import copy_booley_tree, safe_rmtree
 from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.platform_paths import bash_bin
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_dir import checkout_project_dir_relative_to, resolve_project_dir
 from booley.runtime.project_prepare import PreparationResult, prepare_project
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
@@ -129,12 +129,17 @@ def _hook_acceptance_controls(worktree_path: Path, surface_root: Path | None) ->
         from booley.ticket_board.acceptance_targets import acceptance_control_paths
 
         controls = acceptance_control_paths(root)
-    except (OSError, ValueError):
-        logger.warning("Could not enumerate Ticket baseline controls for %s", root)
-        return []
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"Could not enumerate Ticket baseline controls for {root}: {exc}"
+        ) from exc
     if worktree_path == root:
-        return [path for path in controls if not path.startswith(".booley_project/")]
-    prefix = ".booley_project/"
+        try:
+            prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
+        except (FileNotFoundError, ValueError):
+            return list(controls)
+        return [path for path in controls if not path.startswith(prefix)]
+    prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
     return [path.removeprefix(prefix) for path in controls if path.startswith(prefix)]
 
 
