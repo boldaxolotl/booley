@@ -120,6 +120,7 @@ def test_direct_simulation_invocations_share_report_numbering(runtime, monkeypat
 
     reserved = []
     monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", lambda self: None)
+    monkeypatch.setattr(SimulateFlow, "prepare_target_endpoint", lambda self: None)
 
     def run(session):
         reserved.append(session.reserve_invocation_dir())

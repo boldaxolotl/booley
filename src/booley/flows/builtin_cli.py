@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import TYPE_CHECKING
 
-from booley.flows.endpoint_cli import add_common_args, apply_environment
+from booley.flows.endpoint_cli import add_common_args, apply_environment, normalize_target_arg
 from booley.flows.request import FlowRequest
 from booley.runtime.endpoint_execution import ExecutionResult
 
@@ -35,6 +35,7 @@ def build_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
 def parse_request(flow: BuiltinFlow, argv: list[str] | None = None) -> FlowRequest:
     parser = build_parser(flow)
     args = parser.parse_args(argv)
+    normalize_target_arg(args)
     flow.argument_adapter.normalize(args, parser)
     request = flow.request_type(**vars(args))
     apply_environment(request, flow.endpoint_kind)

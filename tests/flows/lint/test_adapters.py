@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
 import pytest
 
 from booley.flows.lint.flow import LintFlow
@@ -18,6 +22,11 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join((str(Path(sys.executable).parent), os.environ["PATH"])),
+    )
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[3] / "src"))
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
 
     cli_result = LintFlow().execute_cli(["--target", "missing", "--diagnostic"])

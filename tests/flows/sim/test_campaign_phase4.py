@@ -788,7 +788,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_it(
     outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     cancelled = threading.Event()
     admission = AdmissionContext(
-        "managed", slots, outer, 2, "interactive", "a" * 32, 1.0, cancelled.is_set
+        "managed", slots, outer, 2, "interactive", "a" * 32, 0.05, cancelled.is_set
     )
     capacity = HeavyCapacity(
         admission, terminal_proof=registry.is_terminal, recover_child=registry.cancel

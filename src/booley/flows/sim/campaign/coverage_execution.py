@@ -120,16 +120,22 @@ class _CapturingExecution:
         return self._delegate.command(request)
 
 
-def _raise_if_coverage_aborted(outcome: CoverageTargetOutcome) -> None:
+def _raise_if_coverage_aborted(
+    outcome: CoverageTargetOutcome, build_result: SimulationBuildResult | None
+) -> None:
     if not outcome.abort_remaining:
         return
+    # A collector failure without its own error reports the simulator build output.
+    message = outcome.detail.get("error")
+    if message is None and build_result is not None:
+        message = build_result.output
     status = outcome.detail.get("evaluation")
     if status not in {"pass", "fail", "blocked", "not_requested"}:
         raise SimulationCampaignIntegrityError(
             "native coverage collection returned an invalid evaluation status"
         )
     raise _CoverageAggregateError(
-        str(outcome.detail.get("error", "native coverage collection failed")),
+        str(message or "native coverage collection failed"),
         cast(str, status),
     )
 
@@ -195,7 +201,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         )
         if failure is not None:
             return failure
-        _raise_if_coverage_aborted(outcome)
+        _raise_if_coverage_aborted(outcome, capturing.build_result)
         if capturing.captured is None:
             detail = outcome.detail.get("error") or outcome.detail.get("collection")
             raise SimulationCampaignIntegrityError(

@@ -1171,7 +1171,10 @@ class TestDryRun:
         command = plan["work_units"][0]["commands"][0]["argv"]
         assert "BOOLEY_TEST_NAMES=smoke" in command[2]
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
+    @patch(
+        "booley.flows.sim.flow._get_test_names",
+        return_value={"lite": ["smoke", "stress"], "full": ["smoke"]},
+    )
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_dry_run_multi_config(
         self,
@@ -1182,7 +1185,7 @@ class TestDryRun:
     ):
         flow = _make_flow(
             tmp_path,
-            config="lite,lite",
+            config="lite,full",
             extra_args=["--dry-run", "--test", "smoke"],
         )
         flow._run()

@@ -8,7 +8,7 @@
       },
       "target": {
         "type": "string",
-        "description": "FuseSoC .core Target name(s) this run applies to, comma-separated. Run with --target <name> (list them with `booley targets`)."
+        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`."
       },
       "diagnostic": {
         "type": "boolean",
@@ -45,7 +45,7 @@
       },
       "target": {
         "type": "string",
-        "description": "FuseSoC .core Target name(s) this run applies to, comma-separated. Run with --target <name> (list them with `booley targets`)."
+        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`."
       },
       "diagnostic": {
         "type": "boolean",
@@ -121,7 +121,7 @@
       },
       "target": {
         "type": "string",
-        "description": "FuseSoC .core Target name(s) this run applies to, comma-separated. Run with --target <name> (list them with `booley targets`)."
+        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`."
       },
       "diagnostic": {
         "type": "boolean",
@@ -228,7 +228,7 @@
       },
       "target": {
         "type": "string",
-        "description": "FuseSoC .core Target name(s) this run applies to, comma-separated. Run with --target <name> (list them with `booley targets`)."
+        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`."
       },
       "diagnostic": {
         "type": "boolean",

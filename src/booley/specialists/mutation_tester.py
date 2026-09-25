@@ -649,6 +649,10 @@ class MutationTesterSpecialist(Specialist):
     )
     code_modifying: bool = False
     target_required: bool = True
+    target_help: str = (
+        "Exactly one Simulation Target. The CLI accepts one --target value; "
+        "MCP accepts one Target selector string."
+    )
     non_persisting_dry_run: bool = True
     announce_success_report: bool = True
     min_model: str = "standard"

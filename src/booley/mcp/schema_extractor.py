@@ -110,7 +110,9 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
             properties[dest] = dict(_WORK_DIR_PROPERTY)
             continue
 
-        prop = _argparse_type_to_schema(action)
+        # CLI repetition is normalized back to the public comma-separated
+        # scalar before any endpoint consumes it.
+        prop = {"type": "string"} if dest == "target" else _argparse_type_to_schema(action)
         if action.type is parse_positive_int_arg:
             prop["minimum"] = 1
 
