@@ -2,25 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from booley.harness import doctor
 from booley.harness.doctor_waivers import load_doctor_waivers
-
-
-def _git(repository: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-    )
-    return result.stdout.strip()
+from tests.harness.git_support import git_stdout as _git
 
 
 def _repositories(tmp_path: Path, outer_branch: str, project_branch: str) -> tuple[Path, Path]:

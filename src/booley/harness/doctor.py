@@ -715,17 +715,14 @@ def _outer_branch_for_project_data(
     reporter: _Reporter,
 ) -> str | None:
     """Return the attached outer branch while distinguishing Git failure from detach."""
-    result = project_repositories.run_git(
-        project_root, "symbolic-ref", "--quiet", "--short", "HEAD"
-    )
-    branch = result.stdout.strip()
-    if result.returncode == 0 and branch:
-        return branch
-    if (result.stderr or result.stdout).strip():
+    branch = project_repositories.inspect_symbolic_branch(project_root)
+    if branch.branch is not None:
+        return branch.branch
+    if branch.detail:
         _warn_project_data_branch_unreadable(
             project_repo,
             "outer symbolic HEAD",
-            result,
+            branch.result,
             reporter,
         )
     else:

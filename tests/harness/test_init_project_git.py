@@ -2,25 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-
-
-def _git(repository: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-    )
-    return result.stdout.strip()
+from tests.harness.git_support import git_stdout as _git
 
 
 def _outer_project(tmp_path: Path, branch: str) -> tuple[Path, Path]:
@@ -81,6 +69,15 @@ def test_existing_project_data_repository_is_untouched(tmp_path: Path) -> None:
     init_cmd._init_project_git_repo(project_dir, InitContext(project_root=root))
 
     assert _git(project_dir, "symbolic-ref", "HEAD") == "refs/heads/legacy"
+
+
+def test_partial_project_data_repository_is_repaired(tmp_path: Path) -> None:
+    root, project_dir = _outer_project(tmp_path, "main")
+    (project_dir / ".git").mkdir()
+
+    init_cmd._init_project_git_repo(project_dir, InitContext(project_root=root))
+
+    assert _git(project_dir, "symbolic-ref", "HEAD") == "refs/heads/main"
 
 
 def test_detached_outer_checkout_defers_project_data_initialization(

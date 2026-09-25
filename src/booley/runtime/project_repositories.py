@@ -42,22 +42,44 @@ class RepositoryCheckoutError(RuntimeError):
     """A repository checkout could not preserve its identity."""
 
 
+@dataclass(frozen=True)
+class SymbolicBranchInspection:
+    """The attached branch, or Git's explanation when it cannot be read."""
+
+    branch: str | None
+    result: subprocess.CompletedProcess[str]
+
+    @property
+    def detail(self) -> str:
+        """Return Git's bounded failure output, if any."""
+        return (self.result.stderr or self.result.stdout).strip()
+
+
+def is_git_worktree_root(path: Path) -> bool:
+    """Return whether ``path`` is a healthy Git worktree rooted at itself."""
+    if not (path / ".git").exists():
+        return False
+    result = run_git(path, "rev-parse", "--show-toplevel")
+    if result.returncode != 0 or not result.stdout.strip():
+        return False
+    try:
+        return Path(result.stdout.strip()).resolve() == path.resolve()
+    except OSError:
+        return False
+
+
+def is_standalone_git_repository(path: Path) -> bool:
+    """Return whether ``path`` owns its healthy Git metadata directory."""
+    return (path / ".git").is_dir() and is_git_worktree_root(path)
+
+
 def resolve_inner_project_repo(project_root: Path) -> Path | None:
     """Return this checkout's project dir only when it is its own Git repo."""
     try:
         project_dir = resolve_checkout_project_dir(project_root).resolve()
     except FileNotFoundError:
         return None
-    if not (project_dir / ".git").is_dir():
-        return None
-    result = run_git(project_dir, "rev-parse", "--show-toplevel")
-    if result.returncode != 0:
-        return None
-    try:
-        top = Path(result.stdout.strip()).resolve()
-    except OSError:
-        return None
-    return project_dir if top == project_dir else None
+    return project_dir if is_standalone_git_repository(project_dir) else None
 
 
 def paired_project_repository(checkout_root: Path) -> RepositoryCheckout | None:
@@ -101,6 +123,15 @@ def common_git_dir(worktree: Path) -> Path | None:
 def ref_sha(source: Path, ref: str) -> str:
     result = run_git(source, "rev-parse", "--verify", ref)
     return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def inspect_symbolic_branch(worktree: Path) -> SymbolicBranchInspection:
+    """Inspect the worktree's attached branch with bounded Git execution."""
+    result = run_git(worktree, "symbolic-ref", "--quiet", "--short", "HEAD")
+    branch = result.stdout.strip()
+    if result.returncode == 0 and branch:
+        return SymbolicBranchInspection(branch, result)
+    return SymbolicBranchInspection(None, result)
 
 
 def parse_porcelain_z(stdout: str) -> tuple[ProjectRepositoryChange, ...]:
