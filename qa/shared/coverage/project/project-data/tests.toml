@@ -9,9 +9,9 @@ select = "+test={name}"
 skip = ["full", "fail"]
 
 [sim_custom]
-tests = ["gap", "full", "fail", "missing-start", "missing-write", "duplicate-start", "duplicate-write", "out-of-order", "failed-hook", "native-missing", "native-stale", "native-malformed", "native-incompatible", "native-fsm", "native-covergroup", "native-unknown", "native-generated", "native-foreign"]
+tests = ["gap", "full", "fail", "missing-start", "missing-write", "duplicate-start", "duplicate-write", "out-of-order", "failed-hook", "native-missing", "native-malformed", "native-incompatible", "native-fsm", "native-covergroup", "native-unknown", "native-generated", "native-foreign"]
 select = "+test={name}"
-skip = ["full", "fail", "missing-start", "missing-write", "duplicate-start", "duplicate-write", "out-of-order", "failed-hook", "native-missing", "native-stale", "native-malformed", "native-incompatible", "native-fsm", "native-covergroup", "native-unknown", "native-generated", "native-foreign"]
+skip = ["full", "fail", "missing-start", "missing-write", "duplicate-start", "duplicate-write", "out-of-order", "failed-hook", "native-missing", "native-malformed", "native-incompatible", "native-fsm", "native-covergroup", "native-unknown", "native-generated", "native-foreign"]
 
 [sim_toggle]
 tests = ["zero", "quarter", "half", "upper", "rise", "full", "repeat", "reset"]

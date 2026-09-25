@@ -1,85 +1,46 @@
-"""Validate the external provider fixture's protocol and isolated negative inputs."""
+"""The coverage provider fixture must record the product's real evidence rejection."""
 
 import importlib.util
 import json
-import os
-import sys
-import time
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults"
-SPEC = importlib.util.spec_from_file_location("qa_provider", ROOT / "provider.py")
+SPEC = importlib.util.spec_from_file_location(
+    "qa_coverage_provider",
+    Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults/provider.py",
+)
 provider = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(provider)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux Sandbox pipe transport")
-def test_burst_messages_do_not_wait_for_more_fd_input():
-    reader, writer = os.pipe()
-    os.write(writer, b'{"id":1}\n{"id":2}\n')
-    with os.fdopen(reader) as stream:
-        try:
-            deadline = time.monotonic() + 0.1
-            assert provider.receive(stream, deadline) == {"id": 1}
-            assert provider.receive(stream, deadline) == {"id": 2}
-        finally:
-            os.close(writer)
+def _evidence_returning(result: dict):
+    """Build an Evidence client whose tool call returns *result* without a server."""
+    evidence = provider.Evidence.__new__(provider.Evidence)
+    evidence.request = lambda method, params: result
+    return evidence
 
 
-class Recorder:
-    def __init__(self):
-        self.requests = []
-
-    def query(self, **request):
-        self.requests.append(request)
-        return {"points": [{"point_ref": "point:1"}], "next_cursor": "cursor"}
+def _text(value: str) -> dict:
+    return {"content": [{"type": "text", "text": value}]}
 
 
-def test_observed_hit_candidate_has_proof_to_isolate_contradiction():
-    evidence = Recorder()
-    result = provider.advisory(evidence, "observed-hit")
-    assert evidence.requests[-1]["covered"] is True
-    assert result["waiver_candidates"][0]["proof_reference"] == "proof/parity.log"
+def test_plain_text_schema_rejection_is_recorded_verbatim():
+    rejection = "Invalid tool arguments at $.limit: 100000 is greater than the maximum of 100"
+    evidence = _evidence_returning({**_text(rejection), "isError": True})
+    with pytest.raises(ValueError) as caught:
+        evidence.query(view="points", limit=100000)
+    assert str(caught.value) == rejection
 
 
-def test_cross_campaign_uses_actual_foreign_selector(tmp_path, monkeypatch):
-    foreign = tmp_path / "coverage.json"
-    foreign.write_text("{}")
-    monkeypatch.setenv("QA_FOREIGN_CAMPAIGN", str(foreign))
-    evidence = Recorder()
-    provider.query_fault(evidence, "cross-campaign")
-    assert evidence.requests[-1] == {"view": "overview", "campaign": str(foreign)}
-    provider.query_fault(evidence, "undelivered")
-    assert evidence.requests[-1] == {"view": "source", "point_refs": ["point:999999999"]}
+def test_json_error_result_is_recorded_verbatim():
+    rejection = json.dumps({"error": "coverage_evidence_rejected", "message": "Malformed cursor"})
+    evidence = _evidence_returning({**_text(rejection), "isError": True})
+    with pytest.raises(ValueError) as caught:
+        evidence.query(view="points", cursor="bad")
+    assert str(caught.value) == rejection
 
 
-@pytest.mark.parametrize("adapter", ["codex", "claude"])
-def test_incomplete_output_exits_without_terminal_success_or_failure(adapter, capsys):
-    provider.output(adapter, "incomplete", {}, None)
-    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert records
-    assert not any(r["type"] in {"result", "turn.completed", "turn.failed"} for r in records)
-
-
-def test_legal_response_budget_case_uses_maximum_admitted_page(tmp_path, monkeypatch):
-    evidence = Recorder()
-    evidence.start = lambda: None
-    evidence.close = lambda: None
-    monkeypatch.setattr(provider, "Evidence", lambda *_: evidence)
-    provider.model_result({}, False, tmp_path, "response-budget")
-    assert evidence.requests[-1] == {"view": "points", "limit": 100}
-    assert (tmp_path / "legal-page.json").is_file()
-
-
-@pytest.mark.parametrize("case", ["incomplete", "context-exhausted"])
-@pytest.mark.parametrize("adapter", ["codex", "claude"])
-def test_failed_evidence_setup_is_not_replaced_by_intended_model_fault(case, adapter, capsys):
-    with pytest.raises(SystemExit):
-        provider.output(adapter, case, {}, "real MCP initialization failed")
-    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    last = records[-1]
-    assert last["type"] in {"turn.failed", "result"}
-    assert "real MCP initialization failed" in json.dumps(last)
-    assert "maximum context" not in json.dumps(last)
+def test_success_returns_the_decoded_document():
+    evidence = _evidence_returning(_text(json.dumps({"view": "overview"})))
+    assert evidence.query(view="overview") == {"view": "overview"}

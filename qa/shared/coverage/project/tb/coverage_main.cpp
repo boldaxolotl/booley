@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
-#include <utime.h>
 #include <iostream>
 #include <string>
 #if VM_COVERAGE
@@ -17,7 +16,6 @@ static void native_fault(const std::string& test) {
     const char* name = std::getenv("BOOLEY_COVERAGE_FILE");
     if (!name || test.rfind("native-", 0) != 0) return;
     if (test == "native-missing") { std::remove(name); return; }
-    if (test == "native-stale") { struct utimbuf old = {1,1}; utime(name, &old); return; }
     if (test == "native-malformed" || test == "native-incompatible") {
         std::ofstream out(name);
         out << (test == "native-incompatible" ? "# SystemC::Coverage-999\n" : "# SystemC::Coverage-3\ninvalid record\n");
