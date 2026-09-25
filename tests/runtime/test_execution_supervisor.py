@@ -255,10 +255,14 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
     paths = execution_paths(execution_id, project_dir=project_dir)
     heartbeat_path = tmp_path / "reaper-heartbeat"
     write_attachment_heartbeat(paths, generation=1)
+    # Cancel only after the child ignores SIGINT: a signal that lands during
+    # interpreter startup kills it with exit 1 instead of exercising the grace path.
+    ready = tmp_path / "handlers-ready"
     command = [
         sys.executable,
         "-c",
-        "import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(10)",
+        "import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
+        f"open({str(ready)!r}, 'w').close(); time.sleep(10)",
     ]
     supervisor = _start_supervisor_with_test_heartbeat(
         project_dir,
@@ -267,6 +271,7 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
         command,
     )
     try:
+        wait_for(ready.exists, failure="child did not install its SIGINT handler")
         wait_for(
             lambda: len(_heartbeat_generations(heartbeat_path)) >= 2,
             failure="supervisor did not start its reaper heartbeat",
