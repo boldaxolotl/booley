@@ -12,7 +12,7 @@ from booley.core.config_paths import resolve_toml
 from booley.criteria.coverage import validate_coverage_metrics
 from booley.criteria.state import DevelopmentState
 from booley.flows.execution_persistence import AcceptanceRecorder, NoAcceptanceRecorder
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
 
 from .coverage_acceptance import CoverageAcceptance
@@ -32,7 +32,7 @@ _LEGACY = (
 
 
 def coverage_project_context(root: Path, state: DevelopmentState) -> CoverageProjectContext:
-    data = resolve_project_dir(root)
+    data = resolve_checkout_project_dir(root)
     config_path = resolve_toml(data)
     config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
     flows = require_dict(config.get("flows", {}), field="flows")

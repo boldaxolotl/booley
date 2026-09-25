@@ -252,6 +252,16 @@ def _infer_project_data(root: Path) -> Path | None:
     reports_root = root.parent.parent
     if reports_root.name == "flow-reports" and reports_root.parent.name == ".runtime":
         return reports_root.parent.parent
+    if reports_root.name == "flow-reports":
+        from booley.runtime.project_dir import resolve_project_dir
+
+        candidate = reports_root.parent.resolve()
+        try:
+            selected = resolve_project_dir().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if candidate == selected:
+            return candidate
     return None
 
 
@@ -336,7 +346,8 @@ def main() -> None:
         type=Path,
         help=(
             "Resolved project-data root for --full when --reports-root is outside "
-            "<project-data>/.runtime/flow-reports; not required for --native-target"
+            "<project-data>/.runtime/flow-reports or <project-data>/flow-reports; "
+            "not required for --native-target"
         ),
     )
     operation = parser.add_mutually_exclusive_group(required=True)
