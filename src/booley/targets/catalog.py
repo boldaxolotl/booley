@@ -19,6 +19,7 @@ from booley.targets.domain import (
     # Intentional private construction key: only this catalog creates handles.
     _HANDLE_FACTORY_KEY,  # pyright: ignore[reportPrivateUsage]
     TARGET_AWARE_FLOWS,
+    DuplicateTargetError,
     ForeignTargetHandleError,
     IncompatibleTargetError,
     StaleTargetCatalogError,
@@ -127,7 +128,17 @@ class TargetCatalog:
     ) -> tuple[TargetHandle, ...]:
         """Resolve a comma-separated endpoint Target argument."""
         tokens = [token.strip() for token in (target_arg or "").split(",") if token.strip()]
-        return tuple(self.select(token, for_flow=for_flow) for token in tokens)
+        handles = tuple(self.select(token, for_flow=for_flow) for token in tokens)
+        first_selector_by_identity: dict[str, str] = {}
+        for token, handle in zip(tokens, handles, strict=True):
+            first = first_selector_by_identity.get(handle.identity)
+            if first is not None:
+                raise DuplicateTargetError(
+                    f"Target selector {token!r} resolves to {handle.identity!r}, "
+                    f"which was already selected by {first!r}"
+                )
+            first_selector_by_identity[handle.identity] = token
+        return handles
 
     def declaration_count(self, name: str, *, include_private: bool = False) -> int:
         """Count declarations without granting handles to hidden Doctor Targets."""

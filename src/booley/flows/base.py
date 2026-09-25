@@ -33,6 +33,7 @@ from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, ExecutionResult
+from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -454,8 +455,9 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
     satisfies: ClassVar[list[str]] = []
     satisfies_args: ClassVar[dict[str, str]] = {}
     target_help: str = (
-        "FuseSoC .core Target name(s) this run applies to, comma-separated. "
-        "Run with --target <name> (list them with `booley targets`)."
+        "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
+        "repeated or its value comma-separated; MCP accepts one comma-separated string. "
+        "List available Targets with `booley targets`."
     )
 
     def __init__(self) -> None:
@@ -499,6 +501,43 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
 
     def _resolve_job_class(self) -> str | None:
         return None
+
+    def prepare_target_endpoint(self) -> EndpointOutcome | None:
+        """Resolve the complete Target selection before admission."""
+        from booley.targets.catalog import TargetCatalog
+
+        if not self.accepts_target or self.name not in TARGET_AWARE_FLOWS:
+            return None
+        if "_run" in self.__dict__:
+            return None
+        if self.name == "sim" and "prepare_simulation_endpoint" in self.__dict__:
+            return None
+        if self.name == "sim" and getattr(self.args, "resume_from", None) is not None:
+            return None
+        try:
+            catalog = TargetCatalog.build(self.args.work_dir)
+            handles = catalog.select_many(self.args.target, for_flow=self.name)
+        except (FuseSocError, OSError, ValueError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"{self.name} Target selection failed: {exc}",
+            )
+        self._target_catalog = catalog
+        self._prepared_target_handles = handles
+        self._prepared_target_request = (Path(self.args.work_dir).resolve(), self.args.target)
+        return None
+
+    def _selected_target_handles(self) -> tuple[TargetHandle, ...]:
+        """Return the immutable selection prepared for this invocation."""
+        prepared = getattr(self, "_prepared_target_handles", None)
+        request = (Path(self.args.work_dir).resolve(), self.args.target)
+        if prepared is not None and getattr(self, "_prepared_target_request", None) == request:
+            return prepared
+        from booley.targets.catalog import TargetCatalog
+
+        catalog = TargetCatalog.build(self.args.work_dir)
+        self._target_catalog = catalog
+        return catalog.select_many(self.args.target, for_flow=self.name)
 
     @property
     def _eda_tool(self) -> str | None:

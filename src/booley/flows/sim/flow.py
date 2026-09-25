@@ -1431,9 +1431,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return None
         from booley.flows.endpoint_admission import authorize_simulation_targets
 
-        if (binding_error := self.context._criterion_binding_gate()) is not None:
-            return binding_error
-
         try:
             prepared = self._prepare_campaign_targets()
             if isinstance(prepared, EndpointOutcome):
@@ -1445,6 +1442,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
                 if selection_error is not None:
                     return selection_error
+                if getattr(self.args, "coverage", False):
+                    coverage_error = self._prepare_coverage()
+                    if coverage_error is not None:
+                        return coverage_error
             rejection = authorize_simulation_targets(self.context, targets)
         except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
@@ -2222,10 +2223,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return prepared.plan.targets[0]
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
-        error = super()._pre_state_gate()
-        if error is not None or not getattr(self.args, "coverage", False):
-            return error
-        return self._prepare_coverage()
+        return super()._pre_state_gate()
 
     def _prepare_coverage(self) -> EndpointOutcome | None:
         from booley.criteria.state import DevelopmentState
@@ -2248,6 +2246,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     else DevelopmentState()
                 ),
             )
+            handles = self._selected_target_handles()
             prepared = prepare_coverage_invocation(
                 CoverageInvocationRequest(
                     tuple(self._requested_targets()),
@@ -2255,6 +2254,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     trace=self.args.trace,
                 ),
                 context,
+                catalog=self._target_catalog,
+                handles=handles,
             )
         except (ValueError, OSError, fusesoc_registry.FuseSocError) as exc:
             return EndpointOutcome(exit_code=2, report_text=f"Coverage Preflight: {exc}")
@@ -2295,9 +2296,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _run_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
         """Run each native coverage selection as one durable aggregate item."""
-        error = self._prepare_coverage()
-        if error is not None:
-            return error
         if not isinstance(admission, AdmissionContext):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -3960,10 +3958,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
 
     def _resolve_requested_targets(self) -> list[str] | EndpointOutcome:
-        handles = TargetCatalog.build(self.args.work_dir).select_many(
-            self.args.target,
-            for_flow="sim",
-        )
+        handles = self._selected_target_handles()
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if targets:

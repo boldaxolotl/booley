@@ -59,7 +59,6 @@ from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
@@ -2016,10 +2015,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         self._implementation_reports: dict[str, ImplementationReport] = {}
         self._execution_role = "candidate"
 
-        handles = TargetCatalog.build(self.args.work_dir).select_many(
-            self.args.target,
-            for_flow="synth",
-        )
+        handles = self._selected_target_handles()
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if not targets:

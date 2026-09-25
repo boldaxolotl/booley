@@ -160,9 +160,12 @@ class TestFiltering:
 
     def test_target_not_filtered(self):
         p = _make_parser()
-        p.add_argument("--target", default="")
+        p.add_argument("--target", action="append", required=True)
         schema = extract_schema(p)
         assert "target" in schema["properties"]
+        assert schema["properties"]["target"]["type"] == "string"
+        assert "items" not in schema["properties"]["target"]
+        assert "target" in schema["required"]
 
 
 # --- Required field tests ---
@@ -222,6 +225,16 @@ def test_specialist_input_contracts_are_unified(specialist, required, removed) -
     assert properties["steer"]["type"] == "array"
     assert properties["dry_run"]["type"] == "boolean"
     assert removed.isdisjoint(properties)
+
+
+def test_mutation_tester_target_schema_remains_single_required_scalar() -> None:
+    schema = extract_schema(MutationTesterSpecialist()._parser)
+    target = schema["properties"]["target"]
+
+    assert target["type"] == "string"
+    assert "items" not in target
+    assert "target" in schema["required"]
+    assert "Exactly one Simulation Target" in target["description"]
 
 
 @pytest.mark.parametrize(

@@ -15,7 +15,7 @@ yourself inside the Sandbox, use the direct CLI:
 
 ```bash
 booley flow lint --target lint_soc
-booley flow sim --target sim_soc --test reset
+booley flow sim --target sim_core --target sim_peripheral,sim_soc --test reset
 booley flow synth --target synth_soc
 booley flow <name> --help
 ```
@@ -31,7 +31,12 @@ same Target name, use the qualified selector printed by `booley targets`, such a
 
 Common controls:
 
-- `--target <name,...>` selects one or more configured Targets.
+- `--target <name,...>` selects one or more configured Targets. Repeat the flag,
+  use comma-separated values, or mix both forms; for example,
+  `--target a --target b,c` selects `a`, then `b`, then `c`. Caller order is
+  preserved. Selecting the same resolved Target twice, including through two
+  different selector spellings, is an error. MCP keeps one comma-separated
+  `target` string rather than an array.
 - `--work-dir <path>` selects the project/worktree root; it defaults to the
   current directory.
 - `--report-dir <path>` persists the invocation report and Flow-specific reports

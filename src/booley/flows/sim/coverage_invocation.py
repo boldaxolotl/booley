@@ -190,18 +190,29 @@ def _prepare_target(
 def prepare_coverage_invocation(
     request: CoverageInvocationRequest,
     project_context: CoverageProjectContext,
+    *,
+    catalog: TargetCatalog | None = None,
+    handles: tuple[TargetHandle, ...] | None = None,
 ) -> CoveragePreflightResult:
     """Resolve the complete invocation without EDA or artifact/build mutations."""
-    try:
-        catalog = TargetCatalog.build(project_context.rtl_repository)
-    except (FuseSocError, ValueError, OSError) as exc:
-        return CoveragePreflightResult(None, (_finding("COV_TARGET_INVALID", str(exc)),))
-    targets, findings, seen = [], [], set()
-    if not request.targets:
-        findings.append(_finding("COV_TARGET_INVALID", "Select at least one Target"))
-    for token in sorted(request.targets):
+    if (catalog is None) != (handles is None):
+        raise ValueError("prepared coverage selection requires both catalog and handles")
+    if catalog is None:
         try:
-            handle = catalog.select(token, for_flow="sim")
+            catalog = TargetCatalog.build(project_context.rtl_repository)
+        except (FuseSocError, ValueError, OSError) as exc:
+            return CoveragePreflightResult(None, (_finding("COV_TARGET_INVALID", str(exc)),))
+    targets, findings, seen = [], [], set()
+    selections = (
+        tuple((handle.selector, handle) for handle in handles)
+        if handles is not None
+        else tuple((token, None) for token in request.targets)
+    )
+    if not selections:
+        findings.append(_finding("COV_TARGET_INVALID", "Select at least one Target"))
+    for token, prepared_handle in selections:
+        try:
+            handle = prepared_handle or catalog.select(token, for_flow="sim")
             if handle.eda_tool != "verilator":
                 findings.append(
                     _finding("COV_TOOL_UNSUPPORTED", f"{token}: coverage requires Verilator")
@@ -221,8 +232,6 @@ def prepare_coverage_invocation(
         except (FuseSocError, ValueError, OSError) as exc:
             findings.append(_finding("COV_TARGET_INVALID", f"{token}: {exc}"))
     return CoveragePreflightResult(
-        None
-        if findings
-        else CoverageInvocationPlan(tuple(sorted(targets, key=lambda p: p.handle.identity))),
+        None if findings else CoverageInvocationPlan(tuple(targets)),
         tuple(findings),
     )

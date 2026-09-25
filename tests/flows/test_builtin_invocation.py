@@ -25,6 +25,8 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.base import EXIT_ERROR
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import DuplicateTargetError
 
 BUILTINS = (
     (SimulateFlow, "sim", 600_000),
@@ -32,6 +34,82 @@ BUILTINS = (
     (AsicSynthesizeFlow, "synth", 1_800_000),
     (FpgaImplFlow, "fpga", 7_200_000),
 )
+
+
+@pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
+def test_builtin_target_repetition_normalizes_to_ordered_scalar(
+    flow_type: type[BuiltinFlow],
+    _name: str,
+    _default_ms: int,
+) -> None:
+    repeated = flow_type().parse_args(["--target", "a", "--target", "b,c"])
+    comma_list = flow_type().parse_args(["--target", "a,b,c"])
+
+    assert repeated.target == "a,b,c"
+    assert repeated == comma_list
+
+
+def test_optional_builtin_target_absence_and_authored_punctuation_stay_scalar() -> None:
+    assert SimulateFlow().parse_args([]).target == ""
+    assert SimulateFlow().parse_args(["--target", ""]).target == ""
+    assert SimulateFlow().parse_args(["--target", " ", "--target", ","]).target == " ,,"
+
+
+@pytest.mark.parametrize(
+    ("flow_type", "extra_args"),
+    [
+        (LintFlow, ()),
+        (AsicSynthesizeFlow, ()),
+        (FpgaImplFlow, ()),
+        (SimulateFlow, ()),
+        (SimulateFlow, ("--mode", "elab-only")),
+    ],
+)
+def test_duplicate_target_fails_before_start_event_or_admission(
+    flow_type: type[BuiltinFlow],
+    extra_args: tuple[str, ...],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DuplicateCatalog:
+        def select_many(self, target: str, *, for_flow: str):
+            raise DuplicateTargetError(
+                "Target selector 'a' resolves to 'acme:ip:dut:1#a', "
+                "which was already selected by 'a'"
+            )
+
+    flow = flow_type()
+    monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
+    monkeypatch.setattr(
+        TargetCatalog, "build", classmethod(lambda _cls, _root: DuplicateCatalog())
+    )
+    monkeypatch.setattr(
+        "booley.flows.endpoint_session._write_display_event",
+        lambda *_args: pytest.fail("published start event for invalid Target selection"),
+    )
+    monkeypatch.setattr(
+        FlowSession,
+        "_acquire_job_slot",
+        lambda _self: pytest.fail("acquired a slot for invalid Target selection"),
+    )
+
+    result = flow.execute_cli(
+        [
+            "--target",
+            "a",
+            "--target",
+            "a",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            *extra_args,
+        ]
+    )
+
+    assert result.exit_code == 2
+    assert f"{flow.name} Target selection failed" in result.outcome.report_text
+    assert "already selected" in result.outcome.report_text
 
 
 @pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
@@ -49,6 +127,21 @@ def test_builtin_schema_exposes_one_canonical_timeout(
     assert "timeout" not in properties
     assert "_legacy_timeout_ms" not in properties
     assert properties["dry_run"]["type"] == "boolean"
+
+
+@pytest.mark.parametrize(("flow_type", "name", "_default_ms"), BUILTINS)
+def test_builtin_schema_keeps_target_as_comma_separated_scalar(
+    flow_type: type[BuiltinFlow],
+    name: str,
+    _default_ms: int,
+) -> None:
+    schema = flow_schema(flow_type())
+    target = schema["properties"]["target"]
+
+    assert target["type"] == "string"
+    assert "items" not in target
+    assert "CLI flag may be repeated" in target["description"]
+    assert ("target" in schema.get("required", [])) is (name != "sim")
 
 
 def test_fpga_schema_exposes_portable_profile_vocabulary() -> None:
@@ -187,6 +280,10 @@ class _CustomTimeoutFlow(BooleyFlow):
         return EndpointOutcome(exit_code=result.returncode)
 
 
+class _OptionalCustomTimeoutFlow(_CustomTimeoutFlow):
+    target_required = False
+
+
 def test_custom_flow_keeps_its_own_timeout_and_dry_run_surface() -> None:
     args = _CustomTimeoutFlow().parse_args(
         ["--target", "demo", "--timeout", "long", "--dry-run", "summary"]
@@ -195,6 +292,45 @@ def test_custom_flow_keeps_its_own_timeout_and_dry_run_surface() -> None:
     assert args.timeout == "long"
     assert args.dry_run == "summary"
     assert not hasattr(args, "timeout_ms")
+
+
+def test_custom_flow_target_repetition_normalizes_to_scalar() -> None:
+    endpoint = _CustomTimeoutFlow()
+
+    assert endpoint.parse_args(["--target", "a", "--target", "b,c"]).target == "a,b,c"
+    assert _OptionalCustomTimeoutFlow().parse_args([]).target == ""
+
+
+def test_cli_report_preserves_authored_repeated_target_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = LintFlow()
+    report_dir = tmp_path / "reports"
+    argv = [
+        "--target",
+        "a",
+        "--target",
+        "b,c",
+        "--work-dir",
+        str(tmp_path),
+        "--report-dir",
+        str(report_dir),
+    ]
+    monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
+    monkeypatch.setattr(
+        flow,
+        "_run",
+        lambda: EndpointOutcome(detail={"targets": flow.args.target.split(",")}),
+    )
+
+    with mock.patch.object(FlowSession, "admission", return_value=nullcontext(None)):
+        result = flow.execute_cli(argv)
+
+    report = json.loads((report_dir / "lint.json").read_text())
+    assert result.outcome.detail["targets"] == ["a", "b", "c"]
+    assert report["target"] == "a,b,c"
+    assert report["argv"] == argv
 
 
 def _plan(flow: str, *, errors: tuple[str, ...] = ()) -> FlowPlan:
