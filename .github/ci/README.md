@@ -86,21 +86,33 @@ and wheel overlay, and the candidate/parent image inspections. The summary
 records the run and attempt, candidate SHA, UTC boundaries, elapsed seconds,
 outcome, cache observations, parallel completion order, the RISC-V lane's
 completion gap after the latest-finishing other lane, and the post-group Ibex
-duration. A transfer/load duration is reported only when raw BuildKit progress
-exposes a direct daemon import boundary. Otherwise transfer/load is explicitly
-`unavailable`, the successful command duration remains attributed to the
-combined construction/export/transfer/load operation, and the sample is not
-complete.
+duration. Raw progress is BuildKit's `rawjson` stream: one SolveStatus snapshot
+per line, with vertices merged by digest and statuses merged by vertex and ID.
+The outer `exporting to image` vertex includes layer export, image metadata, and
+naming, so it remains part of construction/export. Transfer/load is separated
+only when BuildKit exposes a distinct daemon import, layer-load, or unpack
+interval. Otherwise transfer/load is explicitly `unavailable`, the command
+duration remains attributed to the combined construction/export/transfer/load
+operation, and the sample is not complete.
+A tooling cache hit means every Dockerfile step vertex was cached; the named
+parent context is always reported cached and does not count.
 
 Use the `Tests` workflow's `riscv_measurement` dispatch input for controlled
-samples. `warm` restores a tooling-input- and stable-base-scoped local BuildKit
-cache through GitHub's branch-aware cache service; pull-request caches cannot
-replace the trusted default-branch entry. A cache miss seeds a later rerun and
-is marked non-representative. Only a restored cache for which BuildKit reports
-an actual tooling cache hit is a warm sample. `cold` adds `--no-cache` to both
+samples. Main and manual runs otherwise skip the RISC-V lane unless the last
+commit changed its inputs, so every arm except `automatic` forces the lane on
+dispatch (for example `gh workflow run test.yml --ref main -f
+riscv_measurement=cold`). `baseline` keeps the default build path. `warm`
+enables Docker's containerd image store, then restores a tooling-input- and
+stable-base-scoped local BuildKit cache through GitHub's branch-aware cache
+service. The daemon-backed builder therefore retains access to the exact local
+candidate parent while supporting local cache import/export. Pull-request
+caches cannot replace the trusted default-branch entry. A cache miss seeds a
+later rerun and is marked non-representative. Only a restored cache for which
+BuildKit reports an actual tooling cache hit is a warm sample. `cold` adds
+`--no-cache` to both
 candidate builds. `automatic` retains the baseline
-`--builder default --load` path, and the input does not broaden pull-request
-path coverage. Before considering a reusable tooling carrier, collect at least
+`--builder default --load` path and path gating; the input cannot be set on
+pull requests. Before considering a reusable tooling carrier, collect at least
 five complete representative runs, including two cold runs. Compare runs with
 the same stable base path and report the median and range for every phase and
 parallel lane, workflow queue time, critical-path elapsed time, runner minutes,

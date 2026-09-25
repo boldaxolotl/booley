@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -34,7 +35,7 @@ class TimingError(ValueError):
 
 PhaseTopology = Literal["parallel", "nested", "post-group"]
 PhaseOutcome = Literal["running", "success", "failure", "unavailable", "incomplete"]
-MeasurementArm = Literal["automatic", "warm", "cold"]
+MeasurementArm = Literal["automatic", "baseline", "warm", "cold"]
 CacheState = Literal["not-requested", "hit", "miss"]
 
 
@@ -158,20 +159,54 @@ def finish_record(path: Path, exit_code: int) -> None:
     )
 
 
-def _raw_events(path: Path) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
+# Dockerfile instruction vertices ("[3/7] RUN ...", "[stage-0 2/5] COPY ...").
+# Named-context and internal vertices are excluded: BuildKit reports a
+# docker-image:// context as cached on every build, which is not a tooling hit.
+_BUILD_STEP = re.compile(r"^\[(?:[^\]\s]+ )?\d+/\d+\] ")
+
+
+def _merge_vertices(vertices: dict[str, dict[str, Any]], line_payload: Any) -> None:
+    payload = as_dict(line_payload) or {}
+    for vertex in payload.get("vertexes") or []:
+        vertex_dict = as_dict(vertex)
+        if vertex_dict and isinstance(vertex_dict.get("digest"), str):
+            vertices.setdefault(vertex_dict["digest"], {}).update(vertex_dict)
+
+
+def _merge_statuses(statuses: dict[tuple[str, str], dict[str, Any]], line_payload: Any) -> None:
+    payload = as_dict(line_payload) or {}
+    for status in payload.get("statuses") or []:
+        status_dict = as_dict(status)
+        if not status_dict:
+            continue
+        vertex = status_dict.get("vertex")
+        identifier = status_dict.get("id")
+        if isinstance(vertex, str) and isinstance(identifier, str):
+            statuses.setdefault((vertex, identifier), {}).update(status_dict)
+
+
+def _raw_progress(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return merged vertices and statuses from BuildKit raw progress.
+
+    Each output line is a SolveStatus snapshot (`{"vertexes": [...], ...}`);
+    vertices and statuses repeat as their state advances, so later snapshots
+    win. Statuses retain the daemon import boundary hidden inside an outer
+    image-export vertex when the selected driver exposes one.
+    """
+    vertices: dict[str, dict[str, Any]] = {}
+    statuses: dict[tuple[str, str], dict[str, Any]] = {}
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as error:
         raise TimingError(f"cannot read {path}: {error}") from error
     for line in lines:
         try:
-            event = json.loads(line)
+            payload = json.loads(line)
+            _merge_vertices(vertices, payload)
+            _merge_statuses(statuses, payload)
         except json.JSONDecodeError:
             continue
-        if event_dict := as_dict(event):
-            events.append(cast(dict[str, Any], event_dict))
-    return events
+    return list(vertices.values()), list(statuses.values())
 
 
 def _event_time(event: dict[str, Any], field: str) -> datetime | None:
@@ -180,29 +215,38 @@ def _event_time(event: dict[str, Any], field: str) -> datetime | None:
 
 
 def _buildkit_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
-    vertices = {event.get("id"): event for event in events if isinstance(event.get("id"), str)}
-    cached = [event for event in vertices.values() if event.get("cached") is True]
+    steps = [event for event in events if _BUILD_STEP.match(str(event.get("name", "")))]
+    cached_steps = [event for event in steps if event.get("cached") is True]
     imports = sorted(
         {
             str(event.get("name"))
-            for event in vertices.values()
+            for event in events
             if "importing cache" in str(event.get("name", "")).lower()
         }
     )
     return {
-        "vertex_count": len(vertices),
-        "cached_vertex_count": len(cached),
-        "cache_hit": bool(cached),
+        "vertex_count": len(events),
+        "cached_vertex_count": sum(event.get("cached") is True for event in events),
+        "build_step_count": len(steps),
+        "cached_build_step_count": len(cached_steps),
+        # A tooling hit means every Dockerfile step was reused, not just one.
+        "cache_hit": bool(steps) and len(cached_steps) == len(steps),
         "imported_sources": imports,
     }
 
 
-def _transfer_window(events: list[dict[str, Any]]) -> tuple[datetime, datetime] | None:
-    markers = ("sending tarball", "importing to docker", "loading layer")
+def _transfer_window(
+    events: list[dict[str, Any]], statuses: list[dict[str, Any]]
+) -> tuple[datetime, datetime] | None:
+    # The outer "exporting to image" vertex also contains layer export,
+    # manifest/config creation, and naming. Only a distinct daemon import or
+    # unpack interval is a trustworthy transfer/load boundary.
+    markers = ("importing to docker", "loading layer", "unpacking to ")
     transfers = [
         event
-        for event in events
+        for event in (*events, *statuses)
         if any(marker in str(event.get("name", "")).lower() for marker in markers)
+        or any(marker in str(event.get("id", "")).lower() for marker in markers)
     ]
     starts = [value for event in transfers if (value := _event_time(event, "started"))]
     ends = [value for event in transfers if (value := _event_time(event, "completed"))]
@@ -235,10 +279,11 @@ def _attach_build_evidence(
 def _split_build_phases(
     construction: PhaseRecord,
     events: list[dict[str, Any]],
+    statuses: list[dict[str, Any]],
     exit_code: int,
 ) -> PhaseRecord:
     name = construction["name"]
-    transfer = _transfer_window(events)
+    transfer = _transfer_window(events, statuses)
     if transfer is None:
         construction["attribution"] = "combined_construction_export_transfer_load"
         load = _phase(
@@ -282,10 +327,10 @@ def finish_build_record(
 ) -> None:
     """Finish a BuildKit phase and split transfer/load when directly observable."""
     construction = _finish_phase(_read_json(path), exit_code)
-    events = _raw_events(progress)
+    events, statuses = _raw_progress(progress)
     construction["name"] = f"{construction['name']}_construction_export"
     _attach_build_evidence(construction, events, metadata, image_inspect, parent_inspect)
-    load = _split_build_phases(construction, events, exit_code)
+    load = _split_build_phases(construction, events, statuses, exit_code)
     _write_json(path, {"schema_version": 1, "phases": [construction, load]})
 
 
@@ -556,7 +601,9 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--run-attempt", type=int, required=True)
     child.add_argument("--candidate-sha", required=True)
     child.add_argument(
-        "--measurement-arm", choices=("automatic", "warm", "cold"), default="automatic"
+        "--measurement-arm",
+        choices=("automatic", "baseline", "warm", "cold"),
+        default="automatic",
     )
     child.add_argument(
         "--cache-state", choices=("not-requested", "hit", "miss"), default="not-requested"
