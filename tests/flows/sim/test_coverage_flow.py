@@ -3,6 +3,10 @@ from pathlib import Path
 
 import pytest
 
+from booley.criteria.state import DevelopmentState
+from booley.evidence.acceptance import ResolvedFlowAcceptance
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.sim.acceptance import record_campaign_acceptance
 from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
     resolve_coverage_campaign_reference,
@@ -11,8 +15,91 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.mcp.flow_adapter import flow_schema
+from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
+from booley.ticket_board.criteria_projection import project_ticket_criteria
+from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+from booley.ticket_board.ticket_document import (
+    TicketAuthoringView,
+    TicketConversionContext,
+    convert_ticket_document,
+)
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+
+
+class _AcceptanceAdapter(TicketAcceptanceRecorder):
+    def validate_and_resolve(self, _request: SimRequest) -> ResolvedFlowAcceptance:
+        return ResolvedFlowAcceptance(ticket_backed=True)
+
+
+class _SplitMetricsExecution(NativeExecution):
+    def payload(self, _hits):
+        records = (
+            ("line", 1, "block", 1),
+            ("expr", 2, "true", 1),
+            ("branch", 3, "true", 0),
+        )
+        body = "".join(
+            "C '\x01f\x02rtl/counter.sv"
+            f"\x01l\x02{line}\x01n\x021\x01h\x02TOP.counter"
+            f"\x01t\x02{metric}\x01o\x02{outcome}' {hits}\n"
+            for metric, line, outcome, hits in records
+        )
+        return "# SystemC::Coverage-3\n" + body
+
+
+def _atomic_coverage_projection():
+    text = (
+        "---\nsummary: Close coverage gap\ntype: verification\nbranch: main\n"
+        "scope: [rtl/counter.sv]\non_success: []\nCRITERIA_MANDATORY:\n"
+        "  COVERAGE:\n    sim_custom:\n      tests: [gap]\n"
+        "      metrics: {line: {min_pct: 70}, expression: {min_pct: 66}}\n"
+        "CRITERIA_OPTIONAL:\n  COVERAGE:\n    sim_custom:\n      tests: [gap]\n"
+        "      metrics: {branch: {min_pct: 51}}\n"
+        "---\n\n## Description\n\nClose the coverage gap.\n"
+    )
+    view = TicketAuthoringView(
+        lambda selector, _flow: f"acme:demo:counter:1#{selector}",
+        lambda _target: ("gap",),
+    )
+    converted = convert_ticket_document(
+        text, TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert converted.document is not None, converted.diagnostics
+    return project_ticket_criteria(converted.document.spec)
+
+
+def _ledger_json(log_dir: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(log_dir): path.read_bytes()
+        for path in (log_dir / "acceptance").rglob("*.json")
+    }
+
+
+def _prepare_atomic_coverage_ticket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, bytes]:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    core = tmp_path / "counter.core"
+    core.write_text(core.read_text().replace("sim_0", "sim_custom"))
+    project_data = tmp_path / ".booley_project"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_custom]\ntests = ["gap"]\n')
+    projection = _atomic_coverage_projection()
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.slug = "ticket"
+    state.ticket_type = "verification"
+    state.init_criteria(
+        {**projection.required, "_report_submitted": True},
+        flow_key_aliases=projection.aliases,
+        criterion_params={**projection.params, "_report_submitted": {}},
+        strict=True,
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    return state_path, state_path.read_bytes()
 
 
 def _assert_enclosing_result_is_authenticated(campaign_path, resolved) -> None:
@@ -224,6 +311,79 @@ def test_interactive_coverage_criterion_does_not_mutate_or_save_state(tmp_path, 
     assert save_calls == []
     assert state_path.read_bytes() == before_bytes
     assert state_path.stat().st_mtime_ns == before_mtime
+
+
+def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path, initial_state = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", ticket_identity=identity)
+    flow = SimulateFlow(coverage_execution=lambda _handle, _options: _SplitMetricsExecution())
+    result = flow.execute(
+        SimRequest(
+            target="sim_custom",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        ),
+        adapter=adapter,
+    )
+
+    assert result.exit_code == 1
+    saved = DevelopmentState.load(state_path)
+    verdicts = {
+        next(iter(entry.params["metrics"])): entry.met
+        for key, entry in saved.criteria.items()
+        if key.startswith("coverage_")
+    }
+    assert verdicts == {"line": True, "expression": True, "branch": False}
+    branch = next(
+        entry for entry in saved.criteria.values() if "branch" in entry.params["metrics"]
+    )
+    assert branch.mandatory is False
+    assert len(saved.acceptance_transactions) == 1
+    mandatory = [
+        entry
+        for key, entry in saved.criteria.items()
+        if key.startswith("coverage_") and entry.mandatory
+    ]
+    assert all(SOURCE_FINGERPRINT_DETAIL_KEY in entry.detail for entry in mandatory)
+
+    evidence = sorted((tmp_path / "logs/acceptance/evidence").rglob("record.json"))
+    records = [json.loads(path.read_text()) for path in evidence]
+    assert {
+        record["detail"]["criterion_metric"]: (record["met"], record["mandatory"])
+        for record in records
+    } == {
+        "line": (True, True),
+        "expression": (True, True),
+        "branch": (False, False),
+    }
+
+    ledger = _ledger_json(tmp_path / "logs")
+    state_path.write_bytes(initial_state)
+    flow.context._state = DevelopmentState.load(state_path)
+    record_campaign_acceptance(flow.context, flow.context._simulation_campaign_outcomes)
+    replayed = DevelopmentState.load(state_path)
+    assert replayed.acceptance_transactions == saved.acceptance_transactions
+    assert _ledger_json(tmp_path / "logs") == ledger
+
+    branch_key = next(
+        key
+        for key, entry in replayed.criteria.items()
+        if "branch" in entry.params.get("metrics", {})
+    )
+    replayed.set_criterion(
+        "_report_submitted",
+        True,
+        detail={"unmet_optional_criteria": [branch_key]},
+    )
+    replayed.save()
+    verdict = check_criteria_acceptance(state_path, work_dir=tmp_path)
+    assert verdict.disposition == "review"
+    assert verdict.unmet_mandatory == []
 
 
 def test_public_cli_aliases_select_same_request():
