@@ -72,6 +72,8 @@ class Specialist(McpTool):
     of calling _call_agent_sync() directly.
     """
 
+    endpoint_kind = "specialist"
+
     # Specialists are model-API-bound with ~no local footprint (ADR 0028):
     # every Specialist admits under the LIGHT class pool.
     JOB_CLASS = job_slots.CLASS_LIGHT

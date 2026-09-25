@@ -23,9 +23,7 @@ def _specialist_schema(endpoint: Any) -> dict[str, Any]:
 
 def flow_schema(endpoint: Any) -> dict[str, Any]:
     """Keep MCP schema policy out of deterministic Flow implementations."""
-    from booley.specialists.specialist import Specialist
-
-    if isinstance(endpoint, Specialist):
+    if getattr(endpoint, "endpoint_kind", None) == "specialist":
         return _specialist_schema(endpoint)
     if not isinstance(endpoint, BuiltinFlow):
         hook = getattr(endpoint, "mcp_schema", None)
