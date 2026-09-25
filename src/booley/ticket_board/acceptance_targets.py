@@ -18,6 +18,10 @@ from booley.core.boundary import (
     BoundaryError,
     is_str_list,
 )
+from booley.criteria.templates import (
+    EDA_TOOL_CRITERION_FAMILIES,
+    criterion_family_is_eligible,
+)
 from booley.criteria.thresholds import has_relative_threshold
 from booley.evidence.acceptance import AcceptanceTargetBinding
 from booley.fusesoc import fusesoc_registry
@@ -45,6 +49,7 @@ _FLOW_BY_CRITERION = {
 _RTL_FILE_TYPE_PREFIXES = ("verilogSource", "systemVerilogSource", "vhdlSource")
 _TB_FILE_TYPE_PREFIXES = ("cSource", "cppSource")
 _TB_USER_SOURCE_SUFFIXES = frozenset({".py"})
+_AUTHORED_CRITERION_FAMILIES = frozenset({"coverage"})
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,7 @@ class CriterionTarget:
     flow: str
     relative: bool
     baseline_target: str | None = None
+    family: str | None = None
 
     @property
     def baseline(self) -> str:
@@ -216,6 +222,12 @@ def _criterion_flow(key: str) -> str | None:
     return None
 
 
+def _authored_criterion_family(identity: str) -> str | None:
+    """Return the canonical EDA-gated family carried by authored Criteria."""
+    family = identity.casefold()
+    return family if family in _AUTHORED_CRITERION_FAMILIES else None
+
+
 def _relative_params(value: Any) -> bool:
     if not isinstance(value, Mapping):
         return False
@@ -287,6 +299,7 @@ def criterion_targets(criteria: Any) -> tuple[CriterionTarget, ...]:
                         flow,
                         relative,
                         baseline if baseline != target else None,
+                        family=_authored_criterion_family(str(key)),
                     )
                 )
     return tuple(bindings)
@@ -329,6 +342,7 @@ def criterion_targets_from_spec(spec: TicketSpec) -> tuple[CriterionTarget, ...]
                     flow,
                     baseline is not None,
                     baseline,
+                    family=_authored_criterion_family(criterion.capability),
                 )
             )
     return tuple(bindings)
@@ -710,6 +724,21 @@ def _validate_binding(
             handle = catalog.select(target, for_flow=binding.flow)
         except FuseSocError as exc:
             errors.append(f"{binding.label}: {role} target {target!r}: {exc}")
+            continue
+        if binding.family is not None and not criterion_family_is_eligible(
+            binding.family,
+            handle.eda_tool,
+            target_name=getattr(handle, "name", target),
+        ):
+            tools = [
+                tool.capitalize()
+                for tool, families in EDA_TOOL_CRITERION_FAMILIES.items()
+                if binding.family in families
+            ]
+            errors.append(
+                f"{binding.label}: target {target!r}: {binding.family} requires "
+                f"{' or '.join(tools)} (EDA tool={handle.eda_tool!r})"
+            )
             continue
         try:
             missing_inputs = _missing_target_inputs(catalog, handle.selector)
