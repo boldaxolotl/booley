@@ -8,6 +8,7 @@ from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.sim.acceptance import record_campaign_acceptance
+from booley.flows.sim.campaign import resolve_report_artifact_reference
 from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
     resolve_coverage_campaign_reference,
@@ -603,6 +604,25 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert [request.test.name for request in execution.runs] == ["wrap"]
+    report_path = tmp_path / "resumed/sim/1/report.json"
+    report = json.loads(report_path.read_text())
+    detail = report["detail"]
+    campaign = detail["campaigns"]["sim_0"]
+    assert campaign["dependency"] == "external_origin_campaign"
+    assert set(campaign["artifacts"]) == {"manifest", "simulation", "coverage"}
+    assert {reference["path_base"] for reference in campaign["artifacts"].values()} == {
+        "external_origin_target"
+    }
+    assert detail["targets"]["sim_0"]["coverage_campaign"] == campaign["artifacts"]["coverage"]
+    resolved = resolve_report_artifact_reference(
+        report_path,
+        campaign["artifacts"]["manifest"],
+        expected_kind="simulation_campaign_manifest",
+        expected_owner=campaign["campaign_id"],
+        maximum=1024 * 1024,
+        external_origin_target=manifest.parents[1],
+    )
+    assert resolved.path == manifest
 
 
 def _crash_coverage_publication(tmp_path, monkeypatch, boundary):

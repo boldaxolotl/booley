@@ -30,6 +30,7 @@ from booley.flows.sim.campaign import (
     SIMULATION_PROJECTION_SCHEMA,
     CampaignOutcome,
     build_artifact_reference,
+    encode_artifact_reference,
 )
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES
 from booley.flows.sim.campaign_reports import (
@@ -324,7 +325,34 @@ def record_campaign_acceptance(
 
 
 def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
-    tests = [
+    facts = outcome.acceptance_facts.document
+    campaign_id = str(facts["campaign_id"])
+    target_directory = outcome.manifest_path.parents[1]
+    projection = {
+        "$schema": SIMULATION_PROJECTION_SCHEMA,
+        "flow": "sim",
+        "mode": "simulate",
+        "target": outcome.target["selector"],
+        "target_identity": f"{outcome.target['vlnv']}#{outcome.target['name']}",
+        "passed": outcome.aggregate_grade == "pass",
+        "inconclusive": outcome.aggregate_grade == "inconclusive",
+        "tests": _campaign_test_projections(outcome),
+        "campaign_id": campaign_id,
+        "campaign_manifest": _artifact_document(
+            outcome.manifest_path,
+            base=target_directory,
+            kind="simulation_campaign_manifest",
+            owner=campaign_id,
+            maximum=MANIFEST_MAX_BYTES,
+        ),
+    }
+    if outcome.coverage_reference is not None:
+        projection.update(_coverage_projection_fields(outcome, target_directory, campaign_id))
+    return projection
+
+
+def _campaign_test_projections(outcome: CampaignOutcome) -> list[dict[str, object]]:
+    return [
         {
             "name": observation["test"] or "default",
             "passed": observation["execution"] == "completed"
@@ -337,44 +365,38 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
         }
         for observation in outcome.observations
     ]
-    facts = outcome.acceptance_facts.document
-    campaign_id = str(facts["campaign_id"])
-    target_directory = outcome.manifest_path.parents[1]
-    projection = {
-        "$schema": SIMULATION_PROJECTION_SCHEMA,
-        "flow": "sim",
-        "mode": "simulate",
-        "target": outcome.target["selector"],
-        "target_identity": f"{outcome.target['vlnv']}#{outcome.target['name']}",
-        "passed": outcome.aggregate_grade == "pass",
-        "inconclusive": outcome.aggregate_grade == "inconclusive",
-        "tests": tests,
-        "campaign_id": campaign_id,
-        "campaign_manifest": build_artifact_reference(
-            outcome.manifest_path,
-            base_name="origin_target",
+
+
+def _coverage_projection_fields(
+    outcome: CampaignOutcome, target_directory: Path, campaign_id: str
+) -> dict[str, object]:
+    public = target_directory / "coverage.json"
+    coverage = _resolve_facts_coverage(outcome, public).loaded.campaign
+    return {
+        "coverage_campaign": _artifact_document(
+            public,
             base=target_directory,
-            kind="simulation_campaign_manifest",
+            kind="coverage_campaign_reference",
             owner=campaign_id,
-            maximum=MANIFEST_MAX_BYTES,
+            maximum=MAX_REFERENCE_BYTES,
         ),
+        "collection": coverage.collection["status"],
+        "evaluation": coverage.evaluation["status"],
     }
-    if outcome.coverage_reference is not None:
-        public = outcome.manifest_path.parents[1] / "coverage.json"
-        coverage = _resolve_facts_coverage(outcome, public).loaded.campaign
-        projection.update(
-            coverage_campaign=build_artifact_reference(
-                public,
-                base_name="origin_target",
-                base=target_directory,
-                kind="coverage_campaign_reference",
-                owner=campaign_id,
-                maximum=MAX_REFERENCE_BYTES,
-            ),
-            collection=coverage.collection["status"],
-            evaluation=coverage.evaluation["status"],
-        )
-    return projection
+
+
+def _artifact_document(
+    path: Path, *, base: Path, kind: str, owner: str, maximum: int
+) -> dict[str, object]:
+    reference = build_artifact_reference(
+        path,
+        base_name="origin_target",
+        base=base,
+        kind=kind,
+        owner=owner,
+        maximum=maximum,
+    )
+    return encode_artifact_reference(reference)
 
 
 def _coverage_changes(

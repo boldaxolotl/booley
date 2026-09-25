@@ -1,9 +1,11 @@
 """Public seam for durable Simulation Campaign execution and resume."""
 
 from .artifact_reference import (
+    ArtifactReference,
     ArtifactReferenceError,
     ResolvedArtifact,
     build_artifact_reference,
+    encode_artifact_reference,
     resolve_artifact_reference,
     resolve_report_artifact_reference,
 )
@@ -76,6 +78,7 @@ from .resume import ValidatedResumeManifest, validate_resume_manifest
 __all__ = [
     "SIMULATION_PROJECTION_SCHEMA",
     "AcceptanceFacts",
+    "ArtifactReference",
     "ArtifactReferenceError",
     "BundleBuildAttempt",
     "BundleBuildResult",
@@ -121,6 +124,7 @@ __all__ = [
     "decode_simulation_result",
     "decode_simulator_bundle",
     "encode_acceptance_facts",
+    "encode_artifact_reference",
     "encode_bundle_build_attempt",
     "encode_bundle_build_result",
     "encode_executable_snapshot",

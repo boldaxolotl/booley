@@ -37,13 +37,15 @@ a typed object containing `path_base`, `path`, `bytes`, `sha256`, `kind`, and
   reference to the nested Coverage Campaign.
 
 Resolve `report_invocation` from the directory containing `report.json` and
-`reports_root` from the parent of that report's `sim` directory. Resume reports
-declare `external_origin_campaign` and use `reports_root`; they no longer copy a
-`simulation.json` into an invocation that does not contain the Campaign.
+`reports_root` from the parent of that report's `sim` directory. Same-root resume
+reports use `reports_root`; cross-root resumes use `external_origin_target`, which
+the caller resolves from the separately supplied origin Target directory. Resume
+reports declare `external_origin_campaign`; they no longer copy a `simulation.json`
+into an invocation that does not contain the Simulation Campaign.
 
 The bounded MCP response exposes observation counts and at most 32 observation
-previews. Read the summary and bound result artifacts when complete evidence is
-needed. Existing `simulation.json` compatibility keys remain, with independent
+previews. Resolve the manifest and inspect its authenticated terminal results
+when complete evidence is needed. Existing `simulation.json` compatibility keys remain, with independent
 `execution`, `functional`, and `assertions` observations added for each test.
 
 Scripts must not discover a “latest” Campaign, edit Campaign JSON, or copy an

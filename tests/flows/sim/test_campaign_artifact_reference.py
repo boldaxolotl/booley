@@ -1,4 +1,4 @@
-"""Campaign artifact references stay strict while their base may move."""
+"""Simulation Campaign artifact references stay strict while their base may move."""
 
 import shutil
 
@@ -7,6 +7,7 @@ import pytest
 from booley.flows.sim.campaign import (
     ArtifactReferenceError,
     build_artifact_reference,
+    encode_artifact_reference,
     resolve_artifact_reference,
     resolve_report_artifact_reference,
 )
@@ -61,7 +62,7 @@ def test_reference_resolves_after_complete_base_copy(tmp_path):
 )
 def test_reference_rejects_wrong_profile_or_identity(tmp_path, field, value):
     base, reference = _reference(tmp_path)
-    hostile = {**reference, field: value}
+    hostile = {**encode_artifact_reference(reference), field: value}
 
     with pytest.raises(ArtifactReferenceError):
         resolve_artifact_reference(
@@ -89,6 +90,25 @@ def test_reference_rejects_link_below_base(tmp_path):
             allowed_bases={"origin_target"},
             expected_kind="simulation_campaign_manifest",
             expected_owner="campaign-id",
+            maximum=1024,
+        )
+
+
+def test_reference_encoder_rejects_link_below_base(tmp_path):
+    base = tmp_path / "origin"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "manifest.json").write_bytes(b'{"campaign":true}\n')
+    base.mkdir()
+    (base / "campaign").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ArtifactReferenceError, match=r"link|escapes"):
+        build_artifact_reference(
+            base / "campaign/manifest.json",
+            base_name="origin_target",
+            base=base,
+            kind="simulation_campaign_manifest",
+            owner="campaign-id",
             maximum=1024,
         )
 
@@ -121,3 +141,32 @@ def test_report_reference_uses_the_containing_document_after_reports_root_copy(t
     )
 
     assert resolved.path == copied / "sim/1/targets/sim/campaign/manifest.json"
+
+
+def test_report_reference_accepts_explicit_external_origin_target(tmp_path):
+    origin = tmp_path / "origin-target"
+    artifact = origin / "campaign/manifest.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b'{"campaign":true}\n')
+    report = tmp_path / "other-reports/sim/1/report.json"
+    report.parent.mkdir(parents=True)
+    report.write_text("{}")
+    reference = build_artifact_reference(
+        artifact,
+        base_name="external_origin_target",
+        base=origin,
+        kind="simulation_campaign_manifest",
+        owner="campaign-id",
+        maximum=1024,
+    )
+
+    resolved = resolve_report_artifact_reference(
+        report,
+        reference,
+        expected_kind="simulation_campaign_manifest",
+        expected_owner="campaign-id",
+        maximum=1024,
+        external_origin_target=origin,
+    )
+
+    assert resolved.path == artifact

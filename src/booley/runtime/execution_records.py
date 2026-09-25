@@ -334,7 +334,7 @@ def release_retired_campaign_children(
 
 
 def validate_retired_campaign_children(campaign_children: Path) -> tuple[str, ...]:
-    """Validate a detached Campaign mirror without mutating Project indexes."""
+    """Validate a detached Simulation Campaign mirror without mutating Project indexes."""
     return tuple(sorted(Path(name).stem for name in _campaign_child_records(campaign_children)))
 
 

@@ -9,10 +9,13 @@ import hashlib
 import json
 import shutil
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 
 from .campaign import (
     ProjectionTrust,
+    RetainedCampaignStatus,
+    SimulationProjection,
     decode_simulation_projection,
     resolve_artifact_reference,
 )
@@ -256,16 +259,18 @@ def _release_child_indexes(root: Path, project_data: Path | None) -> None:
                 inferred = _infer_project_data(ownership_root)
                 if inferred is None:
                     raise CampaignRetentionError(
-                        "Campaign child ownership cannot resolve its Project data"
+                        "Simulation Campaign child ownership cannot resolve its Project data"
                     )
                 resolved = Path(project_data).resolve() if project_data else inferred
                 if resolved != inferred.resolve():
                     raise CampaignRetentionError(
-                        "Project data disagrees with the canonical Campaign owner"
+                        "Project data disagrees with the canonical Simulation Campaign owner"
                     )
                 release_retired_campaign_children(resolved, children)
     except (OSError, ValueError) as exc:
-        raise CampaignRetentionError(f"Campaign child retention is invalid: {exc}") from exc
+        raise CampaignRetentionError(
+            f"Simulation Campaign child retention is invalid: {exc}"
+        ) from exc
 
 
 def _child_ownership_root(children: Path, manifest_paths) -> Path | None:
@@ -281,7 +286,7 @@ def _child_ownership_root(children: Path, manifest_paths) -> Path | None:
     if matches and all(matches):
         return producer_paths[0].parents[3]
     if any(matches):
-        raise CampaignRetentionError("Campaign child ownership is ambiguous")
+        raise CampaignRetentionError("Simulation Campaign child ownership is ambiguous")
     return None
 
 
@@ -317,7 +322,7 @@ def _validate_invocation_targets(root: Path) -> None:
     for directory in directories:
         if directory.name not in expected:
             raise CampaignRetentionError("Invocation contains an unresolved Target")
-        # Partial attempts can be removed; existing complete Campaigns must agree.
+        # Partial attempts can be removed; existing Simulation Campaigns must agree.
         if (directory / "coverage.json").exists():
             selector = next(
                 target for target in targets if target_report_directory(root, target) == directory
@@ -349,6 +354,12 @@ def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
         or projection.document.get("complete") is not True
     ):
         raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+    _validate_projection_identity(target, status, projection)
+
+
+def _validate_projection_identity(
+    target: Path, status: RetainedCampaignStatus, projection: SimulationProjection
+) -> None:
     expected = {
         "target": status.target_selector,
         "target_identity": status.target_identity,
@@ -362,31 +373,38 @@ def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
     ):
         raise CampaignRetentionError("legacy Simulation verdict projection is invalid")
     if projection.trust is ProjectionTrust.AUTHENTICATED:
-        if projection.document.get("campaign_id") != status.campaign_id:
-            raise CampaignRetentionError("Simulation Campaign projection owner disagrees")
-        artifact = resolve_artifact_reference(
-            projection.document.get("campaign_manifest"),
-            bases={"origin_target": target},
-            allowed_bases={"origin_target"},
-            expected_kind="simulation_campaign_manifest",
-            expected_owner=status.campaign_id,
-            maximum=MANIFEST_MAX_BYTES,
+        _validate_authenticated_projection(target, status, projection.document)
+
+
+def _validate_authenticated_projection(
+    target: Path, status: RetainedCampaignStatus, document: Mapping[str, object]
+) -> None:
+    if document.get("campaign_id") != status.campaign_id:
+        raise CampaignRetentionError("Simulation Campaign projection owner disagrees")
+    artifact = resolve_artifact_reference(
+        document.get("campaign_manifest"),
+        bases={"origin_target": target},
+        allowed_bases={"origin_target"},
+        expected_kind="simulation_campaign_manifest",
+        expected_owner=status.campaign_id,
+        maximum=MANIFEST_MAX_BYTES,
+    )
+    if artifact.path != status.manifest_path:
+        raise CampaignRetentionError("Simulation Campaign projection manifest disagrees")
+    if not (target / "coverage.json").is_file():
+        return
+    coverage = resolve_artifact_reference(
+        document.get("coverage_campaign"),
+        bases={"origin_target": target},
+        allowed_bases={"origin_target"},
+        expected_kind="coverage_campaign_reference",
+        expected_owner=status.campaign_id,
+        maximum=MAX_REFERENCE_BYTES,
+    )
+    if coverage.path != (target / "coverage.json").absolute():
+        raise CampaignRetentionError(
+            "Simulation Campaign projection Coverage Campaign reference disagrees"
         )
-        if artifact.path != status.manifest_path:
-            raise CampaignRetentionError("Simulation Campaign projection manifest disagrees")
-        if (target / "coverage.json").is_file():
-            coverage = resolve_artifact_reference(
-                projection.document.get("coverage_campaign"),
-                bases={"origin_target": target},
-                allowed_bases={"origin_target"},
-                expected_kind="coverage_campaign_reference",
-                expected_owner=status.campaign_id,
-                maximum=MAX_REFERENCE_BYTES,
-            )
-            if coverage.path != (target / "coverage.json").absolute():
-                raise CampaignRetentionError(
-                    "Simulation Campaign projection Coverage reference disagrees"
-                )
 
 
 def _validate_completed_targets(

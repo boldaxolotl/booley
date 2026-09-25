@@ -227,18 +227,22 @@ and the current Target revision/workload before launching an EDA tool.
 
 New `simulation.json` files use `booley.simulation-projection/v2`. Their manifest
 and optional Coverage pointers are typed `origin_target` references with a
-normalized relative path, byte count, digest, artifact kind, and Campaign owner.
+normalized relative path, byte count, digest, artifact kind, and Simulation
+Campaign owner.
 Legacy absolute manifest and summary strings remain readable only as hints after
-the supplied local Campaign has authenticated; readers never follow them back to
-the producer path.
+the supplied local Simulation Campaign has authenticated; readers never follow
+them back to the producer path.
 
 Versioned `report.json` files use `booley.simulation-report/v2`. Each Target has
 one `artifacts` map whose references use `report_invocation` for local artifacts
-or `reports_root` for an origin Campaign used by resume. A resume report declares
+or `reports_root` for an origin Simulation Campaign under the same reports root.
+A cross-root resume uses `external_origin_target`; its caller supplies the origin
+Target directory when resolving that external dependency. A resume report declares
 `dependency: external_origin_campaign` and publishes no local `simulation.json`.
 Copying a complete invocation preserves local references; copying a reports root
-preserves resume references. Copying only a resume invocation leaves its immutable
-Campaign identity and digest metadata but not the external artifact.
+preserves same-root resume references. Copying only a resume invocation leaves its
+immutable Simulation Campaign identity, digest, and external relative path, but
+not the external artifact bytes.
 
 Structured campaign output reports `grade`, `complete`,
 aggregate `observation_counts`, and a maximum-32 `observations` preview. Every

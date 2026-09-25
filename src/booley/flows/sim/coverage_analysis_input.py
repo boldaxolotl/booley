@@ -126,7 +126,7 @@ def _reference_projection(
     resolved: ResolvedCoverageCampaign,
     authenticated: CampaignWorkItemEvidence,
 ) -> None:
-    """Authenticate a Simulation projection through local Campaign bytes.
+    """Authenticate a Simulation projection through local Simulation Campaign bytes.
 
     The legacy absolute manifest and summary strings are compatibility hints.
     Authority comes from the locally supplied Coverage reference, its enclosing
