@@ -19,6 +19,13 @@ def should_fail(source: Path, gate: str, baseline: set[str]) -> bool:
     return bool(set(document.get("acceptance_transactions", [])) - baseline)
 
 
+def publish_reply(event: Path, answer: str) -> None:
+    """Publish the reply atomically; the shim treats an empty read as a failure."""
+    staging = event.with_suffix(".reply-staging")
+    staging.write_text(answer)
+    staging.replace(event.with_suffix(".reply"))
+
+
 def service(control: Path, gate: str, baseline: set[str], seen: set[Path], producer: int) -> None:
     for event in sorted(control.glob("event-*")):
         if event in seen or "." in event.name:
@@ -41,7 +48,7 @@ def service(control: Path, gate: str, baseline: set[str], seen: set[Path], produ
         if source and Path(source).is_file():
             # Preserve the publication predicate before product cleanup removes temp JSON.
             event.with_suffix(".source.json").write_bytes(Path(source).read_bytes())
-        event.with_suffix(".reply").write_text(answer)
+        publish_reply(event, answer)
         seen.add(event)
 
 

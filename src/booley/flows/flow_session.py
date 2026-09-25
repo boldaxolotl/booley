@@ -51,6 +51,9 @@ class FlowSession(EndpointState):
     def _pre_state_gate(self) -> EndpointOutcome | None:
         return self.flow._pre_state_gate()
 
+    def prepare_target_endpoint(self) -> EndpointOutcome | None:
+        return self.flow.prepare_target_endpoint()
+
     def _resolve_job_class(self) -> str | None:
         return self.flow._resolve_job_class()
 

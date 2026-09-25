@@ -11,6 +11,7 @@ from booley.flows.sim.coverage_invocation import (
     prepare_coverage_invocation,
 )
 from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+from booley.targets.catalog import PreparedTargetSelection
 
 
 def project(root: Path, tools: tuple[str, ...] = ("verilator",)) -> CoverageProjectContext:
@@ -101,6 +102,19 @@ def test_selection_precedence_is_explicit_then_criterion_then_registered_suite(
     )
     assert explicit.plan.targets[0].selected_tests == ("reset",)
     assert explicit.plan.targets[0].criterion == criterion
+
+
+def test_prepared_selection_keeps_catalog_and_ordered_handles_together(tmp_path: Path) -> None:
+    context = project(tmp_path, ("verilator", "verilator"))
+    selection = PreparedTargetSelection.resolve(tmp_path, "sim_1,sim_0", for_flow="sim")
+
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("ignored",)),
+        context,
+        selection=selection,
+    )
+
+    assert [target.handle.name for target in prepared.plan.targets] == ["sim_1", "sim_0"]
 
 
 @pytest.mark.parametrize(
