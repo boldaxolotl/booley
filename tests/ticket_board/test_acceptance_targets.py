@@ -282,6 +282,7 @@ def test_target_value_parser_handles_supported_and_invalid_shapes(
 ) -> None:
     bindings = acceptance_targets.criterion_targets({"mandatory": {"synthesis_ok": value}})
     assert [(item.target, item.baseline, item.relative) for item in bindings] == expected
+    assert all(item.family is None for item in bindings)
 
 
 def test_target_list_parser_handles_coverage_sim_and_invalid_items() -> None:
@@ -301,6 +302,7 @@ def test_target_list_parser_handles_coverage_sim_and_invalid_items() -> None:
         ("sim_text", "sim_text", False),
         ("lint_plain", "lint_plain", False),
     ]
+    assert {item.family for item in bindings} == {"coverage"}
 
 
 def test_target_list_parser_ignores_invalid_sim_expression() -> None:

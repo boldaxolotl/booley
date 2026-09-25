@@ -737,7 +737,7 @@ class TestCriterionEligibility:
     def test_eligible_families_per_tool(self):
         assert eligible_eda_tool_criterion_families("yosys") == frozenset({"synthesis_ok"})
         assert eligible_eda_tool_criterion_families("verilator") == frozenset(
-            {"sim_pass", "cycle_count", "lint_clean"}
+            {"sim_pass", "cycle_count", "lint_clean", "coverage"}
         )
         assert eligible_eda_tool_criterion_families("icarus") == frozenset(
             {"sim_pass", "cycle_count"}
@@ -793,7 +793,16 @@ class TestCriterionEligibility:
         assert set(out) == {"sim_pass_x", "synthesis_ok_x"}
 
     def test_non_tool_gated_family_always_kept(self):
-        """A non-tool-gated family (e.g. coverage) is never filtered."""
-        defs = [_per_config_def("coverage")]
+        """A non-tool-gated family (e.g. review) is never filtered."""
+        defs = [_per_config_def("review_rtl_bugs")]
         out = expand_criteria_defs(defs, ["c"], {"c": "yosys"})
-        assert set(out) == {"coverage_c"}
+        assert set(out) == {"review_rtl_bugs_c"}
+
+    def test_coverage_is_gated_on_verilator(self):
+        defs = [_per_config_def("coverage")]
+        out = expand_criteria_defs(
+            defs,
+            ["sim_verilator", "sim_icarus"],
+            {"sim_verilator": "verilator", "sim_icarus": "icarus"},
+        )
+        assert set(out) == {"coverage_sim_verilator"}
