@@ -125,7 +125,7 @@ from booley.harness.setup.plan import InitPlan, InitPreconditionError
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
 from booley.projects.inventory import ProjectInventoryError, remember_project
-from booley.runtime import auth_token
+from booley.runtime import auth_token, project_repositories
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
@@ -427,19 +427,36 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
     """
     if not stealth_enabled(ctx.project_root):
         return
-    if (target / ".git").exists():
+    if project_repositories.is_git_worktree_root(target):
         return  # already its own repo — leave it be
-    if ctx.check_only:
-        warn(f"would `git init` {target} (stealth persistence, ADR 0036)")
+    branch = project_repositories.inspect_symbolic_branch(ctx.project_root)
+    if branch.branch is None:
+        detail = branch.detail or "detached HEAD"
+        warn(
+            f"could not initialize inner git repo at {target}: outer Project "
+            f"branch is unavailable ({detail}); attach the outer checkout to a branch "
+            "and rerun `booley init`"
+        )
         return
-    result = subprocess.run(
-        ["git", "-C", str(target), "init", "-q"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    if ctx.check_only:
+        warn(f"would `git init -b {branch.branch}` {target} (stealth persistence, ADR 0036)")
+        return
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(target), "init", "-q", "-b", branch.branch],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        warn(f"could not `git init` {target} on {branch.branch}: {exc}")
+        return
     if result.returncode == 0:
-        ok(f"initialized inner git repo at {target} (versions stealth config/cores)")
+        ok(
+            f"initialized inner git repo at {target} on {branch.branch} "
+            "(versions stealth config/cores)"
+        )
     else:
         warn(f"could not `git init` {target}: {result.stderr.strip()}")
 
