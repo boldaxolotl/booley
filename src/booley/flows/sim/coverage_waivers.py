@@ -6,13 +6,16 @@ import hashlib
 import json
 import re
 import tomllib
-import unicodedata
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
 
+from booley.config.coverage_waiver_inputs import (
+    CoverageWaiverConfig,
+    formal_proof_references,
+    is_safe_relative_posix,
+)
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_list, require_str
 from booley.flows.sim.coverage_campaign import (
     CoverageFinding,
@@ -31,7 +34,6 @@ from booley.flows.sim.coverage_waiver_matching import ApprovedWaiver, ApprovedWa
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 _SET_SCHEMA = "booley.approved-waiver-set/v1"
-_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TOP_LEVEL_FIELDS = frozenset({"schema", "source", "source_sha256", "approval"})
 _APPROVAL_FIELDS = frozenset(
@@ -48,14 +50,6 @@ _APPROVAL_FIELDS = frozenset(
     }
 )
 _REQUIRED_APPROVAL_FIELDS = _APPROVAL_FIELDS - {"proof"}
-
-
-@dataclass(frozen=True)
-class CoverageWaiverConfig:
-    """Explicit repository anchor and safe relative approval directory."""
-
-    anchor: Literal["rtl_repository", "project_data_repository"]
-    directory: str
 
 
 @dataclass(frozen=True)
@@ -89,21 +83,6 @@ def _error(code: str, pointer: str, message: str) -> CoverageFinding:
     return CoverageFinding(severity="error", code=code, pointer=pointer, message=message)
 
 
-def _safe_relative_posix(value: object) -> bool:
-    text = as_str(value)
-    if not text or "\\" in text or "\x00" in text:
-        return False
-    if unicodedata.normalize("NFC", text) != text:
-        return False
-    path = PurePosixPath(text)
-    return (
-        not path.is_absolute()
-        and _WINDOWS_DRIVE_RE.match(text) is None
-        and all(part not in {"", ".", ".."} for part in path.parts)
-        and path.as_posix() == text
-    )
-
-
 def _config_findings(config: CoverageWaiverConfig) -> tuple[CoverageFinding, ...]:
     findings: list[CoverageFinding] = []
     if config.anchor not in {"rtl_repository", "project_data_repository"}:
@@ -114,7 +93,7 @@ def _config_findings(config: CoverageWaiverConfig) -> tuple[CoverageFinding, ...
                 "Anchor must name exactly one supplied repository root.",
             )
         )
-    if not _safe_relative_posix(config.directory):
+    if not is_safe_relative_posix(config.directory):
         findings.append(
             _error(
                 "COV_WAIVER_DIRECTORY_UNSAFE",
@@ -232,7 +211,7 @@ def _proof_evidence_finding(
     document = require_dict(proof, field="proof")
     reference = require_str(document, "reference")
     relative = reference.split("#", 1)[0]
-    if not _safe_relative_posix(relative):
+    if not is_safe_relative_posix(relative):
         return _error("COV_WAIVER_PROOF_INVALID", pointer, "Unsafe proof reference.")
     raw, finding = _read_evidence(tree, relative, pointer, label="PROOF")
     if finding is not None:
@@ -395,7 +374,7 @@ def _document_shape_findings(
                 "Approval-file fields are closed and required.",
             )
         )
-    if not _safe_relative_posix(document.get("source")):
+    if not is_safe_relative_posix(document.get("source")):
         findings.append(
             _error("COV_WAIVER_SOURCE_UNSAFE", f"{pointer}/source", "Unsafe RTL source path.")
         )
@@ -541,10 +520,10 @@ def _approval_file_findings(
     approval_tree: SecureTree,
 ) -> tuple[CoverageFinding, ...]:
     findings = _document_shape_findings(document, pointer)
-    if not _safe_relative_posix(relative):
+    if not is_safe_relative_posix(relative):
         findings.append(_error("COV_WAIVER_PATH_UNSAFE", pointer, "Unsafe approval-file path."))
     source = as_str(document.get("source"))
-    if source is not None and _safe_relative_posix(source):
+    if source is not None and is_safe_relative_posix(source):
         findings.extend(_source_file_findings(document, relative, pointer, rtl_tree))
         try:
             require_list(document.get("approval"), field="approval")
@@ -692,6 +671,41 @@ def _load_scanned_set(
         digest=_digest(projection),
         waivers=waivers,
     )
+
+
+def discover_approved_waiver_inputs(
+    config: CoverageWaiverConfig | None,
+    roots: CoverageRepositoryRoots,
+) -> tuple[Path, ...]:
+    """Discover lexical approval policy inputs without following filesystem links."""
+    if config is None:
+        return ()
+    findings = _config_findings(config)
+    if findings:
+        raise ValueError(findings[0].message)
+    anchor = getattr(roots, config.anchor)
+    directory = anchor / config.directory
+    paths = {directory}
+    try:
+        with SecureTree(anchor) as tree:
+            scan = tree.scan_files(config.directory)
+    except SecurePathError as error:
+        if error.kind in {"missing", "symlink", "invalid"}:
+            return tuple(paths)
+        raise OSError(f"approved-waiver discovery failed: {error}") from error
+    unreadable = next((problem for problem in scan.problems if problem.kind == "unreadable"), None)
+    if unreadable is not None:
+        raise OSError(
+            "approved-waiver discovery failed: "
+            f"{unreadable.entry_kind} {unreadable.relative_path!r} is unreadable"
+        )
+    for file in scan.files:
+        try:
+            document = tomllib.loads(file.raw.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+            continue
+        paths.update(anchor / reference for reference in formal_proof_references(document))
+    return tuple(sorted(paths))
 
 
 def load_approved_waiver_set(
