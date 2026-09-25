@@ -308,21 +308,13 @@ def test_campaign_replay_preserves_fail_to_pass_transition_once(tmp_path: Path) 
     )
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
 
-    red_shadow = deepcopy(state)
-    red = red_shadow.set_criterion("sim_pass_uart", False, detail={"failed_tests": ["tx"]})
-    record_or_verify_transaction(
-        log_dir,
-        state,
-        red,
-        acceptance_facts=_campaign_facts(finished_at="2026-09-21T10:00:00Z"),
-        ticket_identity=identity,
-    )
-    green_shadow = deepcopy(state)
-    green = green_shadow.set_criterion("sim_pass_uart", True, detail={"passed_tests": ["tx"]})
+    _record_campaign_transition(log_dir, state, identity, met=False)
     green_facts = _campaign_facts(
         finished_at="2026-09-21T10:01:00Z",
         campaign_id="22345678-1234-4234-9234-123456789abc",
     )
+    green_shadow = deepcopy(state)
+    green = green_shadow.set_criterion("sim_pass_uart", True, detail={"passed_tests": ["tx"]})
     transaction = record_or_verify_transaction(
         log_dir,
         state,
@@ -342,7 +334,24 @@ def test_campaign_replay_preserves_fail_to_pass_transition_once(tmp_path: Path) 
 
     assert retried == transaction
     assert state._file_path.read_bytes() == state_bytes  # type: ignore[union-attr]
-    assert state.criteria["sim_pass_uart"].transition_evidence == [
+    assert state.criteria["sim_pass_uart"].transition_evidence == _transition_evidence()
+
+
+def _record_campaign_transition(log_dir, state, identity, *, met: bool) -> None:
+    detail = {"passed_tests" if met else "failed_tests": ["tx"]}
+    shadow = deepcopy(state)
+    changes = shadow.set_criterion("sim_pass_uart", met, detail=detail)
+    record_or_verify_transaction(
+        log_dir,
+        state,
+        changes,
+        acceptance_facts=_campaign_facts(finished_at="2026-09-21T10:00:00Z"),
+        ticket_identity=identity,
+    )
+
+
+def _transition_evidence() -> list[dict[str, object]]:
+    return [
         {
             "met": False,
             "recorded_at": "2026-09-21T10:00:00Z",

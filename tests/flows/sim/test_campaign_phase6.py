@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover - Windows compatibility
     resource = None  # type: ignore[assignment]
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.endpoint_reporting import _persist_run_state
+from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.acceptance import record_campaign_acceptance
 from booley.flows.sim.campaign import (
     SimulationCampaignWorkItemError,
@@ -56,6 +56,7 @@ from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedRes
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, EndpointOutcome
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
 from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
@@ -673,19 +674,12 @@ def test_acceptance_readiness_requires_strict_superset_grade() -> None:
 
 
 def _acceptance_endpoint(state, recorder, invocation):
-    return SimpleNamespace(
-        state=state,
-        _state=state,
-        _acceptance_recorder=recorder,
-        _invocation_id="1",
-        name="sim",
-        endpoint_kind="flow",
-        _args=None,
-        args=SimpleNamespace(diagnostic=False),
-        _reserved_invocation_dir=invocation,
-        _simulation_acceptance_outcomes=(),
-        _pending_criteria_set=(),
-    )
+    endpoint = SimulateFlow().context
+    endpoint.configure_flow_execution(recorder)
+    endpoint._args = SimRequest(target="sim", report_dir=invocation.parents[1])
+    endpoint._state = state
+    endpoint._reserved_invocation_dir = invocation
+    return endpoint
 
 
 def _one_item_outcome(tmp_path: Path):
@@ -761,10 +755,7 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     assert final_state.criteria["sim_pass_sim"].met is False
 
 
-def test_named_campaign_acceptance_persists_criterion_and_timeline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
+def _named_campaign_outcome(tmp_path: Path):
     original, invocation = _one_item_outcome(tmp_path)
     document = json.loads(original.acceptance_facts.canonical_bytes())
     document["required_suite"]["names"] = ["half", "full"]
@@ -778,14 +769,17 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
         assertions="clean",
     )
     facts = AcceptanceFacts(document)
-    outcome = replace(
+    return replace(
         original,
         target=facts.document["target"],
         observations=tuple(facts.document["observations"]),
         aggregate_grade="pass",
         acceptance_facts=facts,
         acceptance_ready=False,
-    )
+    ), invocation
+
+
+def _named_campaign_state(tmp_path: Path):
     state_path = tmp_path / "state.json"
     state = DevelopmentState.load(state_path)
     state.slug = "ticket"
@@ -807,10 +801,24 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
     state.save()
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
     recorder = TicketAcceptanceRecorder(log_dir=tmp_path / "logs", ticket_identity=identity)
+    return state_path, state, key, recorder
+
+
+def test_named_campaign_acceptance_persists_criterion_and_timeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
+    outcome, invocation = _named_campaign_outcome(tmp_path)
+    state_path, state, key, recorder = _named_campaign_state(tmp_path)
     endpoint = _acceptance_endpoint(state, recorder, invocation)
 
     record_campaign_acceptance(endpoint, (outcome,))
-    _persist_run_state(endpoint, EndpointOutcome(), 0.1, list(endpoint._pending_criteria_set))
+    endpoint.finish_execution(
+        PreparedExecution(None, None, False, False),
+        EndpointOutcome(),
+        started=None,
+        acceptance_recorded=True,
+    )
 
     persisted = DevelopmentState.load(state_path)
     assert persisted.criteria[key].met is True
