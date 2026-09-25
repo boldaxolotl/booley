@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -34,7 +35,7 @@ class TimingError(ValueError):
 
 PhaseTopology = Literal["parallel", "nested", "post-group"]
 PhaseOutcome = Literal["running", "success", "failure", "unavailable", "incomplete"]
-MeasurementArm = Literal["automatic", "warm", "cold"]
+MeasurementArm = Literal["automatic", "baseline", "warm", "cold"]
 CacheState = Literal["not-requested", "hit", "miss"]
 
 
@@ -158,20 +159,37 @@ def finish_record(path: Path, exit_code: int) -> None:
     )
 
 
+# Dockerfile instruction vertices ("[3/7] RUN ...", "[stage-0 2/5] COPY ...").
+# Named-context and internal vertices are excluded: BuildKit reports a
+# docker-image:// context as cached on every build, which is not a tooling hit.
+_BUILD_STEP = re.compile(r"^\[(?:[^\]\s]+ )?\d+/\d+\] ")
+
+
+def _merge_vertices(vertices: dict[str, dict[str, Any]], line_payload: Any) -> None:
+    payload = as_dict(line_payload) or {}
+    for vertex in payload.get("vertexes") or []:
+        vertex_dict = as_dict(vertex)
+        if vertex_dict and isinstance(vertex_dict.get("digest"), str):
+            vertices.setdefault(vertex_dict["digest"], {}).update(vertex_dict)
+
+
 def _raw_events(path: Path) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
+    """Return one merged record per vertex from `docker buildx --progress rawjson`.
+
+    Each output line is a SolveStatus snapshot (`{"vertexes": [...], ...}`);
+    a vertex is repeated as its state advances, so later snapshots win.
+    """
+    vertices: dict[str, dict[str, Any]] = {}
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as error:
         raise TimingError(f"cannot read {path}: {error}") from error
     for line in lines:
         try:
-            event = json.loads(line)
+            _merge_vertices(vertices, json.loads(line))
         except json.JSONDecodeError:
             continue
-        if event_dict := as_dict(event):
-            events.append(cast(dict[str, Any], event_dict))
-    return events
+    return list(vertices.values())
 
 
 def _event_time(event: dict[str, Any], field: str) -> datetime | None:
@@ -180,25 +198,32 @@ def _event_time(event: dict[str, Any], field: str) -> datetime | None:
 
 
 def _buildkit_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
-    vertices = {event.get("id"): event for event in events if isinstance(event.get("id"), str)}
-    cached = [event for event in vertices.values() if event.get("cached") is True]
+    steps = [event for event in events if _BUILD_STEP.match(str(event.get("name", "")))]
+    cached_steps = [event for event in steps if event.get("cached") is True]
     imports = sorted(
         {
             str(event.get("name"))
-            for event in vertices.values()
+            for event in events
             if "importing cache" in str(event.get("name", "")).lower()
         }
     )
     return {
-        "vertex_count": len(vertices),
-        "cached_vertex_count": len(cached),
-        "cache_hit": bool(cached),
+        "vertex_count": len(events),
+        "cached_vertex_count": sum(event.get("cached") is True for event in events),
+        "build_step_count": len(steps),
+        "cached_build_step_count": len(cached_steps),
+        # A tooling hit means every Dockerfile step was reused, not just one.
+        "cache_hit": bool(steps) and len(cached_steps) == len(steps),
         "imported_sources": imports,
     }
 
 
 def _transfer_window(events: list[dict[str, Any]]) -> tuple[datetime, datetime] | None:
-    markers = ("sending tarball", "importing to docker", "loading layer")
+    # "exporting to image" is the docker driver's in-daemon export: it commits
+    # layers, writes, and names the image directly in the daemon store, so it
+    # is the whole transfer/load cost. The other markers cover drivers that
+    # stream a tarball into the daemon instead.
+    markers = ("exporting to image", "sending tarball", "importing to docker", "loading layer")
     transfers = [
         event
         for event in events
@@ -556,7 +581,9 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--run-attempt", type=int, required=True)
     child.add_argument("--candidate-sha", required=True)
     child.add_argument(
-        "--measurement-arm", choices=("automatic", "warm", "cold"), default="automatic"
+        "--measurement-arm",
+        choices=("automatic", "baseline", "warm", "cold"),
+        default="automatic",
     )
     child.add_argument(
         "--cache-state", choices=("not-requested", "hit", "miss"), default="not-requested"
