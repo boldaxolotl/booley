@@ -225,7 +225,7 @@ def test_shared_execution_failure_aborts_later_targets_without_losing_completed_
     assert result.outcome.detail["targets"]["sim_0"]["collection"] == "complete"
     assert result.outcome.detail["targets"]["sim_1"]["abort_remaining"] is True
     assert set(result.outcome.detail["campaigns"]) == {"sim_0"}
-    assert result.outcome.detail["pending_targets"] == ["sim_2"]
+    assert result.outcome.detail["pending_targets"] == ["sim_1", "sim_2"]
     assert (tmp_path / "reports/sim/1/targets/sim_2/campaign/manifest.json").is_file()
     assert not list(
         (tmp_path / "reports/sim/1/targets/sim_2/campaign").glob("work-items/*/result.json")
@@ -440,7 +440,7 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
     )
     assert result.exit_code == 2
     assert len(built) == 1
-    assert result.outcome.detail["pending_targets"] == ["sim_1"]
+    assert result.outcome.detail["pending_targets"] == ["sim_0", "sim_1"]
     target = result.outcome.detail["targets"]["sim_0"]
     assert target["simulation"] == "not_run"
     assert "coverage_campaign" not in target

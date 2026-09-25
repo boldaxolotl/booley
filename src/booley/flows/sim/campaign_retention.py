@@ -264,6 +264,10 @@ def _validate_invocation_targets(root: Path) -> None:
         not isinstance(target, str) or not target or target in {".", ".."} for target in targets
     ) or len(set(targets)) != len(targets):
         raise CampaignRetentionError("Invocation has ambiguous Targets")
+    phase = progress.get("phase")
+    complete = progress.get("complete")
+    if complete is not True or phase not in {"complete", "aborted", "superseded"}:
+        raise CampaignRetentionError("Invocation progress is not terminal")
     _validate_completed_targets(root, progress, targets)
     expected = {target_report_directory(root, target).name for target in targets}
     directories = (root / "targets").iterdir() if (root / "targets").exists() else ()
@@ -278,10 +282,16 @@ def _validate_invocation_targets(root: Path) -> None:
             _target(root, selector, require_projection=False)
         campaign = directory / "campaign"
         if (campaign / "manifest.json").exists():
-            _validate_simulation_campaign(directory, campaign)
+            _validate_simulation_campaign(
+                directory,
+                campaign,
+                allow_incomplete=phase in {"aborted", "superseded"},
+            )
 
 
-def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
+def _validate_simulation_campaign(
+    target: Path, campaign: Path, *, allow_incomplete: bool = False
+) -> None:
     from .campaign import inspect_retained_campaign
 
     try:
@@ -291,6 +301,8 @@ def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
         raise CampaignRetentionError(
             f"Simulation Campaign is invalid and cannot be pruned: {exc}"
         ) from exc
+    if (status.pending or status.interrupted) and allow_incomplete:
+        return
     if status.pending or status.interrupted:
         raise CampaignRetentionError("Incomplete Simulation Campaigns cannot be pruned")
     if (

@@ -93,6 +93,7 @@ from ..implementation_report import (
     build_implementation_aggregate,
 )
 from ..invocation import resolve_timeout_ms
+from ..progress_lifecycle import ProgressLifecycle, ProgressPublicationError
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
@@ -2006,7 +2007,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             self._recipe_evidence = candidate_evidence
         return units, errors
 
-    def _run(self) -> EndpointOutcome:
+    def _run(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0915 — linear guarded orchestration
         """Execute synthesis for all targets, optionally comparing to baseline."""
         # Populated by _run_baseline_configs when a stealth-cores self-compare is
         # detected; read by _aggregate_results. Reset per run so a stale value
@@ -2060,22 +2061,44 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 detail=detail,
             )
         self.reserve_invocation_dir()
-        self._write_progress_report(targets, {}, {}, phase="starting")
-        baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
-        if isinstance(baseline_results, EndpointOutcome):
-            return baseline_results
-        current_results = self._run_current_targets(targets, baseline_results, short_sha)
-        self._discard_stale_selfcompare(targets, current_results, baseline_results)
-        result = self._aggregate_results(targets, current_results, baseline_results, short_sha)
-        self._write_progress_report(
-            targets,
-            current_results,
-            baseline_results,
-            phase="complete",
-            baseline_ref=short_sha,
-            complete=True,
+        current_results: dict[str, SynthMetrics] = {}
+        baseline_results: dict[str, SynthMetrics] = {}
+        self._progress_current_results = current_results
+        self._progress_baseline_results = baseline_results
+        short_sha: str | None = None
+        result: EndpointOutcome | None = None
+        lifecycle = ProgressLifecycle(
+            lambda phase: self._write_progress_report(
+                targets,
+                self._progress_current_results,
+                self._progress_baseline_results,
+                phase=phase,
+                baseline_ref=short_sha,
+                complete=True,
+            )
         )
-        return result
+        try:
+            with lifecycle:
+                self._write_progress_report(targets, {}, {}, phase="starting")
+                baseline_outcome, short_sha = self._run_baseline_configs(self._target_pairs)
+                if isinstance(baseline_outcome, EndpointOutcome):
+                    return baseline_outcome
+                baseline_results = baseline_outcome
+                self._progress_baseline_results = baseline_results
+                current_results = self._run_current_targets(targets, baseline_results, short_sha)
+                self._discard_stale_selfcompare(targets, current_results, baseline_results)
+                result = self._aggregate_results(
+                    targets, current_results, baseline_results, short_sha
+                )
+                lifecycle.complete()
+                return result
+        except ProgressPublicationError as exc:
+            outcome = result or EndpointOutcome()
+            outcome.exit_code = EXIT_ERROR
+            outcome.detail["progress_error"] = str(exc)
+            if not outcome.report_text:
+                outcome.report_text = f"synth: progress publication failed: {exc}"
+            return outcome
 
     def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> EndpointOutcome | None:
         baseline_error = self._apply_ticket_baseline(handles)
@@ -2157,13 +2180,14 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         baseline_ref: str | None,
     ) -> None:
         """Publish one Target while its mutable workspace is still owned."""
-        current_results[target] = metrics
         self._persist_target_outcome(
             target,
             metrics,
             baseline_results.get(target),
             baseline_ref,
         )
+        current_results[target] = metrics
+        self._progress_current_results = current_results
         self._write_progress_report(
             targets,
             current_results,
@@ -2262,6 +2286,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 executed[baseline] = metrics
             metrics = copy.deepcopy(executed[baseline])
             baseline_results[candidate] = metrics
+            self._progress_baseline_results = baseline_results
             self._write_progress_report(
                 targets, {}, baseline_results, phase="baseline", baseline_ref=short_sha
             )

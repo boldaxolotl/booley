@@ -64,6 +64,10 @@ from booley.flows.endpoint_events import (
     _write_display_event,
 )
 from booley.flows.endpoint_reporting import _contains_whole_line_block
+from booley.flows.progress_lifecycle import (
+    read_progress_for_run,
+    repair_progress_after_reap,
+)
 from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
 from booley.mcp.application import McpApplication, McpToolDefinition, UnknownMcpToolError
 from booley.runtime import job_records as jobrec
@@ -421,6 +425,7 @@ def _reconcile_orphaned_jobs() -> None:
             rec.status = jobrec.STATUS_FAILED
             if rec.exit_code is None:
                 rec.exit_code = 2
+        repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
         jobrec.write_record(rec, root=session_jobs_dir())
         logger.info("Reconciled orphaned job %s from prior session", rec.run_id)
 
@@ -2553,17 +2558,13 @@ def _progress_for_run_id(endpoint: str, run_id: str) -> dict[str, Any] | None:
     reports = _endpoint_report_dirs()
     if not reports:
         return None
-    checkpoints = sorted(
-        (path for root in reports for path in root.glob(f"{endpoint}/*/progress.json")),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    for path in checkpoints:
-        report = _read_report_json(path)
-        if report is not None and report.get("run_id") == run_id:
-            report["partial"] = not bool(report.get("complete"))
-            return report
-    return None
+    found = read_progress_for_run(reports, endpoint, run_id)
+    if found is None:
+        return None
+    _path, report = found
+    pending = report.get("pending_targets")
+    report["partial"] = report.get("phase") != "complete" or bool(pending)
+    return report
 
 
 def _job_report(rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:
@@ -2700,6 +2701,7 @@ class _JobManager:
         *,
         timed_out: bool,
     ) -> None:
+        repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
         jobrec.write_record(rec, root=self._jobs_root)
@@ -2750,6 +2752,7 @@ class _JobManager:
                 timeout=timeout,
                 on_spawn=lambda pid: self._stamp_pid(rec, pid),
                 env=_endpoint_subprocess_env(
+                    BOOLEY_RUN_ID=rec.run_id,
                     BOOLEY_DISPLAY_INVOCATION_ID=rec.run_id,
                     BOOLEY_SLOT_TIMEOUT_S=str(timeout),
                 ),
@@ -2820,6 +2823,7 @@ class _JobManager:
             self._lifetime.mark_mcp_endpoint_end()
 
     def _record_user_cancellation(self, rec: jobrec.JobRecord) -> None:
+        repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
         self._results[rec.run_id] = (

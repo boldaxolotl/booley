@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from booley.runtime.platform_paths import posix_relpath
-from booley.runtime.timefmt import utc_now_rfc3339
 
 from .implementation_report import (
     ENVELOPE_KEY,
     SCHEMA_VERSION,
     ImplementationReport,
 )
+from .progress_lifecycle import progress_document
 
 
 @dataclass(frozen=True)
@@ -163,8 +163,7 @@ class ImplementationPublisher:
         """Atomically checkpoint the common live implementation-matrix shape."""
         if self.invocation_dir is None:
             return None
-        completed = set(progress.completed_targets)
-        payload = self._progress_payload(progress, completed)
+        payload = self._progress_payload(progress)
         path = self.invocation_dir / "progress.json"
         _atomic_write_json(path, payload)
         return path
@@ -175,27 +174,26 @@ class ImplementationPublisher:
         return self.invocation_dir / "targets" / f"{target_report_slug(target)}.json"
 
     @staticmethod
-    def _progress_payload(
-        progress: ImplementationProgress,
-        completed: set[str],
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "flow": progress.flow,
-            "run_id": progress.run_id,
-            "timestamp": utc_now_rfc3339(),
-            "phase": progress.phase,
-            "complete": progress.complete,
-            "targets": list(progress.targets),
-            "completed_targets": list(progress.completed_targets),
-            "pending_targets": [target for target in progress.targets if target not in completed],
-            "baseline_completed_targets": list(progress.baseline_completed_targets),
-            ENVELOPE_KEY: {
-                "schema_version": SCHEMA_VERSION,
-                "results": {
-                    target: report.mcp_entry() for target, report in progress.reports.items()
+    def _progress_payload(progress: ImplementationProgress) -> dict[str, Any]:
+        if progress.complete != (progress.phase in {"complete", "aborted", "superseded"}):
+            raise ValueError("implementation progress complete and phase disagree")
+        payload = progress_document(
+            flow=progress.flow,
+            run_id=progress.run_id,
+            phase=progress.phase,
+            targets=progress.targets,
+            completed_targets=progress.completed_targets,
+            detail={},
+            extra={
+                "baseline_completed_targets": list(progress.baseline_completed_targets),
+                ENVELOPE_KEY: {
+                    "schema_version": SCHEMA_VERSION,
+                    "results": {
+                        target: report.mcp_entry() for target, report in progress.reports.items()
+                    },
                 },
             },
-        }
+        )
         if progress.baseline_ref:
             payload["baseline_ref"] = progress.baseline_ref
         return payload

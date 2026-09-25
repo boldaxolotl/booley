@@ -95,6 +95,7 @@ from ..implementation_report import (
     build_implementation_aggregate,
 )
 from ..invocation import resolve_timeout_ms
+from ..progress_lifecycle import ProgressLifecycle, ProgressPublicationError
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
@@ -288,21 +289,43 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         self._execution_role = "candidate"
         self._implementation_reports: dict[str, ImplementationReport] = {}
         self.reserve_invocation_dir()
-        self._write_progress_report(targets, {}, {}, phase="starting")
-        baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
-        if isinstance(baseline_results, EndpointOutcome):
-            return baseline_results
-        current_results = self._run_current_targets(targets, baseline_results, short_sha)
-        result = self._aggregate_results(targets, current_results, baseline_results, short_sha)
-        self._write_progress_report(
-            targets,
-            current_results,
-            baseline_results,
-            phase="complete",
-            baseline_ref=short_sha,
-            complete=True,
+        current_results: dict[str, FpgaMetrics] = {}
+        baseline_results: dict[str, FpgaMetrics] = {}
+        self._progress_current_results = current_results
+        self._progress_baseline_results = baseline_results
+        short_sha: str | None = None
+        result: EndpointOutcome | None = None
+        lifecycle = ProgressLifecycle(
+            lambda phase: self._write_progress_report(
+                targets,
+                self._progress_current_results,
+                self._progress_baseline_results,
+                phase=phase,
+                baseline_ref=short_sha,
+                complete=True,
+            )
         )
-        return result
+        try:
+            with lifecycle:
+                self._write_progress_report(targets, {}, {}, phase="starting")
+                baseline_outcome, short_sha = self._run_baseline_configs(self._target_pairs)
+                if isinstance(baseline_outcome, EndpointOutcome):
+                    return baseline_outcome
+                baseline_results = baseline_outcome
+                self._progress_baseline_results = baseline_results
+                current_results = self._run_current_targets(targets, baseline_results, short_sha)
+                result = self._aggregate_results(
+                    targets, current_results, baseline_results, short_sha
+                )
+                lifecycle.complete()
+                return result
+        except ProgressPublicationError as exc:
+            outcome = result or EndpointOutcome()
+            outcome.exit_code = EXIT_ERROR
+            outcome.detail["progress_error"] = str(exc)
+            if not outcome.report_text:
+                outcome.report_text = f"fpga: progress publication failed: {exc}"
+            return outcome
 
     def _run_current_targets(
         self,
@@ -313,13 +336,14 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         current_results: dict[str, FpgaMetrics] = {}
         for tgt in targets:
             metrics = self._run_single_target(tgt)
-            current_results[tgt] = metrics
             self._persist_target_outcome(
                 tgt,
                 metrics,
                 baseline_results.get(tgt),
                 short_sha,
             )
+            current_results[tgt] = metrics
+            self._progress_current_results = current_results
             self._write_progress_report(
                 targets,
                 current_results,
@@ -1075,6 +1099,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             if baseline not in executed:
                 executed[baseline] = self._run_single_target(baseline)
             results[candidate] = copy.deepcopy(executed[baseline])
+            self._progress_baseline_results = results
             self._write_progress_report(
                 targets, {}, results, phase="baseline", baseline_ref=short_sha
             )

@@ -4204,6 +4204,8 @@ class TestIncompleteResourceResults:
         assert (report_dir / "synth_asic_a.json").is_file()
         invocation_dirs = sorted((report_dir / "synth").iterdir())
         progress = json.loads((invocation_dirs[-1] / "progress.json").read_text())
+        assert progress["complete"] is True
+        assert progress["phase"] == "aborted"
         assert progress["completed_targets"] == ["asic_a"]
         assert progress["pending_targets"] == ["asic_b"]
         assert (invocation_dirs[-1] / "targets" / "asic_a.json").is_file()
