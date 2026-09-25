@@ -170,3 +170,77 @@ def test_report_reference_accepts_explicit_external_origin_target(tmp_path):
     )
 
     assert resolved.path == artifact
+
+
+def test_reference_builder_rejects_artifact_outside_declared_base(tmp_path):
+    base = tmp_path / "origin"
+    base.mkdir()
+    outside = tmp_path / "manifest.json"
+    outside.write_bytes(b"{}\n")
+
+    with pytest.raises(ArtifactReferenceError, match="outside its declared base"):
+        build_artifact_reference(
+            outside,
+            base_name="origin_target",
+            base=base,
+            kind="simulation_campaign_manifest",
+            owner="campaign-id",
+            maximum=1024,
+        )
+
+
+def _resolve_origin(reference, bases, *, maximum=1024):
+    return resolve_artifact_reference(
+        reference,
+        bases=bases,
+        allowed_bases={"origin_target"},
+        expected_kind="simulation_campaign_manifest",
+        expected_owner="campaign-id",
+        maximum=maximum,
+    )
+
+
+def test_reference_rejects_unavailable_base(tmp_path):
+    _base, reference = _reference(tmp_path)
+
+    with pytest.raises(ArtifactReferenceError, match="base is unavailable"):
+        _resolve_origin(reference, {})
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda document: document.pop("owner"), "fields are invalid"),
+        (lambda document: document.update(kind=""), "kind is invalid"),
+    ],
+)
+def test_reference_rejects_malformed_document(tmp_path, mutate, message):
+    base, reference = _reference(tmp_path)
+    document = encode_artifact_reference(reference)
+    mutate(document)
+
+    with pytest.raises(ArtifactReferenceError, match=message):
+        _resolve_origin(document, {"origin_target": base})
+
+
+def test_reference_rejects_missing_and_oversized_artifacts(tmp_path):
+    base, reference = _reference(tmp_path)
+
+    with pytest.raises(ArtifactReferenceError, match="exceeds size limit"):
+        _resolve_origin(reference, {"origin_target": base}, maximum=4)
+    (base / "campaign/manifest.json").unlink()
+    with pytest.raises(ArtifactReferenceError, match="not a regular file"):
+        _resolve_origin(reference, {"origin_target": base})
+
+
+def test_report_reference_requires_numbered_invocation_report(tmp_path):
+    _base, reference = _reference(tmp_path)
+
+    with pytest.raises(ArtifactReferenceError, match="numbered invocation"):
+        resolve_report_artifact_reference(
+            tmp_path / "reports/sim/latest/report.json",
+            reference,
+            expected_kind="simulation_campaign_manifest",
+            expected_owner="campaign-id",
+            maximum=1024,
+        )
