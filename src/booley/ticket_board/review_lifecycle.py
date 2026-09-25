@@ -552,13 +552,19 @@ def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_clean
             }
             _write(operation_path(ctx.log_dir), operation)
             _commit(tio, ctx, operation)
-    return op_complete(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
+    return op_complete(
+        tio,
+        slug,
+        no_merge=no_merge,
+        no_cleanup=no_cleanup,
+        require_review_package_binding=selected is not None,
+    )
 
 
 def _verified_accepted_handoff(
     project_root: Path, slug: str, tio: TicketIO, snapshot: Any
 ) -> prep.ReviewPrepOutcome:
-    from .acceptance_ledger import validate_review_package_binding
+    from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
 
     guidance = (
         f"Ticket {slug!r} is already accepted; run booley board approve {slug} to complete it."
@@ -571,10 +577,13 @@ def _verified_accepted_handoff(
     manifest = tio.logs_dir / slug / ".runtime" / "triage-prep" / "manifest.json"
     if not binding.exists() and not manifest.exists():
         return prep.ReviewPrepOutcome("accepted", guidance)
-    validate_review_package_binding(tio.logs_dir / slug, snapshot)
-    outcome = prep.verify_review_handoff(
-        project_root, slug, locked_basis=tio._load_basis_unlocked(slug)
-    )
+    try:
+        validate_review_package_binding(tio.logs_dir / slug, snapshot)
+        outcome = prep.verify_review_handoff(
+            project_root, slug, locked_basis=tio._load_basis_unlocked(slug)
+        )
+    except (AcceptanceLedgerError, prep.ReviewPrepError, OSError, ValueError):
+        return prep.ReviewPrepOutcome("accepted", guidance)
     return replace(outcome, message=guidance)
 
 
@@ -611,6 +620,18 @@ def _accepted_unselected_handoff(
         ValueError,
     ) as exc:
         return prep.ReviewPrepOutcome("failed", f"{exc}; use acceptance recovery")
+
+
+def _accepted_unselected_handoff_for_ticket(
+    project_root: Path, slug: str
+) -> prep.ReviewPrepOutcome | None:
+    """Resolve an accepted, unselected review Ticket's handoff outcome, if applicable."""
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    board = tio.find_ticket(slug)
+    if board is None or board["status"] != "review":
+        return None
+    canonical = Path(board["file"]).stem
+    return _accepted_unselected_handoff(project_root, canonical, tio)
 
 
 def approve_review_command(
@@ -714,13 +735,9 @@ async def prepare_review(
     project_root: Path, slug: str, *, force: bool = False
 ) -> prep.ReviewPrepOutcome:
     """Prepare artifacts through the Ticket Board lifecycle facade."""
-    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    board = tio.find_ticket(slug)
-    if board is not None and board["status"] == "review":
-        canonical = Path(board["file"]).stem
-        accepted = _accepted_unselected_handoff(project_root, canonical, tio)
-        if accepted is not None:
-            return accepted
+    accepted = _accepted_unselected_handoff_for_ticket(project_root, slug)
+    if accepted is not None:
+        return accepted
     return await prep.prepare_review(project_root, slug, force=force)
 
 
@@ -733,13 +750,9 @@ async def prepare_review_command(
     project_root: Path, slug: str, *, force: bool = False
 ) -> prep.ReviewPrepOutcome:
     """Run manual artifact preparation through the lifecycle facade."""
-    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    board = tio.find_ticket(slug)
-    if board is not None and board["status"] == "review":
-        canonical = Path(board["file"]).stem
-        accepted = _accepted_unselected_handoff(project_root, canonical, tio)
-        if accepted is not None:
-            return accepted
+    accepted = _accepted_unselected_handoff_for_ticket(project_root, slug)
+    if accepted is not None:
+        return accepted
     return await prep.prepare_review_command(project_root, slug, force=force)
 
 

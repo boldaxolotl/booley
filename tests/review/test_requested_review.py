@@ -170,14 +170,12 @@ def test_automatic_accepted_handoff_can_be_publicly_approved(blocked, monkeypatc
     [{"merge": True, "cleanup": True, "criterion": "implementation_done"}],
     indirect=True,
 )
-def test_accepted_handoff_honors_merge_cleanup_override_pair(blocked, monkeypatch):
+def test_accepted_handoff_honors_independent_merge_override(blocked, monkeypatch):
     from booley.ticket_board.review_lifecycle import approve_review_command
 
     root, tio, _package = _automatic_accepted_handoff(blocked, monkeypatch)
 
-    assert not approve_review_command(root, "demo", no_merge=True)
-    assert tio.find_ticket("demo")["status"] == "review"
-    assert approve_review_command(root, "demo", no_merge=True, no_cleanup=True)
+    assert approve_review_command(root, "demo", no_merge=True)
     assert tio.find_ticket("demo")["status"] == "done"
 
 
@@ -232,7 +230,7 @@ def test_prepare_review_force_preserves_accepted_handoff_package(blocked, monkey
 @pytest.mark.parametrize(
     "blocked", [{"merge": True, "criterion": "implementation_done"}], indirect=True
 )
-def test_accepted_handoff_rejects_changed_bound_package(blocked, monkeypatch):
+def test_accepted_handoff_guides_review_when_bound_package_changed(blocked, monkeypatch):
     from booley.ticket_board.review_lifecycle import approve_review_command, review_command
 
     root, tio, _prepared = _automatic_accepted_handoff(blocked, monkeypatch)
@@ -241,10 +239,11 @@ def test_accepted_handoff_rejects_changed_bound_package(blocked, monkeypatch):
 
     outcome = asyncio.run(review_command(root, "demo"))
 
-    assert outcome.status == "failed"
-    assert "acceptance recovery" in outcome.message
-    assert not approve_review_command(root, "demo", no_merge=True)
-    assert tio.find_ticket("demo")["status"] == "review"
+    assert outcome.status == "accepted"
+    assert not outcome.ready
+    assert "booley board approve demo" in outcome.message
+    assert approve_review_command(root, "demo", no_merge=True)
+    assert tio.find_ticket("demo")["status"] == "done"
 
 
 @pytest.mark.parametrize(

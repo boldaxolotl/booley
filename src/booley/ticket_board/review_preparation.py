@@ -182,6 +182,11 @@ class ReviewPrepOutcome:
     def ready(self) -> bool:
         return self.status in {"ready", "fresh"}
 
+    @property
+    def guidance_only(self) -> bool:
+        """Return whether the outcome is successful guidance without a package."""
+        return self.status == "accepted"
+
 
 @dataclass(frozen=True)
 class ReviewBriefingOutcome:

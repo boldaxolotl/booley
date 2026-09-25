@@ -1307,8 +1307,7 @@ def _cmd_board_review(args: argparse.Namespace, project_root: Path) -> int:
             repair=args.repair,
         )
     )
-    if getattr(outcome, "status", "") == "accepted":
-        print(outcome.message)
+    if _report_accepted_review_guidance(outcome):
         return 0
     if not outcome.ready:
         print(f"ERROR: {outcome.message}", file=sys.stderr)
@@ -1388,8 +1387,7 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
     outcome = asyncio.run(
         prepare_review_command(project_root, args.slug, force=getattr(args, "force", False))
     )
-    if getattr(outcome, "status", "") == "accepted":
-        print(outcome.message)
+    if _report_accepted_review_guidance(outcome):
         return 0
     if not outcome.ready:
         print(f"ERROR: {outcome.message}", file=sys.stderr)
@@ -1401,6 +1399,14 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
     if outcome.html_path is not None:
         print(f"HTML explanation ready: {outcome.html_path}")
     return 0
+
+
+def _report_accepted_review_guidance(outcome: object) -> bool:
+    """Print a successful package-free accepted outcome."""
+    if not getattr(outcome, "guidance_only", False):
+        return False
+    print(outcome.message)
+    return True
 
 
 def _cmd_board_review_briefing(args: argparse.Namespace, project_root: Path) -> int:
