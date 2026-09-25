@@ -113,6 +113,30 @@ timing, and DRC evidence into stable resource metrics and `fpga_impl_ok`
 Criteria. The stricter the evidence contract, the less the caller has to infer
 from unstructured output.
 
+### Progress lifecycle
+
+Flow-owned `progress.json` is a run-scoped observation, not process-liveness or
+resume authority. Every producer stamps its dispatched `run_id` and a canonical
+UTC `timestamp`. While work is active, `complete` is false. Every catchable exit
+publishes a terminal document: `phase: complete` means the planned workload was
+exhausted, regardless of whether its represented design verdict passed;
+`phase: aborted` means orchestration stopped early or normal terminal publication
+failed. Coverage resume may change an authenticated origin to `phase: superseded`.
+That transition preserves the origin's `run_id`, Target partition, and detail and
+adds only `superseded_by` for the new invocation.
+
+`targets` is unique, and `completed_targets` plus `pending_targets` is an exact,
+disjoint partition. A Target enters `completed_targets` only after its owner-defined
+durable publication boundary. The shared lifecycle guard retries one failed
+terminal publication: failed normal completion is retried as `aborted`, while a
+failed `aborted` write is retried without masking the original Flow failure. A
+successful repair does not erase the original exit-2 publication error. Progress
+writers and conditional repairs share one file lock, so a supervisor repair cannot
+overwrite a concurrent resume supersession. When an MCP supervisor terminates or
+discovers a dead child, it best-effort repairs a matching, validated, still-live
+checkpoint only after the process group is reaped. Missing, unsafe, malformed, changed, or
+unwritable checkpoints never change the already determined Job outcome.
+
 ### Shared planning and dry-run lifecycle
 
 The four shipped Flows inherit `BuiltinFlow` and project their authoritative
@@ -1002,8 +1026,9 @@ sequences. Thus an interrupted evidence append or failed state save preserves
 the prior authoritative projection without deleting historical observations.
 Ordinary nontransactional ledger observations retain their existing semantics.
 
-Terminal progress follows the state save. If its write fails, the committed
-Campaign and Criteria remain valid and the command returns 2. Persistence errors
+Terminal progress follows the state save. If its normal write fails, the Flow
+retries once with `phase: aborted`; the committed Campaign and Criteria remain
+valid and the command returns 2 even when that repair succeeds. Persistence errors
 retain the independently measured simulation, collection, and evaluation truths
 in the structured result; an error does not turn a measured verdict into a
 policy `blocked` verdict. Report paths are usable only when their publication
@@ -1015,6 +1040,16 @@ coverage. Pruning takes the same nonblocking lock, so active invocations cannot
 be removed. Process exit releases ownership; `progress.json` is never lock or
 resume authority. Every subsequent Flow invocation allocates a fresh number,
 and the Target transaction rejects previously started native state.
+
+Coverage resume derives its origin only from the validated manifest path, takes
+the origin invocation lock before recovery, and holds it through the final
+transition. Successful recovery terminalizes the new invocation as `complete`
+and changes an eligible `running` or `aborted` origin to `superseded`. The
+origin's completed and pending lists remain its historical disposition; they are
+not recomputed from the recovered Campaign store. An already `complete` origin
+is unchanged, and an already `superseded` origin keeps its first `superseded_by`.
+Missing, malformed, or concurrently changed origin progress prevents only that
+observational supersession; it never prevents manifest-authoritative recovery.
 
 #### Exact report retention
 
@@ -1029,11 +1064,14 @@ root explicitly; callers obtain project-data roots through
   and the full deletion set before mutation. Symlinks, unknown payloads, changed
   databases, unexplained missing databases, and ambiguous selections are errors.
 - `prune_invocation(reports_root, invocation)` validates every existing Target
-  before atomically moving that invocation to `.pruned-N` and removing its
-  contents. Interrupted attempts may be removed after their process releases the
-  lock. A pruning journal permits retry after partial cleanup. The empty
-  `.pruned-N` tombstone reserves the number permanently; it contains no Campaign
-  or native evidence. Other invocations remain untouched.
+  and compares every file with the authenticated invocation, Campaign, and
+  artifact inventory before atomically moving that invocation to `.pruned-N` and
+  removing its contents. Unknown files are named and refused without mutation;
+  changed or missing recorded native payloads are accepted because full pruning
+  removes the entire invocation. Interrupted attempts may be removed after their
+  process releases the lock. A pruning journal permits retry after partial cleanup.
+  The empty `.pruned-N` tombstone reserves the number permanently; it contains no
+  Campaign or native evidence. Other invocations remain untouched.
 
 Native pruning first deep-validates the Campaign pair, then writes Target-local
 `availability.json` with schema `booley.coverage-availability/v1`, the Campaign

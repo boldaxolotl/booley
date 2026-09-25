@@ -61,6 +61,7 @@ from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import parse_synth_diagnostics
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
@@ -4170,6 +4171,26 @@ class TestIncompleteResourceResults:
         assert _termination_reason(ambiguous, ambiguous.stderr) == "resource_killed"
         assert _termination_reason(corroborated, corroborated.stderr) == "oom"
 
+    def test_baseline_failure_returns_before_current_matrix(self, tmp_path: Path):
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--report-dir",
+                str(tmp_path / "reports"),
+                "--target",
+                "asic",
+            ]
+        )
+        flow.read_state()
+        failure = EndpointOutcome(exit_code=EXIT_ERROR, report_text="baseline failed")
+
+        with patch.object(flow, "_run_baseline_configs", return_value=(failure, None)):
+            result = flow._run()
+
+        assert result is failure
+
     def test_completed_target_survives_later_matrix_crash(self, tmp_path: Path):
         flow = AsicSynthesizeFlow()
         report_dir = tmp_path / "reports"
@@ -4204,6 +4225,8 @@ class TestIncompleteResourceResults:
         assert (report_dir / "synth_asic_a.json").is_file()
         invocation_dirs = sorted((report_dir / "synth").iterdir())
         progress = json.loads((invocation_dirs[-1] / "progress.json").read_text())
+        assert progress["complete"] is True
+        assert progress["phase"] == "aborted"
         assert progress["completed_targets"] == ["asic_a"]
         assert progress["pending_targets"] == ["asic_b"]
         assert (invocation_dirs[-1] / "targets" / "asic_a.json").is_file()

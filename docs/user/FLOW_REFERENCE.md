@@ -87,6 +87,22 @@ too large for the MCP result, `reports` is empty, `truncated` is `true`, and the
 result retains the Flow, Target, exit code, and artifact pointers needed to open
 the durable report.
 
+Long-running Simulation, ASIC Synthesis, and FPGA Implementation invocations also
+write a run-scoped `progress.json`. `complete: true` means the producer is
+terminal, not necessarily successful. `phase: complete` means every planned
+Target was processed; `phase: aborted` means the invocation stopped with the
+listed `pending_targets`; and coverage resume can mark the authenticated origin
+`phase: superseded` with a bounded `superseded_by` identity. A superseded
+origin's Target lists are historical and are deliberately not rewritten from the
+recovered Campaign. Every new checkpoint includes `run_id` and `timestamp`.
+
+For MCP fallback evidence, `partial` is true whenever the phase is not `complete`
+or pending Targets remain. Thus `aborted` and `superseded` are terminal but
+partial, and neither appears as a running checkpoint. After timeout or
+cancellation, the MCP supervisor attempts an idempotent `aborted` repair only
+after it has reaped the child process; a missing or unwritable checkpoint does
+not override the Job's exit or cancellation result.
+
 ### Dry-run plan
 
 Every built-in dry-run returns a JSON `FlowPlan` with `schema_version`, `flow`,
@@ -367,6 +383,11 @@ directory; `--report-dir` selects an explicit root. Each invocation owns:
     ... hook and queryability evidence
 ```
 
+Coverage progress uses the same terminal lifecycle. It carries `coverage: true`,
+the invocation `run_id`, its latest `timestamp`, the exact Target partition, and
+per-Target detail. An interrupted or failed invocation preserves already durable
+Targets and leaves the failed or unstarted Targets pending.
+
 New `coverage.json` manifests use `booley.coverage-campaign/v3`. They keep exact
 source/build/tool and suite fingerprints, independent per-run verdicts,
 capabilities, overall rollups, deterministic per-source-file rollups, percentages,
@@ -409,9 +430,13 @@ the immutable Campaign manifest and point store, Simulation, and hook evidence. 
 `availability.json` records `pruning` or `pruned`; normalized evidence remains
 analyzable. Full pruning removes the exact invocation's reports and native
 payloads; re-analysis is impossible. An empty `.pruned-N` tombstone reserves its
-number. Selection is validated before deletion; ambiguous, unsafe, changed, or
-active selections exit `2`. Retry an interrupted cleanup with the same exact
-selection. No age, size, or latest heuristic deletes evidence automatically.
+number. Selection is validated before deletion. Native-only pruning exits `2`
+for ambiguous, unsafe, changed, missing, or unrecognized payloads. Full pruning
+does not require recorded native payloads to remain unchanged or present, but it
+exits `2` and names any file the invocation did not produce; the invocation is
+left untouched. Active selections also exit `2`. Retry an interrupted cleanup
+with the same exact selection. No age, size, or latest heuristic deletes evidence
+automatically.
 
 ## `lint`
 

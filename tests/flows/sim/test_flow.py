@@ -1719,6 +1719,8 @@ class TestReportGeneration:
         invocation_dirs = sorted((report_dir / "sim").iterdir())
         progress = json.loads((invocation_dirs[-1] / "progress.json").read_text())
         assert progress["run_id"] == "sim-checkpoint-1"
+        assert progress["complete"] is True
+        assert progress["phase"] == "aborted"
         assert progress["completed_targets"] == ["lite"]
         assert progress["pending_targets"] == ["full"]
         assert (invocation_dirs[-1] / "targets/lite/simulation.json").is_file()
