@@ -34,7 +34,7 @@ def _use_legacy_build_transport_for_canned_cocotb_tests(
     monkeypatch.setattr(
         execution_engine,
         "resolve_target_compile_surface",
-        lambda handle: TargetCompileSurface(handle.project_root, handle.identity, (), ()),
+        lambda handle: TargetCompileSurface(handle.project_root, (), ()),
     )
     with patch.object(
         SimulationExecution,

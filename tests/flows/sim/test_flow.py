@@ -1455,6 +1455,28 @@ class TestCriterionSetting:
         assert not flow.state.has_criterion("sim_pass_lite")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
+@pytest.mark.parametrize("relative", ["unreadable", ".booley_project/unreadable"])
+def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
+    tmp_path: Path, relative: str
+) -> None:
+    flow = _make_flow(tmp_path, config="lite")
+    unreadable = tmp_path / relative
+    unreadable.mkdir(parents=True)
+    unreadable.chmod(0)
+    try:
+        with (
+            patch("booley.flows.sim.flow._get_test_names", return_value={}),
+            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
+            patch.object(SimulateFlow, "_execute", _mock_execute_pass),
+        ):
+            result = flow._run()
+    finally:
+        unreadable.chmod(0o700)
+
+    assert result.exit_code == EXIT_SUCCESS
+
+
 # ---------------------------------------------------------------------------
 # Structured report generation
 # ---------------------------------------------------------------------------

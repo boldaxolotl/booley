@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from contextlib import ExitStack
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -114,7 +114,7 @@ def _prepared_group_with_sources(
         cast(Any, SimpleNamespace(prepared=prepared, trace_requested=trace_requested)),
         MagicMock(),
         0.0,
-        TargetCompileSurface(handle.project_root, handle.identity, (), ()),
+        TargetCompileSurface(handle.project_root, (), ()),
         {},
         {},
         {},
@@ -400,6 +400,13 @@ def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
     return invoke
 
 
+def _compile_surface_patch(handle: TargetHandle) -> AbstractContextManager[object]:
+    return patch(
+        "booley.flows.sim.execution.engine.resolve_target_compile_surface",
+        return_value=TargetCompileSurface(handle.project_root, (), ()),
+    )
+
+
 def _run_execution(
     handle: TargetHandle,
     prepared: PreparedSimulationBuild,
@@ -432,12 +439,7 @@ def _run_execution(
                 return_value=_inspection(cocotb=cocotb),
             )
         )
-        stack.enter_context(
-            patch(
-                "booley.flows.sim.execution.engine.resolve_target_compile_surface",
-                return_value=TargetCompileSurface(handle.project_root, handle.identity, (), ()),
-            )
-        )
+        stack.enter_context(_compile_surface_patch(handle))
         if trace_mode is None:
             stack.enter_context(
                 patch(

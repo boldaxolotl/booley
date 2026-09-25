@@ -41,13 +41,13 @@ class _OperationalState:
 
 
 @dataclass(frozen=True)
-class TargetCompileInputs:
-    """Explicit Target inputs and their prepared operational core views."""
+class TargetCompileSurface:
+    """A resolved Target's immutable authored and prepared compile paths."""
 
-    selected: tuple[Path, ...]
-    authored_cores: tuple[Path, ...]
-    operational_cores: tuple[tuple[Path, Path], ...]
-    configuration: tuple[Path, ...]
+    project_root: Path
+    authored_paths: tuple[Path, ...]
+    operational_paths: tuple[Path, ...]
+    optional_paths: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,7 +173,7 @@ class TargetCatalog:
         self._require_fresh()
         return closure
 
-    def compile_inputs(self, handle: TargetHandle) -> TargetCompileInputs:
+    def compile_inputs(self, handle: TargetHandle) -> TargetCompileSurface:
         """Resolve one immutable Target-scoped compile-input set."""
         self._require_handle(handle)
         self._require_fresh()
@@ -193,11 +193,19 @@ class TargetCatalog:
         )
         projection_config = self.project_root / ".booley_project" / "booley.toml"
         self._require_fresh()
-        return TargetCompileInputs(
-            selected=selected,
-            authored_cores=tuple(sorted(closure)),
-            operational_cores=operational,
-            configuration=(projection_config,),
+        return TargetCompileSurface(
+            project_root=self.project_root,
+            authored_paths=tuple(sorted({*selected, *closure})),
+            operational_paths=tuple(
+                sorted(
+                    {
+                        operational_path
+                        for authored_path, operational_path in operational
+                        if operational_path != authored_path
+                    }
+                )
+            ),
+            optional_paths=(projection_config,),
         )
 
     def _visible(self, refs: tuple[TargetRef, ...]) -> tuple[TargetRef, ...]:
@@ -266,4 +274,4 @@ def _canonical_flow(flow: str | None) -> str | None:
     return result
 
 
-__all__ = ["TargetCatalog", "TargetCompileInputs"]
+__all__ = ["TargetCatalog", "TargetCompileSurface"]

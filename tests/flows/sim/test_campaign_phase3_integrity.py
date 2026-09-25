@@ -133,9 +133,7 @@ class _Group:
     ) -> None:
         self.names = names
         self.build_root = build_root
-        self.compile_surface = TargetCompileSurface(
-            build_root.parent, "acme:lib:dut:1#sim", (), ()
-        )
+        self.compile_surface = TargetCompileSurface(build_root.parent, (), ())
         self.artifact_paths = (build_root / "simv",)
         self._counters = counters
         self._mutate_snapshot = mutate_snapshot

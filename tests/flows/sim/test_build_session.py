@@ -116,7 +116,7 @@ def test_compile_surface_does_not_require_project_initialization(tmp_path: Path)
     generated.parent.mkdir(parents=True)
     generated.write_text("module generated; endmodule\n", encoding="utf-8")
 
-    surface = TargetCompileSurface(tmp_path, "target", (source,), ())
+    surface = TargetCompileSurface(tmp_path, (source,), ())
     assert set(project_compile_surface(surface)) == {"counter.sv"}
 
 
@@ -140,9 +140,7 @@ def test_compile_surface_includes_only_resolved_operational_core_projections(
     linked = generated.parent / "booley-isolated-linked.core"
     linked.symlink_to(generated.name)
 
-    compile_surface = TargetCompileSurface(
-        tmp_path, "target", (authored, foreign, linked), (generated,)
-    )
+    compile_surface = TargetCompileSurface(tmp_path, (authored, foreign, linked), (generated,))
     surface = project_compile_surface(compile_surface)
     assert authored.relative_to(tmp_path).as_posix() in surface
     assert generated.relative_to(tmp_path).as_posix() not in surface
@@ -150,7 +148,7 @@ def test_compile_surface_includes_only_resolved_operational_core_projections(
     assert any(name.startswith(linked.relative_to(tmp_path).as_posix()) for name in surface)
 
     linked.unlink()
-    compile_surface = TargetCompileSurface(tmp_path, "target", (authored, foreign), (generated,))
+    compile_surface = TargetCompileSurface(tmp_path, (authored, foreign), (generated,))
     surface = project_compile_surface(compile_surface)
     prepared_surface = project_compile_surface(compile_surface, include_operational_cores=True)
     assert generated.relative_to(tmp_path).as_posix() in prepared_surface
@@ -172,7 +170,7 @@ def test_compile_surface_hashes_foreign_isolated_cores_without_decoding(tmp_path
         "CAPI=2:\n# Booley stealth core projection: outside.core\n", encoding="utf-8"
     )
 
-    compile_surface = TargetCompileSurface(tmp_path, "target", (invalid_utf8, invalid_source), ())
+    compile_surface = TargetCompileSurface(tmp_path, (invalid_utf8, invalid_source), ())
     surface = project_compile_surface(compile_surface)
     assert invalid_utf8.relative_to(tmp_path).as_posix() in surface
     assert invalid_source.relative_to(tmp_path).as_posix() in surface
@@ -647,7 +645,7 @@ def test_compile_surface_tracks_symlinks_and_rejects_broken_inputs(tmp_path: Pat
     source.write_text("module source; endmodule", encoding="utf-8")
     link = tmp_path / "alias.sv"
     link.symlink_to(source.name)
-    surface = TargetCompileSurface(tmp_path, "target", (link,), ())
+    surface = TargetCompileSurface(tmp_path, (link,), ())
     assert "alias.sv -> source.sv" in project_compile_surface(surface)
     source.unlink()
     with pytest.raises(SimulationBuildSlotError, match="not a file"):

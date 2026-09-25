@@ -1,6 +1,6 @@
 import json
+import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +8,7 @@ from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.sim.acceptance import record_campaign_acceptance
+from booley.flows.sim.campaign import SimulationCampaign
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
@@ -148,6 +149,7 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     campaign = result.outcome.detail["campaigns"]["sim_0"]
     assert Path(campaign["manifest"]).as_posix().endswith("/targets/sim_0/campaign/manifest.json")
     assert Path(campaign["summary"]).as_posix().endswith("/targets/sim_0/campaign/summary.json")
+
     assert Path(campaign["simulation"]).as_posix().endswith("/targets/sim_0/simulation.json")
     assert Path(campaign["coverage"]).as_posix().endswith("/targets/sim_0/coverage.json")
     assert campaign["observation_counts"] == {
@@ -173,6 +175,37 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     projection_path.write_bytes(projection_raw)
     assert not (tmp_path / "reports/sim_sim_0.json").exists()
     assert flow_schema(flow)["properties"]["coverage"]["type"] == "boolean"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
+@pytest.mark.parametrize("relative", ["unreadable", ".booley_project/unreadable"])
+def test_unreadable_unrelated_directory_does_not_block_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: str
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    project_data = tmp_path / ".booley_project"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+    unreadable = tmp_path / relative
+    unreadable.mkdir(parents=True)
+    unreadable.chmod(0)
+    try:
+        result = SimulateFlow(
+            coverage_execution=lambda _handle, _options: NativeExecution()
+        ).execute(
+            SimRequest(
+                target="sim_0",
+                work_dir=tmp_path,
+                coverage=True,
+                report_dir=tmp_path / "reports",
+            )
+        )
+    finally:
+        unreadable.chmod(0o700)
+
+    assert result.exit_code == 0
+    assert result.outcome.detail["targets"]["sim_0"]["collection"] == "complete"
 
 
 def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_path, monkeypatch):
@@ -270,30 +303,36 @@ def test_gated_shared_execution_failure_preserves_blocked_evaluation(tmp_path, m
 
 
 @pytest.mark.parametrize(
-    ("criterion", "expected"),
-    [(None, "not_requested"), (object(), "blocked")],
+    ("gated", "target", "expected"),
+    [(False, "sim_0", "not_requested"), (True, "sim_custom", "blocked")],
 )
-def test_pre_outcome_coverage_failure_uses_prepared_policy(criterion, expected):
-    flow = SimulateFlow()
-    identity = "acme:demo:counter:1#sim_0"
-    flow._coverage_prepared = SimpleNamespace(
-        targets=(SimpleNamespace(handle=SimpleNamespace(identity=identity), criterion=criterion),)
-    )
-    request = SimpleNamespace(
-        plan=SimpleNamespace(
-            manifest=SimpleNamespace(
-                document={
-                    "target": {
-                        "vlnv": "acme:demo:counter:1",
-                        "name": "sim_0",
-                        "selector": "sim_0",
-                    }
-                }
-            )
+def test_pre_outcome_coverage_failure_uses_prepared_policy(
+    tmp_path, monkeypatch, gated, target, expected
+):
+    if gated:
+        _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    else:
+        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+        project(tmp_path)
+        project_data = tmp_path / ".booley_project"
+        project_data.mkdir()
+        (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    def fail_before_outcome(_campaign, _request):
+        raise RuntimeError("failed before nested outcome")
+
+    monkeypatch.setattr(SimulationCampaign, "run", fail_before_outcome)
+    result = SimulateFlow().execute(
+        SimRequest(
+            target=target,
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
         )
     )
 
-    assert flow._coverage_failure_evaluation(request, RuntimeError("before outcome")) == expected
+    assert result.exit_code == 2
+    assert result.outcome.detail["targets"][target]["evaluation"] == expected
 
 
 def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch):

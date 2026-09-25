@@ -100,7 +100,10 @@ class _GeneratorGroup:
         self.changed = changed
         self.artifact_paths = (build_root / "simv",)
         self.compile_surface = SimpleNamespace(
-            project_root=root.resolve(), authored_paths=(), operational_paths=()
+            project_root=root.resolve(),
+            authored_paths=(),
+            operational_paths=(),
+            optional_paths=(),
         )
 
     def compile(self):

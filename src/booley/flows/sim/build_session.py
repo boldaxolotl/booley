@@ -15,7 +15,6 @@ import shutil
 import subprocess
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
@@ -31,7 +30,7 @@ from booley.core.file_lock import (
 from booley.flows import edam as edam_layer
 from booley.flows.run_log import RUN_LOG_NAME
 from booley.fusesoc import fusesoc_registry
-from booley.targets.catalog import TargetCatalog
+from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle
 
 from .build import PreparedSimulationBuild
@@ -114,38 +113,10 @@ def verify_existing_build_inputs(
         raise SimulationBuildSlotError("Simulation build input changed during Pre-Sim Commands")
 
 
-@dataclass(frozen=True)
-class TargetCompileSurface:
-    """A resolved Target's immutable authored and prepared compile paths."""
-
-    project_root: Path
-    target_identity: str
-    authored_paths: tuple[Path, ...]
-    operational_paths: tuple[Path, ...]
-    optional_paths: tuple[Path, ...] = ()
-
-
 def resolve_target_compile_surface(handle: TargetHandle) -> TargetCompileSurface:
     """Resolve explicit compile inputs once through the handle's catalog snapshot."""
     try:
-        inputs = TargetCatalog.build(handle.project_root).compile_inputs(handle)
-        authored = tuple(sorted({*inputs.selected, *inputs.authored_cores}))
-        operational = tuple(
-            sorted(
-                {
-                    operational
-                    for authored_core, operational in inputs.operational_cores
-                    if operational != authored_core
-                }
-            )
-        )
-        return TargetCompileSurface(
-            project_root=handle.project_root.resolve(),
-            target_identity=handle.identity,
-            authored_paths=authored,
-            operational_paths=operational,
-            optional_paths=inputs.configuration,
-        )
+        return TargetCatalog.build(handle.project_root).compile_inputs(handle)
     except (fusesoc_registry.FuseSocError, OSError, RuntimeError, ValueError) as exc:
         raise SimulationBuildSlotError(
             f"cannot resolve compile inputs for Target {handle.identity!r}: {exc}"
@@ -178,7 +149,7 @@ def project_compile_surface(
             if not path.is_file():
                 raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
             result[identity] = _hash_file(path)
-        for path in getattr(surface, "optional_paths", ()):
+        for path in surface.optional_paths:
             identity = _compile_input_identity(surface.project_root, path)
             if path.is_file():
                 result[identity] = _hash_file(path)

@@ -442,6 +442,15 @@ def _campaign_structured_details(
     }
 
 
+def _coverage_request_target(request: NewCampaignRunRequest) -> Mapping[str, object]:
+    """Expose the typed Target projection from one immutable campaign request."""
+    return cast(Mapping[str, object], request.plan.manifest.document["target"])
+
+
+def _coverage_request_selector(request: NewCampaignRunRequest) -> str:
+    return str(_coverage_request_target(request)["selector"])
+
+
 def _campaign_recovery_detail(status: CampaignRecoveryStatus) -> dict[str, object]:
     """Translate campaign-owned recovery state into the endpoint's flat shape."""
     return {
@@ -2393,9 +2402,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Report a fatal aggregate without inventing a terminal Simulation result."""
         self.context._simulation_campaign_outcomes = tuple(outcomes)
         targets = _coverage_compatibility_targets(outcomes, Path(self.args.work_dir))
-        failed = str(
-            cast(Mapping[str, object], request.plan.manifest.document["target"])["selector"]
-        )
+        failed = _coverage_request_selector(request)
         evaluation = self._coverage_failure_evaluation(request, error)
         if evaluation is None:
             return EndpointOutcome(
@@ -2419,10 +2426,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "error": str(error),
             "abort_remaining": True,
         }
-        pending = [
-            str(cast(Mapping[str, object], item.plan.manifest.document["target"])["selector"])
-            for item in requests[index + 1 :]
-        ]
+        pending = [_coverage_request_selector(item) for item in requests[index + 1 :]]
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             detail={
@@ -2440,7 +2444,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Preserve nested evaluation or derive policy before an outcome exists."""
         if isinstance(error, _CoverageAggregateError):
             return error.evaluation_status
-        target = cast(Mapping[str, object], request.plan.manifest.document["target"])
+        target = _coverage_request_target(request)
         identity = f"{target['vlnv']}#{target['name']}"
         matches = [
             plan for plan in self._coverage_prepared.targets if plan.handle.identity == identity

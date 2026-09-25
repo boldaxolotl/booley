@@ -120,6 +120,20 @@ class _CapturingExecution:
         return self._delegate.command(request)
 
 
+def _raise_if_coverage_aborted(outcome: CoverageTargetOutcome) -> None:
+    if not outcome.abort_remaining:
+        return
+    status = outcome.detail.get("evaluation")
+    if status not in {"pass", "fail", "blocked", "not_requested"}:
+        raise SimulationCampaignIntegrityError(
+            "native coverage collection returned an invalid evaluation status"
+        )
+    raise _CoverageAggregateError(
+        str(outcome.detail.get("error", "native coverage collection failed")),
+        cast(str, status),
+    )
+
+
 class CoverageAggregateExecutor(SerialWorkExecutor):
     """Execute one complete Coverage Campaign as one Simulation Work Item."""
 
@@ -176,28 +190,12 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 ),
             )
             outcome = self._collect(request, capturing)
-        if capturing.captured is None:
-            result = _publish_coverage_build_failure(
-                request,
-                build_directory,
-                build_attempt,
-                outcome,
-                capturing.build_result,
-                capturing.build_elapsed,
-                self._publication_checkpoint,
-            )
-            if result is not None:
-                return result
-        if outcome.abort_remaining:
-            status = outcome.detail.get("evaluation")
-            if status not in {"pass", "fail", "blocked", "not_requested"}:
-                raise SimulationCampaignIntegrityError(
-                    "native coverage collection returned an invalid evaluation status"
-                )
-            raise _CoverageAggregateError(
-                str(outcome.detail.get("error", "native coverage collection failed")),
-                cast(str, status),
-            )
+        failure = self._publish_missing_build(
+            request, build_directory, build_attempt, outcome, capturing
+        )
+        if failure is not None:
+            return failure
+        _raise_if_coverage_aborted(outcome)
         if capturing.captured is None:
             detail = outcome.detail.get("error") or outcome.detail.get("collection")
             raise SimulationCampaignIntegrityError(
@@ -205,6 +203,26 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 f" (build={capturing.build_result!r}, detail={detail!r})"
             )
         return _completed_result(request, capturing.captured, outcome, capturing.bindings, started)
+
+    def _publish_missing_build(
+        self,
+        request: WorkExecutionRequest,
+        build_directory: Path,
+        build_attempt: BundleBuildAttempt,
+        outcome: CoverageTargetOutcome,
+        capturing: _CapturingExecution,
+    ) -> SimulationResult | None:
+        if capturing.captured is not None:
+            return None
+        return _publish_coverage_build_failure(
+            request,
+            build_directory,
+            build_attempt,
+            outcome,
+            capturing.build_result,
+            capturing.build_elapsed,
+            self._publication_checkpoint,
+        )
 
     def _collect(
         self, request: WorkExecutionRequest, execution: SimulationExecutionPort
