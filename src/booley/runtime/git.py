@@ -9,8 +9,8 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from booley.commit_policy import validate_message
 from booley.core import scope_matching
-from booley.dev_support.validate_commit_msg import validate_message
 
 from .agent_errors import BlockingError
 

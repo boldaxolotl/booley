@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 from booley.config.jobs import parse_caps
 from booley.feedback import cli as feedback_cli
+from booley.feedback.storage import feedback_storage_dir
 from booley.harness import cheatsheet, doctor_stamp, upgrade_cli, upgrade_review
 from booley.harness.auth_cmd import run_auth
 from booley.harness.blocking import EXIT_USER_QUIT
@@ -56,6 +57,7 @@ from booley.harness.colors import (
     yellow,
 )
 from booley.harness.doctor import run_doctor
+from booley.harness.feedback_environment import resolve_feedback_environment
 from booley.harness.init_cmd import run_init
 from booley.harness.orphan_handler import handle_post_run_orphans, handle_startup_orphans
 from booley.harness.render_md import render
@@ -1846,6 +1848,14 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     return 0
 
 
+def _cmd_feedback(args: argparse.Namespace, project_root: Path) -> int:
+    """Compose Doctor state only for Feedback operations that render it."""
+    env = None
+    if feedback_cli.requires_environment(args):
+        env = resolve_feedback_environment(feedback_storage_dir(project_root))
+    return feedback_cli.run(args, project_root, env=env)
+
+
 _EARLY_COMMANDS: dict[str, Callable] = {
     "chat": run_chat,
     "cheat": _cmd_cheat,
@@ -1857,7 +1867,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "session": _cmd_session,
     "targets": _cmd_targets,
     "flow": _cmd_flow,
-    "feedback": feedback_cli.run,
+    "feedback": _cmd_feedback,
     "cleanup": cleanup_cli.run,
     "upgrade": upgrade_cli.run,
 }

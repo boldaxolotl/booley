@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.agent_workspace.isolation import remove_shadow_package
+from booley.commit_policy import ALLOWED_TYPES, banned_phrases, stealth_enabled, validate_message
 from booley.core.models import AgentCallParams
 
 # Also re-exported for backward compatibility: tb_coder + tests import
@@ -34,7 +35,6 @@ from booley.dev_support.commit_git_io import (
     _save_files_to_logs,
 )
 from booley.dev_support.commit_message_format import _auto_format_commit_message
-from booley.dev_support.validate_commit_msg import ALLOWED_TYPES
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
@@ -517,10 +517,6 @@ class Specialist(McpTool):
         to warn the agent up front and avoid burning a full agent run to a
         post-hoc commit-msg rejection (Pattern A4 — see field reports).
         """
-        try:
-            from booley.dev_support.commit_msg_utils import banned_phrases, stealth_enabled
-        except ImportError:
-            return ""
         # Stealth mode is opt-out ([stealth] enabled = false); when off, neither
         # the commit-msg hook nor this prompt warning applies.
         phrases = banned_phrases(project_root)
@@ -627,8 +623,6 @@ class Specialist(McpTool):
                 f"Refusing to commit in main worktree ({work_dir}). "
                 "Commits must happen in a linked worktree (.git must be a file)."
             )
-
-        from booley.dev_support.validate_commit_msg import validate_message
 
         errors = validate_message(msg, project_root=work_dir)
         if errors:

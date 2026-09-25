@@ -1,4 +1,4 @@
-"""Tests for commit_msg_utils — banned phrase detection and config loading."""
+"""Tests for shared commit policy and Project configuration loading."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from booley.dev_support.commit_msg_utils import (
+from booley.commit_policy.policy import (
     _DEFAULT_BANNED_PHRASES,
     REDACTION_PLACEHOLDER,
     _build_banned_res,
@@ -109,7 +109,7 @@ class TestLoadStealthConfig:
         """When tomllib is unavailable, returns None."""
         with patch.dict("sys.modules", {"tomllib": None}):
             # Re-import to trigger the ImportError path
-            from booley.dev_support.commit_msg_utils import _load_stealth_config
+            from booley.commit_policy.policy import _load_stealth_config
 
             # The function itself handles the import internally
             # so we mock the import mechanism
@@ -126,7 +126,7 @@ class TestLoadStealthConfig:
         (bp_dir / "booley.toml").write_bytes(toml_content)
 
         # Patch the function's path resolution to point to our tmp
-        with patch("booley.dev_support.commit_msg_utils.Path") as MockPath:
+        with patch("booley.commit_policy.policy.Path") as MockPath:
             mock_here = MockPath.__file__ = tmp_path / "commit_msg_utils.py"
             MockPath.return_value.resolve.return_value = mock_here
             # Easier: just call with the file patched to resolve to our tree
@@ -135,16 +135,16 @@ class TestLoadStealthConfig:
             fake_file.parent.mkdir(parents=True, exist_ok=True)
             fake_file.touch()
 
-            with patch("booley.dev_support.commit_msg_utils.Path.__file__", str(fake_file)):
+            with patch("booley.commit_policy.policy.Path.__file__", str(fake_file)):
                 # This is tricky to test without restructuring; verify the
                 # function exists and handles missing paths gracefully.
                 pass
 
     def test_missing_toml_returns_none(self, tmp_path):
         """Returns None when no booley.toml exists at expected locations."""
-        from booley.dev_support.commit_msg_utils import _load_stealth_config
+        from booley.commit_policy.policy import _load_stealth_config
 
-        with patch("booley.dev_support.commit_msg_utils.Path") as MockPath:
+        with patch("booley.commit_policy.policy.Path") as MockPath:
             # Make resolve().parents[3] point to tmp_path
             mock_resolve = MockPath.return_value.resolve.return_value
             mock_resolve.parents.__getitem__ = lambda self, idx: tmp_path
@@ -165,31 +165,31 @@ class TestStealthEnabled:
         return tmp_path
 
     def test_default_true_when_no_config(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import stealth_enabled
+        from booley.commit_policy.policy import stealth_enabled
 
         root = self._project(tmp_path, None)  # no booley.toml
         assert stealth_enabled(root) is True
 
     def test_default_true_when_no_stealth_section(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import stealth_enabled
+        from booley.commit_policy.policy import stealth_enabled
 
         root = self._project(tmp_path, b"[jobs]\nmax_tickets = 2\n")
         assert stealth_enabled(root) is True
 
     def test_false_when_disabled(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import stealth_enabled
+        from booley.commit_policy.policy import stealth_enabled
 
         root = self._project(tmp_path, b"[stealth]\nenabled = false\n")
         assert stealth_enabled(root) is False
 
     def test_true_when_explicitly_enabled(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import stealth_enabled
+        from booley.commit_policy.policy import stealth_enabled
 
         root = self._project(tmp_path, b"[stealth]\nenabled = true\n")
         assert stealth_enabled(root) is True
 
     def test_banned_words_coexist_with_enabled(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import _stealth_section
+        from booley.commit_policy.policy import _stealth_section
 
         root = self._project(
             tmp_path,
@@ -201,13 +201,13 @@ class TestStealthEnabled:
 
     def test_malformed_stealth_section_is_ignored(self, tmp_path):
         """A non-table [stealth] value must not crash — defaults to enabled."""
-        from booley.dev_support.commit_msg_utils import stealth_enabled
+        from booley.commit_policy.policy import stealth_enabled
 
         root = self._project(tmp_path, b'stealth = "yes"\n')
         assert stealth_enabled(root) is True
 
     def test_source_checkout_is_never_stealth_even_with_stale_config(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import banned_phrases, stealth_enabled
+        from booley.commit_policy.policy import banned_phrases, stealth_enabled
 
         root = self._project(tmp_path, b"[stealth]\nenabled = true\n")
         (root / "pyproject.toml").write_text(
@@ -232,7 +232,7 @@ class TestStealthEnabled:
             patch.dict("sys.modules", {"checkout_role": checkout_role}),
             patch(
                 "builtins.__import__",
-                side_effect=_selective_import_error("booley.runtime.checkout_role"),
+                side_effect=_selective_import_error("booley.core.checkout_role"),
             ),
         ):
             assert source_checkout_policy_owner(root)
@@ -245,7 +245,7 @@ class TestStealthEnabled:
 
         def import_after_path_recovery(name, *args, **kwargs):
             nonlocal package_attempts
-            if name == "booley.runtime.checkout_role":
+            if name == "booley.core.checkout_role":
                 package_attempts += 1
                 if package_attempts == 1:
                     raise ModuleNotFoundError(name)
@@ -270,7 +270,7 @@ class TestStealthEnabled:
         real_import = builtins.__import__
 
         def block_classifiers(name, *args, **kwargs):
-            if name in {"booley.runtime.checkout_role", "checkout_role"}:
+            if name in {"booley.core.checkout_role", "checkout_role"}:
                 raise ModuleNotFoundError(name)
             return real_import(name, *args, **kwargs)
 
@@ -278,7 +278,7 @@ class TestStealthEnabled:
             assert not source_checkout_policy_owner(source_root)
 
     def test_invalid_enabled_type_logs_and_uses_default(self, tmp_path, caplog):
-        from booley.dev_support.commit_msg_utils import stealth_enabled
+        from booley.commit_policy.policy import stealth_enabled
 
         root = self._project(tmp_path, b'[stealth]\nenabled = "false"\n')
 
@@ -297,44 +297,44 @@ class TestMaxBodyLines:
         return tmp_path
 
     def test_none_when_no_config(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import max_body_lines
+        from booley.commit_policy.policy import max_body_lines
 
         assert max_body_lines(self._project(tmp_path, None)) is None
 
     def test_none_when_knob_absent(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import max_body_lines
+        from booley.commit_policy.policy import max_body_lines
 
         root = self._project(tmp_path, b'[stealth]\nbanned_words = ["foo"]\n')
         assert max_body_lines(root) is None
 
     def test_zero_is_a_real_cap_not_falsy_none(self, tmp_path):
         """0 means 'no body' and must survive the None/0 distinction."""
-        from booley.dev_support.commit_msg_utils import max_body_lines
+        from booley.commit_policy.policy import max_body_lines
 
         root = self._project(tmp_path, b"[stealth]\nmax_body_lines = 0\n")
         assert max_body_lines(root) == 0
 
     def test_positive_cap(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import max_body_lines
+        from booley.commit_policy.policy import max_body_lines
 
         root = self._project(tmp_path, b"[stealth]\nmax_body_lines = 5\n")
         assert max_body_lines(root) == 5
 
     def test_negative_is_ignored(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import max_body_lines
+        from booley.commit_policy.policy import max_body_lines
 
         root = self._project(tmp_path, b"[stealth]\nmax_body_lines = -1\n")
         assert max_body_lines(root) is None
 
     def test_bool_is_rejected_not_read_as_int(self, tmp_path):
         """`= true` is a typo, not a cap of 1 — bool is an int subclass."""
-        from booley.dev_support.commit_msg_utils import max_body_lines
+        from booley.commit_policy.policy import max_body_lines
 
         root = self._project(tmp_path, b"[stealth]\nmax_body_lines = true\n")
         assert max_body_lines(root) is None
 
     def test_non_int_is_ignored(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import max_body_lines
+        from booley.commit_policy.policy import max_body_lines
 
         root = self._project(tmp_path, b'[stealth]\nmax_body_lines = "many"\n')
         assert max_body_lines(root) is None
@@ -352,30 +352,30 @@ class TestEnforceConvention:
         return tmp_path
 
     def test_false_when_no_config(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import enforce_convention
+        from booley.commit_policy.policy import enforce_convention
 
         assert enforce_convention(self._project(tmp_path, None)) is False
 
     def test_false_when_knob_absent(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import enforce_convention
+        from booley.commit_policy.policy import enforce_convention
 
         root = self._project(tmp_path, b'[stealth]\nbanned_words = ["foo"]\n')
         assert enforce_convention(root) is False
 
     def test_true_when_enabled(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import enforce_convention
+        from booley.commit_policy.policy import enforce_convention
 
         root = self._project(tmp_path, b"[stealth]\nenforce_convention = true\n")
         assert enforce_convention(root) is True
 
     def test_false_when_explicitly_disabled(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import enforce_convention
+        from booley.commit_policy.policy import enforce_convention
 
         root = self._project(tmp_path, b"[stealth]\nenforce_convention = false\n")
         assert enforce_convention(root) is False
 
     def test_invalid_type_logs_and_uses_default(self, tmp_path, caplog):
-        from booley.dev_support.commit_msg_utils import enforce_convention
+        from booley.commit_policy.policy import enforce_convention
 
         root = self._project(tmp_path, b'[stealth]\nenforce_convention = "false"\n')
 
@@ -394,12 +394,12 @@ class TestAllowedAuthors:
         return tmp_path
 
     def test_empty_when_no_config(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import allowed_authors
+        from booley.commit_policy.policy import allowed_authors
 
         assert allowed_authors(self._project(tmp_path, None)) == []
 
     def test_reads_list(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import allowed_authors
+        from booley.commit_policy.policy import allowed_authors
 
         root = self._project(
             tmp_path, b'[stealth]\nallowed_authors = ["*@example.com", "Jane Doe"]\n'
@@ -407,19 +407,19 @@ class TestAllowedAuthors:
         assert allowed_authors(root) == ["*@example.com", "Jane Doe"]
 
     def test_blank_entries_dropped(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import allowed_authors
+        from booley.commit_policy.policy import allowed_authors
 
         root = self._project(tmp_path, b'[stealth]\nallowed_authors = ["a@b.c", "  ", ""]\n')
         assert allowed_authors(root) == ["a@b.c"]
 
     def test_non_list_is_ignored(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import allowed_authors
+        from booley.commit_policy.policy import allowed_authors
 
         root = self._project(tmp_path, b'[stealth]\nallowed_authors = "a@b.c"\n')
         assert allowed_authors(root) == []
 
     def test_non_string_entries_ignored(self, tmp_path):
-        from booley.dev_support.commit_msg_utils import allowed_authors
+        from booley.commit_policy.policy import allowed_authors
 
         root = self._project(tmp_path, b"[stealth]\nallowed_authors = [1, 2]\n")
         assert allowed_authors(root) == []
@@ -429,47 +429,47 @@ class TestIdentityAllowed:
     """Glob matching over email / name / full ident, case-insensitively."""
 
     def test_empty_allowlist_permits_everything(self):
-        from booley.dev_support.commit_msg_utils import identity_allowed
+        from booley.commit_policy.policy import identity_allowed
 
         assert identity_allowed("Anyone", "any@where", []) is True
 
     def test_exact_email(self):
-        from booley.dev_support.commit_msg_utils import identity_allowed
+        from booley.commit_policy.policy import identity_allowed
 
         assert identity_allowed("Jane Doe", "jane@example.com", ["jane@example.com"])
         assert not identity_allowed("Jane Doe", "jane@other.com", ["jane@example.com"])
 
     def test_domain_glob(self):
-        from booley.dev_support.commit_msg_utils import identity_allowed
+        from booley.commit_policy.policy import identity_allowed
 
         allow = ["*@example.com"]
         assert identity_allowed("Jane Doe", "jane@example.com", allow)
         assert not identity_allowed("Bot", "mut@local", allow)
 
     def test_bare_name(self):
-        from booley.dev_support.commit_msg_utils import identity_allowed
+        from booley.commit_policy.policy import identity_allowed
 
         assert identity_allowed("Jane Doe", "whatever@anywhere", ["Jane Doe"])
 
     def test_full_ident_line(self):
-        from booley.dev_support.commit_msg_utils import identity_allowed
+        from booley.commit_policy.policy import identity_allowed
 
         assert identity_allowed("Jane Doe", "jane@example.com", ["Jane Doe <jane@example.com>"])
 
     def test_case_insensitive_both_sides(self):
-        from booley.dev_support.commit_msg_utils import identity_allowed
+        from booley.commit_policy.policy import identity_allowed
 
         assert identity_allowed("JANE DOE", "JANE@EXAMPLE.COM", ["jane@example.com"])
         assert identity_allowed("jane doe", "jane@example.com", ["JANE DOE"])
 
     def test_surrounding_whitespace_tolerated(self):
-        from booley.dev_support.commit_msg_utils import identity_allowed
+        from booley.commit_policy.policy import identity_allowed
 
         assert identity_allowed("  Jane Doe  ", " jane@example.com ", ["jane@example.com"])
 
     def test_the_motivating_case(self):
         """A fabricated `--author` identity must not match a real-team allowlist."""
-        from booley.dev_support.commit_msg_utils import identity_allowed
+        from booley.commit_policy.policy import identity_allowed
 
         allow = ["*@example.com", "*@users.noreply.github.com"]
         assert not identity_allowed("mut-creator", "mut@local", allow)

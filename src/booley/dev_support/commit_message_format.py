@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from .validate_commit_msg import ALLOWED_TYPES
+from booley.commit_policy import ALLOWED_TYPES
 
 # Matches valid conventional-commit subject lines. The type alternation is
 # built from validate_commit_msg.ALLOWED_TYPES so the two can never drift

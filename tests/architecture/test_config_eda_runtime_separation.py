@@ -81,7 +81,18 @@ def test_approved_cyclic_groups_are_tightened_to_actual_groups():
 
 @pytest.mark.parametrize(
     "separated",
-    ["audit", "config", "core", "docker", "eda", "evidence", "presentation", "projects", "review"],
+    [
+        "audit",
+        "commit_policy",
+        "config",
+        "core",
+        "docker",
+        "eda",
+        "evidence",
+        "presentation",
+        "projects",
+        "review",
+    ],
 )
 def test_separated_packages_cannot_join_the_remaining_group(separated):
     dependencies = (

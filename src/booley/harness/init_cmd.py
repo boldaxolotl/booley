@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley import __version__
+from booley.commit_policy import stealth_enabled
 from booley.config.host_config import retired_project_policy_message
 from booley.core.boundary import require_dict
 from booley.fusesoc.core_projection import (
@@ -424,8 +425,6 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
     auto-commit would need the stealth author-identity machinery and is not
     what F-5 asked for.
     """
-    from booley.dev_support.commit_msg_utils import stealth_enabled
-
     if not stealth_enabled(ctx.project_root):
         return
     if (target / ".git").exists():
