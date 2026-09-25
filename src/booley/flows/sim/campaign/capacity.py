@@ -18,6 +18,9 @@ from booley.runtime.job_slots import (
     SlotToken,
 )
 
+_MAX_CHILD_ACQUIRE_POLL_SECONDS = 0.01
+_SHUTDOWN_POLL_SLICES = 10
+
 
 class HeavyCapacityError(RuntimeError):
     """The campaign can no longer safely use heavy capacity."""
@@ -145,6 +148,10 @@ class HeavyCapacity:
                 argv=list(sys.argv),
                 role=self._admission.role,
                 timeout_s=self._admission.timeout_seconds,
+                poll_interval=min(
+                    _MAX_CHILD_ACQUIRE_POLL_SECONDS,
+                    self.shutdown_timeout_seconds / _SHUTDOWN_POLL_SLICES,
+                ),
                 should_abort=self._cancelled,
                 execution_id=child_execution_id,
                 on_submitted=register,
