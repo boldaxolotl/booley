@@ -15,25 +15,24 @@ Exit code 0 = valid, 1 = invalid (errors printed to stderr).
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
 try:
-    from ..core.run_command import run_command
-    from .commit_msg_utils import (
-        enforce_convention,
+    from booley import commit_policy as _shared_validation
+    from booley.commit_policy.policy import (
         find_banned,
-        max_body_lines,
         source_checkout_policy_owner,
         stealth_enabled,
     )
+
+    from ..core.run_command import run_command
 except ImportError:
     # When run as a standalone script (e.g. inside Docker), the package-relative
     # import fails.  Ensure this file's dir and the package root are on sys.path
     # so the bare module names resolve.
     _support_dir = str(Path(__file__).resolve().parent)
-    _pkg_dir = str(Path(__file__).resolve().parent.parent)  # src/booley
+    _pkg_dir = str(Path(__file__).resolve().parents[2])  # source root containing booley/
     for _p in (_support_dir, _pkg_dir):
         if _p not in sys.path:
             sys.path.insert(0, _p)
@@ -43,16 +42,19 @@ except ImportError:
     # resolved via the hook dir already on sys.path.
     import importlib
 
-    from commit_msg_utils import (
-        enforce_convention,
-        find_banned,
-        max_body_lines,
-        source_checkout_policy_owner,
-        stealth_enabled,
-    )
+    try:
+        from booley import commit_policy as _shared_validation
+        from booley.commit_policy.policy import (
+            find_banned,
+            source_checkout_policy_owner,
+            stealth_enabled,
+        )
+    except ImportError:
+        import booley_commit_validation as _shared_validation
+        from booley_commit_policy import find_banned, source_checkout_policy_owner, stealth_enabled
 
     run_command = None
-    for _mod in ("core.run_command", "run_command"):
+    for _mod in ("booley.core.run_command", "core.run_command", "run_command"):
         try:
             run_command = importlib.import_module(_mod).run_command
             break
@@ -92,27 +94,11 @@ except ImportError:
             return _CommandRun(proc.returncode, proc.stdout, proc.stderr)
 
 
-# Max length for the summary part only (after "type(scope): " prefix)
-MAX_SUMMARY_LEN = 72
+ALLOWED_TYPES = _shared_validation.ALLOWED_TYPES
+MAX_SUMMARY_LEN = _shared_validation.MAX_SUMMARY_LEN
+SUBJECT_RE = _shared_validation.SUBJECT_RE
+validate_message = _shared_validation.validate_message
 
-# Allowed commit types — single source of truth for both the SUBJECT_RE regex
-# and the "doesn't match" error message, so the two can never drift apart.
-# `chore` covers mundane housekeeping (gitignore tweaks, dep bumps, ...) that
-# would otherwise have to masquerade as fix/docs (F-15, verilog-pcie setup).
-ALLOWED_TYPES = ("feat", "fix", "refactor", "test", "review", "wip", "docs", "chore")
-
-# Format: type(scope): summary  OR  type: summary
-# Scope allows [a-zA-Z0-9_-] so ticket slugs (which may contain uppercase
-# letters and hyphens) can be used verbatim as the scope.
-SUBJECT_RE = re.compile(
-    r"^(?P<prefix>(?:" + "|".join(ALLOWED_TYPES) + r")"  # type
-    r"(?:\([a-zA-Z0-9_-]+\))?"  # optional (scope)
-    r": )"  # colon + space
-    r"(?P<summary>.+)$"  # summary
-)
-
-# Alias for internal use
-_find_banned = find_banned
 
 _PROJECT_CONFIG_DIRS = (Path(".booley_project"), Path(".booley") / "project")
 _PROJECT_CONFIG_NAMES = ("booley.toml", "pipeline.toml")
@@ -151,84 +137,6 @@ def _current_repo_root() -> Path | None:
     return Path(run.stdout.strip()).resolve()
 
 
-def _body_content_lines(msg: str) -> list[str]:
-    """Body lines that carry content: everything after the subject, minus git's
-    ``#`` comment lines and blank lines.
-
-    Comments and blanks are excluded because neither reaches history — git
-    strips comments itself, and blank lines are just the paragraph spacing the
-    author happened to use. Counting them would make the cap depend on
-    formatting rather than on how much prose the message actually carries.
-    """
-    normalized = msg.replace("\r\n", "\n").replace("\r", "\n")
-    parts = normalized.split("\n", 1)
-    if len(parts) < 2:
-        return []
-    return [ln for ln in parts[1].split("\n") if ln.strip() and not ln.lstrip().startswith("#")]
-
-
-def validate_message(msg: str, *, project_root: Path | None = None) -> list[str]:
-    """Validate commit message. Return list of errors (empty = valid)."""
-    errors = []
-    subject = msg.split("\n", 1)[0]
-    is_merge = subject.startswith("Merge ") or subject.startswith("merge(")
-
-    # --- format and length: opt-in convention, merge commits exempt ---
-    # The type(scope): summary convention is off by default ([stealth]
-    # enforce_convention). A design repo carries human- and upstream-style
-    # commits on code the team doesn't own, and forcing every one through this
-    # format is noise; a team that wants it opts in. Banned-word and body-cap
-    # checks below follow stealth mode — those are leak/hygiene, not convention.
-    if enforce_convention(project_root) and not is_merge:
-        m = SUBJECT_RE.match(subject)
-        if not m:
-            errors.append(
-                f"Subject doesn't match '<type>(<scope>): <summary>' "
-                f"(allowed types: {', '.join(ALLOWED_TYPES)}): "
-                f"'{subject}'"
-            )
-        else:
-            summary = m.group("summary")
-            if len(summary) > MAX_SUMMARY_LEN:
-                errors.append(
-                    f"Summary is {len(summary)} chars (max {MAX_SUMMARY_LEN}): '{summary}'"
-                )
-
-    # --- body length (opt-in cap) ---
-    # A body is allowed by default. The old unconditional rule ("single-line
-    # messages only") existed to guarantee no banned content reached history,
-    # but the sanitizer already redacts the body in place, so the guarantee
-    # holds without the amputation — and enforcing it made the hook throw
-    # authored rationale away (taxi port, F-11). The banned-word check below
-    # still covers the body.
-    #
-    # A project that wants terse history opts back in with [stealth]
-    # max_body_lines. This REJECTS an over-long message rather than truncating
-    # it: that keeps the F-11 lesson intact (nothing the author wrote is ever
-    # silently destroyed) while still enforcing the cap — the author is told,
-    # and moves the rationale somewhere it will survive.
-    #
-    # Merge commits are NOT exempt, unlike the format check above. A merge body
-    # is exactly where the long messages that motivated the knob accumulate
-    # (a merge carrying a hand-written port narrative), and git's own generated
-    # merge messages have no body once its `#` comment lines are dropped.
-    cap = max_body_lines(project_root)
-    if cap is not None:
-        body = _body_content_lines(msg)
-        if len(body) > cap:
-            detail = "commit messages must be a single subject line" if cap == 0 else f"max {cap}"
-            errors.append(
-                f"Body is {len(body)} line(s) ([stealth] max_body_lines = {cap}): {detail}"
-            )
-
-    # --- banned words (checked only while stealth mode is enabled) ---
-    if stealth_enabled(project_root):
-        for phrase in _find_banned(msg, project_root):
-            errors.append(f"Banned phrase in commit message: '{phrase}'")
-
-    return errors
-
-
 def validate_diff(project_root: Path | None = None) -> list[str]:
     """Scan staged diff for banned words. Return list of errors."""
     run = run_command(["git", "diff", "--cached", "-U0"])
@@ -247,7 +155,7 @@ def validate_diff(project_root: Path | None = None) -> list[str]:
         if not line.startswith("+") or line.startswith("+++"):
             continue
         added_text = line[1:]  # strip the leading "+"
-        for phrase in _find_banned(added_text, project_root):
+        for phrase in find_banned(added_text, project_root):
             # Truncate long lines for readability
             display = added_text.strip()
             if len(display) > 80:

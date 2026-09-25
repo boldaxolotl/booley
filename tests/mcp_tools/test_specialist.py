@@ -468,11 +468,11 @@ class TestCommitMsgBannedPhraseSalvage:
         # subject for any input, so the only way to stage a non-banned
         # failure is to inject one. The salvage path must NOT kick in here —
         # the error must surface.
-        from booley.dev_support import validate_commit_msg as vcm
+        from booley.specialists import specialist as specialist_module
 
         with (
             patch.object(
-                vcm,
+                specialist_module,
                 "validate_message",
                 return_value=[
                     "Subject doesn't match '<type>(<scope>): <summary>'",

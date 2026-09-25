@@ -32,7 +32,15 @@ from booley.harness.setup.project_git_hook_bundle import (
 )
 from booley.runtime.project_dir import resolve_project_dir
 
-_LEGACY_MANAGED_HOOKS = tuple(name for name, _relative in _SOURCE_INVENTORY)
+_LEGACY_MANAGED_HOOKS = (
+    "boundary.py",
+    "checkout_role.py",
+    "run_command.py",
+    "commit_msg_utils.py",
+    "validate_commit_msg.py",
+    "commit_msg_hook.py",
+    "pre_push_hook.py",
+)
 
 
 @dataclass(frozen=True, slots=True)

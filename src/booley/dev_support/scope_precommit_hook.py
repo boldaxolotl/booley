@@ -27,7 +27,7 @@ except ModuleNotFoundError:
     from acceptance_path_policy import is_static_acceptance_path, normalize_acceptance_path
 
 try:
-    from booley.dev_support.commit_msg_utils import source_checkout_policy_owner
+    from booley.commit_policy import source_checkout_policy_owner
 except ModuleNotFoundError:
     from commit_msg_utils import source_checkout_policy_owner
 

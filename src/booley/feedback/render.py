@@ -102,7 +102,7 @@ class Environment:
         ]
 
 
-def collect_environment(project_dir: Path | None = None) -> Environment:
+def collect_environment(*, doctor_deep_clean: bool | None = None) -> Environment:
     """Gather the fingerprint, degrading to blanks rather than failing.
 
     A report is still worth filing from a half-broken environment — arguably
@@ -112,6 +112,7 @@ def collect_environment(project_dir: Path | None = None) -> Environment:
         python_version=platform.python_version(),
         platform=f"{platform.system()} {platform.machine()}",
         in_container=Path("/.dockerenv").exists(),
+        doctor_deep_clean=doctor_deep_clean,
     )
     try:
         from booley import __version__
@@ -119,15 +120,6 @@ def collect_environment(project_dir: Path | None = None) -> Environment:
         env.booley_version = __version__
     except ImportError:  # pragma: no cover - defensive
         pass
-    if project_dir is not None:
-        try:
-            from booley.harness import doctor_stamp
-
-            stamp = doctor_stamp.load_stamp(project_dir)
-            if stamp is not None:
-                env.doctor_deep_clean = bool(stamp.get("deep"))
-        except (ImportError, OSError):
-            pass
     return env
 
 
@@ -410,7 +402,7 @@ def render_booley_report(
     silently dropping it. Entries already filed are neither: they are simply
     gone, having been reported once already.
     """
-    env = env or collect_environment(project_dir)
+    env = env or collect_environment()
     plan = plan if plan is not None else redact_mod.build_plan(project_root, project_dir)
     origin = origin or report_origin(log)
 
@@ -497,6 +489,7 @@ def write_user_report(
     *,
     project_name: str = "",
     user_report_path: Path | None = None,
+    env: Environment | None = None,
 ) -> tuple[Path, BooleyReport]:
     """Write the one persistent user report and render outbound feedback in memory.
 
@@ -509,7 +502,7 @@ def write_user_report(
             leave it alone so the report stays out of the tracked tree.
     """
     log = read_log(project_dir)
-    env = collect_environment(project_dir)
+    env = env or collect_environment()
     origin = report_origin(log)
 
     user_path = user_report_path or (project_dir / user_report_name(origin))

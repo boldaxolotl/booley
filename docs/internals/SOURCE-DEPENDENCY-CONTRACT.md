@@ -37,6 +37,21 @@ dependency-light primitives; and `booley.dev_support`, `booley.docker`, `booley.
 and `booley.feedback` own their named mechanisms. These descriptions create no new
 domain concepts.
 
+## Commit policy and Feedback composition boundaries
+
+`booley.commit_policy` is the dependency-light owner of immutable Project Stealth
+policy and reusable commit-message validation. Runtime, Specialists, Project Setup,
+Project Initialization, development commands, and standalone Project Git hooks all
+consume that same implementation. Dev Support retains command, staged-diff, and hook
+adapters; D32 prevents Runtime from depending on those script owners, while D34 keeps
+the shared owner independent of Runtime, Harness, and Dev Support.
+
+Feedback owns report rendering from an explicit `Environment` value. Harness resolves
+the optional Doctor `deep` observation at report, export, and Project Setup cleanup
+composition roots, validates it as a boolean, and passes one environment through each
+logical operation. Missing or invalid observations remain `not recorded`. D33 forbids
+Feedback from importing Harness in any static import location.
+
 ## Runtime execution boundary
 
 Runtime does not import Ticket Board, including under `TYPE_CHECKING` or inside
@@ -253,13 +268,16 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D22 | Prefix `booley.ticket_board` | Prefix `booley.review` | Forbid, subject only to C9 | Ticket Board composes Review only through its exact artifact-generation entry point. |
 | D23 | Prefix `booley.config` | Prefix `booley.eda` | Forbid | Config owns declarative requests without depending on EDA provisioning policy. |
 | D24 | Prefix `booley.eda` | Prefix `booley.runtime` | Forbid | EDA uses neutral host mechanisms without depending on Runtime execution or issuance. |
-| D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets`, `booley.ticket_board` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
+| D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.commit_policy`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets`, `booley.ticket_board` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
 | D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.harness.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 | D29 | Prefix `booley.bwave` | Prefix `booley.flows` | Forbid | B-Wave owns reusable waveform mechanics without Flow execution or Simulation evidence policy. |
 | D30 | Prefix `booley.criteria` | Prefix `booley.ticket_board` | Forbid | Generic Criteria policy and state evaluation must not depend on Ticket document, persistence, or lifecycle ownership. |
 | D31 | Prefix `booley` | Exact modules `booley.flows.sim.campaign.store`, `booley.flows.sim.campaign.inspection` | Forbid, subject only to C10-C13 | Simulation Campaign durable storage is private implementation behind the public Campaign interface. |
+| D32 | Prefix `booley.runtime` | Prefix `booley.dev_support` | Forbid | Packaged execution consumes commit policy through its shared owner; development commands do not own Runtime behavior. |
+| D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Forbid | Feedback consumes resolved environment observations and owns report rendering without command or Ticket Mode composition. |
+| D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Forbid | Shared commit policy stays independent of execution composition and script adapters. |
 
 ## Simulation Campaign storage boundary
 
@@ -377,7 +395,7 @@ proofs define that limit:
 | Owner | Mechanism and scope | Existing named proof |
 | --- | --- | --- |
 | `booley.dev_support.validate_commit_msg` | Imports packaged `core.run_command` or a flat vendored `run_command`; the packaged case is the dynamic equivalent of `booley.dev_support.validate_commit_msg -> booley.core.run_command`. | `tests/dev_support/test_validate_commit_msg.py` proves packaged, vendored, and stale-hook resolution. |
-| `booley.harness.setup.project_git_hook_bundle` | Builds the explicit seven-module flat source inventory and a zip-root launcher for the standalone Project Git-hook bundle. | `tests/harness/setup/test_project_git_hook_bundle.py` proves deterministic bytes, normalized sources, isolated execution, and command dispatch. |
+| `booley.harness.setup.project_git_hook_bundle` | Builds the explicit nine-module flat source inventory, including the shared policy and validator under collision-resistant names, and a zip-root launcher for the standalone Project Git-hook bundle. | `tests/harness/setup/test_project_git_hook_bundle.py` proves deterministic bytes, normalized sources, isolated execution, and command dispatch. |
 | `booley.mcp.server` | Imports discovered built-in `booley.mcp.*` endpoint modules and Project-local MCP files. | MCP server and registry discovery tests prove built-in and custom endpoint loading. |
 | `booley.harness.booley` | Imports a registry-selected built-in `booley.*` MCP tool class or a Project-local MCP file for diagnostic commands. | `tests/harness/test_booley.py` proves built-in and Project-local loading. |
 | `booley.ticket_board.flow_runner` | Loads a named Project-local `BooleyFlow` from an explicit file and supplies Ticket Board execution composition. | `tests/flows/test_transport_contract.py` proves Project-local Flow loading and Ticket adapter composition. |
@@ -717,6 +735,21 @@ analysis fan-out fall from 6 to 5 and 11 to 10 respectively; retention remains
 at 6 after redirecting to the public facade. No named-hotspot fan-out changes.
 The exact edge diff, identities, reproduction command, caller behavior, and
 verification are in [the #661 evidence](../research/simulation-campaign-storage-661-evidence.md).
+
+## Current snapshot: 25 SEP 2026 — commit policy and Feedback observations
+
+Issue [#660](https://github.com/boldaxolotl/booley/issues/660) gives commit policy a
+shared dependency-light owner and moves Doctor-stamp resolution to Harness
+composition. Compared with `51a59016673f7c76d56efda8028ebcf932ce62f3`, the source
+changes from 548 modules, 2,830 dependency facts, and 2,345 unique edges to 552
+modules, 2,843 facts, and 2,353 edges. Direct mutual package pairs fall from eight
+to six by removing only `dev_support <-> runtime` and `feedback <-> harness`.
+
+The nontrivial SCCs remain the 11-package execution group and the two-package
+FuseSoC/Target group; `booley.commit_policy` is an acyclic singleton. D32-D34 ratchet
+the corrected ownership. The exact edge inventory, bundle and fallback evidence,
+fan-out change, and verification commands are recorded in
+[the #660 implementation evidence](../research/runtime-feedback-dependencies-660-evidence.md).
 
 ## Required gate
 

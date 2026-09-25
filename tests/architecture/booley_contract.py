@@ -91,6 +91,28 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D34",
+        (prefix("booley.commit_policy"),),
+        (
+            prefix("booley.dev_support"),
+            prefix("booley.harness"),
+            prefix("booley.runtime"),
+        ),
+        "shared commit policy remains independent of scripts and execution composition",
+    ),
+    DirectionRule(
+        "D33",
+        (prefix("booley.feedback"),),
+        (prefix("booley.harness"),),
+        "Feedback consumes resolved observations without command or Ticket Mode composition",
+    ),
+    DirectionRule(
+        "D32",
+        (prefix("booley.runtime"),),
+        (prefix("booley.dev_support"),),
+        "packaged execution consumes commit policy through its shared owner",
+    ),
+    DirectionRule(
         "D31",
         (prefix("booley"),),
         (
@@ -148,6 +170,7 @@ DIRECTION_RULES = (
                 "agent_workspace",
                 "audit",
                 "bwave",
+                "commit_policy",
                 "config",
                 "criteria",
                 "dev_support",

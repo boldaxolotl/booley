@@ -21,6 +21,8 @@ from typing import Any, Literal
 
 from booley.core.boundary import require_dict, require_list
 from booley.feedback import materialize
+from booley.feedback.render import Environment
+from booley.harness.feedback_environment import resolve_feedback_environment
 from booley.runtime.process_group import ProcessGroup, is_process_group_alive
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_checkout_project_dir
 
@@ -762,7 +764,11 @@ def _entry_map(payload: dict[str, Any]) -> dict[str, ManifestEntry]:
     return {entry.path: entry for entry in entries}
 
 
-def _materialize_dependencies(root: Path, entries: Iterable[ManifestEntry]) -> set[Path]:
+def _materialize_dependencies(
+    root: Path,
+    entries: Iterable[ManifestEntry],
+    environment: Environment,
+) -> set[Path]:
     """Snapshot structured Feedback attachments before their source is removed."""
     entries = tuple(entries)
     sources = {
@@ -770,7 +776,7 @@ def _materialize_dependencies(root: Path, entries: Iterable[ManifestEntry]) -> s
         for entry in entries
         for dependency in (*entry.dependencies, entry.path)
     }
-    return set(materialize.materialize_attachments(root / SETUP_ROOT, sources))
+    return set(materialize.materialize_attachments(root / SETUP_ROOT, sources, env=environment))
 
 
 def _materialize_for_candidates(
@@ -790,9 +796,10 @@ def _materialize_for_candidates(
     selected = explicit | {
         _absolute(root, item.path) for item in candidates if item.path in entries
     }
+    environment = resolve_feedback_environment(root / SETUP_ROOT)
     try:
         referenced_before = materialize.referenced_sources(root / SETUP_ROOT, selected)
-        changed = _materialize_dependencies(root, dependency_entries)
+        changed = _materialize_dependencies(root, dependency_entries, environment)
         candidate_paths = {
             _absolute(root, candidate.path)
             for candidate in candidates

@@ -438,6 +438,11 @@ class TestMain:
         for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
             shutil.copy2(support / name, hooks / name)
         package = support.parent
+        shutil.copy2(package / "commit_policy" / "policy.py", hooks / "booley_commit_policy.py")
+        shutil.copy2(
+            package / "commit_policy" / "validation.py",
+            hooks / "booley_commit_validation.py",
+        )
         shutil.copy2(package / "core" / "checkout_role.py", hooks / "checkout_role.py")
         shutil.copy2(package / "core" / "boundary.py", hooks / "boundary.py")
         message = root / "COMMIT_EDITMSG"
