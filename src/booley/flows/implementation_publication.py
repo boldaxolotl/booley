@@ -8,18 +8,24 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
-from booley.runtime.timefmt import utc_now_rfc3339
 
 from .implementation_report import (
     ENVELOPE_KEY,
     SCHEMA_VERSION,
     ImplementationReport,
+)
+from .progress_lifecycle import (
+    ProgressLifecycle,
+    ProgressPublicationError,
+    progress_document,
+    write_progress_json,
 )
 
 
@@ -45,6 +51,61 @@ class ImplementationProgress:
     complete: bool = False
     baseline_ref: str | None = None
     reports: Mapping[str, ImplementationReport] = field(default_factory=dict)
+
+
+class ImplementationProgressRun:
+    """Own shared synth/FPGA progress state and terminal error policy."""
+
+    def __init__(
+        self,
+        flow: str,
+        publish: Callable[[dict[str, Any], dict[str, Any], str, str | None, bool], None],
+    ) -> None:
+        self.flow = flow
+        self.current_results: dict[str, Any] = {}
+        self.baseline_results: dict[str, Any] = {}
+        self.baseline_ref: str | None = None
+        self._publish = publish
+        self._outcome: EndpointOutcome | None = None
+        self._lifecycle = ProgressLifecycle(self._publish_terminal)
+
+    def __enter__(self) -> ImplementationProgressRun:
+        self._lifecycle.__enter__()
+        self._publish(
+            self.current_results,
+            self.baseline_results,
+            "starting",
+            self.baseline_ref,
+            False,
+        )
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> Literal[False]:
+        return self._lifecycle.__exit__(exc_type, exc, traceback)
+
+    def complete(self, outcome: EndpointOutcome) -> EndpointOutcome:
+        """Publish normal terminal state while retaining the result on write failure."""
+        self._outcome = outcome
+        self._lifecycle.complete()
+        return outcome
+
+    def publication_failure(self, error: ProgressPublicationError) -> EndpointOutcome:
+        """Translate terminal publication failure consistently for implementation Flows."""
+        outcome = self._outcome or EndpointOutcome()
+        outcome.exit_code = EXIT_ERROR
+        outcome.detail["progress_error"] = str(error)
+        if not outcome.report_text:
+            outcome.report_text = f"{self.flow}: progress publication failed: {error}"
+        return outcome
+
+    def _publish_terminal(self, phase: str) -> None:
+        self._publish(
+            self.current_results,
+            self.baseline_results,
+            phase,
+            self.baseline_ref,
+            True,
+        )
 
 
 def target_report_slug(target: str) -> str:
@@ -163,10 +224,9 @@ class ImplementationPublisher:
         """Atomically checkpoint the common live implementation-matrix shape."""
         if self.invocation_dir is None:
             return None
-        completed = set(progress.completed_targets)
-        payload = self._progress_payload(progress, completed)
+        payload = self._progress_payload(progress)
         path = self.invocation_dir / "progress.json"
-        _atomic_write_json(path, payload)
+        write_progress_json(path, payload)
         return path
 
     def _invocation_path(self, target: str) -> Path | None:
@@ -175,27 +235,26 @@ class ImplementationPublisher:
         return self.invocation_dir / "targets" / f"{target_report_slug(target)}.json"
 
     @staticmethod
-    def _progress_payload(
-        progress: ImplementationProgress,
-        completed: set[str],
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "flow": progress.flow,
-            "run_id": progress.run_id,
-            "timestamp": utc_now_rfc3339(),
-            "phase": progress.phase,
-            "complete": progress.complete,
-            "targets": list(progress.targets),
-            "completed_targets": list(progress.completed_targets),
-            "pending_targets": [target for target in progress.targets if target not in completed],
-            "baseline_completed_targets": list(progress.baseline_completed_targets),
-            ENVELOPE_KEY: {
-                "schema_version": SCHEMA_VERSION,
-                "results": {
-                    target: report.mcp_entry() for target, report in progress.reports.items()
+    def _progress_payload(progress: ImplementationProgress) -> dict[str, Any]:
+        if progress.complete != (progress.phase in {"complete", "aborted", "superseded"}):
+            raise ValueError("implementation progress complete and phase disagree")
+        payload = progress_document(
+            flow=progress.flow,
+            run_id=progress.run_id,
+            phase=progress.phase,
+            targets=progress.targets,
+            completed_targets=progress.completed_targets,
+            detail={},
+            extra={
+                "baseline_completed_targets": list(progress.baseline_completed_targets),
+                ENVELOPE_KEY: {
+                    "schema_version": SCHEMA_VERSION,
+                    "results": {
+                        target: report.mcp_entry() for target, report in progress.reports.items()
+                    },
                 },
             },
-        }
+        )
         if progress.baseline_ref:
             payload["baseline_ref"] = progress.baseline_ref
         return payload
