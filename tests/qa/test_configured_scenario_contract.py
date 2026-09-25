@@ -11,6 +11,8 @@ from qa.validate import (
     resolved_pre_run_requirements,
 )
 
+from booley.ticket_board import generate_slug
+
 ROOT = Path(__file__).resolve().parents[2] / "qa"
 
 
@@ -20,6 +22,19 @@ def membership_digest(values):
 
 def scenario_step(scenario, step_id):
     return next(step for step in scenario["steps"] if step["id"] == step_id)
+
+
+def ticket_packet(document):
+    rendered = (
+        document.replace("{{ outer_destination_branch }}", "outer-release")
+        .replace("{{ project_destination_ref }}", "refs/heads/project-data")
+        .replace(
+            "{{ configured_fpga_criterion }}",
+            "  FPGA:\n    fpga_core_zbb (temp): pass",
+        )
+    )
+    frontmatter = rendered.split("```markdown\n---\n", 1)[1].split("\n---\n", 1)[0]
+    return yaml.safe_load(frontmatter)
 
 
 def test_every_configured_scenario_preserves_reviewed_semantics():
@@ -140,6 +155,24 @@ def test_picorv32_ticket_assets_bind_both_destination_roles():
         assert "ticket-routing" in check["expected"]
         assert "field-to-ref mapping" in check["evidence"]
         assert check["authority_ref"].endswith("docs/user/USAGE.md#creating-tickets")
+
+
+def test_picorv32_ticket_slugs_match_authored_summaries_and_dependency():
+    ticket_dir = ROOT / "scenarios" / "picorv32" / "tickets"
+    provider = ticket_packet((ticket_dir / "continuity.md").read_text())
+    consumer = ticket_packet((ticket_dir / "evolution.md").read_text())
+    scenario = load_scenarios(ROOT)["picorv32-published-demo-continuity"]
+
+    provider_slug = generate_slug(provider["summary"])
+    consumer_slug = generate_slug(consumer["summary"])
+
+    assert provider_slug == "dhrystone-self-checking-cycle-contract"
+    assert consumer_slug == "rv32-zbb-pcpi"
+    assert consumer["dependencies"] == [provider_slug]
+    assert provider_slug in scenario_step(scenario, f"create.{provider_slug}.board")["action"]
+    assert consumer_slug in scenario_step(scenario, f"create.{consumer_slug}.board")["action"]
+    assert provider_slug in scenario_step(scenario, "ticket1.scope")["action"]
+    assert consumer_slug in scenario_step(scenario, "ticket2.scope")["action"]
 
 
 def test_picorv32_ticket_create_attempts_are_file_backed_bounded_and_not_retried():

@@ -20,7 +20,7 @@ those definitions.
 
 ```markdown
 ---
-summary: Implement RV32 Zbb through registered PCPI execution
+summary: RV32 Zbb PCPI
 type: feature
 branch: {{ outer_destination_branch }}
 project_destination_ref: {{ project_destination_ref }}
