@@ -757,6 +757,13 @@ class TestTryReadReport:
                     "module": "lint",
                     "default_timeout": 600,
                     "non_persisting_dry_run": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "dry_run": {"type": "boolean"},
+                            "target": {"type": "string"},
+                        },
+                    },
                 },
                 {},
                 MagicMock(),
@@ -1124,6 +1131,31 @@ class TestBooleyStatus:
 
         assert result[0].text.startswith("HEALTH WARNING:")
         assert result[1].text == "MCP tool result"
+
+    def test_health_warning_preserves_error_disposition(self, monkeypatch):
+        from booley.harness import auto_doctor
+        from booley.mcp.application import McpDispatchResult
+
+        def fake_text_content(**kwargs):
+            return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
+
+        monkeypatch.setattr(self.mcp_server, "_status_mcp_tool_visible", lambda: True)
+        monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
+        monkeypatch.setattr(
+            auto_doctor,
+            "consume_changed_summary",
+            lambda *_a, **_kw: "Automatic Doctor found 1 FAIL",
+        )
+        content = McpDispatchResult(
+            value=[fake_text_content(type="text", text="EXIT_CODE: 2")],
+            is_error=True,
+        )
+
+        result = self.mcp_server._prepend_changed_health_alert(content)
+
+        assert result.is_error is True
+        assert result.value[0].text.startswith("HEALTH WARNING:")
+        assert result.value[1].text == "EXIT_CODE: 2"
 
 
 class TestBooleySleep:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -82,8 +83,15 @@ def _map_type_func(type_func: Any) -> str:
     return "string"
 
 
-def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
+def extract_schema(
+    parser: argparse.ArgumentParser,
+    *,
+    public_dests: Collection[str] = (),
+) -> dict[str, Any]:
     """Extract a JSON schema from an argparse ArgumentParser.
+
+    ``public_dests`` selectively exposes otherwise infrastructure-only parser
+    destinations when an endpoint adapter deliberately makes them public.
 
     Returns:
         ``{"type": "object", "properties": {...}, "required": [...]}``
@@ -98,7 +106,7 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
         dest = action.dest
         # Exact-Campaign analysis makes instruction part of its public contract.
         public_instruction = parser.prog == "coverage_analyst" and dest == "instruction"
-        if dest in _FILTERED_DESTS and not public_instruction:
+        if dest in _FILTERED_DESTS and dest not in public_dests and not public_instruction:
             continue
 
         if dest == "work_dir":
