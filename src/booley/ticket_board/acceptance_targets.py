@@ -18,6 +18,10 @@ from booley.core.boundary import (
     BoundaryError,
     is_str_list,
 )
+from booley.criteria.templates import (
+    EDA_TOOL_CRITERION_FAMILIES,
+    criterion_family_is_eligible,
+)
 from booley.criteria.thresholds import has_relative_threshold
 from booley.evidence.acceptance import AcceptanceTargetBinding
 from booley.fusesoc import fusesoc_registry
@@ -57,6 +61,7 @@ class CriterionTarget:
     flow: str
     relative: bool
     baseline_target: str | None = None
+    family: str = ""
 
     @property
     def baseline(self) -> str:
@@ -287,6 +292,7 @@ def criterion_targets(criteria: Any) -> tuple[CriterionTarget, ...]:
                         flow,
                         relative,
                         baseline if baseline != target else None,
+                        family="coverage" if str(key) == "coverage" else "",
                     )
                 )
     return tuple(bindings)
@@ -329,6 +335,7 @@ def criterion_targets_from_spec(spec: TicketSpec) -> tuple[CriterionTarget, ...]
                     flow,
                     baseline is not None,
                     baseline,
+                    family="coverage" if criterion.capability == "COVERAGE" else "",
                 )
             )
     return tuple(bindings)
@@ -710,6 +717,21 @@ def _validate_binding(
             handle = catalog.select(target, for_flow=binding.flow)
         except FuseSocError as exc:
             errors.append(f"{binding.label}: {role} target {target!r}: {exc}")
+            continue
+        if binding.family and not criterion_family_is_eligible(
+            binding.family,
+            handle.eda_tool,
+            target_name=getattr(handle, "name", target),
+        ):
+            tools = [
+                tool.capitalize()
+                for tool, families in EDA_TOOL_CRITERION_FAMILIES.items()
+                if binding.family in families
+            ]
+            errors.append(
+                f"{binding.label}: target {target!r}: {binding.family} requires "
+                f"{' or '.join(tools)} (EDA tool={handle.eda_tool!r})"
+            )
             continue
         try:
             missing_inputs = _missing_target_inputs(catalog, handle.selector)

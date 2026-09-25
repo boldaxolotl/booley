@@ -58,6 +58,16 @@ def _ticket(target: str, *, dependency: str = "") -> str:
     )
 
 
+def _coverage_ticket() -> str:
+    return (
+        "---\nsummary: Check coverage Target\ntype: feature\nbranch: main\n"
+        "scope: [README.md]\non_success: [merge]\nCRITERIA_MANDATORY:\n"
+        "  COVERAGE:\n"
+        "    sim_smoke: {tests: all, metrics: {line: {min_pct: 50}}}\n"
+        "---\n\n## Description\n\nCheck the coverage Target.\n"
+    )
+
+
 def _provider(root: Path, board: TicketIO) -> Path:
     path = board.create_ticket_document("provider", _ticket("lint_future (new)"))
     assert path is not None
@@ -128,6 +138,52 @@ def test_published_simulation_target_binds_all_required_criteria(project, capsys
 
     _assert_both_valid(root, queued, capsys)
     assert _resolve_and_validate(root, str(queued)) == (queued, "simulation")
+
+
+def test_coverage_rejects_icarus_target(project, capsys) -> None:
+    root, board = project
+    path = board.create_ticket_document(
+        "coverage",
+        _coverage_ticket().replace(
+            "COVERAGE:\n    sim_smoke: {tests: all, metrics: {line: {min_pct: 50}}}",
+            "REVIEW: {rtl: {bugs: clean}}",
+        ),
+    )
+    assert path is not None
+    path.write_text(_coverage_ticket(), encoding="utf-8")
+    tests = root / ".booley_project/worktrees/coverage/.booley_project/tests.toml"
+    tests.parent.mkdir(parents=True, exist_ok=True)
+    tests.write_text("[sim_smoke]\ntests = ['smoke']\n", encoding="utf-8")
+
+    _assert_both_reject(root, path, capsys, "sim_smoke': coverage requires Verilator")
+
+
+def test_coverage_accepts_verilator_target(project, capsys) -> None:
+    root, board = project
+    core = root / "ticket_mode_smoke.core"
+    core.write_text(
+        core.read_text(encoding="utf-8").replace(
+            "tool: icarus\n      iverilog_options: [-g2012]",
+            "tool: verilator",
+        ),
+        encoding="utf-8",
+    )
+    _git(root, "add", "ticket_mode_smoke.core")
+    _git(root, "commit", "-qm", "use Verilator")
+    path = board.create_ticket_document(
+        "coverage",
+        _coverage_ticket().replace(
+            "COVERAGE:\n    sim_smoke: {tests: all, metrics: {line: {min_pct: 50}}}",
+            "REVIEW: {rtl: {bugs: clean}}",
+        ),
+    )
+    assert path is not None
+    path.write_text(_coverage_ticket(), encoding="utf-8")
+    tests = root / ".booley_project/worktrees/coverage/.booley_project/tests.toml"
+    tests.parent.mkdir(parents=True, exist_ok=True)
+    tests.write_text("[sim_smoke]\ntests = ['smoke']\n", encoding="utf-8")
+
+    _assert_both_valid(root, path, capsys)
 
 
 def test_draft_provider_target_is_not_consumer_authored(project, capsys) -> None:
