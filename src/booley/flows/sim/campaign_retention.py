@@ -203,6 +203,7 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
         if quarantine.exists():
             raise CampaignRetentionError("Ambiguous invocation pruning state")
         _validate_invocation_targets(root)
+        _validate_invocation_inventory(root)
         _release_child_indexes(root, project_data)
         write_campaign_json(
             root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
@@ -289,6 +290,133 @@ def _validate_invocation_targets(root: Path) -> None:
         campaign = directory / "campaign"
         if (campaign / "manifest.json").exists():
             _validate_simulation_campaign(directory, campaign)
+
+
+def _validate_invocation_inventory(root: Path) -> None:
+    progress = _read_object(root / "progress.json")
+    targets = progress["targets"]
+    assert isinstance(targets, list)
+    expected = {(root / "progress.json").absolute()}
+    report = root / "report.json"
+    if report.exists():
+        if _read_object(report).get("flow") != "sim":
+            raise CampaignRetentionError(
+                f"Invocation report does not belong to Simulation: {report}"
+            )
+        expected.add(report.absolute())
+    for selector in targets:
+        assert isinstance(selector, str)
+        target = target_report_directory(root, selector)
+        expected.update(_target_owned_files(root, target, selector))
+    unexpected = sorted(
+        path.absolute()
+        for path in root.rglob("*")
+        if path.is_file() and path.absolute() not in expected
+    )
+    if unexpected:
+        raise CampaignRetentionError(f"Unrecognized invocation content: {unexpected[0]}")
+
+
+def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
+    expected = {(target / "simulation.json").absolute()}
+    public = target / "coverage.json"
+    if public.exists():
+        storage, loaded = _target(root, selector, require_projection=False)
+        expected.update(_coverage_owned_files(target, storage, loaded))
+    campaign = target / "campaign"
+    manifest = campaign / "manifest.json"
+    if manifest.exists():
+        from .campaign import inspect_retained_campaign
+
+        status = inspect_retained_campaign(manifest)
+        expected.update(status.authenticated_files)
+        expected.update(_campaign_attempt_files(status.authenticated_files))
+        lock = campaign / ".lock"
+        if lock.exists():
+            if lock.read_bytes() != b"":
+                raise CampaignRetentionError(f"Campaign lock content is invalid: {lock}")
+            expected.add(lock.absolute())
+        for registry in ("entries", "retired", "released"):
+            expected.update(
+                path.absolute()
+                for path in (campaign / "child-executions" / registry).glob("*.json")
+            )
+    return expected
+
+
+def _campaign_attempt_files(authenticated: tuple[Path, ...]) -> set[Path]:
+    expected: set[Path] = set()
+    attempts = {
+        path.parent
+        for path in authenticated
+        if path.name == "attempt.json" and path.parent.parent.name == "attempts"
+    }
+    for attempt in attempts:
+        for name in ("private-build", "snapshot", "runtime-inputs", "evidence"):
+            directory = attempt / name
+            expected.update(path.absolute() for path in directory.rglob("*") if path.is_file())
+        coverage = attempt / "coverage-campaign"
+        campaign_path = coverage / "coverage.json"
+        if campaign_path.exists():
+            loaded = load_coverage_campaign(campaign_path)
+            expected.update(_coverage_owned_files(coverage, coverage, loaded))
+        elif coverage.exists():
+            marker = coverage / ".collection-started"
+            if marker.exists() and marker.read_bytes() != b"":
+                raise CampaignRetentionError(f"Coverage collection marker changed: {marker}")
+            expected.add(marker.absolute())
+            expected.update(
+                path.absolute() for path in (coverage / "native").rglob("*") if path.is_file()
+            )
+    return expected
+
+
+def _coverage_owned_files(
+    target: Path, storage: Path, loaded: LoadedCoverageCampaign
+) -> set[Path]:
+    markers = {target / ".collection-started", storage / ".collection-started"}
+    for marker in markers:
+        if marker.exists() and marker.read_bytes() != b"":
+            raise CampaignRetentionError(f"Coverage collection marker changed: {marker}")
+    availability = storage / "availability.json"
+    if availability.exists():
+        _validate_availability(availability, loaded)
+    expected = {
+        (target / "coverage.json").absolute(),
+        (storage / "coverage.json").absolute(),
+        availability.absolute(),
+        *(marker.absolute() for marker in markers),
+    }
+    point_store = loaded.summary.point_store
+    if point_store is not None:
+        expected.add((storage / point_store.path).absolute())
+    for artifact in loaded.campaign.artifacts:
+        relative = Path(artifact.path)
+        expected.add((storage / relative).absolute())
+        if relative.parts and relative.parts[0] == "native":
+            expected.add((storage / ".native-pruned" / Path(*relative.parts[1:])).absolute())
+    return expected
+
+
+def _validate_availability(path: Path, loaded: LoadedCoverageCampaign) -> None:
+    campaign = loaded.campaign
+    artifacts = [
+        {"id": artifact.id, "path": artifact.path, "sha256": artifact.sha256}
+        for artifact in campaign.artifacts
+        if artifact.kind in {"raw_native", "merged_native"}
+    ]
+    point_store = loaded.summary.point_store
+    expected = {
+        "$schema": "booley.coverage-availability/v1",
+        "campaign_id": campaign.campaign_id,
+        "campaign_sha256": loaded.summary.manifest_sha256.removeprefix("sha256:"),
+        "point_store_sha256": point_store.sha256 if point_store is not None else None,
+        "artifacts": artifacts,
+    }
+    document = _read_object(path)
+    status = document.pop("status", None)
+    if status not in {"pruning", "pruned"} or document != expected:
+        raise CampaignRetentionError("Availability journal does not match this Campaign")
 
 
 def _validate_simulation_campaign(target: Path, campaign: Path) -> None:

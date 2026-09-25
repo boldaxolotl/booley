@@ -41,6 +41,7 @@ class RetainedCampaignStatus:
     interrupted: tuple[str, ...]
     summary_complete: bool
     summary_completed_matches: bool
+    authenticated_files: tuple[Path, ...]
 
 
 def authenticate_work_item(manifest_path: Path, work_item_id: str) -> CampaignWorkItemEvidence:
@@ -103,6 +104,7 @@ def inspect_retained_campaign(manifest_path: Path) -> RetainedCampaignStatus:
         recovery.interrupted,
         summary["complete"] is True,
         tuple(completed) == recovery.complete,
+        store.authenticated_files,
     )
 
 

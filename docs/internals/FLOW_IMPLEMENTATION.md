@@ -1022,11 +1022,14 @@ root explicitly; callers obtain project-data roots through
   and the full deletion set before mutation. Symlinks, unknown payloads, changed
   databases, unexplained missing databases, and ambiguous selections are errors.
 - `prune_invocation(reports_root, invocation)` validates every existing Target
-  before atomically moving that invocation to `.pruned-N` and removing its
-  contents. Interrupted attempts may be removed after their process releases the
-  lock. A pruning journal permits retry after partial cleanup. The empty
-  `.pruned-N` tombstone reserves the number permanently; it contains no Campaign
-  or native evidence. Other invocations remain untouched.
+  and compares every file with the authenticated invocation, Campaign, and
+  artifact inventory before atomically moving that invocation to `.pruned-N` and
+  removing its contents. Unknown files are named and refused without mutation;
+  changed or missing recorded native payloads are accepted because full pruning
+  removes the entire invocation. Interrupted attempts may be removed after their
+  process releases the lock. A pruning journal permits retry after partial cleanup.
+  The empty `.pruned-N` tombstone reserves the number permanently; it contains no
+  Campaign or native evidence. Other invocations remain untouched.
 
 Native pruning first deep-validates the Campaign pair, then writes Target-local
 `availability.json` with schema `booley.coverage-availability/v1`, the Campaign
