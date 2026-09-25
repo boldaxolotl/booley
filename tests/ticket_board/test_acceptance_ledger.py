@@ -32,10 +32,14 @@ def _accepted_state() -> DevelopmentState:
     return state
 
 
-def _campaign_facts(*, finished_at: str = "2026-09-21T10:00:00Z") -> dict:
+def _campaign_facts(
+    *,
+    finished_at: str = "2026-09-21T10:00:00Z",
+    campaign_id: str = "12345678-1234-4234-9234-123456789abc",
+) -> dict:
     return {
         "$schema": "booley.simulation-acceptance-facts/v1",
-        "campaign_id": "12345678-1234-4234-9234-123456789abc",
+        "campaign_id": campaign_id,
         "manifest_sha256": f"sha256:{'a' * 64}",
         "origin": {"execution_id": "b" * 32, "invocation_id": 7},
         "target": {"identity": "acme:lib:uart:1#sim_uart", "selector": "sim_uart"},
@@ -292,6 +296,64 @@ def test_campaign_transaction_commits_before_selecting_mutable_state(tmp_path: P
     persisted = DevelopmentState.load(log_dir / ".runtime" / "booley_state.json")
     assert persisted.acceptance_transactions == [transaction.transaction_id]
     assert persisted.criteria["sim_pass_uart"].met is True
+
+
+def test_campaign_replay_preserves_fail_to_pass_transition_once(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs" / "fix-uart"
+    state = DevelopmentState.load(log_dir / ".runtime" / "booley_state.json")
+    state.slug = "fix-uart"
+    params = {"from_state": "fail", "target": "sim_uart"}
+    state.init_criteria(
+        {"sim_pass_uart": True}, criterion_params={"sim_pass_uart": params}, strict=True
+    )
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+
+    red_shadow = deepcopy(state)
+    red = red_shadow.set_criterion("sim_pass_uart", False, detail={"failed_tests": ["tx"]})
+    record_or_verify_transaction(
+        log_dir,
+        state,
+        red,
+        acceptance_facts=_campaign_facts(finished_at="2026-09-21T10:00:00Z"),
+        ticket_identity=identity,
+    )
+    green_shadow = deepcopy(state)
+    green = green_shadow.set_criterion("sim_pass_uart", True, detail={"passed_tests": ["tx"]})
+    green_facts = _campaign_facts(
+        finished_at="2026-09-21T10:01:00Z",
+        campaign_id="22345678-1234-4234-9234-123456789abc",
+    )
+    transaction = record_or_verify_transaction(
+        log_dir,
+        state,
+        green,
+        acceptance_facts=green_facts,
+        ticket_identity=identity,
+    )
+    state_bytes = state._file_path.read_bytes()  # type: ignore[union-attr]
+
+    retried = record_or_verify_transaction(
+        log_dir,
+        state,
+        green,
+        acceptance_facts=green_facts,
+        ticket_identity=identity,
+    )
+
+    assert retried == transaction
+    assert state._file_path.read_bytes() == state_bytes  # type: ignore[union-attr]
+    assert state.criteria["sim_pass_uart"].transition_evidence == [
+        {
+            "met": False,
+            "recorded_at": "2026-09-21T10:00:00Z",
+            "detail": {"failed_tests": ["tx"], "checks": []},
+        },
+        {
+            "met": True,
+            "recorded_at": "2026-09-21T10:01:00Z",
+            "detail": {"passed_tests": ["tx"], "checks": []},
+        },
+    ]
 
 
 def test_campaign_transaction_retry_uses_frozen_intent_after_mutable_drift(tmp_path: Path) -> None:

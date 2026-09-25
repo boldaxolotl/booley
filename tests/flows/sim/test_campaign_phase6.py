@@ -9,6 +9,7 @@ import shutil
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -21,6 +22,7 @@ except ImportError:  # pragma: no cover - Windows compatibility
     resource = None  # type: ignore[assignment]
 
 from booley.criteria.state import DevelopmentState
+from booley.flows.endpoint_reporting import _persist_run_state
 from booley.flows.sim.acceptance import record_campaign_acceptance
 from booley.flows.sim.campaign import (
     SimulationCampaignWorkItemError,
@@ -47,14 +49,16 @@ from booley.flows.sim.campaign.coordinator import (
     WorkExecutionRequest,
     _acceptance_ready,
 )
+from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.campaign.model import SimulationResult, create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 from booley.flows.sim.flow import SimulateFlow
-from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR
+from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, EndpointOutcome
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
+from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
@@ -671,8 +675,12 @@ def test_acceptance_readiness_requires_strict_superset_grade() -> None:
 def _acceptance_endpoint(state, recorder, invocation):
     return SimpleNamespace(
         state=state,
+        _state=state,
         _acceptance_recorder=recorder,
         _invocation_id="1",
+        name="sim",
+        endpoint_kind="flow",
+        _args=None,
         args=SimpleNamespace(diagnostic=False),
         _reserved_invocation_dir=invocation,
         _simulation_acceptance_outcomes=(),
@@ -751,6 +759,64 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     assert projection.read_bytes() == first_projection
     assert final_state.acceptance_transactions == first_state.acceptance_transactions
     assert final_state.criteria["sim_pass_sim"].met is False
+
+
+def test_named_campaign_acceptance_persists_criterion_and_timeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
+    original, invocation = _one_item_outcome(tmp_path)
+    document = json.loads(original.acceptance_facts.canonical_bytes())
+    document["required_suite"]["names"] = ["half", "full"]
+    document["required_suite"]["default_invocation"] = False
+    observation = document["observations"][0]
+    observation.update(
+        test="half",
+        execution="completed",
+        failure_class=None,
+        functional="pass",
+        assertions="clean",
+    )
+    facts = AcceptanceFacts(document)
+    outcome = replace(
+        original,
+        target=facts.document["target"],
+        observations=tuple(facts.document["observations"]),
+        aggregate_grade="pass",
+        acceptance_facts=facts,
+        acceptance_ready=False,
+    )
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.slug = "ticket"
+    state.ticket_type = "implementation"
+    key = "sim_pass_sim_half"
+    params = {
+        "target": "acme:lib:dut:1#sim",
+        "_target_selector": "sim",
+        "test_selector": "half",
+        "required_tests": ["half"],
+        "minimum_total": 1,
+    }
+    state.init_criteria(
+        {key: True, "_report_submitted": True},
+        criterion_params={key: params},
+        strict=True,
+    )
+    state.set_criterion("_report_submitted", True)
+    state.save()
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    recorder = TicketAcceptanceRecorder(log_dir=tmp_path / "logs", ticket_identity=identity)
+    endpoint = _acceptance_endpoint(state, recorder, invocation)
+
+    record_campaign_acceptance(endpoint, (outcome,))
+    _persist_run_state(endpoint, EndpointOutcome(), 0.1, list(endpoint._pending_criteria_set))
+
+    persisted = DevelopmentState.load(state_path)
+    assert persisted.criteria[key].met is True
+    assert persisted.criteria[key].detail["selected_tests"] == ["half"]
+    assert persisted.timeline[-1]["criteria_set"] == [key]
+    assert check_criteria_acceptance(state_path).passed is True
 
 
 def _retained_invocation(tmp_path: Path) -> tuple[Path, Path, CampaignStore]:
