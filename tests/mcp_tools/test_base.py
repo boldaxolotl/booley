@@ -121,6 +121,20 @@ def test_finalize_failure_propagates_without_persisting_replacement_result() -> 
     assert endpoint.post_run_called is False
 
 
+def test_persistence_failure_does_not_hide_the_cli_diagnosis(capsys) -> None:
+    class PersistenceFailingMcpTool(ConcreteMcpTool):
+        def _run(self) -> McpToolResult:
+            return McpToolResult(exit_code=EXIT_FAILURE, report_text="design failed")
+
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            raise RuntimeError("persistence failed")
+
+    with pytest.raises(RuntimeError, match="persistence failed"):
+        PersistenceFailingMcpTool().main([])
+
+    assert capsys.readouterr().err == "design failed\n"
+
+
 def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> None:
     state_file = tmp_path / "state.json"
     DevelopmentState.load(state_file).save()
@@ -462,7 +476,7 @@ class TestMcpToolGateBehavior:
 
         assert exit_code == EXIT_ERROR
         assert endpoint.ran is False
-        assert "lint --target lint_uart" in capsys.readouterr().err
+        assert capsys.readouterr().err.count("lint --target lint_uart") == 1
         assert "lint_clean_sim_uart" not in DevelopmentState.load(state_file).criteria
 
     def test_qualified_selector_matches_bare_target_criterion_identity(self, tmp_path: Path):
@@ -712,14 +726,17 @@ class TestHumanModeStderr:
         assert rc == EXIT_FAILURE
         assert "boom: the actual reason" in capsys.readouterr().err
 
-    def test_no_stderr_spam_in_state_mode(self, tmp_path: Path, capsys):
-        """Agent/state mode keeps report_text in report.json, not on stderr."""
+    def test_state_backed_failure_reaches_stderr_and_report(self, tmp_path: Path, capsys):
         state_file = tmp_path / "state.json"
         DevelopmentState.load(state_file).save()
         endpoint = self._FailingMcpTool()
+        report_dir = tmp_path / "reports"
         with mock.patch.dict(os.environ, _env_with_state(state_file)):
-            endpoint.main(["--report-dir", str(tmp_path / "reports")])
-        assert "boom: the actual reason" not in capsys.readouterr().err
+            endpoint.main(["--report-dir", str(report_dir)])
+
+        assert capsys.readouterr().err.count("boom: the actual reason") == 1
+        report = json.loads((report_dir / "failing_endpoint.json").read_text())
+        assert report["report_text"] == "boom: the actual reason"
 
     class _SilentPassMcpTool(ConcreteMcpTool):
         # A passing endpoint whose only verdict lives in report_text (not
@@ -783,6 +800,34 @@ class TestHumanModeStderr:
         assert "RESULT: FAIL (0/1)" in out.out
         assert "RESULT: FAIL (0/1)" not in out.err
 
+    def test_state_backed_self_printed_verdict_is_not_echoed_again(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        state_file = tmp_path / "state.json"
+        DevelopmentState.load(state_file).save()
+        endpoint = self._SelfPrintingFailMcpTool()
+
+        with mock.patch.dict(os.environ, _env_with_state(state_file)):
+            rc = endpoint.main(["--report-dir", str(tmp_path / "reports")])
+
+        out = capsys.readouterr()
+        assert rc == EXIT_FAILURE
+        assert out.out.count("RESULT: FAIL (0/1)") == 1
+        assert "RESULT: FAIL (0/1)" not in out.err
+
+    def test_state_backed_announcing_endpoint_still_prints_success(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        state_file = tmp_path / "state.json"
+        DevelopmentState.load(state_file).save()
+
+        with mock.patch.dict(os.environ, _env_with_state(state_file)):
+            rc = self._AnnouncingPassMcpTool().main(["--report-dir", str(tmp_path / "reports")])
+
+        out = capsys.readouterr()
+        assert rc == EXIT_SUCCESS
+        assert out.out.count("RESULT: PASS") == 1
+
     class _ChattyBlockedMcpTool(ConcreteMcpTool):
         """A Specialist whose streamed log merely *mentions* its verdict word."""
 
@@ -826,6 +871,36 @@ class TestHumanModeStderr:
         before = _sys.stdout
         self._run_human(self._SelfPrintingFailMcpTool())
         assert _sys.stdout is before
+
+    def test_reused_endpoint_does_not_reuse_an_old_stdout_witness(self, capsys) -> None:
+        class ReusedEndpoint(ConcreteMcpTool):
+            name = "reused_endpoint"
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.reject_during_preparation = False
+
+            def _pre_state_gate(self) -> McpToolResult | None:
+                if self.reject_during_preparation:
+                    return McpToolResult(
+                        exit_code=EXIT_ERROR,
+                        report_text="same verdict",
+                    )
+                return None
+
+            def _run(self) -> McpToolResult:
+                print("same verdict")
+                return McpToolResult(exit_code=EXIT_FAILURE, report_text="same verdict")
+
+        endpoint = ReusedEndpoint()
+        assert self._run_human(endpoint) == EXIT_FAILURE
+        capsys.readouterr()
+        endpoint.reject_during_preparation = True
+
+        assert self._run_human(endpoint) == EXIT_ERROR
+
+        captured = capsys.readouterr()
+        assert captured.err == "same verdict\n"
 
 
 class TestStdoutWitness:
