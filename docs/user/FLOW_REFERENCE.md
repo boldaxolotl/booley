@@ -322,6 +322,13 @@ loading waivers or updating Coverage Criteria. Explicit invocation test selectio
 wins over the Criterion's exact suite, which wins over the full registered suite.
 A different explicit suite still collects evidence but blocks gated evaluation.
 
+Gated evaluation matches Approved Waivers transactionally per Target. For each
+collected Target, only approvals naming that Target are checked against its
+Campaign; one invalid point approval blocks that Target's evaluation and prevents
+all approvals for that Target from applying. Approvals naming a known Target that
+is not in the invocation are not checked against points by that run. Unknown
+Target identities are still rejected when the Approved Waiver Set is loaded.
+
 Only a durably persisted `pass` satisfies `coverage_<target>`. Simulation failure,
 collection completeness, and policy evaluation remain independent: a failing
 simulation can produce valid passing coverage, and passing simulation can miss a
