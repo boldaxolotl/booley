@@ -6,11 +6,12 @@ import json
 import os
 import stat
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
+from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -80,6 +81,14 @@ class ProgressLifecycle:
         try:
             self._publish("aborted")
         except Exception as cleanup:
+            try:
+                self._publish("aborted")
+            except Exception as retry:  # noqa: BLE001 — preserve the original Flow failure
+                if exc_type is None:
+                    message = f"{cleanup}; aborted retry failed: {retry}"
+                    raise ProgressPublicationError(message) from cleanup
+            else:
+                return False
             if exc_type is None:
                 raise ProgressPublicationError(str(cleanup)) from cleanup
         return False
@@ -113,6 +122,13 @@ def progress_document(
         document.update(extra)
     validate_progress_shape(document)
     return document
+
+
+def write_progress_json(path: Path, document: Mapping[str, object]) -> None:
+    """Atomically publish one progress document under its shared writer lock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _progress_file_lock(path):
+        _write_progress_json_unlocked(path, document)
 
 
 def read_progress_for_run(
@@ -175,14 +191,17 @@ def repair_progress_after_reap(report_roots: Sequence[Path], endpoint: str, run_
     return True
 
 
-def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> None:
-    """Mark an authenticated coverage origin terminal without changing its history."""
-    document = validate_coverage_origin_progress(path)
+def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> bool:
+    """Best-effort supersede an authenticated coverage progress projection."""
+    try:
+        document = validate_coverage_origin_progress(path)
+    except (OSError, ValueError):
+        return False
     phase = document.get("phase")
     if phase in {"superseded", "complete"}:
-        return
+        return False
     if phase not in {"running", "aborted"}:
-        raise ValueError("resume origin progress has an ineligible phase")
+        return False
     updated = dict(document)
     updated.update(
         {
@@ -196,7 +215,11 @@ def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> N
         }
     )
     validate_progress_shape(updated)
-    _replace_if_unchanged(path, document, updated)
+    try:
+        _replace_if_unchanged(path, document, updated)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def validate_coverage_origin_progress(path: Path) -> dict[str, Any]:
@@ -249,13 +272,38 @@ def _has_link_between(path: Path, root: Path) -> bool:
 def _replace_if_unchanged(
     path: Path, original: Mapping[str, object], updated: Mapping[str, object]
 ) -> None:
-    current = _read_json_object_nofollow(path)
-    if current != original:
-        raise ValueError("progress changed concurrently")
+    with _progress_file_lock(path):
+        current = _read_json_object_nofollow(path)
+        if current != original:
+            raise ValueError("progress changed concurrently")
+        _write_progress_json_unlocked(path, updated)
+
+
+@contextmanager
+def _progress_file_lock(path: Path) -> Iterator[None]:
+    lock_path = path.with_name(".progress.lock")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("progress lock must be a regular file")
+        with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
+            descriptor = -1
+            wait_for_file_lock(handle, timeout_s=5)
+            try:
+                yield
+            finally:
+                release_file_lock(handle)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _write_progress_json_unlocked(path: Path, document: Mapping[str, object]) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=".progress-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(updated, stream, sort_keys=True, indent=2, allow_nan=False)
+            json.dump(document, stream, sort_keys=True, indent=2, allow_nan=False)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())

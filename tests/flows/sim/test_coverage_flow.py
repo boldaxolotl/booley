@@ -444,6 +444,10 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
     target = result.outcome.detail["targets"]["sim_0"]
     assert target["simulation"] == "not_run"
     assert "coverage_campaign" not in target
+    progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
+    assert progress["phase"] == "aborted"
+    assert progress["completed_targets"] == []
+    assert progress["pending_targets"] == ["sim_0", "sim_1"]
 
 
 def _interrupt_coverage_invocation(tmp_path, monkeypatch, *, selected=None, skipped=()):
@@ -530,6 +534,44 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert [request.test.name for request in execution.runs] == ["wrap"]
+
+
+def test_coverage_resume_uses_manifest_when_origin_progress_is_missing(tmp_path, monkeypatch):
+    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    (reports / "sim/1/progress.json").unlink()
+    resumed_reports = tmp_path / "resumed"
+
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed_reports)
+    )
+
+    assert result.exit_code == 0
+    progress = json.loads((resumed_reports / "sim/1/progress.json").read_text())
+    assert progress["phase"] == "complete"
+    assert progress["completed_targets"] == ["sim_0"]
+    assert progress["pending_targets"] == []
+
+
+def test_interrupted_coverage_resume_publishes_terminal_progress(tmp_path, monkeypatch):
+    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    resumed_reports = tmp_path / "resumed"
+
+    class InterruptedAgain(NativeExecution):
+        def run(self, request):
+            super().run(request)
+            raise KeyboardInterrupt("resume interrupted")
+
+    with pytest.raises(KeyboardInterrupt, match="resume interrupted"):
+        SimulateFlow(coverage_execution=lambda *_args: InterruptedAgain()).execute(
+            SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed_reports)
+        )
+
+    progress = json.loads((resumed_reports / "sim/1/progress.json").read_text())
+    assert progress["phase"] == "aborted"
+    assert progress["completed_targets"] == []
+    assert progress["pending_targets"] == ["sim_0"]
 
 
 def _crash_coverage_publication(tmp_path, monkeypatch, boundary):

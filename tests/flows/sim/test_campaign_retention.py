@@ -38,6 +38,28 @@ def test_coverage_progress_stamps_run_identity_and_timestamp(tmp_path, monkeypat
     assert progress["timestamp"].endswith("Z")
 
 
+def test_coverage_infrastructure_failure_remains_pending_in_terminal_progress(tmp_path):
+    class Unavailable(NativeExecution):
+        def build(self, request):
+            raise FileNotFoundError("Verilator disappeared")
+
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    invocation = tmp_path / "reports/sim/1"
+    plan = replace(prepared.plan.targets[0], invocation_dir=invocation)
+    progress = CoverageProgress(invocation, ("sim_0",))
+    progress.checkpoint()
+
+    outcome = run_coverage_target(plan, Unavailable(), progress)
+    progress.checkpoint(complete=True, phase="aborted")
+
+    document = json.loads((invocation / "progress.json").read_text())
+    assert outcome.abort_remaining is True
+    assert document["phase"] == "aborted"
+    assert document["completed_targets"] == []
+    assert document["pending_targets"] == ["sim_0"]
+
+
 def test_native_pruning_preserves_normalized_campaign_and_records_availability(tmp_path):
     from booley.flows.sim.campaign_retention import prune_native_payload
 

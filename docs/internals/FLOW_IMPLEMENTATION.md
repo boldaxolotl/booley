@@ -127,11 +127,14 @@ adds only `superseded_by` for the new invocation.
 
 `targets` is unique, and `completed_targets` plus `pending_targets` is an exact,
 disjoint partition. A Target enters `completed_targets` only after its owner-defined
-durable publication boundary. The shared lifecycle guard retries a failed normal
-terminal write once as `aborted`; a successful repair does not erase the original
-exit-2 publication error. When an MCP supervisor terminates or discovers a dead
-child, it best-effort repairs a matching, validated, still-live checkpoint only
-after the process group is reaped. Missing, unsafe, malformed, changed, or
+durable publication boundary. The shared lifecycle guard retries one failed
+terminal publication: failed normal completion is retried as `aborted`, while a
+failed `aborted` write is retried without masking the original Flow failure. A
+successful repair does not erase the original exit-2 publication error. Progress
+writers and conditional repairs share one file lock, so a supervisor repair cannot
+overwrite a concurrent resume supersession. When an MCP supervisor terminates or
+discovers a dead child, it best-effort repairs a matching, validated, still-live
+checkpoint only after the process group is reaped. Missing, unsafe, malformed, changed, or
 unwritable checkpoints never change the already determined Job outcome.
 
 ### Shared planning and dry-run lifecycle
@@ -1038,6 +1041,8 @@ and changes an eligible `running` or `aborted` origin to `superseded`. The
 origin's completed and pending lists remain its historical disposition; they are
 not recomputed from the recovered Campaign store. An already `complete` origin
 is unchanged, and an already `superseded` origin keeps its first `superseded_by`.
+Missing, malformed, or concurrently changed origin progress prevents only that
+observational supersession; it never prevents manifest-authoritative recovery.
 
 #### Exact report retention
 

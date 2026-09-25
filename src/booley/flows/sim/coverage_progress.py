@@ -4,9 +4,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from booley.flows.progress_lifecycle import progress_document
+from booley.flows.progress_lifecycle import progress_document, write_progress_json
 
-from .campaign_reports import write_campaign_json
 from .coverage_campaign import coverage_mapping_document
 from .coverage_transaction import CoverageTargetOutcome
 
@@ -18,8 +17,15 @@ class CoverageProgress:
     outcomes: list[CoverageTargetOutcome] = field(default_factory=list)
 
     def completed(self, outcome: CoverageTargetOutcome) -> None:
+        if outcome.abort_remaining:
+            self.checkpoint()
+            return
         self.outcomes.append(outcome)
-        self.checkpoint()
+        try:
+            self.checkpoint()
+        except Exception:
+            self.outcomes.pop()
+            raise
 
     def checkpoint(self, *, complete: bool = False, phase: str | None = None) -> None:
         done = [outcome.target for outcome in self.outcomes]
@@ -30,7 +36,7 @@ class CoverageProgress:
         )
         if complete != (resolved_phase in {"complete", "aborted", "superseded"}):
             raise ValueError("coverage progress complete and phase disagree")
-        write_campaign_json(
+        write_progress_json(
             self.invocation_dir / "progress.json",
             progress_document(
                 flow="sim",

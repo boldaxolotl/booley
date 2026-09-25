@@ -48,7 +48,7 @@ from booley.flows.progress_lifecycle import (
     ProgressPublicationError,
     progress_document,
     supersede_progress,
-    validate_coverage_origin_progress,
+    write_progress_json,
 )
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign_reports import target_report_directory
@@ -2051,7 +2051,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         with lifecycle:
             progress.checkpoint()
-            validate_coverage_origin_progress(validated.path.parents[3] / "progress.json")
             outcome = self._run_validated_resume_campaign(
                 validated, invocation, admission, coverage_plan
             )
@@ -2898,7 +2897,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         if complete != bool(payload["complete"]):
             raise ValueError("Simulation Campaign progress complete and phase disagree")
-        _atomic_write_json(invocation / "progress.json", payload)
+        write_progress_json(invocation / "progress.json", payload)
 
     def _plan_campaign_baselines(
         self,
@@ -3860,7 +3859,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         if complete != bool(payload["complete"]):
             raise ValueError("elaboration progress complete and phase disagree")
-        _atomic_write_json(invocation_dir / "progress.json", payload)
+        write_progress_json(invocation_dir / "progress.json", payload)
 
     def _handle_elab_only_dry_run(self, targets: list[str]) -> EndpointOutcome:
         del targets
@@ -4942,7 +4941,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         if complete != bool(payload["complete"]):
             raise ValueError("simulation progress complete and phase disagree")
-        _atomic_write_json(invocation_dir / "progress.json", payload)
+        write_progress_json(invocation_dir / "progress.json", payload)
 
     def _persist_target_outcome(self, result: TargetResult) -> None:
         """Durably record one terminal Target before starting the next."""

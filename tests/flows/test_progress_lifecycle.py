@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,21 @@ def test_failed_complete_repairs_aborted_but_remains_an_error() -> None:
     assert phases == ["complete", "aborted"]
 
 
+def test_failed_aborted_publication_retries_without_masking_failure() -> None:
+    phases: list[str] = []
+
+    def publish(phase: str) -> None:
+        phases.append(phase)
+        if len(phases) == 1:
+            raise OSError("transient rename failure")
+
+    failure = RuntimeError("Flow failed")
+    with pytest.raises(RuntimeError, match="Flow failed") as raised, ProgressLifecycle(publish):
+        raise failure
+    assert raised.value is failure
+    assert phases == ["aborted", "aborted"]
+
+
 def test_persistent_cleanup_failure_does_not_mask_interrupt() -> None:
     def publish(_phase: str) -> None:
         raise OSError("disk unavailable")
@@ -109,6 +125,51 @@ def test_repair_after_reap_preserves_target_evidence(tmp_path: Path) -> None:
     assert repaired["phase"] == "aborted"
     assert repaired["completed_targets"] == original["completed_targets"]
     assert repaired["pending_targets"] == original["pending_targets"]
+
+
+def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "sim" / "1" / "progress.json"
+    _write_progress(path)
+    supersede_at_replace = threading.Event()
+    repair_at_replace = threading.Event()
+    allow_supersede = threading.Event()
+    original_replace = Path.replace
+
+    def controlled_replace(source: Path, destination: Path) -> Path:
+        if threading.current_thread().name == "supersede":
+            supersede_at_replace.set()
+            assert allow_supersede.wait(timeout=5)
+        elif threading.current_thread().name == "repair":
+            repair_at_replace.set()
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", controlled_replace)
+    results: dict[str, bool] = {}
+    supersede = threading.Thread(
+        name="supersede",
+        target=lambda: results.setdefault(
+            "supersede", supersede_progress(path, new_invocation=2, new_run_id="resume-run")
+        ),
+    )
+    repair = threading.Thread(
+        name="repair",
+        target=lambda: results.setdefault(
+            "repair", repair_progress_after_reap((tmp_path,), "sim", "run-1")
+        ),
+    )
+
+    supersede.start()
+    assert supersede_at_replace.wait(timeout=5)
+    repair.start()
+    repair_at_replace.wait(timeout=0.5)
+    allow_supersede.set()
+    supersede.join(timeout=5)
+    repair.join(timeout=5)
+
+    assert results == {"supersede": True, "repair": False}
+    assert json.loads(path.read_text())["phase"] == "superseded"
 
 
 def test_run_lookup_rejects_wrong_run_and_symlink(tmp_path: Path) -> None:

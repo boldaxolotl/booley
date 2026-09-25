@@ -8,11 +8,12 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
 
 from .implementation_report import (
@@ -20,7 +21,12 @@ from .implementation_report import (
     SCHEMA_VERSION,
     ImplementationReport,
 )
-from .progress_lifecycle import progress_document
+from .progress_lifecycle import (
+    ProgressLifecycle,
+    ProgressPublicationError,
+    progress_document,
+    write_progress_json,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,61 @@ class ImplementationProgress:
     complete: bool = False
     baseline_ref: str | None = None
     reports: Mapping[str, ImplementationReport] = field(default_factory=dict)
+
+
+class ImplementationProgressRun:
+    """Own shared synth/FPGA progress state and terminal error policy."""
+
+    def __init__(
+        self,
+        flow: str,
+        publish: Callable[[dict[str, Any], dict[str, Any], str, str | None, bool], None],
+    ) -> None:
+        self.flow = flow
+        self.current_results: dict[str, Any] = {}
+        self.baseline_results: dict[str, Any] = {}
+        self.baseline_ref: str | None = None
+        self._publish = publish
+        self._outcome: EndpointOutcome | None = None
+        self._lifecycle = ProgressLifecycle(self._publish_terminal)
+
+    def __enter__(self) -> ImplementationProgressRun:
+        self._lifecycle.__enter__()
+        self._publish(
+            self.current_results,
+            self.baseline_results,
+            "starting",
+            self.baseline_ref,
+            False,
+        )
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        return self._lifecycle.__exit__(exc_type, exc, traceback)
+
+    def complete(self, outcome: EndpointOutcome) -> EndpointOutcome:
+        """Publish normal terminal state while retaining the result on write failure."""
+        self._outcome = outcome
+        self._lifecycle.complete()
+        return outcome
+
+    def publication_failure(self, error: ProgressPublicationError) -> EndpointOutcome:
+        """Translate terminal publication failure consistently for implementation Flows."""
+        outcome = self._outcome or EndpointOutcome()
+        outcome.exit_code = EXIT_ERROR
+        outcome.detail["progress_error"] = str(error)
+        if not outcome.report_text:
+            outcome.report_text = f"{self.flow}: progress publication failed: {error}"
+        return outcome
+
+    def _publish_terminal(self, phase: str) -> None:
+        self._publish(
+            self.current_results,
+            self.baseline_results,
+            phase,
+            self.baseline_ref,
+            True,
+        )
 
 
 def target_report_slug(target: str) -> str:
@@ -165,7 +226,7 @@ class ImplementationPublisher:
             return None
         payload = self._progress_payload(progress)
         path = self.invocation_dir / "progress.json"
-        _atomic_write_json(path, payload)
+        write_progress_json(path, payload)
         return path
 
     def _invocation_path(self, target: str) -> Path | None:
