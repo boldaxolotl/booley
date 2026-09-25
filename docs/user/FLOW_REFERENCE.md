@@ -224,8 +224,8 @@ MCP has no `tests_file` or `skip` property. It accepts the same exact ordered
 test names directly in `test`; `resume_from` names one manifest and conflicts
 with `target`, `test`, explicit `mode`, `coverage`, and `trace`.
 
-The authoritative files remain beside the original manifest even when resume
-creates a later compatibility invocation:
+The authoritative files remain beside the original manifest when resume creates
+a later report-only invocation:
 
 ```text
 targets/<encoded-target>/
@@ -237,7 +237,7 @@ targets/<encoded-target>/
       build-result.json
       evidence/bundle.json            authenticated shared Simulator Bundle
     work-items/.../attempts/...       append-only attempts and results
-  simulation.json                    replaceable compatibility projection
+  simulation.json                    versioned Target-local projection
   coverage.json                      optional authenticated coverage reference
 ```
 
@@ -246,8 +246,26 @@ bundles, attempts, results, summaries, and nested coverage references bind one
 another by exact identity, byte count, and digest. Resume validates that chain
 and the current Target revision/workload before launching an EDA tool.
 
-Structured campaign output keeps bounded authority pointers in `manifest`,
-`summary`, `simulation`, and nullable `coverage`. It reports `grade`, `complete`,
+New `simulation.json` files use `booley.simulation-projection/v2`. Their manifest
+and optional Coverage pointers are typed `origin_target` references with a
+normalized relative path, byte count, digest, artifact kind, and Simulation
+Campaign owner.
+Legacy absolute manifest and summary strings remain readable only as hints after
+the supplied local Simulation Campaign has authenticated; readers never follow
+them back to the producer path.
+
+Versioned `report.json` files use `booley.simulation-report/v2`. Each Target has
+one `artifacts` map whose references use `report_invocation` for local artifacts
+or `reports_root` for an origin Simulation Campaign under the same reports root.
+A cross-root resume uses `external_origin_target`; its caller supplies the origin
+Target directory when resolving that external dependency. A resume report declares
+`dependency: external_origin_campaign` and publishes no local `simulation.json`.
+Copying a complete invocation preserves local references; copying a reports root
+preserves same-root resume references. Copying only a resume invocation leaves its
+immutable Simulation Campaign identity, digest, and external relative path, but
+not the external artifact bytes.
+
+Structured campaign output reports `grade`, `complete`,
 aggregate `observation_counts`, and a maximum-32 `observations` preview. Every
 preview entry retains `test`, `execution`, `functional`, `assertions`,
 `assertion_count`, and bounded `detail`; `observation_total` and
@@ -259,8 +277,9 @@ The independent observation axes mean:
 - `functional`: the pass/fail/inconclusive test verdict;
 - `assertions`: assertion evidence independently observed for that test.
 
-Open `summary`, then the referenced terminal result, for the complete durable
-record; the MCP preview is intentionally not a replacement for those files.
+Resolve the `manifest` artifact reference, then inspect its authenticated terminal
+results for the complete durable record; the MCP preview is intentionally not a
+replacement for those files.
 
 Simulation Campaign scheduling uses the admitted Simulation Job as one heavy
 lane. With `[jobs].max_heavy = 1` execution is serial. Higher caps allow at most
@@ -369,8 +388,8 @@ threshold. Exit precedence is `2` for Coverage Preflight, collection, infrastruc
 persistence, incompatible-format, or blocked-evaluation errors; then `1` for a
 simulation failure or valid threshold miss; otherwise `0`, including ungated
 collection. Structured `detail.targets[selector]` retains each Target's
-`simulation`, `collection`, `evaluation`, `coverage_campaign`, and
-`simulation_report` even when another Target dominates the exit code.
+`simulation`, `collection`, `evaluation`, and canonical `coverage_campaign`
+reference even when another Target dominates the exit code.
 
 The default report root is `flow-reports` under the resolved project-data
 directory; `--report-dir` selects an explicit root. Each invocation owns:
@@ -406,8 +425,9 @@ compressed and uncompressed byte counts, point count, and SHA-256. V1 and V2
 Campaigns are rejected at a hard schema cutoff; recollect coverage to produce V3.
 Pass consumers the exact
 `coverage.json` path; never pass or edit the point store directly.
-Native artifact paths are relative to the Target directory; Flow pointers are
-relative to the producing work directory. There is no project-wide latest
+Native artifact paths are relative to the Target directory. New Simulation
+report references are relative to their containing report invocation or reports
+root, never to the producing work directory. There is no project-wide latest
 Campaign and no cross-Target merge. Missing legacy flat reports require consumers
 to follow the canonical report pointers instead.
 
