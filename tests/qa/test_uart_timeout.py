@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def oracle(monkeypatch):
-    evaluator = Path(__file__).resolve().parents[2] / "qa/scenarios/uart/evaluator"
+    evaluator = Path(__file__).resolve().parents[2] / "qa/missions/uart/evaluator"
     monkeypatch.syspath_prepend(str(evaluator))
     return importlib.import_module("timeout_checks")
 
@@ -86,7 +86,7 @@ def test_slow_depth_observation_is_blocked_not_a_hardware_failure(oracle):
 
 
 def test_timeout_manifest_preserves_concrete_fifo_depths():
-    from qa.scenarios.uart.evaluator.cases import materialize
+    from qa.missions.uart.evaluator.cases import materialize
 
     manifest = materialize("0123456789abcdef0123456789abcdef")
     for item in manifest["cases"]:

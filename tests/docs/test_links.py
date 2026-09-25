@@ -21,7 +21,7 @@ GITHUB_BLOB_PREFIX = "/boldaxolotl/Booley/blob/main/"
 
 def _frozen_upstream_documents() -> set[Path]:
     """Pinned upstream text retains upstream links; never fetch its linked RTL."""
-    spec = REPO_ROOT / "qa/scenarios/uart/spec"
+    spec = REPO_ROOT / "qa/missions/uart/spec"
     manifest = json.loads((spec / "corpus-manifest.json").read_text(encoding="utf-8"))
     documents = set()
     for entry in manifest["files"]:
@@ -194,8 +194,8 @@ def test_repository_local_markdown_links_resolve() -> None:
 def test_only_frozen_upstream_markdown_is_excluded() -> None:
     documents = set(_markdown_files())
     assert not documents.intersection(_frozen_upstream_documents())
-    assert REPO_ROOT / "qa/scenarios/uart/evaluator/CONTRACT.md" in documents
-    assert REPO_ROOT / "qa/scenarios/uart/spec/timing-addendum.md" in documents
+    assert REPO_ROOT / "qa/missions/uart/evaluator/CONTRACT.md" in documents
+    assert REPO_ROOT / "qa/missions/uart/spec/timing-addendum.md" in documents
     assert len(_frozen_upstream_documents()) == 5
 
 

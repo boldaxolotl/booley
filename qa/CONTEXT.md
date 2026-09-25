@@ -1,81 +1,35 @@
 # Public QA glossary
 
-This is the canonical vocabulary for Booley's public qualification suite. Shared
-product concepts such as **Booley Flow** and **Trace Artifact** are defined in
-the [shared glossary](../docs/CONTEXT.md); **Finding** belongs to the
-[Feedback glossary](../src/booley/feedback/CONTEXT.md). Scenario and Check structure
-is summarized in the [suite README](README.md#scenario-and-check-structure), and
-Human triage and Qualification behavior belong in the
-[`booley-qa-triage` skill](booley-qa-triage/SKILL.md). Record files and Scenario Run
-execution belong in [FORMAT.md](doc/FORMAT.md) and [PROTOCOL.md](doc/PROTOCOL.md),
-respectively.
+This is the canonical vocabulary for Booley's public QA missions. Shared
+product concepts are defined in the [shared glossary](../docs/CONTEXT.md), and
+**Finding** is defined in the [Feedback glossary](../src/booley/feedback/CONTEXT.md).
 
 ## Language
 
-**Public QA Suite**:
-The versioned collection of Scenarios, Capability Coverage, and shared execution and reporting rules used to qualify a specific Booley product revision.
-_Avoid_: test suite, CI suite, regression tests
+**Mission**:
+One timeboxed, repeatable bug hunt that exercises Booley against pinned inputs.
+It orders Mission Areas by priority but does not certify the product or require
+every area to complete.
+_Avoid_: Scenario, qualification suite, checklist
 
-**Capability**:
-One supported, publicly sourced product behavior inventoried by the Public QA Suite. Its stable, semantic ID names the behavior in uppercase kebab case, such as `SECURITY-RUNTIME-ISOLATION`.
-_Avoid_: feature flag, Check, Criterion
+**Mission Area**:
+One budgeted focus within a Mission, stating an intent, useful stimuli and
+faults, known traps, and any real dependencies. Mission Areas are independent
+unless the Mission says otherwise.
+_Avoid_: Check, Criterion, protocol stage
 
-**Scenario**:
-One representative, end-to-end use of Booley, expressed as an ordered, versioned declaration of its inputs, Configured Scenarios, Steps, Checks, evidence requirements, recovery, and cleanup.
-_Avoid_: script, test, run
+**QA Run**:
+One execution of a Mission against an exact Booley build on one host and agent
+client. It preserves Findings, a running log, owned-resource cleanup state, and
+local evidence under its run directory.
+_Avoid_: Scenario Run, Qualification, certification
 
-**Step**:
-One ordered unit of work in a Scenario. A Step may own multiple Checks and the resources or recovery instructions needed to perform them.
-_Avoid_: Criterion, pipeline stage
+**Release Smoke List**:
+The small must-pass list run before a release. Unlike a Mission, it has a binary
+verdict: every item must pass as documented without a workaround.
+_Avoid_: Qualification, Mission, regression suite
 
-**Check**:
-One independently observable product claim within a Scenario, with declared stimulus, expectation, authority, evidence requirement, and capture point. The Check is the complete instruction for exercising and judging that claim.
-_Avoid_: Criterion, assertion, test function
-
-**Check Result**:
-One immutable record of a Check attempt within a Scenario Run, including its observed outcome and evidence references.
-_Avoid_: Run Result, test result
-
-**Observation**:
-One unclassified fact, reaction, or unexpected behavior recorded during a Scenario Run outside a Check's strict expected-versus-observed judgement. Human triage decides its meaning; the Scenario Operator preserves it without creating a Finding.
-_Avoid_: Finding, Check Result, verdict
-
-**Triage Case**:
-One human decision unit containing a suspected root observation and every explicitly linked consequential Check Result or Observation. Grouping changes presentation, not evidence: every source record remains visible and belongs to exactly one active Triage Case.
-_Avoid_: Finding, hidden failure, issue
-
-**Capability Coverage**:
-The mapping between inventoried Capabilities and the Scenario Checks that exercise them. Capability Coverage establishes representation, not behavioral evidence.
-_Avoid_: RTL coverage, Coverage Campaign, code coverage
-
-**Configured Scenario**:
-A Scenario with one specific choice of execution parameters, pre-run requirements, selected Check sets, and justified exclusions. It also states whether Qualification requires a Scenario Run with that configuration.
-_Avoid_: Profile, run, environment matrix
-
-**Structural Validation**:
-A static consistency evaluation of Public QA Suite assets, distinct from evidence-producing Qualification.
-_Avoid_: Qualification, product test, Scenario Run
-
-**Human Maintainer**:
-The person who initiates and authorizes a Scenario Run, selects a Configured Scenario, supplies its required inputs, and owns Triage Dispositions.
-_Avoid_: operator, requester, coordinator
-
-**Scenario Operator**:
-The agent responsible for executing one Scenario Run and recording its Check Results, Observations, and evidence within the authority granted by the Human Maintainer. It does not create Findings or outcomes.
-_Avoid_: test runner, coordinator agent, autonomous campaign, delegate
-
-**Scenario Run**:
-One execution of a Configured Scenario with exact product, suite, input, tool, and environment identities. It produces sealed Check Results, Observations, and evidence for later human triage.
-_Avoid_: QA Run, Job, Ticket run, test invocation
-
-**Protocol Stage**:
-One part of Scenario Run operation: admit, execute, or finish. It is distinct from a Scenario phase, which allocates and orders product work within execution.
-_Avoid_: phase, Step, pipeline stage
-
-**Scenario Run Outcome**:
-The deterministic evaluation produced after every Triage Case for one Scenario Run has a Human Maintainer disposition. Its value is `passed`, `failed`, or `incomplete`. It is distinct from raw execution status; non-completed execution prevents a passing outcome.
-_Avoid_: Qualification, Profile Verdict
-
-**Qualification**:
-The final step of human QA triage: the aggregate evaluation of Scenario Run Outcomes for one Booley product revision. It is `failed` when any required run failed, `passed` only when every required Configured Scenario has a compatible passing run, and otherwise `incomplete`.
-_Avoid_: Structural Validation, CI pass, test execution
+**Capability Map**:
+The mapping from supported Booley behavior to the Mission Areas that exercise
+it. It records QA breadth, not execution evidence and not native RTL coverage.
+_Avoid_: Capability Coverage, Coverage Campaign, coverage result
