@@ -7,6 +7,8 @@ import os
 import shutil
 import stat
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,41 @@ BOOLEY_COPY_EXCLUDES = (
     "__pycache__",
     "*.pyc",
 )
+
+# Windows refuses to rename onto a file that another handle holds open without
+# FILE_SHARE_DELETE, which is how Python's open() opens files. A reader polling
+# a protocol file therefore makes a concurrent atomic replace fail transiently.
+_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({5, 32})  # ACCESS_DENIED, SHARING_VIOLATION
+_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.25, 0.25)
+
+
+def _is_transient_windows_replace_error(exc: PermissionError) -> bool:
+    return getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_REPLACE_ERRORS
+
+
+def replace_file(
+    source: Path,
+    destination: Path,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Atomically replace ``destination`` with ``source``, tolerating Windows readers.
+
+    Retries only the transient Windows sharing errors, with a bounded backoff
+    of about 1.1 s in total; every other error, and the last transient one,
+    propagates unchanged. POSIX renames never hit this path.
+    """
+    for delay in _REPLACE_RETRY_DELAYS_SECONDS:
+        try:
+            source.replace(destination)
+        except PermissionError as exc:
+            if not _is_transient_windows_replace_error(exc):
+                raise
+            logger.debug("Retrying replace of %s after %s", destination, exc)
+            sleep(delay)
+        else:
+            return
+    source.replace(destination)
 
 
 def _strip_windows_reparse_points(root: Path) -> None:
