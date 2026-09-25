@@ -24,6 +24,7 @@ from typing import Any
 
 from booley.agent_workspace.isolation import remove_shadow_package
 from booley.commit_policy import ALLOWED_TYPES, banned_phrases, stealth_enabled, validate_message
+from booley.core.boundary import parse_positive_int_arg
 from booley.core.models import AgentCallParams
 
 # Also re-exported for backward compatibility: tb_coder + tests import
@@ -70,6 +71,8 @@ class Specialist(McpTool):
     agent calls get automatic aggregation — use _invoke_agent() instead
     of calling _call_agent_sync() directly.
     """
+
+    endpoint_kind = "specialist"
 
     # Specialists are model-API-bound with ~no local footprint (ADR 0028):
     # every Specialist admits under the LIGHT class pool.
@@ -126,7 +129,7 @@ class Specialist(McpTool):
         )
         parser.add_argument(
             "--max-turns",
-            type=int,
+            type=parse_positive_int_arg,
             default=self.default_max_turns,
             help="Maximum agent conversation turns",
         )

@@ -122,6 +122,15 @@ class TestSpecialistArgparse:
         assert args.instruction == ""
         assert args.diff_ref == "HEAD~1"
 
+    @pytest.mark.parametrize("value", ["0", "-1", "1.5", "words"])
+    def test_max_turns_must_be_a_positive_integer(self, value: str):
+        with pytest.raises(SystemExit):
+            ReviewSpecialist().parse_args(["--max-turns", value])
+
+    def test_hidden_options_do_not_accept_abbreviations(self):
+        with pytest.raises(SystemExit):
+            ReviewSpecialist().parse_args(["--transcript", "injected"])
+
 
 class TestFloorEnforcement:
     def test_no_model_falls_back_to_floor(self, tmp_path: Path):
