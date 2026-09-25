@@ -54,7 +54,7 @@ class RegisterTransport:
 @pytest.mark.parametrize("fault", ["pop", "clear-control", "append"])
 @pytest.mark.parametrize("write", [False, True])
 def test_invalid_access_detects_state_loss_and_restoration(monkeypatch, fault, write):
-    evaluator = Path(__file__).resolve().parents[2] / "qa/scenarios/uart/evaluator"
+    evaluator = Path(__file__).resolve().parents[2] / "qa/missions/uart/evaluator"
     monkeypatch.syspath_prepend(str(evaluator))
     exercise = importlib.import_module("exercises").invalid
     parameters = {"address": 0x10018, "write": write}

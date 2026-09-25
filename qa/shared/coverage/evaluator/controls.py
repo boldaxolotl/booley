@@ -1,4 +1,4 @@
-"""Literal independent oracle controls, separate from product qualification evidence."""
+"""Literal independent oracle controls, separate from real product Campaign evidence."""
 
 import argparse
 import gzip

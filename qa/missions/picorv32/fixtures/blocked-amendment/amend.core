@@ -1,0 +1,18 @@
+CAPI=2:
+name: booley:qa:amend:1
+filesets:
+  rtl:
+    files: [rtl/amend_counter.sv]
+    file_type: systemVerilogSource
+  tb:
+    files: [tb/amend_tb.sv]
+    file_type: systemVerilogSource
+    tags: [tb]
+targets:
+  sim_amend:
+    flow: sim
+    filesets: [rtl, tb]
+    toplevel: amend_tb
+    flow_options:
+      tool: verilator
+      verilator_options: [--timing, --main, --exe, -Wno-fatal]

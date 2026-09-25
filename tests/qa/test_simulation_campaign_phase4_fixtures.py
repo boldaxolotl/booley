@@ -8,11 +8,10 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-TAXI = ROOT / "qa/scenarios/taxi/fixtures/simulation-campaign"
-UART = ROOT / "qa/scenarios/uart/fixtures/simulation-campaign"
+TAXI = ROOT / "qa/missions/taxi/fixtures/simulation-campaign"
+UART = ROOT / "qa/missions/uart/fixtures/simulation-campaign"
 SHA = "sha256:" + "a" * 64
 
 
@@ -205,37 +204,6 @@ def test_uart_literal_cwd_validator_proves_scoped_serialization(tmp_path: Path) 
     _write_json(timeline, document)
     with pytest.raises(ValueError, match="attempts overlap"):
         validator.validate_literal_cwd_serialization(manifest, timeline)
-
-
-def test_phase4_checks_are_dedicated_and_pending_fresh_runs() -> None:
-    expectations = {
-        "taxi": (
-            "taxi-simulation-campaign",
-            [
-                "campaign.heavy-cap",
-                "campaign.attempt-isolation",
-                "campaign.continue-after-failure",
-            ],
-            "taxi-ubuntu-codex-cli",
-        ),
-        "uart": (
-            "uart-simulation-campaign",
-            ["campaign.literal-cwd-serialization"],
-            "uart-ubuntu-codex-cli",
-        ),
-    }
-    for scenario_name, (set_id, checks, configured_id) in expectations.items():
-        scenario = yaml.safe_load(
-            (ROOT / f"qa/scenarios/{scenario_name}/scenario.yaml").read_text()
-        )
-        dedicated = next(item for item in scenario["check_sets"] if item["id"] == set_id)
-        assert all(check in dedicated["checks"] for check in checks)
-        selected = [
-            item["id"] for item in scenario["configured_scenarios"] if set_id in item["check_sets"]
-        ]
-        assert selected == [configured_id]
-        step_ids = {item["id"] for item in scenario["steps"]}
-        assert set(checks) <= step_ids
 
 
 def test_phase4_fixture_policy_is_explicit() -> None:

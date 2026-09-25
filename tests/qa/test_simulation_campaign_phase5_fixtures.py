@@ -8,7 +8,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -24,30 +23,6 @@ def _module(path: Path, name: str):
 def _write(path: Path, value: object) -> Path:
     path.write_text(json.dumps(value, sort_keys=True) + "\n")
     return path
-
-
-def test_phase5_check_sets_are_isolated_to_representative_configurations() -> None:
-    expected = {
-        "taxi": (
-            "taxi-simulation-campaign",
-            {"campaign.cocotb-batch-resume", "campaign.mcp-structured-pointers"},
-            "taxi-ubuntu-codex-cli",
-        ),
-        "coverage-lifecycle": (
-            "coverage-lifecycle-simulation-campaign",
-            {"campaign.coverage-aggregate-resume"},
-            "coverage-lifecycle-ubuntu-codex-cli",
-        ),
-    }
-    for scenario_name, (set_id, checks, selected_id) in expected.items():
-        path = ROOT / f"qa/scenarios/{scenario_name}/scenario.yaml"
-        scenario = yaml.safe_load(path.read_text())
-        check_set = next(item for item in scenario["check_sets"] if item["id"] == set_id)
-        assert checks <= set(check_set["checks"])
-        selected = [
-            item["id"] for item in scenario["configured_scenarios"] if set_id in item["check_sets"]
-        ]
-        assert selected == [selected_id]
 
 
 def _taxi_batch_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
@@ -130,7 +105,7 @@ def _mcp_response(tmp_path: Path) -> Path:
 
 def test_taxi_phase5_validator_checks_batch_retry_and_mcp_bound(tmp_path: Path) -> None:
     module = _module(
-        ROOT / "qa/scenarios/taxi/fixtures/simulation-campaign/validate_phase5.py",
+        ROOT / "qa/missions/taxi/fixtures/simulation-campaign/validate_phase5.py",
         "taxi_phase5",
     )
     module.validate_cocotb_batch(*_taxi_batch_files(tmp_path))
@@ -167,7 +142,7 @@ def test_taxi_mcp_validator_rejects_inconsistent_observation_preview(
     tmp_path: Path, mutation: Callable[[dict[str, object]], object], message: str
 ) -> None:
     module = _module(
-        ROOT / "qa/scenarios/taxi/fixtures/simulation-campaign/validate_phase5.py",
+        ROOT / "qa/missions/taxi/fixtures/simulation-campaign/validate_phase5.py",
         "taxi_phase5_mutation",
     )
     response = _mcp_response(tmp_path)
@@ -236,8 +211,7 @@ def _coverage_reference_files(tmp_path: Path) -> tuple[Path, Path, list[Path], d
 
 def test_coverage_phase5_validator_binds_origin_reference(tmp_path: Path) -> None:
     module = _module(
-        ROOT
-        / "qa/scenarios/coverage-lifecycle/fixtures/simulation-campaign/validate_aggregate.py",
+        ROOT / "qa/shared/coverage/simulation-campaign/validate_aggregate.py",
         "coverage_phase5",
     )
     attempts = _coverage_attempt_files(tmp_path)

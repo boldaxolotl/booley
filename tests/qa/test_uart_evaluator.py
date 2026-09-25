@@ -7,7 +7,7 @@ import pytest
 
 
 def test_mmio_control_detects_one_defined_response_bit():
-    from qa.scenarios.uart.evaluator.oracles import compare_mmio
+    from qa.missions.uart.evaluator.oracles import compare_mmio
 
     assert compare_mmio(0x101, 0x101, 0x1FF)
     assert not compare_mmio(0x100, 0x101, 0x1FF)
@@ -15,7 +15,7 @@ def test_mmio_control_detects_one_defined_response_bit():
 
 
 def test_serial_control_detects_payload_corruption_and_restoration():
-    from qa.scenarios.uart.evaluator.oracles import check_tx
+    from qa.missions.uart.evaluator.oracles import check_tx
 
     # Known 0x55, 8N1, exact-a: start/data/stop, 64 source clocks per bit.
     trace = [1] * 8 + functools.reduce(
@@ -29,7 +29,7 @@ def test_serial_control_detects_payload_corruption_and_restoration():
 
 
 def test_manifest_keeps_every_byte_and_96_seeded_supplements():
-    from qa.scenarios.uart.evaluator.cases import materialize
+    from qa.missions.uart.evaluator.cases import materialize
 
     manifest = materialize("0123456789abcdef0123456789abcdef")
     cases = manifest["cases"]
@@ -42,7 +42,7 @@ def test_manifest_keeps_every_byte_and_96_seeded_supplements():
 
 
 def test_serial_oracle_rejects_wrong_fractional_cadence():
-    from qa.scenarios.uart.evaluator.oracles import check_tx
+    from qa.missions.uart.evaluator.oracles import check_tx
 
     bits = [0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
     trace = [1] * 8 + [bit for i, bit in enumerate(bits) for _ in range([85, 85, 86][i % 3])]
@@ -54,7 +54,7 @@ def test_serial_oracle_rejects_wrong_fractional_cadence():
 def test_seed_stream_has_literal_known_answer():
     import hashlib
 
-    from qa.scenarios.uart.evaluator.cases import seed_bytes
+    from qa.missions.uart.evaluator.cases import seed_bytes
 
     expected = hashlib.sha256(
         b"booley.qa.uart.seed.v1\n0123456789abcdef0123456789abcdef\nUART-TXRX\n00000000\n00000000\n"
@@ -63,7 +63,7 @@ def test_seed_stream_has_literal_known_answer():
 
 
 def test_serial_oracle_rejects_unrequested_extra_frame():
-    from qa.scenarios.uart.evaluator.oracles import check_tx
+    from qa.missions.uart.evaluator.oracles import check_tx
 
     frame = [bit for bit in [0, 1, 0, 1, 0, 1, 0, 1, 0, 1] for _ in range(64)]
     assert check_tx([1] * 8 + frame + frame, [0x55], 0x4000)["status"] == "fail"
@@ -76,7 +76,7 @@ def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path, newl
     import subprocess
 
     import pytest
-    from qa.scenarios.uart.evaluator.inputs import snapshot
+    from qa.missions.uart.evaluator.inputs import snapshot
 
     root = tmp_path / "candidate"
     root.mkdir()
@@ -140,7 +140,7 @@ def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path, newl
 
 def test_manifest_publication_retains_existing_and_never_leaves_partial_json(tmp_path):
     import pytest
-    from qa.scenarios.uart.evaluator.publication import publish_new
+    from qa.missions.uart.evaluator.publication import publish_new
 
     path = tmp_path / "manifest.json"
     with pytest.raises(TypeError):
@@ -155,7 +155,7 @@ def test_manifest_publication_retains_existing_and_never_leaves_partial_json(tmp
 
 
 def test_fractional_tx_keeps_global_phase_across_legal_idle():
-    from qa.scenarios.uart.evaluator.oracles import check_tx, serial_bits
+    from qa.missions.uart.evaluator.oracles import check_tx, serial_bits
 
     cadence = (85, 85, 86)
     bits = [*serial_bits(0x55), 1, *serial_bits(0xAA)]
@@ -164,7 +164,7 @@ def test_fractional_tx_keeps_global_phase_across_legal_idle():
 
 
 def test_fractional_tx_rejects_restarted_phase_after_idle():
-    from qa.scenarios.uart.evaluator.oracles import check_tx, serial_bits
+    from qa.missions.uart.evaluator.oracles import check_tx, serial_bits
 
     cadence = (85, 85, 86)
     first = [bit for i, bit in enumerate(serial_bits(0x55)) for _ in range(cadence[i % 3])]

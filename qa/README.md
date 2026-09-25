@@ -1,185 +1,49 @@
-# Public Booley QA suite
+# Booley QA
 
-The `qa/` directory defines Booley's public qualification suite. It contains
-three production Scenarios with their Configured Scenarios, the capability
-coverage map, format validation, and the rules for running and reporting QA.
+Booley has one maintainer and no human QA team, so agents do the QA. Each QA run
+is a **timeboxed bug hunt**: an agent takes a candidate Booley build through a
+realistic journey on a pinned open-source IP and writes down everything that
+breaks, confuses, or slows it down. The metric is real findings per run.
 
-Canonical suite terminology is defined in the [Public QA glossary](CONTEXT.md).
-The repository-wide [context map](../CONTEXT-MAP.md) separates it from shared
-Booley, Ticket Board, and B-Wave vocabulary.
+Missions describe where to look, not a checklist to certify. When something
+fails, the operator records it, works around it, and keeps going, so one broken
+step never hides the bugs behind it.
 
-## Why this exists
+## Missions
 
-Booley has one maintainer and no human QA team. Release QA therefore has to be work
-that agents can execute repeatably and a maintainer can audit afterward. This suite
-defines the scope, instructions, evidence, and verdict rules needed to do that without
-letting a Scenario Operator decide which failures are actionable.
+| Mission | Journey |
+|---|---|
+| [picorv32](missions/picorv32/MISSION.md) | Published demo Project: baseline sim/lint/synth, Vivado, Interactive Mode and waveform diagnosis, two Ticket Mode changes, blocked-Ticket amendment, simulation campaign, cleanup |
+| [taxi](missions/taxi/MISSION.md) | Port of the Taxi 10G MAC from a direct clone: setup, baseline, FST and B-Wave, submodule companion Project, mutation testing, two Tickets, campaign, cleanup |
+| [uart](missions/uart/MISSION.md) | Clean-room UART from the OpenTitan documentation with an independent evaluator |
+| [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, policy, waivers, storage, retention, a coverage Ticket, the Coverage Analyst |
 
-Agents perform setup, product exercises, fault injection, recovery, evidence
-collection, and safe shutdown and cleanup of run-owned resources. The Human Maintainer
-still owns the Scenarios, required Configured Scenarios, acceptance rules, and every
-Triage Disposition. Deterministic tooling derives outcomes from those decisions.
+Each mission fits an 8-hour budget with areas in priority order. Host and client
+coverage (Windows, other agent clients) comes from rerunning a mission on that
+host or client.
 
-## Starting a run
+## Skills
 
-Explicitly invoke the user-only [`booley-qa-run` skill](booley-qa-run/SKILL.md) with a
-Scenario ID, a Configured Scenario ID, and an artifact root. The agent never invokes
-it on its own.
+Invoke these explicitly; agents do not start them on their own.
 
-The selected product may be an existing immutable artifact or an exact source commit.
-For an exact commit, admission may create or refresh its verified candidate wheel,
-install it in an operator-only host environment, and reconcile `booley bootstrap`
-before the Scenario Run is frozen. Before mutation, the operator creates a durable
-Admission Attempt record and resource ledger. Scenario Checks still exercise their
-own declared installation and Host Bootstrap behavior.
+| Skill | Use |
+|---|---|
+| [`booley-qa-run`](booley-qa-run/SKILL.md) | Run one mission against a Booley build; writes `findings.md`, `log.md`, `resources.md`, `evidence/` |
+| [`booley-qa-triage`](booley-qa-triage/SKILL.md) | Deduplicate findings from one or more runs against each other and GitHub issues; file what the maintainer approves |
+| [`booley-add-to-qa`](booley-add-to-qa/SKILL.md) | Add a behavior, fault idea, or known trap to a mission |
 
-Each production Scenario declares a shared pre-run requirement that permits
-admission-time `booley bootstrap` and execution-time `booley init` for its Configured
-Scenarios. A managed image or toolchain that either command owns does not have to
-exist before admission when the host can create it; record its fresh identity in the
-stage that produces it.
-
-QA execution is an agent skill, not a Booley CLI command. The agent reading the skill
-is the Scenario Operator. The [protocol](doc/PROTOCOL.md) discloses one resumable
-stage at a time and owns execution behavior. `validate.py` checks authored QA assets
-only; it does not execute a Scenario Run.
-
-The operator finishes by sealing version-2 `check-results.jsonl`,
-`observations.jsonl`, evidence, execution status, and cleanup status. It does not
-create Findings, calculate a Scenario Run Outcome, or calculate Qualification.
-
-## Triaging completed runs
-
-Explicitly invoke the user-only [`booley-qa-triage` skill](booley-qa-triage/SKILL.md)
-with a triage artifact root and one or more sealed Scenario Run roots. The skill uses
-the deterministic [`triage.py`](triage.py) helper to validate records, enumerate every
-non-pass result and Observation, and group only explicitly causal results into Triage
-Cases. A consequential failure is shown inside its suspected root case instead of as a
-separate question; it never disappears from the evidence or accounting.
-
-The Human Maintainer reviews each Triage Case and may confirm, split, merge, reopen,
-or disposition it. Confirmed product and documentation problems become
-`findings.jsonl`; actionable suite work becomes `qa-changes.jsonl`. Every candidate
-must belong to exactly one active case and every case must have a disposition before
-the helper calculates its Scenario Run Outcome.
-
-Qualification is the final triage step. It aggregates compatible, completely triaged
-runs for one product and target suite revision. A failed required run makes
-Qualification fail even when another required run is missing or incomplete; without
-a failure, missing or incomplete required runs make it incomplete. Optional runs are
-reported separately. Adding a later passing run never erases a trustworthy failure.
-
-## Adding behavior to QA
-
-Explicitly invoke the user-only [`booley-add-to-qa` skill](booley-add-to-qa/SKILL.md)
-with prose describing the proposed public behavior. It identifies existing coverage or
-proposes corrections to existing Checks, new Capabilities or Checks, or a new Scenario
-for Human Maintainer approval, then validates the approved changes. It does not execute
-Scenario Runs.
-
-## What's in this directory
+## Other files
 
 | Path | Contents |
 |---|---|
-| [`scenarios/`](scenarios/) | Production scenario YAML plus each Scenario's prompts, Ticket payloads, fixtures, specifications, and evaluator material |
-| [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Fixed native coverage fixtures, expected operands, approved waiver inputs, independent evaluator and external boundary controls |
-| [`coverage.yaml`](coverage.yaml) | Product capability inventory and public contract sources |
-| [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
-| [`run-record.schema.json`](run-record.schema.json) | Structural contract for version-2 Scenario Run records |
-| [`triage-record.schema.json`](triage-record.schema.json) | Structural contract for version-1 triage sessions and events |
-| [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
-| [`triage.py`](triage.py) | Deterministic sealing, candidate grouping, event replay, and verdict helper used by human triage |
-| [`booley-add-to-qa/`](booley-add-to-qa/) | Explicitly invoked skill that turns a proposed public behavior into reviewed Capability, Check, or Scenario changes |
-| [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
-| [`booley-qa-triage/`](booley-qa-triage/) | Explicitly invoked skill for Human Maintainer triage and Qualification |
-| [`doc/`](doc/) | Scenario Run execution protocol and record contract |
-| [`results/`](results/README.md) | Small Git-tracked snapshots of sealed runs for observed Check status and run-to-run trends |
+| [`SMOKE.md`](SMOKE.md) | Ten must-pass release items, run with `booley-qa-run ... smoke` |
+| [`DISK.md`](DISK.md) | Disk preflight every run performs first |
+| [`AREAS.md`](AREAS.md) | Booley capabilities mapped to the mission areas that exercise them |
+| [`missions/`](missions/) | Mission files plus their prompts, Ticket payloads, fixtures, specs, and evaluators |
+| [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Native-coverage fixture Project, expected values, fault injectors, and evaluator |
 
-The current suite maps 69 product capabilities and 16 distinct EDA integration
-references to 1,658 checks. Those counts show that the reviewed requirements are
-represented. They do not prove that Booley passes them.
-
-## Scenario and Check structure
-
-[`scenario.schema.json`](scenario.schema.json) is the structural authority. Scenario
-files use `format_version: 1`.
-
-A Scenario declares:
-
-- its identity, source, inputs, and public authorities;
-- named Check sets, shared pre-run requirements, and Configured Scenarios;
-- a shared time budget and ordered phases; and
-- ordered Steps.
-
-Each Step declares:
-
-- its identity, phase, action, and Checks; and
-- any prerequisites, authority, timeout, retry, recovery, resources, and assets.
-
-A Configured Scenario declares:
-
-- whether it is required;
-- its host, client, and backend parameters;
-- its specific pre-run requirements, inherited shared requirements, and selected
-  Check sets; and
-- any justified exclusions.
-
-Each Check is one independently observable product claim declaring:
-
-- its ID and Capability references;
-- its stimulus and expected result;
-- the public authority for that expectation; and
-- its required evidence, capture location, and any navigation-only references.
-
-## Scenarios
-
-| Scenario | What it exercises | Sources |
-|---|---|---|
-| PicoRV32 published demo continuity and evolution | Starts from the pinned published-demo Project and upstream source. It checks clean simulation, lint, synthesis, license-free Vivado ML Standard execution on provisioned Linux, Interactive Mode and waveform diagnosis, two Ticket Mode changes, final regression, and cleanup. Paid-license policy and relay checks remain in a separate optional Configured Scenario. | [Scenario](scenarios/picorv32/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/374) |
-| Taxi 10G MAC port and evolution | Starts from a pinned direct clone of Taxi. It checks Project setup, the clean 10G MAC baseline, FST and B-Wave behavior, a disposable submodule companion Project, mutation testing, two Ticket Mode changes, final regression, and cleanup. | [Scenario](scenarios/taxi/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/377) |
-| Documentation-only standalone UART | Builds a UART from the allowlisted OpenTitan documentation corpus without giving the developer the reference implementation or oracle. It covers Interactive Mode, feature and repair Tickets, independent evaluator controls and cases, external-image handling, final regression, and cleanup. | [Scenario](scenarios/uart/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/375), [oracle contract](scenarios/uart/evaluator/CONTRACT.md) |
-
-| Native coverage: measurement | Collection opt-in, harnesses, staging, native windows and exact directional toggle/value-property counts. | [Scenario](scenarios/coverage-measurement/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
-| Native coverage: policy | Metric policies, exact thresholds, independent simulation/coverage verdicts and approved waivers. | [Scenario](scenarios/coverage-policy/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
-| Native coverage: storage | V3 integrity, per-source aggregation, corruption rejection and large Campaigns. | [Scenario](scenarios/coverage-storage/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
-| Native coverage: lifecycle | Durable publication, interrupted/restarted producers, Ticket gap closure and exact retention. | [Scenario](scenarios/coverage-lifecycle/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
-| Native coverage: analysis | Real Coverage Analyst advice, source closure modes, exact-path validation and provider isolation. | [Scenario](scenarios/coverage-analysis/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
-| Native coverage: boundary | Bounded evidence queries, candidate screening, delivered references and controlled model failures. | [Scenario](scenarios/coverage-boundary/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
-
-The six coverage Scenarios each require Ubuntu and Windows with both Codex and
-Claude native clients: 24 additional Configured Scenario Runs. The fixtures pin
-Verilator 5.052 and exact arithmetic; authoring validation and fixture self-tests
-do not qualify these runs. The three existing Scenarios retain their memberships.
-
-The scenarios retain their reviewed pins, workloads, thresholds, prompts, authority,
-fault and recovery sequences, independent evaluation, and product cleanup Checks. The
-[published design](https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/HANDOFF.md)
-records the historical decisions behind the production files.
-
-### Pending Simulation Campaign qualification
-
-The 20 `campaign.*` Checks are behavioral additions and have no qualifying
-Scenario Run for this suite revision. Only these four representative Configured
-Scenarios select the dedicated Simulation Campaign Check sets and therefore
-require fresh runs:
-
-- `picorv32-ubuntu-codex-cli` selects `picorv32-simulation-campaign` (Checks 1–7).
-- `taxi-ubuntu-codex-cli` selects `taxi-simulation-campaign` (Checks 8–13).
-- `uart-ubuntu-codex-cli` selects `uart-simulation-campaign` (Checks 14–17).
-- `coverage-lifecycle-ubuntu-codex-cli` selects
-  `coverage-lifecycle-simulation-campaign` (Checks 18–20).
-
-Structural validation, fixture tests, and optional real EDA tool gates keep the
-authored contracts executable but do not complete these Checks or replace the
-fresh Scenario Runs. Run them only through a separately authorized
-`booley-qa-run`; until then, qualification for the changed suite remains
-incomplete rather than inheriting earlier sealed evidence.
-
-## Validate changes
-
-After changing QA assets, run:
+## Checking changes
 
 ```sh
-python qa/validate.py
 python -m pytest tests/qa/
 ```
