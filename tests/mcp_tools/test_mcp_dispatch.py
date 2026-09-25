@@ -2459,7 +2459,9 @@ class TestJobReportIdentity:
                 {
                     "flow": "sim",
                     "run_id": "simulate-i-1",
+                    "phase": "running",
                     "complete": False,
+                    "targets": ["a", "b"],
                     "completed_targets": ["a"],
                     "pending_targets": ["b"],
                 }
@@ -2490,7 +2492,9 @@ class TestJobReportIdentity:
                 {
                     "flow": "sim",
                     "run_id": "simulate-i-1",
+                    "phase": "running",
                     "complete": False,
+                    "targets": ["a", "b"],
                     "completed_targets": ["a"],
                     "pending_targets": ["b"],
                 }
@@ -2520,6 +2524,7 @@ class TestJobReportIdentity:
                     "run_id": rec.run_id,
                     "phase": "current",
                     "complete": False,
+                    "targets": ["a", "b"],
                     "completed_targets": ["a"],
                     "pending_targets": ["b"],
                 }

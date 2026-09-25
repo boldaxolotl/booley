@@ -868,6 +868,8 @@ def _retained_invocation(
         json.dumps(
             {
                 "flow": "sim",
+                "complete": True,
+                "phase": "complete",
                 "targets": ["sim"],
                 "completed_targets": ["sim"],
                 "pending_targets": [],
@@ -967,6 +969,7 @@ def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, s
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         progress["completed_targets"] = []
         progress["pending_targets"] = ["sim"]
+        progress["phase"] = "aborted"  # terminalized on a catchable exit
         progress_path.write_text(json.dumps(progress), encoding="utf-8")
 
     prune_invocation(reports, 1)
@@ -1006,6 +1009,9 @@ def test_interrupted_campaign_without_surviving_resources_needs_no_project_data(
     progress = json.loads(progress_path.read_text(encoding="utf-8"))
     progress["completed_targets"] = []
     progress["pending_targets"] = ["sim"]
+    # A killed producer never terminalizes its progress.
+    progress["complete"] = False
+    progress["phase"] = "running"
     progress_path.write_text(json.dumps(progress), encoding="utf-8")
 
     prune_invocation(reports, 1)

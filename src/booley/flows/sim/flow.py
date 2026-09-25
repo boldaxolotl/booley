@@ -43,6 +43,13 @@ from booley.flows.plan import (
     plan_value_fingerprint,
     stable_unit_id,
 )
+from booley.flows.progress_lifecycle import (
+    ProgressLifecycle,
+    ProgressPublicationError,
+    progress_document,
+    supersede_progress,
+    write_progress_json,
+)
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
@@ -2008,6 +2015,21 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
+        from .campaign_reports import campaign_invocation_lock
+
+        # reserve_invocation_dir already holds this invocation's producer lock;
+        # also own the resumed origin so pruning cannot remove it mid-resume.
+        origin_invocation = validated.path.parents[3]
+        try:
+            self.context.publication_resources.enter_context(
+                campaign_invocation_lock(origin_invocation)
+            )
+        except (OSError, ValueError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign resume origin is busy: {exc}",
+                detail=_campaign_recovery_detail(observed),
+            )
         if not isinstance(admission, AdmissionContext):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -2022,10 +2044,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 _fresh_campaign_recovery_detail(validated, observed),
             )
         except (OSError, ValueError, RuntimeError) as exc:
+            detail = _fresh_campaign_recovery_detail(validated, observed)
+            if isinstance(exc, ProgressPublicationError):
+                detail["progress_error"] = str(exc)
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign resume failed: {exc}",
-                detail=_fresh_campaign_recovery_detail(validated, observed),
+                detail=detail,
             )
         result = self._campaign_endpoint_outcome([outcome])
         result.detail.update(_campaign_recovery_detail(outcome.recovery))
@@ -2048,13 +2073,39 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if coverage_plan is not None
             else None
         )
-        if progress is not None:
+        if progress is None:
+            return self._run_validated_resume_campaign(
+                validated, invocation, admission, coverage_plan
+            )
+        lifecycle = ProgressLifecycle(
+            lambda phase: progress.checkpoint(complete=True, phase=phase)
+        )
+        with lifecycle:
             progress.checkpoint()
+            outcome = self._run_validated_resume_campaign(
+                validated, invocation, admission, coverage_plan
+            )
+            _checkpoint_coverage_campaign(progress, outcome)
+            supersede_progress(
+                validated.path.parents[3] / "progress.json",
+                new_invocation=int(invocation.name),
+                new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+            )
+            lifecycle.complete()
+            return outcome
+
+    def _run_validated_resume_campaign(
+        self,
+        validated: ValidatedResumeManifest,
+        invocation: Path,
+        admission: AdmissionContext,
+        coverage_plan: CoverageTargetPlan | None,
+    ) -> CampaignOutcome:
         plan = self._resume_campaign_plan(
             validated, int(invocation.name), coverage_plan=coverage_plan
         )
         executor = self._resume_campaign_executor(coverage_plan)
-        outcome = SimulationCampaign(
+        return SimulationCampaign(
             executor, publication_checkpoint=self._campaign_publication_checkpoint
         ).run(
             ResumeCampaignRunRequest(
@@ -2067,10 +2118,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 admission,
             )
         )
-        if progress is not None:
-            _checkpoint_coverage_campaign(progress, outcome)
-            progress.checkpoint(complete=True)
-        return outcome
 
     def _resume_campaign_executor(self, coverage_plan: CoverageTargetPlan | None):
         if coverage_plan is None:
@@ -2328,23 +2375,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 exit_code=EXIT_ERROR,
                 report_text="sim: Coverage Campaign has no borrowed admission context",
             )
-        try:
-            campaign, requests, progress = self._coverage_campaign_session(admission)
-        except (OSError, ValueError, RuntimeError) as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Campaign coverage planning failed: {exc}",
-            )
-        return self._execute_coverage_campaign_requests(campaign, requests, progress)
-
-    def _coverage_campaign_session(
-        self, admission: AdmissionContext
-    ) -> tuple[
-        SimulationCampaign,
-        list[NewCampaignRunRequest],
-        CoverageProgress,
-    ]:
-        """Publish every immutable coverage manifest before admitting work."""
         prepared = self._coverage_prepared
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
@@ -2352,7 +2382,35 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         progress = CoverageProgress(
             invocation, tuple(plan.handle.selector for plan in prepared.targets)
         )
-        progress.checkpoint()
+        lifecycle = ProgressLifecycle(
+            lambda phase: progress.checkpoint(complete=True, phase=phase)
+        )
+        try:
+            with lifecycle:
+                progress.checkpoint()
+                campaign, requests = self._coverage_campaign_session(admission, invocation)
+                result = self._execute_coverage_campaign_requests(campaign, requests, progress)
+                if len(progress.outcomes) == len(progress.targets):
+                    lifecycle.complete()
+                return result
+        except (OSError, ValueError, RuntimeError) as exc:
+            detail = (
+                {"progress_error": str(exc)} if isinstance(exc, ProgressPublicationError) else {}
+            )
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                detail=detail,
+                report_text=f"Simulation Campaign coverage planning failed: {exc}",
+            )
+
+    def _coverage_campaign_session(
+        self, admission: AdmissionContext, invocation: Path
+    ) -> tuple[
+        SimulationCampaign,
+        list[NewCampaignRunRequest],
+    ]:
+        """Publish every immutable coverage manifest before admitting work."""
+        prepared = self._coverage_prepared
         plans = {plan.handle.identity: plan for plan in prepared.targets}
         executor = CoverageAggregateExecutor(
             plans=plans,
@@ -2381,7 +2439,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         ]
         for request in requests:
             campaign.publish_new(request)
-        return campaign, requests, progress
+        return campaign, requests
 
     def _execute_coverage_campaign_requests(
         self,
@@ -2400,7 +2458,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return self._campaign_cancelled_outcome(exc)
             except (OSError, ValueError, RuntimeError) as exc:
                 return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
-        progress.checkpoint(complete=True)
         return self._campaign_endpoint_outcome(outcomes)
 
     def _coverage_campaign_failure(
@@ -2427,8 +2484,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "abort_remaining": True,
         }
         pending = [
-            str(cast(Mapping[str, object], item.plan.manifest.document["target"])["selector"])
-            for item in requests[index + 1 :]
+            failed,
+            *[
+                str(cast(Mapping[str, object], item.plan.manifest.document["target"])["selector"])
+                for item in requests[index + 1 :]
+            ],
         ]
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
@@ -2483,23 +2543,30 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         started_at = utc_now_rfc3339()
         outcomes = []
-        progress.checkpoint()
-        for target in prepared.targets:
-            outcome = self._execute_coverage_target(target, progress, started_at)
-            outcomes.append(outcome)
-            if outcome.abort_remaining:
-                break
-        result = self._coverage_result(outcomes)
-        completed = {item.target for item in outcomes}
-        result.detail["pending_targets"] = [
-            target for target in progress.targets if target not in completed
-        ]
+        lifecycle = ProgressLifecycle(
+            lambda phase: progress.checkpoint(complete=True, phase=phase)
+        )
         try:
-            progress.checkpoint(complete=True)
-        except OSError as exc:
-            result.exit_code = 2
+            with lifecycle:
+                progress.checkpoint()
+                for target in prepared.targets:
+                    outcome = self._execute_coverage_target(target, progress, started_at)
+                    outcomes.append(outcome)
+                    if outcome.abort_remaining:
+                        break
+                result = self._coverage_result(outcomes)
+                completed = {item.target for item in outcomes}
+                result.detail["pending_targets"] = [
+                    target for target in progress.targets if target not in completed
+                ]
+                if len(outcomes) == len(prepared.targets):
+                    lifecycle.complete()
+                return result
+        except ProgressPublicationError as exc:
+            result = self._coverage_result(outcomes)
+            result.exit_code = EXIT_ERROR
             result.detail["progress_error"] = str(exc)
-        return result
+            return result
 
     def _execute_coverage_target(
         self, target: CoverageTargetPlan, progress: CoverageProgress, started_at: str
@@ -2593,16 +2660,34 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _run_legacy_selected_mode(
         self, targets, test_names_map, total_start, resolution_s
     ) -> EndpointOutcome:
-        prepared = self._prepare_legacy_run(targets, test_names_map)
-        if isinstance(prepared, EndpointOutcome):
-            return prepared
-        results, lines, passed = prepared
-        return self._legacy_endpoint_outcome(
-            targets, results, lines, passed, time.monotonic() - total_start, resolution_s
-        )
-
-    def _prepare_legacy_run(self, targets, test_names_map):
         results: list[TargetResult] = []
+        lifecycle = ProgressLifecycle(
+            lambda phase: self._write_progress_report(targets, results, phase=phase, complete=True)
+        )
+        try:
+            with lifecycle:
+                prepared = self._prepare_legacy_run(targets, test_names_map, results)
+                if isinstance(prepared, EndpointOutcome):
+                    return prepared
+                lines, passed = prepared
+                result = self._legacy_endpoint_outcome(
+                    targets,
+                    results,
+                    lines,
+                    passed,
+                    time.monotonic() - total_start,
+                    resolution_s,
+                )
+                lifecycle.complete()
+                return result
+        except ProgressPublicationError as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                detail={"progress_error": str(exc)},
+                report_text=f"sim: progress publication failed: {exc}",
+            )
+
+    def _prepare_legacy_run(self, targets, test_names_map, results):
         lines: list[str] = []
         self._test_names_map = test_names_map
         self.reserve_invocation_dir()
@@ -2619,12 +2704,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             except SimulationBuildInfrastructureError as exc:
                 return self._build_infrastructure_result(exc)
             self._record_legacy_target(targets, results, result)
-        return results, lines, all(result.passed for result in results)
+        return lines, all(result.passed for result in results)
 
     def _record_legacy_target(self, targets, results, result) -> None:
         self._attach_workload_snapshots(result)
-        results.append(result)
         self._persist_target_outcome(result)
+        results.append(result)
         self._write_progress_report(targets, results, phase="running")
         if len(targets) > 1:
             for line in _target_display_lines(result):
@@ -2639,7 +2724,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
         detail = self._legacy_result_detail(results, elapsed, resolution_s)
         self._attach_legacy_artifacts(detail, results)
-        self._write_progress_report(targets, results, phase="complete", complete=True)
         return EndpointOutcome(
             exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
             criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
@@ -2705,27 +2789,49 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
             publication_checkpoint=self._campaign_publication_checkpoint,
         )
+        outcomes: list[CampaignOutcome] = []
+        lifecycle = ProgressLifecycle(
+            lambda phase: self._write_campaign_progress(
+                targets, outcomes, phase=phase, complete=True
+            )
+        )
         try:
-            baseline_requests, prerequisites = self._plan_campaign_baselines(
-                invocation,
-                admission,
-                targets,
-                test_names_map,
-            )
-            candidate_requests = self._candidate_campaign_requests(
-                targets, test_names_map, prerequisites, invocation, admission
-            )
-            outcomes = self._publish_and_run_campaign_requests(
-                campaign, baseline_requests, candidate_requests
-            )
+            with lifecycle:
+                self._write_campaign_progress(targets, outcomes, phase="starting", complete=False)
+                baseline_requests, prerequisites = self._plan_campaign_baselines(
+                    invocation,
+                    admission,
+                    targets,
+                    test_names_map,
+                )
+                candidate_requests = self._candidate_campaign_requests(
+                    targets, test_names_map, prerequisites, invocation, admission
+                )
+                self._publish_and_run_campaign_requests(
+                    campaign,
+                    baseline_requests,
+                    candidate_requests,
+                    outcomes=outcomes,
+                    checkpoint=lambda: self._write_campaign_progress(
+                        targets, outcomes, phase="running", complete=False
+                    ),
+                )
+                result = self._campaign_endpoint_outcome(outcomes)
+                lifecycle.complete()
+                return result
         except SimulationCampaignCancellationError as exc:
             return self._campaign_cancelled_outcome(exc)
         except (OSError, ValueError, RuntimeError) as exc:
+            detail: dict[str, object] = (
+                {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
+            )
+            if isinstance(exc, ProgressPublicationError):
+                detail["progress_error"] = str(exc)
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
+                detail=detail,
                 report_text=f"Simulation Campaign execution failed: {exc}",
             )
-        return self._campaign_endpoint_outcome(outcomes)
 
     @staticmethod
     def _campaign_cancelled_outcome(
@@ -2777,12 +2883,45 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         campaign: SimulationCampaign,
         baselines: Sequence[NewCampaignRunRequest],
         candidates: Sequence[NewCampaignRunRequest],
+        *,
+        outcomes: list[CampaignOutcome] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> list[CampaignOutcome]:
+        completed = outcomes if outcomes is not None else []
         for request in (*baselines, *candidates):
             campaign.publish_new(request)
         for request in baselines:
             campaign.run(request)
-        return [campaign.run(request) for request in candidates]
+        for request in candidates:
+            completed.append(campaign.run(request))
+            if checkpoint is not None:
+                checkpoint()
+        return completed
+
+    def _write_campaign_progress(
+        self,
+        targets: Sequence[str],
+        outcomes: Sequence[CampaignOutcome],
+        *,
+        phase: str,
+        complete: bool,
+    ) -> None:
+        invocation = self.reserve_invocation_dir()
+        if invocation is None:
+            return
+        completed = [str(outcome.target["selector"]) for outcome in outcomes]
+        payload = progress_document(
+            flow=self.name,
+            run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+            phase=phase,
+            targets=targets,
+            completed_targets=completed,
+            detail=_campaign_structured_details(outcomes),
+            extra={"mode": self._mode.value},
+        )
+        if complete != bool(payload["complete"]):
+            raise ValueError("Simulation Campaign progress complete and phase disagree")
+        write_progress_json(invocation / "progress.json", payload)
 
     def _plan_campaign_baselines(
         self,
@@ -3233,26 +3372,44 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if isinstance(preflight, EndpointOutcome):
             return preflight
         targets = preflight
-        results = self._run_elab_only_campaign(targets)
-        missing = self._elab_only_missing_executable(results)
-        if missing is not None:
-            target, exc = missing
-            result = self._missing_executable_result(exc, target)
-            result.detail["mode"] = self._mode.value
-            result.detail["targets"] = [
-                self._elab_only_detail(target_result) for target_result in results
-            ]
-            artifacts = {
-                target_result.target: {"log": target_result.log_path}
-                for target_result in results
-                if target_result.log_path
-            }
-            if artifacts:
-                result.detail["artifacts"] = artifacts
-            self._write_elab_only_progress(targets, results, phase="complete", complete=True)
-            return result
-        exit_code, standalone = self._run_optional_standalone(targets, results)
-        return self._elab_only_result(targets, results, exit_code, standalone)
+        results: list[ElabOnlyTargetResult] = []
+        self._elab_progress_results = results
+        lifecycle = ProgressLifecycle(
+            lambda phase: self._write_elab_only_progress(
+                targets, self._elab_progress_results, phase=phase, complete=True
+            )
+        )
+        try:
+            with lifecycle:
+                results = self._run_elab_only_campaign(targets)
+                self._elab_progress_results = results
+                missing = self._elab_only_missing_executable(results)
+                if missing is not None:
+                    target, exc = missing
+                    result = self._missing_executable_result(exc, target)
+                    result.detail["mode"] = self._mode.value
+                    result.detail["targets"] = [
+                        self._elab_only_detail(target_result) for target_result in results
+                    ]
+                    artifacts = {
+                        target_result.target: {"log": target_result.log_path}
+                        for target_result in results
+                        if target_result.log_path
+                    }
+                    if artifacts:
+                        result.detail["artifacts"] = artifacts
+                    lifecycle.complete()
+                    return result
+                exit_code, standalone = self._run_optional_standalone(targets, results)
+                result = self._elab_only_result(targets, results, exit_code, standalone)
+                lifecycle.complete()
+                return result
+        except ProgressPublicationError as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                detail={"progress_error": str(exc)},
+                report_text=f"sim: progress publication failed: {exc}",
+            )
 
     @staticmethod
     def _elab_only_missing_executable(
@@ -3434,15 +3591,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> list[ElabOnlyTargetResult]:
         """Run and checkpoint each requested build-only Target."""
         self.reserve_invocation_dir()
-        results: list[ElabOnlyTargetResult] = []
+        results = self._elab_progress_results
         self._write_elab_only_progress(targets, results, phase="starting")
         for target in targets:
             result = self._run_one_elab_only(target)
-            results.append(result)
             self._record_elab_only_criterion(result)
             self._write_elab_only_target_report(result)
             if self.state._file_path is not None:
                 self.state.save()
+            results.append(result)
             self._write_elab_only_progress(targets, results, phase="running")
         return results
 
@@ -3499,7 +3656,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if standalone is not None:
             detail["standalone"] = standalone.detail
             display_lines.append(standalone.display)
-        self._write_elab_only_progress(targets, results, phase="complete", complete=True)
         return EndpointOutcome(
             exit_code=exit_code,
             criterion_key=(f"elab_pass_{targets[0]}" if len(targets) == 1 else ""),
@@ -3714,19 +3870,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if invocation_dir is None:
             return
         completed = [result.target for result in results]
-        payload = {
-            "flow": self.name,
-            "mode": self._mode.value,
-            "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
-            "timestamp": utc_now_rfc3339(),
-            "phase": phase,
-            "complete": complete,
-            "targets": list(targets),
-            "completed_targets": completed,
-            "pending_targets": [target for target in targets if target not in completed],
-            "detail": {result.target: self._elab_only_detail(result) for result in results},
-        }
-        _atomic_write_json(invocation_dir / "progress.json", payload)
+        payload = progress_document(
+            flow=self.name,
+            run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+            phase=phase,
+            targets=targets,
+            completed_targets=completed,
+            detail={result.target: self._elab_only_detail(result) for result in results},
+            extra={
+                "mode": self._mode.value,
+            },
+        )
+        if complete != bool(payload["complete"]):
+            raise ValueError("elaboration progress complete and phase disagree")
+        write_progress_json(invocation_dir / "progress.json", payload)
 
     def _handle_elab_only_dry_run(self, targets: list[str]) -> EndpointOutcome:
         del targets
@@ -4795,19 +4952,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if invocation_dir is None:
             return
         completed = [result.target for result in results]
-        payload: dict[str, Any] = {
-            "flow": self.name,
-            "mode": self._mode.value,
-            "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
-            "timestamp": utc_now_rfc3339(),
-            "phase": phase,
-            "complete": complete,
-            "targets": list(targets),
-            "completed_targets": completed,
-            "pending_targets": [target for target in targets if target not in completed],
-            "detail": {result.target: _target_progress_detail(result) for result in results},
-        }
-        _atomic_write_json(invocation_dir / "progress.json", payload)
+        payload = progress_document(
+            flow=self.name,
+            run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+            phase=phase,
+            targets=targets,
+            completed_targets=completed,
+            detail={result.target: _target_progress_detail(result) for result in results},
+            extra={
+                "mode": self._mode.value,
+            },
+        )
+        if complete != bool(payload["complete"]):
+            raise ValueError("simulation progress complete and phase disagree")
+        write_progress_json(invocation_dir / "progress.json", payload)
 
     def _persist_target_outcome(self, result: TargetResult) -> None:
         """Durably record one terminal Target before starting the next."""

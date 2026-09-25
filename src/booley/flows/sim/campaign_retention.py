@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from booley.flows.progress_lifecycle import validate_progress_shape
 from booley.runtime.file_lock import LockContentionError
 
 from .campaign import (
@@ -368,6 +369,7 @@ def _validate_invocation_targets(root: Path) -> None:
         not isinstance(target, str) or not target or target in {".", ".."} for target in targets
     ) or len(set(targets)) != len(targets):
         raise CampaignRetentionError("Invocation has ambiguous Targets")
+    _validate_progress_lifecycle(progress)
     _validate_completed_targets(root, progress, targets)
     expected = {target_report_directory(root, target).name for target in targets}
     directories = (root / "targets").iterdir() if (root / "targets").exists() else ()
@@ -385,11 +387,30 @@ def _validate_invocation_targets(root: Path) -> None:
             _inspect_simulation_campaign(directory, campaign)
 
 
+def _validate_progress_lifecycle(progress: Mapping[str, object]) -> None:
+    """Reject contradictory progress; a live producer is excluded by the invocation lock.
+
+    Nonterminal progress under a free producer lock means the producer died before
+    terminalizing it, so the invocation is abandoned and full pruning may proceed.
+    """
+    try:
+        validate_progress_shape(progress)
+    except ValueError as exc:
+        raise CampaignRetentionError(f"Invocation progress is invalid: {exc}") from exc
+
+
 def _validate_invocation_inventory(root: Path) -> None:
     progress = _read_object(root / "progress.json")
     targets = progress["targets"]
     assert isinstance(targets, list)
     expected = {(root / "progress.json").absolute()}
+    progress_lock = root / ".progress.lock"
+    if progress_lock.exists():
+        if progress_lock.is_symlink() or progress_lock.read_bytes() not in {b"", b"\0"}:
+            raise CampaignRetentionError(
+                f"Invocation progress lock content is invalid: {progress_lock}"
+            )
+        expected.add(progress_lock.absolute())
     report = root / "report.json"
     if report.exists():
         if _read_object(report).get("flow") != "sim":
