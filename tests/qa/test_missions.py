@@ -62,10 +62,15 @@ def test_relative_links_resolve(document: Path):
 
 def test_qa_run_uses_the_canonical_host_install():
     skill = (QA_ROOT / "booley-qa-run" / "SKILL.md").read_text()
+    hard_rules = skill.split("## Hard rules", 1)[1].split("## Run directory", 1)[0]
     install_step = skill.split("2. **", 1)[1].split("\n3. **", 1)[0]
+    compact_hard_rules = " ".join(hard_rules.split())
     compact = " ".join(install_step.split())
 
     assert "venv" not in compact
+    assert "may change only through step 2's Human Maintainer-approved" in compact_hard_rules
+    assert "replacement stays installed after the run" in compact_hard_rules
+    assert "is not a `resources.md` row" in compact_hard_rules
     for required in (
         "git fetch origin main",
         "git rev-parse origin/main",

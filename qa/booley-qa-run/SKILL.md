@@ -42,8 +42,11 @@ an artifact root, and optionally `smoke` to also run the release smoke list.
 - Leave Booley source unchanged; workarounds live in the run dir.
 - Keep credentials and tokens out of evidence, prompts, and Projects. Redact
   secrets from captured output before saving it.
-- Preserve borrowed state: the host's Booley install, credentials, shared images
-  and caches, EDA installs, and worktrees or containers you did not create.
+- Preserve borrowed state: credentials, shared images and caches, EDA installs,
+  and worktrees or containers you did not create. The canonical host Booley
+  install may change only through step 2's Human Maintainer-approved
+  `origin/main` path; that replacement stays installed after the run and is not
+  a `resources.md` row.
 - Baseline IP and Project pins stay fixed; change designs only through the
   mission's prompts and Tickets.
 - Before creating anything outside the run dir (container, image, worktree,
