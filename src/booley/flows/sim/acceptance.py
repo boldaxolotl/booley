@@ -26,13 +26,18 @@ from booley.flows.execution_persistence import (
     AcceptanceRecordingError,
     NoAcceptanceRecorder,
 )
-from booley.flows.sim.campaign import CampaignOutcome
+from booley.flows.sim.campaign import (
+    SIMULATION_PROJECTION_SCHEMA,
+    CampaignOutcome,
+    build_artifact_reference,
+)
+from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES
 from booley.flows.sim.campaign_reports import (
-    target_report_directory,
     write_compatibility_projection,
 )
 from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_reference import (
+    MAX_REFERENCE_BYTES,
     ResolvedCoverageCampaign,
     authenticate_coverage_campaign_owner,
     encode_coverage_campaign_reference,
@@ -248,8 +253,6 @@ def _simulation_detail(
     selected = [_test_name(item["test"]) for item in observations]
     passed = [_test_name(item["test"]) for item in observations if _observation_passed(item)]
     return {
-        "campaign_manifest": str(outcome.manifest_path),
-        "campaign_summary": str(outcome.summary_path),
         "campaign_id": facts["campaign_id"],
         "manifest_sha256": facts["manifest_sha256"],
         "acceptance_facts_sha256": outcome.acceptance_facts.sha256,
@@ -316,14 +319,6 @@ def record_campaign_acceptance(
         projection = _campaign_projection(item)
         origin = item.manifest_path.parents[1] / "simulation.json"
         write_compatibility_projection(origin, projection, acceptance_committed=complete)
-        current_invocation = endpoint._reserved_invocation_dir
-        if current_invocation is not None:
-            current = (
-                target_report_directory(current_invocation, str(item.target["selector"]))
-                / "simulation.json"
-            )
-            if current != origin:
-                write_compatibility_projection(current, projection, acceptance_committed=complete)
     endpoint._simulation_acceptance_outcomes = tuple(acceptances)
     endpoint._pending_criteria_set = tuple(keys)
 
@@ -342,7 +337,11 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
         }
         for observation in outcome.observations
     ]
+    facts = outcome.acceptance_facts.document
+    campaign_id = str(facts["campaign_id"])
+    target_directory = outcome.manifest_path.parents[1]
     projection = {
+        "$schema": SIMULATION_PROJECTION_SCHEMA,
         "flow": "sim",
         "mode": "simulate",
         "target": outcome.target["selector"],
@@ -350,15 +349,28 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
         "passed": outcome.aggregate_grade == "pass",
         "inconclusive": outcome.aggregate_grade == "inconclusive",
         "tests": tests,
-        "campaign_manifest": str(outcome.manifest_path),
-        "campaign_summary": str(outcome.summary_path),
+        "campaign_id": campaign_id,
+        "campaign_manifest": build_artifact_reference(
+            outcome.manifest_path,
+            base_name="origin_target",
+            base=target_directory,
+            kind="simulation_campaign_manifest",
+            owner=campaign_id,
+            maximum=MANIFEST_MAX_BYTES,
+        ),
     }
     if outcome.coverage_reference is not None:
         public = outcome.manifest_path.parents[1] / "coverage.json"
         coverage = _resolve_facts_coverage(outcome, public).loaded.campaign
         projection.update(
-            coverage_campaign="coverage.json",
-            coverage_campaign_base="origin_target",
+            coverage_campaign=build_artifact_reference(
+                public,
+                base_name="origin_target",
+                base=target_directory,
+                kind="coverage_campaign_reference",
+                owner=campaign_id,
+                maximum=MAX_REFERENCE_BYTES,
+            ),
             collection=coverage.collection["status"],
             evaluation=coverage.evaluation["status"],
         )
@@ -453,8 +465,8 @@ def _coverage_detail(
     report_root = outcome.manifest_path.parents[5]
     relative_public_path = public_path.relative_to(report_root).as_posix()
     return {
-        "coverage_campaign": relative_public_path,
         "coverage_campaign_reference": {
+            "path_base": "reports_root",
             "path": relative_public_path,
             "bytes": len(raw),
             "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),

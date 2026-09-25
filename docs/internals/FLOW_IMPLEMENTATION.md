@@ -364,7 +364,11 @@ Campaign manifest at
 `<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/campaign/manifest.json`.
 Append-only attempts/results and the ordered `summary.json` remain beside that
 manifest across exact resume. The replaceable compatibility report at
-`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` carries
+`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` uses
+`booley.simulation-projection/v2` and carries typed, digest-bound
+`origin_target` references to the immutable manifest and optional public Coverage
+reference. Legacy producer-absolute strings are compatibility hints only; local
+Campaign authentication is authoritative. The projection also carries
 the resolved identity (`target`, `tb_top`, `eda_tool`), timing, the target
 `passed` flag, and a `tests`
 list: one entry per test with its `name`, `verdict`, `sva_errors`, and an
@@ -978,8 +982,10 @@ collection, and evaluation without inline Coverage Points. Source rollups cover
 line, branch, expression, and toggle with overall eligibility and waiver policy;
 they never aggregate by instance hierarchy. It integrity-binds the compressed JSON
 Lines point store. V1 and V2 Campaigns are rejected and must be recollected. Native paths in the Campaign
-are relative to that Target directory; Flow artifact pointers are relative to
-the producing work directory. No flat per-Target compatibility report is
+are relative to that Target directory. `booley.simulation-report/v2` artifact
+references use `report_invocation` or `reports_root`, resolved from the containing
+`report.json`; resume reports use the latter to name their external origin and do
+not publish a duplicate Target projection. No flat per-Target compatibility report is
 written in any Simulation mode. The separate report-driven Analyst consumes the
 exact completed Target Campaign without publishing policy evidence.
 

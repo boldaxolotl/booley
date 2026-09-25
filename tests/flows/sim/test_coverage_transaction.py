@@ -252,8 +252,14 @@ def test_ticket_publishes_campaign_before_independent_acceptance_evidence(tmp_pa
         "sim_pass_sim_0": False,
     }
     assert all(
-        record["detail"]["coverage_campaign"] == str(outcome.campaign_path) for record in records
+        record["detail"]["campaign_id"]
+        == load_coverage_campaign(
+            outcome.campaign_path,
+            DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        ).campaign.campaign_id
+        for record in records
     )
+    assert all(str(outcome.campaign_path) not in json.dumps(record) for record in records)
 
 
 def test_unknown_native_records_remain_in_canonical_campaign(tmp_path):

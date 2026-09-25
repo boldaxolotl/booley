@@ -253,6 +253,9 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     if report_dir is None:
         return None
     report_dir.mkdir(parents=True, exist_ok=True)
+    refresh = getattr(getattr(endpoint, "flow", endpoint), "refresh_campaign_report_detail", None)
+    if callable(refresh):
+        refresh(result)
     elapsed_s = round(time.monotonic() - endpoint._start_time, 2)
     passed = result.exit_code == EXIT_SUCCESS
     identity_key = "flow" if endpoint.endpoint_kind == "flow" else "mcp_tool"
@@ -268,6 +271,8 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
         "elapsed_s": elapsed_s,
         "passed": passed,
     }
+    if endpoint.name == "sim":
+        report["$schema"] = "booley.simulation-report/v2"
     mode = result.detail.get("mode")
     if isinstance(mode, str) and mode:
         report["mode"] = mode

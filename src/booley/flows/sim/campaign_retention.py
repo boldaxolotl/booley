@@ -11,6 +11,12 @@ import shutil
 import stat
 from pathlib import Path
 
+from .campaign import (
+    ProjectionTrust,
+    decode_simulation_projection,
+    resolve_artifact_reference,
+)
+from .campaign.codec import MANIFEST_MAX_BYTES
 from .campaign_reports import (
     campaign_invocation_lock,
     is_report_link,
@@ -20,6 +26,7 @@ from .campaign_reports import (
 from .coverage_campaign import CoverageCampaign
 from .coverage_campaign_store import LoadedCoverageCampaign, load_coverage_campaign
 from .coverage_reference import (
+    MAX_REFERENCE_BYTES,
     REFERENCE_SCHEMA,
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
@@ -230,22 +237,52 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
 
 
 def _release_child_indexes(root: Path, project_data: Path | None) -> None:
-    from booley.runtime.execution_records import release_retired_campaign_children
+    from booley.runtime.execution_records import (
+        release_retired_campaign_children,
+        retained_campaign_child_manifests,
+        validate_retired_campaign_children,
+    )
 
     target_root = root / "targets"
     campaign_children = tuple(target_root.glob("*/campaign/child-executions"))
     if not campaign_children:
         return
-    resolved = project_data or _infer_project_data(root)
-    if resolved is None:
-        raise CampaignRetentionError(
-            "Project data is required to release retained campaign child records"
-        )
     try:
         for children in campaign_children:
-            release_retired_campaign_children(resolved, children)
+            ownership_root = _child_ownership_root(children, retained_campaign_child_manifests)
+            if ownership_root is None:
+                validate_retired_campaign_children(children)
+            else:
+                inferred = _infer_project_data(ownership_root)
+                if inferred is None:
+                    raise CampaignRetentionError(
+                        "Campaign child ownership cannot resolve its Project data"
+                    )
+                resolved = Path(project_data).resolve() if project_data else inferred
+                if resolved != inferred.resolve():
+                    raise CampaignRetentionError(
+                        "Project data disagrees with the canonical Campaign owner"
+                    )
+                release_retired_campaign_children(resolved, children)
     except (OSError, ValueError) as exc:
         raise CampaignRetentionError(f"Campaign child retention is invalid: {exc}") from exc
+
+
+def _child_ownership_root(children: Path, manifest_paths) -> Path | None:
+    """Return the canonical invocation root, or classify this mirror as detached."""
+    local = children.parent / "manifest.json"
+    producer_paths = manifest_paths(children)
+    matches: list[bool] = []
+    for producer in producer_paths:
+        try:
+            matches.append(producer.samefile(local))
+        except OSError:
+            matches.append(False)
+    if matches and all(matches):
+        return producer_paths[0].parents[3]
+    if any(matches):
+        raise CampaignRetentionError("Campaign child ownership is ambiguous")
+    return None
 
 
 def _infer_project_data(root: Path) -> Path | None:
@@ -296,7 +333,10 @@ def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
 
     try:
         status = inspect_retained_campaign(campaign / "manifest.json")
-        projection = _read_object(target / "simulation.json")
+        projection = decode_simulation_projection(
+            _read_object(target / "simulation.json"),
+            coverage_expected=(target / "coverage.json").is_file(),
+        )
     except (OSError, ValueError) as exc:
         raise CampaignRetentionError(
             f"Simulation Campaign is invalid and cannot be pruned: {exc}"
@@ -306,11 +346,47 @@ def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
     if (
         not status.summary_complete
         or not status.summary_completed_matches
-        or projection.get("complete") is not True
-        or projection.get("campaign_manifest") != str(status.manifest_path)
-        or projection.get("campaign_summary") != str(status.summary_path)
+        or projection.document.get("complete") is not True
     ):
         raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+    expected = {
+        "target": status.target_selector,
+        "target_identity": status.target_identity,
+    }
+    if any(projection.document.get(key) != value for key, value in expected.items()):
+        raise CampaignRetentionError("Simulation Campaign projection identity disagrees")
+    if projection.trust is ProjectionTrust.TARGET_CONSISTENT_LEGACY and (
+        type(projection.document.get("passed")) is not bool
+        or type(projection.document.get("inconclusive")) is not bool
+        or not isinstance(projection.document.get("tests"), list)
+    ):
+        raise CampaignRetentionError("legacy Simulation verdict projection is invalid")
+    if projection.trust is ProjectionTrust.AUTHENTICATED:
+        if projection.document.get("campaign_id") != status.campaign_id:
+            raise CampaignRetentionError("Simulation Campaign projection owner disagrees")
+        artifact = resolve_artifact_reference(
+            projection.document.get("campaign_manifest"),
+            bases={"origin_target": target},
+            allowed_bases={"origin_target"},
+            expected_kind="simulation_campaign_manifest",
+            expected_owner=status.campaign_id,
+            maximum=MANIFEST_MAX_BYTES,
+        )
+        if artifact.path != status.manifest_path:
+            raise CampaignRetentionError("Simulation Campaign projection manifest disagrees")
+        if (target / "coverage.json").is_file():
+            coverage = resolve_artifact_reference(
+                projection.document.get("coverage_campaign"),
+                bases={"origin_target": target},
+                allowed_bases={"origin_target"},
+                expected_kind="coverage_campaign_reference",
+                expected_owner=status.campaign_id,
+                maximum=MAX_REFERENCE_BYTES,
+            )
+            if coverage.path != (target / "coverage.json").absolute():
+                raise CampaignRetentionError(
+                    "Simulation Campaign projection Coverage reference disagrees"
+                )
 
 
 def _validate_completed_targets(
@@ -330,8 +406,28 @@ def _validate_completed_targets(
     assert isinstance(completed, list) and isinstance(pending, list)
     if set(completed) & set(pending) or set(completed) | set(pending) != set(targets):
         raise CampaignRetentionError("Invocation has inconsistent completed Target resolution")
-    if any(not target_report_directory(root, name).is_dir() for name in completed):
+    if any(not target_report_directory(root, name).is_dir() for name in completed) and not (
+        _is_resume_receipt(root, completed, pending)
+    ):
         raise CampaignRetentionError("Invocation contains an unresolved completed Target")
+
+
+def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> bool:
+    """Recognize a complete report-only resume without granting storage authority."""
+    if pending or not completed or (root / "targets").exists():
+        return False
+    try:
+        report = _read_object(root / "report.json")
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    detail = report.get("detail")
+    campaigns = detail.get("campaigns") if isinstance(detail, dict) else None
+    return (
+        report.get("flow") == "sim"
+        and report.get("exit_code") in {0, 1, 2}
+        and isinstance(campaigns, dict)
+        and set(campaigns) == set(completed)
+    )
 
 
 def main() -> None:
@@ -345,9 +441,9 @@ def main() -> None:
         "--project-data",
         type=Path,
         help=(
-            "Resolved project-data root for --full when --reports-root is outside "
-            "<project-data>/.runtime/flow-reports or <project-data>/flow-reports; "
-            "not required for --native-target"
+            "Resolved project-data root used only to verify canonical ownership for "
+            "--full; it never grants a detached copy authority to release shared "
+            "indexes and is not required for --native-target"
         ),
     )
     operation = parser.add_mutually_exclusive_group(required=True)

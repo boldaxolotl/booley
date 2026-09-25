@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import BoundaryError, require_dict
+from booley.flows.sim.campaign import (
+    ProjectionTrust,
+    SimulationProjection,
+    decode_simulation_projection,
+    resolve_artifact_reference,
+)
+from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES
 from booley.flows.sim.campaign_reports import is_report_link, target_report_directory
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
@@ -20,6 +27,7 @@ from booley.flows.sim.coverage_campaign_store import (
     load_coverage_campaign,
 )
 from booley.flows.sim.coverage_reference import (
+    MAX_REFERENCE_BYTES,
     REFERENCE_SCHEMA,
     ResolvedCoverageCampaign,
     authenticate_coverage_campaign_owner,
@@ -66,7 +74,11 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
             invocation, campaign.target.selector
         ):
             raise CoverageAnalysisError("Campaign identity disagrees with its exact path")
-        projection = _projection(path.parent / "simulation.json", campaign)
+        projection = _projection(
+            path.parent / "simulation.json",
+            campaign,
+            coverage_expected=resolved is not None,
+        )
         if resolved is not None:
             authenticated = authenticate_coverage_campaign_owner(resolved)
             _reference_projection(path, projection, resolved, authenticated)
@@ -86,9 +98,14 @@ def _safe_path(path: Path) -> None:
         raise CoverageAnalysisError(f"Expected a retained regular file: {path}")
 
 
-def _projection(path: Path, campaign: CoverageCampaign) -> dict[str, object]:
+def _projection(
+    path: Path, campaign: CoverageCampaign, *, coverage_expected: bool
+) -> SimulationProjection:
     _safe_path(path)
-    projection = require_dict(json.loads(path.read_text(encoding="utf-8")))
+    projection = decode_simulation_projection(
+        require_dict(json.loads(path.read_text(encoding="utf-8"))),
+        coverage_expected=coverage_expected,
+    )
     expected = {
         "flow": "sim",
         "target": campaign.target.selector,
@@ -96,8 +113,8 @@ def _projection(path: Path, campaign: CoverageCampaign) -> dict[str, object]:
         "collection": campaign.collection["status"],
         "evaluation": campaign.evaluation["status"],
     }
-    if projection.get("complete") is not True or any(
-        projection.get(key) != value for key, value in expected.items()
+    if projection.document.get("complete") is not True or any(
+        projection.document.get(key) != value for key, value in expected.items()
     ):
         raise CoverageAnalysisError("Campaign lacks a matching completed Simulation projection")
     return projection
@@ -105,30 +122,50 @@ def _projection(path: Path, campaign: CoverageCampaign) -> dict[str, object]:
 
 def _reference_projection(
     public_path: Path,
-    projection: Mapping[str, object],
+    projection: SimulationProjection,
     resolved: ResolvedCoverageCampaign,
     authenticated: CampaignWorkItemEvidence,
 ) -> None:
-    """Authenticate a Simulation-owned projection through its exact manifest."""
-    manifest_pointer = projection.get("campaign_manifest")
-    expected_manifest = public_path.parent / "campaign" / "manifest.json"
-    if (
-        projection.get("coverage_campaign") != "coverage.json"
-        or projection.get("coverage_campaign_base") != "origin_target"
-        or not isinstance(manifest_pointer, str)
-        or Path(manifest_pointer).absolute() != expected_manifest
-    ):
-        raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
+    """Authenticate a Simulation projection through local Campaign bytes.
+
+    The legacy absolute manifest and summary strings are compatibility hints.
+    Authority comes from the locally supplied Coverage reference, its enclosing
+    authenticated Simulation Campaign, and the projection's Target/verdict fields.
+    """
+    expected_manifest = (public_path.parent / "campaign" / "manifest.json").absolute()
+    document = projection.document
+    owner = str(resolved.reference.document["simulation_campaign_id"])
+    if projection.trust is ProjectionTrust.AUTHENTICATED:
+        if document.get("campaign_id") != owner:
+            raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
+        manifest_artifact = resolve_artifact_reference(
+            document.get("campaign_manifest"),
+            bases={"origin_target": public_path.parent},
+            allowed_bases={"origin_target"},
+            expected_kind="simulation_campaign_manifest",
+            expected_owner=owner,
+            maximum=MANIFEST_MAX_BYTES,
+        )
+        coverage_artifact = resolve_artifact_reference(
+            document.get("coverage_campaign"),
+            bases={"origin_target": public_path.parent},
+            allowed_bases={"origin_target"},
+            expected_kind="coverage_campaign_reference",
+            expected_owner=owner,
+            maximum=MAX_REFERENCE_BYTES,
+        )
+        if manifest_artifact.path != expected_manifest or coverage_artifact.path != public_path:
+            raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
     _safe_path(expected_manifest)
     manifest = authenticated.manifest
-    document = resolved.reference.document
+    reference = resolved.reference.document
     target = manifest.document["target"]
     if not isinstance(target, Mapping):
         raise CoverageAnalysisError("Simulation Campaign Target is invalid")
     if (
-        manifest.document["campaign_id"] != document["simulation_campaign_id"]
+        manifest.document["campaign_id"] != reference["simulation_campaign_id"]
         or authenticated.manifest_path != expected_manifest.absolute()
-        or authenticated.manifest_sha256 != document["simulation_manifest_sha256"]
+        or authenticated.manifest_sha256 != reference["simulation_manifest_sha256"]
         or target["selector"] != resolved.loaded.campaign.target.selector
         or f"{target['vlnv']}#{target['name']}" != resolved.loaded.campaign.target.identity
     ):
