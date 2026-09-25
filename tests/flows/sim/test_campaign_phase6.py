@@ -930,11 +930,15 @@ def test_complete_campaign_pruning_releases_exact_project_child_pair(
     assert list((reports / "sim" / ".pruned-1").iterdir()) == []
 
 
+@pytest.mark.parametrize("nested", [False, True])
 def test_complete_campaign_pruning_rejects_unrecognized_campaign_file(
-    tmp_path: Path,
+    tmp_path: Path, nested: bool
 ) -> None:
     reports, project_data, store = _retained_invocation(tmp_path)
-    stray = store.root / "stray.txt"
+    parent = store.root
+    if nested:
+        parent = next(store.root.glob("work-items/*/attempts/*")) / "evidence"
+    stray = parent / "stray.txt"
     stray.write_text("do not delete", encoding="utf-8")
 
     with pytest.raises(CampaignRetentionError, match=r"stray\.txt"):

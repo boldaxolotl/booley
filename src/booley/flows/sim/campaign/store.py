@@ -224,8 +224,8 @@ class CampaignStore:
         self._authenticated_files: set[Path] = set()
 
     @property
-    def authenticated_files(self) -> tuple[Path, ...]:
-        """Files authenticated while reading this Campaign, in stable order."""
+    def retention_files(self) -> tuple[Path, ...]:
+        """Authenticated files owned by this Campaign, in stable order."""
         return tuple(sorted(self._authenticated_files))
 
     def _read(self, path: Path, *, limit: int) -> bytes:

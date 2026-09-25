@@ -105,14 +105,7 @@ def _target(
 
 
 def _native_manifest(target: Path, campaign: CoverageCampaign) -> list[dict[str, object]]:
-    artifacts = []
-    for artifact in campaign.artifacts:
-        if artifact.kind not in {"raw_native", "merged_native"}:
-            continue
-        path = Path(artifact.path)
-        if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "native":
-            raise CampaignRetentionError("Native artifact is outside the Target native directory")
-        artifacts.append({"id": artifact.id, "path": artifact.path, "sha256": artifact.sha256})
+    artifacts = _native_artifacts(campaign)
     known = {str(item["path"]): item["sha256"] for item in artifacts}
     for name in ("native", ".native-pruned"):
         directory = target / name
@@ -129,6 +122,18 @@ def _native_manifest(target: Path, campaign: CoverageCampaign) -> list[dict[str,
     return artifacts
 
 
+def _native_artifacts(campaign: CoverageCampaign) -> list[dict[str, object]]:
+    artifacts = []
+    for artifact in campaign.artifacts:
+        if artifact.kind not in {"raw_native", "merged_native"}:
+            continue
+        path = Path(artifact.path)
+        if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "native":
+            raise CampaignRetentionError("Native artifact is outside the Target native directory")
+        artifacts.append({"id": artifact.id, "path": artifact.path, "sha256": artifact.sha256})
+    return artifacts
+
+
 def prune_native_payload(reports_root: Path, invocation: int, target: str) -> Path:
     """Remove one exact Target's native databases; return its availability sidecar."""
     root = _invocation(reports_root, invocation)
@@ -140,17 +145,9 @@ def _prune_native(root: Path, target: str) -> Path:
     _safe_tree(root)
     directory, loaded = _target(root, target)
     campaign = loaded.campaign
-    artifacts = _native_manifest(directory, campaign)
-    point_store = loaded.summary.point_store
+    _native_manifest(directory, campaign)
     sidecar = directory / "availability.json"
-    document = {
-        "$schema": "booley.coverage-availability/v1",
-        "campaign_id": campaign.campaign_id,
-        "campaign_sha256": loaded.summary.manifest_sha256.removeprefix("sha256:"),
-        "point_store_sha256": point_store.sha256 if point_store is not None else None,
-        "artifacts": artifacts,
-        "status": "pruning",
-    }
+    document = _availability_document(loaded, status="pruning")
     if sidecar.exists():
         previous = _read_object(sidecar)
         if (
@@ -329,8 +326,9 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
         from .campaign import inspect_retained_campaign
 
         status = inspect_retained_campaign(manifest)
-        expected.update(status.authenticated_files)
-        expected.update(_campaign_attempt_files(status.authenticated_files))
+        expected.update(status.retention_files)
+        for coverage in status.coverage_directories:
+            expected.update(_campaign_coverage_files(coverage))
         lock = campaign / ".lock"
         if lock.exists():
             if lock.read_bytes() != b"":
@@ -344,31 +342,20 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
     return expected
 
 
-def _campaign_attempt_files(authenticated: tuple[Path, ...]) -> set[Path]:
-    expected: set[Path] = set()
-    attempts = {
-        path.parent
-        for path in authenticated
-        if path.name == "attempt.json" and path.parent.parent.name == "attempts"
+def _campaign_coverage_files(coverage: Path) -> set[Path]:
+    campaign_path = coverage / "coverage.json"
+    if campaign_path.exists():
+        loaded = load_coverage_campaign(campaign_path)
+        return _coverage_owned_files(coverage, coverage, loaded)
+    if not coverage.exists():
+        return set()
+    marker = coverage / ".collection-started"
+    if marker.exists() and marker.read_bytes() != b"":
+        raise CampaignRetentionError(f"Coverage collection marker changed: {marker}")
+    return {
+        marker.absolute(),
+        *(path.absolute() for path in (coverage / "native").rglob("*") if path.is_file()),
     }
-    for attempt in attempts:
-        for name in ("private-build", "snapshot", "runtime-inputs", "evidence"):
-            directory = attempt / name
-            expected.update(path.absolute() for path in directory.rglob("*") if path.is_file())
-        coverage = attempt / "coverage-campaign"
-        campaign_path = coverage / "coverage.json"
-        if campaign_path.exists():
-            loaded = load_coverage_campaign(campaign_path)
-            expected.update(_coverage_owned_files(coverage, coverage, loaded))
-        elif coverage.exists():
-            marker = coverage / ".collection-started"
-            if marker.exists() and marker.read_bytes() != b"":
-                raise CampaignRetentionError(f"Coverage collection marker changed: {marker}")
-            expected.add(marker.absolute())
-            expected.update(
-                path.absolute() for path in (coverage / "native").rglob("*") if path.is_file()
-            )
-    return expected
 
 
 def _coverage_owned_files(
@@ -399,24 +386,27 @@ def _coverage_owned_files(
 
 
 def _validate_availability(path: Path, loaded: LoadedCoverageCampaign) -> None:
+    expected = _availability_document(loaded, status="pruning")
+    document = _read_object(path)
+    status = document.get("status")
+    if status not in {"pruning", "pruned"}:
+        raise CampaignRetentionError("Availability journal does not match this Campaign")
+    expected["status"] = status
+    if document != expected:
+        raise CampaignRetentionError("Availability journal does not match this Campaign")
+
+
+def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> dict[str, object]:
     campaign = loaded.campaign
-    artifacts = [
-        {"id": artifact.id, "path": artifact.path, "sha256": artifact.sha256}
-        for artifact in campaign.artifacts
-        if artifact.kind in {"raw_native", "merged_native"}
-    ]
     point_store = loaded.summary.point_store
-    expected = {
+    return {
         "$schema": "booley.coverage-availability/v1",
         "campaign_id": campaign.campaign_id,
         "campaign_sha256": loaded.summary.manifest_sha256.removeprefix("sha256:"),
         "point_store_sha256": point_store.sha256 if point_store is not None else None,
-        "artifacts": artifacts,
+        "artifacts": _native_artifacts(campaign),
+        "status": status,
     }
-    document = _read_object(path)
-    status = document.pop("status", None)
-    if status not in {"pruning", "pruned"} or document != expected:
-        raise CampaignRetentionError("Availability journal does not match this Campaign")
 
 
 def _validate_simulation_campaign(target: Path, campaign: Path) -> None:
