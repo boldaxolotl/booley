@@ -49,6 +49,7 @@ _FLOW_BY_CRITERION = {
 _RTL_FILE_TYPE_PREFIXES = ("verilogSource", "systemVerilogSource", "vhdlSource")
 _TB_FILE_TYPE_PREFIXES = ("cSource", "cppSource")
 _TB_USER_SOURCE_SUFFIXES = frozenset({".py"})
+_AUTHORED_CRITERION_FAMILIES = frozenset({"coverage"})
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ class CriterionTarget:
     flow: str
     relative: bool
     baseline_target: str | None = None
-    family: str = ""
+    family: str | None = None
 
     @property
     def baseline(self) -> str:
@@ -221,6 +222,12 @@ def _criterion_flow(key: str) -> str | None:
     return None
 
 
+def _authored_criterion_family(identity: str) -> str | None:
+    """Return the canonical EDA-gated family carried by authored Criteria."""
+    family = identity.casefold()
+    return family if family in _AUTHORED_CRITERION_FAMILIES else None
+
+
 def _relative_params(value: Any) -> bool:
     if not isinstance(value, Mapping):
         return False
@@ -292,7 +299,7 @@ def criterion_targets(criteria: Any) -> tuple[CriterionTarget, ...]:
                         flow,
                         relative,
                         baseline if baseline != target else None,
-                        family="coverage" if str(key) == "coverage" else "",
+                        family=_authored_criterion_family(str(key)),
                     )
                 )
     return tuple(bindings)
@@ -335,7 +342,7 @@ def criterion_targets_from_spec(spec: TicketSpec) -> tuple[CriterionTarget, ...]
                     flow,
                     baseline is not None,
                     baseline,
-                    family="coverage" if criterion.capability == "COVERAGE" else "",
+                    family=_authored_criterion_family(criterion.capability),
                 )
             )
     return tuple(bindings)
@@ -718,7 +725,7 @@ def _validate_binding(
         except FuseSocError as exc:
             errors.append(f"{binding.label}: {role} target {target!r}: {exc}")
             continue
-        if binding.family and not criterion_family_is_eligible(
+        if binding.family is not None and not criterion_family_is_eligible(
             binding.family,
             handle.eda_tool,
             target_name=getattr(handle, "name", target),
