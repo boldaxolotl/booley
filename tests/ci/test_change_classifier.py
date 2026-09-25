@@ -275,6 +275,24 @@ def test_riscv_measurement_arm_rejects_non_dispatch_events(tmp_path: Path) -> No
     assert "require workflow_dispatch" in result.stderr
 
 
+def test_riscv_measurement_rejects_windows_shard_benchmark(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "docs/unrelated.md")
+    head = _commit(repo, "unrelated docs change")
+
+    result, _output = _run_classifier(
+        repo,
+        base,
+        head,
+        event_name="workflow_dispatch",
+        windows_shard_benchmark=True,
+        riscv_measurement="baseline",
+    )
+
+    assert result.returncode == 2
+    assert "cannot be combined" in result.stderr
+
+
 def test_pull_request_uses_matching_merge_parent_instead_of_stale_event_base(
     tmp_path: Path,
 ) -> None:

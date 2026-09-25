@@ -26,7 +26,11 @@ def _write(path: Path, value: object) -> None:
     path.write_text(json.dumps(value) + "\n", encoding="utf-8")
 
 
-def _rawjson(path: Path, *vertices: dict[str, object]) -> Path:
+def _rawjson(
+    path: Path,
+    *vertices: dict[str, object],
+    statuses: tuple[dict[str, object], ...] = (),
+) -> Path:
     """Write BuildKit `--progress rawjson` snapshots: one `{"vertexes": [...]}` per line.
 
     Each vertex is emitted twice, first as a bare start and then complete, the
@@ -37,12 +41,28 @@ def _rawjson(path: Path, *vertices: dict[str, object]) -> Path:
         started = {key: vertex[key] for key in ("digest", "name", "started") if key in vertex}
         lines.append(json.dumps({"vertexes": [started]}))
         lines.append(json.dumps({"vertexes": [vertex], "statuses": [], "logs": []}))
+    for status in statuses:
+        started = {
+            key: status[key] for key in ("id", "vertex", "started", "timestamp") if key in status
+        }
+        lines.append(json.dumps({"statuses": [started]}))
+        lines.append(json.dumps({"vertexes": [], "statuses": [status], "logs": []}))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
 def _vertex(digest: str, name: str, started: str, completed: str, **extra: object) -> dict:
     return {"digest": digest, "name": name, "started": started, "completed": completed, **extra}
+
+
+def _status(identifier: str, vertex: str, started: str, completed: str, **extra: object) -> dict:
+    return {
+        "id": identifier,
+        "vertex": vertex,
+        "started": started,
+        "completed": completed,
+        **extra,
+    }
 
 
 _CONTEXT = _vertex(
@@ -308,12 +328,8 @@ def test_start_record_rejects_boolean_epoch(tmp_path: Path) -> None:
         finish_record(record, 0)
 
 
-def test_docker_driver_export_is_the_transfer_load_boundary(tmp_path: Path) -> None:
-    """The default docker driver writes straight into the daemon store.
-
-    Its only load step is the "exporting to image" vertex, so that vertex must
-    split construction from transfer/load instead of leaving load unavailable.
-    """
+def test_docker_driver_export_without_import_boundary_is_unavailable(tmp_path: Path) -> None:
+    """Image export is construction work, not evidence of a distinct daemon import."""
     record = tmp_path / "build.json"
     start_record(record, "riscv_tool_substrate", "nested")
     progress = _rawjson(
@@ -338,14 +354,56 @@ def test_docker_driver_export_is_the_transfer_load_boundary(tmp_path: Path) -> N
     )
 
     construction, load = json.loads(record.read_text(encoding="utf-8"))["phases"]
-    assert "attribution" not in construction
-    assert construction["elapsed_seconds"] == 480.2  # from the earliest vertex (context)
-    assert load["name"] == "riscv_tool_substrate_transfer_load"
-    assert load["outcome"] == "success"
-    assert load["elapsed_seconds"] == 7
+    assert construction["attribution"] == "combined_construction_export_transfer_load"
+    assert load["outcome"] == "unavailable"
     summary = summarize_records([record], 1, 1, "sha", "2026-09-24T12:09:00Z")
-    measured = {phase["name"]: phase["outcome"] for phase in summary["phases"]}
-    assert measured["riscv_tool_substrate_transfer_load"] == "success"
+    assert summary["complete"] is False
+
+
+def test_docker_driver_unpack_status_is_the_transfer_load_boundary(tmp_path: Path) -> None:
+    """A distinct unpack status separates completed image export from daemon import."""
+    record = tmp_path / "build.json"
+    start_record(record, "riscv_tool_substrate", "nested")
+    progress = _rawjson(
+        tmp_path / "progress.jsonl",
+        _CONTEXT,
+        _vertex(
+            "sha256:spike",
+            "[4/7] RUN build spike",
+            "2026-09-24T12:00:00.123456789Z",
+            "2026-09-24T12:08:00.123456789Z",
+        ),
+        _vertex(
+            "sha256:export",
+            "exporting to image",
+            "2026-09-24T12:08:00.2Z",
+            "2026-09-24T12:08:07.2Z",
+        ),
+        statuses=(
+            _status(
+                "exporting layers",
+                "sha256:export",
+                "2026-09-24T12:08:00.2Z",
+                "2026-09-24T12:08:06.2Z",
+            ),
+            _status(
+                "unpacking to docker.io/library/booley-riscv-substrate:ci",
+                "sha256:export",
+                "2026-09-24T12:08:06.2Z",
+                "2026-09-24T12:08:07.2Z",
+            ),
+        ),
+    )
+
+    finish_build_record(
+        record, 0, progress, tmp_path / "m.json", tmp_path / "i.json", tmp_path / "p.json"
+    )
+
+    construction, load = json.loads(record.read_text(encoding="utf-8"))["phases"]
+    assert "attribution" not in construction
+    assert construction["elapsed_seconds"] == 486.2
+    assert load["outcome"] == "success"
+    assert load["elapsed_seconds"] == 1
 
 
 @pytest.mark.parametrize(

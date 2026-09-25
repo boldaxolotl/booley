@@ -173,23 +173,40 @@ def _merge_vertices(vertices: dict[str, dict[str, Any]], line_payload: Any) -> N
             vertices.setdefault(vertex_dict["digest"], {}).update(vertex_dict)
 
 
-def _raw_events(path: Path) -> list[dict[str, Any]]:
-    """Return one merged record per vertex from `docker buildx --progress rawjson`.
+def _merge_statuses(statuses: dict[tuple[str, str], dict[str, Any]], line_payload: Any) -> None:
+    payload = as_dict(line_payload) or {}
+    for status in payload.get("statuses") or []:
+        status_dict = as_dict(status)
+        if not status_dict:
+            continue
+        vertex = status_dict.get("vertex")
+        identifier = status_dict.get("id")
+        if isinstance(vertex, str) and isinstance(identifier, str):
+            statuses.setdefault((vertex, identifier), {}).update(status_dict)
+
+
+def _raw_progress(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return merged vertices and statuses from BuildKit raw progress.
 
     Each output line is a SolveStatus snapshot (`{"vertexes": [...], ...}`);
-    a vertex is repeated as its state advances, so later snapshots win.
+    vertices and statuses repeat as their state advances, so later snapshots
+    win. Statuses retain the daemon import boundary hidden inside an outer
+    image-export vertex when the selected driver exposes one.
     """
     vertices: dict[str, dict[str, Any]] = {}
+    statuses: dict[tuple[str, str], dict[str, Any]] = {}
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as error:
         raise TimingError(f"cannot read {path}: {error}") from error
     for line in lines:
         try:
-            _merge_vertices(vertices, json.loads(line))
+            payload = json.loads(line)
+            _merge_vertices(vertices, payload)
+            _merge_statuses(statuses, payload)
         except json.JSONDecodeError:
             continue
-    return list(vertices.values())
+    return list(vertices.values()), list(statuses.values())
 
 
 def _event_time(event: dict[str, Any], field: str) -> datetime | None:
@@ -218,16 +235,18 @@ def _buildkit_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _transfer_window(events: list[dict[str, Any]]) -> tuple[datetime, datetime] | None:
-    # "exporting to image" is the docker driver's in-daemon export: it commits
-    # layers, writes, and names the image directly in the daemon store, so it
-    # is the whole transfer/load cost. The other markers cover drivers that
-    # stream a tarball into the daemon instead.
-    markers = ("exporting to image", "sending tarball", "importing to docker", "loading layer")
+def _transfer_window(
+    events: list[dict[str, Any]], statuses: list[dict[str, Any]]
+) -> tuple[datetime, datetime] | None:
+    # The outer "exporting to image" vertex also contains layer export,
+    # manifest/config creation, and naming. Only a distinct daemon import or
+    # unpack interval is a trustworthy transfer/load boundary.
+    markers = ("importing to docker", "loading layer", "unpacking to ")
     transfers = [
         event
-        for event in events
+        for event in (*events, *statuses)
         if any(marker in str(event.get("name", "")).lower() for marker in markers)
+        or any(marker in str(event.get("id", "")).lower() for marker in markers)
     ]
     starts = [value for event in transfers if (value := _event_time(event, "started"))]
     ends = [value for event in transfers if (value := _event_time(event, "completed"))]
@@ -260,10 +279,11 @@ def _attach_build_evidence(
 def _split_build_phases(
     construction: PhaseRecord,
     events: list[dict[str, Any]],
+    statuses: list[dict[str, Any]],
     exit_code: int,
 ) -> PhaseRecord:
     name = construction["name"]
-    transfer = _transfer_window(events)
+    transfer = _transfer_window(events, statuses)
     if transfer is None:
         construction["attribution"] = "combined_construction_export_transfer_load"
         load = _phase(
@@ -307,10 +327,10 @@ def finish_build_record(
 ) -> None:
     """Finish a BuildKit phase and split transfer/load when directly observable."""
     construction = _finish_phase(_read_json(path), exit_code)
-    events = _raw_events(progress)
+    events, statuses = _raw_progress(progress)
     construction["name"] = f"{construction['name']}_construction_export"
     _attach_build_evidence(construction, events, metadata, image_inspect, parent_inspect)
-    load = _split_build_phases(construction, events, exit_code)
+    load = _split_build_phases(construction, events, statuses, exit_code)
     _write_json(path, {"schema_version": 1, "phases": [construction, load]})
 
 

@@ -413,6 +413,10 @@ def main() -> int:
     try:
         if args.riscv_measurement != "automatic" and args.event_name != "workflow_dispatch":
             raise ValueError("RISC-V measurement arms require workflow_dispatch")
+        if args.windows_shard_benchmark and args.riscv_measurement != "automatic":
+            raise ValueError(
+                "Windows shard benchmarking cannot be combined with a RISC-V measurement arm"
+            )
         base = _diff_base(args.repo, args.base, args.head, args.event_name)
         paths = _changed_paths(_git_diff(args.repo, base, args.head))
         if args.windows_shard_benchmark:
