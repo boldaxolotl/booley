@@ -1,7 +1,7 @@
 interface:
   display_name: "Add to Booley QA"
-  short_description: "Review public QA Checks, Capabilities, and Scenarios"
-  default_prompt: "Use $booley-add-to-qa to review this public Booley behavior and propose any needed QA Check, Capability, or Scenario changes."
+  short_description: "Add a behavior or trap to a QA mission"
+  default_prompt: "Use $booley-add-to-qa to add this behavior to the QA missions."
 
 policy:
   allow_implicit_invocation: false
