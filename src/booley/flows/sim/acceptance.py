@@ -9,6 +9,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from booley.criteria.simulation import (
+    SimulationCriterionContract,
+    resolve_simulation_criterion_contract,
+)
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import (
@@ -27,6 +31,7 @@ from booley.flows.sim.campaign_reports import (
     target_report_directory,
     write_compatibility_projection,
 )
+from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_reference import (
     ResolvedCoverageCampaign,
     authenticate_coverage_campaign_owner,
@@ -110,62 +115,155 @@ class SimulationAcceptanceCoordinator:
         shadow = deepcopy(state)
         changes = _cycle_changes(outcome, shadow, target)
         changes.extend(_coverage_changes(outcome, shadow, target))
-        target_identity = f"{target['vlnv']}#{target_name}"
-        target_selector = str(target["selector"])
-        keys = [
-            key
-            for key, entry in state.criteria.items()
-            if key in {"sim_pass", f"sim_pass_{target_name}"}
-            or (
-                key.startswith("sim_pass_")
-                and criterion_matches_target(
-                    entry.params or {}, identity=target_identity, selector=target_selector
-                )
-            )
-        ]
-        if not keys:
-            return changes
-        suite = facts["required_suite"]
-        observations = facts["observations"]
-        if not isinstance(suite, Mapping) or not isinstance(observations, tuple):
-            raise TypeError("campaign acceptance suite is malformed")
-        observed_names = {item["test"] for item in observations if isinstance(item, Mapping)}
-        required_names = set(suite["names"])
-        has_required_scope = (
-            len(observations) == 1 and None in observed_names
-            if suite["default_invocation"] is True
-            else required_names.issubset(observed_names)
-        )
-        if not has_required_scope:
-            return changes
-        met = outcome.acceptance_ready and outcome.aggregate_grade == "pass"
-        selected = [str(item["test"] or "default") for item in observations]
-        passed = [
-            str(item["test"] or "default")
-            for item in observations
-            if item["execution"] == "completed"
-            and item["functional"] == "pass"
-            and item["assertions"] != "dirty"
-        ]
-        detail = {
-            "campaign_manifest": str(outcome.manifest_path),
-            "campaign_summary": str(outcome.summary_path),
-            "campaign_id": facts["campaign_id"],
-            "manifest_sha256": facts["manifest_sha256"],
-            "acceptance_facts_sha256": outcome.acceptance_facts.sha256,
-            "aggregate_grade": outcome.aggregate_grade,
-            "tests_passed": len(passed),
-            "tests_total": len(selected),
-            "test_selector": "all",
-            "registry_tests": sorted(required_names),
-            "selected_tests": selected,
-            "passed_tests": passed,
-            "failed_tests": [name for name in selected if name not in passed],
-            "skipped_tests": [],
-        }
-        for key in keys:
-            changes.extend(shadow.set_criterion(key, met, detail=detail))
+        changes.extend(_simulation_changes(outcome, shadow, target, target_name))
         return changes
+
+
+def _simulation_changes(
+    outcome: CampaignOutcome,
+    shadow: DevelopmentState,
+    target: Mapping[str, object],
+    target_name: str,
+) -> list[CriterionChange]:
+    if not outcome.complete or target["role"] != "candidate":
+        return []
+    keys = _matching_simulation_keys(shadow, target, target_name)
+    if not keys:
+        return []
+    facts = outcome.acceptance_facts.document
+    suite = facts["required_suite"]
+    if not isinstance(suite, Mapping):
+        raise TypeError("campaign acceptance suite is malformed")
+    observations = _candidate_simulation_observations(facts, target)
+    selected = {_test_name(name): item for name, item in observations.items()}
+    registered = set(cast(tuple[str, ...], suite["names"]))
+    changes: list[CriterionChange] = []
+    for key in keys:
+        entry = shadow.criteria[key]
+        contract = resolve_simulation_criterion_contract(entry.params or {}, registered, selected)
+        if contract.selector == "all":
+            required = {"default"} if suite["default_invocation"] is True else registered
+            contract = SimulationCriterionContract(
+                contract.selector,
+                frozenset(required),
+                contract.minimum_total,
+            )
+        relevant = _criterion_observations(contract, suite, observations, selected)
+        if relevant is None:
+            continue
+        met = _simulation_criterion_met(outcome, contract, relevant)
+        detail = _simulation_detail(outcome, contract, registered, relevant)
+        changes.extend(shadow.set_criterion(key, met, detail=detail))
+    return changes
+
+
+def _matching_simulation_keys(
+    state: DevelopmentState,
+    target: Mapping[str, object],
+    target_name: str,
+) -> list[str]:
+    identity = f"{target['vlnv']}#{target_name}"
+    selector = str(target["selector"])
+    return [
+        key
+        for key, entry in state.criteria.items()
+        if key in {"sim_pass", f"sim_pass_{target_name}"}
+        or (
+            key.startswith("sim_pass_")
+            and criterion_matches_target(entry.params or {}, identity=identity, selector=selector)
+        )
+    ]
+
+
+def _candidate_simulation_observations(
+    facts: Mapping[str, object], target: Mapping[str, object]
+) -> dict[object, Mapping[str, object]]:
+    indexed: dict[object, Mapping[str, object]] = {}
+    for item in facts["observations"]:  # type: ignore[union-attr]
+        if not isinstance(item, Mapping):
+            continue
+        if (
+            item["role"] != "candidate"
+            or item["revision"] != target["revision"]
+            or item["target"] != target
+        ):
+            continue
+        test = item["test"]
+        assert test not in indexed, "validated acceptance facts repeat an observation test"
+        indexed[test] = item
+    return indexed
+
+
+def _criterion_observations(
+    contract: SimulationCriterionContract,
+    suite: Mapping[str, object],
+    observations: Mapping[object, Mapping[str, object]],
+    selected: Mapping[str, Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...] | None:
+    if (
+        contract.selector == "all"
+        and suite["default_invocation"] is True
+        and (len(observations) != 1 or None not in observations)
+    ):
+        return None
+    if not contract.required_tests.issubset(selected):
+        return None
+    if contract.selector == "all":
+        return tuple(selected[name] for name in sorted(selected))
+    return tuple(selected[name] for name in sorted(contract.required_tests))
+
+
+def _observation_passed(observation: Mapping[str, object]) -> bool:
+    return (
+        observation["execution"] == "completed"
+        and observation["functional"] == "pass"
+        and observation["assertions"] != "dirty"
+    )
+
+
+def _simulation_criterion_met(
+    outcome: CampaignOutcome,
+    contract: SimulationCriterionContract,
+    observations: tuple[Mapping[str, object], ...],
+) -> bool:
+    minimum_met = (
+        contract.minimum_total is not None and len(observations) >= contract.minimum_total
+    )
+    if contract.selector == "all":
+        return minimum_met and outcome.acceptance_ready and outcome.aggregate_grade == "pass"
+    return minimum_met and all(_observation_passed(item) for item in observations)
+
+
+def _test_name(value: object) -> str:
+    return "default" if value is None else str(value)
+
+
+def _simulation_detail(
+    outcome: CampaignOutcome,
+    contract: SimulationCriterionContract,
+    registered: set[str],
+    observations: tuple[Mapping[str, object], ...],
+) -> dict[str, object]:
+    facts = outcome.acceptance_facts.document
+    selected = [_test_name(item["test"]) for item in observations]
+    passed = [_test_name(item["test"]) for item in observations if _observation_passed(item)]
+    return {
+        "campaign_manifest": str(outcome.manifest_path),
+        "campaign_summary": str(outcome.summary_path),
+        "campaign_id": facts["campaign_id"],
+        "manifest_sha256": facts["manifest_sha256"],
+        "acceptance_facts_sha256": outcome.acceptance_facts.sha256,
+        "aggregate_grade": outcome.aggregate_grade,
+        "tests_passed": len(passed),
+        "tests_total": len(selected),
+        "test_selector": contract.selector,
+        "required_tests": sorted(contract.required_tests),
+        "registry_tests": sorted(registered),
+        "selected_tests": selected,
+        "passed_tests": passed,
+        "failed_tests": [name for name in selected if name not in passed],
+        "skipped_tests": [],
+    }
 
 
 def record_campaign_acceptance(
@@ -294,13 +392,20 @@ def _coverage_changes(
     if not keys:
         return []
     detail = _coverage_detail(outcome, resolved, public_path)
+    evaluation = campaign.evaluation
     changes: list[CriterionChange] = []
     for key in keys:
+        met, projected_detail = project_coverage_criterion(
+            shadow.criteria[key],
+            evaluation,
+            detail,
+            atomic=key != direct,
+        )
         changes.extend(
             shadow.set_criterion(
                 key,
-                campaign.evaluation["status"] == "pass",
-                detail=detail,
+                met,
+                detail=projected_detail,
             )
         )
     return changes

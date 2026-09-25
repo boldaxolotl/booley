@@ -165,25 +165,14 @@ def _sim_contract_requirements(
     """Resolve required names and minimum count from a basis-bound simulation criterion."""
     from booley.config.project_config import lookup_target_section
     from booley.criteria.actions import criterion_target
+    from booley.criteria.simulation import resolve_simulation_criterion_contract
 
     params = entry.params or {}
     target = criterion_target(key, entry, "sim_pass", per_target=True)
     section = lookup_target_section(registry, target) if target else None
     registered = set(section.get("tests", [])) if isinstance(section, dict) else set()
-    selector = params.get("test_selector") or params.get("selector") or "all"
-    required_raw = params.get("required_tests")
-    if isinstance(required_raw, list) and all(isinstance(name, str) for name in required_raw):
-        required = set(required_raw)
-    elif selector == "all" and registered:
-        required = registered
-    elif isinstance(selector, str) and selector not in {"", "all"}:
-        required = {selector}
-    else:
-        required = set(selected)
-    minimum_total = params.get("minimum_total", len(required))
-    if not isinstance(minimum_total, int) or isinstance(minimum_total, bool):
-        minimum_total = None
-    return required, minimum_total
+    contract = resolve_simulation_criterion_contract(params, registered, selected)
+    return set(contract.required_tests), contract.minimum_total
 
 
 def _sim_evidence_error(key: str, entry, registry: dict[str, dict]) -> str | None:

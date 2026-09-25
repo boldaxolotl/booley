@@ -130,6 +130,97 @@ class TestParamsToArgv:
         assert _params_to_argv({}) == []
 
 
+class TestExitDisposition:
+    def test_invalid_work_dir_is_mcp_error(self, tmp_path):
+        import asyncio
+
+        definition = {
+            "module": "lint",
+            "is_flow": True,
+            "default_timeout": 60,
+        }
+
+        result = asyncio.run(
+            mcp_server._dispatch_booley_mcp_tool(
+                "lint",
+                {"work_dir": str(tmp_path / "missing")},
+                definition,
+                {},
+                MagicMock(),
+            )
+        )
+
+        assert isinstance(result, mcp_server.McpDispatchResult)
+        assert result.is_error is True
+        assert "does not exist" in _text(result)
+
+    def test_invalid_flow_timeout_is_mcp_error(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr(
+            mcp_server,
+            "_mcp_tool_timeout_seconds",
+            MagicMock(side_effect=ValueError("bad timeout")),
+        )
+        definition = {
+            "module": "lint",
+            "is_flow": True,
+            "default_timeout": 60,
+        }
+
+        result = asyncio.run(
+            mcp_server._dispatch_booley_mcp_tool(
+                "lint",
+                {},
+                definition,
+                {},
+                MagicMock(),
+            )
+        )
+
+        assert isinstance(result, mcp_server.McpDispatchResult)
+        assert result.is_error is True
+        assert "invalid Flow timeout: bad timeout" in _text(result)
+
+    @pytest.mark.parametrize(("exit_code", "is_error"), [(0, False), (1, True), (2, True)])
+    def test_inline_exit_code_sets_mcp_error(
+        self,
+        exit_code,
+        is_error,
+        monkeypatch,
+    ):
+        import asyncio
+
+        monkeypatch.setattr(
+            mcp_server,
+            "_run_inline_endpoint",
+            AsyncMock(return_value=(exit_code, "done", "", False)),
+        )
+        monkeypatch.setattr(mcp_server, "_try_read_report", lambda: None)
+        definition = {
+            "module": "lint",
+            "is_flow": True,
+            "default_timeout": 60,
+            "schema": {
+                "type": "object",
+                "properties": {"target": {"type": "string"}},
+            },
+        }
+
+        result = asyncio.run(
+            mcp_server._dispatch_booley_mcp_tool(
+                "lint",
+                {"target": "lint_demo"},
+                definition,
+                {},
+                MagicMock(),
+            )
+        )
+
+        assert isinstance(result, mcp_server.McpDispatchResult) is is_error
+        assert f"EXIT_CODE: {exit_code}" in _text(result)
+
+
 class TestFormatMcpToolResult:
     def test_success_with_stdout(self):
         result = _format_mcp_tool_result(0, "all tests passed\n", "")
@@ -903,6 +994,32 @@ class TestStructuredContent:
         out = asyncio.run(scenario())
         assert isinstance(out, list)
 
+    @pytest.mark.parametrize("exit_code", [1, 2])
+    def test_specialist_job_nonzero_exit_is_mcp_error(
+        self,
+        exit_code,
+        _report_env,
+        monkeypatch,
+    ):
+        async def _run(cmd, *, timeout, on_spawn=None, **_kwargs):
+            if on_spawn:
+                on_spawn(4242)
+            return exit_code, "specialist failed", "", False
+
+        monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
+        monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
+
+        async def scenario():
+            jobs = _JobManager(_FakeLifetime())
+            return await _dispatch_async_job("reviewer", ["c"], 60, jobs)
+
+        import asyncio
+
+        result = asyncio.run(scenario())
+        assert isinstance(result, mcp_server.McpDispatchResult)
+        assert result.is_error is True
+        assert f"EXIT_CODE: {exit_code}" in _text(result)
+
 
 class _FakeLifetime:
     """Minimal stand-in tracking the busy counter the JobManager holds."""
@@ -918,12 +1035,16 @@ class _FakeLifetime:
 
 
 def _blocks(result) -> list:
-    """Text blocks of a dispatch result — plain list or (blocks, structured)."""
+    """Text blocks of a dispatch result, including explicit error results."""
+    if isinstance(result, mcp_server.McpDispatchResult):
+        result = result.value
     return result[0] if isinstance(result, tuple) else result
 
 
 def _structured(result) -> dict | None:
     """structuredContent dict of a dispatch result, or None when text-only."""
+    if isinstance(result, mcp_server.McpDispatchResult):
+        result = result.value
     return result[1] if isinstance(result, tuple) else None
 
 
@@ -1308,6 +1429,7 @@ class TestAsyncJobDispatch:
         jobs = _JobManager(_FakeLifetime())
         out = asyncio.run(_dispatch_poll({}, jobs))
         assert "Provide a 'run_id'" in _text(out)
+        assert out.is_error is True
 
     def test_poll_unknown_run_id(self, _report_env):
         import asyncio
@@ -1315,6 +1437,7 @@ class TestAsyncJobDispatch:
         jobs = _JobManager(_FakeLifetime())
         out = asyncio.run(_dispatch_poll({"run_id": "nope-1"}, jobs))
         assert "Unknown run_id" in _text(out)
+        assert out.is_error is True
 
     def test_poll_reconnect_terminal_from_disk(self, _report_env):
         # A fresh server (new JobManager, empty in-memory registry) still
@@ -1339,6 +1462,29 @@ class TestAsyncJobDispatch:
         text = _text(out)
         assert "EXIT_CODE: 0" in text
         assert "RESULT: PASS" in text
+
+    def test_poll_reconnect_cancelled_job_is_error(self, _report_env):
+        import asyncio
+
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="simulate-x-cancelled",
+                endpoint="sim",
+                started_at="t",
+                timeout_s=60,
+                status=jobrec.STATUS_CANCELLED,
+                exit_code=130,
+            ),
+            root=session_jobs_dir(),
+        )
+        jobs = _JobManager(_FakeLifetime())
+
+        result = asyncio.run(_dispatch_poll({"run_id": "simulate-x-cancelled"}, jobs))
+
+        assert isinstance(result, mcp_server.McpDispatchResult)
+        assert result.is_error is True
+        assert "EXIT_CODE: 130" in _text(result)
+        assert "CANCELLED" in _text(result)
 
     def test_poll_reconnect_running_dead_pid_is_failed(self, _report_env):
         # A record left 'running' after a restart, whose PID is gone, resolves
@@ -2436,9 +2582,11 @@ class TestDiskLongPoll:
             lambda r, alive, **kw: next(statuses),
         )
         jobs = _JobManager(_FakeLifetime())
-        text = asyncio.run(mcp_server._poll_from_disk("simulate-d-1", jobs, wait_seconds=5.0))
+        result = asyncio.run(mcp_server._poll_from_disk("simulate-d-1", jobs, wait_seconds=5.0))
+        text = _text(result)
         assert "still in progress" not in text
         assert "EXIT_CODE" in text
+        assert result.is_error is True
 
     def test_poll_from_disk_zero_wait_answers_immediately(self, _report_env, monkeypatch):
         import asyncio
@@ -2459,7 +2607,8 @@ class TestDiskLongPoll:
             lambda r, alive, **kw: jobrec.STATUS_RUNNING,
         )
         jobs = _JobManager(_FakeLifetime())
-        text = asyncio.run(mcp_server._poll_from_disk("simulate-d-2", jobs, wait_seconds=0.0))
+        result = asyncio.run(mcp_server._poll_from_disk("simulate-d-2", jobs, wait_seconds=0.0))
+        text = _text(result)
         assert "still in progress" in text
 
 

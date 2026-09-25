@@ -7,8 +7,24 @@ from booley.flows.builtin_cli import build_parser
 from booley.mcp.schema_extractor import extract_schema
 
 
+def _specialist_schema(endpoint: Any) -> dict[str, Any]:
+    """Expose supported per-call controls while keeping infrastructure private."""
+    hook = getattr(endpoint, "mcp_schema", None)
+    extracted = extract_schema(endpoint._parser)
+    if not callable(hook):
+        return extracted
+    schema = hook()
+    properties = schema.setdefault("properties", {})
+    for dest in ("model", "max_turns"):
+        properties[dest] = extracted["properties"][dest]
+    schema["additionalProperties"] = False
+    return schema
+
+
 def flow_schema(endpoint: Any) -> dict[str, Any]:
     """Keep MCP schema policy out of deterministic Flow implementations."""
+    if getattr(endpoint, "endpoint_kind", None) == "specialist":
+        return _specialist_schema(endpoint)
     if not isinstance(endpoint, BuiltinFlow):
         hook = getattr(endpoint, "mcp_schema", None)
         return hook() if callable(hook) else extract_schema(endpoint._parser)

@@ -51,6 +51,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   Project data. Plain Simulation, native coverage, and resume share one report
   root and invocation-number sequence, and no default `flow-reports/` directory
   leaks into the RTL checkout.
+- Specialist MCP tools now expose bounded `model` and `max_turns` controls,
+  reject undeclared and infrastructure-only arguments before any side effect,
+  and report nonzero Specialist or Flow exits as MCP errors. (#734)
 - B-Wave directory discovery no longer rewrites a Simulation run's
   `trace_status.json`. Conversion failures are reported directly while the
   original attempt record remains byte-for-byte intact.
