@@ -557,6 +557,9 @@ only after terminal proof.
 An authenticated abandoned Simulation Campaign can be discarded with exact
 `--full` pruning after its producer exits. Full pruning performs bounded orphan-child
 cancellation/recovery and marker-checked cleanup of owned templated run directories.
+Project data is needed only when one of those authenticated external resources
+survives. An empty reservation abandoned before its first `progress.json` can also
+be discarded with `--full` when its external invocation lock remains intact.
 Use the printed `booley flow sim --resume-from <manifest>` command instead when the
 evidence is worth preserving. Native-only pruning requires a completed Target and
 will point to those choices; it cannot prune partial native evidence independently.

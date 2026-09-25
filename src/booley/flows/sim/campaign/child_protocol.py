@@ -90,25 +90,36 @@ class ChildExecutionRegistry:
         self,
         store: CampaignStore,
         manifest: SimulationCampaignManifest,
-        project_root: Path | None = None,
-        *,
-        project_data: Path | None = None,
+        project_root: Path,
     ) -> None:
-        if (project_root is None) == (project_data is None):
-            raise ValueError("select exactly one checkout root or Project-data root")
+        self._configure(store, manifest, resolve_checkout_project_dir(project_root))
+
+    @classmethod
+    def from_project_data(
+        cls,
+        store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        project_data: Path,
+    ) -> ChildExecutionRegistry:
+        """Bind recovery to an already resolved Project-data root."""
+        registry = cls.__new__(cls)
+        registry._configure(store, manifest, project_data)
+        return registry
+
+    def _configure(
+        self,
+        store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        project_data: Path,
+    ) -> None:
         self._store = store
         self._manifest = manifest
-        self._checkout_root = project_root
-        self._explicit_project_data = project_data
+        self._project_data_root = project_data
         self._campaign_root = store.root / "child-executions"
 
     @property
     def _project_data(self) -> Path:
-        explicit = getattr(self, "_explicit_project_data", None)
-        if explicit is not None:
-            return explicit
-        assert self._checkout_root is not None
-        return resolve_checkout_project_dir(self._checkout_root)
+        return self._project_data_root
 
     @property
     def project_data(self) -> Path:

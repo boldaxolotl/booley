@@ -89,6 +89,39 @@ def test_pruning_rejects_an_active_invocation(tmp_path):
     assert (outcome.campaign_path.parent / "native").is_dir()
 
 
+def test_full_pruning_accepts_an_empty_abandoned_reservation(tmp_path):
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+    from booley.flows.sim.campaign_retention import prune_invocation
+
+    invocation = tmp_path / "reports/sim/1"
+    invocation.parent.mkdir(parents=True)
+    with campaign_invocation_lock(invocation):
+        invocation.mkdir()
+
+    prune_invocation(tmp_path / "reports", 1)
+
+    assert not invocation.exists()
+    assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
+
+
+def test_native_pruning_points_empty_abandoned_reservation_at_full_pruning(tmp_path):
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        prune_native_payload,
+    )
+
+    invocation = tmp_path / "reports/sim/1"
+    invocation.parent.mkdir(parents=True)
+    with campaign_invocation_lock(invocation):
+        invocation.mkdir()
+
+    with pytest.raises(CampaignRetentionError, match="use --full"):
+        prune_native_payload(tmp_path / "reports", 1, "sim_0")
+
+    assert invocation.is_dir()
+
+
 def test_maintenance_cli_translates_active_invocation_contention(tmp_path):
     import os
     import subprocess

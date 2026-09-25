@@ -1033,10 +1033,15 @@ root explicitly; callers obtain project-data roots through
   artifact inventory before atomically moving that invocation to `.pruned-N` and
   removing its contents. Unknown files are named and refused without mutation;
   changed or missing recorded native payloads are accepted because full pruning
-  removes the entire invocation. Interrupted attempts may be removed after their
-  process releases the lock. Authenticated pending/interrupted Campaigns, missing
+  removes the entire invocation. Terminal attempts use only their exact
+  authenticated inventory; nonterminal attempts retain directory-level ownership
+  only for producer-private partial outputs that cannot acquire a terminal manifest.
+  Interrupted attempts may be removed after their process releases the lock.
+  Authenticated pending/interrupted Campaigns, missing
   summaries, and missing compatibility projections are abandoned rather than
-  invalid. A pruning journal permits retry after partial cleanup.
+  invalid. A producer-locked reservation abandoned before `progress.json` is also
+  removable when its invocation directory is still empty and its external lock
+  file is intact. A pruning journal permits retry after partial cleanup.
   The empty `.pruned-N` tombstone reserves the number permanently; it contains no
   Campaign or native evidence. Other invocations remain untouched.
 
@@ -1059,10 +1064,12 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 ```
 
 Full pruning releases matching retired child-execution index entries before it
-removes the invocation. Before release it performs bounded recovery/cancellation
-of exact Campaign-mirrored orphan process trees, proves them terminal, reconciles
-their heavy-slot tokens, publishes retirement mirrors, and marker-authenticates
-cleanup of owned templated run directories. Literal run directories are untouched.
+removes the invocation. When authenticated surviving external resources exist,
+it first performs bounded recovery/cancellation of exact Campaign-mirrored orphan
+process trees, proves them terminal, reconciles their heavy-slot tokens, publishes
+retirement mirrors, and marker-authenticates cleanup of owned templated run
+directories. It does not require or inspect Project data when no such resource
+survives. Literal run directories are untouched.
 The project-data root is inferred only when the report
 root is exactly `<project-data>/.runtime/flow-reports`. A nonstandard report
 root therefore requires `--project-data <resolved-project-data>` for `--full`

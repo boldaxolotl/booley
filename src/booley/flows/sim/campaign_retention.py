@@ -20,6 +20,7 @@ from booley.runtime.file_lock import LockContentionError
 from .campaign import (
     RetainedCampaignStatus,
     SimulationCampaignIntegrityError,
+    authenticate_retained_campaign_inventory,
     inspect_retained_campaign,
     recover_retained_campaign_resources,
     retained_campaign_lock,
@@ -231,18 +232,13 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
     if root.exists():
         if quarantine.exists():
             raise CampaignRetentionError("Ambiguous invocation pruning state")
-        _validate_invocation_targets(root)
-        _validate_invocation_inventory(root)
-        campaigns = _campaign_directories(root)
-        with _campaign_mutation_locks(campaigns):
-            _validate_invocation_targets(root)
-            _validate_invocation_inventory(root)
-            _recover_campaign_resources(root, campaigns, project_data)
-            _release_child_indexes(root, project_data)
+        if _empty_abandoned_reservation(root):
             write_campaign_json(
                 root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
             )
             root.rename(quarantine)
+        else:
+            _prune_published_invocation(root, project_data)
     elif not quarantine.is_dir():
         raise CampaignRetentionError("Invocation does not exist")
     children = list(quarantine.iterdir())
@@ -262,6 +258,34 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
         else:
             child.unlink()
     journal.unlink()
+
+
+def _prune_published_invocation(root: Path, project_data: Path | None) -> None:
+    """Validate and quarantine one invocation that published its progress record."""
+    _validate_invocation_targets(root)
+    _validate_invocation_inventory(root)
+    campaigns = _campaign_directories(root)
+    with _campaign_mutation_locks(campaigns):
+        _validate_invocation_targets(root)
+        _validate_invocation_inventory(root)
+        _recover_campaign_resources(root, campaigns, project_data)
+        _release_child_indexes(root, project_data)
+        write_campaign_json(
+            root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
+        )
+        root.rename(root.with_name(f".pruned-{root.name}"))
+
+
+def _empty_abandoned_reservation(root: Path) -> bool:
+    """Recognize a producer-locked reservation abandoned before first publication."""
+    lock = root.with_name(f".invocation-{root.name}.lock")
+    return (
+        root.is_dir()
+        and not any(root.iterdir())
+        and not is_report_link(lock)
+        and lock.is_file()
+        and lock.read_bytes() == b""
+    )
 
 
 def _release_child_indexes(root: Path, project_data: Path | None) -> None:
@@ -397,6 +421,7 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
     if manifest.exists():
         status = inspect_retained_campaign(manifest)
         expected.update(status.retention_files)
+        expected.update(authenticate_retained_campaign_inventory(status))
         for coverage in status.coverage_directories:
             expected.update(_campaign_coverage_files(coverage))
         lock = campaign / ".lock"
@@ -515,6 +540,11 @@ def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligi
 
 
 def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
+    if _empty_abandoned_reservation(root):
+        raise CampaignRetentionError(
+            "native-only pruning requires a completed Target; use --full to discard "
+            "this abandoned invocation"
+        )
     progress = _read_object(root / "progress.json")
     targets = progress.get("targets")
     if (

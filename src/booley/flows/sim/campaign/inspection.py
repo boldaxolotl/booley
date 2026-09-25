@@ -160,6 +160,21 @@ def retained_campaign_lock(manifest_path: Path) -> Iterator[None]:
         yield
 
 
+def authenticate_retained_campaign_inventory(
+    status: RetainedCampaignStatus,
+) -> tuple[Path, ...]:
+    """Authenticate shared-build files owned by one retained Campaign."""
+    store = _store_for_manifest(status.manifest_path)
+    origin = cast(Mapping[str, object], status.manifest.document["origin"])
+    variants = cast(tuple[Mapping[str, object], ...], status.manifest.document["build_variants"])
+    for variant in variants:
+        store.recover_shared_build(
+            cast(str, variant["build_variant_id"]),
+            cast(int, origin["invocation_id"]),
+        )
+    return store.retention_files
+
+
 def recover_retained_campaign_resources(
     status: RetainedCampaignStatus, project_data: Path | None
 ) -> None:
@@ -167,7 +182,10 @@ def recover_retained_campaign_resources(
     from booley.runtime.job_slots import SlotStore
 
     from .child_protocol import ChildExecutionRegistry
-    from .run_directory import cleanup_interrupted_run_directory, restore_run_directory
+    from .run_directory import (
+        cleanup_interrupted_run_directory,
+        restore_run_directory_from_project_data,
+    )
 
     store = _store_for_manifest(status.manifest_path)
     children = store.root / "child-executions" / "entries"
@@ -180,21 +198,22 @@ def recover_retained_campaign_resources(
         if children.is_dir()
         else ()
     )
-    if (unretired or status.interrupted) and project_data is None:
+    surviving_runs = _surviving_owned_run_directories(store, status.interrupted)
+    if (unretired or surviving_runs) and project_data is None:
         raise SimulationCampaignIntegrityError(
             "Project data is required to recover retained Campaign resources"
         )
     if project_data is None:
         return
     if unretired:
-        registry = ChildExecutionRegistry(store, status.manifest, project_data=project_data)
+        registry = ChildExecutionRegistry.from_project_data(store, status.manifest, project_data)
         registry.recover_selected_unretired(SlotStore(project_data / "runtime" / "jobs" / "slots"))
     for work_item_id in status.interrupted:
         attempt = store.latest_attempt(work_item_id)
         if attempt is None:
             continue
         document = attempt.document
-        run = restore_run_directory(
+        run = restore_run_directory_from_project_data(
             cast(Mapping[str, object], document["run_directory"]),
             project_data=project_data,
         )
@@ -206,6 +225,21 @@ def recover_retained_campaign_resources(
                 "attempt_id": cast(str, document["attempt_id"]),
             },
         )
+
+
+def _surviving_owned_run_directories(
+    store: CampaignStore, interrupted: tuple[str, ...]
+) -> tuple[Path, ...]:
+    surviving: list[Path] = []
+    for work_item_id in interrupted:
+        attempt = store.latest_attempt(work_item_id)
+        if attempt is None:
+            continue
+        run = cast(Mapping[str, object], attempt.document["run_directory"])
+        path = Path(cast(str, run["resolved"]))
+        if run["owned"] is True and path.exists():
+            surviving.append(path)
+    return tuple(surviving)
 
 
 def _store_for_manifest(manifest_path: Path) -> CampaignStore:
@@ -221,6 +255,7 @@ __all__ = [
     "CampaignWorkItemEvidence",
     "RetainedCampaignStatus",
     "SimulationCampaignWorkItemError",
+    "authenticate_retained_campaign_inventory",
     "authenticate_work_item",
     "inspect_retained_campaign",
     "recover_retained_campaign_resources",

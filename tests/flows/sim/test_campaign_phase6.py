@@ -839,13 +839,15 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
     assert check_criteria_acceptance(state_path).passed is True
 
 
-def _retained_invocation(tmp_path: Path) -> tuple[Path, Path, CampaignStore]:
+def _retained_invocation(
+    tmp_path: Path, *, reports: Path | None = None
+) -> tuple[Path, Path, CampaignStore]:
     source = tmp_path / "source"
     source.mkdir()
     (source / ".booley_project").mkdir()
     complete = _completed(source)
     project_data = tmp_path / "project-data"
-    reports = project_data / ".runtime" / "flow-reports"
+    reports = reports or project_data / ".runtime" / "flow-reports"
     invocation = reports / "sim" / "1"
     target = invocation / "targets" / "sim"
     target.mkdir(parents=True)
@@ -966,6 +968,45 @@ def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, s
         progress["completed_targets"] = []
         progress["pending_targets"] = ["sim"]
         progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
+    prune_invocation(reports, 1)
+
+    assert not (reports / "sim/1").exists()
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+
+
+def test_full_pruning_rejects_foreign_file_in_completed_attempt(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    status = inspect_retained_campaign(store.manifest_path)
+    attempts = store.work_item_directory(status.completed[0]) / "attempts"
+    foreign = next(attempts.iterdir()) / "evidence" / "foreign.txt"
+    foreign.parent.mkdir(exist_ok=True)
+    foreign.write_text("not produced by Booley", encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match=r"foreign\.txt"):
+        prune_invocation(reports, 1, project_data=project_data)
+
+    assert foreign.read_text(encoding="utf-8") == "not produced by Booley"
+    assert (reports / "sim/1").is_dir()
+
+
+def test_interrupted_campaign_without_surviving_resources_needs_no_project_data(
+    tmp_path: Path,
+) -> None:
+    reports, _project_data, store = _retained_invocation(
+        tmp_path, reports=tmp_path / "external-reports"
+    )
+    target = store.root.parent
+    store.summary_path.unlink()
+    (target / "simulation.json").unlink()
+    status = inspect_retained_campaign(store.manifest_path)
+    result = store.work_item_directory(status.completed[0]) / "result.json"
+    result.unlink()
+    progress_path = reports / "sim/1/progress.json"
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["completed_targets"] = []
+    progress["pending_targets"] = ["sim"]
+    progress_path.write_text(json.dumps(progress), encoding="utf-8")
 
     prune_invocation(reports, 1)
 
