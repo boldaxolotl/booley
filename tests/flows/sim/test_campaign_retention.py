@@ -180,6 +180,7 @@ def test_pruning_rejects_an_active_invocation(tmp_path):
     assert (outcome.campaign_path.parent / "native").is_dir()
 
 
+@pytest.mark.usefixtures("mandatory_file_locks")
 def test_full_pruning_accepts_an_empty_abandoned_reservation(tmp_path):
     from booley.flows.sim.campaign_reports import campaign_invocation_lock
     from booley.flows.sim.campaign_retention import prune_invocation
@@ -195,6 +196,7 @@ def test_full_pruning_accepts_an_empty_abandoned_reservation(tmp_path):
     assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
 
 
+@pytest.mark.usefixtures("mandatory_file_locks")
 def test_native_pruning_points_empty_abandoned_reservation_at_full_pruning(tmp_path):
     from booley.flows.sim.campaign_reports import campaign_invocation_lock
     from booley.flows.sim.campaign_retention import (
@@ -529,3 +531,33 @@ def test_full_pruning_rejects_unresolved_completed_target(tmp_path):
         prune_invocation(tmp_path / "reports", 1)
     assert outcome.campaign_path.is_file()
     assert not (tmp_path / "reports/sim/.pruned-1").exists()
+
+
+@pytest.mark.parametrize(
+    ("content", "valid"), [(None, False), (b"", True), (b"\0", True), (b"x", False)]
+)
+def test_lock_sentinel_accepts_only_platform_sentinels(tmp_path, content, valid):
+    from booley.flows.sim.campaign_retention import _valid_lock_sentinel
+
+    lock = tmp_path / ".lock"
+    if content is not None:
+        lock.write_bytes(content)
+
+    assert _valid_lock_sentinel(lock) is valid
+
+
+def test_lock_sentinel_read_denial_is_an_error_without_mandatory_locks(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from booley.flows.sim import campaign_retention
+
+    lock = tmp_path / ".lock"
+    lock.write_bytes(b"")
+    monkeypatch.setattr(campaign_retention, "_MANDATORY_FILE_LOCKS", False)
+
+    def denied(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    with pytest.raises(PermissionError):
+        campaign_retention._valid_lock_sentinel(lock)

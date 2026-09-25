@@ -9,6 +9,7 @@ import hashlib
 import json
 import shutil
 import stat
+import sys
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -43,6 +44,11 @@ from .coverage_reference import (
 
 class CampaignRetentionError(ValueError):
     """A selection or filesystem tree cannot be safely pruned."""
+
+
+# Windows file locks are mandatory byte-range locks: while any handle (including
+# one held by this very prune) locks the sentinel byte, other handles cannot read it.
+_MANDATORY_FILE_LOCKS = sys.platform == "win32"
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,19 +280,36 @@ def _prune_published_invocation(root: Path, project_data: Path | None) -> None:
         write_campaign_json(
             root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
         )
-        root.rename(root.with_name(f".pruned-{root.name}"))
+    # Windows cannot rename a directory while a handle inside it (the Campaign
+    # ``.lock``) is open, so rename after releasing the Campaign locks. The held
+    # invocation lock still excludes producers and resumes, which lock their origin.
+    root.rename(root.with_name(f".pruned-{root.name}"))
 
 
 def _empty_abandoned_reservation(root: Path) -> bool:
     """Recognize a producer-locked reservation abandoned before first publication."""
     lock = root.with_name(f".invocation-{root.name}.lock")
-    return (
-        root.is_dir()
-        and not any(root.iterdir())
-        and not is_report_link(lock)
-        and lock.is_file()
-        and lock.read_bytes() == b""
-    )
+    return root.is_dir() and not any(root.iterdir()) and _valid_lock_sentinel(lock)
+
+
+def _valid_lock_sentinel(lock: Path) -> bool:
+    """Accept only a regular lock file holding the empty or single-NUL sentinel.
+
+    ``acquire_file_lock`` writes one NUL on Windows and nothing on POSIX. When a
+    mandatory lock hides the byte, the at-most-one-byte length is all we can verify.
+    """
+    try:
+        info = lock.lstat()
+    except FileNotFoundError:
+        return False
+    if is_report_link(lock) or not stat.S_ISREG(info.st_mode) or info.st_size > 1:
+        return False
+    try:
+        return lock.read_bytes() in {b"", b"\0"}
+    except PermissionError:
+        if _MANDATORY_FILE_LOCKS:
+            return True
+        raise
 
 
 def _release_child_indexes(root: Path, project_data: Path | None) -> None:
@@ -406,7 +429,7 @@ def _validate_invocation_inventory(root: Path) -> None:
     expected = {(root / "progress.json").absolute()}
     progress_lock = root / ".progress.lock"
     if progress_lock.exists():
-        if progress_lock.is_symlink() or progress_lock.read_bytes() not in {b"", b"\0"}:
+        if not _valid_lock_sentinel(progress_lock):
             raise CampaignRetentionError(
                 f"Invocation progress lock content is invalid: {progress_lock}"
             )
@@ -447,7 +470,7 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
             expected.update(_campaign_coverage_files(coverage))
         lock = campaign / ".lock"
         if lock.exists():
-            if lock.read_bytes() not in {b"", b"\0"}:
+            if not _valid_lock_sentinel(lock):
                 raise CampaignRetentionError(f"Campaign lock content is invalid: {lock}")
             expected.add(lock.absolute())
         for registry in ("entries", "retired", "released"):

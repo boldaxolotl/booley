@@ -946,6 +946,7 @@ def test_complete_campaign_pruning_releases_exact_project_child_pair(
     assert list((reports / "sim" / ".pruned-1").iterdir()) == []
 
 
+@pytest.mark.usefixtures("mandatory_file_locks")
 def test_complete_campaign_pruning_accepts_windows_lock_sentinel(tmp_path: Path) -> None:
     reports, project_data, store = _retained_invocation(tmp_path)
     (store.root / ".lock").write_bytes(b"\0")
@@ -955,6 +956,7 @@ def test_complete_campaign_pruning_accepts_windows_lock_sentinel(tmp_path: Path)
     assert list((reports / "sim" / ".pruned-1").iterdir()) == []
 
 
+@pytest.mark.usefixtures("mandatory_file_locks")
 @pytest.mark.parametrize("state", ["terminal-unpublished", "interrupted"])
 def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, state: str) -> None:
     reports, _project_data, store = _retained_invocation(tmp_path)
@@ -1064,6 +1066,44 @@ def test_simulation_reservation_locks_before_directory_publication(
         assert flow.reserve_invocation_dir() == reports / "sim/1"
 
     assert observed
+
+
+def test_simulation_reservation_skips_contended_and_raced_numbers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+
+    reports = tmp_path / "reports"
+    (reports / "sim").mkdir(parents=True)
+    flow = SimulateFlow()
+    flow.context._args = SimRequest(report_dir=reports)
+    mkdir = type(reports).mkdir
+
+    def lose_race_for_two(path: Path, *args: object, **kwargs: object) -> None:
+        if path == reports / "sim/2":
+            mkdir(path, *args, **kwargs)
+            raise FileExistsError(path)
+        mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(reports), "mkdir", lose_race_for_two)
+    with campaign_invocation_lock(reports / "sim/1"), flow.context.publication_resources:
+        assert flow.reserve_invocation_dir() == reports / "sim/3"
+        # The raced number's producer lock was released, not leaked.
+        with campaign_invocation_lock(reports / "sim/2"):
+            pass
+
+
+def test_simulation_reservation_stops_at_the_invocation_ceiling(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    (reports / "sim" / "1000000").mkdir(parents=True)
+    flow = SimulateFlow()
+    flow.context._args = SimRequest(report_dir=reports)
+
+    with (
+        flow.context.publication_resources,
+        pytest.raises(RuntimeError, match="reservation ceiling exceeded"),
+    ):
+        flow.reserve_invocation_dir()
 
 
 @pytest.mark.parametrize("nested", [False, True])
