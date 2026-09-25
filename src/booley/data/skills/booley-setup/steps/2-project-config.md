@@ -208,15 +208,17 @@ generation lifecycles, extract every repeated design file list into one
 dependency core instead of copying it. The dependency core owns the reusable
 filesets and a `default` Target that selects them; each adapter core declares a
 fileset with `depend: [<dependency-vlnv>]` and adds only its flow-specific
-testbench, wrapper, constraint, or waiver files. Preserve the common files'
-compile order in the dependency core. A standalone YAML fragment is not a CAPI2
-composition mechanism, and YAML anchors do not cross files.
+testbench, wrapper, constraint, or waiver files. Before refactoring, record each
+affected Target's complete resolved file order and compare it with the result:
+FuseSoC emits dependency-core files before adapter-core files, so do not split a
+core when that ordering cannot remain identical. A standalone YAML fragment is
+not a CAPI2 composition mechanism, and YAML anchors do not cross files.
 
 Use this split only when there are at least two real adapters. For one core,
 local shared filesets keep the interface smaller. When refactoring an existing
-Project, preserve selectable Target VLNVs unless the plan explicitly accepts
-the identity change; Criteria and durable evidence bind to the declaring core's
-VLNV as well as the Target name.
+Project, preserve both parts of every selectable Target's durable identity: the
+declaring core's VLNV and the Target name. Criteria and durable evidence bind to
+that pair.
 
 Authoring rules:
 

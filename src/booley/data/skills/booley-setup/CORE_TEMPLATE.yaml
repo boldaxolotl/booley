@@ -6,17 +6,15 @@
 # `*.core` template vendored under `.booley/` would be picked up as a real
 # project core. Copy the shape below into a `.core`, do not rename this file.
 #
-# Keep sim/lint/synth/fpga Targets in this one core when they share the same
-# design sources. If separate project-owned adapter cores are justified, move
-# their repeated filesets into one reusable core with a `default` Target, then
-# give each adapter a local fileset containing:
+# Keep Targets that share design sources in this core. When the Project Config
+# guide justifies separate adapters, compose them through a dependency core;
+# the adapter-side syntax is:
 #
 #   design:
 #     depend: [vendor:library:shared-design:1]
 #
-# Adapter Targets select `design` plus only their flow-specific filesets. CAPI2
-# composes cores through `depend:`; standalone YAML fragments and cross-file
-# YAML anchors cannot share file lists.
+# See `steps/2-project-config.md` for the dependency core's required `default`
+# Target and the compile-order and Target-identity preservation rules.
 
 CAPI=2:
 name: ::<project>:0          # a VLNV; the leading :: is fine for a leaf project
