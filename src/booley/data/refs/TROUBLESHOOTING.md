@@ -505,9 +505,10 @@ invocation pruning removes all reports and prevents re-analysis. See the
 [exact retention commands](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
 
 An `availability.json` status of `pruning` means cleanup was interrupted. Retry
-the same exact maintenance command after resolving the filesystem error. A lock
-contention error means the invocation is still executing or another maintenance
-operation is using it. Do not delete the lock file to bypass it. An interrupted
+the same exact maintenance command after resolving the filesystem error.
+`invocation N is still being produced` means the producer lock is owned; wait and
+retry. `Simulation Campaign is being resumed` means an exact resume owns the
+Campaign mutation lock; wait for that resume. Do not delete either lock file. An interrupted
 Simulation starts a new numbered invocation when rerun without an exact
 `--resume-from <manifest.json>`. Durable Simulation Campaigns resume only the
 named manifest; Booley never guesses a “latest” Simulation Campaign. A resume
@@ -553,9 +554,17 @@ Never delete Project job-slot or child-execution records to force progress:
 their leases protect live EDA process trees, and normal recovery retires them
 only after terminal proof.
 
-Incomplete or invalid Simulation Campaigns are protected from retention. Once
-a Campaign is complete, use the exact retention command and invocation number
-documented in the Flow reference. For coverage collected inside a Simulation
+An authenticated abandoned Simulation Campaign can be discarded with exact
+`--full` pruning after its producer exits. Full pruning performs bounded orphan-child
+cancellation/recovery and marker-checked cleanup of owned templated run directories.
+Project data is needed only when one of those authenticated external resources
+survives. An empty reservation abandoned before its first `progress.json` can also
+be discarded with `--full` when its external invocation lock remains intact.
+Use the printed `booley flow sim --resume-from <manifest>` command instead when the
+evidence is worth preserving. Native-only pruning requires a completed Target and
+will point to those choices; it cannot prune partial native evidence independently.
+Malformed, contradictory, linked, foreign, or unrecognized evidence remains
+protected. For coverage collected inside a Simulation
 Campaign, the public Target-level `coverage.json` is an authenticated reference
 to the selected attempt's nested Coverage Campaign; keep the reference and
 enclosing Simulation Campaign together. If full pruning reports that Project

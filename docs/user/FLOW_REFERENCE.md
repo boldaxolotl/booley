@@ -441,6 +441,11 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 ```
 
 Full pruning also retires the Campaign's Project-local child-execution records.
+For abandoned Campaigns with surviving external resources it first performs
+bounded recovery/cancellation of authenticated orphan child processes and
+marker-checked cleanup of owned templated run directories. It does not require
+Project data when no external resource survives. Literal user-supplied run
+directories are never removed.
 When `REPORTS_ROOT` has either standard shape,
 `<project-data>/.runtime/flow-reports` for runtime-scoped execution or
 `<project-data>/flow-reports` for direct execution, Booley infers that project-data
@@ -462,6 +467,16 @@ exits `2` and names any file the invocation did not produce; the invocation is
 left untouched. Active selections also exit `2`. Retry an interrupted cleanup
 with the same exact selection. No age, size, or latest heuristic deletes evidence
 automatically.
+
+Retention distinguishes active, abandoned, and invalid evidence. If the invocation
+producer still owns its lock, wait for it to finish. If an exact resume owns a
+Campaign mutation lock, wait for the resume to finish. An authenticated pending or
+interrupted Campaign, an unpublished summary, or an absent Simulation projection is
+abandoned and may be discarded with `--full`; native-only pruning instead points to
+`--full` or the exact `booley flow sim --resume-from <manifest>` command. Malformed,
+contradictory, linked, foreign, or unrecognized content remains undeletable.
+An empty producer reservation abandoned before `progress.json` is likewise
+discardable with `--full` when its external invocation lock remains intact.
 
 ## `lint`
 

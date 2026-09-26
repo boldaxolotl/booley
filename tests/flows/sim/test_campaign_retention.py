@@ -121,14 +121,33 @@ def test_full_pruning_accepts_terminal_partial_progress(tmp_path, phase):
     assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
 
 
-def test_full_pruning_rejects_nonterminal_progress(tmp_path):
-    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+def test_full_pruning_accepts_abandoned_nonterminal_progress(tmp_path):
+    """A producer killed before terminalizing progress leaves an abandoned invocation."""
+    from booley.flows.sim.campaign_retention import prune_invocation
 
     invocation = tmp_path / "reports/sim/1"
     CoverageProgress(invocation, ("sim_0",)).checkpoint()
 
-    with pytest.raises(CampaignRetentionError, match="progress is not terminal"):
+    prune_invocation(tmp_path / "reports", 1)
+
+    assert not invocation.exists()
+    assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
+
+
+def test_full_pruning_rejects_contradictory_progress(tmp_path):
+    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+
+    invocation = tmp_path / "reports/sim/1"
+    CoverageProgress(invocation, ("sim_0",)).checkpoint()
+    progress_path = invocation / "progress.json"
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["complete"] = True
+    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match="complete and phase disagree"):
         prune_invocation(tmp_path / "reports", 1)
+
+    assert invocation.is_dir()
 
 
 def test_full_pruning_rejects_changed_progress_lock(tmp_path):
@@ -145,17 +164,93 @@ def test_pruning_rejects_an_active_invocation(tmp_path):
     import pytest
 
     from booley.flows.sim.campaign_reports import campaign_invocation_lock
-    from booley.flows.sim.campaign_retention import prune_invocation, prune_native_payload
-    from booley.runtime.file_lock import LockContentionError
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        prune_invocation,
+        prune_native_payload,
+    )
 
     outcome = campaign(tmp_path)
     with campaign_invocation_lock(tmp_path / "reports/sim/1"):
-        with pytest.raises(LockContentionError):
+        with pytest.raises(CampaignRetentionError, match="invocation 1 is still being produced"):
             prune_native_payload(tmp_path / "reports", 1, "sim_0")
-        with pytest.raises(LockContentionError):
+        with pytest.raises(CampaignRetentionError, match="invocation 1 is still being produced"):
             prune_invocation(tmp_path / "reports", 1)
     assert outcome.campaign_path.is_file()
     assert (outcome.campaign_path.parent / "native").is_dir()
+
+
+@pytest.mark.usefixtures("mandatory_file_locks")
+def test_full_pruning_accepts_an_empty_abandoned_reservation(tmp_path):
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+    from booley.flows.sim.campaign_retention import prune_invocation
+
+    invocation = tmp_path / "reports/sim/1"
+    invocation.parent.mkdir(parents=True)
+    with campaign_invocation_lock(invocation):
+        invocation.mkdir()
+
+    prune_invocation(tmp_path / "reports", 1)
+
+    assert not invocation.exists()
+    assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
+
+
+@pytest.mark.usefixtures("mandatory_file_locks")
+def test_native_pruning_points_empty_abandoned_reservation_at_full_pruning(tmp_path):
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        prune_native_payload,
+    )
+
+    invocation = tmp_path / "reports/sim/1"
+    invocation.parent.mkdir(parents=True)
+    with campaign_invocation_lock(invocation):
+        invocation.mkdir()
+
+    with pytest.raises(CampaignRetentionError, match="use --full"):
+        prune_native_payload(tmp_path / "reports", 1, "sim_0")
+
+    assert invocation.is_dir()
+
+
+def test_maintenance_cli_translates_active_invocation_contention(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import booley
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+
+    campaign(tmp_path)
+    invocation = tmp_path / "reports/sim/1"
+    command = [
+        sys.executable,
+        "-m",
+        "booley.flows.sim.campaign_retention",
+        "--reports-root",
+        str(tmp_path / "reports"),
+        "--invocation",
+        "1",
+        "--full",
+    ]
+    with campaign_invocation_lock(invocation):
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env={**os.environ, "PYTHONPATH": str(Path(booley.__file__).parent.parent)},
+            check=False,
+        )
+
+    assert result.returncode == 2
+    assert "invocation 1 is still being produced; retry after it finishes" in result.stderr
+    assert "Errno" not in result.stderr
+    assert invocation.is_dir()
+    assert not (tmp_path / "reports/sim/.pruned-1").exists()
 
 
 @pytest.mark.parametrize(
@@ -436,3 +531,33 @@ def test_full_pruning_rejects_unresolved_completed_target(tmp_path):
         prune_invocation(tmp_path / "reports", 1)
     assert outcome.campaign_path.is_file()
     assert not (tmp_path / "reports/sim/.pruned-1").exists()
+
+
+@pytest.mark.parametrize(
+    ("content", "valid"), [(None, False), (b"", True), (b"\0", True), (b"x", False)]
+)
+def test_lock_sentinel_accepts_only_platform_sentinels(tmp_path, content, valid):
+    from booley.flows.sim.campaign_retention import _valid_lock_sentinel
+
+    lock = tmp_path / ".lock"
+    if content is not None:
+        lock.write_bytes(content)
+
+    assert _valid_lock_sentinel(lock) is valid
+
+
+def test_lock_sentinel_read_denial_is_an_error_without_mandatory_locks(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from booley.flows.sim import campaign_retention
+
+    lock = tmp_path / ".lock"
+    lock.write_bytes(b"")
+    monkeypatch.setattr(campaign_retention, "_MANDATORY_FILE_LOCKS", False)
+
+    def denied(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    with pytest.raises(PermissionError):
+        campaign_retention._valid_lock_sentinel(lock)

@@ -53,8 +53,11 @@ from .inspection import (
     CampaignWorkItemEvidence,
     RetainedCampaignStatus,
     SimulationCampaignWorkItemError,
+    authenticate_retained_campaign_inventory,
     authenticate_work_item,
     inspect_retained_campaign,
+    recover_retained_campaign_resources,
+    retained_campaign_lock,
 )
 from .model import (
     BundleBuildAttempt,
@@ -111,6 +114,7 @@ __all__ = [
     "SimulatorBundle",
     "ValidatedResumeManifest",
     "acceptance_facts_sha256",
+    "authenticate_retained_campaign_inventory",
     "authenticate_work_item",
     "build_artifact_reference",
     "create_simulation_campaign_plan",
@@ -134,7 +138,9 @@ __all__ = [
     "encode_simulation_result",
     "encode_simulator_bundle",
     "inspect_retained_campaign",
+    "recover_retained_campaign_resources",
     "resolve_artifact_reference",
     "resolve_report_artifact_reference",
+    "retained_campaign_lock",
     "validate_resume_manifest",
 ]

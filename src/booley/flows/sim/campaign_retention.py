@@ -9,15 +9,27 @@ import hashlib
 import json
 import shutil
 import stat
-from collections.abc import Mapping
+import sys
+from collections.abc import Iterator, Mapping
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
+
+from booley.flows.progress_lifecycle import validate_progress_shape
+from booley.runtime.file_lock import LockContentionError
 
 from .campaign import (
     ProjectionTrust,
     RetainedCampaignStatus,
+    SimulationCampaignIntegrityError,
     SimulationProjection,
+    authenticate_retained_campaign_inventory,
     decode_simulation_projection,
+    inspect_retained_campaign,
+    recover_retained_campaign_resources,
     resolve_artifact_reference,
+    retained_campaign_lock,
 )
 from .campaign.codec import MANIFEST_MAX_BYTES
 from .campaign_reports import (
@@ -38,6 +50,29 @@ from .coverage_reference import (
 
 class CampaignRetentionError(ValueError):
     """A selection or filesystem tree cannot be safely pruned."""
+
+
+# Windows file locks are mandatory byte-range locks: while any handle (including
+# one held by this very prune) locks the sentinel byte, other handles cannot read it.
+_MANDATORY_FILE_LOCKS = sys.platform == "win32"
+
+
+@dataclass(frozen=True, slots=True)
+class _CampaignEligibility:
+    status: RetainedCampaignStatus
+    abandoned: bool
+
+
+@contextmanager
+def _retention_invocation_lock(root: Path) -> Iterator[None]:
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(campaign_invocation_lock(root))
+        except LockContentionError as exc:
+            raise CampaignRetentionError(
+                f"invocation {root.name} is still being produced; retry after it finishes"
+            ) from exc
+        yield
 
 
 def _remove_tree(path: Path) -> None:
@@ -147,12 +182,13 @@ def _native_artifacts(campaign: CoverageCampaign) -> list[dict[str, object]]:
 def prune_native_payload(reports_root: Path, invocation: int, target: str) -> Path:
     """Remove one exact Target's native databases; return its availability sidecar."""
     root = _invocation(reports_root, invocation)
-    with campaign_invocation_lock(root):
+    with _retention_invocation_lock(root):
         return _prune_native(root, target)
 
 
 def _prune_native(root: Path, target: str) -> Path:
     _safe_tree(root)
+    _validate_native_pruning_eligibility(root, target)
     directory, loaded = _target(root, target)
     campaign = loaded.campaign
     _native_manifest(directory, campaign)
@@ -198,7 +234,7 @@ def prune_invocation(
 ) -> None:
     """Remove exactly one invocation, retaining only an empty number tombstone."""
     root = _invocation(reports_root, invocation)
-    with campaign_invocation_lock(root):
+    with _retention_invocation_lock(root):
         _prune_invocation(root, project_data=project_data)
 
 
@@ -209,13 +245,13 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
     if root.exists():
         if quarantine.exists():
             raise CampaignRetentionError("Ambiguous invocation pruning state")
-        _validate_invocation_targets(root)
-        _validate_invocation_inventory(root)
-        _release_child_indexes(root, project_data)
-        write_campaign_json(
-            root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
-        )
-        root.rename(quarantine)
+        if _empty_abandoned_reservation(root):
+            write_campaign_json(
+                root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
+            )
+            root.rename(quarantine)
+        else:
+            _prune_published_invocation(root, project_data)
     elif not quarantine.is_dir():
         raise CampaignRetentionError("Invocation does not exist")
     children = list(quarantine.iterdir())
@@ -235,6 +271,51 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
         else:
             child.unlink()
     journal.unlink()
+
+
+def _prune_published_invocation(root: Path, project_data: Path | None) -> None:
+    """Validate and quarantine one invocation that published its progress record."""
+    _validate_invocation_targets(root)
+    _validate_invocation_inventory(root)
+    campaigns = _campaign_directories(root)
+    with _campaign_mutation_locks(campaigns):
+        _validate_invocation_targets(root)
+        _validate_invocation_inventory(root)
+        _recover_campaign_resources(root, campaigns, project_data)
+        _release_child_indexes(root, project_data)
+        write_campaign_json(
+            root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
+        )
+    # Windows cannot rename a directory while a handle inside it (the Campaign
+    # ``.lock``) is open, so rename after releasing the Campaign locks. The held
+    # invocation lock still excludes producers and resumes, which lock their origin.
+    root.rename(root.with_name(f".pruned-{root.name}"))
+
+
+def _empty_abandoned_reservation(root: Path) -> bool:
+    """Recognize a producer-locked reservation abandoned before first publication."""
+    lock = root.with_name(f".invocation-{root.name}.lock")
+    return root.is_dir() and not any(root.iterdir()) and _valid_lock_sentinel(lock)
+
+
+def _valid_lock_sentinel(lock: Path) -> bool:
+    """Accept only a regular lock file holding the empty or single-NUL sentinel.
+
+    ``acquire_file_lock`` writes one NUL on Windows and nothing on POSIX. When a
+    mandatory lock hides the byte, the at-most-one-byte length is all we can verify.
+    """
+    try:
+        info = lock.lstat()
+    except FileNotFoundError:
+        return False
+    if is_report_link(lock) or not stat.S_ISREG(info.st_mode) or info.st_size > 1:
+        return False
+    try:
+        return lock.read_bytes() in {b"", b"\0"}
+    except PermissionError:
+        if _MANDATORY_FILE_LOCKS:
+            return True
+        raise
 
 
 def _release_child_indexes(root: Path, project_data: Path | None) -> None:
@@ -288,6 +369,64 @@ def _child_ownership_root(children: Path, manifest_paths) -> Path | None:
     return None
 
 
+def _campaign_directories(root: Path) -> tuple[Path, ...]:
+    return tuple(
+        sorted(
+            path.parent for path in root.glob("targets/*/campaign/manifest.json") if path.is_file()
+        )
+    )
+
+
+@contextmanager
+def _campaign_mutation_locks(campaigns: tuple[Path, ...]) -> Iterator[None]:
+    with ExitStack() as stack:
+        for campaign in campaigns:
+            try:
+                stack.enter_context(retained_campaign_lock(campaign / "manifest.json"))
+            except LockContentionError as exc:
+                raise CampaignRetentionError(
+                    "Simulation Campaign is being resumed; retry after it finishes"
+                ) from exc
+        yield
+
+
+def _recover_campaign_resources(
+    root: Path, campaigns: tuple[Path, ...], project_data: Path | None
+) -> None:
+    from booley.runtime.execution_records import campaign_child_entry_manifests
+
+    try:
+        for directory in campaigns:
+            status = inspect_retained_campaign(directory / "manifest.json")
+            children = directory / "child-executions"
+            if not campaign_child_entry_manifests(children):
+                # No child records: only this invocation's own run directories can survive.
+                resolved = project_data or _infer_project_data(root)
+            else:
+                owner = _child_ownership_root(children, campaign_child_entry_manifests)
+                if owner is None:
+                    # A detached copy has no authority over its producer's resources.
+                    continue
+                resolved = _owner_project_data(owner, project_data)
+            recover_retained_campaign_resources(status, resolved)
+    except CampaignRetentionError:
+        raise
+    except (OSError, ValueError, SimulationCampaignIntegrityError) as exc:
+        raise CampaignRetentionError(f"Campaign recovery is invalid: {exc}") from exc
+
+
+def _owner_project_data(owner: Path, project_data: Path | None) -> Path | None:
+    """Resolve Project data for a canonical owner; an explicit value must agree."""
+    inferred = _infer_project_data(owner)
+    if inferred is None:
+        return project_data
+    if project_data is not None and Path(project_data).resolve() != inferred.resolve():
+        raise CampaignRetentionError(
+            "Project data disagrees with the canonical Simulation Campaign owner"
+        )
+    return inferred
+
+
 def _infer_project_data(root: Path) -> Path | None:
     reports_root = root.parent.parent
     if reports_root.name == "flow-reports" and reports_root.parent.name == ".runtime":
@@ -314,10 +453,7 @@ def _validate_invocation_targets(root: Path) -> None:
         not isinstance(target, str) or not target or target in {".", ".."} for target in targets
     ) or len(set(targets)) != len(targets):
         raise CampaignRetentionError("Invocation has ambiguous Targets")
-    phase = progress.get("phase")
-    complete = progress.get("complete")
-    if complete is not True or phase not in {"complete", "aborted", "superseded"}:
-        raise CampaignRetentionError("Invocation progress is not terminal")
+    _validate_progress_lifecycle(progress)
     _validate_completed_targets(root, progress, targets)
     expected = {target_report_directory(root, target).name for target in targets}
     directories = (root / "targets").iterdir() if (root / "targets").exists() else ()
@@ -332,11 +468,19 @@ def _validate_invocation_targets(root: Path) -> None:
             _target(root, selector, require_projection=False)
         campaign = directory / "campaign"
         if (campaign / "manifest.json").exists():
-            _validate_simulation_campaign(
-                directory,
-                campaign,
-                allow_incomplete=phase in {"aborted", "superseded"},
-            )
+            _inspect_simulation_campaign(directory, campaign)
+
+
+def _validate_progress_lifecycle(progress: Mapping[str, object]) -> None:
+    """Reject contradictory progress; a live producer is excluded by the invocation lock.
+
+    Nonterminal progress under a free producer lock means the producer died before
+    terminalizing it, so the invocation is abandoned and full pruning may proceed.
+    """
+    try:
+        validate_progress_shape(progress)
+    except ValueError as exc:
+        raise CampaignRetentionError(f"Invocation progress is invalid: {exc}") from exc
 
 
 def _validate_invocation_inventory(root: Path) -> None:
@@ -346,7 +490,7 @@ def _validate_invocation_inventory(root: Path) -> None:
     expected = {(root / "progress.json").absolute()}
     progress_lock = root / ".progress.lock"
     if progress_lock.exists():
-        if progress_lock.is_symlink() or progress_lock.read_bytes() not in {b"", b"\0"}:
+        if not _valid_lock_sentinel(progress_lock):
             raise CampaignRetentionError(
                 f"Invocation progress lock content is invalid: {progress_lock}"
             )
@@ -380,15 +524,14 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
     campaign = target / "campaign"
     manifest = campaign / "manifest.json"
     if manifest.exists():
-        from .campaign import inspect_retained_campaign
-
         status = inspect_retained_campaign(manifest)
         expected.update(status.retention_files)
+        expected.update(authenticate_retained_campaign_inventory(status))
         for coverage in status.coverage_directories:
             expected.update(_campaign_coverage_files(coverage))
         lock = campaign / ".lock"
         if lock.exists():
-            if lock.read_bytes() not in {b"", b"\0"}:
+            if not _valid_lock_sentinel(lock):
                 raise CampaignRetentionError(f"Campaign lock content is invalid: {lock}")
             expected.add(lock.absolute())
         for registry in ("entries", "retired", "released"):
@@ -466,32 +609,73 @@ def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> di
     }
 
 
-def _validate_simulation_campaign(
-    target: Path, campaign: Path, *, allow_incomplete: bool = False
-) -> None:
-    from .campaign import inspect_retained_campaign
-
+def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligibility:
     try:
         status = inspect_retained_campaign(campaign / "manifest.json")
-        projection = decode_simulation_projection(
-            _read_object(target / "simulation.json"),
-            coverage_expected=(target / "coverage.json").is_file(),
-        )
     except (OSError, ValueError) as exc:
         raise CampaignRetentionError(
             f"Simulation Campaign is invalid and cannot be pruned: {exc}"
         ) from exc
-    if (status.pending or status.interrupted) and allow_incomplete:
-        return
-    if status.pending or status.interrupted:
-        raise CampaignRetentionError("Incomplete Simulation Campaigns cannot be pruned")
-    if (
-        not status.summary_complete
-        or not status.summary_completed_matches
-        or projection.document.get("complete") is not True
-    ):
+    incomplete_recovery = bool(status.pending or status.interrupted)
+    if status.summary_present and not status.summary_completed_matches:
         raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
-    _validate_projection_identity(target, status, projection)
+    if status.summary_present and status.summary_complete == incomplete_recovery:
+        raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+    projection_path = target / "simulation.json"
+    projection = None
+    if projection_path.exists():
+        try:
+            projection = decode_simulation_projection(
+                _read_object(projection_path),
+                coverage_expected=(target / "coverage.json").is_file(),
+            )
+        except (OSError, ValueError) as exc:
+            raise CampaignRetentionError(
+                f"Simulation Campaign is invalid and cannot be pruned: {exc}"
+            ) from exc
+        _validate_projection_identity(target, status, projection)
+    abandoned = incomplete_recovery or not status.summary_present or projection is None
+    if projection is not None and projection.document.get("complete") is (not abandoned):
+        return _CampaignEligibility(status, abandoned)
+    if projection is None and abandoned:
+        return _CampaignEligibility(status, True)
+    raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+
+
+def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
+    if _empty_abandoned_reservation(root):
+        raise CampaignRetentionError(
+            "native-only pruning requires a completed Target; use --full to discard "
+            "this abandoned invocation"
+        )
+    progress = _read_object(root / "progress.json")
+    targets = progress.get("targets")
+    if (
+        progress.get("flow") != "sim"
+        or not isinstance(targets, list)
+        or targets.count(selector) != 1
+    ):
+        raise CampaignRetentionError("Target does not resolve exactly in this invocation")
+    target = target_report_directory(root, selector)
+    manifest = target / "campaign" / "manifest.json"
+    if not manifest.exists():
+        if not (target / "coverage.json").exists():
+            raise CampaignRetentionError(
+                "native-only pruning requires a completed Target; use --full to discard "
+                "this abandoned invocation"
+            )
+        return
+    eligibility = _inspect_simulation_campaign(target, manifest.parent)
+    status = eligibility.status
+    workload = cast(Mapping[str, object], status.manifest.document["workload"])
+    if workload["coverage"] is not True:
+        raise CampaignRetentionError("--native-target has no native Coverage Campaign")
+    if eligibility.abandoned:
+        raise CampaignRetentionError(
+            "native-only pruning requires a completed Target; use --full to discard the "
+            f"abandoned invocation or booley flow sim --resume-from {manifest} to preserve "
+            "and complete it"
+        )
 
 
 def _validate_projection_identity(
@@ -603,7 +787,14 @@ def main() -> None:
     )
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--native-target", help="Exact Target selector for native-only pruning")
-    operation.add_argument("--full", action="store_true", help="Remove the full invocation")
+    operation.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "Remove the full invocation after bounded orphan-child recovery and "
+            "marker-checked cleanup of owned templated run directories"
+        ),
+    )
     args = parser.parse_args()
     try:
         if args.full:

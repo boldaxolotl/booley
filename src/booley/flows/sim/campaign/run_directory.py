@@ -147,6 +147,17 @@ def _cleanup_interrupted_run_directory(run: RunDirectory, *, identity: Mapping[s
 
 def restore_run_directory(document: Mapping[str, object], *, project_root: Path) -> RunDirectory:
     """Reconstruct and authenticate one persisted attempt run directory."""
+    return _restore_run_directory(document, checkout_runtime_dir(project_root))
+
+
+def restore_run_directory_from_project_data(
+    document: Mapping[str, object], *, project_data: Path
+) -> RunDirectory:
+    """Reconstruct a persisted run directory from resolved Project data."""
+    return _restore_run_directory(document, project_data / ".runtime")
+
+
+def _restore_run_directory(document: Mapping[str, object], runtime: Path) -> RunDirectory:
     path = Path(str(document["resolved"]))
     collision_key = os.path.normcase(str(path.resolve(strict=False)))
     if collision_key != document["collision_key"]:
@@ -158,7 +169,7 @@ def restore_run_directory(document: Mapping[str, object], *, project_root: Path)
         path=path,
         collision_key=collision_key,
         owned=bool(document["owned"]),
-        lock_path=checkout_runtime_dir(project_root) / "simulation-run-locks" / lock_name,
+        lock_path=runtime / "simulation-run-locks" / lock_name,
     )
 
 
@@ -201,4 +212,5 @@ __all__ = [
     "cleanup_interrupted_run_directory",
     "expand_run_directory",
     "restore_run_directory",
+    "restore_run_directory_from_project_data",
 ]

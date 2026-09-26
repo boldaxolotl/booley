@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.evidence.acceptance import ResolvedFlowAcceptance
@@ -58,6 +59,12 @@ class FlowSession(EndpointState):
 
     def _resolve_display_label(self) -> str | None:
         return self.flow._resolve_display_label()
+
+    def _next_invocation_dir(self, report_dir: Path) -> Path:
+        """Let Simulation lock a number before its generic report directory appears."""
+        if self.name == "sim":
+            return self.flow._next_invocation_dir(report_dir)
+        return super()._next_invocation_dir(report_dir)
 
     def execute_prepared(self) -> ExecutionResult:
         """Keep invocation resources alive through final report publication."""
