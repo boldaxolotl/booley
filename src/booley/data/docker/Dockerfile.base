@@ -24,7 +24,7 @@ WORKDIR /
 # Yosys + ABC + native slang frontend, built from source.
 #
 # Yosys 0.67 replaced the old `make config-gcc` Makefile flow with CMake
-# (>=3.28; Ubuntu 24.04 ships 3.28.3). The SystemVerilog `read_slang` frontend
+# (>=3.28; the Ubuntu 26.04 builder ships 4.2.3). The SystemVerilog `read_slang` frontend
 # (povik/sv-elab on top of MikePopoloski/slang) is a git submodule and is
 # ENABLED BY DEFAULT — there is no enable flag; slang is built unless
 # -DYOSYS_WITHOUT_SLANG=ON is passed. Its C++ deps (fmt/cxxopts/boost_regex)
