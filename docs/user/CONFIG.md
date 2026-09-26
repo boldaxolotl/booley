@@ -1511,7 +1511,7 @@ them makes cocotb fail to import the testbench at all. Copy the project's own
 pin set (`tox.ini` / `requirements.txt`) wholesale.
 
 **Wholesale is still not always enough.** Old pin sets were written for old
-Pythons, and the sandbox runs Python 3.13:
+Pythons, and the sandbox runs Python 3.14:
 
 - **`distutils` is gone** (removed in Python 3.12). Packages of the cocotb-1.x
   era still do `from distutils.spawn import find_executable` — `cocotb-test`
