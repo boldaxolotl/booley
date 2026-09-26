@@ -6,7 +6,7 @@
 # run from the exact dependency image used by upstream's final stage. The
 # builder is intentionally throwaway: its object files and regression fixtures
 # account for most of the old Sandbox Image.
-FROM docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a AS openroad-artifacts
+FROM docker.io/openroad/ubuntu26.04@sha256:63771c032b50317169bdc19a304cfe9dce068b19ec29969012cc4e696698ce66 AS openroad-artifacts
 
 USER root
 ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8
@@ -14,7 +14,7 @@ RUN tar --sort=name --mtime='UTC 2026-06-30' --owner=0 --group=0 --numeric-owner
         --exclude='./build' -C /OpenROAD -czf \
         "/tmp/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" .
 
-FROM docker.io/openroad/ubuntu24.04-dev@sha256:1cfdeba85a28a0bd2a4fca1a5b357fa7f715838941b87a0eeff1686494b1c1db AS eda-artifacts
+FROM docker.io/openroad/ubuntu26.04-dev@sha256:9569cbf83385f791569a798c42b85fce04a6d3c68ee6166b3caebdeb0273d119 AS eda-artifacts
 
 # Heavy compilers and development packages stay in this throwaway stage. The
 # runtime below receives only the installed EDA artifacts.
@@ -24,7 +24,7 @@ WORKDIR /
 # Yosys + ABC + native slang frontend, built from source.
 #
 # Yosys 0.67 replaced the old `make config-gcc` Makefile flow with CMake
-# (>=3.28; Ubuntu 24.04 ships 3.28.3). The SystemVerilog `read_slang` frontend
+# (>=3.28; the Ubuntu 26.04 builder ships 4.2.3). The SystemVerilog `read_slang` frontend
 # (povik/sv-elab on top of MikePopoloski/slang) is a git submodule and is
 # ENABLED BY DEFAULT — there is no enable flag; slang is built unless
 # -DYOSYS_WITHOUT_SLANG=ON is passed. Its C++ deps (fmt/cxxopts/boost_regex)
@@ -106,7 +106,7 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
 # Minimal Sandbox. The immutable upstream development image remains the
 # EDA builder, but none of its compilers, Docker tooling, Pandoc, LLVM, CMake,
 # headers, or build caches become runtime layers.
-FROM docker.io/library/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+FROM docker.io/library/ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=America/Los_Angeles \
@@ -128,14 +128,12 @@ RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-cl
 RUN echo ">>> Installing minimal runtime dependencies and Python 3.14..." \
     && apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates ccache curl file g++ gcc git jq locales make \
-        ripgrep software-properties-common time unzip xz-utils zlib1g-dev \
-        libbz2-1.0 libffi8 libgomp1 liblz4-dev libpixman-1-0 libpython3.12 \
+        ripgrep time unzip xz-utils zlib1g-dev \
+        libbz2-1.0 libffi8 libgomp1 liblz4-dev libpixman-1-0 libpython3.14 \
         libreadline8t64 libtcl8.6 libudev1 libyaml-cpp0.8 tcl tcllib zlib1g \
-        libgl1 libopengl0 libqt5charts5 libqt5core5a libqt5gui5 \
-        libqt5widgets5 qt5-image-formats-plugins \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        python3.14 python3.14-dev python3.14-venv \
+        libgl1 libopengl0 libqt5charts5 libqt5core5t64 libqt5gui5t64 \
+        libqt5widgets5t64 qt5-image-formats-plugins \
+        python3.14 python3.14-dev python3.14-venv python3-pip \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.14 /usr/bin/python3 \
@@ -259,7 +257,7 @@ COPY src/booley/data/docker/claude-managed-settings.json /etc/claude-code/manage
 
 # Non-root user for agent execution.
 # Pin agent to uid/gid 1000 so it matches the typical first host user on native
-# Linux; the base ubuntu:24.04 image already occupies 1000 with its default
+# Linux; the base ubuntu:26.04 image already occupies 1000 with its default
 # "ubuntu" user, so remove that first. Without this, bind-mounted project files
 # (owned by host uid 1000) are unwritable by the container and the MCP server
 # fails to create its .interactive_logs dir.
@@ -283,8 +281,9 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 # the merged filesystem without reclaiming any image storage.
 COPY pyproject.toml /tmp/booley-build/pyproject.toml
 COPY src/booley/data/docker/export_project_dependencies.py /tmp/booley-build/export_project_dependencies.py
-RUN python -m ensurepip --default-pip \
-    && python /tmp/booley-build/export_project_dependencies.py \
+# Ubuntu 26.04's system Python refuses ensurepip outside a venv; its supported
+# pip is the distro python3-pip installed with the runtime closure above.
+RUN python /tmp/booley-build/export_project_dependencies.py \
         /tmp/booley-build/pyproject.toml \
         /tmp/booley-build/project-dependencies.txt \
     && python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
@@ -378,8 +377,8 @@ LABEL org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
       org.opencontainers.image.created=${BOOLEY_BASE_BUILT_AT} \
       io.booley.runtime-base.contract=${BOOLEY_BASE_CONTRACT} \
       io.booley.openroad.source-revision=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8 \
-      io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a \
-      io.booley.eda.builder-artifact=docker.io/openroad/ubuntu24.04-dev@sha256:1cfdeba85a28a0bd2a4fca1a5b357fa7f715838941b87a0eeff1686494b1c1db \
-      io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+      io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu26.04@sha256:63771c032b50317169bdc19a304cfe9dce068b19ec29969012cc4e696698ce66 \
+      io.booley.eda.builder-artifact=docker.io/openroad/ubuntu26.04-dev@sha256:9569cbf83385f791569a798c42b85fce04a6d3c68ee6166b3caebdeb0273d119 \
+      io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
 
 WORKDIR /work

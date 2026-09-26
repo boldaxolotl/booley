@@ -25,7 +25,7 @@ def _named_step(job: dict, name: str) -> dict:
 
 def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    install_start = dockerfile.index("RUN python -m ensurepip --default-pip")
+    install_start = dockerfile.index("RUN python /tmp/booley-build/export_project_dependencies.py")
     install_end = dockerfile.index("\n\n# EDA invocation", install_start)
     install_layer = dockerfile[install_start:install_end]
 
@@ -38,7 +38,7 @@ def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
 
 def test_all_python_installs_tolerate_slow_publisher_reads() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    install_start = dockerfile.index("RUN python -m ensurepip --default-pip")
+    install_start = dockerfile.index("RUN python /tmp/booley-build/export_project_dependencies.py")
     install_end = dockerfile.index("\n\n# Publisher transfers", install_start)
     invariant_install = dockerfile[install_start:install_end]
 
@@ -61,17 +61,17 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert project_install < image_dependencies
     assert "YOSYS_REF" in base
     assert (
-        "FROM docker.io/openroad/ubuntu24.04@sha256:"
-        "c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a"
+        "FROM docker.io/openroad/ubuntu26.04@sha256:"
+        "63771c032b50317169bdc19a304cfe9dce068b19ec29969012cc4e696698ce66"
     ) in base
     assert (
-        "FROM docker.io/openroad/ubuntu24.04-dev@sha256:"
-        "1cfdeba85a28a0bd2a4fca1a5b357fa7f715838941b87a0eeff1686494b1c1db "
+        "FROM docker.io/openroad/ubuntu26.04-dev@sha256:"
+        "9569cbf83385f791569a798c42b85fce04a6d3c68ee6166b3caebdeb0273d119 "
         "AS eda-artifacts"
     ) in base
     assert (
-        "FROM docker.io/library/ubuntu:24.04@sha256:"
-        "33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517"
+        "FROM docker.io/library/ubuntu:26.04@sha256:"
+        "da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78"
     ) in base
     assert "COPY --from=eda-artifacts /usr/local/share/yosys/ /usr/local/share/yosys/" in base
     assert "COPY --from=eda-artifacts /usr/local/lib/ivl/ /usr/local/lib/ivl/" in base

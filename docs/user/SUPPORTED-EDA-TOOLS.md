@@ -160,8 +160,8 @@ may override the Python rows (see
 
 | Component | Version |
 |---|---|
-| Base image | `ubuntu:24.04` |
-| Python | 3.14 (deadsnakes PPA) |
+| Base image | `ubuntu:26.04` |
+| Python | 3.14 (Ubuntu) |
 | Verilator | v5.052, source commit `ea338be98e1e838d3518809ce8899f85a009963c` |
 | Icarus Verilog | v13_0 |
 | Yosys | v0.68, built with its bundled `read_slang` frontend (povik/sv-elab on MikePopoloski/slang — a Yosys submodule, so it has no version of its own) |
@@ -188,7 +188,7 @@ booley session enter -- python -m pip list        # the Python side
 The RISC-V variant (`booley-sandbox-riscv`) adds xPack RISC-V GCC `15.2.0-1`
 and a tested official-master Spike snapshot at
 `c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb` (`1.1.1-dev`) on top of these.
-Upstream has no maintained stable release suitable for Ubuntu 24.04, so Booley
+Upstream has no maintained stable release suitable for Ubuntu 26.04, so Booley
 moves this exact official-master pin only after its image and RISC-V acceptance
 gates pass. See also [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
