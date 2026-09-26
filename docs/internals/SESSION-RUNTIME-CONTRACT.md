@@ -21,7 +21,7 @@ constrains agent traffic, and system policy disables provider-hosted web tools.
 The following command families are required:
 
 - Shell and project compilation: Bash, POSIX `sh`, Git, Make, GCC, and G++.
-- Python: Python 3.13, pip, Booley, `booley-mcp`, FuseSoC/Edalize, cocotb, and
+- Python: Python 3.14, pip, Booley, `booley-mcp`, FuseSoC/Edalize, cocotb, and
   the curated Python dependencies installed by the image recipe.
 - Simulation and waveform work: Icarus (`iverilog`, `iverilog-vpi`, `vvp`),
   Verilator's normal, debug, and coverage commands, cocotb's simulator

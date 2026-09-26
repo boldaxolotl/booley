@@ -161,7 +161,7 @@ may override the Python rows (see
 | Component | Version |
 |---|---|
 | Base image | `ubuntu:24.04` |
-| Python | 3.13 (deadsnakes PPA) |
+| Python | 3.14 (deadsnakes PPA) |
 | Verilator | v5.052, source commit `ea338be98e1e838d3518809ce8899f85a009963c` |
 | Icarus Verilog | v13_0 |
 | Yosys | v0.68, built with its bundled `read_slang` frontend (povik/sv-elab on MikePopoloski/slang — a Yosys submodule, so it has no version of its own) |

@@ -100,7 +100,7 @@ absent_paths = [
   "/opt/or-tools/include",
   "/usr/local/cargo",
   "/usr/local/rustup",
-  "/usr/local/lib/python3.13/dist-packages/claude_agent_sdk/_bundled/claude",
+  "/usr/local/lib/python3.14/dist-packages/claude_agent_sdk/_bundled/claude",
 ]
 stripped_elf = [
   "/usr/local/bin/iverilog",
@@ -143,7 +143,7 @@ stripped_elf = [
 ]
 hard_link_groups = [
   [
-    "/usr/local/lib/python3.13/dist-packages/booley/data/bin/bwave",
+    "/usr/local/lib/python3.14/dist-packages/booley/data/bin/bwave",
     "/usr/local/libexec/booley/bwave",
   ],
 ]
