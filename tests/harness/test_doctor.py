@@ -210,6 +210,9 @@ def _patch_bootstrap_current(monkeypatch) -> None:
 def _patch_host_environment(monkeypatch, root: Path) -> None:
     monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    # The suite itself may run under an agent CLI (CLAUDECODE, CODEX_HOME, ...);
+    # a plain host shell is the baseline these fixtures model.
+    monkeypatch.setattr(runtime_context, "agent_session_app", lambda: None)
     monkeypatch.setattr(Path, "home", lambda: _write_skills_home(root))
     runtime = "doc" + "ker"
     monkeypatch.setattr(doctor.shutil, "which", lambda name: runtime if name == runtime else None)
