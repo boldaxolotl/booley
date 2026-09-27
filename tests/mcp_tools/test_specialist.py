@@ -276,7 +276,7 @@ def test_provider_exception_preserves_report_and_persists_traceback(
     assert diagnosis.startswith("review_test failed: RuntimeError: provider failed secret detail")
     assert "\n" not in diagnosis
     assert len(diagnosis) < 1_100
-    diagnostic = Path(result.outcome.report_text.split("Diagnostic: ", 1)[1])
+    diagnostic = Path(result.outcome.report_text.rsplit(". Diagnostic: ", 1)[1])
     assert diagnostic.parent == tmp_path / "transcripts"
     assert diagnostic.name.startswith("review_test.")
     assert diagnostic.name.endswith(".error.log")

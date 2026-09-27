@@ -573,7 +573,7 @@ def test_cli_reports_terminal_provider_failures_without_mutating_state(
     assert str(provider_error) in result.outcome.report_text
     persisted = json.loads((report_dir / "coverage_analyst.json").read_text())
     assert persisted["report_text"] == result.outcome.report_text
-    diagnostic = Path(result.outcome.report_text.split("Diagnostic: ", 1)[1])
+    diagnostic = Path(result.outcome.report_text.rsplit(". Diagnostic: ", 1)[1])
     assert "Traceback" in diagnostic.read_text(encoding="utf-8")
     assert "Traceback" not in capsys.readouterr().err
     assert state.read_bytes() == b"seeded state must remain byte-for-byte unchanged"

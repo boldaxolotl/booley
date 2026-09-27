@@ -1341,7 +1341,7 @@ class TestMcpToolMain:
         numbered = json.loads((report_dir / "test_endpoint/1/report.json").read_text())
         assert flat["report_text"] == numbered["report_text"]
         assert "test_endpoint failed: ValueError: boom" in flat["report_text"]
-        diagnostic = Path(flat["report_text"].split("Diagnostic: ", 1)[1])
+        diagnostic = Path(flat["report_text"].rsplit(". Diagnostic: ", 1)[1])
         assert diagnostic.is_file()
         assert report_dir / "test_endpoint/1" not in diagnostic.parents
         assert "Traceback" in diagnostic.read_text(encoding="utf-8")
@@ -1362,7 +1362,7 @@ class TestMcpToolMain:
         assert "ValueError: first line second line" in diagnosis
         assert "\n" not in diagnosis
         assert len(diagnosis) < 1_100
-        diagnostic = Path(result.outcome.report_text.split("Diagnostic: ", 1)[1])
+        diagnostic = Path(result.outcome.report_text.rsplit(". Diagnostic: ", 1)[1])
         assert long_message in diagnostic.read_text(encoding="utf-8")
 
     def test_exception_diagnostic_failure_does_not_mask_report(self):

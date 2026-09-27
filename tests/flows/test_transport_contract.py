@@ -609,7 +609,7 @@ def test_flow_exception_produces_actionable_report_without_console_traceback(
     report = json.loads((report_root / "lint.json").read_text(encoding="utf-8"))
     assert report["flow"] == "lint"
     assert report["report_text"] == result.outcome.report_text
-    diagnostic = Path(report["report_text"].split("Diagnostic: ", 1)[1])
+    diagnostic = Path(report["report_text"].rsplit(". Diagnostic: ", 1)[1])
     assert diagnostic.is_file()
     assert report_root / "lint/1" not in diagnostic.parents
     output = capsys.readouterr()
