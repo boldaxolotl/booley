@@ -42,7 +42,11 @@ from booley.flows.sim.execution.engine import (
     prepare_simulation_work,
     simulation_target_environment,
 )
-from booley.fusesoc.fusesoc_registry import FuseSocError, core_target_coverage_errors
+from booley.fusesoc.fusesoc_registry import (
+    FuseSocError,
+    core_target_coverage_errors,
+    coverage_target_metadata_errors,
+)
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
@@ -336,14 +340,13 @@ def prepare_coverage_collection(
     inspection = TargetCatalog.build(handle.project_root).inspect(handle)
     if inspection.eda_tool != "verilator":
         raise ValueError("Verilator-native coverage requires a Verilator sim Target")
+    resolved_errors = _resolved_coverage_errors(inspection, handle.name)
+    if resolved_errors:
+        raise ValueError("; ".join(resolved_errors))
     metadata = _coverage_metadata(inspection)
     harness = _coverage_harness(inspection)
-    declared_hooks = metadata.get("custom_main_hooks", ())
-    assert isinstance(declared_hooks, tuple)
-    assert all(isinstance(item, str) for item in declared_hooks)
-    hooks = cast(tuple[str, ...], declared_hooks)
-    reset_included = metadata.get("reset_included", True)
-    assert isinstance(reset_included, bool)
+    hooks = cast(tuple[str, ...], metadata.get("custom_main_hooks", ()))
+    reset_included = cast(bool, metadata.get("reset_included", True))
     return CoverageCollectionRequest(
         target=CoverageTarget(
             identity=handle.identity,
@@ -385,6 +388,20 @@ def _coverage_metadata(inspection: TargetInspection) -> Mapping[str, object]:
         return MappingProxyType({})
     coverage = booley.get("coverage")
     return coverage if isinstance(coverage, Mapping) else MappingProxyType({})
+
+
+def _resolved_coverage_errors(inspection: TargetInspection, target_name: str) -> list[str]:
+    """Validate FuseSoC's effective recipe after inheritance and flag resolution."""
+    booley = inspection.flow_options.get("booley")
+    if not isinstance(booley, Mapping) or "coverage" not in booley:
+        return []
+    coverage = booley["coverage"]
+    if isinstance(coverage, Mapping):
+        coverage = dict(coverage)
+        hooks = coverage.get("custom_main_hooks")
+        if isinstance(hooks, tuple):
+            coverage["custom_main_hooks"] = list(hooks)
+    return coverage_target_metadata_errors(coverage, f"targets.{target_name}.flow_options.booley")
 
 
 def _coverage_harness(inspection: TargetInspection) -> CoverageHarness:
