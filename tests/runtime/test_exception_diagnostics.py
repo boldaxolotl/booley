@@ -45,3 +45,17 @@ def test_transcript_diagnostics_do_not_overwrite_prior_failures(tmp_path) -> Non
     assert first is not None and second is not None and first != second
     assert "first failure" in first.read_text(encoding="utf-8")
     assert "second failure" in second.read_text(encoding="utf-8")
+
+
+def test_report_diagnostic_sanitizes_untrusted_path_components(tmp_path) -> None:
+    path = write_exception_diagnostic(
+        ValueError("failure"),
+        endpoint_name="../../reviewer",
+        invocation_id="../outside/report",
+        report_dir=tmp_path,
+    )
+
+    assert path is not None
+    assert path.is_relative_to(tmp_path / ".endpoint-errors")
+    assert ".." not in path.relative_to(tmp_path).parts
+    assert "failure" in path.read_text(encoding="utf-8")

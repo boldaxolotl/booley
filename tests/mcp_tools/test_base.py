@@ -1382,21 +1382,36 @@ class TestMcpToolMain:
 
     def test_non_persisting_dry_run_exception_creates_no_artifacts(self, tmp_path: Path):
         report_dir = tmp_path / "reports"
+        transcript_dir = tmp_path / "transcripts"
 
         class FailingDryRunMcpTool(ConcreteMcpTool):
             non_persisting_dry_run = True
 
             def _add_args(self, parser: argparse.ArgumentParser) -> None:
                 parser.add_argument("--dry-run", action="store_true")
+                parser.add_argument("--transcript-dir", type=Path)
+
+            def _transcript_path(self):
+                self.args.transcript_dir.mkdir(parents=True, exist_ok=True)
+                return self.args.transcript_dir / "dry-run.jsonl"
 
             def _run(self):
                 raise ValueError("boom")
 
-        result = FailingDryRunMcpTool().execute_cli(["--dry-run", "--report-dir", str(report_dir)])
+        result = FailingDryRunMcpTool().execute_cli(
+            [
+                "--dry-run",
+                "--report-dir",
+                str(report_dir),
+                "--transcript-dir",
+                str(transcript_dir),
+            ]
+        )
 
         assert result.exit_code == EXIT_ERROR
         assert result.outcome.report_text == "test_endpoint failed: ValueError: boom"
         assert not report_dir.exists()
+        assert not transcript_dir.exists()
 
     def test_main_works_in_human_mode(self):
         """main() completes without BOOLEY_* env vars (no state file)."""

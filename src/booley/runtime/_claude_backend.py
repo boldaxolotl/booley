@@ -865,7 +865,6 @@ def _handle_stream_exception(
             transcript_path=transcript_path,
         )
         raise exc
-
     # intentionally broad: SDK can raise arbitrary exceptions
     if got_result and isinstance(exc, _SDK_TEARDOWN_EXCEPTIONS):
         logger.debug(

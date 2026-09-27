@@ -2256,11 +2256,15 @@ def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
 
     assert issues is None
     assert output_lines[0].startswith("[review")
+    report_text = endpoint._provider_failure_report(output_lines, "fallback")
+    assert report_text.startswith("reviewer failed: RuntimeError: boom")
+    assert "Diagnostic:" in report_text
     assert "Traceback" not in capsys.readouterr().err
     diagnostics = list((tmp_path / "transcripts").glob("reviewer.*.error.log"))
     assert len(diagnostics) == 1
     diagnostic = diagnostics[0]
     assert "RuntimeError: boom" in diagnostic.read_text(encoding="utf-8")
+    assert str(diagnostic) in report_text
     assert any(record.exc_info for record in caplog.records if record.levelname == "DEBUG")
     assert not any(record.exc_info for record in caplog.records if record.levelno >= 20)
 
