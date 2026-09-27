@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import shlex
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +20,7 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.coverage_overlay import CoverageOverlay
-from booley.flows.sim.execution.contract import SimulationOptions
+from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
@@ -32,6 +36,7 @@ from booley.flows.sim.verilator_coverage_execution import (
     VerilatorCoverageExecution,
     prepare_coverage_collection,
 )
+from booley.fusesoc.fusesoc_registry import core_target_coverage_errors
 from booley.targets.catalog import TargetCatalog
 
 
@@ -108,6 +113,64 @@ def test_prepare_collection_projects_resolved_sources_and_custom_main_recipe(
     ]
 
 
+def test_prepare_collection_defaults_to_reset_inclusive_coverage(tmp_path: Path) -> None:
+    _write_target(tmp_path)
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text().replace(
+            "      booley:\n        coverage:\n          reset_included: true\n", ""
+        )
+    )
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+
+    request = prepare_coverage_collection(
+        handle,
+        selected_tests=("reset",),
+        artifact_root=tmp_path / "coverage",
+    )
+
+    assert request.reset_included is True
+
+
+def test_prepare_collection_rejects_invalid_inherited_coverage_recipe(tmp_path: Path) -> None:
+    _write_target(tmp_path)
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text()
+        .replace(
+            "targets:\n  sim:\n",
+            "targets:\n"
+            "  defaults: &defaults\n"
+            "    flow_options:\n"
+            "      booley:\n"
+            '        coverage: {reset_included: "false"}\n'
+            "  sim:\n"
+            "    <<: *defaults\n",
+        )
+        .replace(
+            "    flow_options:\n"
+            "      tool: verilator\n"
+            "      booley:\n"
+            "        coverage:\n"
+            "          reset_included: true\n",
+            "    flow_options: {tool: verilator}\n",
+        )
+    )
+    assert core_target_coverage_errors(core, "sim") == []
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+
+    with pytest.raises(
+        ValueError,
+        match=r"targets\.sim\.flow_options\.booley\.coverage\.reset_included "
+        r"must be a boolean",
+    ):
+        prepare_coverage_collection(
+            handle,
+            selected_tests=("reset",),
+            artifact_root=tmp_path / "coverage",
+        )
+
+
 def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -123,6 +186,309 @@ def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     assert captured["work"].plusargs[-1] == f"+verilator+coverage+file+{raw_path}"
     assert "BOOLEY_COVERAGE_RUN_ID=run:001:wrap" in captured["run_script"]
     assert run.verdict == "pass"
+
+
+def test_coverage_runs_pre_sim_commands_before_the_adapter(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    marker = tmp_path / "pre-sim.txt"
+    staged = tmp_path / "staged-input.txt"
+    staged.write_text("stale", encoding="utf-8")
+    project_dir.joinpath("booley.toml").write_text(
+        "[flows.sim]\n"
+        'pre_run_commands = [\'printf "%s\\n%s\\n%s\\n%s\\n%s" '
+        '"$BOOLEY_TEST_NAME" "$BOOLEY_TEST_NAMES" "$BOOLEY_TARGET" '
+        '"$BOOLEY_RUN_CWD" "${BOOLEY_BUILD_ROOT-unset}" > pre-sim.txt\', '
+        '\'printf "%s" "$BOOLEY_TEST_NAME" > staged-input.txt\']\n',
+        encoding="utf-8",
+    )
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    captured["staged_input_path"] = staged
+    assert _build_coverage(execution, target).success
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == "pass"
+    assert marker.read_text(encoding="utf-8").splitlines() == [
+        "wrap",
+        "wrap",
+        "sim",
+        str(tmp_path),
+        "unset",
+    ]
+    assert captured["staged_values"] == ["wrap"]
+    assert "run_script" in captured
+
+
+def test_cocotb_coverage_runs_pre_sim_once_per_selected_test_process(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    project_dir.joinpath("booley.toml").write_text(
+        "[flows.sim]\n"
+        'pre_run_commands = [\'printf "%s\\n" "$BOOLEY_TEST_NAME" >> firings.txt\', '
+        '\'printf "%s" "$BOOLEY_TEST_NAME" > staged-input.txt\']\n',
+        encoding="utf-8",
+    )
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch, cocotb=True)
+    staged = tmp_path / "staged-input.txt"
+    staged.write_text("stale", encoding="utf-8")
+    captured["staged_input_path"] = staged
+    assert _build_coverage(execution, target).success
+
+    for index, name in enumerate(("gap", "full"), start=1):
+        request = replace(
+            _run_request(target, raw_path),
+            test=SelectedCoverageTest(name),
+            run_id=f"run:{index:03d}:{name}",
+        )
+        assert execution.run(request).verdict == "pass"
+
+    assert (tmp_path / "firings.txt").read_text(encoding="utf-8").splitlines() == [
+        "gap",
+        "full",
+    ]
+    assert len(captured["run_scripts"]) == 2
+    assert captured["staged_values"] == ["gap", "full"]
+    assert captured["work"].adapter == "cocotb"
+    assert captured["work"].tests == ("full",)
+
+
+def test_snapshot_bound_coverage_uses_authoritative_run_cwd_for_pre_sim(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    project_dir.joinpath("booley.toml").write_text(
+        '[flows.sim]\npre_run_commands = [\'printf "%s" "$BOOLEY_RUN_CWD" > bound-cwd.txt\']\n',
+        encoding="utf-8",
+    )
+    execution, target, raw_path, _captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    source_root, artifacts = execution.authenticated_image()
+    snapshot_root = tmp_path / "snapshot"
+    snapshot_root.mkdir()
+    for artifact in artifacts:
+        destination = snapshot_root / artifact.relative_to(source_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact, destination)
+    run_cwd = tmp_path / "attempt" / "run"
+    run_cwd.mkdir(parents=True)
+    execution.bind_authenticated_attempt(snapshot_root, run_cwd)
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == "pass"
+    assert (tmp_path / "bound-cwd.txt").read_text(encoding="utf-8") == str(run_cwd)
+
+
+@pytest.mark.parametrize("snapshot_bound", [False, True])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(
+            "chmod",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Windows has no POSIX execute-bit contract"
+            ),
+        ),
+        pytest.param(
+            "symlink",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Windows CI does not grant symlink privileges"
+            ),
+        ),
+        "delete",
+    ],
+)
+def test_pre_sim_reauthenticates_direct_and_snapshot_bound_images(
+    tmp_path: Path, monkeypatch, snapshot_bound: bool, mutation: str
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    source_root, artifacts = execution.authenticated_image()
+    image = artifacts[0]
+    if snapshot_bound:
+        snapshot_root = tmp_path / "snapshot"
+        destination = snapshot_root / image.relative_to(source_root)
+        destination.parent.mkdir(parents=True)
+        shutil.copy2(image, destination)
+        run_cwd = tmp_path / "attempt" / "run"
+        run_cwd.mkdir(parents=True)
+        execution.bind_authenticated_attempt(snapshot_root, run_cwd)
+        image = destination
+    commands = {
+        "chmod": f"chmod -x {shlex.quote(str(image))}",
+        "symlink": (
+            f"cp {shlex.quote(str(image))} {shlex.quote(str(image) + '.copy')} && "
+            f"rm {shlex.quote(str(image))} && "
+            f"ln -s {shlex.quote(str(image) + '.copy')} {shlex.quote(str(image))}"
+        ),
+        "delete": f"rm {shlex.quote(str(image))}",
+    }
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.resolve_pre_sim_commands",
+        lambda _root: (commands[mutation],),
+    )
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == "inconclusive"
+    assert result.infrastructure_error is True
+    assert "coverage image" in result.output
+    assert "run_script" not in captured
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod mutation is POSIX-specific")
+def test_protected_surface_change_takes_priority_over_hook_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    _source_root, artifacts = execution.authenticated_image()
+    command = f"chmod -x {shlex.quote(str(artifacts[0]))}; false"
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.resolve_pre_sim_commands",
+        lambda _root: (command,),
+    )
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == "inconclusive"
+    assert result.infrastructure_error is True
+    assert result.pre_sim is not None and result.pre_sim.status == "failed"
+    assert "coverage image" in result.output
+    assert "run_script" not in captured
+
+
+@pytest.mark.parametrize("status", ["failed", "timed_out"])
+def test_pre_sim_failure_skips_the_coverage_adapter(
+    tmp_path: Path, monkeypatch, status: str
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.run_pre_sim_commands",
+        lambda *_args, **_kwargs: PreSimEvidence(
+            ("prepare",), ("wrap",), status, 0.1, "staging failed"
+        ),
+    )
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == "elab_error"
+    assert result.pre_sim is not None
+    assert result.pre_sim.status == status
+    assert result.infrastructure_error is False
+    assert "staging failed" in result.output
+    assert "run_script" not in captured
+
+
+def test_pre_sim_missing_executable_is_an_infrastructure_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    project_dir.joinpath("booley.toml").write_text(
+        "[flows.sim]\npre_run_commands = ['booley-command-that-does-not-exist']\n",
+        encoding="utf-8",
+    )
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == "elab_error"
+    assert result.pre_sim is not None
+    assert result.pre_sim.status == "spawn_error"
+    assert result.infrastructure_error is True
+    assert "booley-command-that-does-not-exist" in result.output
+    assert "run_script" not in captured
+
+
+def test_legacy_build_access_with_commands_fails_before_coverage_build(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    project_dir.joinpath("booley.toml").write_text(
+        "[flows.sim]\npre_run_commands = ['true']\npre_sim_build_access = 'legacy-per-test'\n",
+        encoding="utf-8",
+    )
+    execution, target, _raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+
+    result = _build_coverage(execution, target)
+
+    assert result.success is False
+    assert result.infrastructure_error is False
+    assert "legacy-per-test" in result.output
+    assert "prepare" not in captured
+
+
+def test_legacy_build_access_without_commands_remains_compatible(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    project_dir.joinpath("booley.toml").write_text(
+        "[flows.sim]\npre_sim_build_access = 'legacy-per-test'\n",
+        encoding="utf-8",
+    )
+    execution, target, _raw_path, _captured = _execution_fixture(tmp_path, monkeypatch)
+
+    assert _build_coverage(execution, target).success
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "compile",
+        pytest.param(
+            "image",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="find mutation command is POSIX-specific"
+            ),
+        ),
+        "raw",
+        "hook_evidence",
+    ],
+)
+def test_pre_sim_cannot_mutate_authenticated_coverage_surfaces(
+    tmp_path: Path, monkeypatch, surface: str
+) -> None:
+    raw_path = tmp_path / "artifacts" / "raw.dat"
+    hook_path = tmp_path / "artifacts" / "hook.json"
+    paths: dict[str, Path] = {
+        "compile": tmp_path / "rtl" / "counter.sv",
+        "raw": raw_path,
+        "hook_evidence": hook_path,
+    }
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir(exist_ok=True)
+    command = (
+        f"find {shlex.quote(str(tmp_path))} -name Vcounter_tb -exec "
+        "sh -c 'printf changed >> \"$1\"' _ {} \\;"
+        if surface == "image"
+        else f"printf changed >> {shlex.quote(str(paths[surface]))}"
+    )
+    project_dir.joinpath("booley.toml").write_text(
+        f"[flows.sim]\npre_run_commands = [{json.dumps(command)}]\n",
+        encoding="utf-8",
+    )
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    request = _run_request(target, raw_path)
+    if surface == "hook_evidence":
+        request = replace(request, hook_evidence_path=hook_path)
+
+    result = execution.run(request)
+
+    assert result.verdict == "inconclusive"
+    assert "changed during Pre-Sim Commands" in result.output
+    assert result.pre_sim is not None
+    assert result.pre_sim.status == "passed"
+    assert "run_script" not in captured
 
 
 def test_build_reports_unpinned_collector_version(tmp_path: Path, monkeypatch) -> None:
@@ -186,7 +552,7 @@ def test_coverage_image_changed_after_build_cannot_launch(tmp_path: Path, monkey
     assert "run_script" not in captured
 
 
-def _execution_fixture(tmp_path: Path, monkeypatch):
+def _execution_fixture(tmp_path: Path, monkeypatch, *, cocotb: bool = False):
     _write_target(tmp_path)
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     build_root = tmp_path / "build" / "coverage"
@@ -199,7 +565,9 @@ def _execution_fixture(tmp_path: Path, monkeypatch):
     prepared = PreparedSimulationBuild(
         target=handle.selector,
         target_identity=handle.identity,
-        resolved=SimpleNamespace(cocotb_module="", parameters={}, files=()),
+        resolved=SimpleNamespace(
+            cocotb_module="test_counter" if cocotb else "", parameters={}, files=()
+        ),
         work_root=build_root,
         build_root=build_root,
         eda_tool="verilator",
@@ -207,6 +575,7 @@ def _execution_fixture(tmp_path: Path, monkeypatch):
         make_argv=("make",),
     )
     captured = {}
+    captured["cocotb"] = cocotb
     raw_path = tmp_path / "artifacts" / "raw.dat"
     monkeypatch.setattr(
         "booley.flows.sim.verilator_coverage_execution.write_coverage_overlay",
@@ -266,7 +635,9 @@ def _fake_invoke(captured, raw_path: Path):
         script = command[2]
         if "BOOLEY_BUILD_STAGE" in script:
             token = re.search(r"token=([0-9a-f]+)", script).group(1)
-            image = captured["prepare"]["build_root"] / "Vcounter_tb"
+            image = captured["prepare"]["build_root"] / (
+                "Vtop" if captured.get("cocotb") else "Vcounter_tb"
+            )
             image.write_text("compiled image", encoding="utf-8")
             image.chmod(0o755)
             return SubprocessResult(
@@ -274,6 +645,12 @@ def _fake_invoke(captured, raw_path: Path):
                 stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0 duration_ms=1\n",
             )
         work = captured["work"]
+        verdict = "pass"
+        staged_path = captured.get("staged_input_path")
+        if staged_path is not None:
+            staged_value = staged_path.read_text(encoding="utf-8")
+            captured.setdefault("staged_values", []).append(staged_value)
+            verdict = "pass" if staged_value == work.tests[0] else "fail"
         identity = AdapterTransportIdentity(
             adapter=work.adapter,
             attempt_token=work.attempt_token,
@@ -285,16 +662,17 @@ def _fake_invoke(captured, raw_path: Path):
             identity,
             captured.get("result")
             or AdapterResult(
-                passed=True,
+                passed=verdict == "pass",
                 inconclusive=False,
                 sva_errors=0,
                 tests=work.tests,
-                test_results=(AdapterTestResult("wrap", "pass"),),
+                test_results=tuple(AdapterTestResult(name, verdict) for name in work.tests),
             ),
         )
         raw_path.parent.mkdir(parents=True, exist_ok=True)
         raw_path.write_text("# SystemC::Coverage-3\n", encoding="utf-8")
         captured["run_script"] = script
+        captured.setdefault("run_scripts", []).append(script)
         return captured.get("process") or SubprocessResult(
             returncode=0, stdout="[SIM_RESULT] PASSED\n"
         )

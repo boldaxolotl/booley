@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from booley.flows.sim.execution.contract import PreSimEvidence
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     CoverageCollectionRequest,
@@ -270,6 +272,111 @@ class _WrongVerilatorExecution(_NoExecution):
             success=True,
             collector=VerilatorCollectorIdentity("v5.050", "0" * 40),
         )
+
+
+class _PreSimExecution(_GeneratedMainExecution):
+    def __init__(self, status: str) -> None:
+        self.status = status
+        self.tests = []
+
+    def run(self, request) -> SimulationRunResult:
+        self.tests.append(request.test.name)
+        evidence = PreSimEvidence(
+            ("prepare-vectors",),
+            (request.test.name,),
+            self.status if len(self.tests) == 1 else "passed",
+            0.25,
+            "missing-generator" if self.status == "spawn_error" else "bad vectors",
+        )
+        if evidence.status != "passed":
+            return SimulationRunResult(
+                "elab_error",
+                evidence.detail,
+                evidence,
+                infrastructure_error=evidence.status == "spawn_error",
+            )
+        result = super().run(request)
+        return replace(result, pre_sim=evidence)
+
+    def command(self, request) -> SimulationCommandResult:
+        if self.status == "passed":
+            return super().command(request)
+        raise AssertionError("merge must not run after a Pre-Sim failure")
+
+
+def test_pre_sim_failure_is_attributed_and_later_tests_continue(tmp_path: Path) -> None:
+    request = replace(
+        _request(tmp_path, "first"),
+        selected_tests=(SelectedCoverageTest("first"), SelectedCoverageTest("second")),
+    )
+    execution = _PreSimExecution("failed")
+
+    result = collect(request, execution)
+
+    assert execution.tests == ["first", "second"]
+    assert result.status == "collector_error"
+    assert result.infrastructure_error is False
+    assert [run.simulation_verdict for run in result.runs] == ["elab_error", "pass"]
+    assert result.runs[0].attributes["pre_sim"]["status"] == "failed"
+    assert [finding.code for finding in result.findings] == ["COV_PRE_SIM_FAILED"]
+    assert all(finding.code != "COV_RAW_FILE_MISSING" for finding in result.findings)
+
+
+def test_pre_sim_spawn_error_aborts_later_tests(tmp_path: Path) -> None:
+    request = replace(
+        _request(tmp_path, "first"),
+        selected_tests=(SelectedCoverageTest("first"), SelectedCoverageTest("second")),
+    )
+    execution = _PreSimExecution("spawn_error")
+
+    result = collect(request, execution)
+
+    assert execution.tests == ["first"]
+    assert result.infrastructure_error is True
+    assert [run.simulation_verdict for run in result.runs] == [
+        "elab_error",
+        "inconclusive",
+    ]
+    assert result.runs[1].attributes["execution"] == "not_completed"
+    assert "missing-generator" in result.findings[-1].message
+
+
+def test_protected_surface_failure_takes_priority_over_failed_hook(tmp_path: Path) -> None:
+    class ChangedImage(_GeneratedMainExecution):
+        def run(self, request) -> SimulationRunResult:
+            evidence = PreSimEvidence(
+                ("mutate-and-fail",),
+                (request.test.name,),
+                "failed",
+                0.25,
+                "hook exited 1",
+            )
+            return SimulationRunResult(
+                "inconclusive",
+                "coverage image verification failed: image changed",
+                evidence,
+                infrastructure_error=True,
+            )
+
+        def command(self, request) -> SimulationCommandResult:
+            raise AssertionError("merge must not run after image verification failure")
+
+    result = collect(_request(tmp_path, "first"), ChangedImage())
+
+    assert result.infrastructure_error is True
+    assert result.findings[0].code == "COV_INFRASTRUCTURE_ERROR"
+    assert "image changed" in result.findings[0].message
+    assert result.runs[0].attributes["pre_sim"]["status"] == "failed"
+
+
+def test_successful_pre_sim_evidence_is_serialized_on_the_run(tmp_path: Path) -> None:
+    execution = _PreSimExecution("passed")
+
+    result = collect(_request(tmp_path, "reset"), execution)
+
+    assert result.status == "complete"
+    assert result.runs[0].attributes["pre_sim"]["status"] == "passed"
+    assert result.runs[0].attributes["pre_sim"]["test_names"] == ("reset",)
 
 
 def test_generated_main_collects_one_native_database_and_normalizes_line_point(
