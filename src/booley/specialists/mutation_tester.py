@@ -1321,7 +1321,9 @@ replacement must differ, and every proposal must remain a single source edit.
                     prompt, resume=round_idx > 1, attempt=round_idx
                 )
         except Exception as exc:
-            logger.exception("Creator invocation failed on round %d", round_idx)
+            logger.error("Creator invocation failed on round %d: %s", round_idx, exc)
+            logger.debug("Creator invocation traceback on round %d", round_idx, exc_info=True)
+            self._write_provider_diagnostic(exc, self._transcript_path())
             error = McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=f"creator agent invocation failed: {exc}",

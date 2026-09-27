@@ -590,3 +590,27 @@ def test_typed_failure_releases_admission_and_restores_stdout(failure, runtime, 
         assert flow.execute(request).exit_code == 2
     assert sys.stdout is stdout
     store.release.assert_called_once_with(claim)
+
+
+def test_flow_exception_produces_actionable_report_without_console_traceback(
+    runtime, monkeypatch, capsys
+):
+    flow = LintFlow()
+
+    def fail():
+        raise ValueError("boom")
+
+    monkeypatch.setattr(flow, "_run", fail)
+    result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
+
+    assert result.exit_code == 2
+    assert "lint failed: ValueError: boom" in result.outcome.report_text
+    report_root = runtime / "flow-reports"
+    report = json.loads((report_root / "lint.json").read_text(encoding="utf-8"))
+    assert report["flow"] == "lint"
+    assert report["report_text"] == result.outcome.report_text
+    diagnostic = Path(report["report_text"].split("Diagnostic: ", 1)[1])
+    assert diagnostic.is_file()
+    assert report_root / "lint/1" not in diagnostic.parents
+    output = capsys.readouterr()
+    assert "Traceback" not in output.out + output.err

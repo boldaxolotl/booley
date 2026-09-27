@@ -2091,8 +2091,10 @@ object, even after calling the capability.
                 remaining, remaining_indices, dispositions = self._parse_verify_output(
                     result.output, prior_detail
                 )
-        except Exception:
-            logger.exception("Verify review agent failed for focus=%s", focus)
+        except Exception as exc:
+            logger.error("Verify review agent failed for focus=%s: %s", focus, exc)
+            logger.debug("Verify review agent traceback for focus=%s", focus, exc_info=True)
+            self._write_provider_diagnostic(exc, transcript)
             return None, output_lines, set(), {}
 
         self._persist_session_id(session_key)
@@ -2618,8 +2620,10 @@ Schema enforcement (applied upstream by the harness):
                     return None, output_lines
                 issues = self._filter_review_issues(issues, output_lines)
                 self.emit_progress(f"review complete: {len(issues)} finding(s)")
-        except Exception:
-            logger.exception("Review agent failed for focus=%s", focus)
+        except Exception as exc:
+            logger.error("Review agent failed for focus=%s: %s", focus, exc)
+            logger.debug("Review agent traceback for focus=%s", focus, exc_info=True)
+            self._write_provider_diagnostic(exc, transcript)
             return None, output_lines
 
         self._persist_session_id(f"reviewer-{self.args.category}-{focus}")

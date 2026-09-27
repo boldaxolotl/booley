@@ -247,6 +247,42 @@ class TestTimeoutClamping:
         assert endpoint.args.timeout == 3600
 
 
+def test_provider_exception_preserves_report_and_persists_traceback(
+    tmp_path: Path, capsys, caplog
+) -> None:
+    state_file = tmp_path / "state.json"
+    state_file.write_text("{}")
+    endpoint = ReviewSpecialist()
+    message = "provider failed\nsecret detail " + "x" * 2_000
+    caplog.set_level("DEBUG")
+
+    with (
+        patch.dict(os.environ, _env_with_state(state_file)),
+        patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError(message)),
+    ):
+        result = endpoint.execute_cli(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--report-dir",
+                str(tmp_path / "reports"),
+                "--transcript-dir",
+                str(tmp_path / "transcripts"),
+            ]
+        )
+
+    assert result.exit_code == 2
+    diagnosis = result.outcome.report_text.split(". Diagnostic: ", 1)[0]
+    assert diagnosis.startswith("review_test failed: RuntimeError: provider failed secret detail")
+    assert "\n" not in diagnosis
+    assert len(diagnosis) < 1_100
+    diagnostic = Path(result.outcome.report_text.split("Diagnostic: ", 1)[1])
+    assert diagnostic == tmp_path / "transcripts/review_test.error.log"
+    assert message in diagnostic.read_text(encoding="utf-8")
+    assert "Traceback" not in capsys.readouterr().err
+    assert any(record.exc_info for record in caplog.records if record.levelname == "DEBUG")
+
+
 class TestTranscriptPath:
     def test_transcript_path_created(self, tmp_path: Path):
         state_file = tmp_path / "state.json"

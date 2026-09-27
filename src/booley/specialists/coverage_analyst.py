@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import ClassVar
+
+from claude_agent_sdk import ClaudeSDKError
 
 from booley.core.boundary import require_dict
 from booley.core.models import AgentCallParams, AgentResult
@@ -27,7 +30,16 @@ from booley.flows.sim.coverage_campaign_store import (
 )
 from booley.flows.sim.coverage_evidence import decode_coverage_evidence_audit
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
-from booley.runtime.agent_errors import ContextExhaustedError
+from booley.runtime.agent_errors import (
+    AgentTimeoutError,
+    ContextExhaustedError,
+    TransientAPIError,
+    UsageLimitError,
+)
+from booley.runtime.exception_diagnostics import (
+    bounded_exception_message,
+    write_exception_diagnostic,
+)
 
 from .coverage_analysis import (
     CoverageAnalysisReport,
@@ -36,6 +48,16 @@ from .coverage_analysis import (
 )
 from .coverage_analysis_schema import coverage_analysis_model_schema
 from .specialist import Specialist
+
+logger = logging.getLogger(__name__)
+
+
+class _CoverageProviderError(Exception):
+    """A terminal model-provider failure translated at the invocation seam."""
+
+    def __init__(self, message: str, diagnostic_path: Path | None) -> None:
+        self.diagnostic_path = diagnostic_path
+        super().__init__(message)
 
 
 class CoverageAnalystSpecialist(Specialist):
@@ -135,7 +157,30 @@ class CoverageAnalystSpecialist(Specialist):
                 reasoning_effort=self._resolve_effort(),
                 max_turns=self.args.max_turns,
             )
-            result = self._model(params) if self._model is not None else self._invoke_agent(params)
+            try:
+                result = (
+                    self._model(params) if self._model is not None else self._invoke_agent(params)
+                )
+            except ContextExhaustedError:
+                raise
+            except (
+                ClaudeSDKError,
+                AgentTimeoutError,
+                UsageLimitError,
+                TransientAPIError,
+                RuntimeError,
+            ) as exc:
+                logger.debug("Coverage Analyst provider failed", exc_info=True)
+                diagnostic_path = write_exception_diagnostic(
+                    exc,
+                    endpoint_name=self.name,
+                    invocation_id=self._invocation_id,
+                    report_dir=self.args.report_dir,
+                    transcript_path=params.transcript_path,
+                )
+                raise _CoverageProviderError(
+                    bounded_exception_message(exc), diagnostic_path
+                ) from exc
             return self._coverage_model_result(result, audit_path)
 
     def _evidence_environment(
@@ -164,9 +209,16 @@ class CoverageAnalystSpecialist(Specialist):
     def _coverage_model_result(result: AgentResult, audit_path: Path) -> CoverageModelResult:
         if result.timed_out or result.max_turns_exhausted:
             raise CoverageAnalysisError("Coverage Analyst model did not finish")
-        response = (
-            result.structured if result.structured is not None else json.loads(result.output)
-        )
+        response = result.structured
+        if response is None:
+            if not result.output.strip():
+                raise CoverageAnalysisError("provider ended without a final result")
+            try:
+                response = json.loads(result.output)
+            except json.JSONDecodeError as exc:
+                raise CoverageAnalysisError(
+                    f"model output is not valid JSON at line {exc.lineno}, column {exc.colno}"
+                ) from exc
         try:
             audit = require_dict(
                 json.loads(audit_path.read_text(encoding="utf-8")),
@@ -200,6 +252,11 @@ class CoverageAnalystSpecialist(Specialist):
                     "retry with a model that supports a larger input context."
                 ),
             )
+        except _CoverageProviderError as exc:
+            report_text = f"Coverage analysis failed: model provider returned an error: {exc}"
+            if exc.diagnostic_path is not None:
+                report_text += f". Diagnostic: {exc.diagnostic_path}"
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=report_text)
         except (OSError, ValueError) as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR, report_text=f"Coverage analysis rejected: {exc}"

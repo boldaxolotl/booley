@@ -65,6 +65,27 @@ def _raise_callback_error(_event):
     raise RuntimeError("console died")
 
 
+def test_unclassified_stream_exception_keeps_traceback_at_debug(caplog) -> None:
+    from booley.runtime import _claude_backend as cb
+
+    failure = RuntimeError("provider exploded")
+    caplog.set_level("DEBUG")
+    with (
+        patch.object(cb, "_dump_crash_context"),
+        pytest.raises(RuntimeError, match="provider exploded"),
+    ):
+        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None)
+
+    ordinary = [
+        record
+        for record in caplog.records
+        if record.levelno >= 20 and record.getMessage() == "Agent call failed: provider exploded"
+    ]
+    assert len(ordinary) == 1
+    assert ordinary[0].exc_info is None
+    assert any(record.levelname == "DEBUG" and record.exc_info for record in caplog.records)
+
+
 # ===========================================================================
 # Protocol conformance
 # ===========================================================================

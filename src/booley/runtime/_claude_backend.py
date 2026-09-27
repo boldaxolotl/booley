@@ -889,7 +889,8 @@ def _handle_stream_exception(
     if _is_transient_error(exc):
         logger.warning("Transient API error: %s", exc)
         raise TransientAPIError(str(exc)) from exc
-    logger.error("Agent call failed: %s", exc, exc_info=True)
+    logger.error("Agent call failed: %s", exc)
+    logger.debug("Agent call traceback", exc_info=True)
     raise exc
 
 

@@ -5,10 +5,19 @@ import json
 from pathlib import Path
 
 import pytest
+from claude_agent_sdk import ClaudeSDKError
+
+try:
+    from claude_agent_sdk._errors import ResultError
+except ModuleNotFoundError:
+    # The harness tests install a minimal SDK stub during combined collection.
+    from claude_agent_sdk import ResultError
+
 
 from booley.core.models import AgentResult
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
 from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
+from booley.runtime.agent_errors import AgentTimeoutError, TransientAPIError, UsageLimitError
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.test_coverage_campaign import _valid_document
@@ -493,6 +502,76 @@ def test_cli_reports_unfinished_model_as_analysis_error(tmp_path, failure):
     result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
     assert result.exit_code == 2
     assert "model did not finish" in result.outcome.report_text
+
+
+@pytest.mark.parametrize(
+    ("output", "expected", "unexpected"),
+    [
+        ("", "provider ended without a final result", "model output is not valid JSON"),
+        ("not json", "model output is not valid JSON", "provider ended without a final result"),
+    ],
+)
+def test_cli_distinguishes_empty_and_malformed_model_output(
+    tmp_path, output, expected, unexpected
+):
+    path = persist_campaign(tmp_path)
+    analyst = CoverageAnalystSpecialist(
+        model=lambda _params: AgentResult(output=output, structured=None)
+    )
+
+    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+
+    assert result.exit_code == 2
+    assert expected in result.outcome.report_text
+    assert unexpected not in result.outcome.report_text
+
+
+@pytest.mark.parametrize(
+    "provider_error",
+    [
+        ResultError("terminal result failed"),
+        ClaudeSDKError("SDK failed"),
+        AgentTimeoutError("provider timed out"),
+        UsageLimitError("usage exhausted", provider="codex"),
+        TransientAPIError("provider unavailable"),
+        RuntimeError("Codex exited unsuccessfully"),
+    ],
+    ids=["result", "claude-sdk", "timeout", "usage", "transient", "codex"],
+)
+def test_cli_reports_terminal_provider_failures_without_mutating_state(
+    tmp_path, monkeypatch, capsys, provider_error
+):
+    path = persist_campaign(tmp_path)
+    report_dir = tmp_path / "analysis-reports"
+    state = tmp_path / "state.json"
+    state.write_bytes(b"seeded state must remain byte-for-byte unchanged")
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
+
+    def fail(_params):
+        raise provider_error
+
+    result = CoverageAnalystSpecialist(model=fail).execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+            "--report-dir",
+            str(report_dir),
+        ]
+    )
+
+    assert result.exit_code == 2
+    assert "Coverage analysis failed: model provider returned an error:" in (
+        result.outcome.report_text
+    )
+    assert str(provider_error) in result.outcome.report_text
+    persisted = json.loads((report_dir / "coverage_analyst.json").read_text())
+    assert persisted["report_text"] == result.outcome.report_text
+    diagnostic = Path(result.outcome.report_text.split("Diagnostic: ", 1)[1])
+    assert "Traceback" in diagnostic.read_text(encoding="utf-8")
+    assert "Traceback" not in capsys.readouterr().err
+    assert state.read_bytes() == b"seeded state must remain byte-for-byte unchanged"
 
 
 def test_cli_reports_backend_input_limit_as_actionable_error(tmp_path):

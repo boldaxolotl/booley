@@ -38,6 +38,11 @@ from booley.dev_support.commit_git_io import (
 from booley.dev_support.commit_message_format import _auto_format_commit_message
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
+from booley.runtime.exception_diagnostics import (
+    bounded_exception_message,
+    exception_report_text,
+    write_exception_diagnostic,
+)
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
 from booley.runtime.process_tree import descendant_pids as _descendant_pids
 from booley.ticket_board.agent_execution import configure_agent_call
@@ -233,6 +238,18 @@ class Specialist(McpTool):
             return None
         transcript_dir.mkdir(parents=True, exist_ok=True)
         return transcript_dir / f"{self.name}.jsonl"
+
+    def _write_provider_diagnostic(
+        self, exc: Exception, transcript_path: Path | None = None
+    ) -> Path | None:
+        """Persist a provider traceback without changing the primary outcome."""
+        return write_exception_diagnostic(
+            exc,
+            endpoint_name=self.name,
+            invocation_id=self._invocation_id,
+            report_dir=self.args.report_dir,
+            transcript_path=transcript_path,
+        )
 
     # --- Overridable agent parameters ---
 
@@ -475,10 +492,19 @@ class Specialist(McpTool):
                     reasoning_effort=effort,
                 )
             )
-        except Exception:
-            logger.exception("Agent invocation failed for %s", self.name)
+        except Exception as exc:
+            logger.error(
+                "Agent invocation failed for %s: %s",
+                self.name,
+                bounded_exception_message(exc),
+            )
+            logger.debug("Agent invocation traceback for %s", self.name, exc_info=True)
+            diagnostic_path = self._write_provider_diagnostic(exc, transcript)
             self.emit_progress("agent invocation failed")
-            return McpToolResult(exit_code=EXIT_ERROR, report_text="Agent invocation failed")
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=exception_report_text(self.name, exc, diagnostic_path),
+            )
         finally:
             remove_shadow_package(self.args.work_dir)
 
