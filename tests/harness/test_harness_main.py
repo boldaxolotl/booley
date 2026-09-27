@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from unittest.mock import AsyncMock
+
+import pytest
 
 from booley.harness import __main__ as harness_main
 from booley.harness.developer import RUN_RESULT_PREFIX, TicketRunResult
@@ -16,6 +19,7 @@ def test_successful_review_emits_stable_package_record(tmp_path, monkeypatch, ca
     run = AsyncMock(
         return_value=TicketRunResult(
             slug="demo",
+            disposition="review",
             review_package_path=package_path,
             html_path=html_path,
         )
@@ -41,20 +45,50 @@ def test_successful_review_emits_stable_package_record(tmp_path, monkeypatch, ca
     )
 
 
-def test_non_review_run_emits_no_result_record(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("disposition", "expected_exit"),
+    [("review", 0), ("done", 0), ("blocked", 1), ("failed", 1)],
+)
+def test_normal_ticket_ending_emits_result_record(
+    tmp_path, monkeypatch, capsys, disposition, expected_exit
+):
+    package_path = tmp_path / "review-package.json" if disposition == "review" else None
+    result = TicketRunResult(
+        slug="demo",
+        disposition=disposition,
+        review_package_path=package_path,
+    )
+    monkeypatch.setattr(harness_main, "run_ticket", AsyncMock(return_value=result))
+    args = argparse.Namespace(ticket="demo", no_transcripts=True)
+
+    assert harness_main._run_harness(args, tmp_path) == expected_exit
+
+    line = capsys.readouterr().out.strip()
+    assert json.loads(line.removeprefix(RUN_RESULT_PREFIX)) == {
+        "version": 1,
+        "slug": "demo",
+        "disposition": disposition,
+        "review_package_path": str(package_path) if package_path is not None else None,
+        "html_path": None,
+    }
+
+
+def test_missing_result_is_an_internal_invariant_error(tmp_path, monkeypatch, caplog, capsys):
     monkeypatch.setattr(harness_main, "run_ticket", AsyncMock(return_value=None))
     args = argparse.Namespace(ticket="demo", no_transcripts=True)
 
-    assert harness_main._run_harness(args, tmp_path) == 1
+    with caplog.at_level(logging.ERROR):
+        assert harness_main._run_harness(args, tmp_path) == 1
 
     assert capsys.readouterr().out == ""
+    assert "internal invariant" in caplog.text.lower()
 
 
 def test_main_forwards_cli_options_to_ticket_execution(tmp_path, monkeypatch):
     import sys
     from unittest.mock import Mock
 
-    run = AsyncMock(return_value=None)
+    run = AsyncMock(return_value=TicketRunResult(slug="demo", disposition="done"))
     logging_setup = Mock()
     monkeypatch.setattr(harness_main, "run_ticket", run)
     monkeypatch.setattr(harness_main, "_setup_logging", logging_setup)
@@ -73,7 +107,7 @@ def test_main_forwards_cli_options_to_ticket_execution(tmp_path, monkeypatch):
         ],
     )
 
-    assert harness_main.main() == 1
+    assert harness_main.main() == 0
 
     logging_setup.assert_called_once_with(True)
     run.assert_awaited_once_with("demo", tmp_path, save_transcripts=False)

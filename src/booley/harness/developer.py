@@ -25,7 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from booley.criteria.state import (
     DevelopmentState,
@@ -111,16 +111,17 @@ def _persist_console_failure(
 
 
 RUN_RESULT_PREFIX = "BOOLEY_RUN_RESULT "
+TicketRunDisposition = Literal["review", "done", "blocked", "failed"]
 
 
 @dataclass(frozen=True)
 class TicketRunResult:
-    """Stable command-line handoff emitted when a ticket enters review."""
+    """Stable command-line result for one normally completed Ticket run."""
 
     slug: str
-    review_package_path: Path
+    disposition: TicketRunDisposition
+    review_package_path: Path | None = None
     html_path: Path | None = None
-    disposition: str = "review"
     version: int = 1
 
     def to_dict(self) -> dict[str, object]:
@@ -128,7 +129,9 @@ class TicketRunResult:
             "version": self.version,
             "slug": self.slug,
             "disposition": self.disposition,
-            "review_package_path": str(self.review_package_path),
+            "review_package_path": (
+                str(self.review_package_path) if self.review_package_path is not None else None
+            ),
             "html_path": str(self.html_path) if self.html_path is not None else None,
         }
 
@@ -139,6 +142,11 @@ class TicketRunResult:
             sort_keys=True,
             separators=(",", ":"),
         )
+
+
+def _ticket_run_result(slug: str, disposition: TicketRunDisposition) -> TicketRunResult:
+    """Build a result without inventing review-only artifact paths."""
+    return TicketRunResult(slug=slug, disposition=disposition)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +223,7 @@ async def run_ticket(
     project_root: Path | None = None,
     *,
     save_transcripts: bool = True,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Execute the full developer flow for a ticket.
 
     Args:
@@ -374,14 +382,14 @@ async def _run_ticket_body(
         setup_blocked = await _run_setup_step(ctx, project_root)
         if setup_blocked:
             await _prepare_blocked_triage(ctx, project_root)
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
 
     if resume_uses_existing_setup:
         basis_failure = _resumed_basis_failure(ctx)
         if basis_failure is not None:
             block_ticket(ctx, basis_failure, "setup")
             await _prepare_blocked_triage(ctx, project_root)
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
 
     # A blocked ticket may have received an expanded scope during triage while
     # retaining its worktree and completed setup marker. Refresh the persisted
@@ -398,13 +406,13 @@ async def _run_ticket_body(
             )
         except OSError as exc:
             fail_ticket(ctx, f"scope guard refresh failed: {exc}", "setup")
-            return None
+            return _ticket_run_result(ctx.slug, "failed")
 
     criteria_failure = _deferred_criteria_failure(ctx)
     if criteria_failure is not None:
         block_ticket(ctx, criteria_failure, "setup")
         await _prepare_blocked_triage(ctx, project_root)
-        return None
+        return _ticket_run_result(ctx.slug, "blocked")
 
     # Setup created the worktree -- refresh the click-link resolver so
     # post-setup file clicks resolve against the worktree copy with a
@@ -418,11 +426,11 @@ async def _run_ticket_body(
     try:
         if ctx.current_step != "setup" and ctx.worktree_path:
             _reset_worktree_if_dirty(ctx)
-    except (OSError, subprocess.SubprocessError, ValueError) as e:
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as e:
         fail_ticket(
             ctx, f"worktree cleanup failed: {type(e).__name__}: {e}", ctx.current_step or "setup"
         )
-        return None
+        return _ticket_run_result(ctx.slug, "failed")
 
     # ---- Developer Agent (criteria-based) ----
     result = await _run_developer_path(ctx, project_root)
@@ -441,7 +449,7 @@ async def _run_with_console(
     ticket_path_or_slug: str,
     project_root: Path,
     save_transcripts: bool,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Run the full ticket flow inside the Console TUI.
 
     The Textual app launches FIRST, with a placeholder header; Ticket Preflight
@@ -544,6 +552,7 @@ async def _run_with_console(
 
     if getattr(app, "_user_quit", False) and not harness_completed:
         raise UserQuitError("User quit Console TUI")
+    assert ticket_result is not None, "completed Harness worker must return a Ticket result"
     return ticket_result
 
 
@@ -1441,7 +1450,10 @@ def _verify_review_package(
     from .colors import yellow
 
     try:
-        return verify_review_handoff(project_root, ctx.slug)
+        outcome = verify_review_handoff(project_root, ctx.slug)
+        if outcome.package_path is None:
+            raise ReviewPrepError("verified review package path is unavailable")
+        return outcome
     except ReviewPrepError as exc:
         reason = f"Review package changed before handoff: {exc}"
         logger.warning("Review handoff verification failed for %s: %s", ctx.slug, exc)
@@ -1450,30 +1462,66 @@ def _verify_review_package(
         return None
 
 
+def _reconcile_done_handoff_failure(
+    ctx: TicketContext,
+    project_root: Path,
+    run_index: int,
+    error: Exception,
+) -> TicketRunResult:
+    """Classify a direct-to-done failure from the durable Board status."""
+    from .colors import bold_red, dim, green
+
+    status = ticket_cli.ticket_status(project_root, ctx.slug)
+    if status == "done":
+        terminal.raw(f"  {green('all criteria met')} {dim('→ done')}")
+        return _ticket_run_result(ctx.slug, "done")
+    if status == "running":
+        fail_ticket(
+            ctx,
+            f"Ticket handoff failed: {type(error).__name__}: {error}",
+            "developer",
+            run_index=run_index,
+        )
+    elif status != "review":
+        raise RuntimeError(
+            f"Ticket {ctx.slug} reached unexpected status {status!r} after done handoff failed"
+        ) from error
+    logger.error("Direct-to-done handoff failed for %s in status %s: %s", ctx.slug, status, error)
+    terminal.raw(f"  {bold_red('[FAIL]')} handoff to done did not complete")
+    return _ticket_run_result(ctx.slug, "failed")
+
+
 async def _handoff_accepted_ticket(
     ctx: TicketContext, project_root: Path, run_index: int
-) -> TicketRunResult | None:
-    """Complete an accepted Ticket handoff and return its review package."""
+) -> TicketRunResult:
+    """Complete an accepted Ticket handoff and return its durable outcome."""
     from .colors import dim, green
 
     review_outcome = None
     if ctx.on_success.destination == "review":
         prepared = await _prepare_review_handoff(ctx, project_root, run_index)
         if prepared is None:
-            return None
-        terminal.raw(f"  {green('post-processing complete')} {dim('→ review')}")
+            return _ticket_run_result(ctx.slug, "blocked")
         review_outcome = _verify_review_package(ctx, project_root, run_index)
         if review_outcome is None:
-            return None
-    else:
-        terminal.raw(f"  {green('all criteria met')} {dim('→ review')}")
+            return _ticket_run_result(ctx.slug, "blocked")
 
     ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
-    ticket_cli.handoff(project_root, ctx.slug, **ownership)
-    if review_outcome is None or review_outcome.package_path is None:
-        return None
+    try:
+        ticket_cli.handoff(project_root, ctx.slug, **ownership)
+    except Exception as exc:
+        if ctx.on_success.destination != "done":
+            raise
+        return _reconcile_done_handoff_failure(ctx, project_root, run_index, exc)
+
+    destination = ctx.on_success.destination
+    terminal.raw(f"  {green('post-processing complete')} {dim(f'→ {destination}')}")
+    if destination == "done":
+        return _ticket_run_result(ctx.slug, "done")
+    assert review_outcome is not None and review_outcome.package_path is not None
     return TicketRunResult(
         slug=ctx.slug,
+        disposition="review",
         review_package_path=review_outcome.package_path,
         html_path=review_outcome.html_path,
     )
@@ -1485,10 +1533,10 @@ async def _resolve_ticket_disposition(
     project_root: Path,
     run_index: int,
     endpoint_catalog: CriterionEndpointCatalog,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Read final state, check criteria acceptance, and transition the ticket."""
     if _block_changed_ticket_baseline(ctx, run_index):
-        return None
+        return _ticket_run_result(ctx.slug, "blocked")
     from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
     from .colors import bold_red, yellow
@@ -1503,10 +1551,11 @@ async def _resolve_ticket_disposition(
     if verdict.disposition == "blocked":
         block_ticket(ctx, verdict.blocked_reason, "developer", run_index=run_index)
         terminal.raw(f"  {yellow('[BLOCK]')} {verdict.blocked_reason}")
-    elif verdict.disposition == "review":
+        return _ticket_run_result(ctx.slug, "blocked")
+    if verdict.disposition == "review":
         logger.info("All mandatory criteria met for %s", ctx.slug)
         return await _handoff_accepted_ticket(ctx, project_root, run_index)
-    elif verdict.disposition == "failed":
+    if verdict.disposition == "failed":
         fail_ticket(
             ctx,
             f"Developer Agent exited with {len(verdict.unmet_mandatory)} unmet criteria: "
@@ -1515,12 +1564,11 @@ async def _resolve_ticket_disposition(
             run_index=run_index,
         )
         terminal.raw(f"  {bold_red('[FAIL]')} {len(verdict.unmet_mandatory)} unmet criteria")
-    else:
-        raise ValueError(
-            f"Unknown criteria verdict disposition {verdict.disposition!r} for "
-            f"{ctx.slug} — expected one of: review, blocked, failed"
-        )
-    return None
+        return _ticket_run_result(ctx.slug, "failed")
+    raise ValueError(
+        f"Unknown criteria verdict disposition {verdict.disposition!r} for "
+        f"{ctx.slug} — expected one of: review, blocked, failed"
+    )
 
 
 def _block_changed_ticket_baseline(ctx: TicketContext, run_index: int) -> bool:
@@ -1641,7 +1689,7 @@ def _write_developer_prompt_snapshot(
 async def _run_developer_path(
     ctx: TicketContext,
     project_root: Path,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Run the developer agent for criteria-based tickets.
 
     Flow: detect crash recovery -> build prompt -> launch agent ->
@@ -1717,7 +1765,7 @@ async def _run_developer_path(
             budget,
         )
         if result is None:
-            return None
+            return _ticket_run_result(ctx.slug, "failed")
 
         await _drain_outstanding_ticket_jobs(ctx, budget)
 
@@ -1727,7 +1775,7 @@ async def _run_developer_path(
         guardrail_blocked = _run_post_guardrails(ctx, state_path, run_index)
         budget.raise_if_exhausted()
         if guardrail_blocked:
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
 
         hook_blocked = _run_post_developer_hook(
             ctx,
@@ -1738,7 +1786,7 @@ async def _run_developer_path(
         )
         budget.raise_if_exhausted()
         if hook_blocked:
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
         return await run_with_developer_budget(
             _resolve_ticket_disposition(
                 ctx,
@@ -1763,15 +1811,19 @@ async def _run_developer_path(
             run_index=run_index,
             crashed=True,
         )
+        return _ticket_run_result(ctx.slug, "failed")
     finally:
         if budget is not None:
             budget.finish()
         # Runs after every exit path — including the early returns for
         # guardrail/hook blocks — so a transient crash gets its retry no
         # matter which disposition the run finally landed on.
-        retried = maybe_auto_retry(ctx, project_root, run_index)
-        if not retried:
-            await _prepare_blocked_triage(ctx, project_root)
+        try:
+            retried = maybe_auto_retry(ctx, project_root, run_index)
+            if not retried:
+                await _prepare_blocked_triage(ctx, project_root)
+        except Exception:
+            logger.exception("Ticket failure finalization failed for %s", ctx.slug)
 
 
 async def _prepare_blocked_triage(ctx: TicketContext, project_root: Path) -> None:

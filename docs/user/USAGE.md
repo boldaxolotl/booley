@@ -831,16 +831,29 @@ editor (or run **Live Preview: Show Preview** from the Command Palette). The
 workflow does not emit a `command:` link because VS Code intentionally
 disables command URIs in untrusted chat-authored Markdown.
 
-After a ticket enters review, `booley run` emits one stable JSON record
+After every normal Ticket ending, `booley run` emits one stable JSON record
 after the full-screen Console closes:
 
 ```text
 BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":1}
 ```
 
+The `disposition` is `review`, `done`, `blocked`, or `failed`. `review` and
+`done` exit with status 0; `blocked` and `failed` exit with status 1. A direct
+completion has no review artifacts:
+
+```text
+BOOLEY_RUN_RESULT {"disposition":"done","html_path":null,"review_package_path":null,"slug":"demo","version":1}
+```
+
 Normal progress output may surround this line. Command-line clients should scan
-for the `BOOLEY_RUN_RESULT ` prefix; one record is emitted per review-bound
-ticket. `html_path` is `null` when no HTML explanation was produced.
+for the `BOOLEY_RUN_RESULT ` prefix; exactly one record is emitted per normal
+Ticket ending. `review_package_path` and `html_path` are review-only and are
+`null` for every other disposition; `html_path` may also be `null` for review.
+A `failed` result classifies this Harness invocation even though the Ticket
+Board state is `blocked`, or `queued` after automatic retry. Because unexpected
+infrastructure errors also exit 1, automation should use the record's presence
+and disposition—not the exit status alone—to classify a normal Ticket ending.
 
 **Ticket worktrees live under `.booley_project/worktrees/<slug>`, but they are registered by their in-container path.** Booley is container-only, so the project is `/work` from git's point of view and the registrations record `/work/.booley_project/worktrees/...`. On the host those paths don't exist, so `git worktree list` shows every live ticket worktree as `prunable`:
 
