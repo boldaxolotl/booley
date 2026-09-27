@@ -25,6 +25,18 @@ from booley.runtime import session_runtime as sr
 from booley.runtime import session_spec
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session_admission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from booley.runtime import session_admission
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(session_admission, "claim_vscode_start", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(session_admission, "has_pending_claim", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(session_admission, "vscode_sandboxes", lambda *_args, **_kwargs: ())
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "i2c"
@@ -1688,6 +1700,26 @@ class TestRefreshContainerTransactions:
 
 
 class TestUp:
+    def test_new_sandbox_refusal_happens_before_relay_or_docker_mutation(self, wired):
+        workspace, run = wired
+        from booley.runtime import session_admission
+
+        run.reset_mock()
+        with (
+            patch.object(sr.idk, "container_exists", return_value=False),
+            patch.object(
+                session_admission,
+                "admit_start",
+                side_effect=session_admission.AdmissionError("host is at max_sessions=1"),
+            ),
+            patch.object(sr, "_prepare_license_relay") as relay,
+            pytest.raises(sr.SessionError, match="max_sessions=1"),
+        ):
+            sr.up(workspace)
+
+        relay.assert_not_called()
+        run.assert_not_called()
+
     @pytest.mark.parametrize(
         "wired",
         ["real-image-lifecycle"],
@@ -2580,7 +2612,7 @@ class TestLicensedRelayLifecycle:
             patch.object(sr.idk, "container_exists", side_effect=[False, True]),
             patch.object(sr, "_remove_license_relay") as remove,
         ):
-            assert sr.down(workspace) is True
+            assert sr.down(workspace).relay is True
         remove.assert_called_once_with(relay)
 
 
@@ -2804,7 +2836,7 @@ class TestStaleSessionContainerWarning:
 class TestDownAndStatus:
     def test_down_on_absent_container_is_false(self, workspace: Path):
         with patch.object(sr.idk, "container_exists", return_value=False):
-            assert sr.down(workspace) is False
+            assert not sr.down(workspace)
 
     def test_down_never_removes_the_issuance_image_keeper(self, workspace: Path):
         relay = SimpleNamespace(relay_container="relay")
@@ -2815,7 +2847,7 @@ class TestDownAndStatus:
             patch.object(sr, "_run") as run,
         ):
             run.return_value = subprocess.CompletedProcess([], 0)
-            assert sr.down(workspace) is True
+            assert sr.down(workspace).headless is True
         commands = [_argv_of(call) for call in run.call_args_list]
         assert ["docker", "stop", sr.session_container_name(workspace)] in commands
         assert not any(command[:3] == ["docker", "image", "rm"] for command in commands)

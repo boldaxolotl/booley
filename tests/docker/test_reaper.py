@@ -32,41 +32,38 @@ def _cp(returncode=0, stdout="", stderr=""):
 class TestSelectReap:
     def test_nothing_to_reap(self):
         cs = [_sc("a", 100, 100), _sc("b", 100, 100)]
-        assert select_reap(cs, now=150, idle_timeout=1000, max_sessions=4) == []
+        assert select_reap(cs, now=150, idle_timeout=1000) == []
 
     def test_idle_reaped(self):
         cs = [_sc("fresh", 0, last=900), _sc("stale", 0, last=100)]
         # now=1000, timeout=500 → stale idle_age=900>500, fresh=100<500
-        assert select_reap(cs, now=1000, idle_timeout=500, max_sessions=10) == ["stale"]
+        assert select_reap(cs, now=1000, idle_timeout=500) == ["stale"]
 
-    def test_concurrency_cap_stops_oldest(self):
+    def test_fresh_sandboxes_are_not_reaped_when_host_is_over_cap(self):
         cs = [_sc("old", 10), _sc("mid", 20), _sc("new", 30)]
-        # all fresh; cap=1 → keep newest, stop the two oldest
-        out = select_reap(cs, now=30, idle_timeout=10_000, max_sessions=1)
-        assert out == ["old", "mid"]
+        # Capacity is enforced before a start; the reaper only owns idle policy.
+        out = select_reap(cs, now=30, idle_timeout=10_000)
+        assert out == []
 
-    def test_cap_ignores_already_idle(self):
-        # stale is idle-reaped; cap then applies to the 2 survivors only
+    def test_idle_selection_ignores_fresh_sandboxes(self):
         cs = [_sc("stale", 0, last=0), _sc("a", 10, last=100), _sc("b", 20, last=100)]
-        out = select_reap(cs, now=100, idle_timeout=50, max_sessions=2)
-        # stale idle (100-0>50); a,b fresh (100-100=0); survivors=2<=cap → only stale
+        out = select_reap(cs, now=100, idle_timeout=50)
         assert out == ["stale"]
 
-    def test_union_idle_and_cap(self):
+    def test_only_idle_sandboxes_are_selected(self):
         cs = [
             _sc("stale", 0, last=0),
             _sc("a", 10, last=100),
             _sc("b", 20, last=100),
             _sc("c", 30, last=100),
         ]
-        out = select_reap(cs, now=100, idle_timeout=50, max_sessions=1)
-        # stale idle; survivors a,b,c (cap 1) → stop oldest 2 = a,b; keep c
-        assert out == ["stale", "a", "b"]
+        out = select_reap(cs, now=100, idle_timeout=50)
+        assert out == ["stale"]
 
     def test_deterministic_order(self):
-        cs = [_sc("c", 30), _sc("a", 10), _sc("b", 20)]
-        out = select_reap(cs, now=30, idle_timeout=10_000, max_sessions=0)
-        assert out == ["a", "b", "c"]  # sorted by started_at
+        cs = [_sc("c", 30, last=40), _sc("a", 10), _sc("b", 20)]
+        out = select_reap(cs, now=40, idle_timeout=5)
+        assert out == ["a", "b"]  # sorted by started_at; c remains fresh
 
 
 # ===========================================================================
@@ -164,7 +161,7 @@ class TestCollectAndReap:
                 (lambda a: a[0] == "exec", _cp(0, stdout="10.0\n")),
             ]
         )
-        stopped = reaper.reap_once(now=86452.0, idle_timeout=7200, max_sessions=4, run=run)
+        stopped = reaper.reap_once(now=86452.0, idle_timeout=7200, run=run)
         assert stopped == []
         assert not run.ran("stop", "abc")
 
@@ -181,7 +178,7 @@ class TestCollectAndReap:
                 return _cp(0, stdout=next(heartbeat_reads))
             return _cp(0, stdout="{}")
 
-        assert reaper.reap_once(now=1000, idle_timeout=100, max_sessions=4, run=run) == []
+        assert reaper.reap_once(now=1000, idle_timeout=100, run=run) == []
 
     def test_stale_revalidation_still_stops_idle_container(self):
         run = FakeRun(
@@ -194,7 +191,7 @@ class TestCollectAndReap:
                 (lambda a: a[0] == "exec", _cp(0, stdout="10.0\n")),
             ]
         )
-        assert reaper.reap_once(now=1000, idle_timeout=100, max_sessions=4, run=run) == ["abc"]
+        assert reaper.reap_once(now=1000, idle_timeout=100, run=run) == ["abc"]
         assert run.ran("stop", "abc")
 
     def test_revalidation_failure_does_not_stop_idle_container(self):
@@ -213,10 +210,10 @@ class TestCollectAndReap:
                 )
             return _cp(0, stdout="{}")
 
-        assert reaper.reap_once(now=1000, idle_timeout=100, max_sessions=4, run=run) == []
+        assert reaper.reap_once(now=1000, idle_timeout=100, run=run) == []
 
-    def test_fresh_revalidation_does_not_exempt_session_cap(self):
-        heartbeat_reads = {"old": iter(["900.0\n", "999.0\n"]), "new": iter(["900.0\n"])}
+    def test_fresh_over_cap_sandboxes_are_never_stopped(self):
+        heartbeat_reads = {"old": iter(["999.0\n"]), "new": iter(["999.0\n"])}
 
         def run(args, *, timeout=30):
             del timeout
@@ -229,7 +226,7 @@ class TestCollectAndReap:
                 return _cp(0, stdout=next(heartbeat_reads[args[1]]))
             return _cp(0, stdout="{}")
 
-        assert reaper.reap_once(now=1000, idle_timeout=100, max_sessions=1, run=run) == ["old"]
+        assert reaper.reap_once(now=1000, idle_timeout=100, run=run) == []
 
     def test_collect_falls_back_to_started_at(self):
         run = FakeRun(
@@ -260,14 +257,14 @@ class TestCollectAndReap:
                 (lambda a: a[0] == "exec", _cp(1)),  # no heartbeats → last=started
             ]
         )
-        stopped = reaper.reap_once(now=30, idle_timeout=10_000, max_sessions=1, run=run)
-        assert stopped == ["old"]
-        assert run.ran("stop", "old")
+        stopped = reaper.reap_once(now=30, idle_timeout=10_000, run=run)
+        assert stopped == []
+        assert not run.ran("stop", "old")
         assert not run.ran("stop", "new")
 
     def test_reap_once_empty_when_no_containers(self):
         run = FakeRun([(lambda a: a[0] == "ps", _cp(0, stdout=""))])
-        assert reaper.reap_once(now=0, idle_timeout=1, max_sessions=1, run=run) == []
+        assert reaper.reap_once(now=0, idle_timeout=1, run=run) == []
 
     def test_licensed_vscode_session_removes_container_relay_then_networks(self):
         project_id = "b" * 64
@@ -293,7 +290,7 @@ class TestCollectAndReap:
             ]
         )
 
-        assert reaper.reap_once(now=1000, idle_timeout=10, max_sessions=4, run=run) == ["abc"]
+        assert reaper.reap_once(now=1000, idle_timeout=10, run=run) == ["abc"]
         session_id = project_id[:16]
         lifecycle = [call for call in run.calls if call[0] in {"stop", "rm", "network"}]
         assert lifecycle == [
@@ -320,7 +317,7 @@ class TestCollectAndReap:
             ]
         )
 
-        assert reaper.reap_once(now=1000, idle_timeout=10, max_sessions=4, run=run) == []
+        assert reaper.reap_once(now=1000, idle_timeout=10, run=run) == []
         assert not run.ran("stop", "abc")
 
     def test_licensed_cleanup_reports_every_residual(self):

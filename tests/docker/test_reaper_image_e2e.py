@@ -110,8 +110,6 @@ def _start_reaper(client: DockerClient, image: str, topology: _Topology) -> None
             "BOOLEY_IDLE_TIMEOUT_SECONDS=1",
             "-e",
             "BOOLEY_REAP_INTERVAL_SECONDS=1",
-            "-e",
-            "BOOLEY_MAX_SESSIONS=4",
             image,
         )
     )

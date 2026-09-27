@@ -11,7 +11,11 @@ For `config-defaults`, leave the file absent. Capture its absence before and aft
 
 `idle.toml` sets a 30-second idle limit; save the Sandbox identity and actual expiry.
 `cap.toml` sets one Sandbox; open a second declared Project on the same isolated
-daemon and verify the global cap. `egress.toml` permits only the additional named
+daemon and require a refusal that names the first Project, its Sandbox age, the
+Project-scoped shutdown command, and the host-config remedy. Prove the first
+Sandbox remains live. Also attempt VS Code reopen for the second Project; if its
+create fails after `session prepare`, cancel the create before using the reported
+`session down` command to clear the pending claim. `egress.toml` permits only the additional named
 host. Supply a controlled endpoint with that exact name in the run's DNS fixture;
 use a second unlisted name at the same endpoint for the deny check. The reserved
 example hostname is a fixture identity, not an Internet service.

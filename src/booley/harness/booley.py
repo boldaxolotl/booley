@@ -1523,8 +1523,23 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
 def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime import session_runtime as sr
 
-    if sr.down(project_root):
-        print(f"removed {sr.session_container_name(project_root)}")
+    result = sr.down(project_root)
+    if result:
+        if isinstance(result, bool):
+            print(f"removed {sr.session_container_name(project_root)}")
+            return 0
+        details = []
+        if result.headless:
+            details.append(f"removed {sr.session_container_name(project_root)}")
+        if result.vscode_stopped:
+            details.append("stopped VS Code Sandbox " + ", ".join(result.vscode_stopped))
+        if result.claim_cleared:
+            details.append("cleared pending editor start claim")
+        print("; ".join(details) or "removed Sandbox resources")
+        if result.claim_cleared:
+            print(
+                "Cancel any in-progress VS Code create before clearing its claim.", file=sys.stderr
+            )
     else:
         print("no Sandbox container for this folder")
     return 0
