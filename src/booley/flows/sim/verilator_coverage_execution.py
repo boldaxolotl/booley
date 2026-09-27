@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shlex
 import shutil
@@ -623,7 +624,7 @@ def _image_identity(root: Path, paths: tuple[Path, ...]) -> tuple[tuple[str, int
             if not stat.S_ISREG(info.st_mode) or not resolved.is_relative_to(resolved_root):
                 raise SimulationBuildSlotError(f"unsafe coverage image: {path}")
             mode = stat.S_IMODE(info.st_mode)
-            if not mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            if os.name != "nt" and not mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
                 raise SimulationBuildSlotError(f"coverage image is not executable: {path}")
             content = path.read_bytes()
             relative = path.relative_to(root).as_posix()

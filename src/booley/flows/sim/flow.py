@@ -532,9 +532,7 @@ def _coverage_pre_sim_lines(selector: str, campaign: CoverageCampaign) -> list[s
         evidence = run.attributes.get("pre_sim")
         if not isinstance(evidence, Mapping):
             continue
-        lines.append(
-            _pre_sim_report_line(selector, run.test, coverage_mapping_document(evidence))
-        )
+        lines.append(_pre_sim_report_line(selector, run.test, coverage_mapping_document(evidence)))
     return lines
 
 
