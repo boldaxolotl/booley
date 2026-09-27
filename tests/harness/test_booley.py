@@ -144,6 +144,12 @@ def _board_create_project(
 def board_create_project_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[pytest.MonkeyPatch]:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    monkeypatch.delenv("GIT_TEMPLATE_DIR", raising=False)
+    for variable in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(variable, raising=False)
     yield monkeypatch
     reset_cache()
 

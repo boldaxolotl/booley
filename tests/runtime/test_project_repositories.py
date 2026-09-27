@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from booley.runtime.project_repositories import inspect_symbolic_branch
+
+
+@pytest.fixture(autouse=True)
+def _isolated_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    monkeypatch.delenv("GIT_TEMPLATE_DIR", raising=False)
+    for variable in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(variable, raising=False)
 
 
 def _git(repository: Path, *args: str) -> str:
