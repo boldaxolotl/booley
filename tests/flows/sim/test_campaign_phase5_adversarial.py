@@ -46,6 +46,7 @@ from booley.flows.sim.flow import (
     _campaign_report_lines,
     _campaign_structured_details,
     _compact_coverage_number,
+    _coverage_report_suffix,
 )
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.targets.catalog import TargetCatalog
@@ -65,6 +66,29 @@ from tests.flows.sim.test_coverage_transaction import NativeExecution
 )
 def test_coverage_report_numbers_are_compact_and_non_scientific(value, expected) -> None:
     assert _compact_coverage_number(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("collection", "evaluation", "expected"),
+    [
+        (
+            {"status": "collector_error", "diagnostics": ()},
+            {"status": "not_requested", "diagnostics": (), "metrics": ()},
+            "coverage collection COLLECTOR_ERROR · evaluation NOT_REQUESTED",
+        ),
+        (
+            {"status": "complete", "diagnostics": ()},
+            {"status": "fail", "diagnostics": (), "metrics": ()},
+            "coverage collection COMPLETE · evaluation FAIL",
+        ),
+    ],
+)
+def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
+    collection, evaluation, expected
+) -> None:
+    campaign = SimpleNamespace(collection=collection, evaluation=evaluation)
+
+    assert _coverage_report_suffix(campaign) == expected
 
 
 def _facts(
