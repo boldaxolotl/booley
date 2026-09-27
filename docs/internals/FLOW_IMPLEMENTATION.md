@@ -1042,6 +1042,12 @@ policy `blocked` verdict. Report paths are usable only when their publication
 succeeded. No later stage runs after an earlier publication failure, except for
 an observational error checkpoint.
 
+All Simulation progress producers normalize a failed terminal publication onto
+the result already assembled from durable Target or Campaign outcomes. They do
+not replace that result with a generic error. A per-Target progress failure
+terminalizes as `aborted`, even when every Target execution already completed;
+`phase: complete` is reserved for successful progress publication.
+
 The Flow holds an OS file lock outside the invocation directory while producing
 coverage. Pruning takes the same nonblocking lock, so active invocations cannot
 be removed. Process exit releases ownership; `progress.json` is never lock or

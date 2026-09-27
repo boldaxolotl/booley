@@ -16,6 +16,7 @@ from booley.flows.endpoint_reporting import _StdoutWitness
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
+    ExecutionResult,
 )
 
 if TYPE_CHECKING:
@@ -153,10 +154,11 @@ def finish_execution(
     *,
     started: float | None,
     acceptance_recorded: bool,
-) -> int:
+) -> ExecutionResult:
     """Publish completion, persisting only after acceptance succeeds."""
-    return endpoint._finish_main(
-        endpoint._adapt_outcome(outcome),
+    final_outcome = endpoint._adapt_outcome(outcome)
+    exit_code = endpoint._finish_main(
+        final_outcome,
         prepared.display_target,
         outcome.display_label or prepared.display_label,
         started=started,
@@ -164,3 +166,4 @@ def finish_execution(
         dry_run=prepared.dry_run,
         non_persisting_dry_run=prepared.non_persisting_dry_run,
     )
+    return ExecutionResult(exit_code=exit_code, outcome=final_outcome)

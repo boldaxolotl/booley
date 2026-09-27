@@ -64,8 +64,12 @@ completion, the coordinator records final acceptance/invalidation before saving
 the timeline and final report. Preserve both boundaries; do not defer all
 Criteria writes until completion.
 
-A final acceptance-recording failure skips final mutable persistence and still
-runs completion cleanup. An acceptance append failure inside `_run` is different:
+A final acceptance-recording failure becomes exit 2 with
+`detail.completion_error`, preserves the underlying Flow verdict and already-known
+Target facts, skips final mutable persistence, and still attempts `report.json`
+publication. Any per-Target acceptance dispositions committed before a later
+projection failure remain visible in `detail.acceptance`; user-facing output has
+no traceback. An acceptance append failure inside `_run` is different:
 the immediate update does not save, but the invocation adapter normalizes the
 exception to an error outcome, after which final error persistence can occur.
 This existing distinction is characterized by tests; the separation does not

@@ -265,6 +265,10 @@ preserves same-root resume references. Copying only a resume invocation leaves i
 immutable Simulation Campaign identity, digest, and external relative path, but
 not the external artifact bytes.
 
+If completion reporting fails, the Flow returns exit code 2 with a structured
+`detail.completion_error` while preserving existing Target, Campaign, and
+Criterion results.
+
 Structured campaign output reports `grade`, `complete`,
 aggregate `observation_counts`, and a maximum-32 `observations` preview. Every
 preview entry retains `test`, `execution`, `functional`, `assertions`,
