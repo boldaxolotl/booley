@@ -385,6 +385,7 @@ def test_committed_recovery_only_finishes_replacement_cleanup(tmp_path: Path, mo
         expected_image_id="sha256:fresh",
         expected_wheel_source_fingerprint="payload-fresh",
         expected_wheel_sha256=None,
+        recovery=True,
     )
     discard.assert_called_once()
     restore.assert_not_called()

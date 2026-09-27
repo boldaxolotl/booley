@@ -707,7 +707,7 @@ def test_run_arguments_include_policy_and_optional_allowlist() -> None:
     assert 'PROXY_ALLOWLIST=["example.com"]' in proxy
     assert f"{sidecars.ROLE_LABEL}=egress-proxy" in proxy
     assert "BOOLEY_IDLE_TIMEOUT_SECONDS=600" in reaper
-    assert "BOOLEY_MAX_SESSIONS=2" in reaper
+    assert not any("BOOLEY_MAX_SESSIONS=" in arg for arg in reaper)
     assert "PROXY_ALLOWLIST" not in " ".join(
         sidecars._proxy_run_args(InteractiveHostPolicy(), "fingerprint")
     )

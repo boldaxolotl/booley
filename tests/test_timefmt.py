@@ -57,6 +57,13 @@ def test_epoch_serialization_is_second_resolution_utc():
     assert timefmt.rfc3339_from_epoch(epoch) == "2026-08-10T09:11:49Z"
 
 
+def test_datetime_serialization_can_preserve_microseconds():
+    value = datetime(2026, 8, 10, 13, 11, 49, 123456, tzinfo=timezone(timedelta(hours=4)))
+    assert timefmt.rfc3339_from_datetime(value, microseconds=True) == (
+        "2026-08-10T09:11:49.123456Z"
+    )
+
+
 def test_detect_host_timezone_falls_back_to_offset(monkeypatch):
     fixed = timezone(timedelta(hours=-3, minutes=-30))
     monkeypatch.delenv("TZ", raising=False)

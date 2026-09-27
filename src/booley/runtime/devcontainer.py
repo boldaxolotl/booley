@@ -987,7 +987,8 @@ def build_devcontainer_spec(
         # Survive window close (ADR 0028 Decision 11): tickets may still be
         # running when the last VS Code window disconnects, so VS Code must
         # never stop the container itself — the idle reaper is the sole
-        # lifecycle owner (same idle-timeout + session cap as before).
+        # lifecycle owner for idle shutdown; admission enforces the host cap
+        # before VS Code starts another Sandbox.
         "shutdownAction": "none",
         # The issued image ID is immutable.  Letting Dev Containers synthesize
         # an update-UID derivative would both fail for an ID-only FROM and run

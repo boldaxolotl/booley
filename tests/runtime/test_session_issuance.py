@@ -20,8 +20,8 @@ from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.harness import eda_grants
 from booley.runtime import devcontainer as dc
+from booley.runtime import session_admission, session_runtime, session_spec
 from booley.runtime import session_issuance as runtime_spec
-from booley.runtime import session_runtime, session_spec
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import reset_cache
 
@@ -681,6 +681,7 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
             session_runtime, "_warn_on_stale_session_containers", lambda *_args: None
         )
         monkeypatch.setattr(session_runtime, "_preflight", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
         monkeypatch.setattr(
             session_runtime,

@@ -654,8 +654,6 @@ def _reaper_run_args(policy: InteractiveHostPolicy, fingerprint: str) -> list[st
         f"{legacy.DOCKER_SOCK}:{legacy.DOCKER_SOCK}",
         "-e",
         f"BOOLEY_IDLE_TIMEOUT_SECONDS={policy.idle_timeout_seconds}",
-        "-e",
-        f"BOOLEY_MAX_SESSIONS={policy.max_sessions}",
         legacy.REAPER_IMAGE,
     ]
     return args

@@ -442,7 +442,7 @@ def _connect_to_egress(container: str, network: str = EGRESS_NETWORK) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Idle reaper + concurrency cap (WS2)
+# Idle reaper (WS2)
 # ---------------------------------------------------------------------------
 
 
@@ -483,8 +483,6 @@ def _reaper_run_args(cfg: InteractiveConfig) -> list[str]:
         f"{DOCKER_SOCK}:{DOCKER_SOCK}",
         "-e",
         f"BOOLEY_IDLE_TIMEOUT_SECONDS={cfg.idle_timeout_seconds}",
-        "-e",
-        f"BOOLEY_MAX_SESSIONS={cfg.max_sessions}",
         REAPER_IMAGE,
     ]
 

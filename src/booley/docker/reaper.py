@@ -1,11 +1,11 @@
-"""Idle reaper + concurrency cap for Interactive Mode Sandboxes.
+"""Idle reaper for Interactive Mode Sandboxes.
 
 ADR 0018 makes this mandatory: VS Code's stop-on-close is unreliable, and an
 orphaned Sandbox is an orphaned copy of the repo with forwarded git
 credentials. This runs as the long-lived ``booley-reaper`` container (the only
 container that mounts the docker socket; Sandboxes keep none) and
 periodically stops Sandboxes (label ``booley.role=interactive``) that
-are idle past a timeout or exceed the concurrency cap.
+are idle past a timeout.
 
 Self-contained (stdlib only) so it runs in a minimal ``docker:cli`` + python
 image, mirroring ``proxy_entry.py``. It shells out to the ``docker`` CLI.
@@ -49,7 +49,6 @@ _PROJECT_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 HEARTBEAT_PATH = "/tmp/booley_mcp_heartbeat"
 
 DEFAULT_IDLE_TIMEOUT_S = 7200
-DEFAULT_MAX_SESSIONS = 4
 DEFAULT_INTERVAL_S = 60
 
 
@@ -94,20 +93,12 @@ def select_reap(
     *,
     now: float,
     idle_timeout: float,
-    max_sessions: int,
 ) -> list[str]:
-    """Return the IDs of containers to stop, given current policy.
-
-    Two independent reasons, unioned:
-      * idle — ``now - last_activity > idle_timeout``;
-      * over-cap — among the non-idle survivors, the oldest beyond
-        *max_sessions* (by ``started_at``, then ``id`` for determinism).
-    """
+    """Return IDs of containers idle beyond the configured timeout."""
     reasons = _reap_reasons(
         containers,
         now=now,
         idle_timeout=idle_timeout,
-        max_sessions=max_sessions,
     )
     return _ordered_reap_ids(containers, reasons)
 
@@ -126,18 +117,9 @@ def _reap_reasons(
     *,
     now: float,
     idle_timeout: float,
-    max_sessions: int,
 ) -> dict[str, frozenset[str]]:
     idle = {c.id for c in containers if now - c.last_activity > idle_timeout}
-    survivors = sorted(
-        (c for c in containers if c.id not in idle),
-        key=lambda c: (c.started_at, c.id),
-    )
-    over_cap = survivors[: max(0, len(survivors) - max_sessions)]
-    reasons: dict[str, set[str]] = {cid: {"idle"} for cid in idle}
-    for container in over_cap:
-        reasons.setdefault(container.id, set()).add("cap")
-    return {cid: frozenset(values) for cid, values in reasons.items()}
+    return {cid: frozenset({"idle"}) for cid in idle}
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +387,6 @@ def reap_once(
     *,
     now: float,
     idle_timeout: float,
-    max_sessions: int,
     run: Callable[..., subprocess.CompletedProcess] = _run,
 ) -> list[str]:
     """One reap pass: collect, select, stop. Returns the stopped IDs."""
@@ -414,7 +395,6 @@ def reap_once(
         containers,
         now=now,
         idle_timeout=idle_timeout,
-        max_sessions=max_sessions,
     )
     by_id = {container.id: container for container in containers}
     to_reap = _ordered_reap_ids(containers, reasons)
@@ -424,7 +404,7 @@ def reap_once(
         if not ownership.inspected:
             logger.warning("not stopping %s until its license ownership can be inspected", cid)
             continue
-        if reasons[cid] == frozenset({"idle"}) and not _idle_after_revalidation(
+        if not _idle_after_revalidation(
             by_id[cid],
             now=now,
             idle_timeout=idle_timeout,
@@ -460,12 +440,10 @@ def _env_int(name: str, default: int) -> int:
 
 def main() -> None:
     idle_timeout = _env_int("BOOLEY_IDLE_TIMEOUT_SECONDS", DEFAULT_IDLE_TIMEOUT_S)
-    max_sessions = _env_int("BOOLEY_MAX_SESSIONS", DEFAULT_MAX_SESSIONS)
     interval = _env_int("BOOLEY_REAP_INTERVAL_SECONDS", DEFAULT_INTERVAL_S)
     logger.info(
-        "starting: idle_timeout=%ds max_sessions=%d interval=%ds",
+        "starting: idle_timeout=%ds interval=%ds",
         idle_timeout,
-        max_sessions,
         interval,
     )
     prev_wall = time.time()
@@ -495,7 +473,7 @@ def main() -> None:
             )
         else:
             try:
-                reap_once(now=wall, idle_timeout=idle_timeout, max_sessions=max_sessions)
+                reap_once(now=wall, idle_timeout=idle_timeout)
             except (subprocess.SubprocessError, OSError) as exc:
                 logger.warning("reap pass failed: %s", exc)
         time.sleep(interval)
