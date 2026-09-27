@@ -47,6 +47,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Ticket Mode now emits a version 2 `BOOLEY_RUN_RESULT` record for every
+  handled Ticket ending. The record distinguishes `review`, `done`, `blocked`,
+  and `failed`; review artifacts are nullable, successful outcomes exit 0,
+  handled unsuccessful outcomes exit 1, and infrastructure failures exit 2.
 - Direct built-in and Custom Flows now keep their default reports under resolved
   Project data. Plain Simulation, native coverage, and resume share one report
   root and invocation-number sequence, and no default `flow-reports/` directory

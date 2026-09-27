@@ -33,8 +33,9 @@ async def test_setup_block_prepares_blocked_triage_dossier(tmp_path: Path, monke
     prepare = AsyncMock()
     monkeypatch.setattr(developer, "_prepare_blocked_triage", prepare)
 
-    await developer._run_ticket_body(ctx, tmp_path, 0.0)
+    result = await developer._run_ticket_body(ctx, tmp_path, 0.0)
 
+    assert result.disposition == "blocked"
     prepare.assert_awaited_once_with(ctx, tmp_path)
 
 
@@ -61,8 +62,9 @@ async def test_invalid_resumed_basis_prepares_blocked_triage(
     prepare = AsyncMock()
     monkeypatch.setattr(developer, "_prepare_blocked_triage", prepare)
 
-    await developer._run_ticket_body(ctx, tmp_path, 0.0)
+    result = await developer._run_ticket_body(ctx, tmp_path, 0.0)
 
+    assert result.disposition == "blocked"
     block.assert_called_once_with(
         ctx,
         "acceptance-input-change-required: basis changed",
@@ -217,3 +219,77 @@ def test_deferred_criteria_returns_fatal_initialization_error(
 
     assert developer._deferred_criteria_failure(ctx) == "criteria initialization failed"
     assert ctx.criteria_state_needs_init is True
+
+
+def _patch_body_prelude(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(developer, "_display_ticket_banner", lambda _ctx: None)
+    monkeypatch.setattr(developer, "_recover_setup_state", lambda *_args: None)
+    monkeypatch.setattr(developer, "_invalidate_missing_worktree", lambda *_args: None)
+
+
+@pytest.mark.asyncio
+async def test_deferred_criteria_failure_returns_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _context(tmp_path, completed_steps=["setup"], criteria_state_needs_init=True)
+    _patch_body_prelude(monkeypatch)
+    monkeypatch.setattr(developer, "_resumed_basis_failure", lambda _ctx: None)
+    monkeypatch.setattr(
+        developer,
+        "_deferred_criteria_failure",
+        lambda _ctx: "criteria initialization failed",
+    )
+    monkeypatch.setattr(developer, "block_ticket", MagicMock())
+    monkeypatch.setattr(developer, "_prepare_blocked_triage", AsyncMock())
+
+    result = await developer._run_ticket_body(ctx, tmp_path, 0.0)
+
+    assert result.disposition == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_scope_refresh_failure_returns_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _context(
+        tmp_path,
+        completed_steps=["setup"],
+        worktree_path=tmp_path / "worktree",
+    )
+    _patch_body_prelude(monkeypatch)
+    monkeypatch.setattr(developer, "_resumed_basis_failure", lambda _ctx: None)
+    monkeypatch.setattr(
+        "booley.harness.setup.workspace.refresh_scope_guards",
+        MagicMock(side_effect=OSError("read-only")),
+    )
+    monkeypatch.setattr(developer, "fail_ticket", MagicMock())
+
+    result = await developer._run_ticket_body(ctx, tmp_path, 0.0)
+
+    assert result.disposition == "failed"
+
+
+@pytest.mark.asyncio
+async def test_worktree_cleanup_failure_returns_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _context(
+        tmp_path,
+        completed_steps=["setup"],
+        current_step="developer",
+        worktree_path=tmp_path / "worktree",
+    )
+    _patch_body_prelude(monkeypatch)
+    monkeypatch.setattr(developer, "_resumed_basis_failure", lambda _ctx: None)
+    monkeypatch.setattr(developer, "_deferred_criteria_failure", lambda _ctx: None)
+    monkeypatch.setattr("booley.harness.setup.workspace.refresh_scope_guards", MagicMock())
+    monkeypatch.setattr(
+        developer,
+        "_reset_worktree_if_dirty",
+        MagicMock(side_effect=OSError("cleanup failed")),
+    )
+    monkeypatch.setattr(developer, "fail_ticket", MagicMock())
+
+    result = await developer._run_ticket_body(ctx, tmp_path, 0.0)
+
+    assert result.disposition == "failed"

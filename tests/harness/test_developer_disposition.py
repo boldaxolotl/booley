@@ -153,9 +153,10 @@ class TestResolveTicketDisposition:
 
         mocks["prepare_review"].side_effect = prepare
         try:
-            await _resolve_ticket_disposition(
+            result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
             )
+            assert result.disposition == "review"
             assert mocks["handoff"].call_count == 1
             assert mocks["block"].call_count == 0
         finally:
@@ -172,11 +173,29 @@ class TestResolveTicketDisposition:
             package_path=tmp_path / "review-package.json",
         )
         try:
-            await _resolve_ticket_disposition(
+            result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
             )
+            assert result.disposition == "review"
             assert mocks["handoff"].call_count == 1
             assert mocks["block"].call_count == 0
+        finally:
+            _stop_all(patches)
+
+    @pytest.mark.asyncio
+    async def test_review_verification_failure_returns_blocked(self, tmp_path: Path):
+        from booley.ticket_board.review_lifecycle import ReviewPrepError
+
+        ctx = _make_ctx(tmp_path)
+        mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
+        mocks["verify_review"].side_effect = ReviewPrepError("changed")
+        try:
+            result = await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
+            )
+            assert result.disposition == "blocked"
+            mocks["block"].assert_called_once()
+            mocks["handoff"].assert_not_called()
         finally:
             _stop_all(patches)
 
@@ -189,9 +208,10 @@ class TestResolveTicketDisposition:
             "changed", "live review inputs changed concurrently"
         )
         try:
-            await _resolve_ticket_disposition(
+            result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
             )
+            assert result.disposition == "blocked"
             assert mocks["block"].call_count == 1
             assert (
                 mocks["block"]
@@ -221,11 +241,13 @@ class TestResolveTicketDisposition:
         ctx.on_success = on_success
         mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
         try:
-            await _resolve_ticket_disposition(
+            result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
             )
             assert mocks["handoff"].call_count == 1
             assert mocks["prepare_review"].await_count == expected_preparations
+            assert result is not None
+            assert result.disposition == on_success.destination
         finally:
             _stop_all(patches)
 
@@ -238,9 +260,10 @@ class TestResolveTicketDisposition:
         )
         mocks, patches = _patch_disposition_collaborators(verdict)
         try:
-            await _resolve_ticket_disposition(
+            result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
             )
+            assert result.disposition == "blocked"
             assert mocks["block"].call_count == 1
             assert mocks["handoff"].call_count == 0
             assert mocks["fail"].call_count == 0
@@ -257,14 +280,30 @@ class TestResolveTicketDisposition:
         )
         mocks, patches = _patch_disposition_collaborators(verdict)
         try:
-            await _resolve_ticket_disposition(
+            result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
             )
+            assert result.disposition == "failed"
             assert mocks["fail"].call_count == 1
             assert mocks["block"].call_count == 0
             assert mocks["handoff"].call_count == 0
             # Core invariant: failed verdict must NOT auto-archive the ticket.
             assert mocks["archive"].call_count == 0
+        finally:
+            _stop_all(patches)
+
+    @pytest.mark.asyncio
+    async def test_changed_baseline_returns_blocked(self, tmp_path: Path):
+        ctx = _make_ctx(tmp_path)
+        mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
+        mocks["basis"].return_value = True
+        try:
+            result = await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 2, _ENDPOINTS
+            )
+            assert result.disposition == "blocked"
+            mocks["prepare_review"].assert_not_awaited()
+            mocks["handoff"].assert_not_called()
         finally:
             _stop_all(patches)
 

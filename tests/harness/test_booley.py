@@ -2606,6 +2606,21 @@ class TestCheckFastFailure:
         # >=5s failures aren't "fast" -- normal post-run handling applies.
         assert tlr._check_fast_failure(self._args(), Path(), exit_code=2, elapsed=9.0) is None
 
+    def test_fast_handled_ticket_failure_bypasses_infrastructure_heuristic(self):
+        with (
+            patch.object(tlr, "get_ticket_counts") as mock_counts,
+            patch.object(tlr, "interruptible_sleep") as mock_sleep,
+        ):
+            action = tlr._check_fast_failure(
+                self._args(slug="my-ticket"),
+                Path(),
+                exit_code=1,
+                elapsed=0.2,
+            )
+        assert action is None
+        mock_counts.assert_not_called()
+        mock_sleep.assert_not_called()
+
     def test_slug_mode_fast_failure_aborts_without_race_recheck(self):
         # Slug mode: a fast failure is always infra -> abort, and we must NOT
         # consult ticket counts (our own pre-activation would read as a race).
@@ -2828,6 +2843,18 @@ class TestNamedTicketImplications:
             patch.object(tlr, "_log_attempt"),
             patch.object(tlr, "_run_harness", return_value=(1, 10.0)),
             patch.object(tlr, "_handle_post_run", return_value="next"),
+        ):
+            assert tlr._execute_one_ticket(args, tmp_path, "/venv/python", 1, {}) == (
+                "next_failed"
+            )
+
+    def test_fast_handled_failure_is_preserved(self, tmp_path):
+        args = self._parse(["run", "--ticket", "fix-crc"])
+        with (
+            patch.object(tlr, "_log_attempt"),
+            patch.object(tlr, "_run_harness", return_value=(1, 0.2)),
+            patch.object(tlr, "detect_subscription_limit", return_value=0),
+            patch.object(tlr, "handle_post_run_orphans"),
         ):
             assert tlr._execute_one_ticket(args, tmp_path, "/venv/python", 1, {}) == (
                 "next_failed"

@@ -2234,7 +2234,7 @@ def _check_fast_failure(
     elapsed: float,
 ) -> str | None:
     """Detect race conditions and infra errors on fast harness failures; returns action or None."""
-    if exit_code == 0 or elapsed >= 5.0:
+    if exit_code != 2 or elapsed >= 5.0:
         return None
     # The "race with another runner" heuristic only applies in queue-polling
     # mode. When a specific --ticket was requested, _run_harness pre-activates

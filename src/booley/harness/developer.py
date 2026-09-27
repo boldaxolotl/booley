@@ -4,9 +4,9 @@ Steps 00 (parse/validate) and 01 (setup) run as Python functions.
 All subsequent work is handled by the Developer Agent invoking Flows and Specialists
 against acceptance criteria defined in the ticket.
 
-EXIT INVARIANT: the ticket MUST be transitioned out of active/ before
-the developer stops -- either to review/ (success), blocked/, or
-archived/. Every exit path (normal completion, BlockingError, FatalError,
+EXIT INVARIANT: the Ticket MUST be transitioned out of active/ before
+the Developer Agent stops -- either to review/ or done/ (success), or blocked/.
+Every exit path (normal completion, BlockingError, FatalError,
 unexpected exception) upholds this via block_ticket() or fail_ticket().
 """
 
@@ -25,7 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from booley.criteria.state import (
     DevelopmentState,
@@ -115,20 +115,32 @@ RUN_RESULT_PREFIX = "BOOLEY_RUN_RESULT "
 
 @dataclass(frozen=True)
 class TicketRunResult:
-    """Stable command-line handoff emitted when a ticket enters review."""
+    """Stable command-line result for one handled Ticket run."""
 
     slug: str
-    review_package_path: Path
+    disposition: Literal["review", "done", "blocked", "failed"]
+    review_package_path: Path | None = None
     html_path: Path | None = None
-    disposition: str = "review"
-    version: int = 1
+    version: int = 2
+
+    def __post_init__(self) -> None:
+        has_review_artifacts = self.review_package_path is not None
+        if (self.disposition == "review") != has_review_artifacts:
+            raise ValueError(
+                "review results require a package path and non-review results "
+                "must not claim review artifacts"
+            )
+        if self.disposition != "review" and self.html_path is not None:
+            raise ValueError("non-review results must not claim review artifacts")
 
     def to_dict(self) -> dict[str, object]:
         return {
             "version": self.version,
             "slug": self.slug,
             "disposition": self.disposition,
-            "review_package_path": str(self.review_package_path),
+            "review_package_path": (
+                str(self.review_package_path) if self.review_package_path is not None else None
+            ),
             "html_path": str(self.html_path) if self.html_path is not None else None,
         }
 
@@ -139,6 +151,14 @@ class TicketRunResult:
             sort_keys=True,
             separators=(",", ":"),
         )
+
+
+def _ticket_run_result(
+    slug: str,
+    disposition: Literal["done", "blocked", "failed"],
+) -> TicketRunResult:
+    """Build a handled Ticket result without review artifacts."""
+    return TicketRunResult(slug=slug, disposition=disposition)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +235,7 @@ async def run_ticket(
     project_root: Path | None = None,
     *,
     save_transcripts: bool = True,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Execute the full developer flow for a ticket.
 
     Args:
@@ -230,7 +250,12 @@ async def run_ticket(
     if project_root is None:
         project_root = Path.cwd()
 
-    return await _run_with_console(ticket_path_or_slug, project_root, save_transcripts)
+    try:
+        return await _run_with_console(ticket_path_or_slug, project_root, save_transcripts)
+    except FatalError as exc:
+        if not exc.slug:
+            raise
+        return _ticket_run_result(exc.slug, "failed")
 
 
 async def _prepare_ticket(
@@ -356,7 +381,7 @@ async def _run_ticket_body(
     ctx: TicketContext,
     project_root: Path,
     exec_start: float,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Inner execution body -- separated so teardown_file_logging always runs."""
     logger.debug(
         "Execution started for %s (type=%s, branch=%s)", ctx.slug, ctx.ticket_type, ctx.branch
@@ -374,14 +399,14 @@ async def _run_ticket_body(
         setup_blocked = await _run_setup_step(ctx, project_root)
         if setup_blocked:
             await _prepare_blocked_triage(ctx, project_root)
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
 
     if resume_uses_existing_setup:
         basis_failure = _resumed_basis_failure(ctx)
         if basis_failure is not None:
             block_ticket(ctx, basis_failure, "setup")
             await _prepare_blocked_triage(ctx, project_root)
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
 
     # A blocked ticket may have received an expanded scope during triage while
     # retaining its worktree and completed setup marker. Refresh the persisted
@@ -398,13 +423,13 @@ async def _run_ticket_body(
             )
         except OSError as exc:
             fail_ticket(ctx, f"scope guard refresh failed: {exc}", "setup")
-            return None
+            return _ticket_run_result(ctx.slug, "failed")
 
     criteria_failure = _deferred_criteria_failure(ctx)
     if criteria_failure is not None:
         block_ticket(ctx, criteria_failure, "setup")
         await _prepare_blocked_triage(ctx, project_root)
-        return None
+        return _ticket_run_result(ctx.slug, "blocked")
 
     # Setup created the worktree -- refresh the click-link resolver so
     # post-setup file clicks resolve against the worktree copy with a
@@ -422,7 +447,7 @@ async def _run_ticket_body(
         fail_ticket(
             ctx, f"worktree cleanup failed: {type(e).__name__}: {e}", ctx.current_step or "setup"
         )
-        return None
+        return _ticket_run_result(ctx.slug, "failed")
 
     # ---- Developer Agent (criteria-based) ----
     result = await _run_developer_path(ctx, project_root)
@@ -441,7 +466,7 @@ async def _run_with_console(
     ticket_path_or_slug: str,
     project_root: Path,
     save_transcripts: bool,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Run the full ticket flow inside the Console TUI.
 
     The Textual app launches FIRST, with a placeholder header; Ticket Preflight
@@ -464,7 +489,7 @@ async def _run_with_console(
 
     worker_error: list[BaseException] = []
     harness_completed = False
-    ticket_result: TicketRunResult | None = None
+    ticket_results: list[TicketRunResult] = []
     ctx: TicketContext | None = None
     worker_failure_recorded = False
 
@@ -474,7 +499,7 @@ async def _run_with_console(
     app.on_lifecycle_error = record_lifecycle_error
 
     async def harness_work() -> None:
-        nonlocal ctx, harness_completed, ticket_result, worker_failure_recorded
+        nonlocal ctx, harness_completed, worker_failure_recorded
         exec_start = time.monotonic()
         try:
             app.post_message(SetupProgress("loading model/backend config..."))
@@ -501,7 +526,7 @@ async def _run_with_console(
                 # Setup is finished — we're now in the ticket-execution loop.
                 # Past this point MCP endpoint/Criteria/Agent events route normally.
                 app.transition_to(ConsolePhase.RUNNING)
-                ticket_result = await _run_ticket_body(ctx, project_root, exec_start)
+                ticket_results.append(await _run_ticket_body(ctx, project_root, exec_start))
                 harness_completed = True
             except BaseException as error:
                 if not isinstance(error, asyncio.CancelledError):
@@ -544,7 +569,9 @@ async def _run_with_console(
 
     if getattr(app, "_user_quit", False) and not harness_completed:
         raise UserQuitError("User quit Console TUI")
-    return ticket_result
+    if len(ticket_results) != 1:
+        raise RuntimeError("Harness completed without a Ticket run result")
+    return ticket_results[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1452,28 +1479,33 @@ def _verify_review_package(
 
 async def _handoff_accepted_ticket(
     ctx: TicketContext, project_root: Path, run_index: int
-) -> TicketRunResult | None:
-    """Complete an accepted Ticket handoff and return its review package."""
+) -> TicketRunResult:
+    """Complete an accepted Ticket handoff and return its run disposition."""
     from .colors import dim, green
 
     review_outcome = None
     if ctx.on_success.destination == "review":
         prepared = await _prepare_review_handoff(ctx, project_root, run_index)
         if prepared is None:
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
         terminal.raw(f"  {green('post-processing complete')} {dim('→ review')}")
         review_outcome = _verify_review_package(ctx, project_root, run_index)
         if review_outcome is None:
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
+        if review_outcome.package_path is None:
+            reason = "Review package unavailable before handoff"
+            block_ticket(ctx, reason, "post-processing", run_index=run_index)
+            return _ticket_run_result(ctx.slug, "blocked")
     else:
-        terminal.raw(f"  {green('all criteria met')} {dim('→ review')}")
+        terminal.raw(f"  {green('all criteria met')} {dim('→ done')}")
 
     ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
     ticket_cli.handoff(project_root, ctx.slug, **ownership)
-    if review_outcome is None or review_outcome.package_path is None:
-        return None
+    if review_outcome is None:
+        return _ticket_run_result(ctx.slug, "done")
     return TicketRunResult(
         slug=ctx.slug,
+        disposition="review",
         review_package_path=review_outcome.package_path,
         html_path=review_outcome.html_path,
     )
@@ -1485,10 +1517,10 @@ async def _resolve_ticket_disposition(
     project_root: Path,
     run_index: int,
     endpoint_catalog: CriterionEndpointCatalog,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Read final state, check criteria acceptance, and transition the ticket."""
     if _block_changed_ticket_baseline(ctx, run_index):
-        return None
+        return _ticket_run_result(ctx.slug, "blocked")
     from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
     from .colors import bold_red, yellow
@@ -1503,10 +1535,11 @@ async def _resolve_ticket_disposition(
     if verdict.disposition == "blocked":
         block_ticket(ctx, verdict.blocked_reason, "developer", run_index=run_index)
         terminal.raw(f"  {yellow('[BLOCK]')} {verdict.blocked_reason}")
-    elif verdict.disposition == "review":
+        return _ticket_run_result(ctx.slug, "blocked")
+    if verdict.disposition == "review":
         logger.info("All mandatory criteria met for %s", ctx.slug)
         return await _handoff_accepted_ticket(ctx, project_root, run_index)
-    elif verdict.disposition == "failed":
+    if verdict.disposition == "failed":
         fail_ticket(
             ctx,
             f"Developer Agent exited with {len(verdict.unmet_mandatory)} unmet criteria: "
@@ -1515,12 +1548,11 @@ async def _resolve_ticket_disposition(
             run_index=run_index,
         )
         terminal.raw(f"  {bold_red('[FAIL]')} {len(verdict.unmet_mandatory)} unmet criteria")
-    else:
-        raise ValueError(
-            f"Unknown criteria verdict disposition {verdict.disposition!r} for "
-            f"{ctx.slug} — expected one of: review, blocked, failed"
-        )
-    return None
+        return _ticket_run_result(ctx.slug, "failed")
+    raise ValueError(
+        f"Unknown criteria verdict disposition {verdict.disposition!r} for "
+        f"{ctx.slug} — expected one of: review, blocked, failed"
+    )
 
 
 def _block_changed_ticket_baseline(ctx: TicketContext, run_index: int) -> bool:
@@ -1641,7 +1673,7 @@ def _write_developer_prompt_snapshot(
 async def _run_developer_path(
     ctx: TicketContext,
     project_root: Path,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Run the developer agent for criteria-based tickets.
 
     Flow: detect crash recovery -> build prompt -> launch agent ->
@@ -1717,7 +1749,7 @@ async def _run_developer_path(
             budget,
         )
         if result is None:
-            return None
+            return _ticket_run_result(ctx.slug, "failed")
 
         await _drain_outstanding_ticket_jobs(ctx, budget)
 
@@ -1725,10 +1757,10 @@ async def _run_developer_path(
         budget.raise_if_exhausted()
 
         guardrail_blocked = _run_post_guardrails(ctx, state_path, run_index)
-        budget.raise_if_exhausted()
         if guardrail_blocked:
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
 
+        budget.raise_if_exhausted()
         hook_blocked = _run_post_developer_hook(
             ctx,
             state_path,
@@ -1736,9 +1768,8 @@ async def _run_developer_path(
             run_index=run_index,
             budget=budget,
         )
-        budget.raise_if_exhausted()
         if hook_blocked:
-            return None
+            return _ticket_run_result(ctx.slug, "blocked")
         return await run_with_developer_budget(
             _resolve_ticket_disposition(
                 ctx,
@@ -1763,6 +1794,7 @@ async def _run_developer_path(
             run_index=run_index,
             crashed=True,
         )
+        return _ticket_run_result(ctx.slug, "failed")
     finally:
         if budget is not None:
             budget.finish()

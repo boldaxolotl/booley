@@ -84,6 +84,36 @@ async def test_console_worker_surfaces_preflight_failure(tmp_path, monkeypatch):
     assert terminal.get_console_app() is None
 
 
+@pytest.mark.asyncio
+async def test_slug_bearing_intake_failure_returns_failed_result(tmp_path, monkeypatch):
+    from booley.harness.blocking import FatalError
+
+    monkeypatch.setattr(
+        developer,
+        "_run_with_console",
+        AsyncMock(side_effect=FatalError("invalid Ticket", slug="demo")),
+    )
+
+    result = await developer.run_ticket("demo", tmp_path)
+
+    assert result.slug == "demo"
+    assert result.disposition == "failed"
+
+
+@pytest.mark.asyncio
+async def test_intake_failure_without_slug_remains_infrastructure_error(tmp_path, monkeypatch):
+    from booley.harness.blocking import FatalError
+
+    monkeypatch.setattr(
+        developer,
+        "_run_with_console",
+        AsyncMock(side_effect=FatalError("project configuration unavailable")),
+    )
+
+    with pytest.raises(FatalError, match="project configuration unavailable"):
+        await developer.run_ticket("demo", tmp_path)
+
+
 def test_console_lifecycle_failure_returns_cli_error(tmp_path, monkeypatch):
     from booley.harness.console.app import ConsoleApp
 
@@ -101,7 +131,7 @@ def test_console_lifecycle_failure_returns_cli_error(tmp_path, monkeypatch):
     monkeypatch.setattr(developer, "_prepare_ticket", prepare)
     args = argparse.Namespace(ticket="demo", no_transcripts=True)
 
-    assert child._run_harness(args, tmp_path) == 1
+    assert child._run_harness(args, tmp_path) == 2
     prepare.assert_not_awaited()
     assert terminal.get_console_app() is None
     diagnostic = tmp_path / ".booley" / "project" / "logs" / "runner-diagnostics.log"

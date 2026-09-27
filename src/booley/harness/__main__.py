@@ -23,7 +23,7 @@ def main() -> int:
     project_root = Path(args.project_root) if args.project_root else _find_project_root()
     if project_root is None:
         print("ERROR: Could not find project root (no .git directory found)", file=sys.stderr)
-        return 1
+        return 2
 
     return _run_harness(args, project_root)
 
@@ -109,12 +109,16 @@ def _run_harness(args: argparse.Namespace, project_root: Path) -> int:
         return 2
     except Exception as e:
         logging.getLogger(__name__).critical("Harness failed: %s", e, exc_info=True)
-        return 1
-    if result is not None:
-        print(result.to_cli_line(), flush=True)
-        return 0
-    logging.getLogger(__name__).warning("Ticket run ended without a review result")
-    return 1
+        return 2
+    disposition = getattr(result, "disposition", None)
+    if result is None or disposition not in {"review", "done", "blocked", "failed"}:
+        logging.getLogger(__name__).critical(
+            "Harness returned invalid Ticket run disposition: %r",
+            disposition,
+        )
+        return 2
+    print(result.to_cli_line(), flush=True)
+    return 0 if disposition in {"review", "done"} else 1
 
 
 def _find_project_root() -> Path | None:

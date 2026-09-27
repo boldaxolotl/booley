@@ -828,16 +828,22 @@ editor (or run **Live Preview: Show Preview** from the Command Palette). The
 workflow does not emit a `command:` link because VS Code intentionally
 disables command URIs in untrusted chat-authored Markdown.
 
-After a ticket enters review, `booley run` emits one stable JSON record
-after the full-screen Console closes:
+After every handled Ticket run, `booley run` emits one stable JSON record after
+the full-screen Console closes:
 
 ```text
-BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":1}
+BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":2}
 ```
 
 Normal progress output may surround this line. Command-line clients should scan
-for the `BOOLEY_RUN_RESULT ` prefix; one record is emitted per review-bound
-ticket. `html_path` is `null` when no HTML explanation was produced.
+for the `BOOLEY_RUN_RESULT ` prefix and branch on `disposition`: `review` and
+`done` exit 0, while `blocked` and `failed` exit 1. Infrastructure failures exit
+2 without a result record. Version 2 uses `review_package_path` and `html_path`
+only for `review`; both are `null` for `done`, `blocked`, and `failed`.
+
+Automatic retry does not rewrite the outcome of the invocation that stopped. A
+failed invocation emits `failed` and contributes a nonzero aggregate exit even
+when Booley requeues the Ticket and a later invocation succeeds.
 
 **Ticket worktrees live under `.booley_project/worktrees/<slug>`, but they are registered by their in-container path.** Booley is container-only, so the project is `/work` from git's point of view and the registrations record `/work/.booley_project/worktrees/...`. On the host those paths don't exist, so `git worktree list` shows every live ticket worktree as `prunable`:
 

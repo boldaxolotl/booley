@@ -57,6 +57,7 @@ def _create_criteria_ticket(
     criteria_yaml: dict | None = None,
     ticket_type: str = "bugfix",
     sim_targets: list[str] | None = None,
+    destination: str = "review",
 ) -> Path:
     """Create a criteria-based ticket .md file in queue/.
 
@@ -90,7 +91,7 @@ def _create_criteria_ticket(
         "branch": "main",
         "scope": scope,
         "criteria": criteria_yaml,
-        "on_success": {"destination": "review", "merge": False, "cleanup": False},
+        "on_success": {"destination": destination, "merge": False, "cleanup": False},
         "priority": "high",
     }
     body = f"## Description\nE2E developer test: {slug}\n"
@@ -309,7 +310,7 @@ async def _run_developer_pipeline(
     for p in patches:
         p.start()
     try:
-        await run_ticket(
+        return await run_ticket(
             f".booley/project/tickets/board/queue/{slug}.md",
             project_root,
             save_transcripts=False,
@@ -366,7 +367,7 @@ class TestDeveloperSimplePass:
             state_updater=_set_all_met,
         )
 
-        asyncio.run(
+        result = asyncio.run(
             _run_developer_pipeline(
                 project_root,
                 slug,
@@ -379,6 +380,48 @@ class TestDeveloperSimplePass:
         assert _ticket_in_dir(project_root, slug, "review"), (
             "Ticket should have moved to review/ after all criteria met"
         )
+        assert result.disposition == "review"
+
+
+@pytest.mark.e2e
+class TestDeveloperDone:
+    """Accepted Ticket configured to complete without human review."""
+
+    SLUG = "e2e-orch-done"
+
+    def test_developer_done_returns_explicit_result(
+        self,
+        project_root,
+        worktree_factory,
+    ):
+        slug = self.SLUG
+        _create_criteria_ticket(project_root, slug, destination="done")
+        _ensure_run_log(project_root, slug)
+
+        def _set_all_met(state_path):
+            state = DevelopmentState.load(state_path)
+            for key in list(state.criteria.keys()):
+                state.set_criterion(key, True)
+            state.save()
+
+        result = asyncio.run(
+            _run_developer_pipeline(
+                project_root,
+                slug,
+                developer_mock=_make_developer_mock(
+                    project_root,
+                    slug,
+                    state_updater=_set_all_met,
+                ),
+                setup_bypass=make_setup_bypass(worktree_factory),
+            )
+        )
+
+        assert _ticket_in_dir(project_root, slug, "done")
+        assert result is not None
+        assert result.disposition == "done"
+        assert result.review_package_path is None
+        assert result.html_path is None
 
 
 @pytest.mark.e2e
@@ -421,7 +464,7 @@ class TestDeveloperPartialFail:
             state_updater=_set_partial,
         )
 
-        asyncio.run(
+        result = asyncio.run(
             _run_developer_pipeline(
                 project_root,
                 slug,
@@ -434,6 +477,7 @@ class TestDeveloperPartialFail:
         assert _ticket_in_dir(project_root, slug, "blocked"), (
             "Ticket should have moved to blocked/ with unmet criteria"
         )
+        assert result.disposition == "failed"
 
         # Verify state file still has the unmet criterion
         state = DevelopmentState.load(_state_path(project_root, slug))
@@ -474,7 +518,7 @@ class TestDeveloperBlocked:
             state_updater=_set_blocked,
         )
 
-        asyncio.run(
+        result = asyncio.run(
             _run_developer_pipeline(
                 project_root,
                 slug,
@@ -487,6 +531,7 @@ class TestDeveloperBlocked:
         assert _ticket_in_dir(project_root, slug, "blocked"), (
             "Ticket should have moved to blocked/ with _blocked_reason"
         )
+        assert result.disposition == "blocked"
 
 
 @pytest.mark.e2e
@@ -512,7 +557,7 @@ class TestDeveloperAgentTimeout:
             timed_out=True,
         )
 
-        asyncio.run(
+        result = asyncio.run(
             _run_developer_pipeline(
                 project_root,
                 slug,
@@ -525,6 +570,7 @@ class TestDeveloperAgentTimeout:
         assert _ticket_in_dir(project_root, slug, "blocked"), (
             "Timed-out ticket should have moved to blocked/"
         )
+        assert result.disposition == "failed"
 
 
 @pytest.mark.e2e
@@ -593,7 +639,7 @@ class TestDeveloperCrashRecovery:
 
         setup_bypass = make_setup_bypass(worktree_factory)
 
-        asyncio.run(
+        result = asyncio.run(
             _run_developer_pipeline(
                 project_root,
                 slug,
@@ -606,6 +652,7 @@ class TestDeveloperCrashRecovery:
         assert _ticket_in_dir(project_root, slug, "review"), (
             "Crash-recovered ticket should move to review/ when all criteria met"
         )
+        assert result.disposition == "review"
 
         # Verify the prompt included crash recovery context
         assert len(mock_agent.call_records) == 1
@@ -663,7 +710,7 @@ class TestDeveloperDirtyHandoffGuardrail:
         # the Harness must not synthesize one after the Agent exits.
         commit_mock = MagicMock(return_value=None)
 
-        asyncio.run(
+        result = asyncio.run(
             _run_developer_pipeline(
                 project_root,
                 slug,
@@ -681,6 +728,7 @@ class TestDeveloperDirtyHandoffGuardrail:
         assert _ticket_in_dir(project_root, slug, "blocked"), (
             "Run should block when the Developer Agent leaves uncommitted edits"
         )
+        assert result.disposition == "blocked"
 
 
 @pytest.mark.e2e

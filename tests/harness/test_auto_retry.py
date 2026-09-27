@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.harness import developer
 from booley.harness.auto_retry import (
     DEFAULT_MAX_ATTEMPTS,
     _crashes_path,
@@ -229,6 +230,28 @@ class TestMaybeAutoRetry:
         ops.ticket_status.side_effect = RuntimeError("board unavailable")
         record_crash(ctx.logs_dir, run_index=1, reason=STALL)
         assert maybe_auto_retry(ctx, tmp_path, 1) is False
+
+
+@pytest.mark.asyncio
+async def test_requeued_invocation_still_returns_failed(tmp_path, monkeypatch):
+    ctx = _make_ctx(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        developer,
+        "_detect_crash_recovery",
+        MagicMock(side_effect=RuntimeError("stream stalled")),
+    )
+    monkeypatch.setattr(developer, "record_crash", MagicMock())
+    monkeypatch.setattr(developer, "fail_ticket", MagicMock())
+    retry = MagicMock(return_value=True)
+    monkeypatch.setattr(developer, "maybe_auto_retry", retry)
+    triage = MagicMock()
+    monkeypatch.setattr(developer, "_prepare_blocked_triage", triage)
+
+    result = await developer._run_developer_path(ctx, tmp_path)
+
+    assert result.disposition == "failed"
+    retry.assert_called_once_with(ctx, tmp_path, 0)
+    triage.assert_not_called()
 
 
 # -- Configuration -----------------------------------------------------
