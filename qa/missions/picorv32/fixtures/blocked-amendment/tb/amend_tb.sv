@@ -12,6 +12,7 @@ module amend_tb;
       if (progress !== cycles[0]) $fatal(1, "progress mismatch");
     end
     $display("[SIM_CYCLES] amend_smoke %0d", cycles);
+    $display("ALL TESTS PASSED.");
     $finish;
   end
 endmodule
