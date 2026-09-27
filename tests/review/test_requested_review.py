@@ -342,6 +342,7 @@ def test_unaccepted_review_drift_is_not_stale_acceptance(blocked):
     ],
     indirect=True,
 )
+@pytest.mark.timeout(180)
 def test_stale_selected_accepted_review_uses_shared_approval_diagnostic(blocked, capsys):
     from booley.ticket_board.review_lifecycle import (
         approve_review_command,
