@@ -75,6 +75,7 @@ from booley.flows.target_test_suite import (
 )
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
 from booley.targets.catalog import TargetCatalog
@@ -1320,11 +1321,12 @@ replacement must differ, and every proposal must remain a single source edit.
                 specs, elapsed = self._invoke_creator(
                     prompt, resume=round_idx > 1, attempt=round_idx
                 )
-        except Exception as exc:
-            logger.exception("Creator invocation failed on round %d", round_idx)
+        except Exception as exc:  # noqa: BLE001 — normalize the creator-provider boundary
+            log_exception(logger, exc, summary=f"Creator invocation failed on round {round_idx}")
+            diagnostic_path = self._write_provider_diagnostic(exc, self._transcript_path())
             error = McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text=f"creator agent invocation failed: {exc}",
+                report_text=exception_report_text("mutation creator", exc, diagnostic_path),
             )
             return [], 0.0, error
         strays = self._revert_stray_tracked_edits(plan.work_dir, pre_dirty, keep=[])

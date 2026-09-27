@@ -69,7 +69,8 @@ if "claude_agent_sdk" not in sys.modules:
         },
     )
     _sdk.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
-    _sdk.ProcessError = type("ProcessError", (Exception,), {})
+    _sdk.ProcessError = type("ProcessError", (_sdk.ClaudeSDKError,), {})
+    _sdk.ResultError = type("ResultError", (_sdk.ProcessError,), {})
     _sdk.RateLimitEvent = type("RateLimitEvent", (), {})
     _sdk.ResultMessage = type(
         "ResultMessage",

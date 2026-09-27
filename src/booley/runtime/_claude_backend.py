@@ -59,6 +59,7 @@ from .agent_errors import (
     is_usage_limit,
 )
 from .developer_budget import DeveloperBudget, run_with_developer_budget
+from .exception_diagnostics import log_exception, provider_exception_message
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
@@ -864,7 +865,6 @@ def _handle_stream_exception(
             transcript_path=transcript_path,
         )
         raise exc
-
     # intentionally broad: SDK can raise arbitrary exceptions
     if got_result and isinstance(exc, _SDK_TEARDOWN_EXCEPTIONS):
         logger.debug(
@@ -882,14 +882,15 @@ def _handle_stream_exception(
         attempt=attempt,
         transcript_path=transcript_path,
     )
-    if is_usage_limit(str(exc)):
-        raise UsageLimitError(str(exc), provider="claude") from exc
-    if is_context_exhausted(str(exc)):
-        raise ContextExhaustedError(str(exc), provider="claude") from exc
-    if _is_transient_error(exc):
-        logger.warning("Transient API error: %s", exc)
-        raise TransientAPIError(str(exc)) from exc
-    logger.error("Agent call failed: %s", exc, exc_info=True)
+    provider_message = provider_exception_message(exc)
+    if is_usage_limit(provider_message):
+        raise UsageLimitError(provider_message, provider="claude") from exc
+    if is_context_exhausted(provider_message):
+        raise ContextExhaustedError(provider_message, provider="claude") from exc
+    if _is_transient_error(RuntimeError(provider_message)):
+        logger.warning("Transient API error: %s", provider_message)
+        raise TransientAPIError(provider_message) from exc
+    log_exception(logger, exc, summary="Agent call failed")
     raise exc
 
 
