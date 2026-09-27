@@ -207,6 +207,74 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
     assert "different Board Ticket generation" in capsys.readouterr().err
 
 
+def test_restoring_frozen_heads_resumes_later_snapshot_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.ticket_board.acceptance_diagnostics import StaleAcceptanceError
+    from booley.ticket_board.acceptance_ledger import AcceptanceLedgerError
+
+    tio = _review_tio(tmp_path)
+    basis = tio.load_basis("ticket")
+    frozen = {"outer": "a" * 40}
+    snapshot = SimpleNamespace(
+        ticket_identity=basis.ticket_identity(),
+        participant_heads=frozen,
+    )
+    live_heads = iter([{"outer": "c" * 40}, frozen])
+    materialized: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "booley.ticket_board.acceptance_ledger.validate_review_package_binding",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "booley.ticket_board.acceptance_journal.completion_basis_sources",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ticket_baseline,
+        "validate_current_basis_refs",
+        lambda *_args: next(live_heads),
+    )
+    monkeypatch.setattr(ticket_baseline, "worktree_for_ref", lambda *_args: tmp_path)
+
+    def materialize(_root, _basis, destination, sources):
+        materialized.append(sources)
+        return destination
+
+    monkeypatch.setattr(ticket_baseline, "materialize_ticket_commits", materialize)
+    monkeypatch.setattr(ticket_baseline, "assert_live_inputs_unchanged", lambda *_args: None)
+    monkeypatch.setattr(
+        operations,
+        "_prepare_materialized_basis_view",
+        lambda *_args: ["latent selector drift"],
+    )
+
+    with pytest.raises(StaleAcceptanceError):
+        operations._validate_accepted_snapshot(tio, "ticket", tmp_path, snapshot)
+    assert materialized == []
+    with pytest.raises(AcceptanceLedgerError, match="latent selector drift"):
+        operations._validate_accepted_snapshot(tio, "ticket", tmp_path, snapshot)
+    assert materialized == [frozen]
+
+
+def test_done_stale_acceptance_guidance_does_not_offer_review_reset(tmp_path: Path) -> None:
+    from booley.ticket_board.acceptance_diagnostics import (
+        ParticipantHeadLocation,
+        compare_accepted_heads,
+        format_stale_acceptance,
+    )
+
+    drift = compare_accepted_heads(
+        {"outer": "a" * 40},
+        {"outer": "b" * 40},
+        [ParticipantHeadLocation("outer", "refs/heads/ticket", tmp_path)],
+    )
+    assert drift is not None
+    message = format_stale_acceptance("demo", drift, status="done")
+    assert "Acceptance Journal" in message
+    assert "booley board reset" not in message
+
+
 def test_handoff_basis_heads_validates_materialized_composite(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -267,7 +335,7 @@ def test_completion_acceptance_reports_unreadable_corrupt_and_valid_snapshots(
     tio = _review_tio(tmp_path)
 
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
-    assert "unreadable" in capsys.readouterr().err
+    assert "corrupt" in capsys.readouterr().err
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
     assert "broken binding" in capsys.readouterr().err
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is True

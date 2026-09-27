@@ -14,6 +14,12 @@ from booley.criteria.state import DevelopmentState
 from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.ticket_board.acceptance_diagnostics import (
+    StaleAcceptanceError,
+    compare_accepted_heads,
+    format_stale_acceptance,
+    participant_head_locations,
+)
 from booley.ticket_board.acceptance_ledger import (
     bind_review_package,
     freeze_acceptance,
@@ -371,13 +377,35 @@ def _validate_regeneration(
     if action != "regenerate":
         return
     assert ctx.inspection is not None
+    accepted = read_acceptance(tio.logs_dir / slug)
+    if accepted.kind == "accepted":
+        if accepted.snapshot is None:
+            raise ReviewEntryError("Criteria Satisfaction Record is corrupt: missing snapshot")
+        basis = tio.load_basis(slug)
+        worktrees = {"outer": ctx.worktree}
+        if ctx.project_repository is not None:
+            worktrees["project"] = ctx.project_repository.worktree
+        locations = participant_head_locations(
+            ((row.role, row.ticket_ref) for row in basis.participants),
+            worktrees,
+        )
+        drift = compare_accepted_heads(
+            accepted.snapshot.participant_heads,
+            ctx.inspection["heads"],
+            locations,
+        )
+        if drift is not None:
+            raise StaleAcceptanceError(drift)
+        if prior is None or prior["state"] != ctx.inspection["state"]:
+            raise ReviewEntryError(
+                "accepted review inspection disagrees with the Criteria Satisfaction Record"
+            )
+        return
     if (
         prior is None
         or prior["heads"] != ctx.inspection["heads"]
         or prior["state"] != ctx.inspection["state"]
     ):
-        if read_acceptance(tio.logs_dir / slug).kind == "accepted":
-            raise ReviewEntryError("accepted review inputs changed; use acceptance recovery")
         raise ReviewEntryError("inspection changed; use board review to select new inputs")
 
 
@@ -457,7 +485,12 @@ async def request_review_command(
         operation = _claim(tio, slug, action, reason, repair)
         return await _generate(tio, slug, operation)
     except Exception as exc:  # noqa: BLE001 — stable public command outcome
-        return prep.ReviewPrepOutcome("failed", str(exc))
+        message = (
+            format_stale_acceptance(slug, exc.drift, status="review")
+            if isinstance(exc, StaleAcceptanceError)
+            else str(exc)
+        )
+        return prep.ReviewPrepOutcome("failed", message)
     finally:
         try:
             pending = read_json(operation_path(tio.logs_dir / slug))
@@ -471,6 +504,19 @@ def _selected_context(tio: TicketIO, slug: str) -> prep.ReviewPrepContext:
     row = read_entry(tio.logs_dir / slug)
     if row is None:
         raise ReviewEntryError("no selected review; run board review first")
+    accepted = read_acceptance(tio.logs_dir / slug)
+    if accepted.kind == "corrupt":
+        raise ReviewEntryError(f"Criteria Satisfaction Record is corrupt: {accepted.reason}")
+    if accepted.kind == "accepted":
+        if accepted.snapshot is None:
+            raise ReviewEntryError(
+                "Criteria Satisfaction Record is corrupt: accepted result has no snapshot"
+            )
+        if row["heads"] != accepted.snapshot.participant_heads:
+            raise ReviewEntryError(
+                "selected review package is corrupt: heads disagree with the "
+                "Criteria Satisfaction Record"
+            )
     ctx = prep._resolve_context(
         tio._project_root,
         slug,
@@ -489,8 +535,12 @@ def _require_selected_package(tio: TicketIO, ctx: prep.ReviewPrepContext) -> Non
         _check_capture(tio, ctx, row["capture_sha"])
     except prep.ReviewPrepConcurrentChangeError as exc:
         accepted = read_acceptance(ctx.log_dir)
-        guidance = "acceptance recovery" if accepted.kind == "accepted" else "board review"
-        raise ReviewEntryError(f"selected review inputs changed; use {guidance}") from exc
+        if accepted.kind == "accepted":
+            raise ReviewEntryError(
+                "selected accepted-review inputs changed without participant-head drift; "
+                "inspect the Criteria Satisfaction Record and bound package integrity"
+            ) from exc
+        raise ReviewEntryError("selected review inputs changed; use board review") from exc
     manifest = prep._read_manifest(ctx)
     _prompt, prompt_sha = prep._review_prompt(ctx)
     if prep._fresh_outcome(ctx, manifest, prompt_sha, row["capture_sha"]) is None:
@@ -513,6 +563,24 @@ def _approve_done_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_cleanup
     return True
 
 
+def _recover_for_approval(tio: TicketIO, slug: str) -> None:
+    """Translate interrupted stale publication into the public approval error."""
+    try:
+        _recover(tio, slug)
+    except StaleAcceptanceError as exc:
+        raise ReviewEntryError(format_stale_acceptance(slug, exc.drift, status="review")) from exc
+
+
+def _selected_approval_context(tio: TicketIO, slug: str) -> prep.ReviewPrepContext:
+    """Resolve and validate the selected package for public approval."""
+    try:
+        ctx = _selected_context(tio, slug)
+    except StaleAcceptanceError as exc:
+        raise ReviewEntryError(format_stale_acceptance(slug, exc.drift, status="review")) from exc
+    _require_selected_package(tio, ctx)
+    return ctx
+
+
 def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_cleanup: bool) -> bool:
     """Publish acceptance for a selected review and complete the Ticket."""
     from .operations import _completion_context, op_complete
@@ -522,7 +590,7 @@ def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_clean
         return False
     if not completion[1].merge and tio.load_basis(slug).target_plan is not None:
         raise ReviewEntryError("Target Plan acceptance requires merge")
-    _recover(tio, slug)
+    _recover_for_approval(tio, slug)
     with tio._ticket_lock(slug, review_operation=True):
         assert_idle(tio.logs_dir / slug)
         _quiescent(tio, slug)
@@ -536,8 +604,7 @@ def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_clean
             raise ReviewEntryError(f"Criteria Satisfaction Record is corrupt: {accepted.reason}")
         selected = read_entry(log_dir)
         if selected is not None or accepted.kind != "accepted":
-            ctx = _selected_context(tio, slug)
-            _require_selected_package(tio, ctx)
+            ctx = _selected_approval_context(tio, slug)
         if accepted.kind == "unavailable":
             _acceptance_ready(tio, ctx)
             _require_selected_package(tio, ctx)
@@ -571,7 +638,7 @@ def _verified_accepted_handoff(
     )
     if snapshot is None:
         return prep.ReviewPrepOutcome(
-            "failed", "Criteria Satisfaction Record is unreadable; use acceptance recovery"
+            "failed", "Criteria Satisfaction Record is corrupt: accepted result has no snapshot"
         )
     binding = tio.logs_dir / slug / "acceptance" / "review-package.json"
     manifest = tio.logs_dir / slug / ".runtime" / "triage-prep" / "manifest.json"
@@ -582,6 +649,8 @@ def _verified_accepted_handoff(
         outcome = prep.verify_review_handoff(
             project_root, slug, locked_basis=tio._load_basis_unlocked(slug)
         )
+    except StaleAcceptanceError:
+        raise
     except (AcceptanceLedgerError, prep.ReviewPrepError, OSError, ValueError):
         return prep.ReviewPrepOutcome("accepted", guidance)
     return replace(outcome, message=guidance)
@@ -612,6 +681,10 @@ def _accepted_unselected_handoff(
             if accepted.kind != "accepted" or read_entry(tio.logs_dir / slug) is not None:
                 return None
             return _verified_accepted_handoff(project_root, slug, tio, accepted.snapshot)
+    except StaleAcceptanceError as exc:
+        return prep.ReviewPrepOutcome(
+            "failed", format_stale_acceptance(slug, exc.drift, status="review")
+        )
     except (
         ReviewEntryError,
         prep.ReviewPrepError,
@@ -619,7 +692,7 @@ def _accepted_unselected_handoff(
         OSError,
         ValueError,
     ) as exc:
-        return prep.ReviewPrepOutcome("failed", f"{exc}; use acceptance recovery")
+        return prep.ReviewPrepOutcome("failed", str(exc))
 
 
 def _accepted_unselected_handoff_for_ticket(
@@ -659,6 +732,10 @@ def _current_review_package(tio: TicketIO, slug: str) -> prep.ReviewPrepOutcome 
             assert manifest is not None
             _prompt, prompt_sha = prep._review_prompt(ctx)
             return prep._fresh_outcome(ctx, manifest, prompt_sha, ctx.inspection["capture_sha"])
+    except StaleAcceptanceError as exc:
+        return prep.ReviewPrepOutcome(
+            "failed", format_stale_acceptance(slug, exc.drift, status="review")
+        )
     except (ReviewEntryError, prep.ReviewPrepError, OSError, ValueError):
         return None
 

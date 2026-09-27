@@ -51,6 +51,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- A commit after review acceptance is now reported as stale acceptance, with
+  the frozen and live heads and the real exits (restore the accepted heads or
+  reset), instead of as a corrupt review binding. `board show` renders the
+  frozen briefing with a stale marker instead of failing. ([#775](https://github.com/boldaxolotl/Booley/issues/775))
 - Native-coverage Simulation now runs Pre-Sim Commands before every selected
   test process, including one-test Cocotb batches. It rejects stale staged
   inputs and hook mutations of authenticated compile, simulator, and coverage
