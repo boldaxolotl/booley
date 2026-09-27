@@ -490,6 +490,48 @@ def test_interactive_coverage_criterion_does_not_mutate_or_save_state(tmp_path, 
     assert state_path.stat().st_mtime_ns == before_mtime
 
 
+def test_projection_publication_failure_returns_structured_report_with_target_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state_path, initial_state = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", ticket_identity=identity)
+
+    def fail_projection(*_args, **_kwargs) -> None:
+        raise OSError(5, "injected projection publication failure")
+
+    monkeypatch.setattr(
+        "booley.flows.sim.acceptance.write_compatibility_projection", fail_projection
+    )
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options: _SplitMetricsExecution()
+    ).execute(
+        SimRequest(
+            target="sim_custom",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        ),
+        adapter=adapter,
+    )
+
+    assert result.exit_code == 2
+    assert result.outcome.detail["targets"]["sim_custom"]["simulation"] == "pass"
+    assert result.outcome.detail["completion_error"]["operation"] == (
+        "record acceptance and projections"
+    )
+    acceptance = result.outcome.detail["acceptance"]
+    assert acceptance["status"] == "partial"
+    assert acceptance["targets"][0]["committed"] is True
+    assert acceptance["targets"][0]["transaction_id"]
+    report = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
+    assert report["detail"] == result.outcome.detail
+    assert state_path.read_bytes() != initial_state
+    assert len(DevelopmentState.load(state_path).acceptance_transactions) == 1
+    assert not (tmp_path / "reports/sim/1/targets/sim_custom/simulation.json").exists()
+    assert "Traceback" not in capsys.readouterr().err
+
+
 def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

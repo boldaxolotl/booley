@@ -265,6 +265,16 @@ preserves same-root resume references. Copying only a resume invocation leaves i
 immutable Simulation Campaign identity, digest, and external relative path, but
 not the external artifact bytes.
 
+Completion infrastructure failures return exit code 2 and add
+`detail.completion_error` with `operation`, exception `type`, a length-limited
+`message`, and `path` when known. Existing `detail.targets`, Campaign facts,
+artifacts, and the underlying Criterion verdict remain intact. If a later
+recovery attempt also fails, it is appended to `detail.completion_errors` without
+replacing the first cause. `detail.acceptance` records any per-Target acceptance
+dispositions completed before a later projection failure. Report publication is
+best effort when the destination itself remains unwritable; the returned outcome
+and stderr diagnosis still contain the failure without a traceback.
+
 Structured campaign output reports `grade`, `complete`,
 aggregate `observation_counts`, and a maximum-32 `observations` preview. Every
 preview entry retains `test`, `execution`, `functional`, `assertions`,

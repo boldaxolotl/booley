@@ -128,7 +128,7 @@ def test_report_failure_is_returned_on_the_final_adapted_outcome(tmp_path: Path)
     assert result.outcome.detail["nested"] == {"fact": "kept"}
     completion_error = result.outcome.detail["completion_error"]
     assert {key: completion_error[key] for key in ("operation", "type", "path")} == {
-        "operation": "persist endpoint completion",
+        "operation": "publish report.json",
         "type": "OSError",
         "path": str(tmp_path / "reports/test_endpoint/1/report.json"),
     }
@@ -138,6 +138,32 @@ def test_report_failure_is_returned_on_the_final_adapted_outcome(tmp_path: Path)
     )
     assert report["detail"] == result.outcome.detail
     assert not (tmp_path / "reports/test_endpoint/2").exists()
+
+
+def test_persistent_report_failure_preserves_primary_diagnosis(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class FailingMcpTool(ConcreteMcpTool):
+        writes = 0
+
+        def _run(self) -> EndpointOutcome:
+            return EndpointOutcome(detail={"fact": "kept"}, report_text="PASS")
+
+        def write_report(self, result: EndpointOutcome) -> Path | None:
+            self.writes += 1
+            path = self.reserve_invocation_dir()
+            assert path is not None
+            raise OSError(errno.EIO, f"publication failure {self.writes}", path / "report.json")
+
+    endpoint = FailingMcpTool()
+    result = endpoint.execute_cli(["--report-dir", str(tmp_path / "reports")])
+
+    assert result.exit_code == EXIT_ERROR
+    assert endpoint.writes == 2
+    assert result.outcome.detail["fact"] == "kept"
+    assert "publication failure 1" in result.outcome.detail["completion_error"]["message"]
+    assert "publication failure 2" in result.outcome.detail["completion_errors"][0]["message"]
+    assert "Traceback" not in capsys.readouterr().err
 
 
 def test_finalize_failure_propagates_without_persisting_replacement_result() -> None:

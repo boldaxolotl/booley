@@ -21,6 +21,7 @@ EXIT_ERROR = 2
 EXIT_CANCELLED = 130
 
 logger = logging.getLogger(__name__)
+_MAX_COMPLETION_MESSAGE_CHARS = 500
 
 
 @dataclass
@@ -73,19 +74,26 @@ def normalize_completion_error(
         filename = exc.filename
         if isinstance(filename, (str, os.PathLike)):
             error_path = filename
-    completion_error = {
+    message = str(exc)
+    if len(message) > _MAX_COMPLETION_MESSAGE_CHARS:
+        message = f"{message[: _MAX_COMPLETION_MESSAGE_CHARS - 1]}…"
+    completion_error: dict[str, str] = {
         "operation": operation,
         "type": type(exc).__name__,
-        "message": str(exc),
+        "message": message,
     }
     if error_path is not None:
         completion_error["path"] = os.fspath(error_path)
     outcome.exit_code = EXIT_ERROR
-    outcome.criterion_key = ""
-    outcome.criterion_met = False
     outcome.detail = dict(outcome.detail)
-    outcome.detail["completion_error"] = completion_error
-    diagnosis = f"Completion failure ({operation}): {type(exc).__name__}: {exc}"
+    primary = outcome.detail.get("completion_error")
+    if isinstance(primary, dict):
+        secondary = list(outcome.detail.get("completion_errors", []))
+        secondary.append(completion_error)
+        outcome.detail["completion_errors"] = secondary
+    else:
+        outcome.detail["completion_error"] = completion_error
+    diagnosis = f"Completion failure ({operation}): {type(exc).__name__}: {message}"
     outcome.report_text = "\n".join(filter(None, (outcome.report_text, diagnosis)))
     return outcome
 

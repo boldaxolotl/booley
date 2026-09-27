@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -423,7 +424,11 @@ def record_acceptance(
         handler = getattr(getattr(endpoint, "flow", None), "record_campaign_acceptance", None)
         if not callable(handler):
             raise RuntimeError("campaign outcomes have no Flow-owned acceptance handler")
-        handler(campaign_outcomes)
+        try:
+            handler(campaign_outcomes)
+        except Exception:
+            _retain_partial_campaign_acceptance(endpoint, outcome, campaign_outcomes)
+            raise
         return
     result = endpoint._adapt_outcome(outcome)
     if endpoint._state is not None and endpoint._state._file_path is not None:
@@ -448,3 +453,29 @@ def record_acceptance(
     criteria_set = [result.criterion_key] if result.criterion_key else []
     criteria_set.extend(f"~{key}" for key in reset_keys)
     endpoint._pending_criteria_set = tuple(criteria_set)
+
+
+def _retain_partial_campaign_acceptance(
+    endpoint: EndpointState,
+    outcome: EndpointOutcome,
+    campaign_outcomes: tuple[object, ...],
+) -> None:
+    """Expose durable per-Target acceptance completed before projection failed."""
+    flow = getattr(endpoint, "flow", endpoint)
+    context = getattr(flow, "context", flow)
+    accepted = tuple(getattr(context, "_simulation_acceptance_outcomes", ()))
+    entries: list[dict[str, object]] = []
+    for campaign, disposition in zip(campaign_outcomes, accepted, strict=False):
+        target = getattr(campaign, "target", {})
+        selector = target.get("selector", "") if isinstance(target, Mapping) else ""
+        entries.append(
+            {
+                "target": str(selector),
+                "committed": bool(getattr(disposition, "committed", False)),
+                "transaction_id": getattr(disposition, "transaction_id", None),
+                "reason": str(getattr(disposition, "reason", "unknown")),
+            }
+        )
+    if entries:
+        outcome.detail = dict(outcome.detail)
+        outcome.detail["acceptance"] = {"status": "partial", "targets": entries}

@@ -76,7 +76,12 @@ class _Endpoint:
         if self.fail:
             self.events.append("normalize-error")
             return EndpointOutcome(exit_code=EXIT_ERROR)
-        return EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="ok")
+        return EndpointOutcome(
+            exit_code=EXIT_SUCCESS,
+            criterion_key="sim_pass_demo" if self.acceptance_failure else "",
+            criterion_met=self.acceptance_failure,
+            report_text="ok",
+        )
 
     def finish_execution(
         self,
@@ -178,8 +183,8 @@ def test_acceptance_failure_runs_non_persisting_finish_and_releases_admission() 
     result = execute_endpoint(endpoint, "prepared")
 
     assert result.exit_code == EXIT_ERROR
-    assert result.outcome.criterion_key == ""
-    assert result.outcome.criterion_met is False
+    assert result.outcome.criterion_key == "sim_pass_demo"
+    assert result.outcome.criterion_met is True
     assert result.outcome.detail["completion_error"] == {
         "operation": "record acceptance and projections",
         "type": "RuntimeError",

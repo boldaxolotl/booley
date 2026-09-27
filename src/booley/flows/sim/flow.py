@@ -2177,7 +2177,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 detail=_campaign_recovery_detail(observed),
             )
         try:
-            outcome = self._execute_validated_resume(validated, invocation, admission)
+            outcome, progress_error = self._execute_validated_resume(
+                validated, invocation, admission
+            )
         except SimulationCampaignCancellationError as exc:
             return self._campaign_cancelled_outcome(
                 exc,
@@ -2194,6 +2196,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         result = self._campaign_endpoint_outcome([outcome])
         result.detail.update(_campaign_recovery_detail(outcome.recovery))
+        if progress_error is not None:
+            normalize_completion_error(
+                result,
+                progress_error,
+                "publish coverage progress",
+                path=invocation / "progress.json",
+            )
         return result
 
     def _execute_validated_resume(
@@ -2201,7 +2210,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         validated: ValidatedResumeManifest,
         invocation: Path,
         admission: AdmissionContext,
-    ) -> CampaignOutcome:
+    ) -> tuple[CampaignOutcome, Exception | None]:
         items = cast(tuple[Mapping[str, object], ...], validated.manifest.document["work_items"])
         coverage_plan = (
             self._resume_coverage_target_plan(validated)
@@ -2214,25 +2223,35 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else None
         )
         if progress is None:
-            return self._run_validated_resume_campaign(
-                validated, invocation, admission, coverage_plan
+            return (
+                self._run_validated_resume_campaign(
+                    validated, invocation, admission, coverage_plan
+                ),
+                None,
             )
         lifecycle = ProgressLifecycle(
             lambda phase: progress.checkpoint(complete=True, phase=phase)
         )
-        with lifecycle:
-            progress.checkpoint()
-            outcome = self._run_validated_resume_campaign(
-                validated, invocation, admission, coverage_plan
-            )
-            _checkpoint_coverage_campaign(progress, outcome)
-            supersede_progress(
-                validated.path.parents[3] / "progress.json",
-                new_invocation=int(invocation.name),
-                new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-            )
-            lifecycle.complete()
-            return outcome
+        outcome: CampaignOutcome | None = None
+        try:
+            with lifecycle:
+                progress.checkpoint()
+                outcome = self._run_validated_resume_campaign(
+                    validated, invocation, admission, coverage_plan
+                )
+                _checkpoint_coverage_campaign(progress, outcome)
+                supersede_progress(
+                    validated.path.parents[3] / "progress.json",
+                    new_invocation=int(invocation.name),
+                    new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+                )
+                lifecycle.complete()
+                return outcome, None
+        except ProgressPublicationError as exc:
+            if outcome is None:
+                raise
+            failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+            return outcome, failure
 
     def _run_validated_resume_campaign(
         self,
@@ -2527,7 +2546,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 progress.checkpoint()
                 campaign, requests = self._coverage_campaign_session(admission, invocation)
                 result = self._execute_coverage_campaign_requests(campaign, requests, progress)
-                if len(progress.outcomes) == len(progress.targets):
+                if result.exit_code != EXIT_ERROR and len(progress.outcomes) == len(
+                    progress.targets
+                ):
                     lifecycle.complete()
                 return result
         except (OSError, ValueError, RuntimeError) as exc:
@@ -2607,19 +2628,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             except (OSError, ValueError, RuntimeError) as exc:
                 return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
             outcomes.append(outcome)
-            _retain_coverage_campaign(progress, outcome)
+            try:
+                _retain_coverage_campaign(progress, outcome)
+            except (OSError, ValueError) as exc:
+                return self._coverage_campaign_failure(
+                    outcomes[:-1], requests, index, request, exc
+                )
             try:
                 progress.checkpoint()
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 result = self._campaign_endpoint_outcome(outcomes)
                 result.detail = dict(result.detail)
                 result.detail["pending_targets"] = [
-                    str(
-                        cast(Mapping[str, object], item.plan.manifest.document["target"])[
-                            "selector"
-                        ]
-                    )
-                    for item in requests[index + 1 :]
+                    _coverage_request_selector(item) for item in requests[index + 1 :]
                 ]
                 return normalize_completion_error(
                     result,
@@ -2856,6 +2877,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, targets, test_names_map, total_start, resolution_s
     ) -> EndpointOutcome:
         results: list[TargetResult] = []
+        result: EndpointOutcome | None = None
         lifecycle = ProgressLifecycle(
             lambda phase: self._write_progress_report(targets, results, phase=phase, complete=True)
         )
@@ -2876,6 +2898,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 lifecycle.complete()
                 return result
         except ProgressPublicationError as exc:
+            if result is not None:
+                failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+                return normalize_completion_error(
+                    result,
+                    failure,
+                    "publish simulation progress",
+                    path=self.context._reserved_invocation_dir / "progress.json"
+                    if self.context._reserved_invocation_dir is not None
+                    else None,
+                )
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 detail={"progress_error": str(exc)},
@@ -2985,6 +3017,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             publication_checkpoint=self._campaign_publication_checkpoint,
         )
         outcomes: list[CampaignOutcome] = []
+        result: EndpointOutcome | None = None
         lifecycle = ProgressLifecycle(
             lambda phase: self._write_campaign_progress(
                 targets, outcomes, phase=phase, complete=True
@@ -3017,6 +3050,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         except SimulationCampaignCancellationError as exc:
             return self._campaign_cancelled_outcome(exc)
         except (OSError, ValueError, RuntimeError) as exc:
+            if result is not None and isinstance(exc, ProgressPublicationError):
+                failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+                return normalize_completion_error(
+                    result,
+                    failure,
+                    "publish simulation progress",
+                    path=invocation / "progress.json",
+                )
             detail: dict[str, object] = (
                 {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
             )
@@ -3571,6 +3612,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return preflight
         targets = preflight
         results: list[ElabOnlyTargetResult] = []
+        result: EndpointOutcome | None = None
         self._elab_progress_results = results
         lifecycle = ProgressLifecycle(
             lambda phase: self._write_elab_only_progress(
@@ -3603,6 +3645,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 lifecycle.complete()
                 return result
         except ProgressPublicationError as exc:
+            if result is not None:
+                failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+                invocation = self.context._reserved_invocation_dir
+                return normalize_completion_error(
+                    result,
+                    failure,
+                    "publish elaboration progress",
+                    path=invocation / "progress.json" if invocation is not None else None,
+                )
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 detail={"progress_error": str(exc)},

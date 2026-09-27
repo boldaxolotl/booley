@@ -76,8 +76,10 @@ Every agent-facing call follows the same shape:
    mutable state/report persistence, then releases admission. In Ticket Mode,
    normalized Criterion changes are appended before state is saved; Interactive
    Mode has no persistent Criterion evidence. If final acceptance recording
-   fails, final mutable persistence is skipped while terminal reporting and
-   admission cleanup still run. An append failure during an in-run Criterion
+   fails, the coordinator returns exit 2, adds a structured `completion_error`,
+   preserves existing result and Target facts, skips final mutable persistence,
+   and makes one bounded recovery-report attempt before admission cleanup. Later
+   recovery failures do not overwrite the first diagnosis. An append failure during an in-run Criterion
    update instead follows the invocation error path; see the failure distinctions
    in [Built-in Flow execution](FLOW-EXECUTION.md).
 

@@ -313,6 +313,8 @@ def record_campaign_acceptance(
         accepted = reconciler.reconcile(item, context)
         acceptances.append(accepted)
         keys.extend(change.key for change in accepted.changes)
+        endpoint._simulation_acceptance_outcomes = tuple(acceptances)
+        endpoint._pending_criteria_set = tuple(keys)
         complete = accepted.committed or accepted.reason in {
             "no_criteria",
             "no_applicable_criteria",
@@ -320,8 +322,6 @@ def record_campaign_acceptance(
         projection = _campaign_projection(item)
         origin = item.manifest_path.parents[1] / "simulation.json"
         write_compatibility_projection(origin, projection, acceptance_committed=complete)
-    endpoint._simulation_acceptance_outcomes = tuple(acceptances)
-    endpoint._pending_criteria_set = tuple(keys)
 
 
 def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
