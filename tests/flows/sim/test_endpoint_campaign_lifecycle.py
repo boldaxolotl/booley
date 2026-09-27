@@ -153,10 +153,12 @@ def test_all_campaigns_survive_terminal_progress_failure(
     requests = [_request("first"), _request("second")]
 
     progress = SimpleNamespace(invocation_dir=tmp_path, targets=("first", "second"), outcomes=[])
+    terminal_phases: list[str] = []
 
     def checkpoint(*, complete: bool = False, phase: str | None = None) -> None:
-        del phase
         if complete:
+            assert phase is not None
+            terminal_phases.append(phase)
             raise OSError("terminal progress unavailable")
 
     progress.checkpoint = checkpoint
@@ -183,4 +185,5 @@ def test_all_campaigns_survive_terminal_progress_failure(
         "target-1": {"simulation": "pass"},
     }
     assert result.detail["completion_error"]["operation"] == "publish coverage progress"
+    assert terminal_phases == ["complete", "aborted"]
     assert pending == []
