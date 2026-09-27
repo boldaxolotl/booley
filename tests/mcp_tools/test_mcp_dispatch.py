@@ -286,6 +286,19 @@ class TestFormatMcpToolResult:
         assert "report_text:" not in result
         assert "status: pass" in result
 
+    def test_coverage_headline_is_exposed_exactly_once(self):
+        headline = (
+            "sim_custom: simulation PASS · coverage collection COMPLETE · "
+            "evaluation FAIL (branch: observed 1/2 points; displayed 50%; minimum 80%) "
+            "(Simulation Campaign campaign-123)"
+        )
+        report = {"status": "fail", "report_text": headline}
+
+        result = _format_mcp_tool_result(1, f"running...\n{headline}\n", "", report)
+
+        assert result.count(headline) == 1
+        assert "report_text:" not in result
+
 
 class TestOutputCapEnvKnobs:
     """BOOLEY_MCP_MAX_STDOUT_BYTES / BOOLEY_MCP_MAX_STDERR_BYTES overrides."""

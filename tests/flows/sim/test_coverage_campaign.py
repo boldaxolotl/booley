@@ -734,6 +734,25 @@ def test_decoder_validates_campaign_state_sections_before_semantic_checks() -> N
     ]
 
 
+def test_decoder_validates_diagnostic_shapes_at_the_campaign_boundary() -> None:
+    document = _valid_document()
+    document["collection"]["diagnostics"] = [False]
+    document["evaluation"]["diagnostics"] = [
+        {"code": False, "pointer": "/evaluation", "message": "invalid code"}
+    ]
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_FIELD_TYPE", "/collection/diagnostics/0"),
+        ("COV_FIELD_TYPE", "/evaluation/diagnostics/0/code"),
+    ]
+
+
 def test_decoder_recomputes_stored_evaluation_from_rollups_and_thresholds() -> None:
     document = _valid_document()
     document["evaluation"] = {
