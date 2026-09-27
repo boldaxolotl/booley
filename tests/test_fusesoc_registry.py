@@ -33,6 +33,7 @@ from booley.fusesoc.fusesoc_registry import (
     all_referenced_files,
     core_schema_errors,
     core_setup_hazards,
+    core_target_coverage_errors,
     core_target_doctor_flows,
     core_target_eda_tool,
     core_target_flow,
@@ -623,6 +624,41 @@ class TestDoctorTargetMetadata:
             encoding="utf-8",
         )
         assert core_schema_errors(core) == []
+
+    def test_selected_target_coverage_errors_match_full_schema_message(self, tmp_path: Path):
+        core = tmp_path / "coverage.core"
+        core.write_text(
+            "CAPI=2:\nname: ::coverage:0\ntargets:\n"
+            "  sim:\n    flow: sim\n    flow_options:\n"
+            "      tool: verilator\n"
+            "      booley: {coverage: {reset_included: bad}}\n",
+            encoding="utf-8",
+        )
+        expected = "targets.sim.flow_options.booley.coverage.reset_included must be a boolean"
+
+        assert core_target_coverage_errors(core, "sim") == [expected]
+        assert core_schema_errors(core) == [expected]
+
+    def test_selected_target_coverage_accepts_raw_hook_list_and_ignores_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        core = tmp_path / "coverage.core"
+        core.write_text(
+            "CAPI=2:\nname: ::coverage:0\ntargets:\n"
+            "  selected:\n    flow: sim\n    flow_options:\n"
+            "      tool: verilator\n"
+            "      booley: {coverage: {custom_main_hooks: [start_hook, write_hook]}}\n"
+            "  sibling:\n    flow: sim\n    flow_options:\n"
+            "      tool: verilator\n"
+            "      booley: {coverage: {bogus_key: true}}\n",
+            encoding="utf-8",
+        )
+
+        assert core_target_coverage_errors(core, "selected") == []
+        assert core_target_coverage_errors(core, "sibling") == [
+            "targets.sibling.flow_options.booley.coverage.bogus_key "
+            "is not a supported coverage key"
+        ]
 
     def test_fpga_doctor_metadata_selects_target(self, tmp_path: Path):
         core = tmp_path / "fpga.core"
