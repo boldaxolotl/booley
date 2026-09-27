@@ -39,7 +39,12 @@ async def test_ticket_execution_always_uses_console(environment, tty, tmp_path, 
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(sys, "stdout", Mock(isatty=Mock(return_value=tty)))
-    console_run = AsyncMock(return_value=None)
+    console_run = AsyncMock(
+        return_value=developer.TicketRunResult(
+            slug="demo",
+            disposition=developer.TicketRunDisposition.DONE,
+        )
+    )
     monkeypatch.setattr(developer, "_run_with_console", console_run)
 
     assert parent._will_use_console(argparse.Namespace()) is True
@@ -87,31 +92,59 @@ async def test_console_worker_surfaces_preflight_failure(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_slug_bearing_intake_failure_returns_failed_result(tmp_path, monkeypatch):
     from booley.harness.blocking import FatalError
+    from booley.harness.console.app import ConsoleApp
 
+    run_async = ConsoleApp.run_async
+
+    async def run_headless(app):
+        await run_async(app, headless=True)
+
+    fail = Mock()
+    monkeypatch.setattr(ConsoleApp, "run_async", run_headless)
+    monkeypatch.setattr("booley.runtime.agent_config.load_backend_config", Mock())
+    monkeypatch.setattr(developer, "run_ticket_preflight", Mock())
     monkeypatch.setattr(
-        developer,
-        "_run_with_console",
+        "booley.harness.setup.intake.run",
         AsyncMock(side_effect=FatalError("invalid Ticket", slug="demo")),
     )
+    monkeypatch.setattr(developer.ticket_cli, "fail", fail)
 
     result = await developer.run_ticket("demo", tmp_path)
 
     assert result.slug == "demo"
     assert result.disposition == "failed"
+    fail.assert_called_once_with(
+        tmp_path,
+        "demo",
+        error="invalid Ticket",
+        step="parse-validate",
+    )
 
 
 @pytest.mark.asyncio
 async def test_intake_failure_without_slug_remains_infrastructure_error(tmp_path, monkeypatch):
     from booley.harness.blocking import FatalError
+    from booley.harness.console.app import ConsoleApp
 
+    run_async = ConsoleApp.run_async
+
+    async def run_headless(app):
+        await run_async(app, headless=True)
+
+    fail = Mock()
+    monkeypatch.setattr(ConsoleApp, "run_async", run_headless)
+    monkeypatch.setattr("booley.runtime.agent_config.load_backend_config", Mock())
+    monkeypatch.setattr(developer, "run_ticket_preflight", Mock())
     monkeypatch.setattr(
-        developer,
-        "_run_with_console",
+        "booley.harness.setup.intake.run",
         AsyncMock(side_effect=FatalError("project configuration unavailable")),
     )
+    monkeypatch.setattr(developer.ticket_cli, "fail", fail)
 
     with pytest.raises(FatalError, match="project configuration unavailable"):
         await developer.run_ticket("demo", tmp_path)
+
+    fail.assert_not_called()
 
 
 def test_console_lifecycle_failure_returns_cli_error(tmp_path, monkeypatch):

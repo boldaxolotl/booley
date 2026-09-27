@@ -732,6 +732,62 @@ class TestDeveloperDirtyHandoffGuardrail:
 
 
 @pytest.mark.e2e
+class TestDeveloperPostHookBlock:
+    """Post-developer hook rejection returns a handled blocked result."""
+
+    SLUG = "e2e-orch-post-hook-block"
+
+    def test_post_developer_hook_block_returns_blocked(
+        self,
+        project_root,
+        worktree_factory,
+    ):
+        from booley.harness import developer
+
+        slug = self.SLUG
+        _create_criteria_ticket(project_root, slug)
+        _ensure_run_log(project_root, slug)
+
+        def _set_all_met(state_path):
+            state = DevelopmentState.load(state_path)
+            for key in list(state.criteria.keys()):
+                state.set_criterion(key, True)
+            state.save()
+
+        def _block_from_hook(ctx, _state_path, _logs_dir, *, run_index, budget):
+            budget.raise_if_exhausted()
+            developer.block_ticket(
+                ctx,
+                "post-developer hook rejected the run",
+                "developer",
+                run_index=run_index,
+            )
+            return True
+
+        result = asyncio.run(
+            _run_developer_pipeline(
+                project_root,
+                slug,
+                developer_mock=_make_developer_mock(
+                    project_root,
+                    slug,
+                    state_updater=_set_all_met,
+                ),
+                setup_bypass=make_setup_bypass(worktree_factory),
+                extra_patches=[
+                    patch(
+                        "booley.harness.developer._run_post_developer_hook",
+                        side_effect=_block_from_hook,
+                    )
+                ],
+            )
+        )
+
+        assert result.disposition == "blocked"
+        assert _ticket_in_dir(project_root, slug, "blocked")
+
+
+@pytest.mark.e2e
 class TestDeveloperEnvVars:
     """Verify slug, state_path, logs_dir are passed to the developer agent.
 

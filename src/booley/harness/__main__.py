@@ -110,15 +110,8 @@ def _run_harness(args: argparse.Namespace, project_root: Path) -> int:
     except Exception as e:
         logging.getLogger(__name__).critical("Harness failed: %s", e, exc_info=True)
         return 2
-    disposition = getattr(result, "disposition", None)
-    if result is None or disposition not in {"review", "done", "blocked", "failed"}:
-        logging.getLogger(__name__).critical(
-            "Harness returned invalid Ticket run disposition: %r",
-            disposition,
-        )
-        return 2
     print(result.to_cli_line(), flush=True)
-    return 0 if disposition in {"review", "done"} else 1
+    return result.disposition.exit_code
 
 
 def _find_project_root() -> Path | None:
