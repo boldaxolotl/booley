@@ -105,10 +105,11 @@ The buckets:
   dependency or experimental gate (a missing Vivado registration/Grant, or a
   required floating FlexNet checkout whose real paid-site behavior has not been
   validated); an
-  input the repo **does not ship and somebody must author** (an SDC for a synth
-  Target, an XDC for FPGA, a flat-port wrapper, a pass/fail sentinel a directed
-  TB never prints); or a mechanical conversion whose input you have not actually
-  read yet (a `.fl` filelist, a legacy EDA-tool-API `.core`).
+  input the repo **does not ship and somebody must provide** (a flat-port
+  wrapper or a pass/fail sentinel a directed TB never prints, which you author;
+  or an SDC for a physical synth Target or an XDC for FPGA, which only the user
+  may supply, as row 10 explains); or a mechanical conversion whose input you
+  have not actually read yet (a `.fl` filelist, a legacy EDA-tool-API `.core`).
 - **Red:** out of reach today. A simulator outside the built-in matrix
   (Questa/ModelSim, VCS today), VHDL-only RTL against the built-in Verilog
   engines, encrypted RTL with no licensed simulator, or a license daemon that
@@ -486,7 +487,7 @@ Part A ends in a per-flow verdict table:
 Flow   Verdict  Provisioning                       Why
 sim    Green    image (Verilator/Icarus)           SV TB, self-checking
 lint   Green    image (Verilator)                  SV RTL
-synth  Yellow   image                              missing SDC to author
+synth  Yellow   image                              no upstream SDC; user must supply
 fpga   Yellow   host-provisioned Vivado 2025.2     registration/grant pending
 ```
 
@@ -500,8 +501,8 @@ want, and want-ness has no codebase signal, so it resolves like the other
 never-evidence-forced rows: **configure every Green flow, plus any Yellow one
 whose remaining wiring the plan can fully specify from evidence** (the exact
 command, the exact file to author). Leave out Yellow flows that hinge on
-something only the user can supply (a license host, a host EDA-tool install, a
-constraint value nobody can derive) and all Red flows. Star row 1 `review`
+something only the user can supply (a license host, a host EDA-tool install,
+an SDC or XDC the repo does not ship) and all Red flows. Star row 1 `review`
 per flow-set — "configured sim/lint/synth; fpga left out (Vivado present but
 untargeted)" — and surface it in the final report. Configuring a flow the user
 did not want is cheap to drop later; silently skipping a flow they wanted is
@@ -636,7 +637,28 @@ separate columns (see "How a row resolves"). The standard checklist:
    hidden.
 10. **Constraints** — physical ASIC synth needs an SDC per synth Target that
     creates at least one clock (hard error without one); FPGA needs an XDC
-    fileset. Does the repo ship them, or must they be authored?
+    fileset. Timing constraints encode design intent that only the design
+    owner knows: clock periods, which clocks are asynchronous, which clocks
+    leave the design, and I/O budgets. **Never author, generate, or guess
+    one.** Resolve the row from exactly one source:
+
+    - **The repo ships it.** Record its path and reference it in place from the
+      Target's constraints fileset. Use it as-is. Do not edit, relax, or add
+      exceptions to it (periods, false paths, clock groups) unless the user
+      explicitly asks.
+    - **The user supplies it.** If the repo ships none, the Target is
+      **blocked** until the user provides a file. Interactive: ask for it in
+      the grill (a path, or file contents to place at
+      `.booley_project/cores/constraints/<target>.sdc` or `.xdc`). Record the
+      exact file as `user-confirmed`. Copying a file the user supplied into
+      the project is not authoring.
+      Unattended: leave that Target unconfigured. Star the row `review`, and
+      name the missing file in the final report as an open question.
+
+    Offer a real alternative while the file is missing: `synth_mode: logical`
+    needs no SDC and gives mapped area and an approximate Fmax. Offer it as a
+    choice; never switch to it silently. An SDC that is only a placeholder
+    (for example a single made-up clock) is still authoring and is forbidden.
 10a. **Memory implementation** — for every enabled ASIC synthesis Target,
     scan its reachable RTL and native synthesis scripts for instantiated
     SRAM/RAM/register-file modules, large unpacked arrays,

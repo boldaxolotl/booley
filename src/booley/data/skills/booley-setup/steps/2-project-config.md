@@ -275,6 +275,15 @@ Authoring rules:
   `.core`: a single `file_type: veribleLintRules` rules-config file and/or
   `file_type: veribleLintWaiver` waiver files in the Target's fileset
   (analogous to Verilator's `.vlt`). Never change existing Target shapes.
+- **Timing constraints (SDC/XDC) are never authored here.** Wire exactly the
+  file that plan row 10 recorded: the repo's own file, referenced in place, or
+  the user-supplied file. Use `file_type: SDC` for synthesis and
+  `file_type: xdc` for FPGA. Do not change its contents. If a timing
+  violation, an STA warning, or a Doctor finding looks like a constraint
+  problem (an undeclared clock, an I/O delay on a clock port, a false path
+  hiding a clock), report it to the user with the evidence and leave the file
+  unchanged. A Target whose row 10 is still unresolved stays unconfigured.
+  Never write a placeholder SDC to unblock Doctor.
 - **Memory timing surrogates.** Implement every approved plan row 10a
   disposition in the ASIC synthesis Target only. Prefer an existing
   project-owned replacement seam: an implementation-selection define, wrapper,
@@ -317,8 +326,9 @@ When stealth mode keeps Booley state hidden, leave native tracked `.core` files
 byte-for-byte unchanged and place the adapter `.core` under
 `.booley_project/cores/`. Give it a distinct VLNV so it cannot collide with a
 native core. Author its filesets relative to the **repository root**:
-`rtl/top.sv` names upstream RTL directly, while project-owned constraints use
-paths such as `.booley_project/cores/constraints/core.sdc`. Do not create
+`rtl/top.sv` names upstream RTL directly, while a user-supplied constraints
+file (plan row 10) lives at a path such as
+`.booley_project/cores/constraints/core.sdc`. Do not create
 resolution symlinks or use escaping `../../` paths. With explicit
 `[stealth] enabled = true`, `booley init` materializes ignored root-level core projections
 and every Booley resolution refreshes them. Validate raw FuseSoC only after the
