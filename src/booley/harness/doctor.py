@@ -5196,6 +5196,13 @@ def _run_selftest_checks(
         )
 
 
+def _sandbox_failure_remedy(exc: session_runtime.SessionError) -> str:
+    """Keep admission-control remediation distinct from stale issuance."""
+    if str(exc).startswith("Sandbox start refused:"):
+        return "free Sandbox capacity using the command in the refusal, then retry"
+    return "run 'booley init --seed' and retry"
+
+
 def _prepare_selftest_invocation(
     project: ProjectAudit,
     flow_name: str,
@@ -5227,7 +5234,7 @@ def _prepare_selftest_invocation(
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
-            "run 'booley init --seed' and retry",
+            _sandbox_failure_remedy(exc),
         )
         return None
     env = _doctor_subprocess_env(project)
@@ -5629,7 +5636,7 @@ def _doctor_flow_command(
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
-            "run 'booley init --seed' and retry",
+            _sandbox_failure_remedy(exc),
         )
         return None
 

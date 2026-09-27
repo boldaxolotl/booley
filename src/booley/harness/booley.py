@@ -1525,9 +1525,6 @@ def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
 
     result = sr.down(project_root)
     if result:
-        if isinstance(result, bool):
-            print(f"removed {sr.session_container_name(project_root)}")
-            return 0
         details = []
         if result.headless:
             details.append(f"removed {sr.session_container_name(project_root)}")

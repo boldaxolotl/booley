@@ -2314,17 +2314,36 @@ def _down_unlocked(workspace: Path, *, remove: bool = True) -> DownResult:
         vscode = session_admission.vscode_sandboxes(workspace, run=_run)
     except session_admission.AdmissionError as exc:
         raise SessionError(str(exc)) from exc
-    if session_exists:
-        _run(["docker", "stop", name])
-        if remove:
-            _run(["docker", "rm", "-f", name])
-    stopped = []
+    verified_vscode = []
     for item in vscode:
         if not item.running:
             continue
         current = session_admission.vscode_sandboxes(workspace, run=_run)
-        if not any(value.container_id == item.container_id and value.running for value in current):
+        match = next(
+            (
+                value
+                for value in current
+                if value.container_id == item.container_id
+                and value.name == item.name
+                and value.running
+            ),
+            None,
+        )
+        if match is None:
             raise SessionError(f"cannot prove VS Code Sandbox {item.name!r} identity before stop")
+        verified_vscode.append(match)
+    if session_exists:
+        result = _run(["docker", "stop", name])
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or "docker stop failed"
+            raise SessionError(f"cannot stop headless Sandbox {name!r}: {detail}")
+        if remove:
+            result = _run(["docker", "rm", "-f", name])
+            if result.returncode:
+                detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
+                raise SessionError(f"cannot remove headless Sandbox {name!r}: {detail}")
+    stopped = []
+    for item in verified_vscode:
         result = _run(["docker", "stop", item.container_id])
         if result.returncode:
             detail = result.stderr.strip() or result.stdout.strip() or "docker stop failed"

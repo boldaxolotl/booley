@@ -2852,6 +2852,46 @@ class TestDownAndStatus:
         assert ["docker", "stop", sr.session_container_name(workspace)] in commands
         assert not any(command[:3] == ["docker", "image", "rm"] for command in commands)
 
+    def test_down_rejects_unproven_vscode_identity_before_mutation(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        run = Mock()
+        monkeypatch.setattr(sr, "_run", run)
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        monkeypatch.setattr(
+            session_admission,
+            "vscode_sandboxes",
+            Mock(side_effect=session_admission.AdmissionError("identity disagrees")),
+        )
+
+        with pytest.raises(sr.SessionError, match="identity disagrees"):
+            sr.down(workspace)
+
+        run.assert_not_called()
+
+    def test_down_stops_revalidated_vscode_and_clears_claim(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        discovered = Mock(side_effect=[(item,), (item,)])
+        monkeypatch.setattr(session_admission, "vscode_sandboxes", discovered)
+        monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda _root: True)
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+        monkeypatch.setattr(sr, "_run", run)
+
+        result = sr.down(workspace)
+
+        assert result.vscode_stopped == ("editor",)
+        assert result.claim_cleared
+        assert ["docker", "stop", "editor-id"] in [_argv_of(call) for call in run.call_args_list]
+
     def test_status_reports_three_states(self, workspace: Path):
         with patch.object(sr.idk, "container_exists", return_value=False):
             assert sr.status(workspace) == "absent"
@@ -3466,7 +3506,7 @@ class TestSessionRefresh:
         enter.assert_called_once_with(tmp_path, ["echo", "ready"], tty=True)
 
         with (
-            patch.object(sr, "down", return_value=False),
+            patch.object(sr, "down", return_value=sr.DownResult()),
             patch.object(sr, "status", return_value="stopped"),
             patch.object(sr, "validate", return_value="valid"),
             patch.object(sr, "prepare", return_value="prepared"),
@@ -3786,7 +3826,7 @@ class TestSessionRefresh:
         from booley.harness import auto_doctor, booley
         from booley.harness.booley import _build_parser
 
-        monkeypatch.setattr(sr, "down", lambda _root: True)
+        monkeypatch.setattr(sr, "down", lambda _root: sr.DownResult(headless=True))
         monkeypatch.setattr(sr, "session_container_name", lambda _root: "session")
         down_args = _build_parser().parse_args(["session", "down"])
         assert booley._cmd_session(down_args, tmp_path) == 0

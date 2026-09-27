@@ -9,11 +9,60 @@ from pathlib import Path
 
 import pytest
 
+from booley.runtime import devcontainer as dc
 from booley.runtime import session_admission
 
 
 def _completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess([], returncode, stdout, stderr)
+
+
+def _vscode_inspection(
+    project: Path,
+    *,
+    container_id: str = "editor-id",
+    running: bool = False,
+    started: str = "0001-01-01T00:00:00Z",
+    project_id: str | None = None,
+) -> dict:
+    return {
+        "Id": container_id,
+        "Name": "/editor",
+        "Created": "2026-09-27T08:00:00.123456Z",
+        "Config": {
+            "Labels": {
+                "booley.role": "interactive",
+                "devcontainer.local_folder": str(project),
+                "booley.project-id": project_id or dc.canonical_project_id(project),
+            }
+        },
+        "State": {"Running": running, "StartedAt": started},
+        "Mounts": [],
+    }
+
+
+class _Docker:
+    def __init__(self, documents: dict[str, dict]):
+        self.documents = documents
+        self.all_queries = 0
+
+    def __call__(self, argv: list[str], **_kwargs):
+        if argv[1] == "ps":
+            include_stopped = "-a" in argv
+            if include_stopped:
+                self.all_queries += 1
+            rows = []
+            for container_id, document in self.documents.items():
+                if not include_stopped and not document["State"]["Running"]:
+                    continue
+                name = "editor"
+                if include_stopped:
+                    folder = document["Config"]["Labels"].get("devcontainer.local_folder", "")
+                    rows.append(f"{container_id}\t{name}\t{folder}")
+                else:
+                    rows.append(f"{container_id}\t{name}")
+            return _completed(stdout="\n".join(rows) + ("\n" if rows else ""))
+        return _completed(stdout=json.dumps(self.documents[argv[3]]))
 
 
 @pytest.fixture(autouse=True)
@@ -102,6 +151,41 @@ def test_inventory_failure_refuses_instead_of_assuming_empty(tmp_path: Path) -> 
         session_admission.admit_start(project, target_name="headless", run=run)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("Name", 7), ("StartedAt", "0001-01-01T00:00:00Z")],
+)
+def test_malformed_live_inspection_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    document = _vscode_inspection(
+        project,
+        running=True,
+        started="2026-09-27T08:00:00Z",
+    )
+    if field == "StartedAt":
+        document["State"][field] = value
+    else:
+        document[field] = value
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=2),
+    )
+
+    with pytest.raises(session_admission.AdmissionError, match="incomplete inspection"):
+        session_admission.admit_start(
+            project,
+            target_name="headless",
+            run=_Docker({"editor-id": document}),
+        )
+
+
 def test_running_exact_target_is_idempotent_at_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -128,3 +212,149 @@ def test_running_exact_target_is_idempotent_at_cap(
         lambda: session_admission.InteractiveHostPolicy(max_sessions=1),
     )
     session_admission.admit_start(project, target_name="headless", run=run)
+
+
+def test_claim_reconciliation_uses_observed_container_state_not_cross_clock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    document = _vscode_inspection(project)
+    docker = _Docker({"editor-id": document})
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=2),
+    )
+
+    assert session_admission.claim_vscode_start(
+        project,
+        run=docker,
+        now=datetime(2026, 9, 27, 8, 0, 0, 900000, tzinfo=UTC),
+    )
+    assert session_admission.has_pending_claim(project, run=docker)
+
+    document["State"]["StartedAt"] = "2026-09-27T08:00:01.000001Z"
+    assert not session_admission.has_pending_claim(project, run=docker)
+
+
+def test_claim_for_moved_project_can_be_reconciled_and_cleared(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    project_id = dc.canonical_project_id(project)
+    docker = _Docker({})
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=2),
+    )
+    assert session_admission.claim_vscode_start(project, run=docker)
+    project.rmdir()
+
+    docker.documents["editor-id"] = _vscode_inspection(project, project_id=project_id)
+    assert not session_admission.has_pending_claim(project, run=docker)
+
+    project.mkdir()
+    assert session_admission.claim_vscode_start(project, run=_Docker({}))
+    project.rmdir()
+    assert session_admission.clear_vscode_claim(project)
+
+
+def test_vscode_cleanup_rejects_mismatched_sealed_project_identity(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    docker = _Docker(
+        {
+            "editor-id": _vscode_inspection(
+                project,
+                running=True,
+                started="2026-09-27T08:00:00Z",
+                project_id="wrong",
+            )
+        }
+    )
+
+    with pytest.raises(session_admission.AdmissionError, match="identity disagrees"):
+        session_admission.vscode_sandboxes(project, run=docker)
+
+
+def test_unrelated_stopped_sandbox_is_not_in_admission_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    malformed = _vscode_inspection(other)
+    malformed["Name"] = 7
+    docker = _Docker({"old": malformed})
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=1),
+    )
+
+    session_admission.admit_start(project, target_name="headless", run=docker)
+    assert docker.all_queries == 0
+
+
+def test_corrupt_claim_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=2),
+    )
+    assert session_admission.claim_vscode_start(project, run=_Docker({}))
+    claim_path = next(session_admission._store().root.glob("*.json"))
+    claim_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(session_admission.AdmissionError, match="invalid shape"):
+        session_admission.admit_start(project, target_name="headless", run=_Docker({}))
+
+
+def test_claim_candidate_disappearing_during_inspect_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=2),
+    )
+    assert session_admission.claim_vscode_start(project, run=_Docker({}))
+
+    def disappearing(argv: list[str], **_kwargs):
+        if argv[1] == "ps" and "-a" not in argv:
+            return _completed()
+        if argv[1] == "ps":
+            return _completed(stdout=f"gone\teditor\t{project}\n")
+        return _completed(1, stderr="no such container")
+
+    with pytest.raises(session_admission.AdmissionError, match="cannot inspect"):
+        session_admission.admit_start(project, target_name="headless", run=disappearing)
+
+
+def test_recovery_reports_when_it_will_restore_at_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    docker = _Docker(
+        {"editor-id": _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")}
+    )
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=1),
+    )
+
+    session_admission.admit_start(project, target_name="recovery", recovery=True, run=docker)
+
+    assert "recovery is restoring work at or above" in caplog.text

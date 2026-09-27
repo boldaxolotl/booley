@@ -37,6 +37,13 @@ def rfc3339_from_epoch(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).strftime(MACHINE_TIMESTAMP_FORMAT)
 
 
+def rfc3339_from_datetime(value: datetime, *, microseconds: bool = False) -> str:
+    """Return *value* as UTC RFC 3339, optionally preserving microseconds."""
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    timespec = "microseconds" if microseconds else "seconds"
+    return aware.astimezone(UTC).isoformat(timespec=timespec).replace("+00:00", "Z")
+
+
 def compact_utc_now(*, microseconds: bool = False) -> str:
     """Return a filesystem-safe compact UTC timestamp with an explicit ``Z``."""
     pattern = "%Y%m%dT%H%M%S%fZ" if microseconds else "%Y%m%dT%H%M%SZ"
