@@ -24,6 +24,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
+- Projects that placed formal proof artifacts at `<anchor>/proofs/...` as a
+  workaround must move them beneath
+  `<anchor>/<approval-directory>/proofs/...`. Keep the authored proof reference
+  unchanged because it is relative to the configured approval directory.
 - Existing Projects should rerun `booley init` before their first direct Flow
   invocation after upgrading. Initialization appends the new `flow-reports/`
   ignore rule without replacing user-authored `.gitignore` content.
@@ -47,6 +51,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Approved Waiver Sets now load referenced non-TOML formal proof artifacts from
+  the configured approval directory without parsing them as approval documents.
+  Unreferenced artifacts still invalidate the set, and lowercase `*.toml` remains
+  reserved for approval documents.
 - Direct built-in and Custom Flows now keep their default reports under resolved
   Project data. Plain Simulation, native coverage, and resume share one report
   root and invocation-number sequence, and no default `flow-reports/` directory
