@@ -71,7 +71,7 @@ class PreSimEvidence:
 
 def pre_sim_failure_message(status: PreSimStatus, detail: str = "") -> str:
     """Render one stable diagnostic for a failed Pre-Sim Commands firing."""
-    message = f"pre-sim commands failed ({status})"
+    message = f"Pre-Sim Commands failed ({status})"
     return f"{message}: {detail}" if detail else message
 
 

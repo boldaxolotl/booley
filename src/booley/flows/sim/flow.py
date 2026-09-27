@@ -54,7 +54,7 @@ from booley.flows.progress_lifecycle import (
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
-from booley.flows.sim.config import resolve_run_cwd
+from booley.flows.sim.config import resolve_pre_sim_build_access, resolve_run_cwd
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     FrozenJson,
@@ -507,7 +507,8 @@ def _campaign_report_lines(
             )
         else:
             assert resolved is not None
-            suffix = _coverage_report_suffix(resolved[selector])
+            campaign = resolved[selector]
+            suffix = _coverage_report_suffix(campaign)
             line = (
                 f"{selector}: simulation {outcome.aggregate_grade.upper()} · {suffix} "
                 f"(Simulation Campaign {campaign_id})"
@@ -518,8 +519,31 @@ def _campaign_report_lines(
             reason = detail.get("reason") if isinstance(detail, Mapping) else None
             if isinstance(reason, str) and reason and reason not in reasons:
                 reasons.append(reason)
-        lines.append("\n".join((line, *(f"  {reason}" for reason in reasons))))
+        report_lines = [line, *(f"  {reason}" for reason in reasons)]
+        if getattr(outcome, "coverage_reference", None) is not None:
+            report_lines.extend(_coverage_pre_sim_lines(selector, campaign))
+        lines.append("\n".join(report_lines))
     return lines
+
+
+def _coverage_pre_sim_lines(selector: str, campaign: CoverageCampaign) -> list[str]:
+    lines: list[str] = []
+    for run in campaign.runs:
+        evidence = run.attributes.get("pre_sim")
+        if not isinstance(evidence, Mapping):
+            continue
+        lines.append(
+            _pre_sim_report_line(selector, run.test, coverage_mapping_document(evidence))
+        )
+    return lines
+
+
+def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str, object]) -> str:
+    elapsed = evidence.get("elapsed_s")
+    duration = float(elapsed) if isinstance(elapsed, int | float) else 0.0
+    return (
+        f"{selector}: pre-sim={evidence.get('status')} test={test_name} duration={duration:.3f}s"
+    )
 
 
 def _campaign_structured_details(
@@ -2902,7 +2926,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, target: CoverageTargetPlan, progress: CoverageProgress, started_at: str
     ) -> CoverageTargetOutcome:
         from booley.flows.sim.coverage_flow_context import coverage_acceptance
-        from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 
         plan = replace(
             target,
@@ -2919,12 +2942,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             timeout_ms=self._effective_timeout_ms(),
             result_verbosity=self.args.result_verbosity,
         )
-        execution = (
-            self._coverage_execution_factory(plan.handle, options)
-            if self._coverage_execution_factory is not None
-            else VerilatorCoverageExecution(
-                plan.handle, invoke=self._execute_boundary, options=options
-            )
+        execution = self._coverage_campaign_execution(
+            plan,
+            options,
+            tuple(_resolve_pre_sim_commands(self.args.work_dir)),
+            resolve_pre_sim_build_access(self.args.work_dir),
         )
         return run_coverage_target(plan, execution, progress)
 
@@ -2946,16 +2968,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             lines.append(
                 f"{outcome.target}: simulation={detail.get('simulation', 'inconclusive')}, collection={detail.get('collection')}, coverage={detail.get('evaluation')}"
             )
-            for test in detail.get("tests", ()):
+            tests = detail.get("tests")
+            for test in tests if isinstance(tests, list) else ():
                 if not isinstance(test, Mapping):
                     continue
                 pre_sim = test.get("pre_sim")
                 if not isinstance(pre_sim, Mapping):
                     continue
-                duration = float(pre_sim.get("elapsed_s", 0.0))
                 lines.append(
-                    f"{outcome.target}: pre-sim={pre_sim.get('status')} "
-                    f"test={test.get('name')} duration={duration:.3f}s"
+                    _pre_sim_report_line(
+                        outcome.target,
+                        test.get("name"),
+                        cast(Mapping[str, object], pre_sim),
+                    )
                 )
         return EndpointOutcome(
             exit_code=max((item.exit_code for item in outcomes), default=2),

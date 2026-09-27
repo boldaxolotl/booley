@@ -15,6 +15,7 @@ from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
     resolve_coverage_campaign_reference,
 )
+from booley.flows.sim.execution.contract import PreSimEvidence
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
@@ -228,9 +229,20 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
     )
     received = []
 
+    class PreSimPassingExecution(NativeExecution):
+        def run(self, request):
+            result = super().run(request)
+            evidence = PreSimEvidence(
+                ("python3 scripts/stage.py",),
+                (request.test.name,),
+                "passed",
+                0.25,
+            )
+            return SimulationRunResult(result.verdict, result.output, evidence)
+
     def execution_factory(_handle, _options, commands, access):
         received.append((commands, access))
-        return NativeExecution()
+        return PreSimPassingExecution()
 
     result = SimulateFlow(coverage_execution=execution_factory).execute(
         SimRequest(
@@ -243,6 +255,7 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
 
     assert result.exit_code == 0
     assert received == [(("python3 scripts/stage.py",), "legacy-per-test")]
+    assert "sim_0: pre-sim=passed test=reset duration=0.250s" in result.outcome.report_text
 
 
 @pytest.mark.parametrize(

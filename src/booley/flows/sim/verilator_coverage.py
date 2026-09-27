@@ -402,43 +402,38 @@ def _collect_one_run(
     context = _prepare_run(request, index, selected)
     result = execution.run(_run_request(request, context))
     if result.infrastructure_error and result.verdict != "elab_error":
-        failed = _run_failure(
-            request,
-            context,
-            result.verdict,
-            code="COV_INFRASTRUCTURE_ERROR",
-            message=result.output or "coverage Simulation infrastructure failed",
-            pointer="execution",
-            attributes=_pre_sim_attributes(result.pre_sim),
-        )
-        return replace(
-            failed,
-            infrastructure_error=True,
-            infrastructure_detail=result.output,
-        )
+        return _collected_infrastructure_failure(request, context, result)
     if result.pre_sim is not None and result.pre_sim.status != "passed":
         return _pre_sim_failure(request, context, result)
     if result.infrastructure_error:
-        failed = _run_failure(
-            request,
-            context,
-            result.verdict,
-            code="COV_INFRASTRUCTURE_ERROR",
-            message=result.output or "coverage Simulation infrastructure failed",
-            pointer="execution",
-            attributes=_pre_sim_attributes(result.pre_sim),
-        )
-        return replace(
-            failed,
-            infrastructure_error=True,
-            infrastructure_detail=result.output,
-        )
+        return _collected_infrastructure_failure(request, context, result)
     failure = _read_raw_artifact(request, context, result.verdict)
     if isinstance(failure, _CollectedRun):
         return failure
     raw_artifact, records = failure
     return _finish_run(
         request, context, result.verdict, raw_artifact, records, pre_sim=result.pre_sim
+    )
+
+
+def _collected_infrastructure_failure(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    result: SimulationRunResult,
+) -> _CollectedRun:
+    failed = _run_failure(
+        request,
+        context,
+        result.verdict,
+        code="COV_INFRASTRUCTURE_ERROR",
+        message=result.output or "coverage Simulation infrastructure failed",
+        pointer="execution",
+        attributes=_pre_sim_attributes(result.pre_sim),
+    )
+    return replace(
+        failed,
+        infrastructure_error=True,
+        infrastructure_detail=result.output,
     )
 
 

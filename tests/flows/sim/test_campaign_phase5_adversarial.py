@@ -479,7 +479,7 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
     observations = result.document["observations"]
     assert observations[0]["execution"] == "completed"
     assert observations[0]["detail"]["reason"] == (
-        "pre-sim commands failed (failed): vector generator rejected input"
+        "Pre-Sim Commands failed (failed): vector generator rejected input"
     )
 
 
