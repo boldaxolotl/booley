@@ -808,4 +808,6 @@ def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -
         observations=({"detail": {"reason": "intentional simulator failure"}},),
     )
 
-    assert "intentional simulator failure" in _campaign_report_lines((outcome,))[0]
+    assert _campaign_report_lines((outcome,))[0] == (
+        "sim_fail: FAIL (Simulation Campaign unavailable)\n  intentional simulator failure"
+    )

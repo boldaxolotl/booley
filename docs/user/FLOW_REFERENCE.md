@@ -214,6 +214,18 @@ booley flow sim --resume-from \
   "$PROJECT_DATA/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json"
 ```
 
+For coverage invocations, each final Target headline reports simulation,
+collection, and evaluation independently. `NOT_REQUESTED` means collection was
+ungated by a Coverage Criterion; it is not an evaluated pass. A non-successful
+collection or evaluation includes the first stable diagnostic code or failed
+metric summary when available. For example:
+
+```text
+sim_soc: simulation PASS · coverage collection COMPLETE · evaluation FAIL (line: observed 5/7 points; displayed 71.43%; minimum 80%) (Simulation Campaign <id>)
+```
+
+Non-coverage Simulation Flow headlines retain their existing compact grade.
+
 The MCP `sim` input deliberately uses an array, not the former scalar shape:
 
 ```json

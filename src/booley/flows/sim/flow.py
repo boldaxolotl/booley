@@ -54,7 +54,7 @@ from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import resolve_run_cwd
-from booley.flows.sim.coverage_campaign import coverage_mapping_document
+from booley.flows.sim.coverage_campaign import CoverageCampaign, coverage_mapping_document
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
@@ -413,16 +413,92 @@ def _campaign_observation_counts(
     return {axis: dict(Counter(str(item[axis]) for item in observations)) for axis in axes}
 
 
-def _campaign_report_lines(outcomes: Sequence[CampaignOutcome]) -> list[str]:
+def _coverage_diagnostic_detail(value: object) -> str | None:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes) or not value:
+        return None
+    diagnostic = value[0]
+    if not isinstance(diagnostic, Mapping):
+        return None
+    code = diagnostic.get("code")
+    return str(code) if code else None
+
+
+def _failed_metric_detail(value: object) -> str | None:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return None
+    failed = next(
+        (item for item in value if isinstance(item, Mapping) and item.get("verdict") == "fail"),
+        None,
+    )
+    if failed is None:
+        return None
+    return (
+        f"{failed['metric']}: observed {failed['covered_points']}/"
+        f"{failed['eligible_points']} points; displayed {failed['actual_percent']}%; "
+        f"minimum {failed['minimum_percent']}%"
+    )
+
+
+def _coverage_report_suffix(campaign: CoverageCampaign) -> str:
+    collection = campaign.collection
+    evaluation = campaign.evaluation
+    collection_status = str(collection["status"]).upper()
+    evaluation_status = str(evaluation["status"]).upper()
+    collection_detail = None
+    if collection["status"] != "complete":
+        collection_detail = _coverage_diagnostic_detail(collection.get("diagnostics"))
+    evaluation_detail = None
+    if evaluation["status"] == "blocked":
+        evaluation_detail = _coverage_diagnostic_detail(evaluation.get("diagnostics"))
+    elif evaluation["status"] == "fail":
+        evaluation_detail = _failed_metric_detail(evaluation.get("metrics"))
+    if collection_detail:
+        collection_status += f" ({collection_detail})"
+    if evaluation_detail:
+        evaluation_status += f" ({evaluation_detail})"
+    return f"coverage collection {collection_status} · evaluation {evaluation_status}"
+
+
+def _resolved_coverage_campaigns(
+    outcomes: Sequence[CampaignOutcome],
+) -> dict[str, CoverageCampaign]:
+    campaigns: dict[str, CoverageCampaign] = {}
+    for outcome in outcomes:
+        if getattr(outcome, "coverage_reference", None) is None:
+            continue
+        public = outcome.manifest_path.parents[1] / "coverage.json"
+        selector = str(outcome.target["selector"])
+        campaigns[selector] = resolve_coverage_campaign_reference(public).loaded.campaign
+    return campaigns
+
+
+def _campaign_report_lines(
+    outcomes: Sequence[CampaignOutcome],
+    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+) -> list[str]:
+    resolved = coverage_campaigns
+    if resolved is None and any(
+        getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
+    ):
+        resolved = _resolved_coverage_campaigns(outcomes)
     lines: list[str] = []
     for outcome in outcomes:
         acceptance = getattr(outcome, "acceptance_facts", None)
         facts = getattr(acceptance, "document", {})
         campaign_id = facts.get("campaign_id", "unavailable")
-        line = (
-            f"{outcome.target['selector']}: {outcome.aggregate_grade.upper()} "
-            f"(Simulation Campaign {campaign_id})"
-        )
+        selector = str(outcome.target["selector"])
+        if getattr(outcome, "coverage_reference", None) is None:
+            line = (
+                f"{selector}: {outcome.aggregate_grade.upper()} "
+                f"(Simulation Campaign {campaign_id})"
+            )
+        else:
+            assert resolved is not None
+            suffix = _coverage_report_suffix(resolved[selector])
+            line = (
+                f"{selector}: simulation {outcome.aggregate_grade.upper()} · {suffix} "
+                f"(Simulation Campaign {campaign_id})"
+            )
         reasons = []
         for observation in outcome.observations:
             detail = observation.get("detail")
@@ -623,16 +699,19 @@ def _structured_json(value: object) -> object:
 
 
 def _coverage_compatibility_targets(
-    outcomes: Sequence[CampaignOutcome], report_invocation: Path | None = None
+    outcomes: Sequence[CampaignOutcome],
+    report_invocation: Path | None = None,
+    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
 ) -> dict[str, object]:
     """Preserve bounded coverage endpoint fields while authority stays referenced."""
+    resolved = coverage_campaigns or _resolved_coverage_campaigns(outcomes)
     targets: dict[str, object] = {}
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
         public = outcome.manifest_path.parents[1] / "coverage.json"
-        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
         selector = str(outcome.target["selector"])
+        campaign = resolved[selector]
         reference = _report_artifact_reference(
             public,
             report_invocation=report_invocation,
@@ -665,14 +744,18 @@ def _campaign_simulation_status(outcome: CampaignOutcome) -> str:
     return "not_run"
 
 
-def _coverage_campaign_exit_code(outcomes: Sequence[CampaignOutcome]) -> int:
+def _coverage_campaign_exit_code(
+    outcomes: Sequence[CampaignOutcome],
+    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+) -> int:
     """Preserve native collection/evaluation exit policy for wrapped aggregates."""
+    resolved = coverage_campaigns or _resolved_coverage_campaigns(outcomes)
     saw_failure = False
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
-        public = outcome.manifest_path.parents[1] / "coverage.json"
-        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+        selector = str(outcome.target["selector"])
+        campaign = resolved[selector]
         if (
             campaign.collection["status"] != "complete"
             or campaign.evaluation["status"] == "blocked"
@@ -688,7 +771,7 @@ def _checkpoint_coverage_campaign(progress: CoverageProgress, outcome: CampaignO
     progress.completed(
         CoverageTargetOutcome(
             str(outcome.target["selector"]),
-            _coverage_campaign_exit_code([outcome]),
+            _coverage_campaign_exit_code([outcome], {str(outcome.target["selector"]): campaign}),
             public,
             public.with_name("simulation.json"),
             campaign.evaluation,
@@ -3468,19 +3551,21 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _campaign_endpoint_outcome(self, outcomes: list[CampaignOutcome]) -> EndpointOutcome:
         self.context._simulation_campaign_outcomes = tuple(outcomes)
+        coverage_campaigns = _resolved_coverage_campaigns(outcomes)
         grades = [outcome.aggregate_grade for outcome in outcomes]
-        exit_code = _coverage_campaign_exit_code(outcomes) or (
+        exit_code = _coverage_campaign_exit_code(outcomes, coverage_campaigns) or (
             EXIT_ERROR
             if "error" in grades
             else EXIT_FAILURE
             if any(grade != "pass" for grade in grades)
             else EXIT_SUCCESS
         )
-        lines = _campaign_report_lines(outcomes)
+        lines = _campaign_report_lines(outcomes, coverage_campaigns)
         campaigns = _campaign_structured_details(outcomes, self.context._reserved_invocation_dir)
         coverage_targets = _coverage_compatibility_targets(
             outcomes,
             self.context._reserved_invocation_dir,
+            coverage_campaigns,
         )
         detail: dict[str, object] = {"campaigns": campaigns}
         if coverage_targets:
