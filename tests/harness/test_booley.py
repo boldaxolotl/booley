@@ -3022,6 +3022,31 @@ def test_hidden_session_prepare_accepts_explicit_workspace_root():
     assert args.project_root == "/tmp/project"
 
 
+@pytest.mark.parametrize("command", ["up", "prepare"])
+def test_at_cap_session_start_reports_status_two_without_success(
+    command, tmp_path, monkeypatch, capsys
+):
+    from booley.harness import auto_doctor
+    from booley.runtime import session_runtime as sr
+
+    args = tlr._build_parser().parse_args(["session", command])
+    monkeypatch.setattr(tlr, "_report_upgrade_before_session", lambda _root: None)
+    monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: None)
+    monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(
+        sr,
+        command,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sr.SessionError("Sandbox start refused: host is at interactive.max_sessions=1")
+        ),
+    )
+
+    assert tlr._cmd_session(args, tmp_path) == 2
+    captured = capsys.readouterr()
+    assert "interactive.max_sessions=1" in captured.err
+    assert "Sandbox ready" not in captured.out
+
+
 @pytest.mark.parametrize(
     "argv",
     [

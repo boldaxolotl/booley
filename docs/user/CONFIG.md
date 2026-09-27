@@ -57,10 +57,16 @@ entries are hostnames only; schemes, paths, ports, IP literals, and wildcards
 are rejected.
 
 This policy applies to the whole Docker daemon, not the current Project. The
-timeout and session cap cover all Booley Sandboxes, and every extra
+timeout and admission cap cover all Booley Sandboxes, and every extra
 egress hostname becomes reachable from every Project. The former Project
 `booley.toml [interactive]` policy fields are retired; init and Doctor print a
 concrete replacement for this host file and never adopt Project values.
+
+`max_sessions` is checked before a start would add a live Sandbox. At the limit,
+the command refuses, lists live Projects and ages, and explains how to stop one
+or raise the limit; it never evicts existing work. A pending VS Code start also
+holds a slot and can be cleared with the reported `session down` command after
+canceling the editor operation.
 
 ## booley.toml
 

@@ -126,15 +126,11 @@ def _mint_claude_token(credential: AppCredential, project_root: Path) -> str | N
     if in_project:
         from booley.runtime import session_runtime
 
-        try:
-            returncode = session_runtime.run_project_command(
-                project_root,
-                command,
-                tty=sys.stdin.isatty() and sys.stdout.isatty(),
-            )
-        except session_runtime.SessionError as exc:
-            err(f"could not run `{' '.join(command)}` in the Sandbox: {exc}")
-            return None
+        returncode = session_runtime.run_project_command(
+            project_root,
+            command,
+            tty=sys.stdin.isatty() and sys.stdout.isatty(),
+        )
     else:
         returncode = subprocess.run(credential.mint_cmd, check=False).returncode
     print()
@@ -262,9 +258,18 @@ def run_auth(args: argparse.Namespace, project_root: Path) -> int:
     credential = auth_token.CREDENTIALS[app]
     banner(f"Agent auth — {app} ({credential.label})")
 
-    token = _acquire(credential, getattr(args, "token_stdin", False), project_root)
+    from booley.runtime import session_runtime
+
+    session_refused = False
+    try:
+        token = _acquire(credential, getattr(args, "token_stdin", False), project_root)
+    except session_runtime.SessionError as exc:
+        assert credential.mint_cmd is not None
+        err(f"could not run `{' '.join(credential.mint_cmd)}` in the Sandbox: {exc}")
+        token = None
+        session_refused = True
     if token is None:
-        return 1
+        return 2 if session_refused else 1
 
     if not token.startswith(credential.prefix):
         # Warn, don't reject: a prefix could change, and locking someone out of

@@ -881,7 +881,20 @@ def _create_or_resume_session(
     request: _UpRequest,
     *,
     exists: bool,
+    recovery: bool = False,
 ) -> bool:
+    from booley.runtime import session_admission
+
+    if not exists or not idk.container_running(request.name):
+        try:
+            session_admission.admit_start(
+                workspace,
+                target_name=request.name,
+                recovery=recovery,
+                run=_run,
+            )
+        except session_admission.AdmissionError as exc:
+            raise SessionError(str(exc)) from exc
     relay, relay_created = _prepare_license_relay(
         workspace,
         request.relay,
@@ -921,6 +934,7 @@ def _run_up_transaction(
     expected_payload_fingerprint: str | None,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
+    recovery: bool = False,
 ) -> None:
     replacing = rebuild and idk.container_exists(request.name)
     if replacing and request.profile is not None:
@@ -944,6 +958,7 @@ def _run_up_transaction(
             workspace,
             request,
             exists=exists,
+            recovery=recovery,
         )
         candidate_ready = True
         if expected_image_id is not None:
@@ -983,6 +998,7 @@ def _up_unlocked(
     expected_payload_fingerprint: str | None = None,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
+    recovery: bool = False,
 ) -> str:
     """Create-or-start the Sandbox for *workspace*; return its name.
 
@@ -1006,6 +1022,7 @@ def _up_unlocked(
         expected_payload_fingerprint=expected_payload_fingerprint,
         expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
         expected_wheel_sha256=expected_wheel_sha256,
+        recovery=recovery,
     )
     for name in stale_vscode:
         _remove_stopped_session_container(name)
@@ -1082,14 +1099,20 @@ def _prepare_unlocked(workspace: Path) -> str:
     if quiesced is not None:
         _remove_quiesced_legacy_container(quiesced)
     _reconcile_stopped_vscode_containers(workspace, issuance)
-    profile = _requested_issued_license(workspace, issuance)
-    _preflight(spec, license_required=profile is not None)
-    if profile is None:
-        return issuance.spec_sha256
-    relay = _relay_resources(workspace)
-    issuance_labels = runtime_spec.labels(issuance)
-    if _relay_objects_exist(relay):
-        try:
+    from booley.runtime import session_admission
+
+    try:
+        claim_created = session_admission.claim_vscode_start(workspace, run=_run)
+    except session_admission.AdmissionError as exc:
+        raise SessionError(str(exc)) from exc
+    try:
+        profile = _requested_issued_license(workspace, issuance)
+        _preflight(spec, license_required=profile is not None)
+        if profile is None:
+            return issuance.spec_sha256
+        relay = _relay_resources(workspace)
+        issuance_labels = runtime_spec.labels(issuance)
+        if _relay_objects_exist(relay):
             validate_relay(
                 relay,
                 None,
@@ -1097,16 +1120,22 @@ def _prepare_unlocked(workspace: Path) -> str:
                 issuance_labels=issuance_labels,
                 image=issuance.relay_image_id or "",
             )
-        except RelayDockerError as exc:
-            raise SessionError(f"licensed Sandbox topology is invalid: {exc}") from exc
-    else:
-        _provision_license_relay(
-            workspace,
-            profile,
-            issuance_labels,
-            issuance.relay_image_id,
-        )
-    return issuance.spec_sha256
+        else:
+            _provision_license_relay(
+                workspace,
+                profile,
+                issuance_labels,
+                issuance.relay_image_id,
+            )
+        return issuance.spec_sha256
+    except RelayDockerError as exc:
+        if claim_created:
+            session_admission.clear_vscode_claim(workspace)
+        raise SessionError(f"licensed Sandbox topology is invalid: {exc}") from exc
+    except BaseException:
+        if claim_created:
+            session_admission.clear_vscode_claim(workspace)
+        raise
 
 
 def prepare(workspace: Path) -> str:
@@ -2260,22 +2289,73 @@ def _verify_wheel_identity(
         raise SessionError("refreshed Sandbox wheel identity does not match: " + detail)
 
 
-def _down_unlocked(workspace: Path, *, remove: bool = True) -> bool:
-    """Stop (and by default remove) the Sandbox. False if absent."""
+@dataclass(frozen=True, slots=True)
+class DownResult:
+    """Observable resources cleaned by ``session down``."""
+
+    headless: bool = False
+    relay: bool = False
+    vscode_stopped: tuple[str, ...] = ()
+    claim_cleared: bool = False
+
+    def __bool__(self) -> bool:
+        return self.headless or self.relay or bool(self.vscode_stopped) or self.claim_cleared
+
+
+def _down_unlocked(workspace: Path, *, remove: bool = True) -> DownResult:
+    """Stop this Project's Sandboxes and clear pending editor capacity."""
+    from booley.runtime import session_admission
+
     name = session_container_name(workspace)
     relay = _relay_resources(workspace)
     session_exists = idk.container_exists(name)
     relay_exists = _relay_objects_exist(relay)
+    try:
+        vscode = session_admission.vscode_sandboxes(workspace, run=_run)
+    except session_admission.AdmissionError as exc:
+        raise SessionError(str(exc)) from exc
+    verified_vscode = []
+    for item in vscode:
+        if not item.running:
+            continue
+        current = session_admission.vscode_sandboxes(workspace, run=_run)
+        match = next(
+            (
+                value
+                for value in current
+                if value.container_id == item.container_id
+                and value.name == item.name
+                and value.running
+            ),
+            None,
+        )
+        if match is None:
+            raise SessionError(f"cannot prove VS Code Sandbox {item.name!r} identity before stop")
+        verified_vscode.append(match)
     if session_exists:
-        _run(["docker", "stop", name])
+        result = _run(["docker", "stop", name])
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or "docker stop failed"
+            raise SessionError(f"cannot stop headless Sandbox {name!r}: {detail}")
         if remove:
-            _run(["docker", "rm", "-f", name])
+            result = _run(["docker", "rm", "-f", name])
+            if result.returncode:
+                detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
+                raise SessionError(f"cannot remove headless Sandbox {name!r}: {detail}")
+    stopped = []
+    for item in verified_vscode:
+        result = _run(["docker", "stop", item.container_id])
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or "docker stop failed"
+            raise SessionError(f"cannot stop VS Code Sandbox {item.name!r}: {detail}")
+        stopped.append(item.name)
     if remove and relay_exists:
         _remove_license_relay(relay)
-    return session_exists or relay_exists
+    claim_cleared = session_admission.clear_vscode_claim(workspace)
+    return DownResult(session_exists, relay_exists, tuple(stopped), claim_cleared)
 
 
-def down(workspace: Path, *, remove: bool = True) -> bool:
+def down(workspace: Path, *, remove: bool = True) -> DownResult:
     """Stop one Session while excluding other host mutations."""
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
@@ -2291,6 +2371,13 @@ def status(workspace: Path) -> str:
 
     if has_pending_refresh(workspace) or issuance_invalidation.has_pending(workspace):
         return "recovery-pending"
+    from booley.runtime import session_admission
+
+    try:
+        if session_admission.has_pending_claim(workspace):
+            return "start-pending"
+    except session_admission.AdmissionError as exc:
+        raise SessionError(str(exc)) from exc
     name = session_container_name(workspace)
     if not idk.container_exists(name):
         return "absent"
