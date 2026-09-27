@@ -75,6 +75,7 @@ def is_safe_relative_posix(value: object) -> bool:
     return (
         not path.is_absolute()
         and _WINDOWS_DRIVE_RE.match(text) is None
+        and bool(path.parts)
         and all(part not in {"", ".", ".."} for part in path.parts)
         and path.as_posix() == text
     )
@@ -117,7 +118,8 @@ def _formal_reference(proof: object) -> tuple[bool, str | None]:
     if not is_sha256(proof.get("sha256")):
         return False, None
     relative = reference.split("#", 1)[0]
-    return (True, relative) if is_safe_relative_posix(relative) else (False, None)
+    valid = is_safe_relative_posix(relative) and not relative.endswith(".toml")
+    return (True, relative) if valid else (False, None)
 
 
 def _approval_proof_reference(record: object) -> tuple[bool, str | None]:

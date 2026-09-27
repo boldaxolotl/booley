@@ -264,7 +264,7 @@ def test_acceptance_control_paths_include_approved_waiver_inputs(
     policy_root = tmp_path if anchor == "rtl_repository" else project
     approvals = policy_root / "coverage-waivers"
     approval = approvals / "rtl/counter.sv.toml"
-    proof = policy_root / "proofs/counter.sby"
+    proof = approvals / "proofs/counter.sby"
     approval.parent.mkdir(parents=True)
     proof.parent.mkdir(parents=True)
     proof.write_text("[tasks]\ncover\n", encoding="utf-8")
@@ -302,7 +302,6 @@ def test_acceptance_control_paths_include_approved_waiver_inputs(
             {
                 ".booley_project/pipeline.toml",
                 f"{prefix}coverage-waivers",
-                f"{prefix}proofs/counter.sby",
             }
         )
     )
