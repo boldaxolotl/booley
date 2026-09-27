@@ -18,6 +18,7 @@ from booley.criteria.state import (
     DevelopmentState,
 )
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.endpoint_session import _transcript_diagnostic_path
 from booley.flows.source_fingerprint import as_str_list
 from booley.mcp.base import (
     EXIT_ERROR,
@@ -1412,6 +1413,34 @@ class TestMcpToolMain:
         assert result.outcome.report_text == "test_endpoint failed: ValueError: boom"
         assert not report_dir.exists()
         assert not transcript_dir.exists()
+
+    def test_transcript_diagnostic_path_uses_endpoint_resolver(self, tmp_path: Path):
+        expected = tmp_path / "endpoint.jsonl"
+
+        class Endpoint:
+            args = argparse.Namespace(transcript_dir=tmp_path)
+
+            def _transcript_path(self):
+                return expected
+
+        assert _transcript_diagnostic_path(Endpoint()) == expected
+
+    def test_transcript_diagnostic_path_ignores_missing_resolver(self, tmp_path: Path):
+        endpoint = mock.Mock(
+            args=argparse.Namespace(transcript_dir=tmp_path),
+            _transcript_path=None,
+        )
+
+        assert _transcript_diagnostic_path(endpoint) is None
+
+    def test_transcript_diagnostic_path_ignores_resolver_failure(self, tmp_path: Path):
+        class Endpoint:
+            args = argparse.Namespace(transcript_dir=tmp_path)
+
+            def _transcript_path(self):
+                raise OSError("unavailable")
+
+        assert _transcript_diagnostic_path(Endpoint()) is None
 
     def test_main_works_in_human_mode(self):
         """main() completes without BOOLEY_* env vars (no state file)."""
