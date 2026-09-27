@@ -51,6 +51,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Native-coverage Simulation now runs Pre-Sim Commands before every selected
+  test process, including one-test Cocotb batches. It rejects stale staged
+  inputs and hook mutations of authenticated compile, simulator, and coverage
+  artifacts, while preserving attributed failures in CLI, MCP, and durable
+  Simulation Campaign reports. (#723)
 - Approved Waiver Sets now load referenced non-TOML formal proof artifacts from
   the configured approval directory without parsing them as approval documents.
   Unreferenced artifacts still invalidate the set, and lowercase `*.toml` remains

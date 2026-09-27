@@ -38,10 +38,12 @@ from booley.flows.sim.campaign_durability import (
     durable_directory,
 )
 from booley.flows.sim.execution.contract import (
+    PreSimEvidence,
     SimulationInfrastructureFailure,
     SimulationOptions,
     SimulationTargetOutcome,
     SimulationTestOutcome,
+    pre_sim_failure_message,
 )
 from booley.flows.sim.execution.engine import (
     ProcessInvoker,
@@ -737,16 +739,15 @@ def _run_hook(
 
 
 def _hook_failure_outcome(
-    target: str, names: tuple[str, ...], evidence: object
+    target: str, names: tuple[str, ...], evidence: PreSimEvidence
 ) -> SimulationTargetOutcome:
-    detail = cast(str, getattr(evidence, "detail", ""))
     tests = tuple(
         SimulationTestOutcome(
             name=name or target,
             verdict="elab_error",
             passed=False,
             elab_failed=True,
-            error_tail=detail or "Pre-Sim Commands failed",
+            error_tail=pre_sim_failure_message(evidence.status, evidence.detail),
         )
         for name in (names or (target,))
     )

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import shlex
 import shutil
-from collections.abc import Mapping
-from dataclasses import replace
+import stat
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import cast
@@ -14,6 +17,7 @@ from typing import cast
 from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim import trace_overlay
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
 from booley.flows.sim.build import (
     PreparedSimulationBuild,
@@ -28,7 +32,10 @@ from booley.flows.sim.build_session import (
     SimulationBuildSlotError,
     project_compile_surface,
     resolve_target_compile_surface,
+    snapshot_build_inputs,
+    verify_existing_build_inputs,
 )
+from booley.flows.sim.config import resolve_pre_sim_build_access, resolve_pre_sim_commands
 from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
 from booley.flows.sim.execution.attempt import (
     AdapterAttemptOutcome,
@@ -37,17 +44,23 @@ from booley.flows.sim.execution.attempt import (
     execute_adapter_attempt,
 )
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
-from booley.flows.sim.execution.contract import SimulationOptions
+from booley.flows.sim.execution.contract import (
+    PreSimEvidence,
+    SimulationOptions,
+    pre_sim_failure_message,
+)
 from booley.flows.sim.execution.engine import (
     prepare_simulation_work,
     simulation_target_environment,
 )
+from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifact
+from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     core_target_coverage_errors,
     coverage_target_metadata_errors,
 )
-from booley.targets.catalog import TargetCatalog
+from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
 from .coverage_campaign import SimulationVerdict
@@ -74,6 +87,18 @@ _VERSION_RE = re.compile(r"\bVerilator (?P<version>[0-9]+\.[0-9]+)\b")
 _ADAPTER_CLEANUP_MARGIN_S = 90
 
 
+@dataclass(frozen=True)
+class _PreSimSnapshot:
+    """Protected coverage state captured immediately before one Project hook."""
+
+    compile_surface: TargetCompileSurface
+    compile_hashes: Mapping[str, str]
+    build_inputs: Mapping[str, str]
+    image: tuple[tuple[str, int, int, str], ...]
+    raw: ArtifactStamp | None
+    hook: ArtifactStamp | None
+
+
 class VerilatorCoverageExecution:
     """Bind the collector port to Booley's ordinary build and run adapters."""
 
@@ -84,11 +109,15 @@ class VerilatorCoverageExecution:
         invoke: ProcessInvoker,
         options: SimulationOptions,
         provenance_path: Path = _PROVENANCE_PATH,
+        pre_sim_commands: tuple[str, ...] | None = None,
+        pre_sim_build_access: str | None = None,
     ) -> None:
         self._handle = handle
         self._invoke = invoke
         self._options = options
         self._provenance_path = provenance_path
+        self._pre_sim_commands = pre_sim_commands
+        self._pre_sim_build_access = pre_sim_build_access
         self._prepared: PreparedSimulationBuild | None = None
         self._artifact_paths: tuple[Path, ...] = ()
         self._build_variant: str | None = None
@@ -103,6 +132,13 @@ class VerilatorCoverageExecution:
         self._build_variant = None
         self._attempt_run_cwd = None
         self._snapshot_bound = False
+        commands = self._commands()
+        if commands and self._build_access() == "legacy-per-test":
+            return SimulationBuildResult(
+                False,
+                "native coverage does not support legacy-per-test Pre-Sim build access; "
+                "use immutable access or remove Pre-Sim Commands",
+            )
         if request.target.identity != self._handle.identity:
             return SimulationBuildResult(False, "coverage Target identity does not match handle")
         identity, version_output = self._collector_identity()
@@ -208,14 +244,24 @@ class VerilatorCoverageExecution:
                 return self._run_prepared(request, prepared)
             with SimulationBuildSession(self._handle, variant) as session:
                 session.verify_fresh_image(prepared)
-                return self._run_prepared(request, prepared)
+                return self._run_prepared(
+                    request,
+                    prepared,
+                    verify_image=lambda: session.verify_fresh_image(prepared),
+                )
         except SimulationBuildSlotError as exc:
             return SimulationRunResult(
-                "inconclusive", f"coverage image verification failed: {exc}"
+                "inconclusive",
+                f"coverage image verification failed: {exc}",
+                infrastructure_error=True,
             )
 
     def _run_prepared(
-        self, request: SimulationRunRequest, prepared: PreparedSimulationBuild
+        self,
+        request: SimulationRunRequest,
+        prepared: PreparedSimulationBuild,
+        *,
+        verify_image: Callable[[], None] | None = None,
     ) -> SimulationRunResult:
         _prepare_artifact_directories(request)
         token = new_attempt_token()
@@ -228,6 +274,39 @@ class VerilatorCoverageExecution:
             selected_tests=test_names,
             result_path=prepared.build_root / f".booley-coverage-adapter-{token}.json",
         )
+        work = self._prepare_work(request, prepared, transport)
+        before = _snapshot_pre_sim_state(self._handle, prepared, request, self._artifact_paths)
+        pre_sim = self._run_pre_sim(prepared, test_names, work.run_cwd)
+        try:
+            _verify_pre_sim_state(
+                prepared,
+                request,
+                self._artifact_paths,
+                before,
+                verify_image=verify_image,
+            )
+        except SimulationBuildSlotError as exc:
+            return SimulationRunResult(
+                "inconclusive",
+                f"coverage image verification failed: {exc}",
+                pre_sim,
+                infrastructure_error=True,
+            )
+        if pre_sim is not None and pre_sim.status != "passed":
+            return SimulationRunResult(
+                "elab_error",
+                pre_sim_failure_message(pre_sim.status, pre_sim.detail),
+                pre_sim,
+                infrastructure_error=pre_sim.status == "spawn_error",
+            )
+        return self._execute_run(request, prepared, transport, work, pre_sim)
+
+    def _prepare_work(
+        self,
+        request: SimulationRunRequest,
+        prepared: PreparedSimulationBuild,
+        transport: AdapterTransportIdentity,
+    ) -> PreparedSimulationWork:
         work = prepare_simulation_work(
             self._handle,
             prepared,
@@ -237,8 +316,32 @@ class VerilatorCoverageExecution:
             trace_mode=self._trace_mode,
             plusargs_suffix=request.argv_suffix,
         )
-        if self._attempt_run_cwd is not None:
-            work = replace(work, run_cwd=str(self._attempt_run_cwd))
+        return replace(work, run_cwd=str(self._attempt_run_cwd)) if self._attempt_run_cwd else work
+
+    def _run_pre_sim(
+        self, prepared: PreparedSimulationBuild, test_names: tuple[str, ...], run_cwd: str
+    ) -> PreSimEvidence | None:
+        return run_pre_sim_commands(
+            self._handle,
+            test_names=test_names,
+            build_root=prepared.build_root,
+            eda_tool=prepared.eda_tool,
+            timeout_s=DEFAULT_TIMEOUT_S,
+            simulator_environment=simulation_target_environment(self._handle),
+            commands=self._commands(),
+            run_cwd=run_cwd,
+            working_directory=self._handle.project_root,
+            expose_build_root=False,
+        )
+
+    def _execute_run(
+        self,
+        request: SimulationRunRequest,
+        prepared: PreparedSimulationBuild,
+        transport: AdapterTransportIdentity,
+        work: PreparedSimulationWork,
+        pre_sim: PreSimEvidence | None,
+    ) -> SimulationRunResult:
         invocation = prepare_adapter_invocation(work)
         environment = {**simulation_target_environment(self._handle), **request.environment}
         script = _environment_script(environment, invocation)
@@ -252,7 +355,17 @@ class VerilatorCoverageExecution:
                 prepared.build_root,
             ),
         )
-        return _simulation_run_result(executed, request.test.name)
+        return replace(_simulation_run_result(executed, request.test.name), pre_sim=pre_sim)
+
+    def _commands(self) -> tuple[str, ...]:
+        if self._pre_sim_commands is not None:
+            return self._pre_sim_commands
+        return tuple(resolve_pre_sim_commands(self._handle.project_root))
+
+    def _build_access(self) -> str:
+        if self._pre_sim_build_access is not None:
+            return self._pre_sim_build_access
+        return resolve_pre_sim_build_access(self._handle.project_root)
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
         """Run one collector utility in its requested artifact directory."""
@@ -450,6 +563,75 @@ def _prepare_artifact_directories(request: SimulationRunRequest) -> None:
     request.raw_path.parent.mkdir(parents=True, exist_ok=True)
     if request.hook_evidence_path is not None:
         request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _snapshot_pre_sim_state(
+    handle: TargetHandle,
+    prepared: PreparedSimulationBuild,
+    request: SimulationRunRequest,
+    artifact_paths: tuple[Path, ...],
+) -> _PreSimSnapshot:
+    surface = resolve_target_compile_surface(handle)
+    return _PreSimSnapshot(
+        compile_surface=surface,
+        compile_hashes=project_compile_surface(surface, include_operational_cores=True),
+        build_inputs=snapshot_build_inputs(prepared),
+        image=_image_identity(prepared.build_root, artifact_paths),
+        raw=snapshot_artifact(request.raw_path),
+        hook=(
+            snapshot_artifact(request.hook_evidence_path)
+            if request.hook_evidence_path is not None
+            else None
+        ),
+    )
+
+
+def _verify_pre_sim_state(
+    prepared: PreparedSimulationBuild,
+    request: SimulationRunRequest,
+    artifact_paths: tuple[Path, ...],
+    before: _PreSimSnapshot,
+    *,
+    verify_image: Callable[[], None] | None,
+) -> None:
+    verify_existing_build_inputs(prepared, before.build_inputs)
+    if (
+        project_compile_surface(before.compile_surface, include_operational_cores=True)
+        != before.compile_hashes
+    ):
+        raise SimulationBuildSlotError("Project compile inputs changed during Pre-Sim Commands")
+    if verify_image is not None:
+        verify_image()
+    if _image_identity(prepared.build_root, artifact_paths) != before.image:
+        raise SimulationBuildSlotError("coverage image changed during Pre-Sim Commands")
+    if snapshot_artifact(request.raw_path) != before.raw:
+        raise SimulationBuildSlotError("native coverage database changed during Pre-Sim Commands")
+    if request.hook_evidence_path is not None and (
+        snapshot_artifact(request.hook_evidence_path) != before.hook
+    ):
+        raise SimulationBuildSlotError("Coverage Window evidence changed during Pre-Sim Commands")
+
+
+def _image_identity(root: Path, paths: tuple[Path, ...]) -> tuple[tuple[str, int, int, str], ...]:
+    try:
+        resolved_root = root.resolve(strict=True)
+        if root.is_symlink() or not resolved_root.is_dir():
+            raise SimulationBuildSlotError("coverage image root is not a regular directory")
+        identities = []
+        for path in paths:
+            info = path.lstat()
+            resolved = path.resolve(strict=True)
+            if not stat.S_ISREG(info.st_mode) or not resolved.is_relative_to(resolved_root):
+                raise SimulationBuildSlotError(f"unsafe coverage image: {path}")
+            mode = stat.S_IMODE(info.st_mode)
+            if os.name != "nt" and not mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+                raise SimulationBuildSlotError(f"coverage image is not executable: {path}")
+            content = path.read_bytes()
+            relative = path.relative_to(root).as_posix()
+            identities.append((relative, mode, len(content), hashlib.sha256(content).hexdigest()))
+        return tuple(identities)
+    except OSError as exc:
+        raise SimulationBuildSlotError(f"cannot verify coverage image: {exc}") from exc
 
 
 def _simulation_run_result(attempt: AdapterAttemptOutcome, test_name: str) -> SimulationRunResult:
