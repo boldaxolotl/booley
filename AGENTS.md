@@ -5,8 +5,11 @@ simulation, synthesis, linting, and ticket workflows.
 
 ## Repository Rules
 
-- Before modifying Booley code in a new chat, create a worktree and new branch
-  from `main`, even when the existing checkout has dirty files.
+- Before modifying Booley code in a new chat, fast-forward local `main` to
+  `origin/main` (`git pull --ff-only` in the main checkout), then create a
+  worktree and new branch from `main`.
+- Keep the main checkout on `main` and clean: make every edit in a worktree,
+  and leave no modified or untracked files in the main checkout.
 - Before creating that worktree, run the Agent Readiness Check's `prepare`
   phase with the intended `codex/` branch. After creating it and before
   modifying files, run `develop` from the intended worktree:
