@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -283,7 +284,24 @@ def test_snapshot_bound_coverage_uses_authoritative_run_cwd_for_pre_sim(
 
 
 @pytest.mark.parametrize("snapshot_bound", [False, True])
-@pytest.mark.parametrize("mutation", ["chmod", "symlink", "delete"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(
+            "chmod",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Windows has no POSIX execute-bit contract"
+            ),
+        ),
+        pytest.param(
+            "symlink",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Windows CI does not grant symlink privileges"
+            ),
+        ),
+        "delete",
+    ],
+)
 def test_pre_sim_reauthenticates_direct_and_snapshot_bound_images(
     tmp_path: Path, monkeypatch, snapshot_bound: bool, mutation: str
 ) -> None:
@@ -322,6 +340,7 @@ def test_pre_sim_reauthenticates_direct_and_snapshot_bound_images(
     assert "run_script" not in captured
 
 
+@pytest.mark.skipif(os.name == "nt", reason="chmod mutation is POSIX-specific")
 def test_protected_surface_change_takes_priority_over_hook_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -421,7 +440,20 @@ def test_legacy_build_access_without_commands_remains_compatible(
     assert _build_coverage(execution, target).success
 
 
-@pytest.mark.parametrize("surface", ["compile", "image", "raw", "hook_evidence"])
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "compile",
+        pytest.param(
+            "image",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="find mutation command is POSIX-specific"
+            ),
+        ),
+        "raw",
+        "hook_evidence",
+    ],
+)
 def test_pre_sim_cannot_mutate_authenticated_coverage_surfaces(
     tmp_path: Path, monkeypatch, surface: str
 ) -> None:
