@@ -208,6 +208,75 @@ def test_persistence_failure_does_not_hide_the_cli_diagnosis(capsys) -> None:
     )
 
 
+def test_self_printed_verdict_gets_only_the_completion_suffix(capsys) -> None:
+    class SelfPrintingPersistenceFailure(ConcreteMcpTool):
+        def _run(self) -> McpToolResult:
+            print("design failed")
+            return McpToolResult(exit_code=EXIT_FAILURE, report_text="design failed")
+
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            raise RuntimeError("persistence failed")
+
+    result = SelfPrintingPersistenceFailure().execute_cli([])
+
+    captured = capsys.readouterr()
+    assert result.exit_code == EXIT_ERROR
+    assert captured.out == "design failed\n"
+    assert "design failed" not in captured.err
+    assert "Completion failure (persist endpoint completion)" in captured.err
+
+
+def test_console_failure_is_normalized_and_recovery_is_attempted() -> None:
+    endpoint = ConcreteMcpTool()
+    with (
+        mock.patch.object(
+            endpoint, "_publish_console_report", side_effect=OSError("console unavailable")
+        ),
+        mock.patch("booley.flows.endpoint_reporting._recover_report_publication") as recover,
+    ):
+        result = endpoint.execute_cli([])
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.detail["completion_error"]["operation"] == ("publish console diagnosis")
+    recover.assert_called_once_with(endpoint, result.outcome)
+
+
+def test_endpoint_end_failure_is_suppressed_after_completion_failure() -> None:
+    class PersistenceFailingMcpTool(ConcreteMcpTool):
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            raise RuntimeError("persistence failed")
+
+    def fail_endpoint_end(event: dict[str, object]) -> None:
+        if event["type"] == "endpoint_end":
+            raise OSError("display unavailable")
+
+    endpoint = PersistenceFailingMcpTool()
+    with (
+        mock.patch("booley.flows.endpoint_session._write_display_event", fail_endpoint_end),
+        mock.patch("booley.flows.endpoint_reporting._write_display_event", fail_endpoint_end),
+    ):
+        result = endpoint.execute_cli([])
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.detail["completion_error"]["operation"] == (
+        "persist endpoint completion"
+    )
+
+
+def test_endpoint_end_failure_propagates_without_completion_failure() -> None:
+    def fail_endpoint_end(event: dict[str, object]) -> None:
+        if event["type"] == "endpoint_end":
+            raise OSError("display unavailable")
+
+    endpoint = ConcreteMcpTool()
+    with (
+        mock.patch("booley.flows.endpoint_session._write_display_event", fail_endpoint_end),
+        mock.patch("booley.flows.endpoint_reporting._write_display_event", fail_endpoint_end),
+        pytest.raises(OSError, match="display unavailable"),
+    ):
+        endpoint.execute_cli([])
+
+
 def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> None:
     state_file = tmp_path / "state.json"
     DevelopmentState.load(state_file).save()

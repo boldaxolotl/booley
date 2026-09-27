@@ -100,7 +100,17 @@ def test_prepared_campaign_and_borrowed_admission_are_explicit_values() -> None:
 
 def _request(selector: str) -> SimpleNamespace:
     return SimpleNamespace(
-        plan=SimpleNamespace(manifest=SimpleNamespace(document={"target": {"selector": selector}}))
+        plan=SimpleNamespace(
+            manifest=SimpleNamespace(
+                document={
+                    "target": {
+                        "selector": selector,
+                        "vlnv": "acme:demo:target:1.0",
+                        "name": selector,
+                    }
+                }
+            )
+        )
     )
 
 
@@ -134,6 +144,32 @@ def test_completed_campaign_survives_per_target_progress_failure(
     assert result.detail["pending_targets"] == ["second"]
     assert result.detail["completion_error"]["path"] == str(tmp_path / "progress.json")
     assert len(outcomes) == 1
+
+
+def test_coverage_authentication_failure_returns_structured_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow = SimulateFlow()
+    flow._coverage_prepared = SimpleNamespace(targets=[])
+    completed = [object(), object()]
+    pending = list(completed)
+    campaign = SimpleNamespace(run=lambda _request: pending.pop(0))
+    progress = SimpleNamespace(invocation_dir=tmp_path, checkpoint=lambda **_kwargs: None)
+    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", _retained_campaign_outcome)
+    monkeypatch.setattr(
+        "booley.flows.sim.flow._retain_coverage_campaign",
+        lambda _progress, _outcome: (_ for _ in ()).throw(ValueError("untrusted campaign")),
+    )
+
+    result = flow._execute_coverage_campaign_requests(
+        campaign, [_request("first"), _request("second")], progress
+    )
+
+    assert result.exit_code == 2
+    assert result.detail["campaigns"] == {}
+    assert result.detail["targets"] == {}
+    assert "untrusted campaign" in result.report_text
+    assert len(pending) == 1
 
 
 def test_all_campaigns_survive_terminal_progress_failure(
@@ -187,3 +223,28 @@ def test_all_campaigns_survive_terminal_progress_failure(
     assert result.detail["completion_error"]["operation"] == "publish coverage progress"
     assert terminal_phases == ["complete", "aborted"]
     assert pending == []
+
+
+def test_legacy_result_survives_terminal_progress_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = tmp_path
+    monkeypatch.setattr(flow, "_prepare_legacy_run", lambda *_args: (["PASS"], True))
+    monkeypatch.setattr(
+        flow,
+        "_legacy_endpoint_outcome",
+        lambda *_args: EndpointOutcome(detail={"targets": {"first": {"simulation": "pass"}}}),
+    )
+    monkeypatch.setattr(
+        flow,
+        "_write_progress_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("progress unavailable")),
+    )
+
+    result = flow._run_legacy_selected_mode(["first"], {}, 0.0, 0.0)
+
+    assert result.exit_code == 2
+    assert result.detail["targets"] == {"first": {"simulation": "pass"}}
+    assert result.detail["completion_error"]["operation"] == "publish simulation progress"
+    assert result.detail["completion_error"]["path"] == str(tmp_path / "progress.json")

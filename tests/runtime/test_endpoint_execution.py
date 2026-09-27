@@ -14,6 +14,7 @@ from booley.runtime.endpoint_execution import (
     EndpointRejectedError,
     ExecutionResult,
     execute_endpoint,
+    normalize_completion_error,
 )
 
 
@@ -152,6 +153,16 @@ def test_endpoint_outcome_keeps_the_existing_structured_verdict_fields() -> None
     assert outcome.detail == {"warnings": 0}
     assert outcome.display_lines == ["0 warnings"]
     assert outcome.summary == "lint clean"
+
+
+def test_completion_error_message_is_bounded() -> None:
+    outcome = EndpointOutcome()
+
+    normalize_completion_error(outcome, RuntimeError("x" * 600), "publish report")
+
+    message = outcome.detail["completion_error"]["message"]
+    assert len(message) == 500
+    assert message.endswith("…")
 
 
 def test_admission_rejection_finishes_without_invoking_endpoint() -> None:
