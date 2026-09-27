@@ -69,6 +69,12 @@ class PreSimEvidence:
     detail: str = ""
 
 
+def pre_sim_failure_message(status: PreSimStatus, detail: str = "") -> str:
+    """Render one stable diagnostic for a failed Pre-Sim Commands firing."""
+    message = f"pre-sim commands failed ({status})"
+    return f"{message}: {detail}" if detail else message
+
+
 @dataclass(frozen=True)
 class SimulationArtifactEvidence:
     """A current-attempt artifact validated by shared execution policy."""
@@ -168,4 +174,5 @@ __all__ = [
     "SimulationTargetOutcome",
     "SimulationTestOutcome",
     "SimulationVerdict",
+    "pre_sim_failure_message",
 ]

@@ -153,7 +153,9 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     data = tmp_path / ".booley_project"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
-    flow = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution())
+    flow = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    )
     result = flow.execute(
         SimRequest(
             target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
@@ -192,6 +194,36 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     assert flow_schema(flow)["properties"]["coverage"]["type"] == "boolean"
 
 
+def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+    (data / "booley.toml").write_text(
+        "[flows.sim]\n"
+        'pre_run_commands = ["python3 scripts/stage.py"]\n'
+        'pre_sim_build_access = "legacy-per-test"\n'
+    )
+    received = []
+
+    def execution_factory(_handle, _options, commands, access):
+        received.append((commands, access))
+        return NativeExecution()
+
+    result = SimulateFlow(coverage_execution=execution_factory).execute(
+        SimRequest(
+            target="sim_0",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 0
+    assert received == [(("python3 scripts/stage.py",), "legacy-per-test")]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
 @pytest.mark.parametrize("relative", ["unreadable", ".booley_project/unreadable"])
 def test_unreadable_unrelated_directory_does_not_block_coverage(
@@ -207,7 +239,7 @@ def test_unreadable_unrelated_directory_does_not_block_coverage(
     unreadable.chmod(0)
     try:
         result = SimulateFlow(
-            coverage_execution=lambda _handle, _options: NativeExecution()
+            coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
         ).execute(
             SimRequest(
                 target="sim_0",
@@ -235,7 +267,9 @@ def test_copied_complete_invocation_remains_analyzable_and_independently_prunabl
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
     reports = tmp_path / "reports"
-    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(
         SimRequest(
             target="sim_0",
             work_dir=tmp_path,
@@ -281,7 +315,9 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     data.mkdir()
     (data / "tests.toml").write_text("".join(f'[sim_{i}]\ntests = ["reset"]\n' for i in range(3)))
     flow = SimulateFlow(
-        coverage_execution=lambda handle, options: NativeExecution(missing=handle.name == "sim_1")
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution(
+            missing=handle.name == "sim_1"
+        )
     )
     request = flow.parse_args(
         [
@@ -318,7 +354,7 @@ def test_shared_execution_failure_aborts_later_targets_without_losing_completed_
             raise FileNotFoundError("Sandbox executable disappeared")
 
     flow = SimulateFlow(
-        coverage_execution=lambda handle, options: (
+        coverage_execution=lambda handle, options, _commands, _access: (
             Unavailable() if handle.name == "sim_1" else NativeExecution()
         )
     )
@@ -355,7 +391,9 @@ def test_gated_shared_execution_failure_preserves_blocked_evaluation(tmp_path, m
         def build(self, request):
             raise FileNotFoundError("Sandbox executable disappeared")
 
-    result = SimulateFlow(coverage_execution=lambda _handle, _options: Unavailable()).execute(
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: Unavailable()
+    ).execute(
         SimRequest(
             target="sim_custom",
             work_dir=tmp_path,
@@ -448,9 +486,9 @@ def test_explicit_coverage_selection_executes_configured_skips(
             return SimulationRunResult("fail" if request.test.name == "wrap" else "pass")
 
     execution = PerTestVerdict()
-    result = SimulateFlow(coverage_execution=lambda _handle, _options: execution).execute(
-        SimRequest(target="sim_0", test=selected, work_dir=tmp_path, coverage=True)
-    )
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: execution
+    ).execute(SimRequest(target="sim_0", test=selected, work_dir=tmp_path, coverage=True))
 
     assert result.exit_code == exit_code
     assert [request.test.name for request in execution.runs] == expected_runs
@@ -481,9 +519,9 @@ def test_interactive_coverage_criterion_does_not_mutate_or_save_state(tmp_path, 
     )
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
-        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True)
-    )
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))
     assert result.exit_code == 0, result.outcome
     assert save_calls == []
     assert state_path.read_bytes() == before_bytes
@@ -497,7 +535,9 @@ def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
 
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
     adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", ticket_identity=identity)
-    flow = SimulateFlow(coverage_execution=lambda _handle, _options: _SplitMetricsExecution())
+    flow = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: _SplitMetricsExecution()
+    )
     result = flow.execute(
         SimRequest(
             target="sim_custom",
@@ -612,7 +652,9 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
                 infrastructure_error=True,
             )
 
-    result = SimulateFlow(coverage_execution=lambda handle, options: Unavailable()).execute(
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: Unavailable()
+    ).execute(
         SimRequest(
             target="sim_0,sim_1", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
         )
@@ -662,7 +704,9 @@ def _interrupt_coverage_invocation(tmp_path, monkeypatch, *, selected=None, skip
         report_dir=reports,
     )
     with pytest.raises(KeyboardInterrupt):
-        SimulateFlow(coverage_execution=lambda handle, options: Interrupted()).execute(request)
+        SimulateFlow(
+            coverage_execution=lambda handle, options, _commands, _access: Interrupted()
+        ).execute(request)
     return reports, request
 
 
@@ -678,7 +722,9 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     original = original_path.read_bytes()
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     resumed_reports = reports
-    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(
         SimRequest(
             resume_from=manifest,
             work_dir=tmp_path,
@@ -705,9 +751,9 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
         "sim/1/targets/sim_0/campaign/manifest.json"
     )
     prune_invocation(resumed_reports, 2)
-    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
-        request
-    )
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(request)
     assert result.exit_code == 0
     assert (reports / "sim/3/targets/sim_0/coverage.json").is_file()
     prune_invocation(reports, 1)
@@ -720,9 +766,9 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     execution = NativeExecution()
 
-    result = SimulateFlow(coverage_execution=lambda _handle, _options: execution).execute(
-        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=tmp_path / "resumed")
-    )
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: execution
+    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=tmp_path / "resumed"))
 
     assert result.exit_code == 0
     assert [request.test.name for request in execution.runs] == ["wrap"]
@@ -802,7 +848,7 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
             runs.append(request.test)
             return super().run(request)
 
-    def execution_factory(_handle, _options):
+    def execution_factory(_handle, _options, _commands, _access):
         return CountedExecution()
 
     armed = True
@@ -880,7 +926,9 @@ def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatc
         return write(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", check_lock)
-    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(
         SimRequest(
             target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
         )
@@ -899,9 +947,9 @@ def test_full_pruning_rejects_extra_nested_coverage_payload(tmp_path, monkeypatc
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     reports = tmp_path / "reports"
-    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
-        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
-    )
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports))
     assert result.exit_code == 0
     native = next(
         (reports / "sim/1/targets/sim_0/campaign").glob(
@@ -942,7 +990,9 @@ def test_pruning_during_allocation_does_not_reuse_campaign_number(tmp_path, monk
         return iter(entries)
 
     monkeypatch.setattr(Path, "iterdir", interleaved)
-    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(
         SimRequest(
             target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
         )
@@ -962,9 +1012,9 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     data = tmp_path / ".booley_project"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
-    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
-        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True)
-    )
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))
     assert result.exit_code == 0
     campaign = next(tmp_path.rglob("targets/sim_0/coverage.json"))
     model = Model()
@@ -1022,7 +1072,7 @@ def test_interactive_collection_keeps_criteria_unchanged_across_verdicts(
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
     result = SimulateFlow(
-        coverage_execution=lambda handle, options: NativeExecution(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution(
             verdict=verdict, hits=hits, missing=missing
         )
     ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))

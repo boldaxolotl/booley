@@ -22,7 +22,7 @@ from .coverage_campaign import (
     FrozenJson,
     SimulationVerdict,
 )
-from .execution.contract import PreSimEvidence
+from .execution.contract import PreSimEvidence, pre_sim_failure_message
 from .execution.freshness import (
     ArtifactStamp,
     ArtifactValidationError,
@@ -401,6 +401,21 @@ def _collect_one_run(
 ) -> _CollectedRun:
     context = _prepare_run(request, index, selected)
     result = execution.run(_run_request(request, context))
+    if result.infrastructure_error and result.verdict != "elab_error":
+        failed = _run_failure(
+            request,
+            context,
+            result.verdict,
+            code="COV_INFRASTRUCTURE_ERROR",
+            message=result.output or "coverage Simulation infrastructure failed",
+            pointer="execution",
+            attributes=_pre_sim_attributes(result.pre_sim),
+        )
+        return replace(
+            failed,
+            infrastructure_error=True,
+            infrastructure_detail=result.output,
+        )
     if result.pre_sim is not None and result.pre_sim.status != "passed":
         return _pre_sim_failure(request, context, result)
     if result.infrastructure_error:
@@ -450,9 +465,7 @@ def _pre_sim_failure(
 ) -> _CollectedRun:
     evidence = result.pre_sim
     assert evidence is not None
-    message = f"Pre-Sim Commands failed ({evidence.status})"
-    if evidence.detail:
-        message += f": {evidence.detail}"
+    message = pre_sim_failure_message(evidence.status, evidence.detail)
     failed = _run_failure(
         request,
         context,

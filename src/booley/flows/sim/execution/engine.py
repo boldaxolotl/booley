@@ -89,6 +89,7 @@ from .contract import (
     SimulationSelection,
     SimulationTargetOutcome,
     SimulationTestOutcome,
+    pre_sim_failure_message,
 )
 from .failures import find_missing_executable
 from .freshness import (
@@ -1378,7 +1379,7 @@ def _pre_sim_failure(
             verdict="elab_error",
             passed=False,
             elapsed_s=evidence.elapsed_s,
-            error_tail=f"pre-sim commands failed ({evidence.status}): {detail}",
+            error_tail=pre_sim_failure_message(evidence.status, detail),
             elab_failed=True,
         )
         for name in names

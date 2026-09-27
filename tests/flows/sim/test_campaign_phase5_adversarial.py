@@ -22,7 +22,10 @@ from booley.flows.sim.campaign.coordinator import (
     ResumeCampaignRunRequest,
     SimulationCampaign,
 )
-from booley.flows.sim.campaign.coverage_execution import CoverageAggregateExecutor
+from booley.flows.sim.campaign.coverage_execution import (
+    CoverageAggregateExecutor,
+    _CoverageAggregateError,
+)
 from booley.flows.sim.campaign.flow_planning import plan_coarse_simulation_campaign
 from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.campaign.resume import (
@@ -440,8 +443,39 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
     observations = result.document["observations"]
     assert observations[0]["execution"] == "completed"
     assert observations[0]["detail"]["reason"] == (
-        "Pre-Sim Commands failed (failed): vector generator rejected input"
+        "pre-sim commands failed (failed): vector generator rejected input"
     )
+
+
+def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Path) -> None:
+    class PreSimSpawnError(NativeExecution):
+        def run(self, request):
+            evidence = PreSimEvidence(
+                ("missing-vector-generator",),
+                (request.test.name,),
+                "spawn_error",
+                0.2,
+                "missing-vector-generator: command not found",
+            )
+            return SimulationRunResult(
+                "elab_error", evidence.detail, evidence, infrastructure_error=True
+            )
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a Pre-Sim spawn error")
+
+    with pytest.raises(_CoverageAggregateError, match="missing-vector-generator") as raised:
+        _run_coverage_campaign(tmp_path, PreSimSpawnError())
+
+    assert raised.value.evaluation_status == "not_requested"
+    nested = next(
+        (tmp_path / "reports/1/targets/sim_0").glob(
+            "campaign/work-items/*/attempts/*/coverage-campaign/coverage.json"
+        )
+    )
+    document = json.loads(nested.read_text(encoding="utf-8"))
+    assert document["collection"]["status"] == "collector_error"
+    assert document["tests"]["runs"][1]["execution"] == "not_completed"
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:

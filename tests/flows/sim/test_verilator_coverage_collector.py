@@ -341,6 +341,34 @@ def test_pre_sim_spawn_error_aborts_later_tests(tmp_path: Path) -> None:
     assert "missing-generator" in result.findings[-1].message
 
 
+def test_protected_surface_failure_takes_priority_over_failed_hook(tmp_path: Path) -> None:
+    class ChangedImage(_GeneratedMainExecution):
+        def run(self, request) -> SimulationRunResult:
+            evidence = PreSimEvidence(
+                ("mutate-and-fail",),
+                (request.test.name,),
+                "failed",
+                0.25,
+                "hook exited 1",
+            )
+            return SimulationRunResult(
+                "inconclusive",
+                "coverage image verification failed: image changed",
+                evidence,
+                infrastructure_error=True,
+            )
+
+        def command(self, request) -> SimulationCommandResult:
+            raise AssertionError("merge must not run after image verification failure")
+
+    result = collect(_request(tmp_path, "first"), ChangedImage())
+
+    assert result.infrastructure_error is True
+    assert result.findings[0].code == "COV_INFRASTRUCTURE_ERROR"
+    assert "image changed" in result.findings[0].message
+    assert result.runs[0].attributes["pre_sim"]["status"] == "failed"
+
+
 def test_successful_pre_sim_evidence_is_serialized_on_the_run(tmp_path: Path) -> None:
     execution = _PreSimExecution("passed")
 

@@ -132,14 +132,18 @@ def test_coverage_runs_pre_sim_commands_before_the_adapter(tmp_path: Path, monke
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
     marker = tmp_path / "pre-sim.txt"
+    staged = tmp_path / "staged-input.txt"
+    staged.write_text("stale", encoding="utf-8")
     project_dir.joinpath("booley.toml").write_text(
         "[flows.sim]\n"
         'pre_run_commands = [\'printf "%s\\n%s\\n%s\\n%s\\n%s" '
         '"$BOOLEY_TEST_NAME" "$BOOLEY_TEST_NAMES" "$BOOLEY_TARGET" '
-        '"$BOOLEY_RUN_CWD" "${BOOLEY_BUILD_ROOT-unset}" > pre-sim.txt\']\n',
+        '"$BOOLEY_RUN_CWD" "${BOOLEY_BUILD_ROOT-unset}" > pre-sim.txt\', '
+        '\'printf "%s" "$BOOLEY_TEST_NAME" > staged-input.txt\']\n',
         encoding="utf-8",
     )
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    captured["staged_input_path"] = staged
     assert _build_coverage(execution, target).success
 
     result = execution.run(_run_request(target, raw_path))
@@ -152,6 +156,7 @@ def test_coverage_runs_pre_sim_commands_before_the_adapter(tmp_path: Path, monke
         str(tmp_path),
         "unset",
     ]
+    assert captured["staged_values"] == ["wrap"]
     assert "run_script" in captured
 
 
@@ -162,10 +167,14 @@ def test_cocotb_coverage_runs_pre_sim_once_per_selected_test_process(
     project_dir.mkdir()
     project_dir.joinpath("booley.toml").write_text(
         "[flows.sim]\n"
-        'pre_run_commands = [\'printf "%s\\n" "$BOOLEY_TEST_NAME" >> firings.txt\']\n',
+        'pre_run_commands = [\'printf "%s\\n" "$BOOLEY_TEST_NAME" >> firings.txt\', '
+        '\'printf "%s" "$BOOLEY_TEST_NAME" > staged-input.txt\']\n',
         encoding="utf-8",
     )
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch, cocotb=True)
+    staged = tmp_path / "staged-input.txt"
+    staged.write_text("stale", encoding="utf-8")
+    captured["staged_input_path"] = staged
     assert _build_coverage(execution, target).success
 
     for index, name in enumerate(("gap", "full"), start=1):
@@ -181,6 +190,7 @@ def test_cocotb_coverage_runs_pre_sim_once_per_selected_test_process(
         "full",
     ]
     assert len(captured["run_scripts"]) == 2
+    assert captured["staged_values"] == ["gap", "full"]
     assert captured["work"].adapter == "cocotb"
     assert captured["work"].tests == ("full",)
 
@@ -211,6 +221,67 @@ def test_snapshot_bound_coverage_uses_authoritative_run_cwd_for_pre_sim(
 
     assert result.verdict == "pass"
     assert (tmp_path / "bound-cwd.txt").read_text(encoding="utf-8") == str(run_cwd)
+
+
+@pytest.mark.parametrize("snapshot_bound", [False, True])
+@pytest.mark.parametrize("mutation", ["chmod", "symlink", "delete"])
+def test_pre_sim_reauthenticates_direct_and_snapshot_bound_images(
+    tmp_path: Path, monkeypatch, snapshot_bound: bool, mutation: str
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    source_root, artifacts = execution.authenticated_image()
+    image = artifacts[0]
+    if snapshot_bound:
+        snapshot_root = tmp_path / "snapshot"
+        destination = snapshot_root / image.relative_to(source_root)
+        destination.parent.mkdir(parents=True)
+        shutil.copy2(image, destination)
+        run_cwd = tmp_path / "attempt" / "run"
+        run_cwd.mkdir(parents=True)
+        execution.bind_authenticated_attempt(snapshot_root, run_cwd)
+        image = destination
+    commands = {
+        "chmod": f"chmod -x {shlex.quote(str(image))}",
+        "symlink": (
+            f"cp {shlex.quote(str(image))} {shlex.quote(str(image) + '.copy')} && "
+            f"rm {shlex.quote(str(image))} && "
+            f"ln -s {shlex.quote(str(image) + '.copy')} {shlex.quote(str(image))}"
+        ),
+        "delete": f"rm {shlex.quote(str(image))}",
+    }
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.resolve_pre_sim_commands",
+        lambda _root: (commands[mutation],),
+    )
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == "inconclusive"
+    assert result.infrastructure_error is True
+    assert "coverage image" in result.output
+    assert "run_script" not in captured
+
+
+def test_protected_surface_change_takes_priority_over_hook_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    _source_root, artifacts = execution.authenticated_image()
+    command = f"chmod -x {shlex.quote(str(artifacts[0]))}; false"
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.resolve_pre_sim_commands",
+        lambda _root: (command,),
+    )
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == "inconclusive"
+    assert result.infrastructure_error is True
+    assert result.pre_sim is not None and result.pre_sim.status == "failed"
+    assert "coverage image" in result.output
+    assert "run_script" not in captured
 
 
 @pytest.mark.parametrize("status", ["failed", "timed_out"])
@@ -483,6 +554,12 @@ def _fake_invoke(captured, raw_path: Path):
                 stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0 duration_ms=1\n",
             )
         work = captured["work"]
+        verdict = "pass"
+        staged_path = captured.get("staged_input_path")
+        if staged_path is not None:
+            staged_value = staged_path.read_text(encoding="utf-8")
+            captured.setdefault("staged_values", []).append(staged_value)
+            verdict = "pass" if staged_value == work.tests[0] else "fail"
         identity = AdapterTransportIdentity(
             adapter=work.adapter,
             attempt_token=work.attempt_token,
@@ -494,11 +571,11 @@ def _fake_invoke(captured, raw_path: Path):
             identity,
             captured.get("result")
             or AdapterResult(
-                passed=True,
+                passed=verdict == "pass",
                 inconclusive=False,
                 sva_errors=0,
                 tests=work.tests,
-                test_results=tuple(AdapterTestResult(name, "pass") for name in work.tests),
+                test_results=tuple(AdapterTestResult(name, verdict) for name in work.tests),
             ),
         )
         raw_path.parent.mkdir(parents=True, exist_ok=True)

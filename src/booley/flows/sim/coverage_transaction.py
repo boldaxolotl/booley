@@ -3,7 +3,7 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from booley.flows.execution_persistence import AcceptanceRecordingError
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -23,6 +23,7 @@ from .coverage_invocation import CoverageTargetPlan
 from .coverage_policy import evaluate_coverage_campaign
 from .coverage_provenance import coverage_digest, validate_coverage_sources
 from .coverage_waivers import CoverageWaiverValidationError, load_approved_waiver_set
+from .execution.contract import PreSimStatus, pre_sim_failure_message
 from .verilator_coverage import CoverageCollectionResult, SimulationExecutionPort, collect
 
 
@@ -352,9 +353,10 @@ def _coverage_test_projection(run) -> dict[str, object]:
         projected = dict(pre_sim)
         entry["pre_sim"] = projected
         if projected.get("status") != "passed":
+            status = projected.get("status")
+            assert status in {"failed", "timed_out", "spawn_error"}
             detail = str(projected.get("detail") or "").strip()
-            error = f"Pre-Sim Commands failed ({projected.get('status')})"
-            entry["error_tail"] = f"{error}: {detail}" if detail else error
+            entry["error_tail"] = pre_sim_failure_message(cast(PreSimStatus, status), detail)
     return entry
 
 

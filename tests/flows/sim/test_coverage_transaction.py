@@ -120,7 +120,7 @@ def test_simulation_projection_preserves_pre_sim_failure_detail(tmp_path: Path):
     simulation = json.loads(outcome.simulation_path.read_text())
     assert simulation["tests"][0]["pre_sim"]["status"] == "failed"
     assert simulation["tests"][0]["error_tail"] == (
-        "Pre-Sim Commands failed (failed): vector generator rejected input"
+        "pre-sim commands failed (failed): vector generator rejected input"
     )
 
 

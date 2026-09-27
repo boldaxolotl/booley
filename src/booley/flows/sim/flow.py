@@ -1518,7 +1518,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def __init__(
         self,
         *,
-        coverage_execution: Callable[[TargetHandle, SimulationOptions], SimulationExecutionPort]
+        coverage_execution: Callable[
+            [TargetHandle, SimulationOptions, tuple[str, ...], str],
+            SimulationExecutionPort,
+        ]
         | None = None,
         campaign_publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
@@ -2666,7 +2669,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 
         return (
-            self._coverage_execution_factory(plan.handle, options)
+            self._coverage_execution_factory(
+                plan.handle, options, pre_sim_commands, pre_sim_build_access
+            )
             if self._coverage_execution_factory is not None
             else VerilatorCoverageExecution(
                 plan.handle,
