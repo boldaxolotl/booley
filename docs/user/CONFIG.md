@@ -284,9 +284,7 @@ pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
 
 The lines run **inside the Sandbox** immediately before each simulation run:
 per test for an HDL-testbench Target, once before the batch for a Cocotb
-Target. The same rule applies to plain, traced, and native-coverage Simulation.
-Native coverage launches one simulator process per selected test, so each
-selected Cocotb test is a one-test batch and receives its own firing.
+Target.
 
 Their working directory is the **repo root** — *not* `run_cwd`, and not the
 build tree. Write paths relative to the repo root, or `cd "$BOOLEY_RUN_CWD"`
@@ -325,15 +323,6 @@ Every firing is recorded in the run report — one line per invocation naming th
 Target/test, the number of command lines, the exit status and the duration
 (`pre_run_commands (2 line(s)) for div_test: rc=0 in 4.7s`) — so a hook doing
 the wrong thing quietly is visible without breaking it on purpose.
-
-Native coverage always uses an authenticated immutable instrumented image, so
-it never exports `BOOLEY_BUILD_ROOT` to Pre-Sim Commands. A failed or timed-out
-firing skips that simulator process, records `COV_PRE_SIM_FAILED` with an
-`elab_error`, continues later selected tests, and leaves collection incomplete
-(public exit 2). A missing command is an infrastructure failure and aborts the
-remaining tests. `pre_sim_build_access = "legacy-per-test"` is rejected before
-the coverage build only when Pre-Sim Commands are configured; without commands,
-the setting remains compatible.
 
 In the default `immutable` mode the shared Simulator Bundle is authenticated
 before the hook runs, but the hook receives no authoritative build path and
