@@ -16,12 +16,16 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import AgentCallParams, AgentResult
+from booley.criteria.categories import verification_fingerprint_categories
+from booley.criteria.freshness import evaluate_verification_freshness
 from booley.criteria.state import DevelopmentState
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.review.generation import (
     ExplanationError,
     ResolvedReviewEvidence,
@@ -129,7 +133,15 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
         developer_crashes=crashes,
         missing_evidence=missing,
     )
-    return build_review_facts(ctx, evidence, run_economics=_usage_summary(ctx))
+    return build_review_facts(
+        ctx,
+        evidence,
+        run_economics=_usage_summary(ctx),
+        freshness_evaluator=partial(
+            evaluate_verification_freshness,
+            fingerprint_provider=compute_source_fingerprint,
+        ),
+    )
 
 
 class ReviewPrepError(RuntimeError):
@@ -558,6 +570,7 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
         "--untracked-files=all",
     )
     digest.update(status.encode("utf-8"))
+    digest.update(_verification_evidence_identity(ctx))
     if ctx.project_repository is not None:
         project = ctx.project_repository
         digest.update(project.base_sha.encode("ascii"))
@@ -577,6 +590,51 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
         digest.update(_file_sha256(path).encode("ascii"))
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _verification_evidence_identity(ctx: ReviewPrepContext) -> bytes:
+    inspection_state = ctx.inspection.get("state") if ctx.inspection is not None else None
+    if isinstance(inspection_state, Mapping) and isinstance(
+        inspection_state.get("criteria"), Mapping
+    ):
+        state = inspection_state
+    else:
+        state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+    criteria = state.get("criteria") if isinstance(state, Mapping) else None
+    if not isinstance(criteria, Mapping):
+        return b""
+    fingerprints: dict[str | None, dict] = {}
+    identities = []
+    for key, entry in sorted(criteria.items()):
+        if not isinstance(key, str) or not isinstance(entry, Mapping):
+            continue
+        is_review = key.startswith(("review_rtl_", "review_tb_"))
+        observable = any(
+            (
+                entry.get("met") is True,
+                entry.get("ever_failed") is True,
+                entry.get("stale") is True,
+                bool(entry.get("detail")),
+            )
+        )
+        eligible = (is_review and observable) or (
+            entry.get("mandatory", True) and entry.get("met") is True
+        )
+        if not eligible or not verification_fingerprint_categories(key):
+            continue
+        result = evaluate_verification_freshness(
+            key,
+            entry,
+            work_dir=ctx.worktree,
+            fingerprint_provider=compute_source_fingerprint,
+            fingerprints=fingerprints,
+        )
+        identities.append((key, result.current_evidence_identity, result.reason))
+    return json.dumps(identities, sort_keys=True, separators=(",", ":")).encode()
 
 
 def _require_unchanged(ctx: ReviewPrepContext, expected_sha: str, message: str) -> None:

@@ -14,11 +14,17 @@ from booley.criteria.state import (
 )
 from booley.criteria.templates import cycle_count_criterion_key
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.review_receipt import (
+    REVIEW_DETAIL_VERSION,
+    ReviewInvocation,
+    build_review_contract_detail,
+)
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.ticket_board.criteria_acceptance import (
     CriteriaVerdict,
     build_criteria_summary_lines,
     check_criteria_acceptance,
+    evaluate_verification_freshness,
     format_criteria_verdict,
     refresh_verification_freshness,
 )
@@ -926,3 +932,98 @@ class TestBuildCriteriaSummaryLines:
         raw = self._strip(lines[0])
         assert "reviews" in raw
         assert "not yet run" in raw
+
+
+def test_read_only_freshness_evaluator_reports_tb_drift_without_mutation(
+    tmp_path: Path,
+) -> None:
+    work_dir = tmp_path / "work"
+    (work_dir / ".booley_project").mkdir(parents=True)
+    (work_dir / "rtl").mkdir()
+    (work_dir / "tb").mkdir()
+    (work_dir / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    (work_dir / "tb" / "tb.sv").write_text("module tb; endmodule\n")
+    (work_dir / "design.core").write_text(
+        "CAPI=2:\n"
+        "name: ::design:0\n"
+        "filesets:\n"
+        "  rtl: {files: [rtl/dut.sv]}\n"
+        "  tb: {files: [tb/tb.sv], tags: [tb]}\n"
+        "targets:\n"
+        "  sim: {filesets: [rtl, tb], toplevel: tb}\n",
+        encoding="utf-8",
+    )
+    entry = _FakeCriterion(
+        met=True,
+        mandatory=True,
+        detail={
+            SOURCE_FINGERPRINT_DETAIL_KEY: {
+                "categories": ["rtl", "tb"],
+                "target": "sim",
+                "fingerprint": compute_source_fingerprint(work_dir, target="sim"),
+            }
+        },
+    )
+    before = repr(entry)
+    current = evaluate_verification_freshness(
+        "sim_pass_sim",
+        entry,
+        work_dir=work_dir,
+        fingerprint_provider=compute_source_fingerprint,
+    )
+    (work_dir / "tb" / "tb.sv").write_text("module tb; // changed\nendmodule\n")
+
+    result = evaluate_verification_freshness(
+        "sim_pass_sim",
+        entry,
+        work_dir=work_dir,
+        fingerprint_provider=compute_source_fingerprint,
+    )
+
+    assert current.stale is False
+    assert current.changed_categories == ()
+    assert result.stale is True
+    assert result.changed_categories == ("tb",)
+    assert "sources changed" in result.reason
+    assert repr(entry) == before
+
+
+def test_read_only_freshness_evaluator_prefers_version_4_reviewer_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    (tmp_path / ".booley_project").mkdir()
+    source = tmp_path / "rtl" / "dut.sv"
+    source.parent.mkdir()
+    source.write_text("module dut; endmodule\n", encoding="utf-8")
+    detail = {
+        "review_detail_version": REVIEW_DETAIL_VERSION,
+        "contract": build_review_contract_detail(
+            ReviewInvocation(
+                work_dir=tmp_path,
+                category="rtl",
+                focus="bugs",
+                scope=("rtl/dut.sv",),
+                mode="done",
+            )
+        ),
+    }
+    entry = _FakeCriterion(True, True, detail=detail)
+
+    assert not evaluate_verification_freshness(
+        "review_rtl_bugs_done",
+        entry,
+        work_dir=tmp_path,
+        fingerprint_provider=compute_source_fingerprint,
+    ).stale
+    source.write_text("module dut; // changed\nendmodule\n", encoding="utf-8")
+    result = evaluate_verification_freshness(
+        "review_rtl_bugs_done",
+        entry,
+        work_dir=tmp_path,
+        fingerprint_provider=compute_source_fingerprint,
+    )
+
+    assert result.stale
+    assert result.changed_categories == ("rtl",)
+    assert result.review_dimensions == ("scope",)

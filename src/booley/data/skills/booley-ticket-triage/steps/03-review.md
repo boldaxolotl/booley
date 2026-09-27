@@ -13,8 +13,12 @@ Run exactly once:
 booley board show $SLUG --no-open-diffs
 ```
 
-This command performs a fast freshness check and prints the fixed review
-briefing with diff launching disabled. Always use `--no-open-diffs`: the automatic
+This command performs a fast freshness check of the prepared package manifest
+and prints the fixed review briefing with diff launching disabled. Review preparation separately compares
+each source-sensitive Criterion and Reviewer receipt with the current Ticket
+worktree. Stale rows name the changed source categories; a stale mandatory
+Criterion forces a `hold` recommendation without changing its recorded outcome
+or mutating runtime state. Always use `--no-open-diffs`: the automatic
 filter uses extensions and binary detection, so it cannot recognize every
 compiled output (for example, hexadecimal firmware stored as `.txt`).
 
@@ -63,7 +67,8 @@ changed path (including renames and submodules), recorded scope deviation,
 current-run usage summary, and mechanical health check. The report agent supplies
 the recommendation, scope classifications, report summary, blockers, and findings.
 Both `review_*_done` and `review_*_clean` are freshness-sensitive to their
-recorded source fingerprint. The package also lists every review finding and
+recorded source fingerprint, or to their receipt for current package versions.
+The package also lists every review finding and
 disposition deterministically; every accepted waiver, including `MINOR`, must
 appear with its justification.
 
@@ -86,6 +91,8 @@ It preserves work and creates an unaccepted package when its Basis/worktree are
 valid. Never substitute a mechanical move or fabricate accepted evidence.
 
 For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
+Do not offer approval while any mandatory Criterion is marked stale; rerun its
+Flow or Specialist and prepare a new review package first.
 
 - **Approve**: `booley board approve $SLUG`
 - **Fix here**: Criteria Satisfaction Records are immutable. Explain that

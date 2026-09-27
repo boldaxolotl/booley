@@ -11,6 +11,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### New features
 
+- `booley board show` and generated review packages now compare recorded
+  Criterion and Reviewer-receipt evidence with the live Ticket worktree. They
+  show changed source categories, hold on stale mandatory evidence, and leave
+  the recorded runtime state unchanged.
 - Simulation now records each exact Target workload as a durable Simulation
   Campaign. Immutable manifests, authenticated shared Simulator Bundles,
   isolated append-only attempts, strict resume, and bounded Project-local

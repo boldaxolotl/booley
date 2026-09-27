@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
@@ -134,11 +134,17 @@ _CATEGORY_ORDER = {
 }
 
 
-def _criterion_status(entry: Mapping[str, Any]) -> str:
+def _criterion_status(
+    entry: Mapping[str, Any],
+    *,
+    freshness: str | None = None,
+    changed_categories: list[str] | None = None,
+) -> str:
+    if freshness == "stale" or entry.get("stale") is True:
+        categories = changed_categories or []
+        return f"STALE ({', '.join(categories)})" if categories else "STALE"
     if entry.get("met") is True:
         return "met"
-    if entry.get("stale") is True:
-        return "STALE"
     if entry.get("ever_failed") is True:
         return "unmet"
     return "not run"
@@ -158,6 +164,14 @@ def _criterion_freshness(entry: Mapping[str, Any]) -> str:
     if entry.get("met") is True or entry.get("ever_failed") is True:
         return "current"
     return "unknown"
+
+
+def _persisted_changed_categories(entry: Mapping[str, Any]) -> list[str]:
+    detail = entry.get("detail")
+    raw = detail.get("stale_source_categories") if isinstance(detail, Mapping) else None
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        return []
+    return sorted(set(raw))
 
 
 def _short_value(value: Any) -> str:
@@ -229,23 +243,57 @@ def _criteria(
     *,
     worktree: Path,
     project_root: Path,
+    freshness_evaluator: Callable[..., Any],
 ) -> list[dict[str, Any]]:
     raw = state.get("criteria")
     if not isinstance(raw, dict):
         return []
     rows = []
+    fingerprints: dict[str | None, dict] = {}
+    newly_stale_categories: set[str] = set()
     for name, value in raw.items():
         if (name.startswith("_") and name != "_report_submitted") or not isinstance(value, dict):
             continue
         category = _category(name)
+        freshness = _criterion_freshness(value)
+        changed_categories = _persisted_changed_categories(value)
+        is_review = name.startswith(("review_rtl_", "review_tb_"))
+        observable = any(
+            (
+                value.get("met") is True,
+                value.get("ever_failed") is True,
+                value.get("stale") is True,
+                bool(value.get("detail")),
+            )
+        )
+        eligible = not name.startswith("_") and (
+            (is_review and observable)
+            or (value.get("mandatory", True) and value.get("met") is True)
+        )
+        if eligible:
+            result = freshness_evaluator(
+                name,
+                value,
+                work_dir=worktree,
+                fingerprints=fingerprints,
+            )
+            if result is not None and result.stale:
+                freshness = "stale"
+                changed_categories = list(result.changed_categories)
+                newly_stale_categories.update(result.changed_categories)
         rows.append(
             {
                 "category": category,
                 "criterion": name,
                 "required": "mandatory" if value.get("mandatory", True) else "optional",
-                "status": _criterion_status(value),
+                "status": _criterion_status(
+                    value,
+                    freshness=freshness,
+                    changed_categories=changed_categories,
+                ),
                 "outcome": _criterion_outcome(value),
-                "freshness": _criterion_freshness(value),
+                "freshness": freshness,
+                "changed_categories": changed_categories,
                 "metric": _criterion_metric(value),
                 "availability": value.get("availability", "available"),
                 "report_path": _criterion_report_path(
@@ -256,6 +304,18 @@ def _criteria(
                 ),
             }
         )
+    if newly_stale_categories:
+        for row in rows:
+            if row["criterion"] != "_report_submitted" or row["outcome"] != "met":
+                continue
+            row["freshness"] = "stale"
+            row["changed_categories"] = sorted(newly_stale_categories)
+            row["metric"] = "Verification evidence became stale after this report was submitted."
+            row["status"] = _criterion_status(
+                {"met": True},
+                freshness="stale",
+                changed_categories=row["changed_categories"],
+            )
     return sorted(rows, key=lambda row: (_CATEGORY_ORDER[row["category"]], row["criterion"]))
 
 
@@ -678,6 +738,7 @@ def build_review_facts(
     ctx: TriageContext,
     evidence: ResolvedReviewEvidence,
     *,
+    freshness_evaluator: Callable[..., Any],
     run_economics: str = "unavailable",
 ) -> dict[str, Any]:
     """Build artifacts from Ticket Board-resolved evidence and immutable heads."""
@@ -737,6 +798,7 @@ def build_review_facts(
             state,
             worktree=ctx.worktree,
             project_root=ctx.project_root,
+            freshness_evaluator=freshness_evaluator,
         ),
         "review_dispositions": collect_review_dispositions(state.get("criteria", {})),
         "recipe_comparisons": _recipe_comparisons(state),
@@ -778,7 +840,30 @@ def validate_assessment(value: Any, facts: Mapping[str, Any]) -> dict[str, Any]:
         scope_rows,
         deviations,
     )
+    _enforce_stale_criteria_blocker(assessment, facts)
     return assessment
+
+
+def _enforce_stale_criteria_blocker(assessment: dict[str, Any], facts: Mapping[str, Any]) -> None:
+    labels = []
+    for row in facts.get("criteria", []):
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("required") != "mandatory" or row.get("freshness") != "stale":
+            continue
+        categories = row.get("changed_categories")
+        suffix = (
+            f" ({', '.join(categories)})" if isinstance(categories, list) and categories else ""
+        )
+        labels.append(f"{row.get('criterion', 'unknown')}{suffix}")
+    if not labels:
+        return
+    blocker = "Stale mandatory verification evidence: " + ", ".join(labels) + "."
+    assessment["recommendation"] = "hold"
+    if blocker not in assessment["decision_blockers"]:
+        assessment["decision_blockers"].append(blocker)
+    if blocker not in assessment["findings"]:
+        assessment["findings"].append(blocker)
 
 
 def _normalize_scope_assessments(
@@ -835,6 +920,7 @@ def write_triage_package(
     explanation: StructuredExplanation | None = None,
 ) -> Path:
     """Persist one machine-readable package consumed by interactive triage."""
+    _enforce_stale_criteria_blocker(assessment, facts)
     inspection = facts.get("inspection")
     if inspection and inspection["disposition"] == "unaccepted":
         assessment = {

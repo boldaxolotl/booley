@@ -125,8 +125,8 @@ def _capture(
         "created_at": utc_now_rfc3339(),
     }
     captured = replace(ctx, inspection=row, runtime_dir=package_dir(ctx.log_dir, row))
-    row["capture_sha"] = prep._source_fingerprint(captured)
     row["state"] = _capture_state(ctx)
+    row["capture_sha"] = prep._source_fingerprint(captured)
     prep._require_unchanged(captured, row["capture_sha"], "review inputs changed during capture")
     return captured
 

@@ -22,16 +22,24 @@ from booley.core.boundary import as_str_list
 from booley.criteria.categories import (
     verification_fingerprint_categories as _verification_fingerprint_categories,
 )
+from booley.criteria.freshness import (
+    VerificationFreshness,
+    evaluate_verification_freshness,
+)
 
 # NOTE: DevelopmentState is imported function-locally (not here) because the
 # test suite patches ``booley.criteria.state.DevelopmentState`` at
 # its source module; a module-level binding here would defeat that patch.
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.source_fingerprint import compute_source_fingerprint
-from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "VerificationFreshness",
+    "evaluate_verification_freshness",
+]
 
 _REPORT_CRITERION = "_report_submitted"
 _JUSTIFIED_OPTIONAL_DETAIL = "unmet_optional_criteria"
@@ -302,107 +310,6 @@ def _find_unverified_transitions(criteria: dict) -> list[str]:
     return unverified
 
 
-def _mark_review_receipt_stale(
-    entry,
-    *,
-    categories: list[str],
-    now: str,
-    reason: str,
-    dimensions: list[str],
-) -> bool:
-    _mark_verification_stale(
-        entry,
-        now=now,
-        reason=reason,
-        changed_categories=categories,
-        current={},
-    )
-    entry.detail["stale_review_dimensions"] = dimensions
-    return True
-
-
-def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], now: str) -> bool:
-    from booley.evidence.review_receipt import ReviewTicketError, review_receipt_drift
-
-    try:
-        from .review_policy import review_policy_digest
-
-        detail = entry.detail or {}
-        contract = detail.get("contract") if isinstance(detail, dict) else None
-        category = contract.get("category", "") if isinstance(contract, dict) else ""
-        changed = review_receipt_drift(
-            detail,
-            work_dir,
-            tb_policy_digest=review_policy_digest(work_dir, category),
-        )
-    except ReviewTicketError as exc:
-        return _mark_review_receipt_stale(
-            entry,
-            categories=categories,
-            now=now,
-            reason=str(exc),
-            dimensions=["ticket"],
-        )
-    except (FuseSocError, OSError) as exc:
-        return _mark_review_receipt_stale(
-            entry,
-            categories=categories,
-            now=now,
-            reason=f"Reviewer source context can no longer be resolved: {exc}",
-            dimensions=["source_context"],
-        )
-    if not changed:
-        return False
-    return _mark_review_receipt_stale(
-        entry,
-        categories=categories,
-        now=now,
-        reason=(
-            "Reviewer requirement changed after the recorded verdict "
-            f"({', '.join(changed)}); re-run Reviewer."
-        ),
-        dimensions=changed,
-    )
-
-
-def _source_evidence_is_stale(
-    entry,
-    *,
-    work_dir: Path,
-    fingerprints: dict[str | None, dict],
-    categories: list[str],
-    now: str,
-) -> bool:
-    stamp = (entry.detail or {}).get(SOURCE_FINGERPRINT_DETAIL_KEY)
-    target = stamp.get("target") if isinstance(stamp, dict) else None
-    target = target if isinstance(target, str) and target else None
-    try:
-        if target not in fingerprints:
-            fingerprints[target] = compute_source_fingerprint(work_dir, target=target)
-        current = fingerprints[target]
-    except FuseSocError as exc:
-        _mark_verification_stale(
-            entry,
-            now=now,
-            reason=(
-                f"Target-specific source fingerprint can no longer be resolved: {exc}. "
-                "Re-run the relevant Flow or Specialist with a valid Target."
-            ),
-            changed_categories=categories,
-            current={},
-        )
-        return True
-    except OSError:
-        logger.debug("Could not compute final source fingerprint", exc_info=True)
-        return False
-    return _stale_verification_entry(
-        entry,
-        categories=categories,
-        current=current,
-        now=now,
-    )
-
-
 def _refresh_verification_entry(
     key: str,
     entry,
@@ -412,26 +319,26 @@ def _refresh_verification_entry(
     now: str,
 ) -> bool:
     """Refresh one passing criterion against its receipt and source evidence."""
-    categories = _verification_fingerprint_categories(key)
-    if key.startswith(("review_rtl_", "review_tb_")) and _review_receipt_is_stale(
+    result = evaluate_verification_freshness(
+        key,
         entry,
         work_dir=work_dir,
-        categories=categories,
-        now=now,
-    ):
-        return True
-    if (
-        key.startswith(("review_rtl_", "review_tb_"))
-        and (entry.detail or {}).get("review_detail_version") == 4
-    ):
-        return False
-    return _source_evidence_is_stale(
-        entry,
-        work_dir=work_dir,
+        fingerprint_provider=compute_source_fingerprint,
         fingerprints=fingerprints,
-        categories=categories,
-        now=now,
     )
+    assert result is not None
+    if not result.stale:
+        return False
+    _mark_verification_stale(
+        entry,
+        now=now,
+        reason=result.reason,
+        changed_categories=result.changed_categories,
+        current=result.current_source_fingerprint,
+    )
+    if result.review_dimensions:
+        entry.detail["stale_review_dimensions"] = list(result.review_dimensions)
+    return True
 
 
 def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]:
@@ -487,73 +394,12 @@ def _invalidate_submitted_report(state, *, now: str) -> None:
     )
 
 
-def _stale_verification_entry(
-    entry,
-    *,
-    categories: set[str],
-    current: dict,
-    now: str,
-) -> bool:
-    """Mark a passing verification entry stale if its source fingerprint drifted.
-
-    Returns ``True`` when the entry was marked stale, ``False`` otherwise.
-    """
-    stamp = (entry.detail or {}).get(SOURCE_FINGERPRINT_DETAIL_KEY)
-    if not isinstance(stamp, dict):
-        _mark_verification_stale(
-            entry,
-            now=now,
-            reason=(
-                "Passing verification criterion has no source fingerprint; "
-                "re-run the relevant Flow or Specialist."
-            ),
-            changed_categories=categories,
-            current=current,
-        )
-        return True
-    previous = stamp.get("fingerprint", {})
-    stamped_categories = stamp.get("categories", [])
-    if not isinstance(previous, dict) or not isinstance(stamped_categories, list):
-        _mark_verification_stale(
-            entry,
-            now=now,
-            reason=(
-                "Passing verification criterion has an invalid source "
-                "fingerprint; re-run the relevant Flow or Specialist."
-            ),
-            changed_categories=categories,
-            current=current,
-        )
-        return True
-
-    changed_categories: list[str] = []
-    for category in stamped_categories:
-        old_digest = (previous.get(category, {}) or {}).get("digest")
-        new_digest = (current.get(category, {}) or {}).get("digest")
-        if old_digest != new_digest:
-            changed_categories.append(str(category))
-    if not changed_categories:
-        return False
-
-    _mark_verification_stale(
-        entry,
-        now=now,
-        reason=(
-            "RTL/testbench sources changed after the last passing "
-            "verification evidence; re-run the relevant Flow or Specialist."
-        ),
-        changed_categories=changed_categories,
-        current=current,
-    )
-    return True
-
-
 def _mark_verification_stale(
     entry,
     *,
     now: str,
     reason: str,
-    changed_categories: set[str] | list[str],
+    changed_categories: set[str] | list[str] | tuple[str, ...],
     current: dict,
 ) -> None:
     """Mark a passing verification entry unmet with a stale diagnostic."""
