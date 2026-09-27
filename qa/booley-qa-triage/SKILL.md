@@ -47,14 +47,16 @@ Triage is a conversation, one **brief** per turn.
    next cluster.
    - `file` (a product or doc cluster, or a `qa-bug` the maintainer asks to file):
      draft the issue in a local file with problem, repro, build identity, the verified
-     cause, the **approved fix direction only**, and acceptance criteria. When the
+     cause, the **approved fix direction only** under a `## Fix` heading, and
+     acceptance criteria. When the
      blast radius is yes or likely, the fix section starts with **Step 1: audit**,
      naming the suspected places and the pattern to search for; the fix then
      covers every affected place the audit finds. When the decision widens scope in
      other ways (for example "add a Doctor check"), write that into the issue too.
      Follow the issue rules in `AGENTS.md`: scan title and body with the
-     confidential-content guard, then `gh issue create`. Label with `bug`,
-     `documentation`, or `enhancement`, plus the triage role from
+     confidential-content guard, then `gh issue create`. Label with `qa-triage`
+     (it marks the issue as filed by this skill), with `bug`, `documentation`, or
+     `enhancement`, and with the triage role from
      `docs/internals/agents/triage-labels.md` (`ready-for-agent` when the fix is
      decided, `needs-triage` for open design).
    - `comment on #<n>`: same drafting and scan, then `gh issue comment`.
