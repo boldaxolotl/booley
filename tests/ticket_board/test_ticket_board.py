@@ -1723,6 +1723,8 @@ class TestOpHandoff:
         )
         error = capsys.readouterr().err
         assert "Ticket heads changed after acceptance" in error
+        assert "Ticket handoff is blocked" in error
+        assert "Acceptance publication is incomplete" not in error
         assert "booley board reset t1" in error
 
     def test_rejects_handoff_without_durable_acceptance_state(self, tmp_path):

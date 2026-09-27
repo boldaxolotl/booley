@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +31,17 @@ class StaleAcceptanceError(RuntimeError):
     def __init__(self, drift: AcceptanceHeadDrift) -> None:
         super().__init__("Ticket heads changed after acceptance")
         self.drift = drift
+
+
+def participant_head_locations(
+    participants: Iterable[tuple[str, str]],
+    worktrees: Mapping[str, Path],
+) -> tuple[ParticipantHeadLocation, ...]:
+    """Pair every participant role and Ticket ref with its resolved worktree."""
+    return tuple(
+        ParticipantHeadLocation(role, ticket_ref, worktrees[role])
+        for role, ticket_ref in participants
+    )
 
 
 def compare_accepted_heads(
@@ -92,6 +103,12 @@ def format_stale_acceptance(
         lines.append(
             "This Ticket is already done. Inspect the Acceptance Journal and the named "
             "Ticket refs/worktrees before retrying terminal recovery."
+        )
+    elif status == "handoff":
+        lines.append(
+            "Ticket handoff is blocked. Restore the named Ticket refs/worktrees to "
+            "the frozen heads, or start a clean execution with "
+            f'`booley board reset {slug} --reason "<why a clean run is required>"`.'
         )
     else:
         lines.append(

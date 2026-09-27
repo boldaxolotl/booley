@@ -531,11 +531,9 @@ def _bind_existing_handoff_snapshot(
             _acceptance_participant_locations(tio, basis),
         )
         if drift is not None:
-            board = tio.find_ticket(slug)
-            status = str(board.get("status")) if board is not None else "missing"
             print(
                 f"Error: cannot hand off '{slug}': "
-                f"{format_stale_acceptance(slug, drift, status=status)}",
+                f"{format_stale_acceptance(slug, drift, status='handoff')}",
                 file=sys.stderr,
             )
             return False
@@ -978,22 +976,45 @@ def _acceptance_failure_detail(tio: Any, slug: str) -> str:
 
 def _acceptance_participant_locations(tio: Any, basis: Any) -> list[Any]:
     """Resolve display metadata after callers have validated the live refs."""
-    from .acceptance_diagnostics import ParticipantHeadLocation
+    from .acceptance_diagnostics import participant_head_locations
     from .ticket_baseline import _project_repository, worktree_for_ref
 
     root = Path(tio._project_root)
-    locations = []
+    worktrees = {}
     for participant in basis.participants:
         owner = root if participant.role == "outer" else _project_repository(root)
-        worktree = worktree_for_ref(owner, participant.ticket_ref) or owner
-        locations.append(
-            ParticipantHeadLocation(
-                participant.role,
-                participant.ticket_ref,
-                worktree,
-            )
+        worktrees[participant.role] = worktree_for_ref(owner, participant.ticket_ref) or owner
+    return list(
+        participant_head_locations(
+            ((row.role, row.ticket_ref) for row in basis.participants),
+            worktrees,
         )
-    return locations
+    )
+
+
+def _accepted_sources(tio: Any, slug: str, basis: Any, snapshot_sources: dict) -> dict:
+    """Resolve completion sources or report accepted participant-head drift."""
+    from .acceptance_diagnostics import StaleAcceptanceError, compare_accepted_heads
+    from .acceptance_journal import completion_basis_sources
+    from .ticket_baseline import validate_current_basis_refs
+
+    sources = completion_basis_sources(
+        Path(tio._project_root),
+        slug,
+        basis,
+        expected_sources=snapshot_sources,
+    )
+    if sources is not None:
+        return sources
+    current_sources = validate_current_basis_refs(tio._project_root, basis)
+    drift = compare_accepted_heads(
+        snapshot_sources,
+        current_sources,
+        _acceptance_participant_locations(tio, basis),
+    )
+    if drift is not None:
+        raise StaleAcceptanceError(drift)
+    return snapshot_sources
 
 
 def _validate_accepted_snapshot(
@@ -1004,13 +1025,10 @@ def _validate_accepted_snapshot(
     *,
     require_review_package_binding: bool = True,
 ) -> None:
-    from .acceptance_diagnostics import StaleAcceptanceError, compare_accepted_heads
-    from .acceptance_journal import completion_basis_sources
     from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
     from .ticket_baseline import (
         assert_live_inputs_unchanged,
         materialize_ticket_commits,
-        validate_current_basis_refs,
     )
 
     if require_review_package_binding:
@@ -1022,22 +1040,7 @@ def _validate_accepted_snapshot(
         )
     with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
         snapshot_sources = snapshot.participant_heads
-        sources = completion_basis_sources(
-            Path(tio._project_root),
-            slug,
-            basis,
-            expected_sources=snapshot_sources,
-        )
-        if sources is None:
-            current_sources = validate_current_basis_refs(tio._project_root, basis)
-            drift = compare_accepted_heads(
-                snapshot_sources,
-                current_sources,
-                _acceptance_participant_locations(tio, basis),
-            )
-            if drift is not None:
-                raise StaleAcceptanceError(drift)
-            sources = snapshot_sources
+        sources = _accepted_sources(tio, slug, basis, snapshot_sources)
         authoring = materialize_ticket_commits(
             tio._project_root,
             basis,
@@ -1050,6 +1053,27 @@ def _validate_accepted_snapshot(
         raise AcceptanceLedgerError(
             "Ticket baseline selectors changed: " + "; ".join(selector_errors)
         )
+
+
+def _validate_current_acceptance(
+    tio: Any,
+    slug: str,
+    log_dir: Path,
+    snapshot: Any,
+    *,
+    require_review_package_binding: bool,
+) -> None:
+    """Preserve the default validation call while supporting binding-free retries."""
+    if require_review_package_binding:
+        _validate_accepted_snapshot(tio, slug, log_dir, snapshot)
+        return
+    _validate_accepted_snapshot(
+        tio,
+        slug,
+        log_dir,
+        snapshot,
+        require_review_package_binding=False,
+    )
 
 
 def _completion_acceptance_valid(
@@ -1077,16 +1101,13 @@ def _completion_acceptance_valid(
             )
             return None
         try:
-            if require_review_package_binding:
-                _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)
-            else:
-                _validate_accepted_snapshot(
-                    tio,
-                    slug,
-                    log_dir,
-                    accepted.snapshot,
-                    require_review_package_binding=False,
-                )
+            _validate_current_acceptance(
+                tio,
+                slug,
+                log_dir,
+                accepted.snapshot,
+                require_review_package_binding=require_review_package_binding,
+            )
         except StaleAcceptanceError as exc:
             board = tio.find_ticket(slug)
             status = str(board.get("status")) if board is not None else "missing"
