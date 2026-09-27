@@ -200,8 +200,12 @@ def _proof_evidence_finding(
     document = require_dict(proof, field="proof")
     reference = require_str(document, "reference")
     relative = reference.split("#", 1)[0]
-    if not is_safe_relative_posix(relative):
-        return _error("COV_WAIVER_PROOF_INVALID", pointer, "Unsafe proof reference.")
+    if not is_safe_relative_posix(relative) or relative.endswith(".toml"):
+        return _error(
+            "COV_WAIVER_PROOF_INVALID",
+            pointer,
+            "Proof reference must be a safe non-TOML path.",
+        )
     resolved = f"{approval_directory}/{relative}"
     raw, finding = _read_evidence(tree, resolved, pointer, label="PROOF")
     if finding is not None:
@@ -634,6 +638,53 @@ def _load_enabled_set(
         raise CoverageWaiverValidationError((_configured_directory_finding(error),)) from error
 
 
+def _classify_scanned_files(
+    scan: SecureFileScan,
+) -> tuple[tuple[SecureFile, ...], tuple[SecureFile, ...]]:
+    approval_files = tuple(file for file in scan.files if file.relative_path.endswith(".toml"))
+    proof_artifacts = tuple(
+        file for file in scan.files if not file.relative_path.endswith(".toml")
+    )
+    return approval_files, proof_artifacts
+
+
+def _unreferenced_artifact_findings(
+    proof_artifacts: tuple[SecureFile, ...], proof_references: set[str]
+) -> tuple[CoverageFinding, ...]:
+    return tuple(
+        _error(
+            "COV_WAIVER_FILE_UNREFERENCED",
+            f"/files/{file.relative_path}",
+            "Non-TOML file is not referenced by a valid formal proof.",
+        )
+        for file in proof_artifacts
+        if file.relative_path not in proof_references
+    )
+
+
+def _approved_waiver_set(
+    config: CoverageWaiverConfig,
+    loaded: list[tuple[dict[str, object], list[ApprovedWaiver]]],
+) -> ApprovedWaiverSet:
+    waivers = tuple(
+        sorted(
+            (waiver for _, file_waivers in loaded for waiver in file_waivers),
+            key=lambda item: (str(item.target), item.point_id, item.waiver_id),
+        )
+    )
+    configuration = {"anchor": config.anchor, "directory": config.directory}
+    projection = {
+        "schema": _SET_SCHEMA,
+        "config": configuration,
+        "files": [item[0] for item in loaded],
+    }
+    return ApprovedWaiverSet(
+        configuration=_freeze_mapping(configuration),
+        digest=_digest(projection),
+        waivers=waivers,
+    )
+
+
 def _load_scanned_set(
     config: CoverageWaiverConfig,
     scan: SecureFileScan,
@@ -649,10 +700,7 @@ def _load_scanned_set(
     claims: list[tuple[str, str]] = []
     proof_references: set[str] = set()
     known = frozenset(str(target) for target in known_targets)
-    approval_files = tuple(file for file in scan.files if file.relative_path.endswith(".toml"))
-    proof_artifacts = tuple(
-        file for file in scan.files if not file.relative_path.endswith(".toml")
-    )
+    approval_files, proof_artifacts = _classify_scanned_files(scan)
     for file in approval_files:
         result, file_findings, source, references = _try_load_approval_file(
             file,
@@ -668,34 +716,13 @@ def _load_scanned_set(
         if result is not None:
             loaded.append(result)
     parse_findings.extend(_duplicate_source_findings(claims))
-    parse_findings.extend(
-        _error(
-            "COV_WAIVER_FILE_UNREFERENCED",
-            f"/files/{file.relative_path}",
-            "Non-TOML file is not referenced by a valid formal proof.",
-        )
-        for file in proof_artifacts
-        if file.relative_path not in proof_references
-    )
+    parse_findings.extend(_unreferenced_artifact_findings(proof_artifacts, proof_references))
     if parse_findings:
         raise CoverageWaiverValidationError(tuple(parse_findings))
     duplicate_findings = _duplicate_findings(loaded)
     if duplicate_findings:
         raise CoverageWaiverValidationError(duplicate_findings)
-    projections = [item[0] for item in loaded]
-    waivers = tuple(
-        sorted(
-            (waiver for _, file_waivers in loaded for waiver in file_waivers),
-            key=lambda item: (str(item.target), item.point_id, item.waiver_id),
-        )
-    )
-    configuration = {"anchor": config.anchor, "directory": config.directory}
-    projection = {"schema": _SET_SCHEMA, "config": configuration, "files": projections}
-    return ApprovedWaiverSet(
-        configuration=_freeze_mapping(configuration),
-        digest=_digest(projection),
-        waivers=waivers,
-    )
+    return _approved_waiver_set(config, loaded)
 
 
 def discover_approved_waiver_inputs(

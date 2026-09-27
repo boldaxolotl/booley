@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -164,14 +165,18 @@ approval_ref = "review:CR-1042"
     return waiver_file
 
 
-def _make_approval_unreachable(waiver_file: Path, reference: str) -> None:
+def _make_approval_unreachable(
+    waiver_file: Path,
+    reference: str,
+    proof_sha256: str = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3",
+) -> None:
     document = waiver_file.read_text(encoding="utf-8")
     document = document.replace('reason = "excluded"', 'reason = "unreachable"')
     document += f'''
 [approval.proof]
 kind = "formal"
 reference = "{reference}"
-sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3"
+sha256 = "{proof_sha256}"
 '''
     waiver_file.write_text(document, encoding="utf-8")
 
@@ -677,7 +682,27 @@ def test_referenced_toml_proof_remains_an_approval_document(tmp_path: Path) -> N
         )
 
     assert [(item.code, item.pointer) for item in raised.value.findings] == [
-        ("COV_WAIVER_FILE_MALFORMED", "/files/proofs/proof.toml")
+        ("COV_WAIVER_FILE_MALFORMED", "/files/proofs/proof.toml"),
+        ("COV_WAIVER_PROOF_INVALID", "/files/rtl/counter.sv.toml/approval/0/proof"),
+    ]
+
+
+def test_valid_approval_toml_cannot_also_serve_as_proof(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    second = _write_second_approval(roots)
+    proof_sha256 = f"sha256:{hashlib.sha256(second.read_bytes()).hexdigest()}"
+    _make_approval_unreachable(waiver_file, "tb/counter_tb.sv.toml#cover_17", proof_sha256)
+
+    with pytest.raises(CoverageWaiverValidationError) as raised:
+        load_approved_waiver_set(
+            CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
+            roots,
+            known_targets=(_TARGET,),
+        )
+
+    assert [(item.code, item.pointer) for item in raised.value.findings] == [
+        ("COV_WAIVER_PROOF_INVALID", "/files/rtl/counter.sv.toml/approval/0/proof")
     ]
 
 
@@ -781,6 +806,37 @@ def test_duplicate_source_claim_is_reported_with_its_mirror_mismatch(tmp_path: P
     assert [item.code for item in raised.value.findings] == [
         "COV_WAIVER_SOURCE_FILE_MISMATCH",
         "COV_WAIVER_SOURCE_DUPLICATE",
+    ]
+
+
+def test_parse_duplicate_source_and_unreferenced_findings_have_stable_order(
+    tmp_path: Path,
+) -> None:
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    approval = waiver_file.read_text(encoding="utf-8")
+    record = approval[approval.index("[[approval]]") :]
+    waiver_file.write_text(f"{approval}\n{record}", encoding="utf-8")
+    duplicate = waiver_file.parents[1] / "copies" / "counter.sv.toml"
+    duplicate.parent.mkdir()
+    duplicate.write_bytes(waiver_file.read_bytes())
+    artifacts = waiver_file.parents[1] / "proofs"
+    artifacts.mkdir()
+    (artifacts / "z.txt").write_text("stray\n", encoding="utf-8")
+    (artifacts / "a.txt").write_text("stray\n", encoding="utf-8")
+
+    with pytest.raises(CoverageWaiverValidationError) as raised:
+        load_approved_waiver_set(
+            CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
+            roots,
+            known_targets=(_TARGET,),
+        )
+
+    assert [(item.code, item.pointer) for item in raised.value.findings] == [
+        ("COV_WAIVER_SOURCE_FILE_MISMATCH", "/files/copies/counter.sv.toml/source"),
+        ("COV_WAIVER_SOURCE_DUPLICATE", "/files/rtl/counter.sv.toml/source"),
+        ("COV_WAIVER_FILE_UNREFERENCED", "/files/proofs/a.txt"),
+        ("COV_WAIVER_FILE_UNREFERENCED", "/files/proofs/z.txt"),
     ]
 
 
