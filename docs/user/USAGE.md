@@ -558,16 +558,10 @@ draft ──► queued ──► running ──► review ──► done
 - `running → review` happens when `on_success` includes `review`. Omitting it
   takes the `running → done` shortcut.
 
-`review` is a human decision point, not a partial-rework loop. An explicitly
-unaccepted Requested Review may still receive direct corrections and
-Ticket-bound validation before its first acceptance: commit the correction,
-run the relevant Booley Flows or Specialists through `booley board validate`,
-and select a new review package. Automatic handoff has already created an
-immutable Criteria Satisfaction Record. Committing a correction after that
-point makes the acceptance stale; it cannot be extended or replaced by review,
-validation, regeneration, or a new revert commit.
-
-The reviewer has three substantive choices:
+`review` is a human decision point, not a partial-rework loop. Once a Ticket is
+accepted, any new commit in its worktree makes that acceptance stale; Booley
+will not approve it until the Ticket heads match the accepted ones again. The
+reviewer has three substantive choices:
 
 1. Approve the Ticket as `done` when its live participant heads still match the
    accepted heads. If acceptance is stale, first preserve post-acceptance commits

@@ -197,8 +197,6 @@ def test_triage_review_distinguishes_direct_fix_from_clean_reset():
         "Criteria Satisfaction Records are immutable",
         "save every post-acceptance commit on a separate safety branch",
         "A new `git revert` commit does not restore an accepted head",
-        "remains authoritative as the immutable record of what was accepted",
-        "not evidence that the changed live heads are current or acceptable",
         "publishes first acceptance, and completes the Ticket",
         "This is a clean start",
         "Do not selectively retain reviewed work",

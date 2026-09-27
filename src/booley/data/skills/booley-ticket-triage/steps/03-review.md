@@ -98,19 +98,16 @@ For stale accepted review, ask: **restore exact accepted heads** / **reset** /
 - **Approve**: `booley board approve $SLUG`
 - **Restore exact accepted heads**: Criteria Satisfaction Records are immutable.
   First save every post-acceptance commit on a separate safety branch. Then move
-  every named Ticket ref and worktree in the stale marker to its exact listed
-  frozen commit, rerun `booley board show $SLUG`, and approve only when the
-  marker is gone. A new `git revert` commit does not restore an accepted head.
-  `board review`, `board validate`, and package regeneration cannot replace or
-  extend the frozen Criteria Satisfaction Record.
+  every Ticket ref and worktree named in the stale marker to its listed frozen
+  commit, rerun `booley board show $SLUG`, and approve once the marker is gone.
+  A new `git revert` commit does not restore an accepted head.
 - **Reset**: ask why a clean run is required, then run
   `booley board reset $SLUG --reason "<correction reason>"`.
   This is a clean start:
   retire the Ticket worktree and branch, archive the current runtime artifacts
   as prior-run history, clear the active state, and return the Ticket to
-  `queued`. Do not selectively retain reviewed work. Reset may first refuse with
-  its pending-amendment, return-to-draft, active-owner, or active-Job diagnostic.
-- **Archive**: `python -m booley.ticket_board archive $SLUG --force`
+  `queued`. Do not selectively retain reviewed work.
+- **Archive**: `booley board archive $SLUG --force`
 - **Skip**: leave as-is
 
 Review never resumes through an ordinary move to `queued`. It finishes in
