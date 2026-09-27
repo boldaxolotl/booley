@@ -1201,9 +1201,8 @@ def _cmd_board_create(tio: TicketIO, slug: str, project_root: Path) -> bool:
         print(f"Error: {message}", file=sys.stderr)
         return False
 
-    # The stub must spell out what queueing requires (A-4): a draft with
-    # no scope/criteria and no '## Description' fails validation on the
-    # first `board move <slug> queue`, and the schema was otherwise only
+    # Keep queue-required fields visible in the authoring stub even though
+    # its TODO placeholders deliberately leave it unready to queue.
     branch = json.dumps(branch_inspection.branch)
     stub = (
         "---\n"

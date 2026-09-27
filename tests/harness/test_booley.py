@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -79,6 +80,37 @@ def test_board_help_hides_deprecated_review_commands(capsys):
     assert "[may invoke agent]" in output
 
 
+def _board_git(repository: Path, *args: str) -> str:
+    git_env = os.environ.copy()
+    git_env["GIT_CONFIG_GLOBAL"] = os.devnull
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    git_env["GIT_CONFIG_COUNT"] = "0"
+    git_env.pop("GIT_TEMPLATE_DIR", None)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+        env=git_env,
+    )
+    return result.stdout.strip()
+
+
+def _initialize_board_repository(
+    repository: Path,
+    branch: str,
+    commit_message: str,
+) -> str:
+    _board_git(repository, "init", "-b", branch)
+    _board_git(repository, "config", "user.name", "Test")
+    _board_git(repository, "config", "user.email", "test@example.invalid")
+    _board_git(repository, "add", "-A")
+    _board_git(repository, "commit", "-m", commit_message)
+    return _board_git(repository, "rev-parse", "HEAD")
+
+
 def _board_create_project(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -89,43 +121,20 @@ def _board_create_project(
 ) -> tuple[Path, Path, str]:
     root = tmp_path / "project"
     root.mkdir()
-    subprocess.run(["git", "init", "-b", branch], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.invalid"],
-        cwd=root,
-        check=True,
-    )
     (root / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
     (root / "README.md").write_text("demo\n", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-m", "initial outer"], cwd=root, check=True)
-    outer_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    outer_sha = _initialize_board_repository(root, branch, "initial outer")
 
     project_dir = root / ".booley_project"
     (project_dir / "tickets" / "board" / "drafts").mkdir(parents=True)
     (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
     if paired:
-        subprocess.run(
-            ["git", "init", "-b", project_branch or branch],
-            cwd=project_dir,
-            check=True,
+        _initialize_board_repository(
+            project_dir,
+            project_branch or branch,
+            "initial project",
         )
-        subprocess.run(["git", "config", "user.name", "Test"], cwd=project_dir, check=True)
-        subprocess.run(
-            ["git", "config", "user.email", "test@example.invalid"],
-            cwd=project_dir,
-            check=True,
-        )
-        subprocess.run(["git", "add", "-A"], cwd=project_dir, check=True)
-        subprocess.run(["git", "commit", "-m", "initial project"], cwd=project_dir, check=True)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
     reset_cache()
     return root, project_dir, outer_sha
@@ -164,13 +173,7 @@ def test_board_create_uses_matching_paired_project_branch(
     assert isinstance(converted.document.spec.fields["branch"], str)
     assert converted.document.spec.fields["project_destination_ref"] == f"refs/heads/{branch}"
     workspace = project_dir / "worktrees" / slug
-    workspace_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=workspace,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    workspace_sha = _board_git(workspace, "rev-parse", "HEAD")
     assert workspace_sha == outer_sha
 
 
@@ -216,7 +219,7 @@ def test_board_create_rejects_detached_head(
         board_create_project_env,
         "release/next",
     )
-    subprocess.run(["git", "checkout", "--detach"], cwd=root, check=True)
+    _board_git(root, "checkout", "--detach")
     materialize = MagicMock()
     board_create_project_env.setattr(
         tlr.TicketIO,
@@ -230,6 +233,29 @@ def test_board_create_rejects_detached_head(
     assert "detached HEAD" in capsys.readouterr().err
     assert not (project_dir / "tickets" / "board" / "drafts" / "detached-draft.md").exists()
     materialize.assert_not_called()
+
+
+def test_board_create_reports_branch_inspection_failure(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project_dir, _outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        "release/next",
+    )
+    inspection = MagicMock()
+    inspection.branch = None
+    inspection.detail = "git inspection timed out"
+    board_create_project_env.setattr(tlr, "inspect_symbolic_branch", lambda _root: inspection)
+    args = tlr._build_parser().parse_args(["board", "create", "inspection-failure"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "cannot inspect the Project checkout branch" in capsys.readouterr().err
+    draft = project_dir / "tickets" / "board" / "drafts" / "inspection-failure.md"
+    assert not draft.exists()
 
 
 def test_board_create_rejects_non_git_project(
@@ -265,7 +291,7 @@ def test_board_create_rejects_uninitialized_git_repository(
 ) -> None:
     root = tmp_path / "project"
     root.mkdir()
-    subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True)
+    _board_git(root, "init", "-b", "main")
     board_create_project_env.delenv("BOOLEY_PROJECT_DIR", raising=False)
     reset_cache()
     materialize = MagicMock()
