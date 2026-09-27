@@ -17,6 +17,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -54,7 +55,11 @@ from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import resolve_run_cwd
-from booley.flows.sim.coverage_campaign import coverage_mapping_document
+from booley.flows.sim.coverage_campaign import (
+    CoverageCampaign,
+    FrozenJson,
+    coverage_mapping_document,
+)
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
@@ -70,6 +75,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_FAILURE,
     EXIT_SUCCESS,
     EndpointOutcome,
+    normalize_completion_error,
 )
 from booley.runtime.file_lock import LockContentionError
 from booley.runtime.platform_paths import posix_relpath
@@ -413,16 +419,99 @@ def _campaign_observation_counts(
     return {axis: dict(Counter(str(item[axis]) for item in observations)) for axis in axes}
 
 
-def _campaign_report_lines(outcomes: Sequence[CampaignOutcome]) -> list[str]:
+def _coverage_diagnostic_detail(diagnostics: FrozenJson) -> str | None:
+    records = cast(tuple[FrozenJson, ...], diagnostics)
+    if not records:
+        return None
+    first = records[0]
+    if isinstance(first, str):
+        return first
+    diagnostic = cast(Mapping[str, FrozenJson], first)
+    return str(diagnostic["code"])
+
+
+def _compact_coverage_number(value: FrozenJson) -> str:
+    assert isinstance(value, int | float) and not isinstance(value, bool)
+    rendered = format(Decimal(str(value)), "f")
+    return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def _failed_metric_detail(metrics: FrozenJson) -> str | None:
+    records = cast(tuple[Mapping[str, FrozenJson], ...], metrics)
+    failed = next(
+        (item for item in records if item["verdict"] == "fail"),
+        None,
+    )
+    if failed is None:
+        return None
+    return (
+        f"{failed['metric']}: observed {failed['covered_points']}/"
+        f"{failed['eligible_points']} points; "
+        f"displayed {_compact_coverage_number(failed['actual_percent'])}%; "
+        f"minimum {_compact_coverage_number(failed['minimum_percent'])}%"
+    )
+
+
+def _coverage_report_suffix(campaign: CoverageCampaign) -> str:
+    collection = campaign.collection
+    evaluation = campaign.evaluation
+    collection_status = str(collection["status"]).upper()
+    evaluation_status = str(evaluation["status"]).upper()
+    collection_detail = None
+    if collection["status"] != "complete":
+        collection_detail = _coverage_diagnostic_detail(collection["diagnostics"])
+    evaluation_detail = None
+    if evaluation["status"] == "blocked":
+        evaluation_detail = _coverage_diagnostic_detail(evaluation["diagnostics"])
+    elif evaluation["status"] == "fail":
+        evaluation_detail = _failed_metric_detail(evaluation["metrics"])
+    if collection_detail:
+        collection_status += f" ({collection_detail})"
+    if evaluation_detail:
+        evaluation_status += f" ({evaluation_detail})"
+    return f"coverage collection {collection_status} · evaluation {evaluation_status}"
+
+
+def _resolved_coverage_campaigns(
+    outcomes: Sequence[CampaignOutcome],
+) -> dict[str, CoverageCampaign]:
+    campaigns: dict[str, CoverageCampaign] = {}
+    for outcome in outcomes:
+        if getattr(outcome, "coverage_reference", None) is None:
+            continue
+        public = outcome.manifest_path.parents[1] / "coverage.json"
+        selector = str(outcome.target["selector"])
+        campaigns[selector] = resolve_coverage_campaign_reference(public).loaded.campaign
+    return campaigns
+
+
+def _campaign_report_lines(
+    outcomes: Sequence[CampaignOutcome],
+    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+) -> list[str]:
+    resolved = coverage_campaigns
+    if resolved is None and any(
+        getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
+    ):
+        resolved = _resolved_coverage_campaigns(outcomes)
     lines: list[str] = []
     for outcome in outcomes:
         acceptance = getattr(outcome, "acceptance_facts", None)
         facts = getattr(acceptance, "document", {})
         campaign_id = facts.get("campaign_id", "unavailable")
-        line = (
-            f"{outcome.target['selector']}: {outcome.aggregate_grade.upper()} "
-            f"(Simulation Campaign {campaign_id})"
-        )
+        selector = str(outcome.target["selector"])
+        if getattr(outcome, "coverage_reference", None) is None:
+            line = (
+                f"{selector}: {outcome.aggregate_grade.upper()} "
+                f"(Simulation Campaign {campaign_id})"
+            )
+        else:
+            assert resolved is not None
+            suffix = _coverage_report_suffix(resolved[selector])
+            line = (
+                f"{selector}: simulation {outcome.aggregate_grade.upper()} · {suffix} "
+                f"(Simulation Campaign {campaign_id})"
+            )
         reasons = []
         for observation in outcome.observations:
             detail = observation.get("detail")
@@ -623,16 +712,23 @@ def _structured_json(value: object) -> object:
 
 
 def _coverage_compatibility_targets(
-    outcomes: Sequence[CampaignOutcome], report_invocation: Path | None = None
+    outcomes: Sequence[CampaignOutcome],
+    report_invocation: Path | None = None,
+    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
 ) -> dict[str, object]:
     """Preserve bounded coverage endpoint fields while authority stays referenced."""
+    resolved = (
+        coverage_campaigns
+        if coverage_campaigns is not None
+        else _resolved_coverage_campaigns(outcomes)
+    )
     targets: dict[str, object] = {}
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
         public = outcome.manifest_path.parents[1] / "coverage.json"
-        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
         selector = str(outcome.target["selector"])
+        campaign = resolved[selector]
         reference = _report_artifact_reference(
             public,
             report_invocation=report_invocation,
@@ -665,14 +761,22 @@ def _campaign_simulation_status(outcome: CampaignOutcome) -> str:
     return "not_run"
 
 
-def _coverage_campaign_exit_code(outcomes: Sequence[CampaignOutcome]) -> int:
+def _coverage_campaign_exit_code(
+    outcomes: Sequence[CampaignOutcome],
+    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+) -> int:
     """Preserve native collection/evaluation exit policy for wrapped aggregates."""
+    resolved = (
+        coverage_campaigns
+        if coverage_campaigns is not None
+        else _resolved_coverage_campaigns(outcomes)
+    )
     saw_failure = False
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
-        public = outcome.manifest_path.parents[1] / "coverage.json"
-        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+        selector = str(outcome.target["selector"])
+        campaign = resolved[selector]
         if (
             campaign.collection["status"] != "complete"
             or campaign.evaluation["status"] == "blocked"
@@ -683,12 +787,18 @@ def _coverage_campaign_exit_code(outcomes: Sequence[CampaignOutcome]) -> int:
 
 
 def _checkpoint_coverage_campaign(progress: CoverageProgress, outcome: CampaignOutcome) -> None:
+    _retain_coverage_campaign(progress, outcome)
+    progress.checkpoint()
+
+
+def _retain_coverage_campaign(progress: CoverageProgress, outcome: CampaignOutcome) -> None:
+    """Authenticate and retain one completed Target before observational writes."""
     public = outcome.manifest_path.parents[1] / "coverage.json"
     campaign = resolve_coverage_campaign_reference(public).loaded.campaign
-    progress.completed(
+    progress.outcomes.append(
         CoverageTargetOutcome(
             str(outcome.target["selector"]),
-            _coverage_campaign_exit_code([outcome]),
+            _coverage_campaign_exit_code([outcome], {str(outcome.target["selector"]): campaign}),
             public,
             public.with_name("simulation.json"),
             campaign.evaluation,
@@ -2173,7 +2283,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 detail=_campaign_recovery_detail(observed),
             )
         try:
-            outcome = self._execute_validated_resume(validated, invocation, admission)
+            outcome, progress_error = self._execute_validated_resume(
+                validated, invocation, admission
+            )
         except SimulationCampaignCancellationError as exc:
             return self._campaign_cancelled_outcome(
                 exc,
@@ -2190,6 +2302,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         result = self._campaign_endpoint_outcome([outcome])
         result.detail.update(_campaign_recovery_detail(outcome.recovery))
+        if progress_error is not None:
+            normalize_completion_error(
+                result,
+                progress_error,
+                "publish coverage progress",
+                path=invocation / "progress.json",
+            )
         return result
 
     def _execute_validated_resume(
@@ -2197,7 +2316,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         validated: ValidatedResumeManifest,
         invocation: Path,
         admission: AdmissionContext,
-    ) -> CampaignOutcome:
+    ) -> tuple[CampaignOutcome, Exception | None]:
         items = cast(tuple[Mapping[str, object], ...], validated.manifest.document["work_items"])
         coverage_plan = (
             self._resume_coverage_target_plan(validated)
@@ -2210,25 +2329,35 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else None
         )
         if progress is None:
-            return self._run_validated_resume_campaign(
-                validated, invocation, admission, coverage_plan
+            return (
+                self._run_validated_resume_campaign(
+                    validated, invocation, admission, coverage_plan
+                ),
+                None,
             )
         lifecycle = ProgressLifecycle(
             lambda phase: progress.checkpoint(complete=True, phase=phase)
         )
-        with lifecycle:
-            progress.checkpoint()
-            outcome = self._run_validated_resume_campaign(
-                validated, invocation, admission, coverage_plan
-            )
-            _checkpoint_coverage_campaign(progress, outcome)
-            supersede_progress(
-                validated.path.parents[3] / "progress.json",
-                new_invocation=int(invocation.name),
-                new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-            )
-            lifecycle.complete()
-            return outcome
+        outcome: CampaignOutcome | None = None
+        try:
+            with lifecycle:
+                progress.checkpoint()
+                outcome = self._run_validated_resume_campaign(
+                    validated, invocation, admission, coverage_plan
+                )
+                _checkpoint_coverage_campaign(progress, outcome)
+                supersede_progress(
+                    validated.path.parents[3] / "progress.json",
+                    new_invocation=int(invocation.name),
+                    new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+                )
+                lifecycle.complete()
+                return outcome, None
+        except ProgressPublicationError as exc:
+            if outcome is None:
+                raise
+            failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+            return outcome, failure
 
     def _run_validated_resume_campaign(
         self,
@@ -2517,15 +2646,31 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         lifecycle = ProgressLifecycle(
             lambda phase: progress.checkpoint(complete=True, phase=phase)
         )
+        result: EndpointOutcome | None = None
         try:
             with lifecycle:
                 progress.checkpoint()
                 campaign, requests = self._coverage_campaign_session(admission, invocation)
                 result = self._execute_coverage_campaign_requests(campaign, requests, progress)
-                if len(progress.outcomes) == len(progress.targets):
+                if result.exit_code != EXIT_ERROR and len(progress.outcomes) == len(
+                    progress.targets
+                ):
                     lifecycle.complete()
                 return result
         except (OSError, ValueError, RuntimeError) as exc:
+            if result is not None:
+                failure = (
+                    exc.__cause__
+                    if isinstance(exc, ProgressPublicationError)
+                    and isinstance(exc.__cause__, Exception)
+                    else exc
+                )
+                return normalize_completion_error(
+                    result,
+                    failure,
+                    "publish coverage progress",
+                    path=progress.invocation_dir / "progress.json",
+                )
             detail = (
                 {"progress_error": str(exc)} if isinstance(exc, ProgressPublicationError) else {}
             )
@@ -2584,12 +2729,31 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         for index, request in enumerate(requests):
             try:
                 outcome = campaign.run(request)
-                outcomes.append(outcome)
-                _checkpoint_coverage_campaign(progress, outcome)
             except SimulationCampaignCancellationError as exc:
                 return self._campaign_cancelled_outcome(exc)
             except (OSError, ValueError, RuntimeError) as exc:
                 return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
+            outcomes.append(outcome)
+            try:
+                _retain_coverage_campaign(progress, outcome)
+            except (OSError, ValueError) as exc:
+                return self._coverage_campaign_failure(
+                    outcomes[:-1], requests, index, request, exc
+                )
+            try:
+                progress.checkpoint()
+            except (OSError, ValueError) as exc:
+                result = self._campaign_endpoint_outcome(outcomes)
+                result.detail = dict(result.detail)
+                result.detail["pending_targets"] = [
+                    _coverage_request_selector(item) for item in requests[index + 1 :]
+                ]
+                return normalize_completion_error(
+                    result,
+                    exc,
+                    "publish coverage progress",
+                    path=progress.invocation_dir / "progress.json",
+                )
         return self._campaign_endpoint_outcome(outcomes)
 
     def _coverage_campaign_failure(
@@ -2838,6 +3002,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, targets, test_names_map, total_start, resolution_s
     ) -> EndpointOutcome:
         results: list[TargetResult] = []
+        result: EndpointOutcome | None = None
         lifecycle = ProgressLifecycle(
             lambda phase: self._write_progress_report(targets, results, phase=phase, complete=True)
         )
@@ -2858,6 +3023,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 lifecycle.complete()
                 return result
         except ProgressPublicationError as exc:
+            if result is not None:
+                failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+                return normalize_completion_error(
+                    result,
+                    failure,
+                    "publish simulation progress",
+                    path=self.context._reserved_invocation_dir / "progress.json"
+                    if self.context._reserved_invocation_dir is not None
+                    else None,
+                )
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 detail={"progress_error": str(exc)},
@@ -2967,6 +3142,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             publication_checkpoint=self._campaign_publication_checkpoint,
         )
         outcomes: list[CampaignOutcome] = []
+        result: EndpointOutcome | None = None
         lifecycle = ProgressLifecycle(
             lambda phase: self._write_campaign_progress(
                 targets, outcomes, phase=phase, complete=True
@@ -2999,6 +3175,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         except SimulationCampaignCancellationError as exc:
             return self._campaign_cancelled_outcome(exc)
         except (OSError, ValueError, RuntimeError) as exc:
+            if result is not None and isinstance(exc, ProgressPublicationError):
+                failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+                return normalize_completion_error(
+                    result,
+                    failure,
+                    "publish simulation progress",
+                    path=invocation / "progress.json",
+                )
             detail: dict[str, object] = (
                 {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
             )
@@ -3490,19 +3674,21 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _campaign_endpoint_outcome(self, outcomes: list[CampaignOutcome]) -> EndpointOutcome:
         self.context._simulation_campaign_outcomes = tuple(outcomes)
+        coverage_campaigns = _resolved_coverage_campaigns(outcomes)
         grades = [outcome.aggregate_grade for outcome in outcomes]
-        exit_code = _coverage_campaign_exit_code(outcomes) or (
+        exit_code = _coverage_campaign_exit_code(outcomes, coverage_campaigns) or (
             EXIT_ERROR
             if "error" in grades
             else EXIT_FAILURE
             if any(grade != "pass" for grade in grades)
             else EXIT_SUCCESS
         )
-        lines = _campaign_report_lines(outcomes)
+        lines = _campaign_report_lines(outcomes, coverage_campaigns)
         campaigns = _campaign_structured_details(outcomes, self.context._reserved_invocation_dir)
         coverage_targets = _coverage_compatibility_targets(
             outcomes,
             self.context._reserved_invocation_dir,
+            coverage_campaigns,
         )
         detail: dict[str, object] = {"campaigns": campaigns}
         if coverage_targets:
@@ -3553,6 +3739,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return preflight
         targets = preflight
         results: list[ElabOnlyTargetResult] = []
+        result: EndpointOutcome | None = None
         self._elab_progress_results = results
         lifecycle = ProgressLifecycle(
             lambda phase: self._write_elab_only_progress(
@@ -3585,6 +3772,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 lifecycle.complete()
                 return result
         except ProgressPublicationError as exc:
+            if result is not None:
+                failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+                invocation = self.context._reserved_invocation_dir
+                return normalize_completion_error(
+                    result,
+                    failure,
+                    "publish elaboration progress",
+                    path=invocation / "progress.json" if invocation is not None else None,
+                )
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 detail={"progress_error": str(exc)},

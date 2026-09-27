@@ -930,9 +930,9 @@ Sandbox activity and refreshes the idle-reaper heartbeat, including bounded
 cancellation and descendant cleanup. The reaper rechecks that activity
 immediately before an idle-only stop; that recheck is the lifecycle decision
 point, not atomic coordination with Docker's stop request. An explicit
-lifecycle command or the independent session-cap policy can still stop an
-active Sandbox. A bare interactive shell without a supervised command does not
-receive this execution-lifetime guarantee.
+lifecycle command can still stop an active Sandbox. Capacity policy is checked
+before a start and never preempts existing work. A bare interactive shell
+without a supervised command does not receive this execution-lifetime guarantee.
 
 Each execution identity is inherited by its descendants and any Job leases they
 hold. If the original supervisor disappears or leaves an incomplete record,

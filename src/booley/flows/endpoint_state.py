@@ -115,6 +115,7 @@ class EndpointState(ABC):
         self._display_identity = DisplayIdentity.current(invocation_id)
         self._invocation_id = self._display_identity.invocation_id
         self._reserved_invocation_dir: Path | None = None
+        self._skip_report_detail_refresh = False
         # Transport adapters opt in to automatic stdout/stderr verdict
         # publication. Typed in-process execution stays side-effect free.
         self._console_publication_requested = False
@@ -295,7 +296,7 @@ class EndpointState(ABC):
         *,
         started: float | None,
         acceptance_recorded: bool,
-    ) -> int:
+    ) -> ExecutionResult:
         return endpoint_session.finish_execution(
             self, prepared, outcome, started=started, acceptance_recorded=acceptance_recorded
         )

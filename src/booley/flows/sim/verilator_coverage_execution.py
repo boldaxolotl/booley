@@ -7,7 +7,7 @@ import re
 import shlex
 import shutil
 import stat
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -54,7 +54,11 @@ from booley.flows.sim.execution.engine import (
 )
 from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifact
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
-from booley.fusesoc.fusesoc_registry import FuseSocError
+from booley.fusesoc.fusesoc_registry import (
+    FuseSocError,
+    core_target_coverage_errors,
+    coverage_target_metadata_errors,
+)
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
@@ -442,17 +446,19 @@ def prepare_coverage_collection(
     trace: bool = False,
 ) -> CoverageCollectionRequest:
     """Project one resolved Target into the collector's policy-free request."""
+    coverage_errors = core_target_coverage_errors(handle.core_file, handle.name)
+    if coverage_errors:
+        raise ValueError("; ".join(coverage_errors))
     inspection = TargetCatalog.build(handle.project_root).inspect(handle)
     if inspection.eda_tool != "verilator":
         raise ValueError("Verilator-native coverage requires a Verilator sim Target")
+    resolved_errors = _resolved_coverage_errors(inspection, handle.name)
+    if resolved_errors:
+        raise ValueError("; ".join(resolved_errors))
     metadata = _coverage_metadata(inspection)
     harness = _coverage_harness(inspection)
-    declared_hooks = metadata.get("custom_main_hooks", ())
-    hooks = (
-        tuple(str(item) for item in declared_hooks)
-        if isinstance(declared_hooks, Sequence) and not isinstance(declared_hooks, str | bytes)
-        else ()
-    )
+    hooks = cast(tuple[str, ...], metadata.get("custom_main_hooks", ()))
+    reset_included = cast(bool, metadata.get("reset_included", True))
     return CoverageCollectionRequest(
         target=CoverageTarget(
             identity=handle.identity,
@@ -465,7 +471,7 @@ def prepare_coverage_collection(
         selected_tests=tuple(SelectedCoverageTest(name) for name in selected_tests),
         artifact_root=artifact_root,
         trace=trace,
-        reset_included=bool(metadata.get("reset_included", True)),
+        reset_included=reset_included,
     )
 
 
@@ -494,6 +500,20 @@ def _coverage_metadata(inspection: TargetInspection) -> Mapping[str, object]:
         return MappingProxyType({})
     coverage = booley.get("coverage")
     return coverage if isinstance(coverage, Mapping) else MappingProxyType({})
+
+
+def _resolved_coverage_errors(inspection: TargetInspection, target_name: str) -> list[str]:
+    """Validate FuseSoC's effective recipe after inheritance and flag resolution."""
+    booley = inspection.flow_options.get("booley")
+    if not isinstance(booley, Mapping) or "coverage" not in booley:
+        return []
+    coverage = booley["coverage"]
+    if isinstance(coverage, Mapping):
+        coverage = dict(coverage)
+        hooks = coverage.get("custom_main_hooks")
+        if isinstance(hooks, tuple):
+            coverage["custom_main_hooks"] = list(hooks)
+    return coverage_target_metadata_errors(coverage, f"targets.{target_name}.flow_options.booley")
 
 
 def _coverage_harness(inspection: TargetInspection) -> CoverageHarness:

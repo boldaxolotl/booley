@@ -36,7 +36,9 @@ def _manifest(names: list[str]) -> dict[str, object]:
 def test_fixture_declares_owned_three_test_icarus_target() -> None:
     core = yaml.safe_load((FIXTURE / "campaign.core").read_text().split("\n", 1)[1])
     target = core["targets"]["sim_campaign"]
-    assert target["default_tool"] == "icarus"
+    # Flow-API Icarus recipe: the SystemVerilog TB needs -g2012 to build.
+    assert target["flow"] == "sim"
+    assert target["flow_options"] == {"tool": "icarus", "iverilog_options": ["-g2012"]}
     assert target["toplevel"] == "campaign_tb"
     assert (
         '[sim_campaign]\ntests = ["quick", "slow", "tail"]' in (FIXTURE / "tests.toml").read_text()
@@ -45,6 +47,14 @@ def test_fixture_declares_owned_three_test_icarus_target() -> None:
         "tail",
         "quick",
     ]
+
+
+def test_fixture_testbench_runs_under_icarus_with_project_sentinel() -> None:
+    testbench = (FIXTURE / "campaign_tb.sv").read_text()
+    # Icarus has no $system; `slow` must spin simulation time instead.
+    assert "$system(" not in testbench
+    # The PicoRV32 Project's configured pass sentinel replaces [SIM_RESULT] PASSED.
+    assert '$display("ALL TESTS PASSED.");' in testbench
 
 
 def test_validator_preserves_requested_work_item_order(tmp_path: Path) -> None:

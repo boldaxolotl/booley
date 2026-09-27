@@ -886,6 +886,26 @@ def test_session_runtime_startup_failure_fails_loudly(tmp_path, monkeypatch):
     assert "bad issuance" in rec.fails()[0]
 
 
+def test_session_capacity_refusal_keeps_capacity_remedy(tmp_path, monkeypatch):
+    project, _calls = _tool_check_harness(
+        tmp_path,
+        monkeypatch,
+        lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        doctor.session_runtime,
+        "up",
+        lambda _root: (_ for _ in ()).throw(
+            doctor.session_runtime.SessionError("Sandbox start refused: host is at capacity")
+        ),
+    )
+    rec = _Rec()
+
+    _run_flow_check(project, rec, dry_run=False)
+
+    assert rec.fix_hints == ["free Sandbox capacity using the command in the refusal, then retry"]
+
+
 def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
     """A Flow exiting 97 for its own reasons must NOT be reported as
     misrouting — the guard verdict requires the stderr marker too."""

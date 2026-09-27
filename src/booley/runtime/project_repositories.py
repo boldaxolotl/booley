@@ -127,10 +127,10 @@ def ref_sha(source: Path, ref: str) -> str:
 
 def inspect_symbolic_branch(worktree: Path) -> SymbolicBranchInspection:
     """Inspect the worktree's attached branch with bounded Git execution."""
-    result = run_git(worktree, "symbolic-ref", "--quiet", "--short", "HEAD")
-    branch = result.stdout.strip()
-    if result.returncode == 0 and branch:
-        return SymbolicBranchInspection(branch, result)
+    result = run_git(worktree, "symbolic-ref", "--quiet", "HEAD")
+    ref = result.stdout.strip()
+    if result.returncode == 0 and ref.startswith("refs/heads/"):
+        return SymbolicBranchInspection(ref.removeprefix("refs/heads/"), result)
     return SymbolicBranchInspection(None, result)
 
 

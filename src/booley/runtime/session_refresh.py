@@ -542,6 +542,7 @@ def _resume_journal(journal: _RefreshJournal) -> RecoveryResult:
         expected_image_id=target,
         expected_wheel_source_fingerprint=journal.target_payload_fingerprint,
         expected_wheel_sha256=journal.target_wheel_sha256,
+        recovery=True,
     )
     if journal.direction is not _RecoveryDirection.COMMITTED_FORWARD:
         journal = replace(

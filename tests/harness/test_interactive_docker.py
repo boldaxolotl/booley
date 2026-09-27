@@ -364,7 +364,7 @@ class TestReaper:
         assert fd.ran("-v", f"{idk.DOCKER_SOCK}:{idk.DOCKER_SOCK}")
         run_call = next(c for c in fd.calls if c[:2] == ["run", "-d"])
         assert "BOOLEY_IDLE_TIMEOUT_SECONDS=600" in run_call
-        assert "BOOLEY_MAX_SESSIONS=3" in run_call
+        assert not any("BOOLEY_MAX_SESSIONS=" in arg for arg in run_call)
 
     def test_starts_stopped_reaper(self, fake_docker):
         fd = fake_docker(
@@ -420,7 +420,7 @@ class TestReaper:
         assert fd.ran("rm", "-f", idk.REAPER_CONTAINER)
         run_call = next(c for c in fd.calls if c[:2] == ["run", "-d"])
         assert "BOOLEY_IDLE_TIMEOUT_SECONDS=900" in run_call
-        assert "BOOLEY_MAX_SESSIONS=2" in run_call
+        assert not any("BOOLEY_MAX_SESSIONS=" in arg for arg in run_call)
 
     def test_keeps_reaper_when_image_ids_match(self, fake_docker):
         fd = fake_docker(

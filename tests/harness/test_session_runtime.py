@@ -25,6 +25,18 @@ from booley.runtime import session_runtime as sr
 from booley.runtime import session_spec
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session_admission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from booley.runtime import session_admission
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(session_admission, "claim_vscode_start", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(session_admission, "has_pending_claim", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(session_admission, "vscode_sandboxes", lambda *_args, **_kwargs: ())
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "i2c"
@@ -1688,6 +1700,26 @@ class TestRefreshContainerTransactions:
 
 
 class TestUp:
+    def test_new_sandbox_refusal_happens_before_relay_or_docker_mutation(self, wired):
+        workspace, run = wired
+        from booley.runtime import session_admission
+
+        run.reset_mock()
+        with (
+            patch.object(sr.idk, "container_exists", return_value=False),
+            patch.object(
+                session_admission,
+                "admit_start",
+                side_effect=session_admission.AdmissionError("host is at max_sessions=1"),
+            ),
+            patch.object(sr, "_prepare_license_relay") as relay,
+            pytest.raises(sr.SessionError, match="max_sessions=1"),
+        ):
+            sr.up(workspace)
+
+        relay.assert_not_called()
+        run.assert_not_called()
+
     @pytest.mark.parametrize(
         "wired",
         ["real-image-lifecycle"],
@@ -2580,7 +2612,7 @@ class TestLicensedRelayLifecycle:
             patch.object(sr.idk, "container_exists", side_effect=[False, True]),
             patch.object(sr, "_remove_license_relay") as remove,
         ):
-            assert sr.down(workspace) is True
+            assert sr.down(workspace).relay is True
         remove.assert_called_once_with(relay)
 
 
@@ -2804,7 +2836,7 @@ class TestStaleSessionContainerWarning:
 class TestDownAndStatus:
     def test_down_on_absent_container_is_false(self, workspace: Path):
         with patch.object(sr.idk, "container_exists", return_value=False):
-            assert sr.down(workspace) is False
+            assert not sr.down(workspace)
 
     def test_down_never_removes_the_issuance_image_keeper(self, workspace: Path):
         relay = SimpleNamespace(relay_container="relay")
@@ -2815,10 +2847,124 @@ class TestDownAndStatus:
             patch.object(sr, "_run") as run,
         ):
             run.return_value = subprocess.CompletedProcess([], 0)
-            assert sr.down(workspace) is True
+            assert sr.down(workspace).headless is True
         commands = [_argv_of(call) for call in run.call_args_list]
         assert ["docker", "stop", sr.session_container_name(workspace)] in commands
         assert not any(command[:3] == ["docker", "image", "rm"] for command in commands)
+
+    def test_down_rejects_unproven_vscode_identity_before_mutation(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        run = Mock()
+        monkeypatch.setattr(sr, "_run", run)
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        monkeypatch.setattr(
+            session_admission,
+            "vscode_sandboxes",
+            Mock(side_effect=session_admission.AdmissionError("identity disagrees")),
+        )
+
+        with pytest.raises(sr.SessionError, match="identity disagrees"):
+            sr.down(workspace)
+
+        run.assert_not_called()
+
+    def test_down_stops_revalidated_vscode_and_clears_claim(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        discovered = Mock(side_effect=[(item,), (item,)])
+        monkeypatch.setattr(session_admission, "vscode_sandboxes", discovered)
+        monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda _root: True)
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+        monkeypatch.setattr(sr, "_run", run)
+
+        result = sr.down(workspace)
+
+        assert result.vscode_stopped == ("editor",)
+        assert result.claim_cleared
+        assert ["docker", "stop", "editor-id"] in [_argv_of(call) for call in run.call_args_list]
+
+    def test_down_rejects_vscode_that_disappears_before_stop(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        monkeypatch.setattr(session_admission, "vscode_sandboxes", Mock(side_effect=[(item,), ()]))
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+
+        with pytest.raises(sr.SessionError, match="cannot prove VS Code Sandbox"):
+            sr.down(workspace)
+
+    @pytest.mark.parametrize("failure", ["stop", "rm"])
+    def test_down_reports_headless_docker_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+
+        def run(argv: list[str], **_kwargs):
+            failed = argv[1] == failure
+            return subprocess.CompletedProcess(
+                argv, 1 if failed else 0, "", "denied" if failed else ""
+            )
+
+        monkeypatch.setattr(sr, "_run", run)
+
+        message = "cannot remove" if failure == "rm" else "cannot stop"
+        with pytest.raises(sr.SessionError, match=message):
+            sr.down(workspace)
+
+    def test_down_reports_vscode_stop_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        monkeypatch.setattr(
+            session_admission, "vscode_sandboxes", lambda *_args, **_kwargs: (item,)
+        )
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        monkeypatch.setattr(
+            sr,
+            "_run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "denied"),
+        )
+
+        with pytest.raises(sr.SessionError, match="cannot stop VS Code Sandbox"):
+            sr.down(workspace)
+
+    def test_status_reports_pending_editor_start(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        monkeypatch.setattr(session_admission, "has_pending_claim", lambda _root: True)
+
+        assert sr.status(workspace) == "start-pending"
+
+    def test_status_reports_claim_inspection_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        def fail(_root: Path) -> bool:
+            raise session_admission.AdmissionError("claim unavailable")
+
+        monkeypatch.setattr(session_admission, "has_pending_claim", fail)
+
+        with pytest.raises(sr.SessionError, match="claim unavailable"):
+            sr.status(workspace)
 
     def test_status_reports_three_states(self, workspace: Path):
         with patch.object(sr.idk, "container_exists", return_value=False):
@@ -3434,7 +3580,7 @@ class TestSessionRefresh:
         enter.assert_called_once_with(tmp_path, ["echo", "ready"], tty=True)
 
         with (
-            patch.object(sr, "down", return_value=False),
+            patch.object(sr, "down", return_value=sr.DownResult()),
             patch.object(sr, "status", return_value="stopped"),
             patch.object(sr, "validate", return_value="valid"),
             patch.object(sr, "prepare", return_value="prepared"),
@@ -3754,7 +3900,7 @@ class TestSessionRefresh:
         from booley.harness import auto_doctor, booley
         from booley.harness.booley import _build_parser
 
-        monkeypatch.setattr(sr, "down", lambda _root: True)
+        monkeypatch.setattr(sr, "down", lambda _root: sr.DownResult(headless=True))
         monkeypatch.setattr(sr, "session_container_name", lambda _root: "session")
         down_args = _build_parser().parse_args(["session", "down"])
         assert booley._cmd_session(down_args, tmp_path) == 0

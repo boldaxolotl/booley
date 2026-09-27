@@ -46,7 +46,12 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.flow import _campaign_report_lines, _campaign_structured_details
+from booley.flows.sim.flow import (
+    _campaign_report_lines,
+    _campaign_structured_details,
+    _compact_coverage_number,
+    _coverage_report_suffix,
+)
 from booley.flows.sim.verilator_coverage import SimulationBuildResult, SimulationRunResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -57,6 +62,37 @@ from tests.flows.sim.test_campaign_crash_matrix import (
 )
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(50.0, "50"), (200 / 3, "66.66666666666667"), (1e-5, "0.00001")],
+)
+def test_coverage_report_numbers_are_compact_and_non_scientific(value, expected) -> None:
+    assert _compact_coverage_number(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("collection", "evaluation", "expected"),
+    [
+        (
+            {"status": "collector_error", "diagnostics": ()},
+            {"status": "not_requested", "diagnostics": (), "metrics": ()},
+            "coverage collection COLLECTOR_ERROR · evaluation NOT_REQUESTED",
+        ),
+        (
+            {"status": "complete", "diagnostics": ()},
+            {"status": "fail", "diagnostics": (), "metrics": ()},
+            "coverage collection COMPLETE · evaluation FAIL",
+        ),
+    ],
+)
+def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
+    collection, evaluation, expected
+) -> None:
+    campaign = SimpleNamespace(collection=collection, evaluation=evaluation)
+
+    assert _coverage_report_suffix(campaign) == expected
 
 
 def _facts(
@@ -871,4 +907,6 @@ def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -
         observations=({"detail": {"reason": "intentional simulator failure"}},),
     )
 
-    assert "intentional simulator failure" in _campaign_report_lines((outcome,))[0]
+    assert _campaign_report_lines((outcome,))[0] == (
+        "sim_fail: FAIL (Simulation Campaign unavailable)\n  intentional simulator failure"
+    )
