@@ -796,11 +796,6 @@ reports. The Coverage Analyst accepts the returned Campaign path in a separate
 call. See [Flow contracts](FLOW_IMPLEMENTATION.md#coverage-campaign-orchestration)
 for the ordered persistence and Criterion-evidence transaction.
 
-For coverage invocations, `report_text` carries the same Target headline as the
-CLI, with independent simulation, collection, and evaluation states. The
-machine-readable authority remains `detail.targets`; this presentation change
-does not alter the MCP schema.
-
 ## Report-driven Coverage Analyst
 
 `coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`

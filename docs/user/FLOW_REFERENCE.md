@@ -214,18 +214,6 @@ booley flow sim --resume-from \
   "$PROJECT_DATA/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json"
 ```
 
-For coverage invocations, each final Target headline reports simulation,
-collection, and evaluation independently. `NOT_REQUESTED` means collection was
-ungated by a Coverage Criterion; it is not an evaluated pass. A non-successful
-collection or evaluation includes the first stable diagnostic code or failed
-metric summary when available. For example:
-
-```text
-sim_soc: simulation PASS · coverage collection COMPLETE · evaluation FAIL (line: observed 5/7 points; displayed 71.43%; minimum 80%) (Simulation Campaign <id>)
-```
-
-Non-coverage Simulation Flow headlines retain their existing compact grade.
-
 The MCP `sim` input deliberately uses an array, not the former scalar shape:
 
 ```json
@@ -385,11 +373,6 @@ suite produces the same durable Campaign with evaluation `not_requested`, withou
 loading waivers or updating Coverage Criteria. Explicit invocation test selection
 wins over the Criterion's exact suite, which wins over the full registered suite.
 A different explicit suite still collects evidence but blocks gated evaluation.
-The Simulation Flow final Target headline presents that durable result as separate
-simulation, collection, and evaluation fields. Incomplete collection or blocked
-evaluation includes its first stable diagnostic code when available; a threshold
-miss instead includes the first failed metric's point counts and percentages.
-`NOT_REQUESTED` therefore means ungated collection, not an evaluated pass.
 
 Gated evaluation matches Approved Waivers transactionally per Target. For each
 collected Target, only approvals naming that Target are checked against its
