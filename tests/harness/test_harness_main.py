@@ -44,7 +44,7 @@ def test_handled_ticket_emits_stable_result_record(
     line = capsys.readouterr().out.strip()
     assert line.startswith(RUN_RESULT_PREFIX)
     assert json.loads(line.removeprefix(RUN_RESULT_PREFIX)) == {
-        "version": 2,
+        "version": 1,
         "slug": "demo",
         "disposition": disposition.value,
         "review_package_path": (

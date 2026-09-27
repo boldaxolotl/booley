@@ -136,7 +136,7 @@ class TicketRunResult:
     disposition: TicketRunDisposition
     review_package_path: Path | None = None
     html_path: Path | None = None
-    version: int = 2
+    version: int = 1
 
     def __post_init__(self) -> None:
         if not isinstance(self.disposition, TicketRunDisposition):

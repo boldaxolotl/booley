@@ -832,13 +832,13 @@ After every handled Ticket run, `booley run` emits one stable JSON record after
 the full-screen Console closes:
 
 ```text
-BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":2}
+BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":1}
 ```
 
 Normal progress output may surround this line. Command-line clients should scan
 for the `BOOLEY_RUN_RESULT ` prefix and branch on `disposition`: `review` and
 `done` exit 0, while `blocked` and `failed` exit 1. Infrastructure failures exit
-2 without a result record. Version 2 uses `review_package_path` and `html_path`
+2 without a result record. `review_package_path` and `html_path` are populated
 only for `review`; both are `null` for `done`, `blocked`, and `failed`.
 
 Automatic retry does not rewrite the outcome of the invocation that stopped. A
