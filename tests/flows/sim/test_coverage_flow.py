@@ -213,6 +213,95 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     assert flow_schema(flow)["properties"]["coverage"]["type"] == "boolean"
 
 
+@pytest.mark.parametrize(
+    ("coverage_recipe", "message"),
+    [
+        (
+            '{reset_included: "false"}',
+            "targets.sim_0.flow_options.booley.coverage.reset_included must be a boolean",
+        ),
+        (
+            "{bogus_key: 1}",
+            "targets.sim_0.flow_options.booley.coverage.bogus_key is not a supported coverage key",
+        ),
+        (
+            "{custom_main_hooks: write_hook}",
+            "targets.sim_0.flow_options.booley.coverage.custom_main_hooks must be an array",
+        ),
+    ],
+)
+def test_coverage_recipe_schema_errors_are_atomic_preflight_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    coverage_recipe: str,
+    message: str,
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text().replace(
+            "flow_options: {tool: verilator}",
+            f"flow_options: {{tool: verilator, booley: {{coverage: {coverage_recipe}}}}}",
+        )
+    )
+    project_data = tmp_path / ".booley_project"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+    before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+
+    result = SimulateFlow(coverage_execution=lambda _handle, _options: NativeExecution()).execute(
+        SimRequest(
+            target="sim_0",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 2
+    assert message in result.outcome.report_text
+    assert result.outcome.detail["findings"][0]["code"] == "COV_TARGET_INVALID"
+    assert {path.relative_to(tmp_path) for path in tmp_path.rglob("*")} == before
+
+
+def test_valid_custom_main_coverage_recipe_passes_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n")
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text()
+        .replace(
+            "files: [rtl/counter.sv]",
+            "files: [rtl/counter.sv, {main.cpp: {file_type: cppSource}}]",
+        )
+        .replace(
+            "flow_options: {tool: verilator}",
+            "flow_options: {tool: verilator, booley: {coverage: "
+            "{custom_main_hooks: [start_hook, write_hook], reset_included: false}}}",
+        )
+    )
+    project_data = tmp_path / ".booley_project"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    result = SimulateFlow(coverage_execution=lambda _handle, _options: NativeExecution()).execute(
+        SimRequest(
+            target="sim_0",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 2
+    assert "COV_WINDOW_HOOK_MISSING" in result.outcome.report_text
+    assert (tmp_path / "reports/sim/1").is_dir()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
 @pytest.mark.parametrize("relative", ["unreadable", ".booley_project/unreadable"])
 def test_unreadable_unrelated_directory_does_not_block_coverage(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import shlex
 import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
@@ -42,7 +42,7 @@ from booley.flows.sim.execution.engine import (
     prepare_simulation_work,
     simulation_target_environment,
 )
-from booley.fusesoc.fusesoc_registry import FuseSocError
+from booley.fusesoc.fusesoc_registry import FuseSocError, core_target_coverage_errors
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
@@ -330,17 +330,20 @@ def prepare_coverage_collection(
     trace: bool = False,
 ) -> CoverageCollectionRequest:
     """Project one resolved Target into the collector's policy-free request."""
+    coverage_errors = core_target_coverage_errors(handle.core_file, handle.name)
+    if coverage_errors:
+        raise ValueError("; ".join(coverage_errors))
     inspection = TargetCatalog.build(handle.project_root).inspect(handle)
     if inspection.eda_tool != "verilator":
         raise ValueError("Verilator-native coverage requires a Verilator sim Target")
     metadata = _coverage_metadata(inspection)
     harness = _coverage_harness(inspection)
     declared_hooks = metadata.get("custom_main_hooks", ())
-    hooks = (
-        tuple(str(item) for item in declared_hooks)
-        if isinstance(declared_hooks, Sequence) and not isinstance(declared_hooks, str | bytes)
-        else ()
-    )
+    assert isinstance(declared_hooks, tuple)
+    assert all(isinstance(item, str) for item in declared_hooks)
+    hooks = cast(tuple[str, ...], declared_hooks)
+    reset_included = metadata.get("reset_included", True)
+    assert isinstance(reset_included, bool)
     return CoverageCollectionRequest(
         target=CoverageTarget(
             identity=handle.identity,
@@ -353,7 +356,7 @@ def prepare_coverage_collection(
         selected_tests=tuple(SelectedCoverageTest(name) for name in selected_tests),
         artifact_root=artifact_root,
         trace=trace,
-        reset_included=bool(metadata.get("reset_included", True)),
+        reset_included=reset_included,
     )
 
 

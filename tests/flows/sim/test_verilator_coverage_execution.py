@@ -108,6 +108,25 @@ def test_prepare_collection_projects_resolved_sources_and_custom_main_recipe(
     ]
 
 
+def test_prepare_collection_defaults_to_reset_inclusive_coverage(tmp_path: Path) -> None:
+    _write_target(tmp_path)
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text().replace(
+            "      booley:\n        coverage:\n          reset_included: true\n", ""
+        )
+    )
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+
+    request = prepare_coverage_collection(
+        handle,
+        selected_tests=("reset",),
+        artifact_root=tmp_path / "coverage",
+    )
+
+    assert request.reset_included is True
+
+
 def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -612,6 +612,33 @@ def _check_coverage_target_metadata(value: Any, label: str, errors: list[str]) -
         errors.append(f"{coverage_label}.custom_main_hooks must not contain duplicates")
 
 
+def core_target_coverage_errors(core_file: Path | str, target_name: str) -> list[str]:
+    """Return coverage-recipe schema errors for one authored Target.
+
+    The raw ``.core`` value is validated before Target inspection freezes YAML
+    arrays into tuples. Malformed parent Booley metadata remains part of the
+    whole-core Doctor audit rather than this selected-Target boundary.
+    """
+    doc = read_core(core_file)
+    targets = doc.get("targets")
+    if not isinstance(targets, Mapping):
+        return []
+    target = targets.get(target_name)
+    if not isinstance(target, Mapping):
+        return []
+    flow_options = target.get("flow_options")
+    if not isinstance(flow_options, Mapping):
+        return []
+    booley = flow_options.get("booley")
+    if not isinstance(booley, Mapping) or "coverage" not in booley:
+        return []
+    errors: list[str] = []
+    _check_coverage_target_metadata(
+        booley["coverage"], f"targets.{target_name}.flow_options.booley", errors
+    )
+    return errors
+
+
 def core_schema_errors(core_file: Path | str) -> list[str]:
     """Return the CAPI2 array-field schema violations in a single ``.core``.
 
