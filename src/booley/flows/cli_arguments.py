@@ -3,7 +3,7 @@
 import argparse
 import logging
 
-from booley.flows.invocation import positive_milliseconds
+from booley.core.boundary import parse_positive_int_arg
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class BuiltinArguments:
         )
         parser.add_argument(
             "--timeout-ms",
-            type=positive_milliseconds,
+            type=parse_positive_int_arg,
             default=None,
             help=(
                 "Active-time budget in milliseconds for each Flow work unit. "
@@ -32,7 +32,7 @@ class BuiltinArguments:
         parser.add_argument(
             "--timeout",
             dest="_legacy_timeout_ms",
-            type=positive_milliseconds,
+            type=parse_positive_int_arg,
             default=None,
             help=argparse.SUPPRESS,
         )

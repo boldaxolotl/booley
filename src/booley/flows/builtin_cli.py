@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import TYPE_CHECKING
 
-from booley.flows.endpoint_cli import add_common_args, apply_environment
+from booley.flows.endpoint_cli import add_common_args, apply_environment, normalize_target_arg
 from booley.flows.request import FlowRequest
 from booley.runtime.endpoint_execution import ExecutionResult
 
@@ -16,7 +16,11 @@ if TYPE_CHECKING:
 
 
 def build_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=flow.name, description=flow.description)
+    parser = argparse.ArgumentParser(
+        prog=flow.name,
+        description=flow.description,
+        allow_abbrev=False,
+    )
     add_common_args(
         parser,
         target_required=flow.target_required,
@@ -31,6 +35,7 @@ def build_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
 def parse_request(flow: BuiltinFlow, argv: list[str] | None = None) -> FlowRequest:
     parser = build_parser(flow)
     args = parser.parse_args(argv)
+    normalize_target_arg(args)
     flow.argument_adapter.normalize(args, parser)
     request = flow.request_type(**vars(args))
     apply_environment(request, flow.endpoint_kind)
@@ -50,4 +55,5 @@ def execute_cli(
     flow.context = FlowSession(flow, adapter or StandaloneFlowExecution())
     flow.context._args = request
     flow.context._raw_argv = argv if argv is not None else sys.argv[1:]
+    flow.context._console_publication_requested = True
     return flow.context.execute_prepared()

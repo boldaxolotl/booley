@@ -9,6 +9,7 @@ import shutil
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -21,6 +22,7 @@ except ImportError:  # pragma: no cover - Windows compatibility
     resource = None  # type: ignore[assignment]
 
 from booley.criteria.state import DevelopmentState
+from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.acceptance import record_campaign_acceptance
 from booley.flows.sim.campaign import (
     SimulationCampaignWorkItemError,
@@ -47,14 +49,17 @@ from booley.flows.sim.campaign.coordinator import (
     WorkExecutionRequest,
     _acceptance_ready,
 )
+from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.campaign.model import SimulationResult, create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 from booley.flows.sim.flow import SimulateFlow
-from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR
+from booley.flows.sim.request import SimRequest
+from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, EndpointOutcome
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
+from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
@@ -337,6 +342,18 @@ def test_public_campaign_inspection_distinguishes_recovery_and_summary_status(
     interrupted = inspect_retained_campaign(store.manifest_path)
     assert interrupted.interrupted == (work_item_id,)
     assert not interrupted.pending
+
+
+def test_public_campaign_inspection_reports_an_unpublished_summary(tmp_path: Path) -> None:
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+
+    status = inspect_retained_campaign(store.manifest_path)
+
+    assert status.pending
+    assert not status.summary_present
+    assert not status.summary_complete
+    assert status.summary_completed_matches
 
 
 def test_public_campaign_inspection_rejects_malformed_summary_but_reports_mismatch(
@@ -669,15 +686,12 @@ def test_acceptance_readiness_requires_strict_superset_grade() -> None:
 
 
 def _acceptance_endpoint(state, recorder, invocation):
-    return SimpleNamespace(
-        state=state,
-        _acceptance_recorder=recorder,
-        _invocation_id="1",
-        args=SimpleNamespace(diagnostic=False),
-        _reserved_invocation_dir=invocation,
-        _simulation_acceptance_outcomes=(),
-        _pending_criteria_set=(),
-    )
+    endpoint = SimulateFlow().context
+    endpoint.configure_flow_execution(recorder)
+    endpoint._args = SimRequest(target="sim", report_dir=invocation.parents[1])
+    endpoint._state = state
+    endpoint._reserved_invocation_dir = invocation
+    return endpoint
 
 
 def _one_item_outcome(tmp_path: Path):
@@ -753,24 +767,106 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     assert final_state.criteria["sim_pass_sim"].met is False
 
 
-def _retained_invocation(tmp_path: Path) -> tuple[Path, Path, CampaignStore]:
+def _named_campaign_outcome(tmp_path: Path):
+    original, invocation = _one_item_outcome(tmp_path)
+    document = json.loads(original.acceptance_facts.canonical_bytes())
+    document["required_suite"]["names"] = ["half", "full"]
+    document["required_suite"]["default_invocation"] = False
+    observation = document["observations"][0]
+    observation.update(
+        test="half",
+        execution="completed",
+        failure_class=None,
+        functional="pass",
+        assertions="clean",
+    )
+    facts = AcceptanceFacts(document)
+    return replace(
+        original,
+        target=facts.document["target"],
+        observations=tuple(facts.document["observations"]),
+        aggregate_grade="pass",
+        acceptance_facts=facts,
+        acceptance_ready=False,
+    ), invocation
+
+
+def _named_campaign_state(tmp_path: Path):
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.slug = "ticket"
+    state.ticket_type = "implementation"
+    key = "sim_pass_sim_half"
+    params = {
+        "target": "acme:lib:dut:1#sim",
+        "_target_selector": "sim",
+        "test_selector": "half",
+        "required_tests": ["half"],
+        "minimum_total": 1,
+    }
+    state.init_criteria(
+        {key: True, "_report_submitted": True},
+        criterion_params={key: params},
+        strict=True,
+    )
+    state.set_criterion("_report_submitted", True)
+    state.save()
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    recorder = TicketAcceptanceRecorder(log_dir=tmp_path / "logs", ticket_identity=identity)
+    return state_path, state, key, recorder
+
+
+def test_named_campaign_acceptance_persists_criterion_and_timeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
+    outcome, invocation = _named_campaign_outcome(tmp_path)
+    state_path, state, key, recorder = _named_campaign_state(tmp_path)
+    endpoint = _acceptance_endpoint(state, recorder, invocation)
+
+    record_campaign_acceptance(endpoint, (outcome,))
+    endpoint.finish_execution(
+        PreparedExecution(None, None, False, False),
+        EndpointOutcome(),
+        started=None,
+        acceptance_recorded=True,
+    )
+
+    persisted = DevelopmentState.load(state_path)
+    assert persisted.criteria[key].met is True
+    assert persisted.criteria[key].detail["selected_tests"] == ["half"]
+    assert persisted.timeline[-1]["criteria_set"] == [key]
+    assert check_criteria_acceptance(state_path).passed is True
+
+
+def _retained_invocation(
+    tmp_path: Path, *, reports: Path | None = None
+) -> tuple[Path, Path, CampaignStore]:
     source = tmp_path / "source"
     source.mkdir()
     (source / ".booley_project").mkdir()
     complete = _completed(source)
     project_data = tmp_path / "project-data"
-    reports = project_data / ".runtime" / "flow-reports"
+    reports = reports or project_data / ".runtime" / "flow-reports"
     invocation = reports / "sim" / "1"
     target = invocation / "targets" / "sim"
     target.mkdir(parents=True)
     shutil.move(str(complete.store.root), target / "campaign")
     store = CampaignStore(target / "campaign")
     store.regenerate_summary()
+    manifest = store.load_manifest().document
+    manifest_target = manifest["target"]
     (target / "simulation.json").write_bytes(
         canonical_json_bytes(
             {
+                "flow": "sim",
+                "mode": "simulate",
                 "complete": True,
                 "target": "sim",
+                "target_identity": (f"{manifest_target['vlnv']}#{manifest_target['name']}"),
+                "passed": True,
+                "inconclusive": False,
+                "tests": [],
                 "campaign_manifest": str(store.manifest_path),
                 "campaign_summary": str(store.summary_path),
             }
@@ -780,6 +876,8 @@ def _retained_invocation(tmp_path: Path) -> tuple[Path, Path, CampaignStore]:
         json.dumps(
             {
                 "flow": "sim",
+                "complete": True,
+                "phase": "complete",
                 "targets": ["sim"],
                 "completed_targets": ["sim"],
                 "pending_targets": [],
@@ -856,6 +954,238 @@ def test_complete_campaign_pruning_releases_exact_project_child_pair(
     assert list((reports / "sim" / ".pruned-1").iterdir()) == []
 
 
+def test_detached_copy_pruning_never_releases_project_child_pair(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    execution_id = _publish_retired_child(project_data, store)
+    detached_reports = tmp_path / "copy-project/.runtime/flow-reports"
+    detached = detached_reports / "sim" / "1"
+    detached.parent.mkdir(parents=True)
+    shutil.copytree(reports / "sim" / "1", detached)
+
+    prune_invocation(detached_reports, 1, project_data=project_data)
+
+    project_children = project_data / ".runtime" / "campaign-child-executions"
+    assert (project_children / "entries" / f"{execution_id}.json").is_file()
+    assert (project_children / "retired" / f"{execution_id}.json").is_file()
+    prune_invocation(reports, 1)
+    assert not (project_children / "entries" / f"{execution_id}.json").exists()
+    assert not (project_children / "retired" / f"{execution_id}.json").exists()
+
+
+def test_detached_copy_pruning_never_recovers_producer_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim import campaign_retention
+
+    reports, project_data, store = _retained_invocation(tmp_path)
+    _publish_retired_child(project_data, store)
+    detached_reports = tmp_path / "copy-project/.runtime/flow-reports"
+    (detached_reports / "sim").mkdir(parents=True)
+    shutil.copytree(reports / "sim" / "1", detached_reports / "sim" / "1")
+    recovered: list[tuple[Path, Path | None]] = []
+    monkeypatch.setattr(
+        campaign_retention,
+        "recover_retained_campaign_resources",
+        lambda status, resolved: recovered.append((status.manifest_path, resolved)),
+    )
+
+    prune_invocation(detached_reports, 1, project_data=project_data)
+    assert recovered == []
+
+    prune_invocation(reports, 1)
+    assert recovered == [(store.manifest_path, project_data)]
+
+
+def test_canonical_recovery_rejects_disagreeing_project_data(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    _publish_retired_child(project_data, store)
+    other = tmp_path / "other-project"
+    other.mkdir()
+
+    with pytest.raises(CampaignRetentionError, match="disagrees with the canonical"):
+        prune_invocation(reports, 1, project_data=other)
+
+    assert (reports / "sim" / "1").is_dir()
+
+
+@pytest.mark.usefixtures("mandatory_file_locks")
+def test_complete_campaign_pruning_accepts_windows_lock_sentinel(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    (store.root / ".lock").write_bytes(b"\0")
+
+    prune_invocation(reports, 1, project_data=project_data)
+
+    assert list((reports / "sim" / ".pruned-1").iterdir()) == []
+
+
+@pytest.mark.usefixtures("mandatory_file_locks")
+@pytest.mark.parametrize("state", ["terminal-unpublished", "interrupted"])
+def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, state: str) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+    target = store.root.parent
+    store.summary_path.unlink()
+    (target / "simulation.json").unlink()
+    if state == "interrupted":
+        status = inspect_retained_campaign(store.manifest_path)
+        result = store.work_item_directory(status.completed[0]) / "result.json"
+        result.unlink()
+        progress_path = reports / "sim/1/progress.json"
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        progress["completed_targets"] = []
+        progress["pending_targets"] = ["sim"]
+        progress["phase"] = "aborted"  # terminalized on a catchable exit
+        progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
+    prune_invocation(reports, 1)
+
+    assert not (reports / "sim/1").exists()
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+
+
+def test_full_pruning_rejects_foreign_file_in_completed_attempt(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    status = inspect_retained_campaign(store.manifest_path)
+    attempts = store.work_item_directory(status.completed[0]) / "attempts"
+    foreign = next(attempts.iterdir()) / "evidence" / "foreign.txt"
+    foreign.parent.mkdir(exist_ok=True)
+    foreign.write_text("not produced by Booley", encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match=r"foreign\.txt"):
+        prune_invocation(reports, 1, project_data=project_data)
+
+    assert foreign.read_text(encoding="utf-8") == "not produced by Booley"
+    assert (reports / "sim/1").is_dir()
+
+
+def test_interrupted_campaign_without_surviving_resources_needs_no_project_data(
+    tmp_path: Path,
+) -> None:
+    reports, _project_data, store = _retained_invocation(
+        tmp_path, reports=tmp_path / "external-reports"
+    )
+    target = store.root.parent
+    store.summary_path.unlink()
+    (target / "simulation.json").unlink()
+    status = inspect_retained_campaign(store.manifest_path)
+    result = store.work_item_directory(status.completed[0]) / "result.json"
+    result.unlink()
+    progress_path = reports / "sim/1/progress.json"
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["completed_targets"] = []
+    progress["pending_targets"] = ["sim"]
+    # A killed producer never terminalizes its progress.
+    progress["complete"] = False
+    progress["phase"] = "running"
+    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
+    prune_invocation(reports, 1)
+
+    assert not (reports / "sim/1").exists()
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+
+
+def test_full_pruning_refuses_a_campaign_owned_by_resume(tmp_path: Path) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+
+    with store.mutation_lock(), pytest.raises(CampaignRetentionError, match="being resumed"):
+        prune_invocation(reports, 1)
+
+    assert (reports / "sim/1").is_dir()
+    assert not (reports / "sim/.pruned-1").exists()
+
+
+def test_campaign_mutation_lock_never_recreates_a_missing_root(tmp_path: Path) -> None:
+    store = CampaignStore(tmp_path / "campaign")
+
+    with (
+        pytest.raises(SimulationCampaignIntegrityError, match="directory disappeared"),
+        store.mutation_lock(),
+    ):
+        raise AssertionError("unreachable")
+
+    assert not store.root.exists()
+
+
+def test_simulation_reservation_locks_before_directory_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reports = tmp_path / "reports"
+    flow = SimulateFlow()
+    flow.context._args = SimRequest(report_dir=reports)
+    mkdir = type(reports).mkdir
+    observed = False
+
+    def inspect_before_publish(path: Path, *args: object, **kwargs: object) -> None:
+        nonlocal observed
+        if path == reports / "sim/1":
+            with pytest.raises(CampaignRetentionError, match="still being produced"):
+                prune_invocation(reports, 1)
+            observed = True
+        mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(reports), "mkdir", inspect_before_publish)
+    with flow.context.publication_resources:
+        assert flow.reserve_invocation_dir() == reports / "sim/1"
+
+    assert observed
+
+
+def test_simulation_reservation_skips_contended_and_raced_numbers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+
+    reports = tmp_path / "reports"
+    (reports / "sim").mkdir(parents=True)
+    flow = SimulateFlow()
+    flow.context._args = SimRequest(report_dir=reports)
+    mkdir = type(reports).mkdir
+
+    def lose_race_for_two(path: Path, *args: object, **kwargs: object) -> None:
+        if path == reports / "sim/2":
+            mkdir(path, *args, **kwargs)
+            raise FileExistsError(path)
+        mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(reports), "mkdir", lose_race_for_two)
+    with campaign_invocation_lock(reports / "sim/1"), flow.context.publication_resources:
+        assert flow.reserve_invocation_dir() == reports / "sim/3"
+        # The raced number's producer lock was released, not leaked.
+        with campaign_invocation_lock(reports / "sim/2"):
+            pass
+
+
+def test_simulation_reservation_stops_at_the_invocation_ceiling(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    (reports / "sim" / "1000000").mkdir(parents=True)
+    flow = SimulateFlow()
+    flow.context._args = SimRequest(report_dir=reports)
+
+    with (
+        flow.context.publication_resources,
+        pytest.raises(RuntimeError, match="reservation ceiling exceeded"),
+    ):
+        flow.reserve_invocation_dir()
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_complete_campaign_pruning_rejects_unrecognized_campaign_file(
+    tmp_path: Path, nested: bool
+) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    parent = store.root
+    if nested:
+        parent = next(store.root.glob("work-items/*/attempts/*")) / "evidence"
+    stray = parent / "stray.txt"
+    stray.write_text("do not delete", encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match=r"stray\.txt"):
+        prune_invocation(reports, 1, project_data=project_data)
+
+    assert stray.read_text(encoding="utf-8") == "do not delete"
+    assert (reports / "sim" / "1").is_dir()
+
+
 @pytest.mark.parametrize("defect", ["substituted", "missing"])
 def test_pruning_rejects_invalid_project_child_pair(tmp_path: Path, defect: str) -> None:
     reports, project_data, store = _retained_invocation(tmp_path)
@@ -913,13 +1243,16 @@ def test_pruning_rejects_campaign_child_inventory_disagreement(
     else:
         (directory / f"{'9' * 32}.json").write_bytes(b"{}\n")
 
-    with pytest.raises(CampaignRetentionError, match="inventories disagree"):
+    with pytest.raises(
+        CampaignRetentionError,
+        match=r"inventories disagree|unknown work item|invalid schema",
+    ):
         prune_invocation(reports, 1)
 
     assert (reports / "sim" / "1").is_dir()
 
 
-def test_pruning_rejects_project_entry_missing_from_campaign_mirror(
+def test_pruning_ignores_project_entry_missing_from_selected_campaign_mirror(
     tmp_path: Path,
 ) -> None:
     reports, project_data, store = _retained_invocation(tmp_path)
@@ -929,8 +1262,24 @@ def test_pruning_rejects_project_entry_missing_from_campaign_mirror(
     (campaign / "entries" / f"{orphan}.json").unlink()
     (campaign / "retired" / f"{orphan}.json").unlink()
 
-    with pytest.raises(CampaignRetentionError, match="no exact campaign mirror"):
-        prune_invocation(reports, 1)
+    prune_invocation(reports, 1)
+
+    assert not (reports / "sim/1").exists()
+    assert (
+        project_data / ".runtime/campaign-child-executions/entries" / f"{orphan}.json"
+    ).is_file()
+
+
+def test_pruning_ignores_an_unrelated_malformed_project_child_entry(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    _publish_retired_child(project_data, store)
+    unrelated = project_data / ".runtime/campaign-child-executions/entries/unrelated.json"
+    unrelated.write_text("not json", encoding="utf-8")
+
+    prune_invocation(reports, 1)
+
+    assert unrelated.read_text(encoding="utf-8") == "not json"
+    assert not (reports / "sim/1").exists()
 
 
 @pytest.mark.parametrize("defect", ["noncanonical", "hardlink", "oversize"])

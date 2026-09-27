@@ -8,7 +8,12 @@ from types import SimpleNamespace
 import pytest
 from jsonschema.exceptions import SchemaError
 
-from booley.mcp.application import McpApplication, UnknownMcpToolError, _normalize_payload
+from booley.mcp.application import (
+    McpApplication,
+    McpDispatchResult,
+    UnknownMcpToolError,
+    _normalize_payload,
+)
 
 
 def _definition(name: str = "echo", **extra):
@@ -143,6 +148,19 @@ def test_structured_result_normalization_validates_tuple_shape() -> None:
     payload = _normalize_payload(([], {"answer": "ok"}))
 
     assert payload.structured_content == {"answer": "ok"}
+
+
+def test_dispatch_error_preserves_text_and_structured_content() -> None:
+    result = McpDispatchResult(
+        value=([SimpleNamespace(text="EXIT_CODE: 2")], {"exit_code": 2}),
+        is_error=True,
+    )
+
+    payload = _normalize_payload(result)
+
+    assert payload.content[0].text == "EXIT_CODE: 2"
+    assert payload.structured_content == {"exit_code": 2}
+    assert payload.is_error is True
 
 
 def test_explicit_older_schema_dialect_is_respected() -> None:

@@ -99,6 +99,19 @@ for complete in [False,True]:
     assert json.loads((tmp_path / "progress.json").read_text()) == {"complete": False}
 
 
+def test_progress_gate_reply_is_never_observed_partially_written(tmp_path, library, monkeypatch):
+    """A slow controller write must not expose an empty reply that the shim reads as F."""
+    original_write_text = Path.write_text
+
+    def slow_write_text(self, data, *args, **kwargs):
+        self.touch()
+        time.sleep(0.1)
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", slow_write_text)
+    test_progress_gate_ignores_nonterminal_writes(tmp_path, library)
+
+
 def test_progress_gate_uses_source_bytes_from_event_time(tmp_path, library, monkeypatch):
     script = """import json,os,sys
 from pathlib import Path

@@ -337,6 +337,20 @@ class TestMain:
         ):
             assert main() == 1
 
+    def test_manifest_selected_directory_rejects_descendants(self, tmp_path: Path):
+        root = "coverage-waivers"
+        scope_file = tmp_path / ".scope.json"
+        scope_file.write_text(json.dumps({"scope": [root], "acceptance_control": [root]}))
+
+        with (
+            patch("booley.dev_support.scope_precommit_hook.Path.cwd", return_value=tmp_path),
+            patch(
+                "booley.dev_support.scope_precommit_hook._staged_files",
+                return_value=[f"{root}/rtl/counter.sv.toml"],
+            ),
+        ):
+            assert main() == 1
+
     def test_bookkeeping_check_runs_without_a_scope_file(self, tmp_path: Path):
         """The forbidden tier is scope-independent — no .scope.json, still blocked."""
         with (

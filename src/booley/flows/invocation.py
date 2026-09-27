@@ -7,7 +7,6 @@ Flows so a framework upgrade cannot collide with a Custom Flow's flags.
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,17 +33,6 @@ def default_timeout_ms(flow_name: str) -> int:
         return _BUILTIN_TIMEOUT_DEFAULTS_MS[name]
     except KeyError as exc:
         raise BoundaryError(f"{flow_name!r} is not a built-in Flow") from exc
-
-
-def positive_milliseconds(value: str) -> int:
-    """Parse one strictly-positive integer millisecond value for argparse."""
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("must be a positive integer") from exc
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("must be a positive integer")
-    return parsed
 
 
 def resolve_timeout_ms(

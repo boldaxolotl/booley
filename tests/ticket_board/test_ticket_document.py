@@ -684,6 +684,7 @@ def test_each_synth_metric_has_its_own_target_binding() -> None:
     assert len({binding.key for binding in bindings}) == 2
     assert {binding.target for binding in bindings} == {"synth_core"}
     assert {binding.baseline for binding in bindings} == {"synth_core"}
+    assert {binding.family for binding in bindings} == {None}
 
 
 def test_v2_validation_uses_converted_sim_criterion(tmp_path: Path) -> None:

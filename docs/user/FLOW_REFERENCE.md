@@ -15,7 +15,7 @@ yourself inside the Sandbox, use the direct CLI:
 
 ```bash
 booley flow lint --target lint_soc
-booley flow sim --target sim_soc --test reset
+booley flow sim --target sim_core --target sim_peripheral,sim_soc --test reset
 booley flow synth --target synth_soc
 booley flow <name> --help
 ```
@@ -31,7 +31,12 @@ same Target name, use the qualified selector printed by `booley targets`, such a
 
 Common controls:
 
-- `--target <name,...>` selects one or more configured Targets.
+- `--target <name,...>` selects one or more configured Targets. Repeat the flag,
+  use comma-separated values, or mix both forms; for example,
+  `--target a --target b,c` selects `a`, then `b`, then `c`. Caller order is
+  preserved. Selecting the same resolved Target twice, including through two
+  different selector spellings, is an error. MCP keeps one comma-separated
+  `target` string rather than an array.
 - `--work-dir <path>` selects the project/worktree root; it defaults to the
   current directory.
 - `--report-dir <path>` persists the invocation report and Flow-specific reports
@@ -64,6 +69,11 @@ means the Flow did not produce a trustworthy complete design result.
 Agent-facing MCP calls carry the same grade in `EXIT_CODE:` and structured
 output; MCP `isError` is not the design verdict.
 
+The direct CLI always publishes the final human-readable Flow verdict,
+independently of whether Development State is configured. Successful verdicts
+use stdout; failed and rejected diagnoses use stderr. If a Flow already printed the same complete verdict block during its
+run, Booley does not print a second copy.
+
 An agent-facing MCP call attaches its per-invocation report as
 `structuredContent.reports[0]`. The report contains:
 
@@ -81,6 +91,22 @@ An agent-facing MCP call attaches its per-invocation report as
 too large for the MCP result, `reports` is empty, `truncated` is `true`, and the
 result retains the Flow, Target, exit code, and artifact pointers needed to open
 the durable report.
+
+Long-running Simulation, ASIC Synthesis, and FPGA Implementation invocations also
+write a run-scoped `progress.json`. `complete: true` means the producer is
+terminal, not necessarily successful. `phase: complete` means every planned
+Target was processed; `phase: aborted` means the invocation stopped with the
+listed `pending_targets`; and coverage resume can mark the authenticated origin
+`phase: superseded` with a bounded `superseded_by` identity. A superseded
+origin's Target lists are historical and are deliberately not rewritten from the
+recovered Campaign. Every new checkpoint includes `run_id` and `timestamp`.
+
+For MCP fallback evidence, `partial` is true whenever the phase is not `complete`
+or pending Targets remain. Thus `aborted` and `superseded` are terminal but
+partial, and neither appears as a running checkpoint. After timeout or
+cancellation, the MCP supervisor attempts an idempotent `aborted` repair only
+after it has reaped the child process; a missing or unwritable checkpoint does
+not override the Job's exit or cancellation result.
 
 ### Dry-run plan
 
@@ -100,18 +126,24 @@ verdict report. FuseSoC setup and declared generators may run when authoritative
 resolution requires them, using disposable scratch; this possibility is named
 in `planning_disclosures` and the scratch is removed afterward.
 
-With an explicit `--report-dir`, dry-run atomically writes only the distinct
-`<report-dir>/<flow>/flow_plan.json` artifact. The
+The JSON plan is printed first on stdout. A successful dry run follows it with
+its concise verdict summary on stdout. A failing dry run instead prints its
+concise planning-failure reason on stderr, while still writing no normal
+verdict report.
+
+Dry-run atomically writes only the distinct
+`<selected-report-root>/<flow>/flow_plan.json` artifact. It uses the same report
+root precedence as a real invocation and never reserves a numbered directory. The
 `semantic_plan_fingerprint` excludes scratch and invocation-local paths so the
 same prepared dry and real execution have the same semantic identity.
 
-Ticket and agent-driven runs configure
-`.booley_project/.runtime/flow-reports/` automatically. A direct CLI run writes
-durable JSON only when `--report-dir` or the corresponding runtime environment
-is configured; otherwise the verdict exists only in stdout/stderr and Booley
-prints a warning. The per-Flow fields below describe the Flow-specific durable
-reports written when a report directory is available. Each includes `flow` and
-`timestamp` in addition to the fields listed below.
+An explicit `--report-dir` is authoritative. Ticket and agent-driven runs use
+their configured `<runtime>/flow-reports` root. Otherwise, every direct built-in
+or Custom Flow writes beneath `<resolved-project-data>/flow-reports`. The selected
+checkout determines Project data, including configured external and stealth
+locations; Booley never falls back to writing `flow-reports/` in the RTL checkout.
+The per-Flow fields below describe the Flow-specific durable reports. Each includes
+`flow` and `timestamp` in addition to the fields listed below.
 
 The `synth` and `fpga` per-Target reports and Criteria detail additionally carry
 the shared versioned `implementation` envelope. It contains the policy-resolved
@@ -163,8 +195,9 @@ Ordinary HDL, Cocotb-batch, and native-coverage-aggregate executions publish
 their resume authority at
 `<report-root>/sim/<N>/targets/<encoded-target>/campaign/manifest.json`, with
 append-only attempts/results beneath it and an atomically regenerated
-`summary.json`. When no report root is supplied, Simulation Campaigns use
-`<project>/flow-reports`. A resume creates a new compatibility invocation but
+`summary.json`. Direct Simulation, native coverage, and resume all use
+`<resolved-project-data>/flow-reports` by default and reserve numbers from the
+same `sim/` sequence. A resume creates a new compatibility invocation but
 keeps authoritative Simulation Campaign writes beside the original manifest.
 Cocotb interruption retries its whole batch as one new Simulation Attempt while
 retaining independent XML-derived observations. Native coverage interruption
@@ -178,7 +211,7 @@ final card gives the strict grade and keeps the manifest path needed to resume:
 ```bash
 booley flow sim --target sim_soc --test reset --test interrupts
 booley flow sim --resume-from \
-  flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
+  "$PROJECT_DATA/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json"
 ```
 
 The MCP `sim` input deliberately uses an array, not the former scalar shape:
@@ -191,8 +224,8 @@ MCP has no `tests_file` or `skip` property. It accepts the same exact ordered
 test names directly in `test`; `resume_from` names one manifest and conflicts
 with `target`, `test`, explicit `mode`, `coverage`, and `trace`.
 
-The authoritative files remain beside the original manifest even when resume
-creates a later compatibility invocation:
+The authoritative files remain beside the original manifest when resume creates
+a later report-only invocation:
 
 ```text
 targets/<encoded-target>/
@@ -204,7 +237,7 @@ targets/<encoded-target>/
       build-result.json
       evidence/bundle.json            authenticated shared Simulator Bundle
     work-items/.../attempts/...       append-only attempts and results
-  simulation.json                    replaceable compatibility projection
+  simulation.json                    versioned Target-local projection
   coverage.json                      optional authenticated coverage reference
 ```
 
@@ -213,8 +246,26 @@ bundles, attempts, results, summaries, and nested coverage references bind one
 another by exact identity, byte count, and digest. Resume validates that chain
 and the current Target revision/workload before launching an EDA tool.
 
-Structured campaign output keeps bounded authority pointers in `manifest`,
-`summary`, `simulation`, and nullable `coverage`. It reports `grade`, `complete`,
+New `simulation.json` files use `booley.simulation-projection/v2`. Their manifest
+and optional Coverage pointers are typed `origin_target` references with a
+normalized relative path, byte count, digest, artifact kind, and Simulation
+Campaign owner.
+Legacy absolute manifest and summary strings remain readable only as hints after
+the supplied local Simulation Campaign has authenticated; readers never follow
+them back to the producer path.
+
+Versioned `report.json` files use `booley.simulation-report/v2`. Each Target has
+one `artifacts` map whose references use `report_invocation` for local artifacts
+or `reports_root` for an origin Simulation Campaign under the same reports root.
+A cross-root resume uses `external_origin_target`; its caller supplies the origin
+Target directory when resolving that external dependency. A resume report declares
+`dependency: external_origin_campaign` and publishes no local `simulation.json`.
+Copying a complete invocation preserves local references; copying a reports root
+preserves same-root resume references. Copying only a resume invocation leaves its
+immutable Simulation Campaign identity, digest, and external relative path, but
+not the external artifact bytes.
+
+Structured campaign output reports `grade`, `complete`,
 aggregate `observation_counts`, and a maximum-32 `observations` preview. Every
 preview entry retains `test`, `execution`, `functional`, `assertions`,
 `assertion_count`, and bounded `detail`; `observation_total` and
@@ -226,8 +277,9 @@ The independent observation axes mean:
 - `functional`: the pass/fail/inconclusive test verdict;
 - `assertions`: assertion evidence independently observed for that test.
 
-Open `summary`, then the referenced terminal result, for the complete durable
-record; the MCP preview is intentionally not a replacement for those files.
+Resolve the `manifest` artifact reference, then inspect its authenticated terminal
+results for the complete durable record; the MCP preview is intentionally not a
+replacement for those files.
 
 Simulation Campaign scheduling uses the admitted Simulation Job as one heavy
 lane. With `[jobs].max_heavy = 1` execution is serial. Higher caps allow at most
@@ -322,6 +374,13 @@ loading waivers or updating Coverage Criteria. Explicit invocation test selectio
 wins over the Criterion's exact suite, which wins over the full registered suite.
 A different explicit suite still collects evidence but blocks gated evaluation.
 
+Gated evaluation matches Approved Waivers transactionally per Target. For each
+collected Target, only approvals naming that Target are checked against its
+Campaign; one invalid point approval blocks that Target's evaluation and prevents
+all approvals for that Target from applying. Approvals naming a known Target that
+is not in the invocation are not checked against points by that run. Unknown
+Target identities are still rejected when the Approved Waiver Set is loaded.
+
 Only a durably persisted `pass` satisfies `coverage_<target>`. Simulation failure,
 collection completeness, and policy evaluation remain independent: a failing
 simulation can produce valid passing coverage, and passing simulation can miss a
@@ -329,8 +388,8 @@ threshold. Exit precedence is `2` for Coverage Preflight, collection, infrastruc
 persistence, incompatible-format, or blocked-evaluation errors; then `1` for a
 simulation failure or valid threshold miss; otherwise `0`, including ungated
 collection. Structured `detail.targets[selector]` retains each Target's
-`simulation`, `collection`, `evaluation`, `coverage_campaign`, and
-`simulation_report` even when another Target dominates the exit code.
+`simulation`, `collection`, `evaluation`, and canonical `coverage_campaign`
+reference even when another Target dominates the exit code.
 
 The default report root is `flow-reports` under the resolved project-data
 directory; `--report-dir` selects an explicit root. Each invocation owns:
@@ -348,6 +407,11 @@ directory; `--report-dir` selects an explicit root. Each invocation owns:
     ... hook and queryability evidence
 ```
 
+Coverage progress uses the same terminal lifecycle. It carries `coverage: true`,
+the invocation `run_id`, its latest `timestamp`, the exact Target partition, and
+per-Target detail. An interrupted or failed invocation preserves already durable
+Targets and leaves the failed or unstarted Targets pending.
+
 New `coverage.json` manifests use `booley.coverage-campaign/v3`. They keep exact
 source/build/tool and suite fingerprints, independent per-run verdicts,
 capabilities, overall rollups, deterministic per-source-file rollups, percentages,
@@ -361,8 +425,9 @@ compressed and uncompressed byte counts, point count, and SHA-256. V1 and V2
 Campaigns are rejected at a hard schema cutoff; recollect coverage to produce V3.
 Pass consumers the exact
 `coverage.json` path; never pass or edit the point store directly.
-Native artifact paths are relative to the Target directory; Flow pointers are
-relative to the producing work directory. There is no project-wide latest
+Native artifact paths are relative to the Target directory. New Simulation
+report references are relative to their containing report invocation or reports
+root, never to the producing work directory. There is no project-wide latest
 Campaign and no cross-Target merge. Missing legacy flat reports require consumers
 to follow the canonical report pointers instead.
 
@@ -376,9 +441,16 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 ```
 
 Full pruning also retires the Campaign's Project-local child-execution records.
-When `REPORTS_ROOT` has the standard
-`<project-data>/.runtime/flow-reports` shape, Booley infers that project-data
-root. If reports live elsewhere and the invocation contains Campaign child
+For abandoned Campaigns with surviving external resources it first performs
+bounded recovery/cancellation of authenticated orphan child processes and
+marker-checked cleanup of owned templated run directories. It does not require
+Project data when no external resource survives. Literal user-supplied run
+directories are never removed.
+When `REPORTS_ROOT` has either standard shape,
+`<project-data>/.runtime/flow-reports` for runtime-scoped execution or
+`<project-data>/flow-reports` for direct execution, Booley infers that project-data
+root. The direct layout is accepted only when its parent is the currently resolved
+Project data directory. If reports live elsewhere and the invocation contains Campaign child
 records, add `--project-data "$PROJECT_DATA"` to `--full`, where the value is
 the exact resolved project-data root. Native-only pruning never requires
 `--project-data`.
@@ -388,9 +460,23 @@ the immutable Campaign manifest and point store, Simulation, and hook evidence. 
 `availability.json` records `pruning` or `pruned`; normalized evidence remains
 analyzable. Full pruning removes the exact invocation's reports and native
 payloads; re-analysis is impossible. An empty `.pruned-N` tombstone reserves its
-number. Selection is validated before deletion; ambiguous, unsafe, changed, or
-active selections exit `2`. Retry an interrupted cleanup with the same exact
-selection. No age, size, or latest heuristic deletes evidence automatically.
+number. Selection is validated before deletion. Native-only pruning exits `2`
+for ambiguous, unsafe, changed, missing, or unrecognized payloads. Full pruning
+does not require recorded native payloads to remain unchanged or present, but it
+exits `2` and names any file the invocation did not produce; the invocation is
+left untouched. Active selections also exit `2`. Retry an interrupted cleanup
+with the same exact selection. No age, size, or latest heuristic deletes evidence
+automatically.
+
+Retention distinguishes active, abandoned, and invalid evidence. If the invocation
+producer still owns its lock, wait for it to finish. If an exact resume owns a
+Campaign mutation lock, wait for the resume to finish. An authenticated pending or
+interrupted Campaign, an unpublished summary, or an absent Simulation projection is
+abandoned and may be discarded with `--full`; native-only pruning instead points to
+`--full` or the exact `booley flow sim --resume-from <manifest>` command. Malformed,
+contradictory, linked, foreign, or unrecognized content remains undeletable.
+An empty producer reservation abandoned before `progress.json` is likewise
+discardable with `--full` when its external invocation lock remains intact.
 
 ## `lint`
 

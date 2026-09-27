@@ -11,7 +11,9 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from booley.harness import init_cmd
 from booley.harness.models import TicketContext
+from booley.harness.setup.common import InitContext
 from booley.harness.setup.workspace import run as prepare_ticket_workspace
 from booley.runtime import worktree_relocation
 from booley.runtime.project_dir import reset_cache
@@ -23,6 +25,7 @@ from booley.ticket_board import (
     basis_refresh,
     draft_transition,
     enqueue_publication,
+    ticket_repositories,
     workspace_ops,
 )
 from booley.ticket_board import (
@@ -54,6 +57,7 @@ from booley.ticket_board.ticket_baseline import (
     validate_ticket_view,
     worktree_for_ref,
 )
+from tests.harness.git_support import git_stdout as _git
 
 
 @pytest.fixture(autouse=True)
@@ -267,18 +271,6 @@ def test_packaged_ticket_template_has_no_generated_basis_fields() -> None:
     assert "base_sha:" not in template
 
 
-def _git(repository: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
 def _basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     root = tmp_path / "project"
     root.mkdir()
@@ -294,6 +286,32 @@ def _basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "initial")
     return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
+
+
+def test_current_branch_reads_attached_branch(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-b", "release/next")
+
+    assert ticket_repositories._current_branch(root) == "release/next"
+
+
+def test_current_branch_rejects_detached_checkout(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    _git(root, "add", "README.md")
+    _git(root, "commit", "-m", "initial")
+    _git(root, "checkout", "--detach")
+
+    with pytest.raises(
+        ticket_repositories.TicketWorkspaceError,
+        match="must have a checked-out base branch",
+    ):
+        ticket_repositories._current_branch(root)
 
 
 def _paired_basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
@@ -312,6 +330,32 @@ def _paired_basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
     _git(project_dir, "init", "-b", "main")
+    _git(project_dir, "config", "user.name", "Test")
+    _git(project_dir, "config", "user.email", "test@example.invalid")
+    _git(project_dir, "add", "-A")
+    _git(project_dir, "commit", "-m", "initial project")
+    return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
+
+
+def _initialized_paired_basis_project(
+    tmp_path: Path,
+    branch: str,
+) -> tuple[Path, Path, TicketIO]:
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-b", branch)
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    (root / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "initial outer")
+
+    project_dir = root / ".booley_project"
+    (project_dir / "tickets" / "board" / "drafts").mkdir(parents=True)
+    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    init_cmd._init_project_git_repo(project_dir, InitContext(project_root=root))
     _git(project_dir, "config", "user.name", "Test")
     _git(project_dir, "config", "user.email", "test@example.invalid")
     _git(project_dir, "add", "-A")
@@ -423,6 +467,47 @@ def test_create_persists_inferred_paired_destination_ref(tmp_path: Path) -> None
     assert fields["project_destination_ref"] == "refs/heads/main"
 
 
+@pytest.mark.parametrize("branch", ["main", "release/next"])
+def test_first_paired_ticket_lifecycle_uses_initialized_project_data_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str,
+) -> None:
+    from booley.ticket_board.cli import main
+
+    root, project_dir, tio = _initialized_paired_basis_project(tmp_path, branch)
+    ticket = _create_v2_ticket(
+        tio,
+        "first-paired-ticket",
+        TicketFileSpec(
+            summary="Use initialized paired destination",
+            ticket_type="feature",
+            branch=branch,
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+
+    assert ticket is not None
+    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    assert fields["project_destination_ref"] == f"refs/heads/{branch}"
+    monkeypatch.chdir(root)
+    assert main(["validate-ticket", str(ticket), "--check-git"]) == 0
+    assert tio.enqueue_ticket("first-paired-ticket") is True
+    basis = tio.load_basis("first-paired-ticket")
+    assert basis.participant("outer").destination_ref == f"refs/heads/{branch}"
+    assert basis.participant("project").destination_ref == f"refs/heads/{branch}"
+    assert (
+        "refs/heads/master"
+        not in _git(
+            project_dir,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+        ).splitlines()
+    )
+
+
 def test_paired_ticket_load_ignores_authored_project_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -454,7 +539,10 @@ def test_paired_ticket_load_ignores_authored_project_override(
     ).ticket_identity() == (basis.ticket_identity())
 
 
-def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Path) -> None:
+def test_create_rejects_missing_inferred_paired_destination_branch(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     _root, project_dir, tio = _paired_basis_project(tmp_path)
 
     ticket = _create_v2_ticket(
@@ -471,6 +559,9 @@ def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Pat
 
     assert ticket is None
     assert not (project_dir / "tickets/board/drafts/missing-paired-destination.md").exists()
+    error = capsys.readouterr().err
+    assert "refs/heads/release" in error
+    assert "project_destination_ref" in error
 
 
 def test_distinct_paired_destinations_are_preserved_through_enqueue(tmp_path: Path) -> None:
@@ -1678,6 +1769,77 @@ def test_gitignored_untracked_control_file_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(TicketBaselineError, match="protected path"):
         assert_inputs_unchanged(basis, root)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        ".booley_project/coverage-waivers/rtl/counter.sv.toml",
+        ".booley_project/proofs/counter.sby",
+    ],
+)
+def test_committed_approved_waiver_input_drift_names_changed_path(
+    tmp_path: Path, changed_path: str
+) -> None:
+    root = tmp_path / "project"
+    project = root / ".booley_project"
+    waiver = project / "coverage-waivers/rtl/counter.sv.toml"
+    proof = project / "proofs/counter.sby"
+    waiver.parent.mkdir(parents=True)
+    proof.parent.mkdir(parents=True)
+    (project / "booley.toml").write_text(
+        '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "coverage-waivers"\n',
+        encoding="utf-8",
+    )
+    waiver.write_text(
+        """schema = "booley.coverage-waivers/v1"
+source = "rtl/counter.sv"
+source_sha256 = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+[[approval]]
+id = "counter-unreachable"
+target = "acme:lib:counter:1#sim"
+point_id = "cp1:point"
+reason = "unreachable"
+justification = "Reviewed."
+approved_by = "human@example.invalid"
+approved_at = "2026-09-25T00:00:00Z"
+approval_ref = "review-738"
+[approval.proof]
+kind = "formal"
+reference = "proofs/counter.sby#cover_17"
+sha256 = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+""",
+        encoding="utf-8",
+    )
+    proof.write_text("proof\n", encoding="utf-8")
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "add", "-f", ".booley_project")
+    _git(root, "commit", "-m", "baseline")
+    baseline = _git(root, "rev-parse", "HEAD")
+    basis = TicketBaseline(
+        (
+            BasisParticipant(
+                "outer",
+                baseline,
+                "refs/heads/booley-generation/0123456789abcdef/waivers",
+                "refs/heads/main",
+                baseline,
+            ),
+        )
+    )
+    assert_inputs_unchanged(basis, root)
+
+    changed = root / changed_path
+    changed.write_text(changed.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+    _git(root, "add", "-f", changed_path)
+    _git(root, "commit", "-m", "change protected input")
+
+    with pytest.raises(TicketBaselineError, match="acceptance-input-change-required") as raised:
+        assert_inputs_unchanged(basis, root)
+
+    assert changed_path in str(raised.value)
 
 
 def test_protected_input_git_discovery_failure_is_loud(

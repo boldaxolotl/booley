@@ -75,12 +75,12 @@ def _facts() -> dict[str, object]:
     }
 
 
-def _observation(test: str) -> dict[str, object]:
+def _observation(test: str | None) -> dict[str, object]:
     return {
         "work_item_id": "item:0000:0123456789abcdef",
         "role": "candidate",
         "revision": "abc",
-        "target": "sim",
+        "target": _facts()["target"],
         "result_sha256": "sha256:" + "3" * 64,
         "test": test,
         "execution": "completed",
@@ -90,6 +90,99 @@ def _observation(test: str) -> dict[str, object]:
         "assertion_count": 0,
         "detail": {},
         "cycle_count": None,
+    }
+
+
+def _simulation_outcome(
+    tmp_path: Path,
+    observations: list[dict[str, object]],
+    *,
+    required: tuple[str, ...] = ("half", "full"),
+    complete: bool = True,
+    role: str = "candidate",
+) -> CampaignOutcome:
+    document = _facts()
+    target = dict(document["target"])  # type: ignore[arg-type]
+    target["role"] = role
+    document["target"] = target
+    document["required_suite"] = {
+        "names": list(required),
+        "default_invocation": not required,
+        "source_sha256": "sha256:" + "2" * 64,
+    }
+    normalized = []
+    for observation in observations:
+        normalized.append(observation | {"target": target, "role": role})
+    document["observations"] = normalized
+    facts = AcceptanceFacts(document)
+    passing = all(
+        item["execution"] == "completed"
+        and item["functional"] == "pass"
+        and item["assertions"] != "dirty"
+        for item in normalized
+    )
+    selected = {item["test"] for item in normalized}
+    acceptance_ready = (
+        complete
+        and passing
+        and (
+            len(normalized) == 1 and None in selected
+            if not required
+            else set(required).issubset(selected)
+        )
+    )
+    return CampaignOutcome(
+        tmp_path / "manifest.json",
+        tmp_path / "summary.json",
+        facts.document["target"],  # type: ignore[arg-type]
+        tuple(facts.document["observations"]),  # type: ignore[arg-type]
+        "pass" if passing else "fail",
+        complete,
+        None,
+        facts,
+        acceptance_ready,
+        _recovery_status(tmp_path),
+    )
+
+
+def _simulation_changes(
+    tmp_path: Path,
+    criteria: dict[str, dict[str, object]],
+    outcome: CampaignOutcome,
+):
+    class Recorder:
+        def __init__(self) -> None:
+            self.changes = ()
+
+        def record_or_verify_transaction(self, _state, changes, **_kwargs):
+            self.changes = tuple(changes)
+            return SimpleNamespace(transaction_id="a" * 64)
+
+    state = DevelopmentState.load(tmp_path / "state.json")
+    state.init_criteria(dict.fromkeys(criteria, True), criterion_params=criteria, strict=True)
+    state.save()
+    recorder = Recorder()
+    result = SimulationAcceptanceCoordinator().reconcile(
+        outcome,
+        AcceptanceContext(
+            "ticket",
+            {"slug": "ticket"},
+            "0" * 32,
+            state,
+            recorder,  # type: ignore[arg-type]
+            "invocation",
+        ),
+    )
+    return result, recorder.changes
+
+
+def _named_params(selector: str) -> dict[str, object]:
+    return {
+        "target": "acme:lib:dut:1#sim",
+        "_target_selector": "sim",
+        "test_selector": selector,
+        "required_tests": [selector],
+        "minimum_total": 1,
     }
 
 
@@ -430,6 +523,125 @@ def test_passing_subset_does_not_change_target_level_simulation_criterion(
 
     assert result.reason == "no_applicable_criteria"
     assert state.criteria["sim_pass_sim"].met is False
+
+
+def test_named_simulation_criterion_uses_its_own_observation(tmp_path: Path) -> None:
+    result, changes = _simulation_changes(
+        tmp_path,
+        {"sim_pass_sim_half": _named_params("half")},
+        _simulation_outcome(tmp_path, [_observation("half")]),
+    )
+
+    assert result.committed is True
+    assert [(change.key, change.met) for change in changes] == [("sim_pass_sim_half", True)]
+    detail = changes[0].detail
+    assert detail["test_selector"] == "half"
+    assert detail["required_tests"] == ["half"]
+    assert detail["selected_tests"] == ["half"]
+    assert detail["passed_tests"] == ["half"]
+    assert detail["failed_tests"] == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"functional": "fail", "failure_class": "design"},
+        {"assertions": "dirty", "assertion_count": 1, "failure_class": "design"},
+        {"execution": "timeout", "functional": "not_observed", "failure_class": "infrastructure"},
+        {"execution": "crash", "functional": "not_observed", "failure_class": "infrastructure"},
+    ],
+)
+def test_named_simulation_criterion_records_observed_failure(
+    tmp_path: Path, failure: dict[str, object]
+) -> None:
+    observation = _observation("half") | failure
+    _result, changes = _simulation_changes(
+        tmp_path,
+        {"sim_pass_sim_half": _named_params("half")},
+        _simulation_outcome(tmp_path, [observation]),
+    )
+
+    assert [(change.key, change.met) for change in changes] == [("sim_pass_sim_half", False)]
+    assert changes[0].detail["failed_tests"] == ["half"]
+
+
+def test_named_simulation_criteria_are_reconciled_independently(tmp_path: Path) -> None:
+    criteria = {
+        "sim_pass_sim_half": _named_params("half"),
+        "sim_pass_sim_full": _named_params("full"),
+    }
+    half = _observation("half")
+    full = _observation("full") | {"functional": "fail", "failure_class": "design"}
+
+    _result, changes = _simulation_changes(
+        tmp_path,
+        criteria,
+        _simulation_outcome(tmp_path, [half, full]),
+    )
+
+    assert [(change.key, change.met) for change in changes] == [
+        ("sim_pass_sim_half", True),
+        ("sim_pass_sim_full", False),
+    ]
+    assert changes[0].detail["selected_tests"] == ["half"]
+    assert changes[0].detail["failed_tests"] == []
+    assert changes[1].detail["selected_tests"] == ["full"]
+    assert changes[1].detail["failed_tests"] == ["full"]
+
+
+def test_named_simulation_run_does_not_change_unobserved_sibling(tmp_path: Path) -> None:
+    _result, changes = _simulation_changes(
+        tmp_path,
+        {
+            "sim_pass_sim_half": _named_params("half"),
+            "sim_pass_sim_full": _named_params("full"),
+        },
+        _simulation_outcome(tmp_path, [_observation("half")]),
+    )
+
+    assert [change.key for change in changes] == ["sim_pass_sim_half"]
+
+
+def test_legacy_named_selector_and_default_invocation_are_supported(tmp_path: Path) -> None:
+    legacy = _named_params("half")
+    legacy.pop("required_tests")
+    _result, named = _simulation_changes(
+        tmp_path,
+        {"sim_pass_sim_half": legacy},
+        _simulation_outcome(tmp_path, [_observation("half")]),
+    )
+    _result, default = _simulation_changes(
+        tmp_path / "default",
+        {"sim_pass_sim": {"test_selector": "all"}},
+        _simulation_outcome(tmp_path, [_observation(None)], required=()),
+    )
+
+    assert named[0].met is True
+    assert named[0].detail["required_tests"] == ["half"]
+    assert default[0].met is True
+    assert default[0].detail["required_tests"] == ["default"]
+    assert default[0].detail["selected_tests"] == ["default"]
+
+
+@pytest.mark.parametrize(
+    ("complete", "role"), [(False, "candidate"), (True, "cycle_count_baseline")]
+)
+def test_nonterminal_or_baseline_campaign_does_not_change_simulation_criteria(
+    tmp_path: Path, complete: bool, role: str
+) -> None:
+    result, changes = _simulation_changes(
+        tmp_path,
+        {"sim_pass_sim_half": _named_params("half")},
+        _simulation_outcome(
+            tmp_path,
+            [_observation("half")],
+            complete=complete,
+            role=role,
+        ),
+    )
+
+    assert result.reason == "no_applicable_criteria"
+    assert changes == ()
 
 
 @pytest.mark.parametrize(

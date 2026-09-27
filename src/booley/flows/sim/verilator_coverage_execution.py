@@ -27,6 +27,7 @@ from booley.flows.sim.build_session import (
     SimulationBuildSession,
     SimulationBuildSlotError,
     project_compile_surface,
+    resolve_target_compile_surface,
 )
 from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
 from booley.flows.sim.execution.attempt import (
@@ -104,13 +105,14 @@ class VerilatorCoverageExecution:
         if identity is None:
             return SimulationBuildResult(False, version_output, infrastructure_error=True)
         try:
-            sources_before = project_compile_surface(self._handle.project_root)
+            compile_surface = resolve_target_compile_surface(self._handle)
+            sources_before = project_compile_surface(compile_surface)
             with SimulationBuildSession(self._handle, request.variant.name) as session:
                 candidate = session.new_generation()
                 prepared = self._prepare_build(request, build_root=candidate)
                 if isinstance(prepared, str):
                     return SimulationBuildResult(False, prepared)
-                if project_compile_surface(self._handle.project_root) != sources_before:
+                if project_compile_surface(compile_surface) != sources_before:
                     raise SimulationBuildSlotError(
                         "Project compile inputs changed during coverage preparation"
                     )
@@ -289,19 +291,34 @@ class VerilatorCoverageExecution:
         version = self._invoke(["verilator", "--version"], timeout=30)
         output = version.stdout + ("\n" + version.stderr if version.stderr else "")
         match = _VERSION_RE.search(output)
+        expected = f"{PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}"
+        guidance = "rebuild the Sandbox image (booley session refresh)"
+        if version.returncode != 0 or version.timed_out or match is None:
+            message = (
+                "Verilator coverage collector version could not be determined "
+                f"(expected {expected}); {guidance}"
+            )
+            return None, f"{message}\n\n{output}".strip()
+        expected_version = PINNED_VERILATOR.tag.removeprefix("v")
+        if match["version"] != expected_version:
+            message = (
+                f"Verilator {match['version']} is not the pinned coverage collector "
+                f"(expected {expected}); {guidance}"
+            )
+            return None, f"{message}\n\n{output}".strip()
         try:
             provenance = self._provenance_path.read_text(encoding="utf-8")
         except OSError as exc:
-            return None, f"{output}\nVerilator provenance unavailable: {exc}".strip()
-        expected_version = PINNED_VERILATOR.tag.removeprefix("v")
-        if (
-            version.returncode != 0
-            or version.timed_out
-            or match is None
-            or match["version"] != expected_version
-            or PINNED_VERILATOR.commit not in provenance
-        ):
-            return None, f"{output}\n{provenance}".strip()
+            return None, (
+                "Verilator coverage collector provenance is unavailable "
+                f"(expected {expected}); {guidance}: {exc}"
+            )
+        if PINNED_VERILATOR.commit not in provenance:
+            message = (
+                "Verilator coverage collector provenance does not match the pinned collector "
+                f"(expected {expected}); {guidance}"
+            )
+            return None, f"{message}\n\n{provenance}".strip()
         return PINNED_VERILATOR, output
 
 

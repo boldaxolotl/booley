@@ -301,7 +301,7 @@ def merge_criteria_defs(
 # resolved inputs into a Vivado EDAM; ``expand_criteria_defs`` applies the
 # Target-name policy before consulting the declared tool.
 EDA_TOOL_CRITERION_FAMILIES: dict[str, frozenset[str]] = {
-    "verilator": frozenset({"sim_pass", "cycle_count", "lint_clean"}),
+    "verilator": frozenset({"sim_pass", "cycle_count", "lint_clean", "coverage"}),
     "icarus": frozenset({"sim_pass", "cycle_count"}),
     "iverilog": frozenset({"sim_pass", "cycle_count"}),
     "yosys": frozenset({"synthesis_ok"}),
@@ -309,7 +309,7 @@ EDA_TOOL_CRITERION_FAMILIES: dict[str, frozenset[str]] = {
 }
 
 # Every family that any EDA tool gates — a family outside this set is not EDA-tool-gated
-# (e.g. review/coverage criteria), so eligibility never filters it.
+# (e.g. review criteria), so eligibility never filters it.
 _EDA_TOOL_GATED_FAMILIES: frozenset[str] = frozenset().union(*EDA_TOOL_CRITERION_FAMILIES.values())
 
 
@@ -336,7 +336,7 @@ def unsupported_eda_tool_boundary(eda_tool: str) -> str:
     )
 
 
-def _criterion_eligible(
+def criterion_family_is_eligible(
     crit_name: str,
     eda_tool: str | None,
     *,
@@ -382,7 +382,7 @@ def expand_criteria_defs(
             for tgt in targets:
                 eda_tool = eda_tools.get(tgt)
                 target_name = tgt if tgt in eda_tools else None
-                if not _criterion_eligible(crit.name, eda_tool, target_name=target_name):
+                if not criterion_family_is_eligible(crit.name, eda_tool, target_name=target_name):
                     # A known EDA tool with no row in the matrix is the ADR 0039
                     # §5 boundary (an unsupported simulator), not a routine
                     # cross-family skip — say so, once per EDA tool.

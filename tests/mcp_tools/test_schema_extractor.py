@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from booley.mcp.application import McpApplication
+from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.schema_extractor import extract_schema
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from booley.specialists.mutation_tester import MutationTesterSpecialist
 from booley.specialists.reviewer import ReviewerSpecialist
+from booley.specialists.specialist import VALID_TIERS
 
 # --- Helpers ---
 
@@ -127,14 +132,12 @@ class TestFiltering:
         p.add_argument("--timeout", type=int)
         p.add_argument("--keep-me")
         schema = extract_schema(p)
-        # Only --keep-me should survive
-        assert "keep_me" in schema["properties"]
+        assert {"keep_me", "model", "max_turns"} <= schema["properties"].keys()
+        assert schema["additionalProperties"] is False
         for filtered in (
             "report_dir",
-            "model",
             "instruction",
             "transcript_dir",
-            "max_turns",
             "timeout",
             "help",
         ):
@@ -157,9 +160,12 @@ class TestFiltering:
 
     def test_target_not_filtered(self):
         p = _make_parser()
-        p.add_argument("--target", default="")
+        p.add_argument("--target", action="append", required=True)
         schema = extract_schema(p)
         assert "target" in schema["properties"]
+        assert schema["properties"]["target"]["type"] == "string"
+        assert "items" not in schema["properties"]["target"]
+        assert "target" in schema["required"]
 
 
 # --- Required field tests ---
@@ -210,11 +216,135 @@ def test_specialist_input_contracts_are_unified(specialist, required, removed) -
     schema = extract_schema(specialist()._parser)
     properties = schema["properties"]
 
+    assert schema["additionalProperties"] is False
     assert required <= set(schema["required"])
+    assert properties["max_turns"]["type"] == "integer"
+    assert properties["max_turns"]["minimum"] == 1
+    assert "model" in properties
     assert {"scope", "steer", "dry_run"} <= set(properties)
     assert properties["steer"]["type"] == "array"
     assert properties["dry_run"]["type"] == "boolean"
     assert removed.isdisjoint(properties)
+
+
+def test_mutation_tester_target_schema_remains_single_required_scalar() -> None:
+    schema = extract_schema(MutationTesterSpecialist()._parser)
+    target = schema["properties"]["target"]
+
+    assert target["type"] == "string"
+    assert "items" not in target
+    assert "target" in schema["required"]
+    assert "Exactly one Simulation Target" in target["description"]
+
+
+@pytest.mark.parametrize(
+    "specialist",
+    [ReviewerSpecialist, MutationTesterSpecialist, CoverageAnalystSpecialist],
+)
+def test_specialist_schemas_expose_bounded_agent_controls(
+    specialist: type[Any],
+) -> None:
+    schema = flow_schema(specialist())
+    properties = schema["properties"]
+
+    assert schema["additionalProperties"] is False
+    assert properties["model"] == {
+        "type": "string",
+        "enum": list(VALID_TIERS),
+        "description": properties["model"]["description"],
+    }
+    assert "default" not in properties["model"]
+    assert properties["max_turns"]["type"] == "integer"
+    assert properties["max_turns"]["minimum"] == 1
+    assert {"report_dir", "transcript_dir", "timeout"}.isdisjoint(properties)
+
+
+def test_specialist_custom_schema_keeps_public_agent_controls() -> None:
+    class CustomSchemaReviewer(ReviewerSpecialist):
+        def mcp_schema(self) -> dict[str, Any]:
+            return {
+                "type": "object",
+                "properties": {"custom": {"type": "string"}},
+            }
+
+    schema = flow_schema(CustomSchemaReviewer())
+
+    assert schema["additionalProperties"] is False
+    assert {"custom", "model", "max_turns"} <= schema["properties"].keys()
+
+
+@pytest.mark.parametrize(
+    "specialist",
+    [ReviewerSpecialist, MutationTesterSpecialist, CoverageAnalystSpecialist],
+)
+@pytest.mark.parametrize("undeclared", ["report_dir", "transcript_dir", "timeout", "policy"])
+def test_specialist_schema_rejects_undeclared_arguments(
+    specialist: type[Any],
+    undeclared: str,
+) -> None:
+    schema = flow_schema(specialist())
+    arguments = {
+        name: prop.get("enum", ["value"])[0]
+        for name in schema.get("required", [])
+        if isinstance((prop := schema["properties"][name]), dict)
+    }
+    arguments[undeclared] = "injected"
+    dispatched = False
+
+    async def dispatch(*_args: object) -> list[object]:
+        nonlocal dispatched
+        dispatched = True
+        return []
+
+    application = McpApplication(
+        [{"name": specialist.name, "description": "", "schema": schema}],
+        dispatch=dispatch,
+        canonicalize=lambda name: name,
+        on_discovery_error=lambda _message: None,
+    )
+
+    result = asyncio.run(application.call_tool(specialist.name, arguments))
+
+    assert result.is_error is True
+    assert dispatched is False
+
+
+@pytest.mark.parametrize(
+    "specialist",
+    [ReviewerSpecialist, MutationTesterSpecialist, CoverageAnalystSpecialist],
+)
+def test_specialist_schema_accepts_public_agent_controls(specialist: type[Any]) -> None:
+    schema = flow_schema(specialist())
+    arguments = {
+        name: prop.get("enum", ["value"])[0]
+        for name in schema.get("required", [])
+        if isinstance((prop := schema["properties"][name]), dict)
+    }
+    arguments.update(model="light", max_turns=1)
+    calls: list[dict[str, Any]] = []
+
+    async def dispatch(
+        _name: str,
+        received: dict[str, Any],
+        _source: object,
+    ) -> list[object]:
+        calls.append(received)
+        return []
+
+    application = McpApplication(
+        [{"name": specialist.name, "description": "", "schema": schema}],
+        dispatch=dispatch,
+        canonicalize=lambda name: name,
+        on_discovery_error=lambda _message: None,
+    )
+
+    invalid = dict(arguments, max_turns=0)
+    invalid_result = asyncio.run(application.call_tool(specialist.name, invalid))
+    result = asyncio.run(application.call_tool(specialist.name, arguments))
+
+    assert invalid_result.is_error is True
+    assert result.is_error is False
+    assert calls == [arguments]
 
 
 # --- Description tests ---
@@ -235,7 +365,7 @@ class TestDescription:
 
 
 def test_coverage_analyst_accepts_only_exact_campaign_and_instruction():
-    schema = extract_schema(CoverageAnalystSpecialist()._parser)
+    schema = flow_schema(CoverageAnalystSpecialist())
     assert "campaign" in schema["required"]
     assert "instruction" in schema["properties"]
     assert {"target", "scope", "steer", "criteria", "reset_waivers", "tb_top"}.isdisjoint(

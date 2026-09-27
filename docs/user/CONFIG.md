@@ -1992,9 +1992,14 @@ approval_ref = "review:CR-1042"
 For `reason = "unreachable"`, add an `approval.proof` table with `kind = "formal"`,
 a safe `reference` relative to the approval directory, and exact `sha256` of the
 proof file. `excluded` cannot carry proof. Both reasons yield `waived`; only
-exact RTL points are waivable. Unsafe paths/symlinks, malformed or duplicate
-approvals, stale sources, unmatched points, wrong Targets, missing proofs, and
-candidate content block evaluation and apply no subset. The immutable digest
-binds bytes, configuration, sources, approvals, proof, and provenance. Ungated
-collection does not load this directory. Analyst Waiver Candidates have no
-approval authority and cannot be copied here as approved content.
+exact RTL points are waivable. Loading rejects unsafe paths/symlinks, malformed
+or duplicate approvals, stale sources, unknown Target identities, missing proofs,
+and candidate content. Matching is then transactional per Target: when a Target
+is collected, only approvals naming that Target are validated against its
+Campaign. An unmatched or otherwise invalid point approval blocks evaluation for
+that Target and none of that Target's approvals apply. Approvals naming a known
+Target outside the current invocation are not checked against points by that run.
+The immutable digest binds bytes, configuration, sources, approvals, proof, and
+provenance. Ungated collection does not load this directory. Analyst Waiver
+Candidates have no approval authority and cannot be copied here as approved
+content.

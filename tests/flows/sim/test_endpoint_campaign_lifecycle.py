@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows import endpoint_session
+from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
@@ -139,23 +140,41 @@ def test_all_campaigns_survive_terminal_progress_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = SimulateFlow()
+    flow._args = SimpleNamespace(report_dir=tmp_path)
+    flow._coverage_prepared = SimpleNamespace(
+        targets=[
+            SimpleNamespace(handle=SimpleNamespace(selector="first")),
+            SimpleNamespace(handle=SimpleNamespace(selector="second")),
+        ]
+    )
     returned = [object(), object()]
     pending = list(returned)
     campaign = SimpleNamespace(run=lambda _request: pending.pop(0))
+    requests = [_request("first"), _request("second")]
 
-    def checkpoint(*, complete: bool = False) -> None:
+    progress = SimpleNamespace(invocation_dir=tmp_path, targets=("first", "second"), outcomes=[])
+
+    def checkpoint(*, complete: bool = False, phase: str | None = None) -> None:
+        del phase
         if complete:
             raise OSError("terminal progress unavailable")
 
-    progress = SimpleNamespace(invocation_dir=tmp_path, checkpoint=checkpoint)
+    progress.checkpoint = checkpoint
+    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        flow,
+        "_coverage_campaign_session",
+        lambda _admission, _invocation: (campaign, requests),
+    )
+    monkeypatch.setattr("booley.flows.sim.flow.CoverageProgress", lambda *_args: progress)
     monkeypatch.setattr(flow, "_campaign_endpoint_outcome", _retained_campaign_outcome)
     monkeypatch.setattr(
         "booley.flows.sim.flow._retain_coverage_campaign",
-        lambda _progress, _outcome: None,
+        lambda retained, outcome: retained.outcomes.append(outcome),
     )
 
-    result = flow._execute_coverage_campaign_requests(
-        campaign, [_request("first"), _request("second")], progress
+    result = flow._run_coverage_campaigns(
+        AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
     )
 
     assert result.exit_code == 2

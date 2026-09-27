@@ -9,6 +9,7 @@ import re
 import sys
 from pathlib import Path
 
+from booley.core.boundary import require_str_value
 from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     ExecutionResult,
@@ -83,12 +84,15 @@ def add_common_args(
         default=None,
         help="Directory for endpoint report output",
     )
-    # Kept default="" (not argparse required) so each endpoint's validation can
-    # produce specific guidance and discovery can represent no selection.
+    # Kept optional at argparse so each endpoint's validation can produce
+    # specific guidance and discovery can represent no selection.
     if accepts_target:
         parser.add_argument(
             "--target",
+            action="append",
+            default=None,
             required=target_required,
+            metavar="TARGET[,TARGET...]",
             help=target_help,
         )
     parser.add_argument(
@@ -105,6 +109,7 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments, filling ticket context from env vars."""
     endpoint._raw_argv = argv if argv is not None else sys.argv[1:]
     endpoint._args = endpoint._parser.parse_args(argv)
+    normalize_target_arg(endpoint._args)
     if hasattr(endpoint._args, "steer") and isinstance(endpoint._args.steer, list):
         if len(endpoint._args.steer) == 0:
             endpoint._args.steer = ""
@@ -112,6 +117,19 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
             endpoint._args.steer = endpoint._args.steer[0]
     apply_environment(endpoint._args, endpoint.endpoint_kind)
     return endpoint._args
+
+
+def normalize_target_arg(args: argparse.Namespace) -> None:
+    """Canonicalize argparse's repeatable Target input to the scalar contract."""
+    if not hasattr(args, "target"):
+        return
+    value = args.target
+    if value is None:
+        args.target = ""
+    elif isinstance(value, list):
+        args.target = ",".join(value)
+    else:
+        args.target = require_str_value(value, field="target", allow_empty=True)
 
 
 def execute_cli(endpoint, argv: list[str] | None = None) -> ExecutionResult:

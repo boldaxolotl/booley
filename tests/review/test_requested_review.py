@@ -22,6 +22,7 @@ def test_mechanical_move_cannot_create_unaccepted_review(tmp_path: Path):
 
 import asyncio
 import json
+from contextlib import nullcontext
 from typing import ClassVar
 
 import pytest
@@ -32,6 +33,18 @@ from booley.ticket_board.logs import save_progress
 from booley.ticket_board.review_lifecycle import request_review_command
 from booley.ticket_board.review_records import read_entry
 from tests.ticket_board.test_ticket_baseline import _basis_project
+
+
+def _on_success(options):
+    actions = ["review"]
+    for enabled, action in (
+        (options.get("merge", False), "merge"),
+        (options.get("cleanup", False), "cleanup"),
+        (options.get("model", False), "triage_report"),
+    ):
+        if enabled:
+            actions.append(action)
+    return f"[{', '.join(actions)}]"
 
 
 @pytest.fixture
@@ -76,7 +89,6 @@ if __name__ == "__main__":
         if declared == "implementation_done"
         else "REVIEW: {rtl: {bugs: done}}"
     )
-    actions = "[review, triage_report]" if options.get("model", False) else "[review]"
     project_ref = "project_destination_ref: refs/heads/main\n" if options.get("paired") else ""
     path = tio.create_ticket_document(
         "demo",
@@ -86,7 +98,7 @@ if __name__ == "__main__":
         "branch: main\n"
         f"{project_ref}"
         "scope: [README.md]\n"
-        f"on_success: {actions}\n"
+        f"on_success: {_on_success(options)}\n"
         f"CRITERIA_MANDATORY: {{{criterion}}}\n"
         "---\n\n## Description\nInspect incomplete work.\n",
     )
@@ -113,6 +125,178 @@ if __name__ == "__main__":
     )
     yield root, tio, worktree
     reset_cache()
+
+
+def _automatic_accepted_handoff(blocked, monkeypatch):
+    """Prepare and bind a real automatic handoff without selecting an inspection."""
+    from booley.ticket_board import operations
+    from booley.ticket_board.ticket_baseline import validate_current_basis_refs
+
+    root, tio, _worktree = blocked
+    state = DevelopmentState.load(tio.logs_dir / "demo" / ".runtime" / "booley_state.json")
+    for criterion in state.criteria:
+        state.set_criterion(criterion, True)
+    state.save()
+    package = asyncio.run(prep.prepare_review(root, "demo"))
+    assert package.ready, package.message
+
+    assert tio.move_ticket_file("demo", "active")
+    run_log = tio.logs_dir / "demo" / "human-logs" / "run.log"
+    run_log.parent.mkdir(parents=True, exist_ok=True)
+    run_log.write_text("# Developer Agent run log\n", encoding="utf-8")
+    heads = validate_current_basis_refs(root, tio.load_basis("demo"))
+    monkeypatch.setattr(operations, "_handoff_basis_heads", lambda *_args: heads)
+    monkeypatch.setattr(operations, "_validate_transitions_for_handoff", lambda *_args: True)
+    assert operations.op_handoff(tio, "demo", expected_execution_id="first")
+    assert read_entry(tio.logs_dir / "demo") is None
+    return root, tio, package
+
+
+@pytest.mark.parametrize(
+    "blocked", [{"merge": True, "criterion": "implementation_done"}], indirect=True
+)
+@pytest.mark.parametrize("no_merge", [False, True])
+def test_automatic_accepted_handoff_can_be_publicly_approved(blocked, monkeypatch, no_merge):
+    from booley.ticket_board import operations
+    from booley.ticket_board.review_lifecycle import approve_review_command
+
+    root, tio, _package = _automatic_accepted_handoff(blocked, monkeypatch)
+    merged = []
+    if not no_merge:
+
+        def complete_with_merge(tio, slug, policy, _snapshot):
+            merged.append(policy.merge)
+            assert operations._approve_transition(
+                tio, slug, actor="test", detail="configured merge"
+            )
+            operations._finish_completed_ticket(tio, slug, cleanup=False)
+            return True
+
+        monkeypatch.setattr(operations, "_complete_with_merge", complete_with_merge)
+
+    assert approve_review_command(root, "demo", no_merge=no_merge)
+    assert tio.find_ticket("demo")["status"] == "done"
+    assert merged == ([] if no_merge else [True])
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    [{"merge": True, "cleanup": True, "criterion": "implementation_done"}],
+    indirect=True,
+)
+def test_accepted_handoff_honors_independent_merge_override(blocked, monkeypatch):
+    from booley.ticket_board.review_lifecycle import approve_review_command
+
+    root, tio, _package = _automatic_accepted_handoff(blocked, monkeypatch)
+
+    assert approve_review_command(root, "demo", no_merge=True)
+    assert tio.find_ticket("demo")["status"] == "done"
+
+
+@pytest.mark.parametrize(
+    "blocked", [{"merge": True, "criterion": "implementation_done"}], indirect=True
+)
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"force": True},
+        {"request": True, "repair": True, "reason": "recover review"},
+    ],
+)
+def test_automatic_accepted_handoff_review_reuses_bound_package(blocked, monkeypatch, options):
+    from booley.ticket_board.review_lifecycle import review_command
+
+    root, tio, prepared = _automatic_accepted_handoff(blocked, monkeypatch)
+    manifest = tio.logs_dir / "demo" / ".runtime" / "triage-prep" / "manifest.json"
+    briefing = prepared.package_path
+    before = (manifest.read_bytes(), briefing.read_bytes())
+
+    outcome = asyncio.run(review_command(root, "demo", **options))
+
+    assert outcome.status == "fresh", outcome.message
+    assert outcome.package_path == prepared.package_path
+    assert outcome.message == (
+        "Ticket 'demo' is already accepted; run booley board approve demo to complete it."
+    )
+    assert read_entry(tio.logs_dir / "demo") is None
+    assert (manifest.read_bytes(), briefing.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "blocked", [{"merge": True, "criterion": "implementation_done"}], indirect=True
+)
+@pytest.mark.parametrize("facade", ["prepare_review", "prepare_review_command"])
+def test_prepare_review_force_preserves_accepted_handoff_package(blocked, monkeypatch, facade):
+    from booley.ticket_board import review_lifecycle
+
+    root, tio, prepared = _automatic_accepted_handoff(blocked, monkeypatch)
+    manifest = tio.logs_dir / "demo" / ".runtime" / "triage-prep" / "manifest.json"
+    before = (manifest.read_bytes(), prepared.package_path.read_bytes())
+
+    outcome = asyncio.run(getattr(review_lifecycle, facade)(root, "demo", force=True))
+
+    assert outcome.status == "fresh", outcome.message
+    assert outcome.package_path == prepared.package_path
+    assert (manifest.read_bytes(), prepared.package_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "blocked", [{"merge": True, "criterion": "implementation_done"}], indirect=True
+)
+def test_accepted_handoff_guides_review_when_bound_package_changed(blocked, monkeypatch):
+    from booley.ticket_board.review_lifecycle import approve_review_command, review_command
+
+    root, tio, _prepared = _automatic_accepted_handoff(blocked, monkeypatch)
+    manifest = tio.logs_dir / "demo" / ".runtime" / "triage-prep" / "manifest.json"
+    manifest.write_text("{}\n", encoding="utf-8")
+
+    outcome = asyncio.run(review_command(root, "demo"))
+
+    assert outcome.status == "accepted"
+    assert not outcome.ready
+    assert "booley board approve demo" in outcome.message
+    assert approve_review_command(root, "demo", no_merge=True)
+    assert tio.find_ticket("demo")["status"] == "done"
+
+
+@pytest.mark.parametrize(
+    "blocked", [{"merge": True, "criterion": "implementation_done"}], indirect=True
+)
+def test_legacy_accepted_handoff_without_package_returns_guidance(blocked, monkeypatch):
+    from booley.ticket_board.review_lifecycle import review_command
+
+    root, tio, prepared = _automatic_accepted_handoff(blocked, monkeypatch)
+    (tio.logs_dir / "demo" / "acceptance" / "review-package.json").unlink()
+    (tio.logs_dir / "demo" / ".runtime" / "triage-prep" / "manifest.json").unlink()
+    prepared.package_path.unlink()
+
+    outcome = asyncio.run(review_command(root, "demo"))
+
+    assert outcome.status == "accepted"
+    assert not outcome.ready
+    assert outcome.package_path is None
+    assert "booley board approve demo" in outcome.message
+
+
+def test_validate_action_names_public_approve_command(tmp_path, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    tio = SimpleNamespace(
+        logs_dir=tmp_path,
+        find_ticket=lambda _slug: {"status": "review"},
+    )
+    monkeypatch.setattr(review_lifecycle, "read_entry", lambda _path: {"selected": True})
+    monkeypatch.setattr(
+        review_lifecycle,
+        "read_acceptance",
+        lambda _path: SimpleNamespace(kind="accepted"),
+    )
+
+    with pytest.raises(ReviewEntryError, match="booley board approve demo") as caught:
+        review_lifecycle._validate_action(tio, "demo", "request", repair=True)
+    assert "accepted review/complete workflow" not in str(caught.value)
 
 
 @pytest.mark.parametrize("blocked", [{}, {"paired": True}], indirect=True)
@@ -1141,6 +1325,7 @@ def test_approve_review_ticket_rejects_corrupt_acceptance(monkeypatch, tmp_path)
         logs_dir=tmp_path,
         _ticket_lock=lambda *_args, **_kwargs: Lock(),
         load_basis=lambda _slug: SimpleNamespace(target_plan=None),
+        find_ticket=lambda _slug: {"status": "review"},
     )
     ctx = SimpleNamespace(log_dir=tmp_path, inspection={"reason": "inspect", "capture_sha": "sha"})
     monkeypatch.setattr(
@@ -1220,6 +1405,10 @@ async def test_review_command_reports_missing_corrupt_and_wrong_state(tmp_path, 
 
         def __init__(self, *_args, **_kwargs):
             self.logs_dir = tmp_path / "logs"
+            self._project_root = tmp_path
+
+        def _ticket_lock(self, *_args, **_kwargs):
+            return nullcontext()
 
         def find_ticket(self, _slug):
             return self.board

@@ -113,6 +113,30 @@ timing, and DRC evidence into stable resource metrics and `fpga_impl_ok`
 Criteria. The stricter the evidence contract, the less the caller has to infer
 from unstructured output.
 
+### Progress lifecycle
+
+Flow-owned `progress.json` is a run-scoped observation, not process-liveness or
+resume authority. Every producer stamps its dispatched `run_id` and a canonical
+UTC `timestamp`. While work is active, `complete` is false. Every catchable exit
+publishes a terminal document: `phase: complete` means the planned workload was
+exhausted, regardless of whether its represented design verdict passed;
+`phase: aborted` means orchestration stopped early or normal terminal publication
+failed. Coverage resume may change an authenticated origin to `phase: superseded`.
+That transition preserves the origin's `run_id`, Target partition, and detail and
+adds only `superseded_by` for the new invocation.
+
+`targets` is unique, and `completed_targets` plus `pending_targets` is an exact,
+disjoint partition. A Target enters `completed_targets` only after its owner-defined
+durable publication boundary. The shared lifecycle guard retries one failed
+terminal publication: failed normal completion is retried as `aborted`, while a
+failed `aborted` write is retried without masking the original Flow failure. A
+successful repair does not erase the original exit-2 publication error. Progress
+writers and conditional repairs share one file lock, so a supervisor repair cannot
+overwrite a concurrent resume supersession. When an MCP supervisor terminates or
+discovers a dead child, it best-effort repairs a matching, validated, still-live
+checkpoint only after the process group is reaped. Missing, unsafe, malformed, changed, or
+unwritable checkpoints never change the already determined Job outcome.
+
 ### Shared planning and dry-run lifecycle
 
 The four shipped Flows inherit `BuiltinFlow` and project their authoritative
@@ -157,7 +181,11 @@ executable Ticket formats are beyond the hard cutoff and must be recreated.
 
 The protected-path policy covers FuseSoC-selected Target declarations, the test
 registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
-discovery sentinels and Project routing. Exact Git
+discovery sentinels, Project routing, and the configured
+[Approved Waiver Set](../../src/booley/flows/sim/CONTEXT.md) together with every
+formal proof artifact referenced by an approval. This project-wide approval
+policy is protected for every sealed Ticket, including a Ticket without a
+Coverage Criterion. Exact Git
 comparisons intentionally block formatting-only control changes. RTL and testbench
 contents remain editable when Scope permits them.
 
@@ -360,7 +388,11 @@ Campaign manifest at
 `<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/campaign/manifest.json`.
 Append-only attempts/results and the ordered `summary.json` remain beside that
 manifest across exact resume. The replaceable compatibility report at
-`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` carries
+`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` uses
+`booley.simulation-projection/v2` and carries typed, digest-bound
+`origin_target` references to the immutable manifest and optional public Coverage
+reference. Legacy producer-absolute strings are compatibility hints only; local
+Simulation Campaign authentication is authoritative. The projection also carries
 the resolved identity (`target`, `tb_top`, `eda_tool`), timing, the target
 `passed` flag, and a `tests`
 list: one entry per test with its `name`, `verdict`, `sva_errors`, and an
@@ -938,10 +970,13 @@ A Coverage Criterion never activates collection.
 `prepare_coverage_invocation(request, project_context)` resolves all selected
 Targets without EDA, build setup, report allocation, or state mutation. It
 aggregates invalid selections, rejects any non-Verilator Target, validates hook
-contracts, and freezes exact suites and source/build fingerprints. Selection is
-explicit invocation filtering first, then the Criterion suite, then all runnable
-registered tests. Configured/explicit skips remain visible as suite mismatch
-when a Criterion requires those tests. Execution is sorted and sequential.
+contracts, and freezes exact suites and source/build fingerprints. Suite
+selection has four cases: an explicit invocation suite and an exact Coverage
+Criterion suite each retain every registered name, overriding configured skips;
+the legacy internal substring filter and an unfiltered suite apply configured
+skips. A Criterion with `tests: all` uses the unfiltered case, so any names
+excluded by configuration remain visible as a suite mismatch during evaluation.
+Execution is sorted and sequential.
 
 `run_coverage_target(plan, execution, progress)` collects through
 `SimulationExecutionPort`, assembles and validates the canonical Campaign,
@@ -958,7 +993,10 @@ preserved in structured output. Progress is observational and never resumed.
 Project-wide waiver configuration is `[coverage.waivers]` in the project-data
 `booley.toml`, with explicit `anchor` (`rtl_repository` or
 `project_data_repository`) and safe relative `directory`. Target window/hook
-configuration remains under `flow_options.booley.coverage`.
+configuration remains under `flow_options.booley.coverage`. Once a Ticket is
+sealed, approving, editing, adding, deleting, or replacing an approval file or
+one of its referenced formal proof artifacts requires `return-to-draft`; the new
+Ticket generation records a fresh protected-input baseline.
 
 The canonical Target directory holds the V3 `coverage.json` manifest, required
 `coverage-points.jsonl.gz`, `simulation.json`, `native/raw/`, `native/merged/`,
@@ -968,8 +1006,11 @@ collection, and evaluation without inline Coverage Points. Source rollups cover
 line, branch, expression, and toggle with overall eligibility and waiver policy;
 they never aggregate by instance hierarchy. It integrity-binds the compressed JSON
 Lines point store. V1 and V2 Campaigns are rejected and must be recollected. Native paths in the Campaign
-are relative to that Target directory; Flow artifact pointers are relative to
-the producing work directory. No flat per-Target compatibility report is
+are relative to that Target directory. `booley.simulation-report/v2` artifact
+references use `report_invocation` or `reports_root`, resolved from the containing
+`report.json`; cross-root resume references instead use `external_origin_target`,
+resolved from an explicitly supplied origin Target directory. Resume reports do
+not publish a duplicate Target projection. No flat per-Target compatibility report is
 written in any Simulation mode. The separate report-driven Analyst consumes the
 exact completed Target Campaign without publishing policy evidence.
 
@@ -992,8 +1033,9 @@ sequences. Thus an interrupted evidence append or failed state save preserves
 the prior authoritative projection without deleting historical observations.
 Ordinary nontransactional ledger observations retain their existing semantics.
 
-Terminal progress follows the state save. If its write fails, the committed
-Campaign and Criteria remain valid and the command returns 2. Persistence errors
+Terminal progress follows the state save. If its normal write fails, the Flow
+retries once with `phase: aborted`; the committed Campaign and Criteria remain
+valid and the command returns 2 even when that repair succeeds. Persistence errors
 retain the independently measured simulation, collection, and evaluation truths
 in the structured result; an error does not turn a measured verdict into a
 policy `blocked` verdict. Report paths are usable only when their publication
@@ -1005,6 +1047,16 @@ coverage. Pruning takes the same nonblocking lock, so active invocations cannot
 be removed. Process exit releases ownership; `progress.json` is never lock or
 resume authority. Every subsequent Flow invocation allocates a fresh number,
 and the Target transaction rejects previously started native state.
+
+Coverage resume derives its origin only from the validated manifest path, takes
+the origin invocation lock before recovery, and holds it through the final
+transition. Successful recovery terminalizes the new invocation as `complete`
+and changes an eligible `running` or `aborted` origin to `superseded`. The
+origin's completed and pending lists remain its historical disposition; they are
+not recomputed from the recovered Campaign store. An already `complete` origin
+is unchanged, and an already `superseded` origin keeps its first `superseded_by`.
+Missing, malformed, or concurrently changed origin progress prevents only that
+observational supersession; it never prevents manifest-authoritative recovery.
 
 #### Exact report retention
 
@@ -1019,11 +1071,21 @@ root explicitly; callers obtain project-data roots through
   and the full deletion set before mutation. Symlinks, unknown payloads, changed
   databases, unexplained missing databases, and ambiguous selections are errors.
 - `prune_invocation(reports_root, invocation)` validates every existing Target
-  before atomically moving that invocation to `.pruned-N` and removing its
-  contents. Interrupted attempts may be removed after their process releases the
-  lock. A pruning journal permits retry after partial cleanup. The empty
-  `.pruned-N` tombstone reserves the number permanently; it contains no Campaign
-  or native evidence. Other invocations remain untouched.
+  and compares every file with the authenticated invocation, Campaign, and
+  artifact inventory before atomically moving that invocation to `.pruned-N` and
+  removing its contents. Unknown files are named and refused without mutation;
+  changed or missing recorded native payloads are accepted because full pruning
+  removes the entire invocation. Terminal attempts use only their exact
+  authenticated inventory; nonterminal attempts retain directory-level ownership
+  only for producer-private partial outputs that cannot acquire a terminal manifest.
+  Interrupted attempts may be removed after their process releases the lock.
+  Authenticated pending/interrupted Campaigns, missing
+  summaries, and missing compatibility projections are abandoned rather than
+  invalid. A producer-locked reservation abandoned before `progress.json` is also
+  removable when its invocation directory is still empty and its external lock
+  file is intact. A pruning journal permits retry after partial cleanup.
+  The empty `.pruned-N` tombstone reserves the number permanently; it contains no
+  Simulation Campaign or native evidence. Other invocations remain untouched.
 
 Native pruning first deep-validates the Campaign pair, then writes Target-local
 `availability.json` with schema `booley.coverage-availability/v1`, the Campaign
@@ -1044,7 +1106,13 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 ```
 
 Full pruning releases matching retired child-execution index entries before it
-removes the invocation. The project-data root is inferred only when the report
+removes the invocation. When authenticated surviving external resources exist,
+it first performs bounded recovery/cancellation of exact Campaign-mirrored orphan
+process trees, proves them terminal, reconciles their heavy-slot tokens, publishes
+retirement mirrors, and marker-authenticates cleanup of owned templated run
+directories. It does not require or inspect Project data when no such resource
+survives. Literal run directories are untouched.
+The project-data root is inferred only when the report
 root is exactly `<project-data>/.runtime/flow-reports`. A nonstandard report
 root therefore requires `--project-data <resolved-project-data>` for `--full`
 when Campaign child records exist. Native-only pruning does not inspect or
@@ -1053,6 +1121,13 @@ release those records and does not require the option.
 Selection, locking, validation, and filesystem failures exit 2. Both operations
 are retryable for their exact selections. Do not manually remove journals,
 quarantines, invocation locks, or number tombstones.
+
+Simulation acquires `.invocation-N.lock` before publishing `sim/N`. Full pruning
+holds that producer lock and every discovered Campaign mutation lock through a
+second inventory pass, external recovery, journal publication, and invocation
+rename. Producer contention reports that the invocation is still being produced;
+mutation-lock contention reports an exact resume. Neither lock is removed or
+rewritten by retention, and a Campaign lock never recreates a renamed Campaign root.
 
 ### Coverage Analysis after Simulation
 

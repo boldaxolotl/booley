@@ -84,6 +84,7 @@ def _project_with_projection(
     tracked_projection: bool = False,
     post_setup_marker: bool = False,
     marker_uses_worktree_path: bool = False,
+    waiver_anchor: str | None = None,
 ) -> tuple[Path, Path, TicketIO]:
     root = tmp_path / "project"
     root.mkdir()
@@ -95,15 +96,24 @@ def _project_with_projection(
     (project_dir / "cores").mkdir()
     (root / ".gitignore").write_text("/.booley-projected-*.core\n", encoding="utf-8")
     (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n/tmp/\n", encoding="utf-8")
-    (project_dir / "booley.toml").write_text(
+    config = (
         "[flows]\n[stealth]\nenabled = true\n"
-        f"ignore_native_cores = {str(ignore_native_cores).lower()}\n",
-        encoding="utf-8",
+        f"ignore_native_cores = {str(ignore_native_cores).lower()}\n"
     )
+    if waiver_anchor is not None:
+        config += (
+            f'[coverage.waivers]\nanchor = "{waiver_anchor}"\ndirectory = "coverage-waivers"\n'
+        )
+    (project_dir / "booley.toml").write_text(config, encoding="utf-8")
     (project_dir / "cores/demo.core").write_text(
         "CAPI=2:\nname: booley::demo:0\ntargets: {}\n", encoding="utf-8"
     )
     (root / "README.md").write_text("demo\n", encoding="utf-8")
+    if waiver_anchor is not None:
+        waiver_root = root if waiver_anchor == "rtl_repository" else project_dir
+        waiver = waiver_root / "coverage-waivers/policy.toml"
+        waiver.parent.mkdir()
+        waiver.write_text('schema = "baseline-policy"\n', encoding="utf-8")
     if tracked_projection:
         (root / ".booley-projected-demo.core").write_text(
             "CAPI=2:\n"
@@ -141,6 +151,7 @@ def _enqueued_projection_ticket(
     tracked_projection: bool = False,
     post_setup_marker: bool = False,
     marker_uses_worktree_path: bool = False,
+    waiver_anchor: str | None = None,
 ) -> tuple[Path, Path, TicketBaseline]:
     root, project_dir, tio = _project_with_projection(
         tmp_path,
@@ -148,6 +159,7 @@ def _enqueued_projection_ticket(
         tracked_projection=tracked_projection,
         post_setup_marker=post_setup_marker,
         marker_uses_worktree_path=marker_uses_worktree_path,
+        waiver_anchor=waiver_anchor,
     )
     ticket = _create_v2_ticket(
         tio,
@@ -573,6 +585,7 @@ def test_flow_entry_accepts_matching_post_setup_marker_and_rejects_missing_marke
     flow = _AcceptanceFlow()
     from booley.ticket_board.flow_execution import TicketBoardFlowExecution
 
+    monkeypatch.setattr("booley.ticket_board.flow_execution.detect_project_root", lambda: root)
     flow.execution_adapter = TicketBoardFlowExecution()
     flow.parse_args(["--target", "demo", "--work-dir", str(workspace)])
 
@@ -583,6 +596,67 @@ def test_flow_entry_accepts_matching_post_setup_marker_and_rejects_missing_marke
     assert blocked is not None
     assert blocked.exit_code != 0
     assert blocked.report_text.count("acceptance-input-change-required") == 1
+
+
+@pytest.mark.parametrize(
+    ("anchor", "changed_path"),
+    [
+        ("rtl_repository", "coverage-waivers/policy.toml"),
+        ("project_data_repository", ".booley_project/coverage-waivers/policy.toml"),
+    ],
+)
+def test_uncommitted_waiver_drift_blocks_gated_flow_and_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    anchor: str,
+    changed_path: str,
+) -> None:
+    """The shared gate covers gated evaluation, board validate, and approval."""
+    from booley.ticket_board import operations
+
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path, waiver_anchor=anchor)
+    ticket = _runtime_ticket(root)
+    prepare_acceptance_checkout(
+        root,
+        workspace,
+        slug="generated-input",
+        ticket_path=ticket,
+    )
+    changed = workspace / changed_path
+    changed.write_text(changed.read_text(encoding="utf-8") + "# live drift\n", encoding="utf-8")
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: root)
+    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+    monkeypatch.setenv("BOOLEY_SLUG", "generated-input")
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
+    flow = _AcceptanceFlow()
+    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+
+    monkeypatch.setattr("booley.ticket_board.flow_execution.detect_project_root", lambda: root)
+    flow.execution_adapter = TicketBoardFlowExecution()
+    flow.parse_args(["--target", "demo", "--work-dir", str(workspace)])
+
+    blocked = flow._pre_state_gate()
+
+    assert blocked is not None
+    assert blocked.exit_code != 0
+    assert "acceptance-input-change-required" in blocked.report_text
+    assert changed_path in blocked.report_text
+
+    tio = SimpleNamespace(
+        _project_root=root,
+        tickets_dir=root / ".booley_project/tickets",
+        logs_dir=root / ".booley_project/tickets/logs",
+        _load_basis_unlocked=lambda *_args, **_kwargs: basis,
+    )
+
+    assert operations._handoff_basis_heads(tio, "generated-input") is None
+    approval_error = capsys.readouterr().err
+    assert "acceptance-input-change-required" in approval_error
+    assert changed_path in approval_error
 
 
 @pytest.mark.parametrize("ledger_fails", (False, True))

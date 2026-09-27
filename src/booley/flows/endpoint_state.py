@@ -67,19 +67,16 @@ class EndpointState(ABC):
     accepts_target: bool = True
     # Preview-only dry runs opt in to bypassing admission and persistence.
     non_persisting_dry_run: bool = False
-    # F-14: on a human/standalone (no-state-file) run, ``report_text`` is only
-    # surfaced on *failure* — the PASS verdict lives in ``display_lines``, which
-    # the harness UI renders but a bare CLI run drops. For an endpoint whose success
-    # is otherwise indistinguishable from a no-op (fpga_impl: a passing route
-    # prints zero bytes, exit 0), set this True to also print ``report_text`` on
-    # success, so PASS is never silent.
+    # Successful non-Flow endpoints opt in to publishing report_text. CLI Flows
+    # publish successful verdicts by default; failures publish for every endpoint.
     announce_success_report: bool = False
     # Class-overridable because argparse help is also the MCP ``target`` schema
     # description. The default is endpoint-neutral; a Flow that drives a sim
     # sub-loop can override it with narrower wording.
     target_help: str = (
-        "FuseSoC .core Target name(s) this run applies to, comma-separated. "
-        "Run with --target <name> (list them with `booley targets`)."
+        "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
+        "repeated or its value comma-separated; MCP accepts one comma-separated string. "
+        "List available Targets with `booley targets`."
     )
     # Criteria this endpoint can satisfy (must match names in criteria.toml)
     satisfies: ClassVar[list[str]] = []
@@ -118,8 +115,11 @@ class EndpointState(ABC):
         self._display_identity = DisplayIdentity.current(invocation_id)
         self._invocation_id = self._display_identity.invocation_id
         self._reserved_invocation_dir: Path | None = None
-        # Set for the duration of _run(); read by _post_run to avoid echoing a
-        # verdict block the endpoint already printed itself (F-28).
+        # Transport adapters opt in to automatic stdout/stderr verdict
+        # publication. Typed in-process execution stays side-effect free.
+        self._console_publication_requested = False
+        # Set for the duration of _run(); console publication reads it to avoid
+        # echoing a verdict block the endpoint already printed itself (F-28).
         self._stdout_witness: endpoint_reporting._StdoutWitness | None = None
         self._pending_criteria_set: tuple[str, ...] | None = None
         # The underlying EDA tool that actually ran (e.g. "verilator",
@@ -347,6 +347,9 @@ class EndpointState(ABC):
 
     def _post_run(self, result: EndpointOutcome, duration: float) -> None:
         return endpoint_reporting._post_run(self, result, duration)
+
+    def _publish_console_report(self, result: EndpointOutcome) -> None:
+        return endpoint_reporting._publish_console_report(self, result)
 
     def _pre_save_hook(self, result: EndpointOutcome) -> None:
         """Hook for subclasses to mutate ``self.state`` (or *result*) just before

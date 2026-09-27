@@ -1009,6 +1009,8 @@ def _partition_discovered_inputs(
     protected: set[str],
 ) -> tuple[str, set[str], set[str]]:
     prefix = _project_path_prefix(root)
+    if not any(participant.role == "project" for participant in basis.participants):
+        return prefix, protected, set()
     outer_protected = {path for path in protected if not path.startswith(prefix)}
     project_protected = {
         path.removeprefix(prefix) for path in protected if path.startswith(prefix)

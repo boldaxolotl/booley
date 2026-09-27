@@ -853,6 +853,14 @@ def _replay_projection(
         entry.detail = dict(payload.get("detail") or {})
         entry.ever_met = entry.ever_met or met
         entry.ever_failed = entry.ever_failed or not met
+        if entry.params.get("from_state") == "fail":
+            transition = {
+                "met": met,
+                "recorded_at": payload.get("recorded_at"),
+                "detail": dict(entry.detail),
+            }
+            if transition not in entry.transition_evidence:
+                entry.transition_evidence.append(transition)
 
 
 def _update_live_state(state: DevelopmentState, saved: DevelopmentState) -> None:

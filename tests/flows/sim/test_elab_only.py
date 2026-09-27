@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -496,6 +497,36 @@ def test_missing_executable_is_typed_in_elab_only_result(
     assert result.detail["eda_tool_error"] == "missing_executable"
     assert result.detail["missing_executable"] == "verilator"
     assert "required executable 'verilator'" in result.report_text
+
+
+def test_elab_only_terminalizes_after_later_target_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    targets = ["sim_a", "sim_b"]
+    flow = _flow_with_state(tmp_path, targets)
+    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: targets)
+    monkeypatch.setattr(flow, "_validate_interactive_args", lambda selected: None)
+    calls = 0
+
+    def run_one(target: str) -> ElabOnlyTargetResult:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated elaboration interruption")
+        return ElabOnlyTargetResult(target=target, outcome=BuildOutcome(True, "pass", None))
+
+    monkeypatch.setattr(flow, "_run_one_elab_only", run_one)
+
+    with pytest.raises(RuntimeError, match="elaboration interruption"):
+        flow._run_elab_only()
+
+    progress_path = next((tmp_path / "reports/sim").glob("*/progress.json"))
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert progress["complete"] is True
+    assert progress["phase"] == "aborted"
+    assert progress["completed_targets"] == ["sim_a"]
+    assert progress["pending_targets"] == ["sim_b"]
 
 
 @pytest.mark.parametrize(

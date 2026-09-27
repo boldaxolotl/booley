@@ -250,6 +250,68 @@ class TestFormatMcpToolResult:
         assert "detail.reason: done" in result
         assert "detail.error: none" in result
 
+    @pytest.mark.parametrize(
+        ("stdout", "stderr"),
+        [("RESULT: PASS\n", ""), ("", "RESULT: PASS\n")],
+    )
+    def test_report_text_already_displayed_as_whole_lines_is_not_repeated(
+        self, stdout: str, stderr: str
+    ) -> None:
+        result = self._format_mcp_tool_result(
+            0,
+            stdout,
+            stderr,
+            {"report_text": "RESULT: PASS"},
+        )
+
+        assert result.count("RESULT: PASS") == 1
+        assert "report_text:" not in result
+
+    @pytest.mark.parametrize(
+        ("stdout", "stderr"),
+        [
+            ("progress mentions RESULT: PASS but keeps going\n", ""),
+            ("", "progress mentions RESULT: PASS but keeps going\n"),
+        ],
+    )
+    def test_report_text_mentioned_inside_a_log_line_is_retained(
+        self, stdout: str, stderr: str
+    ) -> None:
+        result = self._format_mcp_tool_result(
+            0,
+            stdout,
+            stderr,
+            {"report_text": "RESULT: PASS"},
+        )
+
+        assert "report_text: RESULT: PASS" in result
+
+    def test_report_text_truncated_out_of_displayed_streams_is_retained(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "12")
+        monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "12")
+
+        result = self._format_mcp_tool_result(
+            1,
+            "RESULT: FAIL\n" + "x" * 20,
+            "RESULT: FAIL\n" + "y" * 20,
+            {"report_text": "RESULT: FAIL"},
+        )
+
+        assert "report_text: RESULT: FAIL" in result
+
+    def test_unrelated_stderr_and_report_are_both_retained(self) -> None:
+        result = self._format_mcp_tool_result(
+            1,
+            "",
+            "compiler warning\n",
+            {"report_text": "RESULT: FAIL"},
+        )
+
+        assert "compiler warning" in result
+        assert "report_text: RESULT: FAIL" in result
+
 
 # ---------------------------------------------------------------------------
 # _run_subprocess
@@ -669,7 +731,12 @@ class TestTryReadReport:
     def test_non_persisting_dry_run_does_not_attach_stale_report(self, monkeypatch):
         async def fake_run(_cmd, timeout=600, env=None):
             del timeout, env
-            return 0, '{"flow": "lint", "schema_version": 1}', "", False
+            return (
+                2,
+                '{"flow": "lint", "schema_version": 1}',
+                "Dry-run planning failed: invalid target",
+                False,
+            )
 
         monkeypatch.setattr(self.mcp_server, "_run_subprocess", fake_run)
         monkeypatch.setattr(
@@ -690,14 +757,61 @@ class TestTryReadReport:
                     "module": "lint",
                     "default_timeout": 600,
                     "non_persisting_dry_run": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "dry_run": {"type": "boolean"},
+                            "target": {"type": "string"},
+                        },
+                    },
                 },
                 {},
                 MagicMock(),
             )
         )
 
-        assert isinstance(result, list)
-        assert '"flow": "lint"' in result[0].text
+        assert isinstance(result, self.mcp_server.McpDispatchResult)
+        assert result.is_error is True
+        assert '"flow": "lint"' in result.value[0].text
+        assert "Dry-run planning failed: invalid target" in result.value[0].text
+
+
+class TestJobManagerResultText:
+    @pytest.fixture(autouse=True)
+    def _import(self):
+        mcp_stubs = {
+            "mcp": MagicMock(),
+            "mcp.server": MagicMock(),
+            "mcp.server.models": MagicMock(),
+            "mcp.server.stdio": MagicMock(),
+            "mcp.types": MagicMock(),
+        }
+        with patch.dict(sys.modules, mcp_stubs):
+            from booley.mcp import server as mcp_server
+
+            self.mcp_server = mcp_server
+
+    def test_captured_stderr_and_fresh_report_render_one_verdict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = object.__new__(self.mcp_server._JobManager)
+        manager._jobs_root = tmp_path
+        manager._results = {"run-1": (1, "", "RESULT: FAIL\n", False)}
+        monkeypatch.setattr(
+            self.mcp_server.jobrec,
+            "read_record",
+            lambda _run_id, root: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            self.mcp_server,
+            "_job_report",
+            lambda _record: ({"report_text": "RESULT: FAIL"}, True),
+        )
+
+        result = manager.result_text("run-1")
+
+        assert result.count("RESULT: FAIL") == 1
+        assert "report_text:" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -1018,6 +1132,37 @@ class TestBooleyStatus:
 
         assert result[0].text.startswith("HEALTH WARNING:")
         assert result[1].text == "MCP tool result"
+
+    def test_health_warning_preserves_error_disposition(self, monkeypatch):
+        from booley.harness import auto_doctor
+        from booley.mcp.application import McpDispatchResult
+
+        def fake_text_content(**kwargs):
+            return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
+
+        monkeypatch.setattr(self.mcp_server, "_status_mcp_tool_visible", lambda: True)
+        monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
+        monkeypatch.setattr(
+            auto_doctor,
+            "consume_changed_summary",
+            lambda *_a, **_kw: "Automatic Doctor found 1 FAIL",
+        )
+        content = McpDispatchResult(
+            value=[fake_text_content(type="text", text="EXIT_CODE: 2")],
+            is_error=True,
+        )
+
+        result = self.mcp_server._prepend_changed_health_alert(content)
+
+        assert result.is_error is True
+        assert result.value[0].text.startswith("HEALTH WARNING:")
+        assert result.value[1].text == "EXIT_CODE: 2"
+
+    def test_health_warning_rejects_invalid_content_shape(self):
+        block = SimpleNamespace(type="text", text="HEALTH WARNING")
+
+        with pytest.raises(TypeError, match="content that is not a list"):
+            self.mcp_server._prepend_health_block(object(), block)
 
 
 class TestBooleySleep:

@@ -651,10 +651,11 @@ class TestCuratedOverrideAdvisory:
 class TestProjectGitignoreBackfill:
     """Project-authored Python hooks may still produce ignored bytecode."""
 
-    def test_new_gitignore_covers_python_bytecode(self, tmp_path: Path):
+    def test_new_gitignore_covers_transient_reports_and_python_bytecode(self, tmp_path: Path):
         init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
 
         lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+        assert "flow-reports/" in lines
         assert "__pycache__/" in lines
         assert "*.pyc" in lines
 
@@ -666,6 +667,7 @@ class TestProjectGitignoreBackfill:
 
         lines = gitignore.read_text(encoding="utf-8").splitlines()
         assert "my_custom_dir/" in lines
+        assert lines.count("flow-reports/") == 1
         assert "__pycache__/" in lines
         assert lines.count("tmp/") == 1  # already present -> not re-added
 

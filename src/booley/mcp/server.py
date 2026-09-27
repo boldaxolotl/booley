@@ -63,8 +63,18 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
+from booley.flows.endpoint_reporting import _contains_whole_line_block
+from booley.flows.progress_lifecycle import (
+    read_progress_for_run,
+    repair_progress_after_reap,
+)
 from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
-from booley.mcp.application import McpApplication, McpToolDefinition, UnknownMcpToolError
+from booley.mcp.application import (
+    McpApplication,
+    McpDispatchResult,
+    McpToolDefinition,
+    UnknownMcpToolError,
+)
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
 from booley.runtime.build_metadata import format_status_line
@@ -420,6 +430,7 @@ def _reconcile_orphaned_jobs() -> None:
             rec.status = jobrec.STATUS_FAILED
             if rec.exit_code is None:
                 rec.exit_code = 2
+        repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
         jobrec.write_record(rec, root=session_jobs_dir())
         logger.info("Reconciled orphaned job %s from prior session", rec.run_id)
 
@@ -1381,7 +1392,24 @@ def _write_synthetic_endpoint_end(
 # (mcp 1.28 ``CombinationContent``). No MCP tool declares an ``outputSchema``,
 # so the SDK performs no output validation on the attached dict — a tuple
 # return without a schema is explicitly supported.
-McpToolContent = list[TextContent] | tuple[list[TextContent], dict[str, Any]]
+McpRawContent = list[TextContent] | tuple[list[TextContent], dict[str, Any]]
+McpToolContent = McpRawContent | McpDispatchResult
+
+
+def _dispatch_result(content: McpRawContent, *, is_error: bool) -> McpToolContent:
+    """Attach an explicit MCP error disposition to existing result content."""
+    if not is_error:
+        return content
+    return McpDispatchResult(value=content, is_error=True)
+
+
+def _error_result(message: str) -> McpDispatchResult:
+    """Return one caller-visible MCP error without raising a protocol error."""
+    return McpDispatchResult(
+        value=[TextContent(type="text", text=message)],
+        is_error=True,
+    )
+
 
 # A report whose serialized ``reports`` payload exceeds this is not attached
 # in full as structuredContent — the agent still gets the text card, and a
@@ -1767,7 +1795,7 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
 def _with_structured_report(
     content: list[TextContent],
     report: dict[str, Any] | None,
-) -> McpToolContent:
+) -> McpRawContent:
     """Attach *report* as structuredContent when possible, else pass through.
 
     The text blocks are returned untouched either way — structured output is
@@ -1779,6 +1807,66 @@ def _with_structured_report(
     return content, structured
 
 
+def _append_stream_section(
+    parts: list[str],
+    *,
+    label: str,
+    stream: str,
+    limit: int,
+    mark_truncation: bool,
+) -> tuple[str, bool]:
+    """Append one displayed stream tail and return its dedupe inputs."""
+    if not stream:
+        return "", False
+    truncated = len(stream) > limit
+    shown = stream[-limit:] if truncated else stream
+    rendered = shown
+    if truncated and mark_truncation:
+        rendered = f"... (truncated, showing last {limit} bytes)\n{shown}"
+    parts.append(f"\n--- {label} ---\n{rendered}")
+    return shown, truncated
+
+
+def _append_report_section(
+    parts: list[str],
+    report: dict[str, Any] | None,
+    *,
+    shown_stdout: str,
+    stdout_truncated: bool,
+    shown_stderr: str,
+    stderr_truncated: bool,
+) -> None:
+    """Append durable report fields not already visible in displayed streams."""
+    if not report:
+        return
+    report_lines = []
+    for field in ("status", "summary", "errors", "report_text"):
+        if field not in report:
+            continue
+        if field == "report_text":
+            report_text = str(report[field]).strip()
+            shown_in_stdout = _contains_whole_line_block(
+                shown_stdout,
+                report_text,
+                leading_truncated=stdout_truncated,
+            )
+            shown_in_stderr = _contains_whole_line_block(
+                shown_stderr,
+                report_text,
+                leading_truncated=stderr_truncated,
+            )
+            if shown_in_stdout or shown_in_stderr:
+                continue
+        report_lines.append(f"{field}: {report[field]}")
+    detail = report.get("detail")
+    if isinstance(detail, dict):
+        for field in ("reason", "error"):
+            if detail.get(field):
+                report_lines.append(f"detail.{field}: {detail[field]}")
+    if report_lines:
+        parts.append("\n--- report ---\n" + "\n".join(report_lines))
+
+
 def _format_mcp_tool_result(
     exit_code: int,
     stdout: str,
@@ -1788,48 +1876,28 @@ def _format_mcp_tool_result(
     """Format hybrid MCP tool result (stdout + report fields)."""
     parts = [f"EXIT_CODE: {exit_code}"]
 
-    max_stdout = _max_stdout_bytes()
-    max_stderr = _max_stderr_bytes()
-
-    # The stdout text as actually shown (post-truncation) — the dedupe check
-    # below must run against this, not the full stdout.
-    shown_stdout = ""
-    if stdout:
-        shown_stdout = stdout[-max_stdout:] if len(stdout) > max_stdout else stdout
-        rendered = shown_stdout
-        if len(stdout) > max_stdout:
-            rendered = f"... (truncated, showing last {max_stdout} bytes)\n" + rendered
-        parts.append(f"\n--- stdout ---\n{rendered}")
-
-    if stderr:
-        truncated = stderr[-max_stderr:] if len(stderr) > max_stderr else stderr
-        parts.append(f"\n--- stderr ---\n{truncated}")
-
-    if report:
-        report_lines = []
-        for field in ("status", "summary", "errors", "report_text"):
-            if field not in report:
-                continue
-            if field == "report_text":
-                # Heavy endpoints print their report_text to stdout AND return it
-                # in report.json, so it would appear verbatim in both sections.
-                # Skip the report copy when it already survives in the stdout
-                # we actually show. Deliberate subtlety: containment is checked
-                # against the TRUNCATED stdout — if truncation cut the summary
-                # out of stdout, this check fails and the report section keeps
-                # it, so the summary survives truncation exactly when needed.
-                # Strip both sides so a trailing newline can't defeat the match.
-                report_text = str(report[field]).strip()
-                if report_text and report_text in shown_stdout.strip():
-                    continue
-            report_lines.append(f"{field}: {report[field]}")
-        detail = report.get("detail")
-        if isinstance(detail, dict):
-            for field in ("reason", "error"):
-                if detail.get(field):
-                    report_lines.append(f"detail.{field}: {detail[field]}")
-        if report_lines:
-            parts.append("\n--- report ---\n" + "\n".join(report_lines))
+    shown_stdout, stdout_truncated = _append_stream_section(
+        parts,
+        label="stdout",
+        stream=stdout,
+        limit=_max_stdout_bytes(),
+        mark_truncation=True,
+    )
+    shown_stderr, stderr_truncated = _append_stream_section(
+        parts,
+        label="stderr",
+        stream=stderr,
+        limit=_max_stderr_bytes(),
+        mark_truncation=False,
+    )
+    _append_report_section(
+        parts,
+        report,
+        shown_stdout=shown_stdout,
+        stdout_truncated=stdout_truncated,
+        shown_stderr=shown_stderr,
+        stderr_truncated=stderr_truncated,
+    )
 
     return "\n".join(parts)
 
@@ -2219,9 +2287,21 @@ def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
     if alert is None:
         return content
     block = TextContent(type="text", text=f"HEALTH WARNING: {alert}")
+    if isinstance(content, McpDispatchResult):
+        return McpDispatchResult(
+            value=_prepend_health_block(content.value, block),
+            is_error=content.is_error,
+        )
+    return _prepend_health_block(content, block)
+
+
+def _prepend_health_block(content: object, block: TextContent) -> McpRawContent:
+    """Prepend one health block while retaining optional structured content."""
     if isinstance(content, tuple):
         blocks, structured = content
         return [block, *blocks], structured
+    if not isinstance(content, list):
+        raise TypeError("MCP tool returned content that is not a list")
     return [block, *content]
 
 
@@ -2512,17 +2592,13 @@ def _progress_for_run_id(endpoint: str, run_id: str) -> dict[str, Any] | None:
     reports = _endpoint_report_dirs()
     if not reports:
         return None
-    checkpoints = sorted(
-        (path for root in reports for path in root.glob(f"{endpoint}/*/progress.json")),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    for path in checkpoints:
-        report = _read_report_json(path)
-        if report is not None and report.get("run_id") == run_id:
-            report["partial"] = not bool(report.get("complete"))
-            return report
-    return None
+    found = read_progress_for_run(reports, endpoint, run_id)
+    if found is None:
+        return None
+    _path, report = found
+    pending = report.get("pending_targets")
+    report["partial"] = report.get("phase") != "complete" or bool(pending)
+    return report
 
 
 def _job_report(rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:
@@ -2659,6 +2735,7 @@ class _JobManager:
         *,
         timed_out: bool,
     ) -> None:
+        repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
         jobrec.write_record(rec, root=self._jobs_root)
@@ -2709,6 +2786,7 @@ class _JobManager:
                 timeout=timeout,
                 on_spawn=lambda pid: self._stamp_pid(rec, pid),
                 env=_endpoint_subprocess_env(
+                    BOOLEY_RUN_ID=rec.run_id,
                     BOOLEY_DISPLAY_INVOCATION_ID=rec.run_id,
                     BOOLEY_SLOT_TIMEOUT_S=str(timeout),
                 ),
@@ -2779,6 +2857,7 @@ class _JobManager:
             self._lifetime.mark_mcp_endpoint_end()
 
     def _record_user_cancellation(self, rec: jobrec.JobRecord) -> None:
+        repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
         self._results[rec.run_id] = (
@@ -2877,20 +2956,24 @@ class _JobManager:
             await asyncio.wait({task}, timeout=timeout)
         return task.done()
 
-    def result_text(self, run_id: str) -> str:
-        """Render a finished job's result exactly like the synchronous path."""
+    def _result_parts(
+        self,
+        run_id: str,
+    ) -> tuple[int, str, str, dict[str, Any] | None, bool]:
+        """Resolve one terminal Job into authoritative rendering inputs."""
         rec = jobrec.read_record(run_id, root=self._jobs_root)
         report, report_fresh = _job_report(rec)
         finished = self._results.get(run_id)
         if finished is not None:
             exit_code, stdout, stderr, _timed_out = finished
-            return _format_mcp_tool_result(exit_code, stdout, stderr, report)
+            return exit_code, stdout, stderr, report, report_fresh
         if rec is not None and rec.status == jobrec.STATUS_CANCELLED:
-            return _format_mcp_tool_result(
+            return (
                 130,
                 "",
                 f"CANCELLED: job {run_id} was stopped by request.",
                 report,
+                report_fresh,
             )
         # Terminal-from-disk (server restarted): no captured stdout/stderr.
         exit_code = rec.exit_code if rec and rec.exit_code is not None else None
@@ -2903,7 +2986,12 @@ class _JobManager:
             exit_code = report["exit_code"]
         if exit_code is None:
             exit_code = 2
-        return _format_mcp_tool_result(exit_code, "", "", report)
+        return exit_code, "", "", report, report_fresh
+
+    def result_text(self, run_id: str) -> str:
+        """Render a finished job's result exactly like the synchronous path."""
+        exit_code, stdout, stderr, report, _report_fresh = self._result_parts(run_id)
+        return _format_mcp_tool_result(exit_code, stdout, stderr, report)
 
     def result_content(self, run_id: str) -> McpToolContent:
         """``result_text`` as MCP content, with structuredContent attached.
@@ -2913,10 +3001,15 @@ class _JobManager:
         the run's outcome, unlike the text card, which may show a non-fresh
         report with its caveats spelled out.
         """
-        content = [TextContent(type="text", text=self.result_text(run_id))]
-        rec = jobrec.read_record(run_id, root=self._jobs_root)
-        report, report_fresh = _job_report(rec)
-        return _with_structured_report(content, report if report_fresh else None)
+        exit_code, stdout, stderr, report, report_fresh = self._result_parts(run_id)
+        content = [
+            TextContent(
+                type="text",
+                text=_format_mcp_tool_result(exit_code, stdout, stderr, report),
+            )
+        ]
+        rendered = _with_structured_report(content, report if report_fresh else None)
+        return _dispatch_result(rendered, is_error=exit_code != 0)
 
 
 # Re-check cadence while long-polling a disk-only (adopted) job. Each check
@@ -2924,7 +3017,11 @@ class _JobManager:
 _DISK_POLL_TICK_SECONDS = 5.0
 
 
-async def _poll_from_disk(run_id: str, jobs: _JobManager, wait_seconds: float = 0.0) -> str:
+async def _poll_from_disk(
+    run_id: str,
+    jobs: _JobManager,
+    wait_seconds: float = 0.0,
+) -> McpToolContent:
     """Resolve a poll for a job not tracked in this server, from the disk record.
 
     Honors the long-poll budget: an adopted job (submitted by a previous
@@ -2938,16 +3035,16 @@ async def _poll_from_disk(run_id: str, jobs: _JobManager, wait_seconds: float = 
     while True:
         rec = jobrec.read_record(run_id, root=session_jobs_dir())
         if rec is None:
-            return (
+            return _error_result(
                 f"Unknown run_id {run_id!r}. It may belong to a different project "
                 f"run, or the job record has been cleaned up."
             )
         status = jobrec.derive_status(rec, is_pid_alive)
         if status != jobrec.STATUS_RUNNING:
-            return jobs.result_text(run_id)
+            return jobs.result_content(run_id)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return _format_job_running_poll(run_id)
+            return [TextContent(type="text", text=_format_job_running_poll(run_id))]
         await asyncio.sleep(min(_DISK_POLL_TICK_SECONDS, remaining))
 
 
@@ -2964,18 +3061,13 @@ async def _dispatch_poll(
     raw = arguments.get("run_id")
     run_id = raw.strip() if isinstance(raw, str) else ""
     if not run_id:
-        return [
-            TextContent(
-                type="text",
-                text="Provide a 'run_id' (returned by an endpoint that reported RUNNING).",
-            )
-        ]
+        return _error_result("Provide a 'run_id' (returned by an endpoint that reported RUNNING).")
     wait_budget = _requested_poll_wait_seconds(arguments)
     finished = await jobs.wait(run_id, wait_budget)
     if finished is None:
         # Not tracked here (previous server generation): long-poll the durable
         # record with the same budget instead of answering instantly.
-        return [TextContent(type="text", text=await _poll_from_disk(run_id, jobs, wait_budget))]
+        return await _poll_from_disk(run_id, jobs, wait_budget)
     if finished:
         return jobs.result_content(run_id)
     return _running_poll_content(run_id)
@@ -3191,7 +3283,7 @@ async def _attach_to_job(
     if finished is None:
         # Adopted job (no in-memory task): long-poll the durable record with
         # the same inline budget a fresh submit would have waited.
-        return [TextContent(type="text", text=await _poll_from_disk(run_id, jobs, inline_wait))]
+        return await _poll_from_disk(run_id, jobs, inline_wait)
     if finished:
         return jobs.result_content(run_id)
     return [TextContent(type="text", text=_format_job_attached(name, run_id))]
@@ -3301,14 +3393,14 @@ async def _dispatch_booley_mcp_tool(
     """
     work_dir_error = _validate_work_dir(arguments.get("work_dir"))
     if work_dir_error is not None:
-        return [TextContent(type="text", text=work_dir_error)]
+        return _error_result(work_dir_error)
 
     cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts)
 
     try:
         mcp_tool_timeout = _mcp_tool_timeout_seconds(name, arguments, mcp_tool_def)
     except ValueError as exc:
-        return [TextContent(type="text", text=f"ERROR: invalid Flow timeout: {exc}")]
+        return _error_result(f"ERROR: invalid Flow timeout: {exc}")
     logger.info("Dispatching %s (timeout=%ds): %s", name, mcp_tool_timeout, " ".join(cmd))
 
     if name in _ASYNC_JOB_MCP_TOOLS:
@@ -3328,7 +3420,8 @@ async def _dispatch_booley_mcp_tool(
     content = [
         TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr, report))
     ]
-    return _with_structured_report(content, report)
+    rendered = _with_structured_report(content, report)
+    return _dispatch_result(rendered, is_error=exit_code != 0)
 
 
 def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> int:

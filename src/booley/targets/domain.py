@@ -46,6 +46,10 @@ class IncompatibleTargetError(FuseSocError):
     """A Target exists but the requested Booley Flow cannot drive it."""
 
 
+class DuplicateTargetError(FuseSocError):
+    """Two authored selectors resolve to the same canonical Target."""
+
+
 class ForeignTargetHandleError(FuseSocError):
     """A Target handle belongs to another Project or catalog snapshot."""
 

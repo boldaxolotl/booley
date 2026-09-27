@@ -108,6 +108,20 @@ def test_acceptance_observation_rejects_invalid_values(field: str, value: object
         facts._validate_observation(observation, 0)
 
 
+@pytest.mark.parametrize("tests", [("smoke", "smoke"), (None, "default")])
+def test_acceptance_facts_reject_duplicate_observation_tests(
+    tests: tuple[str | None, str | None],
+) -> None:
+    document = _facts()
+    first = _observation()
+    second = _observation()
+    first["test"], second["test"] = tests
+    document["observations"] = [first, second]
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="repeat an observation test"):
+        facts.decode_acceptance_facts(canonical_json_bytes(document))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

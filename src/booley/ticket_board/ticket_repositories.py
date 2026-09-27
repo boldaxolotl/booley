@@ -31,6 +31,9 @@ from booley.runtime.project_repositories import (
     common_git_dir as _common_git_dir,
 )
 from booley.runtime.project_repositories import (
+    inspect_symbolic_branch as _inspect_symbolic_branch,
+)
+from booley.runtime.project_repositories import (
     parse_porcelain_z as _parse_porcelain_z,
 )
 from booley.runtime.project_repositories import (
@@ -108,7 +111,8 @@ class TicketWorkspace:
             detail = (result.stderr or result.stdout).strip()
             suffix = f": {detail}" if detail else ""
             raise TicketWorkspaceError(
-                f"paired project destination {ref!r} does not exist as a local branch{suffix}"
+                f"paired project destination {ref!r} does not exist as a local branch{suffix}; "
+                "set project_destination_ref explicitly"
             )
         return ref
 
@@ -463,10 +467,10 @@ def _require_clean_source(source: Path) -> None:
 
 
 def _current_branch(source: Path) -> str:
-    result = _git(source, "symbolic-ref", "--quiet", "--short", "HEAD")
-    if result.returncode != 0 or not result.stdout.strip():
+    branch = _inspect_symbolic_branch(source).branch
+    if branch is None:
         raise TicketWorkspaceError("project repository must have a checked-out base branch")
-    return result.stdout.strip()
+    return branch
 
 
 def _ticket_base_branch(source: Path, requested: str) -> str:

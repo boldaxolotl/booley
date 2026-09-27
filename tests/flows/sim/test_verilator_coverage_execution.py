@@ -24,6 +24,7 @@ from booley.flows.sim.verilator_coverage import (
     CoverageTarget,
     SelectedCoverageTest,
     SimulationBuildRequest,
+    SimulationBuildResult,
     SimulationBuildVariant,
     SimulationRunRequest,
 )
@@ -32,6 +33,18 @@ from booley.flows.sim.verilator_coverage_execution import (
     prepare_coverage_collection,
 )
 from booley.targets.catalog import TargetCatalog
+
+
+def _build_coverage(
+    execution: VerilatorCoverageExecution, target: CoverageTarget
+) -> SimulationBuildResult:
+    return execution.build(
+        SimulationBuildRequest(
+            target,
+            SimulationBuildVariant(trace=False, coverage=True),
+            VERILATOR_COVERAGE_INSTRUMENTATION,
+        )
+    )
 
 
 def _write_target(root: Path, *, custom_main: bool = False) -> None:
@@ -99,13 +112,7 @@ def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     tmp_path: Path, monkeypatch
 ) -> None:
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
-    build = execution.build(
-        SimulationBuildRequest(
-            target,
-            SimulationBuildVariant(trace=False, coverage=True),
-            VERILATOR_COVERAGE_INSTRUMENTATION,
-        )
-    )
+    build = _build_coverage(execution, target)
     run = execution.run(_run_request(target, raw_path))
 
     assert build.success is True
@@ -118,15 +125,56 @@ def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     assert run.verdict == "pass"
 
 
+def test_build_reports_unpinned_collector_version(tmp_path: Path, monkeypatch) -> None:
+    execution, target, _raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    captured["version"] = SubprocessResult(
+        returncode=0,
+        stdout="Verilator 5.050 2026-08-31 rev UNKNOWN.REV\n",
+    )
+
+    build = _build_coverage(execution, target)
+
+    expected = (
+        "Verilator 5.050 is not the pinned coverage collector "
+        f"(expected {PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}); "
+        "rebuild the Sandbox image (booley session refresh)"
+    )
+    assert build.success is False
+    assert expected in build.output
+
+
+def test_build_reports_when_collector_version_cannot_be_determined(
+    tmp_path: Path, monkeypatch
+) -> None:
+    execution, target, _raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    captured["version"] = SubprocessResult(returncode=0, stdout="unexpected output\n")
+
+    build = _build_coverage(execution, target)
+
+    assert build.success is False
+    assert "Verilator coverage collector version could not be determined" in build.output
+    assert f"expected {PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}" in build.output
+
+
+def test_build_reports_collector_provenance_mismatch(tmp_path: Path, monkeypatch) -> None:
+    execution, target, _raw_path, _captured = _execution_fixture(tmp_path, monkeypatch)
+    (tmp_path / "BOOLEY-SOURCE.txt").write_text(
+        f"release={PINNED_VERILATOR.tag}\nsource_revision={'0' * 40}\n",
+        encoding="utf-8",
+    )
+
+    build = _build_coverage(execution, target)
+
+    assert build.success is False
+    assert "Verilator coverage collector provenance does not match the pinned collector" in (
+        build.output
+    )
+    assert f"expected {PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}" in build.output
+
+
 def test_coverage_image_changed_after_build_cannot_launch(tmp_path: Path, monkeypatch) -> None:
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
-    build = execution.build(
-        SimulationBuildRequest(
-            target,
-            SimulationBuildVariant(trace=False, coverage=True),
-            VERILATOR_COVERAGE_INSTRUMENTATION,
-        )
-    )
+    build = _build_coverage(execution, target)
     assert build.success
     image = captured["prepare"]["build_root"] / "Vcounter_tb"
     image.write_text("changed image", encoding="utf-8")
@@ -212,7 +260,9 @@ def _fake_adapter(captured):
 def _fake_invoke(captured, raw_path: Path):
     def fake_invoke(command, *, timeout):
         if command == ["verilator", "--version"]:
-            return SubprocessResult(returncode=0, stdout="Verilator 5.052 2026-09-05\n")
+            return captured.get("version") or SubprocessResult(
+                returncode=0, stdout="Verilator 5.052 2026-09-05\n"
+            )
         script = command[2]
         if "BOOLEY_BUILD_STAGE" in script:
             token = re.search(r"token=([0-9a-f]+)", script).group(1)
@@ -270,13 +320,7 @@ def test_batch_timeout_preserves_authoritative_per_test_verdict(
     tmp_path: Path, monkeypatch, verdict: str
 ) -> None:
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
-    assert execution.build(
-        SimulationBuildRequest(
-            target,
-            SimulationBuildVariant(trace=False, coverage=True),
-            VERILATOR_COVERAGE_INSTRUMENTATION,
-        )
-    ).success
+    assert _build_coverage(execution, target).success
     captured["result"] = AdapterResult(
         passed=False,
         inconclusive=True,
@@ -296,13 +340,7 @@ def test_missing_per_test_evidence_is_rejected_without_losing_process_timeout(
     tmp_path: Path, monkeypatch, process_timeout: bool
 ) -> None:
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
-    assert execution.build(
-        SimulationBuildRequest(
-            target,
-            SimulationBuildVariant(trace=False, coverage=True),
-            VERILATOR_COVERAGE_INSTRUMENTATION,
-        )
-    ).success
+    assert _build_coverage(execution, target).success
     captured["result"] = AdapterResult(
         passed=False,
         inconclusive=True,

@@ -1446,6 +1446,53 @@ class TestFailureCapture:
         assert "default: log:" in result.report_text
 
 
+def test_completed_target_survives_later_matrix_crash(tmp_path: Path, state_file: Path) -> None:
+    flow = FpgaImplFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "fpga_a,fpga_b",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    flow.read_state()
+    flow._target_pairs = ()
+    metrics = FpgaMetrics(lut_count=10, ff_count=5)
+    calls = 0
+
+    def run_one(_target: str) -> FpgaMetrics:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return metrics
+        raise RuntimeError("simulated outer interruption")
+
+    with (
+        patch.object(flow, "_prepare_target_pairs", return_value=None),
+        patch.object(
+            flow,
+            "_plan_fpga_implementation",
+            return_value=SimpleNamespace(aggregate_errors=[]),
+        ),
+        patch.object(flow, "_flow_enabled", return_value=True),
+        patch.object(flow, "_run_baseline_configs", return_value=({}, None)),
+        patch.object(flow, "_run_single_target", side_effect=run_one),
+        patch.object(flow, "_persist_target_outcome"),
+        pytest.raises(RuntimeError, match="outer interruption"),
+    ):
+        flow._run()
+
+    progress_path = next((tmp_path / "reports/fpga").glob("*/progress.json"))
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert progress["complete"] is True
+    assert progress["phase"] == "aborted"
+    assert progress["completed_targets"] == ["fpga_a"]
+    assert progress["pending_targets"] == ["fpga_b"]
+
+
 class TestArtifactPointers:
     """The ``artifacts`` block: present for the run that owns the files,
     absent for the baseline whose files no longer exist."""

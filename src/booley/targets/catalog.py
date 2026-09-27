@@ -19,6 +19,7 @@ from booley.targets.domain import (
     # Intentional private construction key: only this catalog creates handles.
     _HANDLE_FACTORY_KEY,  # pyright: ignore[reportPrivateUsage]
     TARGET_AWARE_FLOWS,
+    DuplicateTargetError,
     ForeignTargetHandleError,
     IncompatibleTargetError,
     StaleTargetCatalogError,
@@ -38,6 +39,45 @@ def _doctor_private_authority() -> bool:
 class _OperationalState:
     inspector: _TargetSourceInspector | None = None
     documents: dict[Path, dict[str, Any]] = field(default_factory=lambda: {})
+
+
+@dataclass(frozen=True)
+class TargetCompileSurface:
+    """A resolved Target's immutable authored and prepared compile paths."""
+
+    project_root: Path
+    authored_paths: tuple[Path, ...]
+    operational_paths: tuple[Path, ...]
+    optional_paths: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
+class PreparedTargetSelection:
+    """One catalog snapshot and its ordered selection for an authored request."""
+
+    catalog: TargetCatalog
+    handles: tuple[TargetHandle, ...]
+    target_arg: str
+
+    @classmethod
+    def resolve(
+        cls,
+        project_root: Path | str,
+        target_arg: str,
+        *,
+        for_flow: str | None = None,
+    ) -> PreparedTargetSelection:
+        """Resolve an authored selection once against one catalog snapshot."""
+        catalog = TargetCatalog.build(project_root)
+        handles = catalog.select_many(target_arg, for_flow=for_flow)
+        return cls(catalog, handles, target_arg)
+
+    def matches(self, project_root: Path | str, target_arg: str) -> bool:
+        """Return whether this selection belongs to the same authored request."""
+        return (
+            self.catalog.project_root == Path(project_root).resolve()
+            and self.target_arg == target_arg
+        )
 
 
 @dataclass(frozen=True)
@@ -127,7 +167,17 @@ class TargetCatalog:
     ) -> tuple[TargetHandle, ...]:
         """Resolve a comma-separated endpoint Target argument."""
         tokens = [token.strip() for token in (target_arg or "").split(",") if token.strip()]
-        return tuple(self.select(token, for_flow=for_flow) for token in tokens)
+        handles = tuple(self.select(token, for_flow=for_flow) for token in tokens)
+        first_selector_by_identity: dict[str, str] = {}
+        for token, handle in zip(tokens, handles, strict=True):
+            first = first_selector_by_identity.get(handle.identity)
+            if first is not None:
+                raise DuplicateTargetError(
+                    f"Target selector {token!r} resolves to {handle.identity!r}, "
+                    f"which was already selected by {first!r}"
+                )
+            first_selector_by_identity[handle.identity] = token
+        return handles
 
     def declaration_count(self, name: str, *, include_private: bool = False) -> int:
         """Count declarations without granting handles to hidden Doctor Targets."""
@@ -162,6 +212,41 @@ class TargetCatalog:
         )
         self._require_fresh()
         return closure
+
+    def compile_inputs(self, handle: TargetHandle) -> TargetCompileSurface:
+        """Resolve one immutable Target-scoped compile-input set."""
+        self._require_handle(handle)
+        self._require_fresh()
+        inspection = self.inspect(handle)
+        closure = self.core_closure((handle,)) or frozenset()
+        inspector = self._state.inspector
+        assert inspector is not None, "inspection must prepare the shared library view"
+        operational = inspector.operational_cores(closure)
+        selected = tuple(
+            sorted(
+                {
+                    path if path.is_absolute() else self.project_root / path
+                    for item in inspection.inputs
+                    if (path := Path(item.path))
+                }
+            )
+        )
+        projection_config = self.project_root / ".booley_project" / "booley.toml"
+        self._require_fresh()
+        return TargetCompileSurface(
+            project_root=self.project_root,
+            authored_paths=tuple(sorted({*selected, *closure})),
+            operational_paths=tuple(
+                sorted(
+                    {
+                        operational_path
+                        for authored_path, operational_path in operational
+                        if operational_path != authored_path
+                    }
+                )
+            ),
+            optional_paths=(projection_config,),
+        )
 
     def _visible(self, refs: tuple[TargetRef, ...]) -> tuple[TargetRef, ...]:
         if self._doctor_private:
@@ -229,4 +314,4 @@ def _canonical_flow(flow: str | None) -> str | None:
     return result
 
 
-__all__ = ["TargetCatalog"]
+__all__ = ["TargetCatalog", "TargetCompileSurface"]

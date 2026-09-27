@@ -216,6 +216,81 @@ def test_authoring_path_allows_untracked_scoped_empty_placeholder(
     )
 
 
+def test_staged_tree_captures_ignored_controls_and_skips_lexical_roots(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "-q", "-b", "main")
+    _git(repository, "config", "user.name", "Test")
+    _git(repository, "config", "user.email", "test@example.invalid")
+    (repository / ".gitignore").write_text("coverage-waivers/\nproofs/\n", encoding="utf-8")
+    (repository / "README.md").write_text("baseline\n", encoding="utf-8")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-qm", "baseline")
+    parent = _git(repository, "rev-parse", "HEAD")
+    approval = repository / "coverage-waivers/rtl/counter.sv.toml"
+    approval.parent.mkdir(parents=True)
+    approval.write_text("approval\n", encoding="utf-8")
+    proof = repository / "proofs/counter.sby"
+    proof.parent.mkdir()
+    proof.write_text("proof\n", encoding="utf-8")
+    (repository / "empty-waivers").mkdir()
+
+    tree = workspace_ops._staged_tree(
+        repository,
+        ["coverage-waivers", "proofs/counter.sby", "empty-waivers", "missing-waivers"],
+        parent,
+    )
+
+    names = _git(repository, "ls-tree", "-r", "--name-only", tree).splitlines()
+    assert "coverage-waivers/rtl/counter.sv.toml" in names
+    assert "proofs/counter.sby" in names
+    assert "empty-waivers" not in names
+    assert "missing-waivers" not in names
+
+
+@pytest.mark.parametrize(
+    ("path", "manifest"),
+    [
+        ("coverage-waivers/rtl/counter.sv.toml", {"coverage-waivers"}),
+        ("proofs/counter.sby", {"proofs/counter.sby"}),
+    ],
+)
+def test_untracked_waiver_controls_are_valid_authoring_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    manifest: set[str],
+) -> None:
+    candidate = tmp_path / path
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("policy input\n", encoding="utf-8")
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda *_args, **_kwargs: _completed("git", returncode=1),
+    )
+
+    assert workspace_ops._is_authoring_path(tmp_path, path, manifest, [])
+
+
+def test_authoring_manifest_discovery_failure_is_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        workspace_ops,
+        "acceptance_control_paths",
+        lambda _root: (_ for _ in ()).throw(ValueError("unsafe waiver config")),
+    )
+
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError,
+        match=r"protected-input discovery failed.*unsafe waiver config",
+    ):
+        workspace_ops._local_manifest_paths(tmp_path, project_repository=False)
+
+
 def test_project_authoring_path_uses_outer_scope_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

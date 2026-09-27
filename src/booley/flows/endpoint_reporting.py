@@ -69,8 +69,9 @@ class _StdoutWitness:
 
     Several Booley Flows end ``_run()`` with ``print(report_text)`` — the verdict
     block belongs on stdout, where a human running ``booley flow`` and an MCP
-    wrapper both see it. ``_post_run`` *also* prints ``report_text``, on stderr,
-    so a failure's reason is never trapped in a report.json that may not exist.
+    wrapper both see it. Completion publication also emits an otherwise unseen
+    failure ``report_text`` on stderr, so its reason is never trapped in a
+    report.json that may not exist.
     On any console that merges the two streams every FAIL path therefore
     rendered its whole verdict block twice (fpu F-28).
 
@@ -152,19 +153,32 @@ class _StdoutWitness:
         ``print(report_text)`` this exists for (F-28), while a mention inside a
         longer line no longer silences the diagnostic.
         """
-        needle = (text or "").strip()
-        if not needle:
-            return False
-        blob = "".join(self._chunks)
-        start = 0
-        while (idx := blob.find(needle, start)) >= 0:
-            starts_line = blob[idx - 1] == "\n" if idx else not self._truncated
-            end = idx + len(needle)
-            ends_line = end == len(blob) or blob[end] == "\n"
-            if starts_line and ends_line:
-                return True
-            start = idx + 1
+        return _contains_whole_line_block(
+            "".join(self._chunks),
+            text,
+            leading_truncated=self._truncated,
+        )
+
+
+def _contains_whole_line_block(
+    blob: str,
+    text: str,
+    *,
+    leading_truncated: bool = False,
+) -> bool:
+    """Return whether *text* appears in *blob* as complete lines."""
+    needle = (text or "").strip()
+    if not needle:
         return False
+    start = 0
+    while (idx := blob.find(needle, start)) >= 0:
+        starts_line = blob[idx - 1] == "\n" if idx else not leading_truncated
+        end = idx + len(needle)
+        ends_line = end == len(blob) or blob[end] == "\n"
+        if starts_line and ends_line:
+            return True
+        start = idx + 1
+    return False
 
 
 def emit_progress(endpoint: EndpointState, line: str) -> None:
@@ -240,6 +254,27 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     if report_dir is None:
         return None
     report_dir.mkdir(parents=True, exist_ok=True)
+    _refresh_report_detail(endpoint, result)
+    report = _report_document(endpoint, result)
+    inv_dir = endpoint._reserved_invocation_dir
+    if inv_dir is None:
+        inv_dir = endpoint._next_invocation_dir(report_dir)
+        endpoint._reserved_invocation_dir = inv_dir
+    inv_path = inv_dir / "report.json"
+    atomic_write_json(inv_path, report)
+    flat_path = report_dir / f"{endpoint.name}.json"
+    atomic_write_json(flat_path, report)
+    endpoint._reserved_invocation_dir = None
+    return inv_path
+
+
+def _refresh_report_detail(endpoint: EndpointState, result: EndpointOutcome) -> None:
+    refresh = getattr(getattr(endpoint, "flow", endpoint), "refresh_campaign_report_detail", None)
+    if callable(refresh):
+        refresh(result)
+
+
+def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[str, Any]:
     elapsed_s = round(time.monotonic() - endpoint._start_time, 2)
     passed = result.exit_code == EXIT_SUCCESS
     identity_key = "flow" if endpoint.endpoint_kind == "flow" else "mcp_tool"
@@ -255,6 +290,8 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
         "elapsed_s": elapsed_s,
         "passed": passed,
     }
+    if endpoint.name == "sim":
+        report["$schema"] = "booley.simulation-report/v2"
     mode = result.detail.get("mode")
     if isinstance(mode, str) and mode:
         report["mode"] = mode
@@ -271,27 +308,20 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     if endpoint._raw_argv is not None:
         report["argv"] = endpoint._raw_argv
     if result.input_tokens or result.output_tokens:
-        report["usage"] = {
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
-            "cached_tokens": result.cached_tokens,
-            "cache_create_tokens": result.cache_create_tokens,
-            "cost_usd": round(result.cost_usd, 4),
-        }
+        report["usage"] = _report_usage(result)
     if result.report_text:
         report["report_text"] = result.report_text
-    # Per-invocation numbered report
-    inv_dir = endpoint._reserved_invocation_dir
-    if inv_dir is None:
-        inv_dir = endpoint._next_invocation_dir(report_dir)
-        endpoint._reserved_invocation_dir = inv_dir
-    inv_path = inv_dir / "report.json"
-    atomic_write_json(inv_path, report)
-    # Flat copy for backward compat
-    flat_path = report_dir / f"{endpoint.name}.json"
-    atomic_write_json(flat_path, report)
-    endpoint._reserved_invocation_dir = None
-    return inv_path
+    return report
+
+
+def _report_usage(result: EndpointOutcome) -> dict[str, object]:
+    return {
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+        "cached_tokens": result.cached_tokens,
+        "cache_create_tokens": result.cache_create_tokens,
+        "cost_usd": round(result.cost_usd, 4),
+    }
 
 
 def _warn_no_report_artifact(endpoint: EndpointState) -> None:
@@ -395,7 +425,7 @@ def _resolve_display_label(endpoint: EndpointState) -> str | None:
 
 
 def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float) -> None:
-    """Persist mutable run state and publish the report.
+    """Persist mutable run state and the structured report.
 
     The execution coordinator calls ``record_acceptance`` first. That step
     also runs ``_pre_save_hook`` so this timeline sees the final rather than
@@ -404,7 +434,6 @@ def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float)
     criteria_set = list(endpoint._pending_criteria_set or ())
     _persist_run_state(endpoint, result, duration, criteria_set)
     _publish_report(endpoint, result)
-    _publish_console_diagnosis(endpoint, result)
 
 
 def _publish_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
@@ -412,29 +441,19 @@ def _publish_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
         endpoint._warn_no_report_artifact()
 
 
-def _publish_console_diagnosis(endpoint: EndpointState, result: EndpointOutcome) -> None:
-    """Publish the endpoint verdict on the normal standalone console surface."""
-    # Human / standalone mode (no state file): the actionable diagnostic lives
-    # in report_text, which is only persisted to report.json when --report-dir
-    # is given. On failure that otherwise leaves a bare exit-1 with the real
-    # reason trapped in a file that may not exist. Surface it on stderr so a
-    # human — or an MCP wrapper that sees only stdout/stderr — gets the cause.
-    # Pre-state gate rejections exit before this point.
-    #
-    # Skip the echo whenever the endpoint already printed the same text on
-    # stdout. Callers commonly capture stdout/stderr separately and merge
-    # them afterward; keying suppression on a shared OS sink duplicated the
-    # complete verdict in that normal execution surface (Taxi F-32).
-    human_mode = endpoint._state is None or endpoint._state._file_path is None
+def _publish_console_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
+    """Publish one CLI verdict without coupling it to durable persistence."""
+    if not endpoint._console_publication_requested or not result.report_text:
+        return
     witness = endpoint._stdout_witness
     already_shown = witness is not None and witness.saw(result.report_text)
-    if human_mode and result.report_text and not already_shown:
-        failed = result.exit_code != EXIT_SUCCESS
-        if failed:
-            print(result.report_text, file=sys.stderr, flush=True)
-        elif endpoint.announce_success_report:
-            # A passing run: put the verdict on stdout so it is not silent.
-            print(result.report_text, flush=True)
+    if already_shown:
+        return
+    if result.exit_code != EXIT_SUCCESS:
+        print(result.report_text, file=sys.stderr, flush=True)
+        return
+    if endpoint.endpoint_kind == "flow" or endpoint.announce_success_report:
+        print(result.report_text, flush=True)
 
 
 def _persist_run_state(
@@ -487,24 +506,27 @@ def _finish_main(
         if not non_persisting_dry_run:
             _finish_publication(endpoint, result, duration, acceptance_recorded)
     finally:
-        endpoint._pending_criteria_set = None
         try:
-            _write_display_event(
-                _endpoint_end_event(
-                    endpoint.name,
-                    display_target,
-                    result,
-                    duration,
-                    display_label=display_label,
-                    dry_run=dry_run,
-                    identity=endpoint._display_identity,
-                ),
-            )
-        except Exception:
-            if result.exit_code != EXIT_SUCCESS:
-                logger.debug("Failed to publish endpoint-end event", exc_info=True)
-            else:
-                raise
+            endpoint._publish_console_report(result)
+        finally:
+            endpoint._pending_criteria_set = None
+            try:
+                _write_display_event(
+                    _endpoint_end_event(
+                        endpoint.name,
+                        display_target,
+                        result,
+                        duration,
+                        display_label=display_label,
+                        dry_run=dry_run,
+                        identity=endpoint._display_identity,
+                    ),
+                )
+            except Exception:
+                if result.exit_code != EXIT_SUCCESS:
+                    logger.debug("Failed to publish endpoint-end event", exc_info=True)
+                else:
+                    raise
     return result.exit_code
 
 
@@ -515,7 +537,7 @@ def _finish_publication(
     acceptance_recorded: bool,
 ) -> None:
     if not acceptance_recorded:
-        _publish_report_and_console(endpoint, result)
+        _publish_report_with_recovery(endpoint, result)
         return
     try:
         endpoint._post_run(result, duration)
@@ -525,15 +547,13 @@ def _finish_publication(
         _recover_report_publication(endpoint, result)
 
 
-def _publish_report_and_console(endpoint: EndpointState, result: EndpointOutcome) -> None:
+def _publish_report_with_recovery(endpoint: EndpointState, result: EndpointOutcome) -> None:
     try:
         _publish_report(endpoint, result)
     except Exception as exc:
         logger.debug("Endpoint report publication failed", exc_info=True)
         normalize_completion_error(result, exc, "publish report.json")
         _recover_report_publication(endpoint, result)
-        return
-    _publish_console_diagnosis(endpoint, result)
 
 
 def _recover_report_publication(endpoint: EndpointState, result: EndpointOutcome) -> None:
@@ -542,4 +562,3 @@ def _recover_report_publication(endpoint: EndpointState, result: EndpointOutcome
     except Exception as exc:
         logger.debug("Endpoint recovery report publication failed", exc_info=True)
         normalize_completion_error(result, exc, "publish report.json")
-    _publish_console_diagnosis(endpoint, result)

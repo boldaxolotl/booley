@@ -10,6 +10,7 @@ from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.implementation_report import build_fpga_implementation_report
 from booley.flows.implementation_publication import (
     ImplementationProgress,
+    ImplementationProgressRun,
     ImplementationPublisher,
     target_report_path,
     target_report_slug,
@@ -22,8 +23,10 @@ from booley.flows.implementation_report import (
     build_implementation_aggregate,
     build_implementation_report,
 )
+from booley.flows.progress_lifecycle import ProgressPublicationError
 from booley.flows.synth.flow import SynthMetrics
 from booley.flows.synth.implementation_report import build_synth_implementation_report
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
 
 def _context(**overrides) -> ImplementationContext:
@@ -359,3 +362,70 @@ def test_progress_uses_shared_shape(tmp_path: Path) -> None:
     assert payload["completed_targets"] == ["board"]
     assert payload["pending_targets"] == ["board_2"]
     assert payload[ENVELOPE_KEY]["results"]["board"]["metrics"]["lut_count"] == 10
+
+
+def test_progress_run_owns_start_and_complete_publication() -> None:
+    phases: list[tuple[str, bool]] = []
+
+    def publish(
+        _current: dict[str, object],
+        _baseline: dict[str, object],
+        phase: str,
+        _baseline_ref: str | None,
+        complete: bool,
+    ) -> None:
+        phases.append((phase, complete))
+
+    outcome = EndpointOutcome()
+    with ImplementationProgressRun("synth", publish) as run:
+        assert run.complete(outcome) is outcome
+
+    assert phases == [("starting", False), ("complete", True)]
+
+
+def test_progress_run_retains_outcome_when_terminal_publication_fails() -> None:
+    def publish(
+        _current: dict[str, object],
+        _baseline: dict[str, object],
+        phase: str,
+        _baseline_ref: str | None,
+        _complete: bool,
+    ) -> None:
+        if phase != "starting":
+            raise OSError("disk unavailable")
+
+    outcome = EndpointOutcome(report_text="existing report")
+    run = ImplementationProgressRun("fpga", publish)
+    run.__enter__()
+    with pytest.raises(ProgressPublicationError) as raised:
+        run.complete(outcome)
+
+    failed = run.publication_failure(raised.value)
+    assert failed is outcome
+    assert failed.exit_code == EXIT_ERROR
+    assert failed.detail["progress_error"] == "disk unavailable"
+    assert failed.report_text == "existing report"
+
+
+def test_progress_run_builds_report_for_publication_failure_without_outcome() -> None:
+    run = ImplementationProgressRun("synth", lambda *_args: None)
+
+    outcome = run.publication_failure(ProgressPublicationError("read-only filesystem"))
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert outcome.report_text == "synth: progress publication failed: read-only filesystem"
+
+
+def test_progress_without_invocation_directory_is_not_published(tmp_path: Path) -> None:
+    progress = ImplementationProgress(flow="synth", run_id="run-1", targets=("asic",))
+
+    assert ImplementationPublisher(tmp_path, tmp_path, None).publish_progress(progress) is None
+
+
+def test_progress_rejects_inconsistent_terminal_shape(tmp_path: Path) -> None:
+    progress = ImplementationProgress(
+        flow="synth", run_id="run-1", targets=("asic",), phase="complete", complete=False
+    )
+
+    with pytest.raises(ValueError, match="complete and phase disagree"):
+        ImplementationPublisher(tmp_path, tmp_path, tmp_path / "1").publish_progress(progress)

@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -73,7 +74,14 @@ from booley.harness.setup.line_endings import (
     reconcile_project_line_endings,
 )
 from booley.harness.setup.readiness import ProjectAudit
-from booley.runtime import auth_token, inspection, runtime_context, session_runtime, vaporview
+from booley.runtime import (
+    auth_token,
+    inspection,
+    project_repositories,
+    runtime_context,
+    session_runtime,
+    vaporview,
+)
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
@@ -585,6 +593,7 @@ def _run_project_phase(
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
         reporter.diagnostics(readiness.check_guidance(project, mode=mode))
+        _check_project_data_destination_branch(project.project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     _check_line_endings(
         project_root,
@@ -605,6 +614,120 @@ def _run_project_phase(
         repair=not read_only,
     )
     return docker_exe, project
+
+
+def _check_project_data_destination_branch(project_root: Path, reporter: _Reporter) -> None:
+    """Report whether implicit paired routing has a local Project-data destination."""
+    project_repo = project_repositories.resolve_inner_project_repo(project_root)
+    if project_repo is None:
+        try:
+            candidate = resolve_checkout_project_dir(project_root).resolve()
+        except (FileNotFoundError, OSError):
+            candidate = None
+        if candidate is not None and (candidate / ".git").is_dir():
+            probe = project_repositories.run_git(candidate, "rev-parse", "--show-toplevel")
+            _warn_project_data_branch_unreadable(
+                candidate,
+                "standalone repository discovery",
+                probe,
+                reporter,
+            )
+            return
+        reporter.skip_("Project-data branch alignment skipped - no standalone repository")
+        return
+    outer_branch = _outer_branch_for_project_data(project_root, project_repo, reporter)
+    if outer_branch is None:
+        return
+    expected_ref = f"refs/heads/{outer_branch}"
+    project_head = project_repositories.run_git(project_repo, "symbolic-ref", "--quiet", "HEAD")
+    if project_head.returncode == 0 and project_head.stdout.strip() == expected_ref:
+        reporter.pass_(f"Project-data destination branch matches outer branch {outer_branch!r}")
+        return
+    expected = project_repositories.run_git(
+        project_repo, "rev-parse", "--verify", "--quiet", f"{expected_ref}^{{commit}}"
+    )
+    if expected.returncode == 0:
+        reporter.pass_(f"Project-data destination branch {outer_branch!r} exists")
+        return
+    if expected.returncode != 1 or (expected.stderr or expected.stdout).strip():
+        _warn_project_data_branch_unreadable(
+            project_repo,
+            f"local branch probe for {expected_ref}",
+            expected,
+            reporter,
+        )
+    elif project_head.returncode != 0 and (project_head.stderr or project_head.stdout).strip():
+        _warn_project_data_branch_unreadable(
+            project_repo,
+            "symbolic HEAD",
+            project_head,
+            reporter,
+        )
+    else:
+        _warn_missing_project_data_branch(project_repo, outer_branch, project_head, reporter)
+
+
+def _warn_missing_project_data_branch(
+    project_repo: Path,
+    outer_branch: str,
+    project_head: subprocess.CompletedProcess[str],
+    reporter: _Reporter,
+) -> None:
+    message = (
+        f"Project-data repository {project_repo} has no local branch {outer_branch!r}; "
+        "implicit paired Tickets will fail"
+    )
+    command = shlex.join(["git", "-C", str(project_repo), "switch", "-c", outer_branch])
+    fix = (
+        f"commit or otherwise clean Project-data changes, then run `{command}` and rerun "
+        "Doctor; if branch names intentionally differ, set project_destination_ref explicitly"
+    )
+    if project_head.stdout.strip() == "refs/heads/master" and outer_branch == "main":
+        fix += "; to replace legacy master instead, a Human may choose `git branch -m main`"
+    _warning_sink(
+        reporter.warn_,
+        "project-data.destination-branch-missing",
+        subject="project-data",
+    )(message, fix)
+
+
+def _warn_project_data_branch_unreadable(
+    project_repo: Path,
+    probe: str,
+    result: subprocess.CompletedProcess[str],
+    reporter: _Reporter,
+) -> None:
+    """Report a failed Git probe without misclassifying it as branch absence."""
+    detail = (result.stderr or result.stdout).strip() or f"Git exited {result.returncode}"
+    _warning_sink(
+        reporter.warn_,
+        "project-data.destination-branch-unreadable",
+        subject="project-data",
+    )(
+        f"could not inspect {probe} for Project-data repository {project_repo}: {detail}",
+        f"inspect Git health at {project_repo} before relying on implicit paired routing",
+    )
+
+
+def _outer_branch_for_project_data(
+    project_root: Path,
+    project_repo: Path,
+    reporter: _Reporter,
+) -> str | None:
+    """Return the attached outer branch while distinguishing Git failure from detach."""
+    branch = project_repositories.inspect_symbolic_branch(project_root)
+    if branch.branch is not None:
+        return branch.branch
+    if branch.detail:
+        _warn_project_data_branch_unreadable(
+            project_repo,
+            "outer symbolic HEAD",
+            branch.result,
+            reporter,
+        )
+    else:
+        reporter.skip_("Project-data branch alignment skipped - outer checkout has detached HEAD")
+    return None
 
 
 def _check_upgrade_review(project_dir: Path | None, reporter: _Reporter) -> None:

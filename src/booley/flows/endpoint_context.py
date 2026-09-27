@@ -50,6 +50,7 @@ class EndpointContext(EndpointState):
         self,
         argv: list[str] | None,
     ) -> PreparedExecution | EndpointOutcome:
+        self._console_publication_requested = True
         self.parse_args(argv)
         return endpoint_session.prepare_execution(self)
 
@@ -66,7 +67,9 @@ class EndpointContext(EndpointState):
     def _parser(self) -> argparse.ArgumentParser:
         if self._cli_parser is None:
             self._cli_parser = argparse.ArgumentParser(
-                prog=self.name or self.__class__.__name__, description=self.description
+                prog=self.name or self.__class__.__name__,
+                description=self.description,
+                allow_abbrev=False,
             )
             self._add_common_args()
             self._add_args(self._cli_parser)

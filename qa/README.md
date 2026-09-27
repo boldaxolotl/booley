@@ -29,7 +29,7 @@ Invoke these explicitly; agents do not start them on their own.
 | Skill | Use |
 |---|---|
 | [`booley-qa-run`](booley-qa-run/SKILL.md) | Run one mission against a Booley build; writes `findings.md`, `log.md`, `resources.md`, `evidence/` |
-| [`booley-qa-triage`](booley-qa-triage/SKILL.md) | Deduplicate findings from one or more runs against each other and GitHub issues; file what the maintainer approves |
+| [`booley-qa-triage`](booley-qa-triage/SKILL.md) | Triage findings with the maintainer one cluster at a time: verify against current main, decide, then file issues or fix the mission |
 | [`booley-add-to-qa`](booley-add-to-qa/SKILL.md) | Add a behavior, fault idea, or known trap to a mission |
 
 ## Other files

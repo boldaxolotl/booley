@@ -964,7 +964,14 @@ def _acceptance_failure_detail(tio: Any, slug: str) -> str:
     return "inspect the Ticket and Acceptance Journal before retrying"
 
 
-def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: Any) -> None:
+def _validate_accepted_snapshot(
+    tio: Any,
+    slug: str,
+    log_dir: Path,
+    snapshot: Any,
+    *,
+    require_review_package_binding: bool = True,
+) -> None:
     from .acceptance_journal import completion_basis_sources
     from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
     from .ticket_baseline import (
@@ -973,7 +980,8 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
         validate_current_basis_refs,
     )
 
-    validate_review_package_binding(log_dir, snapshot)
+    if require_review_package_binding:
+        validate_review_package_binding(log_dir, snapshot)
     basis = tio.load_basis(slug)
     if snapshot.ticket_identity != basis.ticket_identity():
         raise AcceptanceLedgerError(
@@ -1008,7 +1016,9 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
         )
 
 
-def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | None:
+def _completion_acceptance_valid(
+    tio: Any, slug: str, *, require_review_package_binding: bool = True
+) -> AcceptanceSnapshot | None:
     """Refuse destructive terminal actions when durable acceptance is broken."""
     from .acceptance_ledger import AcceptanceLedgerError, read_acceptance
 
@@ -1028,7 +1038,16 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | No
             )
             return None
         try:
-            _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)
+            if require_review_package_binding:
+                _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)
+            else:
+                _validate_accepted_snapshot(
+                    tio,
+                    slug,
+                    log_dir,
+                    accepted.snapshot,
+                    require_review_package_binding=False,
+                )
         except (AcceptanceLedgerError, ValueError, OSError) as exc:
             print(
                 f"Error: review package binding for '{slug}' is corrupt: {exc}",
@@ -1052,6 +1071,7 @@ def op_complete(
     *,
     no_merge: bool = False,
     no_cleanup: bool = False,
+    require_review_package_binding: bool = True,
 ) -> bool:
     """Complete a ticket: approve, merge/cleanup based on on_success.
 
@@ -1063,7 +1083,16 @@ def op_complete(
 
     Returns True on success, False on failure.
     """
-    request = _prepare_completion_request(tio, slug, no_merge, no_cleanup)
+    if require_review_package_binding:
+        request = _prepare_completion_request(tio, slug, no_merge, no_cleanup)
+    else:
+        request = _prepare_completion_request(
+            tio,
+            slug,
+            no_merge,
+            no_cleanup,
+            require_review_package_binding=False,
+        )
     if request is None:
         return False
     slug, on_success, accepted_snapshot = request
@@ -1087,13 +1116,23 @@ def op_complete(
 
 
 def _prepare_completion_request(
-    tio: Any, slug: str, no_merge: bool, no_cleanup: bool
+    tio: Any,
+    slug: str,
+    no_merge: bool,
+    no_cleanup: bool,
+    *,
+    require_review_package_binding: bool = True,
 ) -> tuple[str, Any, Any] | None:
     context = _completion_context(tio, slug, no_merge, no_cleanup)
     if context is None:
         return None
     slug, on_success = context
-    accepted_snapshot = _completion_acceptance_valid(tio, slug)
+    if require_review_package_binding:
+        accepted_snapshot = _completion_acceptance_valid(tio, slug)
+    else:
+        accepted_snapshot = _completion_acceptance_valid(
+            tio, slug, require_review_package_binding=False
+        )
     if accepted_snapshot is None:
         return None
     from .ticket_baseline import TicketBaselineError

@@ -4,7 +4,9 @@ import os
 import shutil
 import subprocess
 import textwrap
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -313,6 +315,13 @@ def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path)
     assert result.merge.status == "equivalent"
 
 
+def _coverage_campaign_path(reports: Path, detail: Mapping[str, Any]) -> Path:
+    """Locate the public Coverage reference from its typed, invocation-relative artifact."""
+    reference = detail["targets"]["sim"]["coverage_campaign"]
+    assert reference["path_base"] == "report_invocation"
+    return reports / "sim" / "1" / reference["path"]
+
+
 @pytest.mark.parametrize(
     "harness,trace",
     [("generated", False), ("generated", True), ("post_reset", False), ("custom", False)],
@@ -341,7 +350,7 @@ def test_real_coverage_flow_publishes_canonical_campaign(
         )
     )
     assert result.exit_code == 0, result.outcome
-    path = tmp_path / result.outcome.detail["targets"]["sim"]["coverage_campaign"]
+    path = _coverage_campaign_path(tmp_path / "reports", result.outcome.detail)
     resolved = resolve_coverage_campaign_reference(path)
     campaign = resolved.loaded.campaign
     assert campaign.target.identity == "booley:smoke:coverage:1#sim"
@@ -375,7 +384,7 @@ def test_real_cocotb_flow_uses_one_process_per_selected_test(tmp_path: Path) -> 
     )
     assert result.exit_code == 0, result.outcome
     resolved = resolve_coverage_campaign_reference(
-        root / result.outcome.detail["targets"]["sim"]["coverage_campaign"]
+        _coverage_campaign_path(root / "reports", result.outcome.detail)
     )
     campaign = resolved.loaded.campaign
     assert len(campaign.runs) == 2

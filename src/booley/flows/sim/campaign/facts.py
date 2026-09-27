@@ -113,8 +113,14 @@ def _validate_facts(value: Mapping[str, object]) -> None:
     for index, item in enumerate(consumed):
         _validate_consumed(item, index)
     observations = _list(value["observations"], "observations", 4_000)
+    observed_tests: set[object] = set()
     for index, item in enumerate(observations):
         _validate_observation(item, index)
+        assert isinstance(item, Mapping)
+        test = item["test"] if item["test"] is not None else "default"
+        if test in observed_tests:
+            raise SimulationCampaignIntegrityError("acceptance facts repeat an observation test")
+        observed_tests.add(test)
     coverage = value["coverage_reference"]
     if coverage is not None:
         _validate_coverage_reference(value, coverage)

@@ -17,6 +17,7 @@ from booley.runtime.project_repositories import paired_project_repository
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
     AmbiguousTargetError,
+    DuplicateTargetError,
     ForeignTargetHandleError,
     IncompatibleTargetError,
     StaleTargetCatalogError,
@@ -120,6 +121,24 @@ def test_catalog_selects_and_lists_from_one_snapshot(project: Path) -> None:
         catalog.select("lint_a", for_flow="sim")
     with pytest.raises(UnknownTargetError):
         catalog.select("lint_private")
+
+
+def test_catalog_rejects_duplicate_canonical_target_identities(project: Path) -> None:
+    catalog = TargetCatalog.build(project)
+
+    with pytest.raises(DuplicateTargetError, match=r"'lint_a'.*already selected by 'lint_a'"):
+        catalog.select_many("lint_a,lint_a", for_flow="lint")
+    with pytest.raises(
+        DuplicateTargetError,
+        match=r"'alpha#lint_a'.*acme:ip:alpha:1.0#lint_a.*'lint_a'",
+    ):
+        catalog.select_many("lint_a,alpha#lint_a", for_flow="lint")
+
+
+def test_catalog_select_many_preserves_authored_order(project: Path) -> None:
+    selected = TargetCatalog.build(project).select_many("lint_b,lint_a", for_flow="lint")
+
+    assert [handle.name for handle in selected] == ["lint_b", "lint_a"]
 
 
 def test_doctor_authority_exposes_private_targets(

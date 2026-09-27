@@ -1171,7 +1171,10 @@ class TestDryRun:
         command = plan["work_units"][0]["commands"][0]["argv"]
         assert "BOOLEY_TEST_NAMES=smoke" in command[2]
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
+    @patch(
+        "booley.flows.sim.flow._get_test_names",
+        return_value={"lite": ["smoke", "stress"], "full": ["smoke"]},
+    )
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_dry_run_multi_config(
         self,
@@ -1182,7 +1185,7 @@ class TestDryRun:
     ):
         flow = _make_flow(
             tmp_path,
-            config="lite,lite",
+            config="lite,full",
             extra_args=["--dry-run", "--test", "smoke"],
         )
         flow._run()
@@ -1455,6 +1458,28 @@ class TestCriterionSetting:
         assert not flow.state.has_criterion("sim_pass_lite")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
+@pytest.mark.parametrize("relative", ["unreadable", ".booley_project/unreadable"])
+def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
+    tmp_path: Path, relative: str
+) -> None:
+    flow = _make_flow(tmp_path, config="lite")
+    unreadable = tmp_path / relative
+    unreadable.mkdir(parents=True)
+    unreadable.chmod(0)
+    try:
+        with (
+            patch("booley.flows.sim.flow._get_test_names", return_value={}),
+            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
+            patch.object(SimulateFlow, "_execute", _mock_execute_pass),
+        ):
+            result = flow._run()
+    finally:
+        unreadable.chmod(0o700)
+
+    assert result.exit_code == EXIT_SUCCESS
+
+
 # ---------------------------------------------------------------------------
 # Structured report generation
 # ---------------------------------------------------------------------------
@@ -1697,6 +1722,8 @@ class TestReportGeneration:
         invocation_dirs = sorted((report_dir / "sim").iterdir())
         progress = json.loads((invocation_dirs[-1] / "progress.json").read_text())
         assert progress["run_id"] == "sim-checkpoint-1"
+        assert progress["complete"] is True
+        assert progress["phase"] == "aborted"
         assert progress["completed_targets"] == ["lite"]
         assert progress["pending_targets"] == ["full"]
         assert (invocation_dirs[-1] / "targets/lite/simulation.json").is_file()
@@ -1704,13 +1731,23 @@ class TestReportGeneration:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_no_report_dir_skips(self, _mock_backend, _mock_tests, tmp_path: Path):
-        """No --report-dir => no crash, no report."""
-        state_file = _make_state(tmp_path)
+    def test_default_report_root_uses_project_data(
+        self, _mock_backend, _mock_tests, tmp_path: Path, monkeypatch
+    ):
+        from booley.flows.endpoint_session import _apply_default_flow_report_root
+        from booley.runtime.project_dir import reset_cache
+
+        rtl = tmp_path / "rtl-checkout"
+        rtl.mkdir()
+        project_data = tmp_path / "project-data"
+        project_data.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_data))
+        reset_cache()
+        state_file = _make_state(rtl)
         env = _env_with_state(state_file)
         # ADR 0039: selection validates against a real .core surface.
         # The replacement targets FuseSoC's upstream CAPI2 ``tool`` field.
-        (tmp_path / "lite.core").write_text(
+        (rtl / "lite.core").write_text(
             "CAPI=2:\nname: ::lite:0\ntargets:\n  lite:\n    flow: sim\n"
             "    flow_options: {tool: verilator}\n    toplevel: alu_tb\n",
             encoding="utf-8",
@@ -1720,15 +1757,20 @@ class TestReportGeneration:
             flow.parse_args(
                 [
                     "--work-dir",
-                    str(tmp_path),
+                    str(rtl),
                     "--target",
                     "lite",
                 ]
             )
+        assert _apply_default_flow_report_root(flow.context) is None
         flow.read_state()
         flow._simulation_execution_override = _BoundaryHarness(flow)
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
+        invocation = project_data / "flow-reports/sim/1"
+        assert (invocation / "progress.json").is_file()
+        assert (invocation / "targets/lite/simulation.json").is_file()
+        assert not (rtl / "flow-reports").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -245,6 +245,7 @@ class _WindowsSecureTree:  # pragma: no cover
 
     @staticmethod
     def _open(path: Path, *, expected_directory: bool) -> Any:
+        import pywintypes
         import win32con
         import win32file
 
@@ -262,7 +263,7 @@ class _WindowsSecureTree:  # pragma: no cover
                 flags,
                 None,
             )
-        except OSError as exc:
+        except (OSError, pywintypes.error) as exc:
             kind: PathEntryKind = "directory" if expected_directory else "file"
             raise SecurePathError(str(path), _windows_error_kind(exc), kind) from exc
         attributes = win32file.GetFileInformationByHandle(handle)[0]

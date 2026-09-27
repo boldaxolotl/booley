@@ -99,6 +99,30 @@ def test_selection_rejection_precedes_target_authorization(
     assert authorized == []
 
 
+def test_state_backed_simulation_preflight_rejection_reaches_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    flow = SimulateFlow()
+    monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
+    monkeypatch.setattr(
+        flow,
+        "prepare_simulation_endpoint",
+        lambda: EndpointOutcome(exit_code=2, report_text="Simulation preflight rejected"),
+    )
+
+    execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert execution.exit_code == 2
+    assert captured.err.count("Simulation preflight rejected") == 1
+    assert captured.out == ""
+
+
 def test_strict_authorization_rejects_unbound_distinct_baseline() -> None:
     candidate = _handle("sim", "acme:lib:dut:2#sim", Path("/candidate"))
     baseline = _handle("sim_old", "acme:lib:dut:1#sim_old", Path("/baseline"))

@@ -116,10 +116,9 @@ def test_protocol_record_size_limit_is_enforced(tmp_path: Path, monkeypatch) -> 
         child_protocol._read_protocol_bytes(path, "record")
 
 
-def _registry(tmp_path: Path, monkeypatch) -> child_protocol.ChildExecutionRegistry:
+def _registry(tmp_path: Path) -> child_protocol.ChildExecutionRegistry:
     registry = object.__new__(child_protocol.ChildExecutionRegistry)
-    registry._checkout_root = tmp_path
-    monkeypatch.setattr(child_protocol, "resolve_checkout_project_dir", lambda _root: tmp_path)
+    registry._project_data_root = tmp_path
     return registry
 
 
@@ -137,7 +136,7 @@ def _prepared(tmp_path: Path) -> child_protocol.PreparedChild:
 def test_mark_terminal_requires_a_recoverable_or_terminal_record(
     tmp_path: Path, monkeypatch, record
 ) -> None:
-    registry = _registry(tmp_path, monkeypatch)
+    registry = _registry(tmp_path)
     monkeypatch.setattr(
         child_protocol,
         "execution_paths",
@@ -149,7 +148,7 @@ def test_mark_terminal_requires_a_recoverable_or_terminal_record(
 
 
 def test_retire_requires_token_absence_and_terminal_proof(tmp_path: Path, monkeypatch) -> None:
-    registry = _registry(tmp_path, monkeypatch)
+    registry = _registry(tmp_path)
     monkeypatch.setattr(
         child_protocol,
         "execution_paths",
@@ -167,7 +166,7 @@ def test_retire_requires_token_absence_and_terminal_proof(tmp_path: Path, monkey
 
 
 def test_cancel_reports_timeout(tmp_path: Path, monkeypatch) -> None:
-    registry = _registry(tmp_path, monkeypatch)
+    registry = _registry(tmp_path)
     monkeypatch.setattr(
         child_protocol,
         "execution_paths",
@@ -208,7 +207,7 @@ def test_release_matching_token_rejects_duplicates_and_stale_files(tmp_path: Pat
 def test_token_absence_checks_managed_and_unmanaged_claims(tmp_path: Path, monkeypatch) -> None:
     execution_id = ExecutionId("e" * 32)
     token = SimpleNamespace(execution_id=execution_id)
-    registry = _registry(tmp_path, monkeypatch)
+    registry = _registry(tmp_path)
     store = SimpleNamespace(snapshot=lambda _kind: ((token,), ()))
     with pytest.raises(SimulationCampaignIntegrityError, match="slot claim remains"):
         registry._assert_token_absent(store, execution_id)

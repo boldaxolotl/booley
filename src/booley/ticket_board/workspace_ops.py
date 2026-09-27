@@ -902,7 +902,12 @@ def _status_paths(repository: Path) -> list[str]:
 
 
 def _local_manifest_paths(surface_root: Path, project_repository: bool) -> set[str]:
-    paths = set(acceptance_control_paths(surface_root))
+    try:
+        paths = set(acceptance_control_paths(surface_root))
+    except (OSError, ValueError) as exc:
+        raise TicketBaselineOperationError(
+            f"Ticket baseline protected-input discovery failed in {surface_root}: {exc}"
+        ) from exc
     paired = paired_project_repository(surface_root)
     if paired is None:
         return set() if project_repository else paths
@@ -930,9 +935,13 @@ def _is_authoring_path(
         candidate.resolve().relative_to(repository.resolve())
     except ValueError:
         return False
-    if candidate.stat().st_size != 0:
-        return False
-    if not scope_allows_new_path(scope, scope_path or path):
+    protected = any(
+        path == control or path.startswith(control.rstrip("/") + "/") for control in manifest
+    )
+    if protected:
+        tracked = _git(repository, "ls-files", "--error-unmatch", "--", path)
+        return candidate.stat().st_size != 0 and tracked.returncode == 1
+    if candidate.stat().st_size != 0 or not scope_allows_new_path(scope, scope_path or path):
         return False
     tracked = _git(repository, "ls-files", "--error-unmatch", "--", path)
     return tracked.returncode == 1
@@ -969,21 +978,34 @@ def _validate_authoring_changes(
 
 def _staged_tree(repository: Path, paths: list[str], parent: str) -> str:
     """Build a tree in an isolated index, leaving the authoring index untouched."""
+    storable = [path for path in paths if _storable_authoring_path(repository, path, parent)]
     with tempfile.TemporaryDirectory(prefix="booley-basis-index-") as directory:
         environment = dict(os.environ)
         environment["GIT_INDEX_FILE"] = str(Path(directory) / "index")
         _require_git(repository, "read-tree", parent, environment=environment)
-        if paths:
+        if storable:
             _require_git(
                 repository,
                 "add",
                 "-f",
                 "--",
-                *paths,
+                *storable,
                 environment=environment,
             )
         tree = _require_git(repository, "write-tree", environment=environment)
     return tree
+
+
+def _storable_authoring_path(repository: Path, relative: str, parent: str) -> bool:
+    """Return whether Git can store a live entry or a deletion at *relative*."""
+    path = repository / relative
+    if path.is_symlink() or path.is_file():
+        return True
+    if path.is_dir():
+        for current, directories, files in os.walk(path, followlinks=False):
+            if files or any((Path(current) / name).is_symlink() for name in directories):
+                return True
+    return _git(repository, "cat-file", "-e", f"{parent}:{relative}").returncode == 0
 
 
 def _basis_validation(

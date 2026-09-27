@@ -30,7 +30,7 @@ from booley.core.file_lock import (
 from booley.flows import edam as edam_layer
 from booley.flows.run_log import RUN_LOG_NAME
 from booley.fusesoc import fusesoc_registry
-from booley.fusesoc.core_projection import is_generated_isolated_core
+from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle
 
 from .build import PreparedSimulationBuild
@@ -113,39 +113,50 @@ def verify_existing_build_inputs(
         raise SimulationBuildSlotError("Simulation build input changed during Pre-Sim Commands")
 
 
-def _raise_walk_error(exc: OSError) -> None:
-    raise exc
+def resolve_target_compile_surface(handle: TargetHandle) -> TargetCompileSurface:
+    """Resolve explicit compile inputs once through the handle's catalog snapshot."""
+    try:
+        return TargetCatalog.build(handle.project_root).compile_inputs(handle)
+    except (fusesoc_registry.FuseSocError, OSError, RuntimeError, ValueError) as exc:
+        raise SimulationBuildSlotError(
+            f"cannot resolve compile inputs for Target {handle.identity!r}: {exc}"
+        ) from exc
+
+
+def _compile_input_identity(project_root: Path, path: Path) -> str:
+    try:
+        identity = path.relative_to(project_root).as_posix()
+    except ValueError:
+        identity = str(path)
+    if path.is_symlink():
+        identity += f" -> {path.readlink()}"
+    return identity
 
 
 def project_compile_surface(
-    project_root: Path, *, include_generated_isolated_cores: bool = False
+    surface: TargetCompileSurface, *, include_operational_cores: bool = False
 ) -> dict[str, str]:
-    """Snapshot Project HDL and core metadata around setup and Pre-Sim Commands."""
-    suffixes = {".core", ".v", ".sv", ".vh", ".svh"}
+    """Snapshot one already-resolved Target compile-input surface."""
     result: dict[str, str] = {}
-    runtime_root = (project_root / ".booley_project" / ".runtime").resolve()
+    paths = surface.authored_paths
+    if include_operational_cores:
+        paths += surface.operational_paths
     try:
-        for directory, children, names in os.walk(project_root, onerror=_raise_walk_error):
-            root = Path(directory)
-            children[:] = [
-                name
-                for name in children
-                if name != ".git" and (root / name).resolve() != runtime_root
-            ]
-            for name in names:
-                path = root / name
-                if path.suffix.lower() not in suffixes:
-                    continue
-                if not include_generated_isolated_cores and is_generated_isolated_core(
-                    project_root, path
-                ):
-                    continue
-                identity = path.relative_to(project_root).as_posix()
-                if path.is_symlink():
-                    identity += f" -> {path.readlink()}"
-                if not path.is_file():
-                    raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
+        for path in paths:
+            identity = _compile_input_identity(surface.project_root, path)
+            if identity in result:
+                continue
+            if not path.is_file():
+                raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
+            result[identity] = _hash_file(path)
+        for path in surface.optional_paths:
+            identity = _compile_input_identity(surface.project_root, path)
+            if path.is_file():
                 result[identity] = _hash_file(path)
+            elif path.is_symlink() or path.exists():
+                raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
+            else:
+                result[identity] = "absent"
     except OSError as exc:
         raise SimulationBuildSlotError(f"cannot capture Project compile inputs: {exc}") from exc
     return result
@@ -725,8 +736,10 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
 __all__ = [
     "SimulationBuildSession",
     "SimulationBuildSlotError",
+    "TargetCompileSurface",
     "preview_generation_root",
     "project_compile_surface",
+    "resolve_target_compile_surface",
     "simulation_build_slot",
     "snapshot_build_inputs",
     "verify_existing_build_inputs",

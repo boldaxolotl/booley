@@ -10,13 +10,20 @@ import re
 import subprocess
 import tomllib
 from collections.abc import Iterable, Iterator, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.config.coverage_waiver_inputs import parse_coverage_waiver_config
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
+)
+from booley.core.config_paths import resolve_toml
+from booley.criteria.templates import (
+    EDA_TOOL_CRITERION_FAMILIES,
+    criterion_family_is_eligible,
 )
 from booley.criteria.thresholds import has_relative_threshold
 from booley.evidence.acceptance import AcceptanceTargetBinding
@@ -45,6 +52,7 @@ _FLOW_BY_CRITERION = {
 _RTL_FILE_TYPE_PREFIXES = ("verilogSource", "systemVerilogSource", "vhdlSource")
 _TB_FILE_TYPE_PREFIXES = ("cSource", "cppSource")
 _TB_USER_SOURCE_SUFFIXES = frozenset({".py"})
+_AUTHORED_CRITERION_FAMILIES = frozenset({"coverage"})
 
 
 @dataclass(frozen=True)
@@ -57,6 +65,7 @@ class CriterionTarget:
     flow: str
     relative: bool
     baseline_target: str | None = None
+    family: str | None = None
 
     @property
     def baseline(self) -> str:
@@ -87,9 +96,35 @@ def _project_control_files(root: Path) -> Iterator[Path]:
     tests_path = project_dir / "tests.toml"
     if tests_path.is_file():
         yield tests_path
-    config_path = project_dir / "booley.toml"
+    config_path = resolve_toml(project_dir)
     if config_path.is_file() and config_path != routing:
         yield config_path
+
+
+def _waiver_control_paths(root: Path) -> set[Path]:
+    """Resolve configured Approved Waiver Set inputs inside one explicit checkout."""
+    project_dir = resolve_checkout_project_dir(root).resolve()
+    config_path = resolve_toml(project_dir)
+    if not config_path.is_file():
+        return set()
+    try:
+        project_dir.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"project directory {project_dir} is outside checkout {root}") from exc
+    if project_dir == root:
+        raise ValueError("project directory cannot be the checkout root")
+    with config_path.open("rb") as stream:
+        config = tomllib.load(stream)
+    waiver_config = parse_coverage_waiver_config(config)
+    if waiver_config is None:
+        return set()
+    from booley.flows.sim.coverage_waivers import (
+        CoverageRepositoryRoots,
+        discover_approved_waiver_inputs,
+    )
+
+    roots = CoverageRepositoryRoots(root, project_dir)
+    return set(discover_approved_waiver_inputs(waiver_config, roots))
 
 
 def _target_config(path: Path) -> dict[str, Any]:
@@ -161,8 +196,10 @@ def acceptance_control_paths(
         paths.update(_core_auxiliary_paths(root, core_file, fusesoc_registry.read_core(core_file)))
     for config_path in _project_control_files(root):
         paths.add(config_path)
-        if config_path.name == "booley.toml":
+        if config_path.name in {"booley.toml", "pipeline.toml"}:
             paths.update(_config_auxiliary_paths(root, config_path))
+    with suppress(FileNotFoundError):
+        paths.update(_waiver_control_paths(root))
     for path in tuple(paths):
         paths.update(_redirecting_control_entries(root, path))
     gitlinks = _tracked_gitlinks(root, git_command)
@@ -214,6 +251,12 @@ def _criterion_flow(key: str) -> str | None:
         if key == prefix or key.startswith(prefix + "_"):
             return flows[prefix]
     return None
+
+
+def _authored_criterion_family(identity: str) -> str | None:
+    """Return the canonical EDA-gated family carried by authored Criteria."""
+    family = identity.casefold()
+    return family if family in _AUTHORED_CRITERION_FAMILIES else None
 
 
 def _relative_params(value: Any) -> bool:
@@ -287,6 +330,7 @@ def criterion_targets(criteria: Any) -> tuple[CriterionTarget, ...]:
                         flow,
                         relative,
                         baseline if baseline != target else None,
+                        family=_authored_criterion_family(str(key)),
                     )
                 )
     return tuple(bindings)
@@ -329,6 +373,7 @@ def criterion_targets_from_spec(spec: TicketSpec) -> tuple[CriterionTarget, ...]
                     flow,
                     baseline is not None,
                     baseline,
+                    family=_authored_criterion_family(criterion.capability),
                 )
             )
     return tuple(bindings)
@@ -710,6 +755,21 @@ def _validate_binding(
             handle = catalog.select(target, for_flow=binding.flow)
         except FuseSocError as exc:
             errors.append(f"{binding.label}: {role} target {target!r}: {exc}")
+            continue
+        if binding.family is not None and not criterion_family_is_eligible(
+            binding.family,
+            handle.eda_tool,
+            target_name=getattr(handle, "name", target),
+        ):
+            tools = [
+                tool.capitalize()
+                for tool, families in EDA_TOOL_CRITERION_FAMILIES.items()
+                if binding.family in families
+            ]
+            errors.append(
+                f"{binding.label}: target {target!r}: {binding.family} requires "
+                f"{' or '.join(tools)} (EDA tool={handle.eda_tool!r})"
+            )
             continue
         try:
             missing_inputs = _missing_target_inputs(catalog, handle.selector)
