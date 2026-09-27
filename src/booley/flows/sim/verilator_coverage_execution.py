@@ -274,16 +274,6 @@ class VerilatorCoverageExecution:
             working_directory=self._handle.project_root,
             expose_build_root=False,
         )
-        if pre_sim is not None and pre_sim.status != "passed":
-            detail = f"Pre-Sim Commands failed ({pre_sim.status})"
-            if pre_sim.detail:
-                detail += f": {pre_sim.detail}"
-            return SimulationRunResult(
-                "elab_error",
-                detail,
-                pre_sim,
-                infrastructure_error=pre_sim.status == "spawn_error",
-            )
         try:
             verify_existing_build_inputs(prepared, inputs_before)
             if (
@@ -311,6 +301,16 @@ class VerilatorCoverageExecution:
                 f"coverage image verification failed: {exc}",
                 pre_sim,
                 infrastructure_error=True,
+            )
+        if pre_sim is not None and pre_sim.status != "passed":
+            detail = f"Pre-Sim Commands failed ({pre_sim.status})"
+            if pre_sim.detail:
+                detail += f": {pre_sim.detail}"
+            return SimulationRunResult(
+                "elab_error",
+                detail,
+                pre_sim,
+                infrastructure_error=pre_sim.status == "spawn_error",
             )
         invocation = prepare_adapter_invocation(work)
         environment = {**simulation_target_environment(self._handle), **request.environment}
