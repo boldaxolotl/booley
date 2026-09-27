@@ -297,3 +297,5 @@ their starting state.
 - If the Interactive work overshoots the baseline, area 4 starts from a moved baseline; record it.
 - Evaluator controls validate the evaluator's observation paths, not candidate conformance.
 - Host policy is daemon-wide; without a dedicated daemon, cap and egress cases disrupt others.
+- The Simulation Campaign fixture is SystemVerilog under Icarus, so its core sets `flow: sim` with
+  `flow_options.iverilog_options: [-g2012]`. Without it the build fails on `string`.

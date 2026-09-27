@@ -11,7 +11,10 @@ filesets:
     - tb
 targets:
   sim_campaign_uart:
-    default_tool: icarus
+    flow: sim
+    flow_options:
+      tool: icarus
+      iverilog_options: [-g2012]
     filesets:
     - tb
     toplevel: campaign_tb
