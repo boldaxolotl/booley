@@ -190,6 +190,7 @@ def _proof_findings(proof: object, pointer: str) -> list[CoverageFinding]:
 
 def _proof_evidence_finding(
     tree: SecureTree,
+    approval_directory: str,
     record: Mapping[str, object],
     pointer: str,
 ) -> CoverageFinding | None:
@@ -201,7 +202,8 @@ def _proof_evidence_finding(
     relative = reference.split("#", 1)[0]
     if not is_safe_relative_posix(relative):
         return _error("COV_WAIVER_PROOF_INVALID", pointer, "Unsafe proof reference.")
-    raw, finding = _read_evidence(tree, relative, pointer, label="PROOF")
+    resolved = f"{approval_directory}/{relative}"
+    raw, finding = _read_evidence(tree, resolved, pointer, label="PROOF")
     if finding is not None:
         return finding
     assert raw is not None
@@ -476,6 +478,7 @@ def _approval_record_findings(
     pointer: str,
     known_targets: frozenset[str],
     approval_tree: SecureTree,
+    approval_directory: str,
 ) -> list[CoverageFinding]:
     source = require_str(document, "source")
     approvals = require_list(document.get("approval"), field="approval")
@@ -487,7 +490,12 @@ def _approval_record_findings(
             record_document = require_dict(record, field="approval")
         except BoundaryError:
             continue
-        proof = _proof_evidence_finding(approval_tree, record_document, f"{record_pointer}/proof")
+        proof = _proof_evidence_finding(
+            approval_tree,
+            approval_directory,
+            record_document,
+            f"{record_pointer}/proof",
+        )
         if proof is not None:
             findings.append(proof)
     return findings
@@ -500,6 +508,7 @@ def _approval_file_findings(
     rtl_tree: SecureTree,
     known_targets: frozenset[str],
     approval_tree: SecureTree,
+    approval_directory: str,
 ) -> tuple[CoverageFinding, ...]:
     findings = _document_shape_findings(document, pointer)
     if not is_safe_relative_posix(relative):
@@ -513,7 +522,13 @@ def _approval_file_findings(
             pass
         else:
             findings.extend(
-                _approval_record_findings(document, pointer, known_targets, approval_tree)
+                _approval_record_findings(
+                    document,
+                    pointer,
+                    known_targets,
+                    approval_tree,
+                    approval_directory,
+                )
             )
     return tuple(findings)
 
@@ -523,24 +538,33 @@ def _try_load_approval_file(
     rtl_tree: SecureTree,
     known_targets: frozenset[str],
     approval_tree: SecureTree,
+    approval_directory: str,
 ) -> tuple[
     tuple[dict[str, object], list[ApprovedWaiver]] | None,
     tuple[CoverageFinding, ...],
     str | None,
+    tuple[str, ...],
 ]:
     relative = file.relative_path
     pointer = f"/files/{relative}"
     raw, document, read_findings = _read_approval_document(file.raw, pointer)
     if document is None or raw is None:
-        return None, read_findings, None
+        return None, read_findings, None, ()
     findings = _approval_file_findings(
-        document, relative, pointer, rtl_tree, known_targets, approval_tree
+        document,
+        relative,
+        pointer,
+        rtl_tree,
+        known_targets,
+        approval_tree,
+        approval_directory,
     )
     source = as_str(document.get("source"))
+    proof_references = formal_proof_references(document)
     if findings:
-        return None, tuple(findings), source
+        return None, tuple(findings), source, proof_references
     assert source is not None
-    return _load_approval_file(raw, document, relative), (), source
+    return _load_approval_file(raw, document, relative), (), source, proof_references
 
 
 def _duplicate_source_findings(
@@ -623,17 +647,36 @@ def _load_scanned_set(
     loaded: list[tuple[dict[str, object], list[ApprovedWaiver]]] = []
     parse_findings: list[CoverageFinding] = []
     claims: list[tuple[str, str]] = []
+    proof_references: set[str] = set()
     known = frozenset(str(target) for target in known_targets)
-    for file in scan.files:
-        result, file_findings, source = _try_load_approval_file(
-            file, rtl_tree, known, approval_tree
+    approval_files = tuple(file for file in scan.files if file.relative_path.endswith(".toml"))
+    proof_artifacts = tuple(
+        file for file in scan.files if not file.relative_path.endswith(".toml")
+    )
+    for file in approval_files:
+        result, file_findings, source, references = _try_load_approval_file(
+            file,
+            rtl_tree,
+            known,
+            approval_tree,
+            config.directory,
         )
         parse_findings.extend(file_findings)
+        proof_references.update(references)
         if source is not None:
             claims.append((source, file.relative_path))
         if result is not None:
             loaded.append(result)
     parse_findings.extend(_duplicate_source_findings(claims))
+    parse_findings.extend(
+        _error(
+            "COV_WAIVER_FILE_UNREFERENCED",
+            f"/files/{file.relative_path}",
+            "Non-TOML file is not referenced by a valid formal proof.",
+        )
+        for file in proof_artifacts
+        if file.relative_path not in proof_references
+    )
     if parse_findings:
         raise CoverageWaiverValidationError(tuple(parse_findings))
     duplicate_findings = _duplicate_findings(loaded)
@@ -667,27 +710,7 @@ def discover_approved_waiver_inputs(
         raise ValueError(findings[0].message)
     anchor = getattr(roots, config.anchor)
     directory = anchor / config.directory
-    paths = {directory}
-    try:
-        with SecureTree(anchor) as tree:
-            scan = tree.scan_files(config.directory)
-    except SecurePathError as error:
-        if error.kind in {"missing", "symlink", "invalid"}:
-            return tuple(paths)
-        raise OSError(f"approved-waiver discovery failed: {error}") from error
-    unreadable = next((problem for problem in scan.problems if problem.kind == "unreadable"), None)
-    if unreadable is not None:
-        raise OSError(
-            "approved-waiver discovery failed: "
-            f"{unreadable.entry_kind} {unreadable.relative_path!r} is unreadable"
-        )
-    for file in scan.files:
-        try:
-            document = tomllib.loads(file.raw.decode("utf-8"))
-        except (UnicodeDecodeError, tomllib.TOMLDecodeError):
-            continue
-        paths.update(anchor / reference for reference in formal_proof_references(document))
-    return tuple(sorted(paths))
+    return (directory,)
 
 
 def load_approved_waiver_set(

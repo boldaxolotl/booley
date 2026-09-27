@@ -1991,7 +1991,11 @@ approval_ref = "review:CR-1042"
 
 For `reason = "unreachable"`, add an `approval.proof` table with `kind = "formal"`,
 a safe `reference` relative to the approval directory, and exact `sha256` of the
-proof file. `excluded` cannot carry proof. Both reasons yield `waived`; only
+proof file. Lowercase `*.toml` paths below the approval directory are reserved
+for approval documents, so proof artifacts use another extension. Every non-TOML
+file below the directory must be named by a formal proof reference in a valid
+approval document; otherwise loading reports it as unreferenced. `excluded`
+cannot carry proof. Both reasons yield `waived`; only
 exact RTL points are waivable. Loading rejects unsafe paths/symlinks, malformed
 or duplicate approvals, stale sources, unknown Target identities, missing proofs,
 and candidate content. Matching is then transactional per Target: when a Target

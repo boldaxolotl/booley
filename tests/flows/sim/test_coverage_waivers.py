@@ -164,6 +164,18 @@ approval_ref = "review:CR-1042"
     return waiver_file
 
 
+def _make_approval_unreachable(waiver_file: Path, reference: str) -> None:
+    document = waiver_file.read_text(encoding="utf-8")
+    document = document.replace('reason = "excluded"', 'reason = "unreachable"')
+    document += f'''
+[approval.proof]
+kind = "formal"
+reference = "{reference}"
+sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3"
+'''
+    waiver_file.write_text(document, encoding="utf-8")
+
+
 def _write_second_approval(roots: CoverageRepositoryRoots) -> Path:
     source = roots.rtl_repository / "tb" / "counter_tb.sv"
     source.parent.mkdir(exist_ok=True)
@@ -549,18 +561,10 @@ def test_incomplete_canonical_point_identity_is_rejected_during_loading(
 def test_unreachable_proof_artifact_must_match_approved_digest(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     waiver_file = _write_valid_approval(roots)
-    proof = roots.project_data_repository / "proofs" / "counter.sby"
+    proof = roots.project_data_repository / "coverage-waivers" / "proofs" / "counter.sby"
     proof.parent.mkdir()
     proof.write_bytes(b"changed-proof\n")
-    document = waiver_file.read_text(encoding="utf-8")
-    document = document.replace('reason = "excluded"', 'reason = "unreachable"')
-    document += """
-[approval.proof]
-kind = "formal"
-reference = "proofs/counter.sby#cover_17"
-sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3"
-"""
-    waiver_file.write_text(document, encoding="utf-8")
+    _make_approval_unreachable(waiver_file, "proofs/counter.sby#cover_17")
 
     with pytest.raises(CoverageWaiverValidationError) as raised:
         load_approved_waiver_set(
@@ -575,18 +579,10 @@ sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd
 def test_valid_unreachable_proof_is_authenticated_and_retained(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     waiver_file = _write_valid_approval(roots)
-    proof = roots.project_data_repository / "proofs" / "counter.sby"
+    proof = roots.project_data_repository / "coverage-waivers" / "proofs" / "counter.sby"
     proof.parent.mkdir()
     proof.write_bytes(b"proof-result\n")
-    document = waiver_file.read_text(encoding="utf-8")
-    document = document.replace('reason = "excluded"', 'reason = "unreachable"')
-    document += """
-[approval.proof]
-kind = "formal"
-reference = "proofs/counter.sby#cover_17"
-sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3"
-"""
-    waiver_file.write_text(document, encoding="utf-8")
+    _make_approval_unreachable(waiver_file, "proofs/counter.sby#cover_17")
 
     approved = load_approved_waiver_set(
         CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
@@ -600,6 +596,89 @@ sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd
         "reference": "proofs/counter.sby#cover_17",
         "sha256": "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3",
     }
+    evaluated = evaluate_coverage_campaign(_campaign(), _criterion(), approved)
+    assert evaluated.evaluation["status"] == "pass"
+    assert evaluated.points[0].disposition["kind"] == "waived"
+    assert evaluated.points[0].disposition["reason"] == "unreachable"
+    assert evaluated.points[0].disposition["provenance"]["proof"] == {
+        "kind": "formal",
+        "reference": "proofs/counter.sby#cover_17",
+        "sha256": "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3",
+    }
+
+
+def test_unsafe_proof_reference_cannot_escape_approval_directory(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    _make_approval_unreachable(waiver_file, "../proofs/counter.sby#cover_17")
+
+    with pytest.raises(CoverageWaiverValidationError) as raised:
+        load_approved_waiver_set(
+            CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
+            roots,
+            known_targets=(_TARGET,),
+        )
+
+    assert [item.code for item in raised.value.findings] == ["COV_WAIVER_PROOF_INVALID"]
+
+
+def test_proof_is_not_loaded_from_former_anchor_relative_location(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    proof = roots.project_data_repository / "proofs" / "counter.sby"
+    proof.parent.mkdir()
+    proof.write_bytes(b"proof-result\n")
+    _make_approval_unreachable(waiver_file, "proofs/counter.sby#cover_17")
+
+    with pytest.raises(CoverageWaiverValidationError) as raised:
+        load_approved_waiver_set(
+            CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
+            roots,
+            known_targets=(_TARGET,),
+        )
+
+    assert [item.code for item in raised.value.findings] == ["COV_WAIVER_PROOF_MISSING"]
+
+
+def test_unreferenced_non_toml_file_invalidates_approval_set(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    proof = roots.project_data_repository / "coverage-waivers" / "proofs" / "counter.sby"
+    proof.parent.mkdir()
+    proof.write_bytes(b"proof-result\n")
+    (proof.parent / "notes.txt").write_text("stray\n", encoding="utf-8")
+    _make_approval_unreachable(waiver_file, "proofs/counter.sby#cover_17")
+
+    with pytest.raises(CoverageWaiverValidationError) as raised:
+        load_approved_waiver_set(
+            CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
+            roots,
+            known_targets=(_TARGET,),
+        )
+
+    assert [(item.code, item.pointer) for item in raised.value.findings] == [
+        ("COV_WAIVER_FILE_UNREFERENCED", "/files/proofs/notes.txt")
+    ]
+
+
+def test_referenced_toml_proof_remains_an_approval_document(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    proof = roots.project_data_repository / "coverage-waivers" / "proofs" / "proof.toml"
+    proof.parent.mkdir()
+    proof.write_bytes(b"proof-result\n")
+    _make_approval_unreachable(waiver_file, "proofs/proof.toml#cover_17")
+
+    with pytest.raises(CoverageWaiverValidationError) as raised:
+        load_approved_waiver_set(
+            CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
+            roots,
+            known_targets=(_TARGET,),
+        )
+
+    assert [(item.code, item.pointer) for item in raised.value.findings] == [
+        ("COV_WAIVER_FILE_MALFORMED", "/files/proofs/proof.toml")
+    ]
 
 
 def test_discovery_returns_lexical_missing_and_symlinked_directories(tmp_path: Path) -> None:
@@ -615,7 +694,9 @@ def test_discovery_returns_lexical_missing_and_symlinked_directories(tmp_path: P
     assert discover_approved_waiver_inputs(config, roots) == expected
 
 
-def test_discovery_protects_fragmentless_formal_proof_once(tmp_path: Path) -> None:
+def test_discovery_protects_approval_directory_without_redundant_proof_path(
+    tmp_path: Path,
+) -> None:
     roots = _roots(tmp_path)
     waiver_file = _write_valid_approval(roots)
     document = waiver_file.read_text(encoding="utf-8")
@@ -630,15 +711,15 @@ sha256 = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd
 
     assert discover_approved_waiver_inputs(
         CoverageWaiverConfig("project_data_repository", "coverage-waivers"), roots
-    ) == (
-        roots.project_data_repository / "coverage-waivers",
-        roots.project_data_repository / "proofs/counter.sby",
-    )
+    ) == (roots.project_data_repository / "coverage-waivers",)
 
 
-def test_discovery_ignores_proofs_from_invalid_approval_document(tmp_path: Path) -> None:
+def test_invalid_approval_document_does_not_authorize_proof_artifact(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     waiver_file = _write_valid_approval(roots)
+    proof = roots.project_data_repository / "coverage-waivers" / "proofs" / "counter.sby"
+    proof.parent.mkdir()
+    proof.write_bytes(b"proof-result\n")
     document = waiver_file.read_text(encoding="utf-8")
     document = document.replace('reason = "excluded"', 'reason = "unreachable"')
     document += """
@@ -652,9 +733,15 @@ reason = "malformed"
 """
     waiver_file.write_text(document, encoding="utf-8")
 
-    assert discover_approved_waiver_inputs(
-        CoverageWaiverConfig("project_data_repository", "coverage-waivers"), roots
-    ) == (roots.project_data_repository / "coverage-waivers",)
+    with pytest.raises(CoverageWaiverValidationError) as raised:
+        load_approved_waiver_set(
+            CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
+            roots,
+            known_targets=(_TARGET,),
+        )
+
+    assert raised.value.findings[-1].code == "COV_WAIVER_FILE_UNREFERENCED"
+    assert raised.value.findings[-1].pointer == "/files/proofs/counter.sby"
 
 
 def test_duplicate_ids_and_target_point_bindings_invalidate_the_whole_set(tmp_path: Path) -> None:

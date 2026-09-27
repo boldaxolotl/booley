@@ -1775,7 +1775,7 @@ def test_gitignored_untracked_control_file_is_rejected(tmp_path: Path) -> None:
     "changed_path",
     [
         ".booley_project/coverage-waivers/rtl/counter.sv.toml",
-        ".booley_project/proofs/counter.sby",
+        ".booley_project/coverage-waivers/proofs/counter.sby",
     ],
 )
 def test_committed_approved_waiver_input_drift_names_changed_path(
@@ -1784,7 +1784,7 @@ def test_committed_approved_waiver_input_drift_names_changed_path(
     root = tmp_path / "project"
     project = root / ".booley_project"
     waiver = project / "coverage-waivers/rtl/counter.sv.toml"
-    proof = project / "proofs/counter.sby"
+    proof = project / "coverage-waivers/proofs/counter.sby"
     waiver.parent.mkdir(parents=True)
     proof.parent.mkdir(parents=True)
     (project / "booley.toml").write_text(
