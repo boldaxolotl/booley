@@ -208,8 +208,7 @@ Follow `fixtures/host-policy/README.md`.
 Try:
 - With no config file, the documented defaults apply.
 - One field at a time: `fixtures/host-policy/idle.toml` (Sandbox expires after 30 s idle),
-  `fixtures/host-policy/cap.toml` (a second Project is refused at the one-Sandbox cap,
-  naming the first Project, its age, and remediation while preserving its live Sandbox),
+  `fixtures/host-policy/cap.toml` (a second Project hits the one-Sandbox cap),
   `fixtures/host-policy/egress.toml` (named host allowed; an unlisted name at the same
   endpoint denied).
 - Each `invalid-{scheme,path,port,ip,wildcard,key}.toml` is rejected before bootstrap changes

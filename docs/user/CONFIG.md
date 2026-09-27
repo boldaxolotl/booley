@@ -62,23 +62,11 @@ egress hostname becomes reachable from every Project. The former Project
 `booley.toml [interactive]` policy fields are retired; init and Doctor print a
 concrete replacement for this host file and never adopt Project values.
 
-`max_sessions` is checked before a start that would add a live Sandbox. At the
-limit, the command refuses, lists the live Projects and Sandbox ages, and gives
-Project-scoped `booley session down --project-root ...` commands; it never
-evicts existing work. `booley session prepare` reserves a pending editor-start
-slot across the gap before VS Code creates the Sandbox. If editor creation
-fails, cancel or close that VS Code operation first, then use the reported
-`session down` command to clear the claim. Clearing it while VS Code is still
-creating can allow that delayed Sandbox to appear afterward.
-
-Identity-verified rollback and crash recovery may restore recorded prior state
-temporarily above the cap. They do not preempt another Sandbox; later ordinary
-starts refuse until explicit or idle shutdown frees capacity.
-
-After upgrading from a release whose reaper enforced the cap by stopping live
-Sandboxes, run Host Bootstrap (`booley bootstrap`, or the normal init path that
-reconciles Host Bootstrap). Updating only the CLI does not replace an already
-running old reaper container.
+`max_sessions` is checked before a start would add a live Sandbox. At the limit,
+the command refuses, lists live Projects and ages, and explains how to stop one
+or raise the limit; it never evicts existing work. A pending VS Code start also
+holds a slot and can be cleared with the reported `session down` command after
+canceling the editor operation.
 
 ## booley.toml
 
