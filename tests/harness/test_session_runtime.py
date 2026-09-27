@@ -2892,6 +2892,80 @@ class TestDownAndStatus:
         assert result.claim_cleared
         assert ["docker", "stop", "editor-id"] in [_argv_of(call) for call in run.call_args_list]
 
+    def test_down_rejects_vscode_that_disappears_before_stop(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        monkeypatch.setattr(session_admission, "vscode_sandboxes", Mock(side_effect=[(item,), ()]))
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+
+        with pytest.raises(sr.SessionError, match="cannot prove VS Code Sandbox"):
+            sr.down(workspace)
+
+    @pytest.mark.parametrize("failure", ["stop", "rm"])
+    def test_down_reports_headless_docker_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+
+        def run(argv: list[str], **_kwargs):
+            failed = argv[1] == failure
+            return subprocess.CompletedProcess(
+                argv, 1 if failed else 0, "", "denied" if failed else ""
+            )
+
+        monkeypatch.setattr(sr, "_run", run)
+
+        message = "cannot remove" if failure == "rm" else "cannot stop"
+        with pytest.raises(sr.SessionError, match=message):
+            sr.down(workspace)
+
+    def test_down_reports_vscode_stop_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        monkeypatch.setattr(
+            session_admission, "vscode_sandboxes", lambda *_args, **_kwargs: (item,)
+        )
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        monkeypatch.setattr(
+            sr,
+            "_run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "denied"),
+        )
+
+        with pytest.raises(sr.SessionError, match="cannot stop VS Code Sandbox"):
+            sr.down(workspace)
+
+    def test_status_reports_pending_editor_start(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        monkeypatch.setattr(session_admission, "has_pending_claim", lambda _root: True)
+
+        assert sr.status(workspace) == "start-pending"
+
+    def test_status_reports_claim_inspection_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        def fail(_root: Path) -> bool:
+            raise session_admission.AdmissionError("claim unavailable")
+
+        monkeypatch.setattr(session_admission, "has_pending_claim", fail)
+
+        with pytest.raises(sr.SessionError, match="claim unavailable"):
+            sr.status(workspace)
+
     def test_status_reports_three_states(self, workspace: Path):
         with patch.object(sr.idk, "container_exists", return_value=False):
             assert sr.status(workspace) == "absent"

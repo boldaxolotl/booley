@@ -140,6 +140,107 @@ def test_pending_editor_claim_takes_the_last_slot_and_is_idempotent(
     assert session_admission.claim_vscode_start(second, run=run) is True
 
 
+def test_headless_start_does_not_consume_own_editor_claim_below_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=2),
+    )
+    docker = _Docker({})
+
+    assert session_admission.claim_vscode_start(project, run=docker)
+    with pytest.raises(session_admission.AdmissionError, match="pending editor start"):
+        session_admission.admit_start(project, target_name="headless", run=docker)
+
+
+def test_live_editor_makes_claim_idempotent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=2),
+    )
+    docker = _Docker(
+        {"editor-id": _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")}
+    )
+
+    assert not session_admission.claim_vscode_start(project, run=docker)
+
+
+def test_invalid_host_policy_is_an_admission_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    def invalid_policy() -> session_admission.InteractiveHostPolicy:
+        raise session_admission.HostConfigError(
+            tmp_path / "host.toml", "interactive.max_sessions", "invalid host policy"
+        )
+
+    monkeypatch.setattr(session_admission, "load_host_policy", invalid_policy)
+
+    with pytest.raises(session_admission.AdmissionError, match="invalid host policy"):
+        session_admission.admit_start(project, target_name="headless", run=_Docker({}))
+
+
+def test_malformed_inventory_row_fails_closed(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    def malformed(_argv: list[str], **_kwargs):
+        return _completed(stdout="missing-tab\n")
+
+    with pytest.raises(session_admission.AdmissionError, match="incomplete Sandbox listing"):
+        session_admission.admit_start(project, target_name="headless", run=malformed)
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    [
+        (_completed(1, stderr="daemon unavailable"), "daemon unavailable"),
+        (_completed(stdout="too\tfew\n"), "incomplete VS Code Sandbox listing"),
+    ],
+)
+def test_vscode_inventory_failure_fails_closed(
+    tmp_path: Path, result: subprocess.CompletedProcess[str], message: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    with pytest.raises(session_admission.AdmissionError, match=message):
+        session_admission.vscode_sandboxes(project, run=lambda _argv, **_kwargs: result)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("role", "other", "cannot prove Sandbox ownership"),
+        ("name", "/renamed", "Sandbox identity changed"),
+    ],
+)
+def test_inspection_revalidates_role_and_name(
+    tmp_path: Path, field: str, value: str, message: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    document = _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")
+    if field == "role":
+        document["Config"]["Labels"]["booley.role"] = value
+    else:
+        document["Name"] = value
+
+    with pytest.raises(session_admission.AdmissionError, match=message):
+        session_admission.vscode_sandboxes(project, run=_Docker({"editor-id": document}))
+
+
 def test_inventory_failure_refuses_instead_of_assuming_empty(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -314,6 +415,34 @@ def test_corrupt_claim_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
     with pytest.raises(session_admission.AdmissionError, match="invalid shape"):
         session_admission.admit_start(project, target_name="headless", run=_Docker({}))
+
+
+def test_unreadable_claim_json_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda: session_admission.InteractiveHostPolicy(max_sessions=2),
+    )
+    assert session_admission.claim_vscode_start(project, run=_Docker({}))
+    claim_path = next(session_admission._store().root.glob("*.json"))
+    claim_path.write_text("not json", encoding="utf-8")
+
+    with pytest.raises(session_admission.AdmissionError, match="cannot read"):
+        session_admission.admit_start(project, target_name="headless", run=_Docker({}))
+
+
+def test_age_includes_minutes_and_seconds() -> None:
+    assert (
+        session_admission._age(
+            datetime(2026, 9, 27, 8, 0, tzinfo=UTC),
+            datetime(2026, 9, 27, 8, 2, 3, tzinfo=UTC),
+        )
+        == "2m 3s"
+    )
 
 
 def test_claim_candidate_disappearing_during_inspect_fails_closed(
