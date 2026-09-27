@@ -40,6 +40,7 @@ from booley.mcp.base import (
     McpToolResult,
     read_source_dirs_from_toml,
 )
+from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.paths import refs_dir
 from booley.targets.flow_names import config_section
 from booley.ticket_board.criteria_acceptance import refresh_verification_freshness
@@ -1782,7 +1783,9 @@ object, even after calling the capability.
         if issues is None:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text="Review agent invocation failed",
+                report_text=self._provider_failure_report(
+                    output_lines, "Review agent invocation failed"
+                ),
             )
 
         elapsed = time.monotonic() - overall_start
@@ -1860,7 +1863,9 @@ object, even after calling the capability.
         if remaining is None:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text="Verify review agent invocation failed",
+                report_text=self._provider_failure_report(
+                    output_lines, "Verify review agent invocation failed"
+                ),
             )
         elapsed = time.monotonic() - overall_start
         return self._build_result_clean_verify(
@@ -1922,7 +1927,9 @@ object, even after calling the capability.
         if issues is None:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text="Review agent invocation failed",
+                report_text=self._provider_failure_report(
+                    output_lines, "Review agent invocation failed"
+                ),
             )
         elapsed = time.monotonic() - overall_start
         return self._build_result_clean_initial(
@@ -2024,6 +2031,46 @@ object, even after calling the capability.
 
     # --- Verify review ---
 
+    def _review_state_filter(self):
+        return filter_state_file_for_category(
+            getattr(self.args, "state_file", None),
+            self.args.category,
+        )
+
+    @staticmethod
+    def _provider_failure_report(output_lines: list[str], fallback: str) -> str:
+        return next(
+            (line for line in reversed(output_lines) if line.startswith("reviewer failed:")),
+            fallback,
+        )
+
+    def _record_review_provider_failure(
+        self, exc: Exception, transcript: Path | None, summary: str
+    ) -> str:
+        log_exception(logger, exc, summary=summary)
+        diagnostic_path = self._write_provider_diagnostic(exc, transcript)
+        return exception_report_text(self.name, exc, diagnostic_path)
+
+    def _verify_agent_params(
+        self, focus: str, prior_detail: dict[str, Any], prior_sid: str | None
+    ) -> AgentCallParams:
+        params = AgentCallParams(
+            prompt=self._build_verify_prompt(focus, prior_detail, resumed=prior_sid is not None),
+            model=self._resolve_model(),
+            cwd=self.args.work_dir,
+            allowed_agent_capabilities=self.agent_capabilities,
+            disallowed_agent_capabilities=[*self.READ_ONLY_DENY, REPORT_FINDINGS_CAPABILITY],
+            system_prompt=self._build_verify_system_prompt(focus),
+            output_format=self._output_format(),
+            max_turns=self.args.max_turns,
+            timeout_seconds=self.args.timeout,
+            transcript_path=self._transcript_path(),
+            label=f"review-verify-{self.args.category}-{focus}",
+            needs_skills=self._needs_skills(),
+            reasoning_effort=self._resolve_effort(),
+        )
+        return self._build_resume_params(params, prior_sid) if prior_sid is not None else params
+
     def _run_verify_review(
         self,
         prior_detail: dict[str, Any],
@@ -2046,55 +2093,25 @@ object, even after calling the capability.
         # the gap is every endpoint's, not the reviewer's (SETUP-F-39).
         output_lines = [f"[review-verify] {self.args.category}/{focus}"]
 
-        # Strip opposite-category detail from booley_state.json for the
-        # duration of the agent run (see workspace_isolation comments).
-        state_filter = filter_state_file_for_category(
-            getattr(self.args, "state_file", None),
-            self.args.category,
-        )
-
         session_key = f"reviewer-{self.args.category}-{focus}"
         prior_sid = self._load_session_id(session_key)
-
         start = time.monotonic()
-        prompt = self._build_verify_prompt(focus, prior_detail, resumed=prior_sid is not None)
-        system_prompt = self._build_verify_system_prompt(focus)
-        model = self._resolve_model()
-        effort = self._resolve_effort()
-        transcript = self._transcript_path()
-        params = AgentCallParams(
-            prompt=prompt,
-            model=model,
-            cwd=self.args.work_dir,
-            allowed_agent_capabilities=self.agent_capabilities,
-            # The verify contract is the ``{"findings": [...]}`` text schema
-            # (index/status/evidence). ReportFindings cannot express a
-            # per-index FIXED/STILL_PRESENT status, so deny it here and force
-            # the agent onto the text schema (unlike the initial review, which
-            # captures ReportFindings instead).
-            disallowed_agent_capabilities=[*self.READ_ONLY_DENY, REPORT_FINDINGS_CAPABILITY],
-            system_prompt=system_prompt,
-            output_format=self._output_format(),
-            max_turns=self.args.max_turns,
-            timeout_seconds=self.args.timeout,
-            transcript_path=transcript,
-            label=f"review-verify-{self.args.category}-{focus}",
-            needs_skills=self._needs_skills(),
-            reasoning_effort=effort,
-        )
-        if prior_sid is not None:
-            params = self._build_resume_params(params, prior_sid)
+        params = self._verify_agent_params(focus, prior_detail, prior_sid)
         self.emit_progress("invoking verify agent")
         try:
-            with state_filter:
+            with self._review_state_filter():
                 result = self._invoke_agent_with_resume(params)
                 remaining, remaining_indices, dispositions = self._parse_verify_output(
                     result.output, prior_detail
                 )
-        except Exception as exc:
-            logger.error("Verify review agent failed for focus=%s: %s", focus, exc)
-            logger.debug("Verify review agent traceback for focus=%s", focus, exc_info=True)
-            self._write_provider_diagnostic(exc, transcript)
+        except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
+            output_lines.append(
+                self._record_review_provider_failure(
+                    exc,
+                    params.transcript_path,
+                    f"Verify review agent failed for focus={focus}",
+                )
+            )
             return None, output_lines, set(), {}
 
         self._persist_session_id(session_key)
@@ -2556,6 +2573,27 @@ Schema enforcement (applied upstream by the harness):
             return None
         return parsed.issues
 
+    def _single_review_params(self, focus: str) -> AgentCallParams:
+        return AgentCallParams(
+            prompt=self._build_prompt(focus_override=focus),
+            model=self._resolve_model(),
+            cwd=self.args.work_dir,
+            allowed_agent_capabilities=[
+                *self.agent_capabilities,
+                REPORT_FINDINGS_CAPABILITY,
+            ],
+            disallowed_agent_capabilities=list(self.READ_ONLY_DENY),
+            system_prompt=self._build_system_prompt(focus),
+            output_format=self._output_format(),
+            capture_agent_capability_calls=[REPORT_FINDINGS_CAPABILITY],
+            max_turns=self.args.max_turns,
+            timeout_seconds=self.args.timeout,
+            transcript_path=self._transcript_path(),
+            label=f"review-{self.args.category}-{focus}",
+            needs_skills=self._needs_skills(),
+            reasoning_effort=self._resolve_effort(),
+        )
+
     def _run_single_review(self) -> tuple[list[ReviewIssue] | None, list[str]]:
         """Run exactly one focus review. Returns (issues, output_lines) or (None, lines) on error.
 
@@ -2567,50 +2605,12 @@ Schema enforcement (applied upstream by the harness):
         output_lines = [f"[review] {self.args.category}/{focus}"]
         self._non_corrective_issues = []
 
-        # Strip opposite-category detail from booley_state.json for the
-        # duration of the agent run (see workspace_isolation comments).
-        state_filter = filter_state_file_for_category(
-            getattr(self.args, "state_file", None),
-            self.args.category,
-        )
-
         start = time.monotonic()
-        prompt = self._build_prompt(focus_override=focus)
-        system_prompt = self._build_system_prompt(focus)
-        model = self._resolve_model()
-        effort = self._resolve_effort()
-        transcript = self._transcript_path()
+        params = self._single_review_params(focus)
         self.emit_progress(f"invoking review agent ({self.args.category}/{focus})")
         try:
-            with state_filter:
-                result = self._invoke_agent(
-                    AgentCallParams(
-                        prompt=prompt,
-                        model=model,
-                        cwd=self.args.work_dir,
-                        # Explicitly admit ReportFindings for the initial review so
-                        # the agent's native review contract is available (and then
-                        # captured below), rather than relying on the SDK leaking it
-                        # past the allowlist.
-                        allowed_agent_capabilities=[
-                            *self.agent_capabilities,
-                            REPORT_FINDINGS_CAPABILITY,
-                        ],
-                        # Hard deny (survives bypassPermissions) — see
-                        # READ_ONLY_DENY. Category deny patterns stay in
-                        # workspace_isolation; this is the read-only half.
-                        disallowed_agent_capabilities=list(self.READ_ONLY_DENY),
-                        system_prompt=system_prompt,
-                        output_format=self._output_format(),
-                        capture_agent_capability_calls=[REPORT_FINDINGS_CAPABILITY],
-                        max_turns=self.args.max_turns,
-                        timeout_seconds=self.args.timeout,
-                        transcript_path=transcript,
-                        label=f"review-{self.args.category}-{focus}",
-                        needs_skills=self._needs_skills(),
-                        reasoning_effort=effort,
-                    )
-                )
+            with self._review_state_filter():
+                result = self._invoke_agent(params)
                 issues = self._extract_review_issues(
                     result,
                     focus,
@@ -2620,10 +2620,14 @@ Schema enforcement (applied upstream by the harness):
                     return None, output_lines
                 issues = self._filter_review_issues(issues, output_lines)
                 self.emit_progress(f"review complete: {len(issues)} finding(s)")
-        except Exception as exc:
-            logger.error("Review agent failed for focus=%s: %s", focus, exc)
-            logger.debug("Review agent traceback for focus=%s", focus, exc_info=True)
-            self._write_provider_diagnostic(exc, transcript)
+        except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
+            output_lines.append(
+                self._record_review_provider_failure(
+                    exc,
+                    params.transcript_path,
+                    f"Review agent failed for focus={focus}",
+                )
+            )
             return None, output_lines
 
         self._persist_session_id(f"reviewer-{self.args.category}-{focus}")
@@ -2908,7 +2912,10 @@ Schema enforcement (applied upstream by the harness):
             if discovered is None:
                 return McpToolResult(
                     exit_code=EXIT_ERROR,
-                    report_text="Final clean-review discovery agent invocation failed",
+                    report_text=self._provider_failure_report(
+                        discovery_lines,
+                        "Final clean-review discovery agent invocation failed",
+                    ),
                 )
             output_lines.extend(["", "[review] final discovery after source changes"])
             output_lines.extend(discovery_lines)

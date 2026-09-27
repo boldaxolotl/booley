@@ -277,7 +277,9 @@ def test_provider_exception_preserves_report_and_persists_traceback(
     assert "\n" not in diagnosis
     assert len(diagnosis) < 1_100
     diagnostic = Path(result.outcome.report_text.split("Diagnostic: ", 1)[1])
-    assert diagnostic == tmp_path / "transcripts/review_test.error.log"
+    assert diagnostic.parent == tmp_path / "transcripts"
+    assert diagnostic.name.startswith("review_test.")
+    assert diagnostic.name.endswith(".error.log")
     assert message in diagnostic.read_text(encoding="utf-8")
     assert "Traceback" not in capsys.readouterr().err
     assert any(record.exc_info for record in caplog.records if record.levelname == "DEBUG")

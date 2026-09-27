@@ -120,6 +120,41 @@ def prepare_execution(
     )
 
 
+def _transcript_diagnostic_path(endpoint: EndpointState) -> Path | None:
+    if getattr(endpoint.args, "transcript_dir", None) is None:
+        return None
+    resolver = getattr(endpoint, "_transcript_path", None)
+    if not callable(resolver):
+        return None
+    try:
+        return resolver()
+    except Exception:
+        logger.debug("Could not resolve endpoint transcript diagnostic path", exc_info=True)
+        return None
+
+
+def _exception_outcome(
+    endpoint: EndpointState,
+    prepared: PreparedExecution,
+    exc: Exception,
+) -> EndpointOutcome:
+    logger.debug("Endpoint %s failed with exception", endpoint.name, exc_info=True)
+    persist = not prepared.non_persisting_dry_run
+    transcript_path = _transcript_diagnostic_path(endpoint) if persist else None
+    diagnostic_path = write_exception_diagnostic(
+        exc,
+        endpoint_name=endpoint.name,
+        invocation_id=endpoint._invocation_id,
+        report_dir=endpoint.args.report_dir,
+        transcript_path=transcript_path,
+        persist=persist,
+    )
+    return EndpointOutcome(
+        exit_code=EXIT_ERROR,
+        report_text=exception_report_text(endpoint.name, exc, diagnostic_path),
+    )
+
+
 def invoke_endpoint(
     endpoint: EndpointState,
     prepared: PreparedExecution,
@@ -141,31 +176,8 @@ def invoke_endpoint(
             else:
                 raw = endpoint._run()
             result = endpoint._adapt_outcome(raw)
-        except Exception as exc:
-            logger.debug("Endpoint %s failed with exception", endpoint.name, exc_info=True)
-            transcript_path = None
-            if getattr(endpoint.args, "transcript_dir", None) is not None:
-                resolver = getattr(endpoint, "_transcript_path", None)
-                if callable(resolver):
-                    try:
-                        transcript_path = resolver()
-                    except Exception:
-                        logger.debug(
-                            "Could not resolve endpoint transcript diagnostic path",
-                            exc_info=True,
-                        )
-            diagnostic_path = write_exception_diagnostic(
-                exc,
-                endpoint_name=endpoint.name,
-                invocation_id=endpoint._invocation_id,
-                report_dir=endpoint.args.report_dir,
-                transcript_path=transcript_path,
-                persist=not prepared.non_persisting_dry_run,
-            )
-            result = EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=exception_report_text(endpoint.name, exc, diagnostic_path),
-            )
+        except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
+            result = _exception_outcome(endpoint, prepared, exc)
     finally:
         sys.stdout = witness.wrapped
     result = endpoint._adapt_outcome(result)

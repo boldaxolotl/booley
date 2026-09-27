@@ -195,9 +195,9 @@ def test_creator_provider_failure_has_durable_debug_traceback(
     ordinary = [record for record in caplog.records if record.levelno >= 20]
     assert all(record.exc_info is None for record in ordinary)
     assert any(record.exc_info for record in caplog.records if record.levelno == 10)
-    assert "RuntimeError: creator boom" in (
-        transcript_dir / "mutation_tester.error.log"
-    ).read_text(encoding="utf-8")
+    diagnostics = list(transcript_dir.glob("mutation_tester.*.error.log"))
+    assert len(diagnostics) == 1
+    assert "RuntimeError: creator boom" in diagnostics[0].read_text(encoding="utf-8")
 
 
 def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch) -> None:

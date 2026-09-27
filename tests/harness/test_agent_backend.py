@@ -86,6 +86,20 @@ def test_unclassified_stream_exception_keeps_traceback_at_debug(caplog) -> None:
     assert any(record.levelname == "DEBUG" and record.exc_info for record in caplog.records)
 
 
+def test_result_error_classification_uses_terminal_text() -> None:
+    from claude_agent_sdk import ResultError
+
+    from booley.runtime import _claude_backend as cb
+    from booley.runtime.agent_errors import UsageLimitError
+
+    failure = ResultError("Command failed with exit code 1")
+    failure.result = "You've hit your usage limit"
+    failure.errors = []
+
+    with patch.object(cb, "_dump_crash_context"), pytest.raises(UsageLimitError):
+        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None)
+
+
 # ===========================================================================
 # Protocol conformance
 # ===========================================================================

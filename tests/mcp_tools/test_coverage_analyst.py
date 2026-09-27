@@ -17,7 +17,12 @@ except ModuleNotFoundError:
 from booley.core.models import AgentResult
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
 from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
-from booley.runtime.agent_errors import AgentTimeoutError, TransientAPIError, UsageLimitError
+from booley.runtime.agent_errors import (
+    AgentProviderError,
+    AgentTimeoutError,
+    TransientAPIError,
+    UsageLimitError,
+)
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.test_coverage_campaign import _valid_document
@@ -534,7 +539,7 @@ def test_cli_distinguishes_empty_and_malformed_model_output(
         AgentTimeoutError("provider timed out"),
         UsageLimitError("usage exhausted", provider="codex"),
         TransientAPIError("provider unavailable"),
-        RuntimeError("Codex exited unsuccessfully"),
+        AgentProviderError("Codex exited unsuccessfully", provider="codex"),
     ],
     ids=["result", "claude-sdk", "timeout", "usage", "transient", "codex"],
 )
@@ -572,6 +577,42 @@ def test_cli_reports_terminal_provider_failures_without_mutating_state(
     assert "Traceback" in diagnostic.read_text(encoding="utf-8")
     assert "Traceback" not in capsys.readouterr().err
     assert state.read_bytes() == b"seeded state must remain byte-for-byte unchanged"
+
+
+def test_cli_reports_result_error_terminal_text(tmp_path):
+    path = persist_campaign(tmp_path)
+    provider_error = ResultError("Command failed with exit code 1")
+    provider_error.result = "API Error: overloaded"
+    provider_error.errors = []
+
+    def fail(_params):
+        raise provider_error
+
+    result = CoverageAnalystSpecialist(model=fail).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert "model provider returned an error: API Error: overloaded" in (
+        result.outcome.report_text
+    )
+
+
+def test_cli_does_not_misclassify_internal_runtime_error_as_provider_failure(tmp_path):
+    path = persist_campaign(tmp_path)
+
+    def fail(_params):
+        raise RuntimeError("internal bug")
+
+    result = CoverageAnalystSpecialist(model=fail).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert result.outcome.report_text.startswith(
+        "coverage_analyst failed: RuntimeError: internal bug"
+    )
+    assert "model provider returned an error" not in result.outcome.report_text
 
 
 def test_cli_reports_backend_input_limit_as_actionable_error(tmp_path):
