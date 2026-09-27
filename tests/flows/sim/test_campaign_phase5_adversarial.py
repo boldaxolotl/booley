@@ -37,13 +37,14 @@ from booley.flows.sim.coverage_invocation import (
     prepare_coverage_invocation,
 )
 from booley.flows.sim.execution.contract import (
+    PreSimEvidence,
     SimulationArtifactEvidence,
     SimulationPreview,
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
 from booley.flows.sim.flow import _campaign_report_lines, _campaign_structured_details
-from booley.flows.sim.verilator_coverage import SimulationBuildResult
+from booley.flows.sim.verilator_coverage import SimulationBuildResult, SimulationRunResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 from tests.flows.sim.test_campaign_crash_matrix import (
@@ -375,7 +376,7 @@ def _run_coverage_campaign(root: Path, native: NativeExecution, *, runtime_input
     plan, target = _coverage_campaign_plan(root, runtime_input=runtime_input)
     executor = CoverageAggregateExecutor(
         plans={target.handle.identity: target},
-        execution_factory=lambda _plan, _options: native,
+        execution_factory=lambda _plan, _options, _commands, _access: native,
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
@@ -413,6 +414,34 @@ def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_t
     )
     build = json.loads((attempt / "private-build/build-result.json").read_bytes())
     assert build["elapsed_seconds"] > 0
+
+
+def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path) -> None:
+    class PreSimFailure(NativeExecution):
+        def run(self, request):
+            self.runs.append(request)
+            evidence = PreSimEvidence(
+                ("prepare-vectors",),
+                (request.test.name,),
+                "failed",
+                0.2,
+                "vector generator rejected input",
+            )
+            return SimulationRunResult("elab_error", evidence.detail, evidence)
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a Pre-Sim failure")
+
+    outcome, store = _run_coverage_campaign(tmp_path, PreSimFailure())
+
+    assert outcome.complete is True
+    result = store.scan().items[0].result
+    assert result is not None
+    observations = result.document["observations"]
+    assert observations[0]["execution"] == "completed"
+    assert observations[0]["detail"]["reason"] == (
+        "Pre-Sim Commands failed (failed): vector generator rejected input"
+    )
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:

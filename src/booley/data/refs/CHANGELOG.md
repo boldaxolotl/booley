@@ -47,6 +47,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Native-coverage Simulation now runs Pre-Sim Commands before every selected
+  test process, including one-test Cocotb batches. It rejects stale staged
+  inputs and hook mutations of authenticated compile, simulator, and coverage
+  artifacts, while preserving attributed failures in CLI, MCP, and durable
+  Simulation Campaign reports. (#723)
 - Direct built-in and Custom Flows now keep their default reports under resolved
   Project data. Plain Simulation, native coverage, and resume share one report
   root and invocation-number sequence, and no default `flow-reports/` directory

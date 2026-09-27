@@ -22,6 +22,7 @@ from .coverage_campaign import (
     FrozenJson,
     SimulationVerdict,
 )
+from .execution.contract import PreSimEvidence
 from .execution.freshness import (
     ArtifactStamp,
     ArtifactValidationError,
@@ -197,6 +198,8 @@ class SimulationRunResult:
 
     verdict: SimulationVerdict
     output: str = ""
+    pre_sim: PreSimEvidence | None = None
+    infrastructure_error: bool = False
 
 
 @dataclass(frozen=True)
@@ -300,6 +303,8 @@ class _CollectedRun:
     records: tuple[_NativeRecord, ...]
     findings: tuple[CoverageFinding, ...] = ()
     hook_artifact: CoverageArtifact | None = None
+    infrastructure_error: bool = False
+    infrastructure_detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -396,11 +401,72 @@ def _collect_one_run(
 ) -> _CollectedRun:
     context = _prepare_run(request, index, selected)
     result = execution.run(_run_request(request, context))
+    if result.pre_sim is not None and result.pre_sim.status != "passed":
+        return _pre_sim_failure(request, context, result)
+    if result.infrastructure_error:
+        failed = _run_failure(
+            request,
+            context,
+            result.verdict,
+            code="COV_INFRASTRUCTURE_ERROR",
+            message=result.output or "coverage Simulation infrastructure failed",
+            pointer="execution",
+            attributes=_pre_sim_attributes(result.pre_sim),
+        )
+        return replace(
+            failed,
+            infrastructure_error=True,
+            infrastructure_detail=result.output,
+        )
     failure = _read_raw_artifact(request, context, result.verdict)
     if isinstance(failure, _CollectedRun):
         return failure
     raw_artifact, records = failure
-    return _finish_run(request, context, result.verdict, raw_artifact, records)
+    return _finish_run(
+        request, context, result.verdict, raw_artifact, records, pre_sim=result.pre_sim
+    )
+
+
+def _pre_sim_attributes(evidence: PreSimEvidence | None) -> Mapping[str, FrozenJson]:
+    if evidence is None:
+        return MappingProxyType({})
+    return MappingProxyType(
+        {
+            "pre_sim": {
+                "commands": evidence.commands,
+                "test_names": evidence.test_names,
+                "status": evidence.status,
+                "elapsed_s": evidence.elapsed_s,
+                "detail": evidence.detail,
+            }
+        }
+    )
+
+
+def _pre_sim_failure(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    result: SimulationRunResult,
+) -> _CollectedRun:
+    evidence = result.pre_sim
+    assert evidence is not None
+    message = f"Pre-Sim Commands failed ({evidence.status})"
+    if evidence.detail:
+        message += f": {evidence.detail}"
+    failed = _run_failure(
+        request,
+        context,
+        "elab_error",
+        code="COV_PRE_SIM_FAILED",
+        message=message,
+        pointer="pre_sim",
+        attributes=_pre_sim_attributes(evidence),
+    )
+    return replace(
+        failed,
+        infrastructure_error=result.infrastructure_error,
+        infrastructure_detail=message,
+    )
 
 
 def _prepare_run(
@@ -513,6 +579,8 @@ def _finish_run(
     verdict: SimulationVerdict,
     raw_artifact: CoverageArtifact,
     records: tuple[_NativeRecord, ...],
+    *,
+    pre_sim: PreSimEvidence | None = None,
 ) -> _CollectedRun:
     hook_artifact = None
     if context.hook_path is not None:
@@ -544,7 +612,7 @@ def _finish_run(
             simulation_verdict=verdict,
             collection="included",
             raw_artifact=raw_artifact.id,
-            attributes=MappingProxyType({}),
+            attributes=_pre_sim_attributes(pre_sim),
         ),
         artifact=raw_artifact,
         records=records,
@@ -563,6 +631,7 @@ def _run_failure(
     artifact: CoverageArtifact | None = None,
     records: tuple[_NativeRecord, ...] = (),
     pointer: str = "raw_artifact",
+    attributes: Mapping[str, FrozenJson] | None = None,
 ) -> _CollectedRun:
     artifact_id = f"artifact:raw:{context.index:03d}" if state else None
     if state is not None:
@@ -580,7 +649,7 @@ def _run_failure(
         verdict,
         "collector_error",
         artifact.id if artifact is not None else None,
-        MappingProxyType({}),
+        attributes or MappingProxyType({}),
     )
     finding = CoverageFinding("error", code, f"/tests/runs/{context.index - 1}/{pointer}", message)
     return _CollectedRun(run, artifact, records, (finding,))
@@ -1180,7 +1249,16 @@ def collect(
     completed: list[_CollectedRun] = []
     try:
         for index, selected in enumerate(request.selected_tests, start=1):
-            completed.append(_collect_one_run(request, execution, index, selected))
+            collected = _collect_one_run(request, execution, index, selected)
+            completed.append(collected)
+            if collected.infrastructure_error:
+                return _infrastructure_failure(
+                    request,
+                    build,
+                    tuple(completed),
+                    collected.infrastructure_detail,
+                    code=collected.findings[0].code,
+                )
         return _finish_collection(request, execution, build, tuple(completed))
     except OSError as exc:
         return _infrastructure_failure(request, build, tuple(completed), str(exc))

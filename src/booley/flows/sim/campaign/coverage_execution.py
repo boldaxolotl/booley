@@ -148,7 +148,8 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         *,
         plans: Mapping[str, CoverageTargetPlan],
         execution_factory: Callable[
-            [CoverageTargetPlan, SimulationOptions], SimulationExecutionPort
+            [CoverageTargetPlan, SimulationOptions, tuple[str, ...], str],
+            SimulationExecutionPort,
         ],
         publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
@@ -272,7 +273,11 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             else None,
             result_verbosity=request.policy.result_verbosity,
         )
-        return self._execution_factory(plan, options)
+        workload = cast(Mapping[str, object], request.manifest.document["workload"])
+        source_recipe = cast(Mapping[str, object], workload["source_recipe"])
+        commands = tuple(cast(tuple[str, ...], source_recipe["pre_sim_commands"]))
+        access = cast(str, workload["pre_sim_build_access"])
+        return self._execution_factory(plan, options, commands, access)
 
     def _capture_build(
         self,
@@ -454,6 +459,9 @@ def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
         or verdict not in {"pass", "fail", "timeout", "crash", "inconclusive", "elab_error"}
     ):
         raise SimulationCampaignIntegrityError("Coverage Campaign test evidence is invalid")
+    error_tail = item.get("error_tail")
+    if not isinstance(error_tail, str):
+        error_tail = "" if verdict == "pass" else f"coverage simulation {verdict}"
     test = SimulationTestOutcome(
         name=name,
         verdict=cast(str, verdict),  # type: ignore[arg-type]
@@ -462,7 +470,7 @@ def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
         crashed=verdict == "crash",
         elab_failed=verdict == "elab_error",
         inconclusive=verdict == "inconclusive",
-        error_tail=("" if verdict == "pass" else f"coverage simulation {verdict}"),
+        error_tail=error_tail,
     )
     return test
 

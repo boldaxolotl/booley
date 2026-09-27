@@ -3,13 +3,15 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity, freeze_coverage_mapping
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
 )
-from booley.flows.sim.coverage_transaction import run_coverage_target
+from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
+from booley.flows.sim.execution.contract import PreSimEvidence
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     SimulationBuildResult,
@@ -90,6 +92,68 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert "source_rollups" not in simulation
     assert "source_rollups" not in outcome.detail
     assert progress.outcomes == [outcome]
+
+
+def test_simulation_projection_preserves_pre_sim_failure_detail(tmp_path: Path):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class PreSimFailure(NativeExecution):
+        def run(self, request):
+            self.runs.append(request)
+            evidence = PreSimEvidence(
+                ("prepare-vectors",),
+                (request.test.name,),
+                "failed",
+                0.2,
+                "vector generator rejected input",
+            )
+            return SimulationRunResult("elab_error", evidence.detail, evidence)
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a Pre-Sim failure")
+
+    outcome = run_coverage_target(plan, PreSimFailure(), Progress())
+
+    assert outcome.exit_code == 2
+    simulation = json.loads(outcome.simulation_path.read_text())
+    assert simulation["tests"][0]["pre_sim"]["status"] == "failed"
+    assert simulation["tests"][0]["error_tail"] == (
+        "Pre-Sim Commands failed (failed): vector generator rejected input"
+    )
+
+
+def test_coverage_cli_renders_one_concise_line_per_pre_sim_firing(tmp_path: Path):
+    detail = freeze_coverage_mapping(
+        {
+            "simulation": "elab_error",
+            "collection": "collector_error",
+            "evaluation": "not_requested",
+            "tests": [
+                {
+                    "name": "reset",
+                    "pre_sim": {"status": "failed", "elapsed_s": 0.125},
+                },
+                {
+                    "name": "wrap",
+                    "pre_sim": {"status": "passed", "elapsed_s": 0.25},
+                },
+            ],
+        }
+    )
+    outcome = CoverageTargetOutcome(
+        "sim_0",
+        2,
+        tmp_path / "missing-coverage.json",
+        tmp_path / "missing-simulation.json",
+        detail,
+    )
+
+    rendered = SimulateFlow()._coverage_result([outcome]).report_text
+
+    assert "sim_0: pre-sim=failed test=reset duration=0.125s" in rendered
+    assert "sim_0: pre-sim=passed test=wrap duration=0.250s" in rendered
 
 
 import pytest

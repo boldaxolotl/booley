@@ -316,7 +316,8 @@ def _simulation_projection(
     result: CoverageCollectionResult,
     passed: bool,
 ) -> dict[str, object]:
-    return {
+    tests = [_coverage_test_projection(run) for run in result.runs]
+    document: dict[str, object] = {
         "flow": "sim",
         "mode": "simulate",
         "timestamp": utc_now_rfc3339(),
@@ -328,19 +329,33 @@ def _simulation_projection(
         "passed": passed,
         "simulation": _simulation_status(result),
         "abort_remaining": result.infrastructure_error,
-        "tests": [
-            {
-                "name": run.test,
-                "verdict": run.simulation_verdict,
-                "passed": run.simulation_verdict == "pass",
-                "collection": run.collection,
-            }
-            for run in result.runs
-        ],
+        "tests": tests,
         "collection": campaign.collection["status"],
         "evaluation": campaign.evaluation["status"],
         "coverage_campaign": "coverage.json",
     }
+    errors = [str(item["error_tail"]) for item in tests if item.get("error_tail")]
+    if errors:
+        document["error"] = errors[0]
+    return document
+
+
+def _coverage_test_projection(run) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "name": run.test,
+        "verdict": run.simulation_verdict,
+        "passed": run.simulation_verdict == "pass",
+        "collection": run.collection,
+    }
+    pre_sim = run.attributes.get("pre_sim")
+    if isinstance(pre_sim, Mapping):
+        projected = dict(pre_sim)
+        entry["pre_sim"] = projected
+        if projected.get("status") != "passed":
+            detail = str(projected.get("detail") or "").strip()
+            error = f"Pre-Sim Commands failed ({projected.get('status')})"
+            entry["error_tail"] = f"{error}: {detail}" if detail else error
+    return entry
 
 
 def _simulation_status(result: CoverageCollectionResult) -> str:

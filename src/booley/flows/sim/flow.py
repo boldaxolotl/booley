@@ -2657,7 +2657,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return "not_requested" if matches[0].criterion is None else "blocked"
 
     def _coverage_campaign_execution(
-        self, plan: CoverageTargetPlan, options: SimulationOptions
+        self,
+        plan: CoverageTargetPlan,
+        options: SimulationOptions,
+        pre_sim_commands: tuple[str, ...],
+        pre_sim_build_access: str,
     ) -> SimulationExecutionPort:
         from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 
@@ -2668,6 +2672,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 plan.handle,
                 invoke=self._execute_boundary,
                 options=options,
+                pre_sim_commands=pre_sim_commands,
+                pre_sim_build_access=pre_sim_build_access,
             )
         )
 
@@ -2771,6 +2777,17 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             lines.append(
                 f"{outcome.target}: simulation={detail.get('simulation', 'inconclusive')}, collection={detail.get('collection')}, coverage={detail.get('evaluation')}"
             )
+            for test in detail.get("tests", ()):
+                if not isinstance(test, Mapping):
+                    continue
+                pre_sim = test.get("pre_sim")
+                if not isinstance(pre_sim, Mapping):
+                    continue
+                duration = float(pre_sim.get("elapsed_s", 0.0))
+                lines.append(
+                    f"{outcome.target}: pre-sim={pre_sim.get('status')} "
+                    f"test={test.get('name')} duration={duration:.3f}s"
+                )
         return EndpointOutcome(
             exit_code=max((item.exit_code for item in outcomes), default=2),
             detail={"coverage": True, "targets": targets},
