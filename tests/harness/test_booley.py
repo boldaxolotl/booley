@@ -1013,10 +1013,43 @@ def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, cap
     monkeypatch.setattr(
         review_lifecycle,
         "review_briefing_command",
-        lambda *_a, **_k: Namespace(status="failed", message="briefing unavailable"),
+        lambda *_a, **_k: Namespace(
+            status="failed",
+            message="briefing unavailable; run booley board review demo",
+        ),
     )
     assert tlr._cmd_board_show(missing_args, tmp_path) == 2
-    assert "briefing unavailable" in capsys.readouterr().err
+    assert capsys.readouterr().err.strip() == (
+        "ERROR: briefing unavailable; run booley board review demo"
+    )
+
+
+def test_board_show_does_not_append_review_guidance_to_accepted_failure(
+    monkeypatch, tmp_path, capsys
+):
+    from booley.ticket_board import io, review_lifecycle
+
+    class FakeTio:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def find_ticket(self, _slug):
+            return {"file": "board/review/demo.md", "status": "review", "summary": "work"}
+
+    monkeypatch.setattr(io, "TicketIO", FakeTio)
+    monkeypatch.setattr(
+        review_lifecycle,
+        "review_briefing_command",
+        lambda *_a, **_k: Namespace(
+            status="failed",
+            message="Criteria Satisfaction Record is corrupt: bad binding",
+        ),
+    )
+    args = tlr._build_parser().parse_args(["board", "show", "demo"])
+    assert tlr._cmd_board_show(args, tmp_path) == 2
+    error = capsys.readouterr().err
+    assert "Criteria Satisfaction Record is corrupt" in error
+    assert "board review" not in error
 
 
 def test_board_review_handler_rejects_inconsistent_options(capsys, tmp_path):
