@@ -122,7 +122,25 @@ def _patch_developer_path(monkeypatch, tmp_path: Path, *, agent_result):
     monkeypatch.setattr(developer, "_prepare_blocked_triage", AsyncMock())
     monkeypatch.setattr(developer, "record_crash", MagicMock())
     monkeypatch.setattr(developer, "fail_ticket", MagicMock())
+    monkeypatch.setattr(developer.ticket_cli, "ticket_status", MagicMock(return_value="running"))
     return invoke
+
+
+@pytest.mark.asyncio
+async def test_early_blocked_triage_error_preserves_result(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path, completed_steps=["setup"], worktree_path=tmp_path / "worktree")
+    _patch_ticket_body(monkeypatch, ctx)
+    monkeypatch.setattr(developer, "_resumed_basis_failure", lambda _ctx: "basis changed")
+    monkeypatch.setattr(developer, "block_ticket", MagicMock())
+    monkeypatch.setattr(
+        developer,
+        "_prepare_blocked_triage",
+        AsyncMock(side_effect=RuntimeError("dossier failed")),
+    )
+
+    result = await developer._run_ticket_body(ctx, tmp_path, 0.0)
+
+    assert result.disposition == "blocked"
 
 
 @pytest.mark.asyncio
@@ -152,6 +170,46 @@ async def test_post_developer_block_returns_blocked(tmp_path: Path, monkeypatch,
     result = await developer._run_developer_path(ctx, tmp_path)
 
     assert result.disposition == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_guardrail_block_wins_over_followup_budget_check(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path, worktree_path=tmp_path / "worktree")
+    _patch_developer_path(
+        monkeypatch,
+        tmp_path,
+        agent_result=AgentResult(output="done", input_tokens=1, output_tokens=1),
+    )
+    budget = MagicMock()
+    budget.raise_if_exhausted.side_effect = [None, AssertionError("must not run after block")]
+    monkeypatch.setattr(developer, "DeveloperBudget", lambda *_args, **_kwargs: budget)
+    monkeypatch.setattr(developer, "_run_post_guardrails", lambda *_args: True)
+
+    result = await developer._run_developer_path(ctx, tmp_path)
+
+    assert result.disposition == "blocked"
+    assert budget.raise_if_exhausted.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "expected", "expected_failures"),
+    [("running", "failed", 1), ("review", "failed", 0), ("done", "done", 0)],
+)
+def test_path_failure_preserves_durable_board_state(
+    tmp_path: Path, monkeypatch, status: str, expected: str, expected_failures: int
+):
+    ctx = _context(tmp_path, worktree_path=tmp_path / "worktree")
+    monkeypatch.setattr(developer, "record_crash", MagicMock())
+    failure = MagicMock()
+    monkeypatch.setattr(developer, "fail_ticket", failure)
+    monkeypatch.setattr(developer.ticket_cli, "ticket_status", MagicMock(return_value=status))
+
+    result = developer._classify_developer_path_failure(
+        ctx, tmp_path, 0, RuntimeError("handoff failed")
+    )
+
+    assert result.disposition == expected
+    assert failure.call_count == expected_failures
 
 
 @pytest.mark.asyncio

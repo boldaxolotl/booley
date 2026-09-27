@@ -124,6 +124,17 @@ class TicketRunResult:
     html_path: Path | None = None
     version: int = 1
 
+    def __post_init__(self) -> None:
+        """Reject artifact combinations that contradict the CLI contract."""
+        if self.disposition not in {"review", "done", "blocked", "failed"}:
+            raise ValueError(f"unknown Ticket run disposition: {self.disposition!r}")
+        if self.disposition == "review":
+            if self.review_package_path is None:
+                raise ValueError("review results require a review package path")
+            return
+        if self.review_package_path is not None or self.html_path is not None:
+            raise ValueError(f"{self.disposition} results cannot contain review artifacts")
+
     def to_dict(self) -> dict[str, object]:
         return {
             "version": self.version,
@@ -364,7 +375,7 @@ async def _run_ticket_body(
     ctx: TicketContext,
     project_root: Path,
     exec_start: float,
-) -> TicketRunResult | None:
+) -> TicketRunResult:
     """Inner execution body -- separated so teardown_file_logging always runs."""
     logger.debug(
         "Execution started for %s (type=%s, branch=%s)", ctx.slug, ctx.ticket_type, ctx.branch
@@ -381,15 +392,13 @@ async def _run_ticket_body(
     if "setup" not in ctx.completed_steps:
         setup_blocked = await _run_setup_step(ctx, project_root)
         if setup_blocked:
-            await _prepare_blocked_triage(ctx, project_root)
-            return _ticket_run_result(ctx.slug, "blocked")
+            return await _finalize_blocked_ticket_result(ctx, project_root)
 
     if resume_uses_existing_setup:
         basis_failure = _resumed_basis_failure(ctx)
         if basis_failure is not None:
             block_ticket(ctx, basis_failure, "setup")
-            await _prepare_blocked_triage(ctx, project_root)
-            return _ticket_run_result(ctx.slug, "blocked")
+            return await _finalize_blocked_ticket_result(ctx, project_root)
 
     # A blocked ticket may have received an expanded scope during triage while
     # retaining its worktree and completed setup marker. Refresh the persisted
@@ -411,8 +420,7 @@ async def _run_ticket_body(
     criteria_failure = _deferred_criteria_failure(ctx)
     if criteria_failure is not None:
         block_ticket(ctx, criteria_failure, "setup")
-        await _prepare_blocked_triage(ctx, project_root)
-        return _ticket_run_result(ctx.slug, "blocked")
+        return await _finalize_blocked_ticket_result(ctx, project_root)
 
     # Setup created the worktree -- refresh the click-link resolver so
     # post-setup file clicks resolve against the worktree copy with a
@@ -1397,7 +1405,11 @@ async def _prepare_review_handoff(
     run_index: int,
 ) -> ReviewPrepOutcome | None:
     """Prepare review artifacts; block and return no outcome on failure."""
-    from booley.ticket_board.review_lifecycle import prepare_review
+    from booley.ticket_board.review_lifecycle import (
+        ReviewPrepError,
+        ReviewPrepOutcome,
+        prepare_review,
+    )
 
     from .colors import dim, green, yellow
 
@@ -1406,7 +1418,11 @@ async def _prepare_review_handoff(
     _console_activity("post-processing")
     terminal.raw(f"  {green('all criteria met')} {dim('→ post-processing')}")
     try:
-        outcome = await prepare_review(project_root, ctx.slug)
+        try:
+            outcome = await prepare_review(project_root, ctx.slug)
+        except ReviewPrepError as exc:
+            logger.exception("Review preparation raised for %s", ctx.slug)
+            outcome = ReviewPrepOutcome("failed", f"{type(exc).__name__}: {exc}"[:2000])
     finally:
         _console_activity("")
     if outcome.ready and outcome.package_path is not None:
@@ -1773,9 +1789,9 @@ async def _run_developer_path(
         budget.raise_if_exhausted()
 
         guardrail_blocked = _run_post_guardrails(ctx, state_path, run_index)
-        budget.raise_if_exhausted()
         if guardrail_blocked:
             return _ticket_run_result(ctx.slug, "blocked")
+        budget.raise_if_exhausted()
 
         hook_blocked = _run_post_developer_hook(
             ctx,
@@ -1784,9 +1800,9 @@ async def _run_developer_path(
             run_index=run_index,
             budget=budget,
         )
-        budget.raise_if_exhausted()
         if hook_blocked:
             return _ticket_run_result(ctx.slug, "blocked")
+        budget.raise_if_exhausted()
         return await run_with_developer_budget(
             _resolve_ticket_disposition(
                 ctx,
@@ -1797,21 +1813,8 @@ async def _run_developer_path(
             ),
             budget,
         )
-    except Exception as e:
-        logger.error("Developer Agent path failed before/after agent: %s", e, exc_info=True)
-        record_crash(
-            ctx.logs_dir,
-            run_index=run_index,
-            reason=f"Developer Agent path error: {type(e).__name__}: {e}",
-        )
-        fail_ticket(
-            ctx,
-            f"Developer Agent path error: {type(e).__name__}: {e}",
-            "developer",
-            run_index=run_index,
-            crashed=True,
-        )
-        return _ticket_run_result(ctx.slug, "failed")
+    except Exception as e:  # noqa: BLE001 - path boundary returns an explicit disposition
+        return _classify_developer_path_failure(ctx, project_root, run_index, e)
     finally:
         if budget is not None:
             budget.finish()
@@ -1841,6 +1844,50 @@ async def _prepare_blocked_triage(ctx: TicketContext, project_root: Path) -> Non
         logger.info("Blocked triage dossier ready for %s", ctx.slug)
     else:
         logger.warning("Blocked triage dossier unavailable for %s: %s", ctx.slug, outcome.message)
+
+
+async def _finalize_blocked_ticket_result(
+    ctx: TicketContext, project_root: Path
+) -> TicketRunResult:
+    """Preserve a blocked result when best-effort dossier preparation fails."""
+    result = _ticket_run_result(ctx.slug, "blocked")
+    try:
+        await _prepare_blocked_triage(ctx, project_root)
+    except Exception:
+        logger.exception("Blocked triage finalization failed for %s", ctx.slug)
+    return result
+
+
+def _classify_developer_path_failure(
+    ctx: TicketContext,
+    project_root: Path,
+    run_index: int,
+    error: Exception,
+) -> TicketRunResult:
+    """Record a path failure without masking it after a durable Board move."""
+    reason = f"Developer Agent path error: {type(error).__name__}: {error}"
+    logger.error("Developer Agent path failed before/after agent: %s", error, exc_info=True)
+    try:
+        record_crash(ctx.logs_dir, run_index=run_index, reason=reason)
+    except Exception:
+        logger.exception("Could not record Developer Agent crash for %s", ctx.slug)
+
+    try:
+        status = ticket_cli.ticket_status(project_root, ctx.slug)
+    except Exception:
+        logger.exception("Could not read Ticket status after path failure for %s", ctx.slug)
+        status = None
+
+    if status == "done":
+        return _ticket_run_result(ctx.slug, "done")
+    if status in {None, "running"}:
+        try:
+            fail_ticket(ctx, reason, "developer", run_index=run_index, crashed=True)
+        except Exception:
+            logger.exception("Could not transition failed Ticket %s out of running", ctx.slug)
+    else:
+        logger.error("Preserving Ticket %s in durable status %s after failure", ctx.slug, status)
+    return _ticket_run_result(ctx.slug, "failed")
 
 
 def _resolve_booley_project_dir(project_root: Path) -> Path:

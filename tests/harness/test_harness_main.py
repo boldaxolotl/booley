@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -82,6 +83,26 @@ def test_missing_result_is_an_internal_invariant_error(tmp_path, monkeypatch, ca
 
     assert capsys.readouterr().out == ""
     assert "internal invariant" in caplog.text.lower()
+
+
+@pytest.mark.parametrize(
+    ("disposition", "package", "html", "message"),
+    [
+        ("review", None, None, "require a review package"),
+        ("done", Path("package.json"), None, "cannot contain review artifacts"),
+        ("blocked", None, Path("report.html"), "cannot contain review artifacts"),
+        ("failed", Path("package.json"), Path("report.html"), "cannot contain review artifacts"),
+        ("unknown", None, None, "unknown Ticket run disposition"),
+    ],
+)
+def test_ticket_result_rejects_invalid_artifact_combinations(disposition, package, html, message):
+    with pytest.raises(ValueError, match=message):
+        TicketRunResult(
+            slug="demo",
+            disposition=disposition,
+            review_package_path=package,
+            html_path=html,
+        )
 
 
 def test_main_forwards_cli_options_to_ticket_execution(tmp_path, monkeypatch):

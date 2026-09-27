@@ -851,7 +851,8 @@ for the `BOOLEY_RUN_RESULT ` prefix; exactly one record is emitted per normal
 Ticket ending. `review_package_path` and `html_path` are review-only and are
 `null` for every other disposition; `html_path` may also be `null` for review.
 A `failed` result classifies this Harness invocation even though the Ticket
-Board state is `blocked`, or `queued` after automatic retry. Because unexpected
+Board state may be `blocked`, `review` after a partial handoff, or `queued`
+after automatic retry. Because unexpected
 infrastructure errors also exit 1, automation should use the record's presence
 and disposition—not the exit status alone—to classify a normal Ticket ending.
 

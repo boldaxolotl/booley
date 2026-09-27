@@ -20,7 +20,7 @@ from booley.harness.blocking import AgentTimeoutError
 from booley.harness.developer import _resolve_ticket_disposition, _run_post_developer_hook
 from booley.harness.models import OnSuccess, TicketContext
 from booley.ticket_board.criteria_acceptance import CriteriaVerdict
-from booley.ticket_board.review_lifecycle import ReviewPrepOutcome
+from booley.ticket_board.review_lifecycle import ReviewPrepError, ReviewPrepOutcome
 from tests.criterion_endpoint_support import builtin_endpoint_catalog
 
 _ENDPOINTS = builtin_endpoint_catalog()
@@ -153,11 +153,42 @@ class TestResolveTicketDisposition:
 
         mocks["prepare_review"].side_effect = prepare
         try:
-            await _resolve_ticket_disposition(
+            result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
             )
+            assert result.disposition == "review"
             assert mocks["handoff"].call_count == 1
             assert mocks["block"].call_count == 0
+        finally:
+            _stop_all(patches)
+
+    @pytest.mark.asyncio
+    async def test_review_preparation_exception_returns_blocked(self, tmp_path: Path):
+        ctx = _make_ctx(tmp_path)
+        mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
+        mocks["prepare_review"].side_effect = ReviewPrepError("inputs disappeared")
+        try:
+            result = await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
+            )
+            assert result.disposition == "blocked"
+            mocks["block"].assert_called_once()
+            mocks["handoff"].assert_not_called()
+        finally:
+            _stop_all(patches)
+
+    @pytest.mark.asyncio
+    async def test_review_verification_exception_returns_blocked(self, tmp_path: Path):
+        ctx = _make_ctx(tmp_path)
+        mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
+        mocks["verify_review"].side_effect = ReviewPrepError("package changed")
+        try:
+            result = await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
+            )
+            assert result.disposition == "blocked"
+            mocks["block"].assert_called_once()
+            mocks["handoff"].assert_not_called()
         finally:
             _stop_all(patches)
 
@@ -172,9 +203,10 @@ class TestResolveTicketDisposition:
             package_path=tmp_path / "review-package.json",
         )
         try:
-            await _resolve_ticket_disposition(
+            result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
             )
+            assert result.disposition == "review"
             assert mocks["handoff"].call_count == 1
             assert mocks["block"].call_count == 0
         finally:
@@ -189,9 +221,10 @@ class TestResolveTicketDisposition:
             "changed", "live review inputs changed concurrently"
         )
         try:
-            await _resolve_ticket_disposition(
+            result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
             )
+            assert result.disposition == "blocked"
             assert mocks["block"].call_count == 1
             assert (
                 mocks["block"]
