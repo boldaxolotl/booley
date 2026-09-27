@@ -16,6 +16,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shlex
@@ -69,6 +70,10 @@ from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.paths import cheatsheet_path
 from booley.runtime.project_dir import PROJECT_DIR_NAME
+from booley.runtime.project_repositories import (
+    inspect_symbolic_branch,
+    is_git_worktree_root,
+)
 from booley.runtime.timefmt import format_human_datetime
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
@@ -1172,6 +1177,49 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
     return 0
 
 
+def _cmd_board_create(tio: TicketIO, slug: str, project_root: Path) -> bool:
+    if not is_git_worktree_root(project_root):
+        print(
+            "Error: Project checkout must be the root of a Git worktree",
+            file=sys.stderr,
+        )
+        return False
+    if not tio.tickets_dir.is_dir():
+        print(
+            "Error: Project Ticket storage is not initialized; run 'booley init' first",
+            file=sys.stderr,
+        )
+        return False
+
+    branch_inspection = inspect_symbolic_branch(project_root)
+    if branch_inspection.branch is None:
+        detail = branch_inspection.detail
+        if detail:
+            message = f"cannot inspect the Project checkout branch: {detail}"
+        else:
+            message = "Project checkout has a detached HEAD; attach it to a branch first"
+        print(f"Error: {message}", file=sys.stderr)
+        return False
+
+    # Keep queue-required fields visible in the authoring stub even though
+    # its TODO placeholders deliberately leave it unready to queue.
+    branch = json.dumps(branch_inspection.branch)
+    stub = (
+        "---\n"
+        f"summary: {json.dumps('TODO: one-line description')}\n"
+        "type: feature\n"
+        f"branch: {branch}\n"
+        "scope: []\n"
+        "on_success: [triage_report, review, merge, cleanup]\n"
+        "CRITERIA_MANDATORY:\n"
+        "  REVIEW:\n"
+        "    rtl: {bugs: done}\n"
+        "---\n"
+        "\n## Description\n\nTODO: describe the change and update the Criteria.\n"
+    )
+    return tio.create_ticket_document(slug, stub) is not None
+
+
 def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
@@ -1192,24 +1240,7 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
 
     if board_cmd == "create":
-        # The stub must spell out what queueing requires (A-4): a draft with
-        # no scope/criteria and no '## Description' fails validation on the
-        # first `board move <slug> queue`, and the schema was otherwise only
-        stub = (
-            "---\n"
-            "summary: TODO: one-line description\n"
-            "type: feature\n"
-            "branch: main\n"
-            "scope: []\n"
-            "on_success: [triage_report, review, merge, cleanup]\n"
-            "CRITERIA_MANDATORY:\n"
-            "  REVIEW:\n"
-            "    rtl: {bugs: done}\n"
-            "---\n"
-            "\n## Description\n\nTODO: describe the change and update the Criteria.\n"
-        )
-        result = tio.create_ticket_document(args.slug, stub)
-        return 0 if result else 1
+        return 0 if _cmd_board_create(tio, args.slug, project_root) else 1
 
     if board_cmd == "move":
         from booley.ticket_board.operations import op_board_move

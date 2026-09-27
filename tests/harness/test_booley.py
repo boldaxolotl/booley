@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
 import threading
 import time
 from argparse import Namespace
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
@@ -19,6 +21,11 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import subscription_limit as sl
+from booley.runtime.project_dir import reset_cache
+from booley.ticket_board.ticket_document import (
+    convert_ticket_document,
+    ticket_conversion_context,
+)
 
 # ===========================================================================
 # ts()
@@ -71,6 +78,262 @@ def test_board_help_hides_deprecated_review_commands(capsys):
     assert "{show,review,approve,validate,create,move,reset,archive}" in output
     assert "request-review" not in output
     assert "[may invoke agent]" in output
+
+
+def _board_git(repository: Path, *args: str) -> str:
+    git_env = os.environ.copy()
+    git_env["GIT_CONFIG_GLOBAL"] = os.devnull
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    git_env["GIT_CONFIG_COUNT"] = "0"
+    git_env.pop("GIT_TEMPLATE_DIR", None)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+        env=git_env,
+    )
+    return result.stdout.strip()
+
+
+def _initialize_board_repository(
+    repository: Path,
+    branch: str,
+    commit_message: str,
+) -> str:
+    _board_git(repository, "init", "-b", branch)
+    _board_git(repository, "config", "user.name", "Test")
+    _board_git(repository, "config", "user.email", "test@example.invalid")
+    _board_git(repository, "add", "-A")
+    _board_git(repository, "commit", "-m", commit_message)
+    return _board_git(repository, "rev-parse", "HEAD")
+
+
+def _board_create_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str,
+    project_branch: str | None = None,
+    *,
+    paired: bool = True,
+) -> tuple[Path, Path, str]:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    outer_sha = _initialize_board_repository(root, branch, "initial outer")
+
+    project_dir = root / ".booley_project"
+    (project_dir / "tickets" / "board" / "drafts").mkdir(parents=True)
+    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    if paired:
+        _initialize_board_repository(
+            project_dir,
+            project_branch or branch,
+            "initial project",
+        )
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+    reset_cache()
+    return root, project_dir, outer_sha
+
+
+@pytest.fixture
+def board_create_project_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[pytest.MonkeyPatch]:
+    yield monkeypatch
+    reset_cache()
+
+
+def test_board_create_uses_matching_paired_project_branch(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+) -> None:
+    branch = "release/next"
+    root, project_dir, outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        branch,
+    )
+    slug = f"generated-{branch.replace('/', '-')}"
+    args = tlr._build_parser().parse_args(["board", "create", slug])
+
+    assert tlr._cmd_board(args, root) == 0
+
+    draft = project_dir / "tickets" / "board" / "drafts" / f"{slug}.md"
+    assert draft.is_file()
+    with ticket_conversion_context(root, slug, "draft") as context:
+        converted = convert_ticket_document(draft.read_text(encoding="utf-8"), context)
+    assert converted.diagnostics == ()
+    assert converted.document is not None
+    assert converted.document.spec.fields["branch"] == branch
+    assert isinstance(converted.document.spec.fields["branch"], str)
+    assert converted.document.spec.fields["project_destination_ref"] == f"refs/heads/{branch}"
+    workspace = project_dir / "worktrees" / slug
+    workspace_sha = _board_git(workspace, "rev-parse", "HEAD")
+    assert workspace_sha == outer_sha
+
+
+def test_board_create_quotes_yaml_keyword_branch(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+) -> None:
+    branch = "true"
+    root, project_dir, _outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        branch,
+        paired=False,
+    )
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    slug = "yaml-keyword"
+    args = tlr._build_parser().parse_args(["board", "create", slug])
+
+    assert tlr._cmd_board(args, root) == 0
+
+    draft = project_dir / "tickets" / "board" / "drafts" / f"{slug}.md"
+    with ticket_conversion_context(root, slug, "draft") as context:
+        converted = convert_ticket_document(draft.read_text(encoding="utf-8"), context)
+    assert converted.diagnostics == ()
+    assert converted.document is not None
+    assert converted.document.spec.fields["branch"] == branch
+    assert isinstance(converted.document.spec.fields["branch"], str)
+    materialize.assert_called_once()
+
+
+def test_board_create_rejects_detached_head(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project_dir, _outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        "release/next",
+    )
+    _board_git(root, "checkout", "--detach")
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    args = tlr._build_parser().parse_args(["board", "create", "detached-draft"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "detached HEAD" in capsys.readouterr().err
+    assert not (project_dir / "tickets" / "board" / "drafts" / "detached-draft.md").exists()
+    materialize.assert_not_called()
+
+
+def test_board_create_reports_branch_inspection_failure(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project_dir, _outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        "release/next",
+    )
+    inspection = MagicMock()
+    inspection.branch = None
+    inspection.detail = "git inspection timed out"
+    board_create_project_env.setattr(tlr, "inspect_symbolic_branch", lambda _root: inspection)
+    args = tlr._build_parser().parse_args(["board", "create", "inspection-failure"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "cannot inspect the Project checkout branch" in capsys.readouterr().err
+    draft = project_dir / "tickets" / "board" / "drafts" / "inspection-failure.md"
+    assert not draft.exists()
+
+
+def test_board_create_rejects_non_git_project(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "project"
+    project_dir = root / ".booley_project"
+    drafts = project_dir / "tickets" / "board" / "drafts"
+    drafts.mkdir(parents=True)
+    board_create_project_env.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+    reset_cache()
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    args = tlr._build_parser().parse_args(["board", "create", "non-git"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "root of a Git worktree" in capsys.readouterr().err
+    assert not (drafts / "non-git.md").exists()
+    materialize.assert_not_called()
+
+
+def test_board_create_rejects_uninitialized_git_repository(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _board_git(root, "init", "-b", "main")
+    board_create_project_env.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    reset_cache()
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    args = tlr._build_parser().parse_args(["board", "create", "uninitialized"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "run 'booley init'" in capsys.readouterr().err
+    assert not (root / ".booley_project" / "tickets").exists()
+    assert not (root / ".booley" / "project" / "tickets").exists()
+    materialize.assert_not_called()
+
+
+def test_board_create_rejects_mismatched_paired_project_branch(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project_dir, _outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        "release/next",
+        project_branch="main",
+    )
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    args = tlr._build_parser().parse_args(["board", "create", "mismatched-project"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "paired project destination 'refs/heads/release/next'" in capsys.readouterr().err
+    assert not (project_dir / "tickets" / "board" / "drafts" / "mismatched-project.md").exists()
+    materialize.assert_not_called()
 
 
 def test_doctor_parser_accepts_concise_flag():
