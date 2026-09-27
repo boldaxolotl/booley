@@ -52,6 +52,26 @@ class _SplitMetricsExecution(NativeExecution):
         return "# SystemC::Coverage-3\n" + body
 
 
+class _PassingSplitMetricsExecution(_SplitMetricsExecution):
+    def payload(self, hits):
+        return super().payload(hits).replace("\x01o\x02true' 0", "\x01o\x02true' 1")
+
+
+def _target_headline(report_text: str, selector: str) -> str:
+    return next(line for line in report_text.splitlines() if line.startswith(f"{selector}:"))
+
+
+def _assert_ungated_report(result, tmp_path: Path) -> None:
+    campaign_id = result.outcome.detail["campaigns"]["sim_0"]["campaign_id"]
+    expected_headline = (
+        "sim_0: simulation PASS · coverage collection COMPLETE · "
+        f"evaluation NOT_REQUESTED (Simulation Campaign {campaign_id})"
+    )
+    assert _target_headline(result.outcome.report_text, "sim_0") == expected_headline
+    persisted = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
+    assert persisted["report_text"] == result.outcome.report_text
+
+
 def _atomic_coverage_projection():
     text = (
         "---\nsummary: Close coverage gap\ntype: verification\nbranch: main\n"
@@ -168,6 +188,7 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     assert json.loads(campaign_path.read_text())["$schema"] == REFERENCE_SCHEMA
     resolved = resolve_coverage_campaign_reference(campaign_path)
     assert resolved.loaded.campaign.evaluation["status"] == "not_requested"
+    _assert_ungated_report(result, tmp_path)
     campaign = result.outcome.detail["campaigns"]["sim_0"]
     assert campaign["dependency"] == "local_campaign"
     assert campaign["artifacts"]["manifest"]["path"] == ("targets/sim_0/campaign/manifest.json")
@@ -302,6 +323,14 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     assert list(result.outcome.detail["targets"]) == ["sim_2", "sim_0", "sim_1"]
     assert list(result.outcome.detail["campaigns"]) == ["sim_2", "sim_0", "sim_1"]
     assert result.outcome.detail["targets"]["sim_2"]["collection"] == "complete"
+    campaign_id = result.outcome.detail["campaigns"]["sim_1"]["campaign_id"]
+    headline = _target_headline(result.outcome.report_text, "sim_1")
+    assert headline == (
+        "sim_1: simulation PASS · coverage collection COLLECTOR_ERROR "
+        "(COV_RAW_FILE_MISSING) · evaluation NOT_REQUESTED "
+        f"(Simulation Campaign {campaign_id})"
+    )
+    assert f"sim_1: PASS (Simulation Campaign {campaign_id})" not in result.outcome.report_text
 
 
 def test_shared_execution_failure_aborts_later_targets_without_losing_completed_reports(
@@ -551,6 +580,16 @@ def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
     )
 
     assert result.exit_code == 1
+    campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]
+    headline = _target_headline(result.outcome.report_text, "sim_custom")
+    assert headline == (
+        "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation FAIL "
+        "(branch: observed 0/1 points; displayed 0%; minimum 51%) "
+        f"(Simulation Campaign {campaign_id})"
+    )
+    assert (
+        f"sim_custom: PASS (Simulation Campaign {campaign_id})" not in result.outcome.report_text
+    )
     saved = DevelopmentState.load(state_path)
     verdicts = {
         next(iter(entry.params["metrics"])): entry.met
@@ -603,6 +642,49 @@ def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
     verdict = check_criteria_acceptance(state_path, work_dir=tmp_path)
     assert verdict.disposition == "review"
     assert verdict.unmet_mandatory == []
+
+
+def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monkeypatch):
+    _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options: _PassingSplitMetricsExecution()
+    ).execute(
+        SimRequest(
+            target="sim_custom",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 0
+    campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]
+    assert _target_headline(result.outcome.report_text, "sim_custom") == (
+        "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation PASS "
+        f"(Simulation Campaign {campaign_id})"
+    )
+
+
+def test_gated_suite_mismatch_headline_attaches_diagnostic_to_evaluation(tmp_path, monkeypatch):
+    _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    tests_path = tmp_path / ".booley_project/tests.toml"
+    tests_path.write_text('[sim_custom]\ntests = ["gap", "other"]\n')
+    result = SimulateFlow(coverage_execution=lambda _handle, _options: NativeExecution()).execute(
+        SimRequest(
+            target="sim_custom",
+            test=("other",),
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 2
+    campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]
+    assert _target_headline(result.outcome.report_text, "sim_custom") == (
+        "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation BLOCKED "
+        f"(COV_EVAL_SUITE_MISMATCH) (Simulation Campaign {campaign_id})"
+    )
 
 
 def test_public_cli_aliases_select_same_request():
@@ -778,6 +860,10 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
         "external_origin_target"
     }
     assert detail["targets"]["sim_0"]["coverage_campaign"] == campaign["artifacts"]["coverage"]
+    assert result.outcome.report_text == (
+        "sim_0: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
+        f"(Simulation Campaign {campaign['campaign_id']})"
+    )
     resolved = resolve_report_artifact_reference(
         report_path,
         campaign["artifacts"]["manifest"],
