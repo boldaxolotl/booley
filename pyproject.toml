@@ -256,7 +256,6 @@ docstring-code-format = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
-faulthandler_timeout = 45
 strict_config = true
 strict_markers = true
 markers = [
