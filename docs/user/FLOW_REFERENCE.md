@@ -385,6 +385,11 @@ suite produces the same durable Campaign with evaluation `not_requested`, withou
 loading waivers or updating Coverage Criteria. Explicit invocation test selection
 wins over the Criterion's exact suite, which wins over the full registered suite.
 A different explicit suite still collects evidence but blocks gated evaluation.
+The Simulation Flow final Target headline presents that durable result as separate
+simulation, collection, and evaluation fields. Incomplete collection or blocked
+evaluation includes its first stable diagnostic code when available; a threshold
+miss instead includes the first failed metric's point counts and percentages.
+`NOT_REQUESTED` therefore means ungated collection, not an evaluated pass.
 
 Gated evaluation matches Approved Waivers transactionally per Target. For each
 collected Target, only approvals naming that Target are checked against its

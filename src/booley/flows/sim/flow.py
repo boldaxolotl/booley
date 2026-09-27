@@ -17,6 +17,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -54,7 +55,11 @@ from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import resolve_run_cwd
-from booley.flows.sim.coverage_campaign import CoverageCampaign, coverage_mapping_document
+from booley.flows.sim.coverage_campaign import (
+    CoverageCampaign,
+    FrozenJson,
+    coverage_mapping_document,
+)
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
@@ -413,29 +418,36 @@ def _campaign_observation_counts(
     return {axis: dict(Counter(str(item[axis]) for item in observations)) for axis in axes}
 
 
-def _coverage_diagnostic_detail(value: object) -> str | None:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes) or not value:
+def _coverage_diagnostic_detail(diagnostics: FrozenJson) -> str | None:
+    records = cast(tuple[FrozenJson, ...], diagnostics)
+    if not records:
         return None
-    diagnostic = value[0]
-    if not isinstance(diagnostic, Mapping):
-        return None
-    code = diagnostic.get("code")
-    return str(code) if code else None
+    first = records[0]
+    if isinstance(first, str):
+        return first
+    diagnostic = cast(Mapping[str, FrozenJson], first)
+    return str(diagnostic["code"])
 
 
-def _failed_metric_detail(value: object) -> str | None:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        return None
+def _compact_coverage_number(value: FrozenJson) -> str:
+    assert isinstance(value, int | float) and not isinstance(value, bool)
+    rendered = format(Decimal(str(value)), "f")
+    return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def _failed_metric_detail(metrics: FrozenJson) -> str | None:
+    records = cast(tuple[Mapping[str, FrozenJson], ...], metrics)
     failed = next(
-        (item for item in value if isinstance(item, Mapping) and item.get("verdict") == "fail"),
+        (item for item in records if item["verdict"] == "fail"),
         None,
     )
     if failed is None:
         return None
     return (
         f"{failed['metric']}: observed {failed['covered_points']}/"
-        f"{failed['eligible_points']} points; displayed {failed['actual_percent']}%; "
-        f"minimum {failed['minimum_percent']}%"
+        f"{failed['eligible_points']} points; "
+        f"displayed {_compact_coverage_number(failed['actual_percent'])}%; "
+        f"minimum {_compact_coverage_number(failed['minimum_percent'])}%"
     )
 
 
@@ -446,12 +458,12 @@ def _coverage_report_suffix(campaign: CoverageCampaign) -> str:
     evaluation_status = str(evaluation["status"]).upper()
     collection_detail = None
     if collection["status"] != "complete":
-        collection_detail = _coverage_diagnostic_detail(collection.get("diagnostics"))
+        collection_detail = _coverage_diagnostic_detail(collection["diagnostics"])
     evaluation_detail = None
     if evaluation["status"] == "blocked":
-        evaluation_detail = _coverage_diagnostic_detail(evaluation.get("diagnostics"))
+        evaluation_detail = _coverage_diagnostic_detail(evaluation["diagnostics"])
     elif evaluation["status"] == "fail":
-        evaluation_detail = _failed_metric_detail(evaluation.get("metrics"))
+        evaluation_detail = _failed_metric_detail(evaluation["metrics"])
     if collection_detail:
         collection_status += f" ({collection_detail})"
     if evaluation_detail:
@@ -704,7 +716,11 @@ def _coverage_compatibility_targets(
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
 ) -> dict[str, object]:
     """Preserve bounded coverage endpoint fields while authority stays referenced."""
-    resolved = coverage_campaigns or _resolved_coverage_campaigns(outcomes)
+    resolved = (
+        coverage_campaigns
+        if coverage_campaigns is not None
+        else _resolved_coverage_campaigns(outcomes)
+    )
     targets: dict[str, object] = {}
     for outcome in outcomes:
         if outcome.coverage_reference is None:
@@ -749,7 +765,11 @@ def _coverage_campaign_exit_code(
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
 ) -> int:
     """Preserve native collection/evaluation exit policy for wrapped aggregates."""
-    resolved = coverage_campaigns or _resolved_coverage_campaigns(outcomes)
+    resolved = (
+        coverage_campaigns
+        if coverage_campaigns is not None
+        else _resolved_coverage_campaigns(outcomes)
+    )
     saw_failure = False
     for outcome in outcomes:
         if outcome.coverage_reference is None:

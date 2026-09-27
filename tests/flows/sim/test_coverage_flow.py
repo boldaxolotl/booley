@@ -539,18 +539,10 @@ def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
 
     assert result.exit_code == 1
     campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]
-    campaign_path = tmp_path / "reports/sim/1/targets/sim_custom/coverage.json"
-    coverage = resolve_coverage_campaign_reference(campaign_path).loaded.campaign
-    failed_metric = next(
-        metric for metric in coverage.evaluation["metrics"] if metric["verdict"] == "fail"
-    )
     headline = _target_headline(result.outcome.report_text, "sim_custom")
     assert headline == (
         "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation FAIL "
-        f"({failed_metric['metric']}: observed "
-        f"{failed_metric['covered_points']}/{failed_metric['eligible_points']} points; "
-        f"displayed {failed_metric['actual_percent']}%; "
-        f"minimum {failed_metric['minimum_percent']}%) "
+        "(branch: observed 0/1 points; displayed 0%; minimum 51%) "
         f"(Simulation Campaign {campaign_id})"
     )
     assert (
@@ -826,6 +818,10 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
         "external_origin_target"
     }
     assert detail["targets"]["sim_0"]["coverage_campaign"] == campaign["artifacts"]["coverage"]
+    assert result.outcome.report_text == (
+        "sim_0: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
+        f"(Simulation Campaign {campaign['campaign_id']})"
+    )
     resolved = resolve_report_artifact_reference(
         report_path,
         campaign["artifacts"]["manifest"],

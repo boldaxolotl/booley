@@ -611,12 +611,33 @@ def _validate_finding_shapes(records: list[object], findings: list[CoverageFindi
         )
 
 
+def _validate_diagnostic_shapes(
+    records: list[object], pointer: str, findings: list[CoverageFinding]
+) -> None:
+    for index, record in enumerate(records):
+        item_pointer = f"{pointer}/{index}"
+        if isinstance(record, str):
+            continue
+        if not isinstance(record, Mapping):
+            findings.append(
+                _error(
+                    "COV_FIELD_TYPE",
+                    item_pointer,
+                    "Diagnostic must be a code string or JSON object.",
+                )
+            )
+            continue
+        _check_string_fields(record, ("code", "pointer", "message"), item_pointer, findings)
+
+
 def _validate_collection_shape(
     collection: Mapping[str, object], findings: list[CoverageFinding]
 ) -> None:
     _check_field(collection, "status", "string", "/collection", findings)
     merge = _check_field(collection, "merge", "object", "/collection", findings)
-    _check_field(collection, "diagnostics", "array", "/collection", findings)
+    diagnostics = _check_field(collection, "diagnostics", "array", "/collection", findings)
+    if isinstance(diagnostics, list):
+        _validate_diagnostic_shapes(diagnostics, "/collection/diagnostics", findings)
     if isinstance(merge, Mapping):
         _check_field(merge, "status", "string", "/collection/merge", findings)
         if "artifact" in merge:
@@ -641,7 +662,9 @@ def _validate_evaluation_shape(
     _check_field(evaluation, "suite", "object", "/evaluation", findings)
     thresholds = _check_field(evaluation, "thresholds", "object", "/evaluation", findings)
     _check_field(evaluation, "metrics", "array", "/evaluation", findings)
-    _check_field(evaluation, "diagnostics", "array", "/evaluation", findings)
+    diagnostics = _check_field(evaluation, "diagnostics", "array", "/evaluation", findings)
+    if isinstance(diagnostics, list):
+        _validate_diagnostic_shapes(diagnostics, "/evaluation/diagnostics", findings)
     if isinstance(thresholds, Mapping):
         for metric, threshold in thresholds.items():
             if not _matches_json_type(threshold, "number"):

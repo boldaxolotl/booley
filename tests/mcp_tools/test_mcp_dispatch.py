@@ -289,7 +289,7 @@ class TestFormatMcpToolResult:
     def test_coverage_headline_is_exposed_exactly_once(self):
         headline = (
             "sim_custom: simulation PASS · coverage collection COMPLETE · "
-            "evaluation FAIL (branch: observed 1/2 points; displayed 50.0%; minimum 80%) "
+            "evaluation FAIL (branch: observed 1/2 points; displayed 50%; minimum 80%) "
             "(Simulation Campaign campaign-123)"
         )
         report = {"status": "fail", "report_text": headline}

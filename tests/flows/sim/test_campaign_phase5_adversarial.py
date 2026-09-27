@@ -42,7 +42,11 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.flow import _campaign_report_lines, _campaign_structured_details
+from booley.flows.sim.flow import (
+    _campaign_report_lines,
+    _campaign_structured_details,
+    _compact_coverage_number,
+)
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -53,6 +57,14 @@ from tests.flows.sim.test_campaign_crash_matrix import (
 )
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(50.0, "50"), (200 / 3, "66.66666666666667"), (1e-5, "0.00001")],
+)
+def test_coverage_report_numbers_are_compact_and_non_scientific(value, expected) -> None:
+    assert _compact_coverage_number(value) == expected
 
 
 def _facts(
