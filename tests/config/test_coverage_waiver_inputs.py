@@ -97,6 +97,17 @@ def test_parse_optional_and_valid_coverage_waiver_config() -> None:
             },
             "safe relative POSIX path",
         ),
+        (
+            {
+                "coverage": {
+                    "waivers": {
+                        "anchor": "rtl_repository",
+                        "directory": ".",
+                    }
+                }
+            },
+            "safe relative POSIX path",
+        ),
     ],
 )
 def test_parse_rejects_invalid_coverage_waiver_config(
@@ -108,7 +119,7 @@ def test_parse_rejects_invalid_coverage_waiver_config(
 
 @pytest.mark.parametrize(
     "value",
-    ["", "/waivers", "C:/waivers", "a\\b", "a/../b", "a/./b", "a//b", "a\0b"],
+    ["", ".", "/waivers", "C:/waivers", "a\\b", "a/../b", "a/./b", "a//b", "a\0b"],
 )
 def test_safe_relative_posix_rejects_unsafe_identifiers(value: str) -> None:
     assert not is_safe_relative_posix(value)
