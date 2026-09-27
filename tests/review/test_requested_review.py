@@ -47,27 +47,15 @@ def _on_success(options):
     return f"[{', '.join(actions)}]"
 
 
-@pytest.fixture
-def blocked(tmp_path, monkeypatch, request):
-    from booley.runtime.project_dir import reset_cache
+def _register_implementation_criterion(root: Path, project: Path, *, paired: bool) -> None:
+    from tests.ticket_board.test_ticket_baseline import _git
 
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    reset_cache()
-    options = getattr(request, "param", {})
-    from tests.ticket_board.test_ticket_baseline import _paired_basis_project
-
-    factory = _paired_basis_project if options.get("paired") else _basis_project
-    root, project, tio = factory(tmp_path)
-    declared = options.get("criterion", "review_rtl_bugs_done")
-    if declared == "implementation_done":
-        from tests.ticket_board.test_ticket_baseline import _git
-
-        (project / "criteria.toml").write_text(
-            '[implementation_done]\ndescription = "Fixture verification"\ncategory = "none"\n'
-        )
-        tools_dir = project / "mcp_tools"
-        tools_dir.mkdir()
-        (tools_dir / "verify_fixture.py").write_text("""
+    (project / "criteria.toml").write_text(
+        '[implementation_done]\ndescription = "Fixture verification"\ncategory = "none"\n'
+    )
+    tools_dir = project / "mcp_tools"
+    tools_dir.mkdir()
+    (tools_dir / "verify_fixture.py").write_text("""
 from booley.mcp.base import McpTool, McpToolResult
 class Verify(McpTool):
     name = "verify_fixture"
@@ -82,8 +70,33 @@ class Verify(McpTool):
 if __name__ == "__main__":
     raise SystemExit(Verify().main())
 """)
-        _git(root, "add", "-f", ".booley_project/criteria.toml", ".booley_project/mcp_tools")
-        _git(root, "commit", "-m", "Register fixture criterion")
+    repository = project if paired else root
+    paths = (
+        ("criteria.toml", "mcp_tools")
+        if paired
+        else (
+            ".booley_project/criteria.toml",
+            ".booley_project/mcp_tools",
+        )
+    )
+    _git(repository, "add", "-f", *paths)
+    _git(repository, "commit", "-m", "Register fixture criterion")
+
+
+@pytest.fixture
+def blocked(tmp_path, monkeypatch, request):
+    from booley.runtime.project_dir import reset_cache
+
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    reset_cache()
+    options = getattr(request, "param", {})
+    from tests.ticket_board.test_ticket_baseline import _paired_basis_project
+
+    factory = _paired_basis_project if options.get("paired") else _basis_project
+    root, project, tio = factory(tmp_path)
+    declared = options.get("criterion", "review_rtl_bugs_done")
+    if declared == "implementation_done":
+        _register_implementation_criterion(root, project, paired=bool(options.get("paired")))
     criterion = (
         "IMPLEMENTATION_DONE: true"
         if declared == "implementation_done"
@@ -177,6 +190,130 @@ def test_automatic_accepted_handoff_can_be_publicly_approved(blocked, monkeypatc
     assert approve_review_command(root, "demo", no_merge=no_merge)
     assert tio.find_ticket("demo")["status"] == "done"
     assert merged == ([] if no_merge else [True])
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        {"merge": True, "criterion": "implementation_done"},
+        {"merge": True, "criterion": "implementation_done", "paired": True},
+    ],
+    indirect=True,
+)
+def test_stale_accepted_handoff_refuses_approval_and_renders_frozen_briefing(  # noqa: PLR0915 — one public regression proves every fail-closed side effect.
+    blocked, monkeypatch, capsys
+):
+    from booley.harness import booley as harness
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+    from booley.ticket_board.review_lifecycle import (
+        approve_review_command,
+        review_command,
+        run_review_command,
+    )
+    from booley.ticket_board.review_records import ReviewEntryError
+    from tests.ticket_board.test_ticket_baseline import _git
+
+    root, tio, worktree = blocked
+    _root, _tio, prepared = _automatic_accepted_handoff(blocked, monkeypatch)
+    acceptance_path = tio.logs_dir / "demo" / "acceptance" / "accepted.json"
+    acceptance_bytes = acceptance_path.read_bytes()
+    snapshot = read_acceptance(tio.logs_dir / "demo").snapshot
+    assert snapshot is not None
+    frozen_head = snapshot.participant_heads["outer"]
+    basis = tio.load_basis("demo")
+    ticket_ref = basis.participant("outer").ticket_ref
+    ticket_ref_before = _git(root, "rev-parse", ticket_ref)
+    main_before = _git(root, "rev-parse", "main")
+
+    readme = worktree / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\n<!-- after acceptance -->\n")
+    _git(worktree, "add", "README.md")
+    _git(worktree, "commit", "-m", "Change accepted source")
+    live_head = _git(worktree, "rev-parse", "HEAD")
+
+    assert not approve_review_command(root, "demo", no_merge=True)
+    approval_error = capsys.readouterr().err
+    assert "Ticket heads changed after acceptance" in approval_error
+    assert f"outer frozen: {frozen_head}" in approval_error
+    assert f"outer live: {live_head}" in approval_error
+    assert "restore the exact frozen heads" in approval_error
+    assert "booley board reset demo" in approval_error
+    assert tio.find_ticket("demo")["status"] == "review"
+    assert _git(root, "rev-parse", "main") == main_before
+    assert acceptance_path.read_bytes() == acceptance_bytes
+    assert _git(root, "rev-parse", ticket_ref) == live_head
+    assert ticket_ref_before == frozen_head
+    assert not (tio.logs_dir / "demo" / "acceptance-journal.json").exists()
+
+    review = asyncio.run(review_command(root, "demo"))
+    assert not review.ready
+    assert "Ticket heads changed after acceptance" in review.message
+    assert "restore the exact frozen heads" in review.message
+    with pytest.raises(ReviewEntryError, match="Ticket heads changed after acceptance") as caught:
+        run_review_command(root, "demo", ["echo", "must-not-run"])
+    assert "restore the exact frozen heads" in str(caught.value)
+
+    args = harness._build_parser().parse_args(["board", "show", "demo", "--no-open-diffs"])
+    assert harness._cmd_board_show(args, root) == 0
+    briefing = capsys.readouterr().out
+    assert "STALE ACCEPTANCE" in briefing
+    assert f"outer frozen: {frozen_head}" in briefing
+    assert f"outer live: {live_head}" in briefing
+    assert "restore the exact frozen heads" in briefing
+    assert "booley board reset demo" in briefing
+
+    prepared.package_path.write_text("{}\n", encoding="utf-8")
+    assert harness._cmd_board_show(args, root) == 2
+    integrity_error = capsys.readouterr().err
+    assert "invalid review package binding" in integrity_error
+    assert "STALE ACCEPTANCE" not in integrity_error
+    assert "board review" not in integrity_error
+
+
+@pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
+def test_current_accepted_review_validation_names_immutable_exits(blocked, monkeypatch):
+    from booley.ticket_board.review_lifecycle import run_review_command
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    root, _tio, _worktree = blocked
+    _automatic_accepted_handoff(blocked, monkeypatch)
+
+    with pytest.raises(ReviewEntryError, match="accepted review is immutable") as caught:
+        run_review_command(root, "demo", ["echo", "must-not-run"])
+    message = str(caught.value)
+    assert "booley board approve demo" in message
+    assert "booley board reset demo" in message
+
+
+@pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
+def test_stale_selected_accepted_review_uses_shared_approval_diagnostic(blocked, capsys):
+    from booley.ticket_board.review_lifecycle import approve_review_command
+    from booley.ticket_board.review_records import ReviewEntryError
+    from tests.ticket_board.test_ticket_baseline import _git
+
+    root, tio, worktree = blocked
+    state = DevelopmentState.load(tio.logs_dir / "demo" / ".runtime" / "booley_state.json")
+    for criterion in state.criteria:
+        state.set_criterion(criterion, True)
+    state.save()
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    assert asyncio.run(request_review_command(root, "demo", action="finalize")).ready
+    assert read_entry(tio.logs_dir / "demo")["disposition"] == "accepted"
+
+    readme = worktree / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\n<!-- stale -->\n")
+    _git(worktree, "add", "README.md")
+    _git(worktree, "commit", "-m", "Change selected accepted source")
+
+    with pytest.raises(ReviewEntryError, match="Ticket heads changed after acceptance") as caught:
+        approve_review_command(root, "demo", no_merge=True)
+    assert "restore the exact frozen heads" in str(caught.value)
+    assert "booley board reset demo" in str(caught.value)
+    assert tio.find_ticket("demo")["status"] == "review"
+    assert not capsys.readouterr().err
+    briefing = prep.review_briefing_command(root, "demo", open_diffs=False)
+    assert briefing.status == "ready", briefing.message
+    assert "STALE ACCEPTANCE" in briefing.briefing
 
 
 @pytest.mark.parametrize(
@@ -1247,19 +1384,34 @@ async def test_review_lifecycle_facade_delegates_public_operations(
 
 def test_accepted_regeneration_rejects_changed_inputs(tmp_path, monkeypatch):
     from booley.ticket_board import review_lifecycle
-    from booley.ticket_board.review_records import ReviewEntryError
+    from booley.ticket_board.acceptance_diagnostics import (
+        StaleAcceptanceError,
+        format_stale_acceptance,
+    )
 
-    tio = SimpleNamespace(logs_dir=tmp_path)
-    ctx = SimpleNamespace(inspection={"heads": {"project": "new"}, "state": {"generation": 2}})
-    prior = {"heads": {"project": "old"}, "state": {"generation": 1}}
+    participant = SimpleNamespace(ticket_ref="refs/heads/booley-ticket/demo")
+    basis = SimpleNamespace(participant=lambda _role: participant)
+    tio = SimpleNamespace(logs_dir=tmp_path, load_basis=lambda _slug: basis)
+    ctx = SimpleNamespace(
+        inspection={"heads": {"outer": "b" * 40}, "state": {"generation": 2}},
+        worktree=tmp_path / "worktree",
+        project_repository=None,
+    )
+    prior = {"heads": {"outer": "a" * 40}, "state": {"generation": 1}}
     monkeypatch.setattr(
         review_lifecycle,
         "read_acceptance",
-        lambda _path: SimpleNamespace(kind="accepted"),
+        lambda _path: SimpleNamespace(
+            kind="accepted",
+            snapshot=SimpleNamespace(participant_heads={"outer": "a" * 40}),
+        ),
     )
 
-    with pytest.raises(ReviewEntryError, match="acceptance recovery"):
+    with pytest.raises(StaleAcceptanceError) as caught:
         review_lifecycle._validate_regeneration(tio, "demo", "regenerate", prior, ctx)
+    diagnostic = format_stale_acceptance("demo", caught.value.drift)
+    assert "Ticket heads changed after acceptance" in diagnostic
+    assert "booley board reset demo" in diagnostic
 
 
 def test_review_lifecycle_reports_missing_and_stale_selection(tmp_path, monkeypatch):
@@ -1277,6 +1429,35 @@ def test_review_lifecycle_reports_missing_and_stale_selection(tmp_path, monkeypa
     monkeypatch.setattr(review_lifecycle, "_check_capture", lambda *_args: None)
     with pytest.raises(ReviewEntryError, match="missing or stale"):
         review_lifecycle._require_selected_package(tio, ctx)
+
+
+def test_selected_accepted_heads_must_match_criteria_satisfaction_record(tmp_path, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    row = {
+        "heads": {"outer": "b" * 40},
+        "generation": "selection",
+    }
+    ctx = SimpleNamespace(log_dir=tmp_path)
+    tio = SimpleNamespace(
+        logs_dir=tmp_path,
+        _project_root=tmp_path,
+        _load_basis_unlocked=lambda _slug: object(),
+    )
+    monkeypatch.setattr(review_lifecycle, "read_entry", lambda _path: row)
+    monkeypatch.setattr(review_lifecycle.prep, "_resolve_context", lambda *_a, **_k: ctx)
+    monkeypatch.setattr(
+        review_lifecycle,
+        "read_acceptance",
+        lambda _path: SimpleNamespace(
+            kind="accepted",
+            snapshot=SimpleNamespace(participant_heads={"outer": "a" * 40}),
+        ),
+    )
+
+    with pytest.raises(ReviewEntryError, match="disagree with the Criteria Satisfaction Record"):
+        review_lifecycle._selected_context(tio, "demo")
 
 
 def test_approve_done_ticket_handles_invalid_and_merge_paths(monkeypatch):

@@ -1687,6 +1687,7 @@ class TestOpHandoff:
         self, tmp_path, monkeypatch, capsys
     ):
         from booley.ticket_board import operations
+        from booley.ticket_board.acceptance_diagnostics import ParticipantHeadLocation
 
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
@@ -1699,16 +1700,30 @@ class TestOpHandoff:
         )
         _write_ready_acceptance_state(tio)
         assert op_handoff(tio, "t1") is True
+        monkeypatch.setattr(
+            operations,
+            "_acceptance_participant_locations",
+            lambda *_args: [
+                ParticipantHeadLocation(
+                    "outer",
+                    basis.participant("outer").ticket_ref,
+                    tmp_path / "ticket-worktree",
+                )
+            ],
+        )
 
         assert (
             operations._bind_existing_handoff_snapshot(
+                tio,
                 tio.logs_dir / "t1",
                 "t1",
                 {"outer": "f" * 40},
             )
             is False
         )
-        assert "Ticket heads changed after acceptance freeze" in capsys.readouterr().err
+        error = capsys.readouterr().err
+        assert "Ticket heads changed after acceptance" in error
+        assert "booley board reset t1" in error
 
     def test_rejects_handoff_without_durable_acceptance_state(self, tmp_path):
         tio = make_tio(tmp_path)

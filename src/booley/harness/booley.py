@@ -1391,7 +1391,7 @@ def _cmd_board_show(args: argparse.Namespace, project_root: Path) -> int:
             open_diffs=not args.no_open_diffs,
         )
         if outcome.status != "ready":
-            print(f"ERROR: {outcome.message}; run booley board review {slug}", file=sys.stderr)
+            print(f"ERROR: {outcome.message}", file=sys.stderr)
             return 2
         print(outcome.briefing)
         return 0

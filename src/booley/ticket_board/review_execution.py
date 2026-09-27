@@ -166,6 +166,32 @@ def run_review_command(project_root: Path, slug: str, command: list[str]) -> int
     with tio._ticket_lock(slug, review_operation=True):
         assert_idle(log_dir)
         _quiescent(tio, slug)
+        from . import review_preparation as prep
+        from .acceptance_diagnostics import StaleAcceptanceError, format_stale_acceptance
+        from .acceptance_ledger import read_acceptance
+
+        accepted = read_acceptance(log_dir)
+        if accepted.kind == "corrupt":
+            raise ReviewEntryError(f"Criteria Satisfaction Record is corrupt: {accepted.reason}")
+        if accepted.kind == "accepted":
+            try:
+                prep._resolve_context(
+                    project_root,
+                    slug,
+                    require_review=True,
+                    allow_report_disabled=True,
+                    inspect_unaccepted=True,
+                    locked_basis=tio._load_basis_unlocked(slug),
+                )
+            except StaleAcceptanceError as exc:
+                raise ReviewEntryError(
+                    format_stale_acceptance(slug, exc.drift, status="review")
+                ) from exc
+            raise ReviewEntryError(
+                f"accepted review is immutable; run booley board approve {slug} to complete "
+                f'it, or booley board reset {slug} --reason "<why a clean run is required>" '
+                "for a destructive clean execution"
+            )
         entry = read_entry(log_dir)
         if entry is None or entry["disposition"] != "unaccepted":
             raise ReviewEntryError("validate requires explicitly unaccepted review")

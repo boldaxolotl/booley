@@ -427,7 +427,7 @@ def _prepare_handoff_snapshot(
     participant_heads = _handoff_basis_heads(tio, slug)
     if participant_heads is None:
         return False
-    existing = _bind_existing_handoff_snapshot(log_dir, slug, participant_heads)
+    existing = _bind_existing_handoff_snapshot(tio, log_dir, slug, participant_heads)
     if existing is not None:
         return existing
     return _freeze_handoff_snapshot(
@@ -507,23 +507,35 @@ def _handoff_jobs_clear(log_dir: Path, slug: str) -> bool:
 
 
 def _bind_existing_handoff_snapshot(
+    tio: Any,
     log_dir: Path,
     slug: str,
     participant_heads: dict[str, str],
 ) -> bool | None:
+    from .acceptance_diagnostics import compare_accepted_heads, format_stale_acceptance
     from .acceptance_ledger import AcceptanceLedgerError, bind_review_package, read_acceptance
 
     accepted = read_acceptance(log_dir)
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
             print(
-                f"Error: cannot hand off '{slug}': Criteria Satisfaction Record is unreadable",
+                f"Error: cannot hand off '{slug}': Criteria Satisfaction Record is corrupt: "
+                "accepted result has no snapshot",
                 file=sys.stderr,
             )
             return False
-        if accepted.snapshot.participant_heads != participant_heads:
+        basis = tio._load_basis_unlocked(slug)
+        drift = compare_accepted_heads(
+            accepted.snapshot.participant_heads,
+            participant_heads,
+            _acceptance_participant_locations(tio, basis),
+        )
+        if drift is not None:
+            board = tio.find_ticket(slug)
+            status = str(board.get("status")) if board is not None else "missing"
             print(
-                f"Error: cannot hand off '{slug}': Ticket heads changed after acceptance freeze",
+                f"Error: cannot hand off '{slug}': "
+                f"{format_stale_acceptance(slug, drift, status=status)}",
                 file=sys.stderr,
             )
             return False
@@ -964,6 +976,26 @@ def _acceptance_failure_detail(tio: Any, slug: str) -> str:
     return "inspect the Ticket and Acceptance Journal before retrying"
 
 
+def _acceptance_participant_locations(tio: Any, basis: Any) -> list[Any]:
+    """Resolve display metadata after callers have validated the live refs."""
+    from .acceptance_diagnostics import ParticipantHeadLocation
+    from .ticket_baseline import _project_repository, worktree_for_ref
+
+    root = Path(tio._project_root)
+    locations = []
+    for participant in basis.participants:
+        owner = root if participant.role == "outer" else _project_repository(root)
+        worktree = worktree_for_ref(owner, participant.ticket_ref) or owner
+        locations.append(
+            ParticipantHeadLocation(
+                participant.role,
+                participant.ticket_ref,
+                worktree,
+            )
+        )
+    return locations
+
+
 def _validate_accepted_snapshot(
     tio: Any,
     slug: str,
@@ -972,6 +1004,7 @@ def _validate_accepted_snapshot(
     *,
     require_review_package_binding: bool = True,
 ) -> None:
+    from .acceptance_diagnostics import StaleAcceptanceError, compare_accepted_heads
     from .acceptance_journal import completion_basis_sources
     from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
     from .ticket_baseline import (
@@ -997,10 +1030,13 @@ def _validate_accepted_snapshot(
         )
         if sources is None:
             current_sources = validate_current_basis_refs(tio._project_root, basis)
-            if current_sources != snapshot_sources:
-                raise AcceptanceLedgerError(
-                    "Ticket heads changed after the Criteria Satisfaction Record was frozen"
-                )
+            drift = compare_accepted_heads(
+                snapshot_sources,
+                current_sources,
+                _acceptance_participant_locations(tio, basis),
+            )
+            if drift is not None:
+                raise StaleAcceptanceError(drift)
             sources = snapshot_sources
         authoring = materialize_ticket_commits(
             tio._project_root,
@@ -1020,6 +1056,7 @@ def _completion_acceptance_valid(
     tio: Any, slug: str, *, require_review_package_binding: bool = True
 ) -> AcceptanceSnapshot | None:
     """Refuse destructive terminal actions when durable acceptance is broken."""
+    from .acceptance_diagnostics import StaleAcceptanceError, format_stale_acceptance
     from .acceptance_ledger import AcceptanceLedgerError, read_acceptance
 
     log_dir = ticket_log_dir(tio.logs_dir, slug)
@@ -1034,7 +1071,9 @@ def _completion_acceptance_valid(
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
             print(
-                f"Error: Criteria Satisfaction Record for '{slug}' is unreadable", file=sys.stderr
+                f"Error: Criteria Satisfaction Record for '{slug}' is corrupt: "
+                "accepted result has no snapshot",
+                file=sys.stderr,
             )
             return None
         try:
@@ -1048,13 +1087,16 @@ def _completion_acceptance_valid(
                     accepted.snapshot,
                     require_review_package_binding=False,
                 )
+        except StaleAcceptanceError as exc:
+            board = tio.find_ticket(slug)
+            status = str(board.get("status")) if board is not None else "missing"
+            error = format_stale_acceptance(slug, exc.drift, status=status)
         except (AcceptanceLedgerError, ValueError, OSError) as exc:
-            print(
-                f"Error: review package binding for '{slug}' is corrupt: {exc}",
-                file=sys.stderr,
-            )
-            return None
-        return accepted.snapshot
+            error = f"review package binding for '{slug}' is corrupt: {exc}"
+        else:
+            return accepted.snapshot
+        print(f"Error: {error}", file=sys.stderr)
+        return None
     if accepted.kind == "corrupt":
         print(
             f"Error: Criteria Satisfaction Record for '{slug}' is corrupt: {accepted.reason}",

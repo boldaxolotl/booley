@@ -47,6 +47,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Accepted participant-head drift is now reported as stale acceptance with the
+  exact frozen and live heads plus safe restore/reset exits. `board show` keeps
+  the integrity-checked frozen briefing visible behind a prominent stale marker,
+  while approve, review, and validate remain fail-closed and genuine Criteria
+  Satisfaction Record or package corruption remains distinct. ([#775](https://github.com/boldaxolotl/Booley/issues/775))
 - Direct built-in and Custom Flows now keep their default reports under resolved
   Project data. Plain Simulation, native coverage, and resume share one report
   root and invocation-number sequence, and no default `flow-reports/` directory

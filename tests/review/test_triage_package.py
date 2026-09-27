@@ -482,7 +482,7 @@ def test_render_uses_precomputed_package_without_raw_evidence(tmp_path: Path):
 
     assert "**Recommendation:** approve" in rendered
     assert "Health checks: all passed." in rendered
-    assert "Choose: **approve** / **fix here** / **reset** / **archive** / **skip**." in rendered
+    assert "Choose: **approve** / **reset** / **archive** / **skip**." in rendered
 
 
 def test_accepted_review_presentation_keeps_packages_without_inspection():
