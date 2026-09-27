@@ -32,6 +32,7 @@ from booley.flows.sim.verilator_coverage_execution import (
     VerilatorCoverageExecution,
     prepare_coverage_collection,
 )
+from booley.fusesoc.fusesoc_registry import core_target_coverage_errors
 from booley.targets.catalog import TargetCatalog
 
 
@@ -106,6 +107,64 @@ def test_prepare_collection_projects_resolved_sources_and_custom_main_recipe(
         ("rtl/counter.sv", "rtl"),
         ("tb/counter_tb.sv", "testbench"),
     ]
+
+
+def test_prepare_collection_defaults_to_reset_inclusive_coverage(tmp_path: Path) -> None:
+    _write_target(tmp_path)
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text().replace(
+            "      booley:\n        coverage:\n          reset_included: true\n", ""
+        )
+    )
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+
+    request = prepare_coverage_collection(
+        handle,
+        selected_tests=("reset",),
+        artifact_root=tmp_path / "coverage",
+    )
+
+    assert request.reset_included is True
+
+
+def test_prepare_collection_rejects_invalid_inherited_coverage_recipe(tmp_path: Path) -> None:
+    _write_target(tmp_path)
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text()
+        .replace(
+            "targets:\n  sim:\n",
+            "targets:\n"
+            "  defaults: &defaults\n"
+            "    flow_options:\n"
+            "      booley:\n"
+            '        coverage: {reset_included: "false"}\n'
+            "  sim:\n"
+            "    <<: *defaults\n",
+        )
+        .replace(
+            "    flow_options:\n"
+            "      tool: verilator\n"
+            "      booley:\n"
+            "        coverage:\n"
+            "          reset_included: true\n",
+            "    flow_options: {tool: verilator}\n",
+        )
+    )
+    assert core_target_coverage_errors(core, "sim") == []
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+
+    with pytest.raises(
+        ValueError,
+        match=r"targets\.sim\.flow_options\.booley\.coverage\.reset_included "
+        r"must be a boolean",
+    ):
+        prepare_coverage_collection(
+            handle,
+            selected_tests=("reset",),
+            artifact_root=tmp_path / "coverage",
+        )
 
 
 def test_execution_uses_simulation_build_and_authenticated_run_adapters(
