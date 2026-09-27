@@ -105,6 +105,21 @@ def test_ticket_result_rejects_invalid_artifact_combinations(disposition, packag
         )
 
 
+def test_unknown_result_disposition_fails_before_emitting_record(tmp_path, monkeypatch, capsys):
+    result = type(
+        "UnexpectedResult",
+        (),
+        {"disposition": "unknown", "to_cli_line": lambda self: "should not print"},
+    )()
+    monkeypatch.setattr(harness_main, "run_ticket", AsyncMock(return_value=result))
+    args = argparse.Namespace(ticket="demo", no_transcripts=True)
+
+    with pytest.raises(ValueError, match="Unknown Ticket run disposition"):
+        harness_main._run_harness(args, tmp_path)
+
+    assert capsys.readouterr().out == ""
+
+
 def test_main_forwards_cli_options_to_ticket_execution(tmp_path, monkeypatch):
     import sys
     from unittest.mock import Mock

@@ -212,6 +212,27 @@ def test_path_failure_preserves_durable_board_state(
     assert failure.call_count == expected_failures
 
 
+def test_path_failure_best_effort_errors_still_return_failed(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path, worktree_path=tmp_path / "worktree")
+    monkeypatch.setattr(
+        developer, "record_crash", MagicMock(side_effect=RuntimeError("record failed"))
+    )
+    monkeypatch.setattr(
+        developer.ticket_cli,
+        "ticket_status",
+        MagicMock(side_effect=RuntimeError("status failed")),
+    )
+    failure = MagicMock(side_effect=RuntimeError("transition failed"))
+    monkeypatch.setattr(developer, "fail_ticket", failure)
+
+    result = developer._classify_developer_path_failure(
+        ctx, tmp_path, 0, RuntimeError("developer failed")
+    )
+
+    assert result.disposition == "failed"
+    failure.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_transient_crash_requeued_still_returns_failed(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path, worktree_path=tmp_path / "worktree")

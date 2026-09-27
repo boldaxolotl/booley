@@ -115,10 +115,10 @@ def _run_harness(args: argparse.Namespace, project_root: Path) -> int:
             "Internal invariant violated: Ticket run ended without a result"
         )
         return 1
-    print(result.to_cli_line(), flush=True)
     exit_code = {"review": 0, "done": 0, "blocked": 1, "failed": 1}.get(result.disposition)
     if exit_code is None:
         raise ValueError(f"Unknown Ticket run disposition: {result.disposition!r}")
+    print(result.to_cli_line(), flush=True)
     return exit_code
 
 

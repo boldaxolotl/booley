@@ -134,6 +134,33 @@ class TestResolveTicketDisposition:
             _stop_all(patches)
 
     @pytest.mark.asyncio
+    async def test_changed_baseline_returns_blocked_result(self, tmp_path: Path):
+        ctx = _make_ctx(tmp_path)
+        mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
+        mocks["basis"].return_value = True
+        try:
+            result = await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
+            )
+            assert result.disposition == "blocked"
+            mocks["handoff"].assert_not_called()
+        finally:
+            _stop_all(patches)
+
+    @pytest.mark.asyncio
+    async def test_review_handoff_exception_is_not_reclassified(self, tmp_path: Path):
+        ctx = _make_ctx(tmp_path)
+        mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
+        mocks["handoff"].side_effect = RuntimeError("handoff failed")
+        try:
+            with pytest.raises(RuntimeError, match="handoff failed"):
+                await _resolve_ticket_disposition(
+                    ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
+                )
+        finally:
+            _stop_all(patches)
+
+    @pytest.mark.asyncio
     async def test_post_processing_runs_before_review_handoff(self, tmp_path: Path):
         ctx = _make_ctx(tmp_path)
         verdict = CriteriaVerdict(disposition="review")
