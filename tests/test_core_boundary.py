@@ -24,6 +24,7 @@ from booley.core.boundary import (
     require_bool_value,
     require_dict,
     require_finite_number,
+    require_finite_number_value,
     require_int,
     require_list,
     require_opt_str,
@@ -358,6 +359,18 @@ class TestRequireFiniteNumber:
     def test_field_in_message(self):
         with pytest.raises(BoundaryError, match="slack"):
             require_finite_number(None, field="slack")
+
+
+class TestRequireFiniteNumberValue:
+    def test_preserves_arbitrarily_large_int(self):
+        value = 10**1000
+
+        assert require_finite_number_value(value, field="threshold") == value
+
+    @pytest.mark.parametrize("value", [True, NAN, INF, "3.0"])
+    def test_rejects_nonfinite_or_nonnumeric_values(self, value: object):
+        with pytest.raises(BoundaryError, match="threshold"):
+            require_finite_number_value(value, field="threshold")
 
 
 # ---------------------------------------------------------------------------

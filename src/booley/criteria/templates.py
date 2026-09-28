@@ -40,6 +40,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS, describe_threshold
 from booley.targets import target_naming
 
@@ -103,16 +104,12 @@ def has_relative_qor_threshold(params: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 # Criterion keys removed or renamed by past migrations, each mapped to a
-# specific, actionable hint. This is the single source of truth, diffed against
-# a ticket both at harness intake (booley.harness.setup.intake) and in
-# ``validate-ticket`` pre-flight (booley.ticket_board.validation) so a ticket
-# authored before a rename fails fast with the exact fix — instead of the
-# opaque mid-run CRITICAL crash that motivated this registry. An unrecognized
-# key is otherwise silently created as *optional*, downgrading a mandatory gate
-# to a no-op; hence a hard error, not a warning.
-_COVERAGE_MIGRATION_HINT = (
-    "replace it with 'coverage: [{targets: [...], metrics: {...}, tests: all}]'"
-)
+# specific, actionable hint. This is the single source of truth consulted at
+# the Ticket-document authoring boundary and by Ticket validation so a Ticket
+# authored before a rename fails fast with the exact fix. An unrecognized key
+# is otherwise silently created as *optional*, downgrading a mandatory
+# Criterion to a no-op; hence a hard error, not a warning.
+_COVERAGE_MIGRATION_HINT = f"replace it with {COVERAGE_MIGRATION_SKELETON!r}"
 RETIRED_CRITERIA: dict[str, str] = {
     "plan_done": "remove it; the planner specialists were pruned",
     "plan_created": "remove it; the planner specialists were pruned",
