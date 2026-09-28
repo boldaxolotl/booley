@@ -299,6 +299,40 @@ def test_standard_sequence_uses_one_peak_instead_of_summed_peaks() -> None:
     assert docker_capacity.required_sequence_headroom(plan) < 3 * 30 * 2**30
 
 
+def test_capacity_plan_rejects_empty_and_unknown_tail() -> None:
+    with pytest.raises(ValueError, match="at least one request"):
+        DockerBuildPlan(())
+
+    plan = DockerBuildPlan((DockerBuildRequest("base", "base"),))
+    with pytest.raises(ValueError, match="no request for output tag"):
+        plan.tail_from_output("missing")
+
+
+def test_sequence_headroom_requires_one_warm_state_per_request() -> None:
+    plan = DockerBuildPlan((DockerBuildRequest("base", "base"),))
+
+    with pytest.raises(ValueError, match="warm state count"):
+        docker_capacity.required_sequence_headroom(plan, warm=())
+
+
+def test_capacity_preflight_rejects_inconsistent_request_arguments() -> None:
+    base = DockerBuildRequest("base", "base")
+    overlay = DockerBuildRequest("overlay", "overlay")
+
+    with pytest.raises(ValueError, match="image or current_request"):
+        docker_capacity.ensure_docker_build_capacity(["docker", "build"])
+    with pytest.raises(ValueError, match="must be first"):
+        docker_capacity.ensure_docker_build_capacity(
+            ["docker", "build"],
+            current_request=base,
+            remaining_plan=DockerBuildPlan((overlay,)),
+        )
+    with pytest.raises(ValueError, match="match the current request"):
+        docker_capacity.ensure_docker_build_capacity(
+            ["docker", "build"], image="other", current_request=base
+        )
+
+
 def test_cached_docker_build_uses_smaller_headroom(tmp_path: Path, monkeypatch) -> None:
     marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
     _set_free_space(monkeypatch, 16)
@@ -686,6 +720,49 @@ def test_capacity_cli_passes_validated_remaining_plan(tmp_path: Path, monkeypatc
 
     assert result == 0
     assert [request.managed_image for request in observed] == ["overlay"]
+
+
+@pytest.mark.parametrize(
+    ("contents", "index", "message"),
+    [
+        ("{", 0, "invalid Docker build plan file"),
+        ('{"requests":[]}', -1, "current index must not be negative"),
+        ('{"requests":[]}', 0, "no request at the current index"),
+    ],
+)
+def test_capacity_plan_file_rejects_invalid_documents(
+    tmp_path: Path, contents: str, index: int, message: str
+) -> None:
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(docker_capacity.DockerCapacityError, match=message):
+        docker_capacity._plan_from_file(plan_file, index)
+
+
+def test_capacity_cli_rejects_plan_output_mismatch(tmp_path: Path, capsys) -> None:
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(
+        '{"requests":['
+        '{"managed_image":"base","output_tag":"base","estimate_class":"heavyweight"}'
+        "]}",
+        encoding="utf-8",
+    )
+
+    result = docker_capacity.main(
+        [
+            "--image",
+            "different",
+            "--plan-file",
+            str(plan_file),
+            "--",
+            "docker",
+            "build",
+        ]
+    )
+
+    assert result == 1
+    assert "current plan output tag does not match" in capsys.readouterr().err
 
 
 def test_capacity_cli_requires_a_build_command() -> None:

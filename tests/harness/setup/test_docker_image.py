@@ -1179,6 +1179,7 @@ esac
     return fake_bin
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell-script execution")
 def test_riscv_script_refuses_five_image_plan_before_first_docker_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

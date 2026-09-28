@@ -92,6 +92,42 @@ def test_source_fingerprint_wraps_unreadable_inputs(tmp_path: Path) -> None:
         _ = spec.fingerprint
 
 
+def test_plan_image_builds_selects_missing_and_refresh_requested_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = sidecars._ImageSpec(
+        "current", "current-image", "current", Path("Dockerfile"), Path(), ()
+    )
+    missing = sidecars._ImageSpec(
+        "missing", "missing-image", "missing", Path("Dockerfile"), Path(), ()
+    )
+    labels = {
+        current.reference: {"role": "current"},
+        missing.reference: {"role": "missing"},
+    }
+    verified = []
+    monkeypatch.setattr(sidecars, "_image_specs", lambda _root: (current, missing))
+    monkeypatch.setattr(
+        sidecars,
+        "_inspect_image",
+        lambda reference, _docker: (
+            ("sha256:current", labels[reference]) if reference == current.reference else None
+        ),
+    )
+    monkeypatch.setattr(
+        sidecars, "_verify_image_ownership", lambda spec, image: verified.append((spec, image))
+    )
+    monkeypatch.setattr(sidecars, "_image_labels", lambda spec: labels[spec.reference])
+
+    ensure = sidecars.plan_image_builds(Intent.ENSURE, docker=FakeDocker())
+    refresh = sidecars.plan_image_builds(Intent.REFRESH, docker=FakeDocker())
+
+    assert [request.output_tag for request in ensure] == [missing.reference]
+    assert [request.output_tag for request in refresh] == [current.reference, missing.reference]
+    assert all(request.estimate_class.value == "thin-overlay" for request in (*ensure, *refresh))
+    assert len(verified) == 4
+
+
 def test_prior_booley_version_makes_sidecar_image_pending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
