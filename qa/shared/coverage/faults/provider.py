@@ -89,8 +89,11 @@ class Evidence:
         text = "\n".join(
             item["text"] for item in result.get("content", []) if item.get("type") == "text"
         )
+        if result.get("isError"):
+            # Schema rejections are plain text, not JSON: record the raw rejection verbatim.
+            raise ValueError(text)
         document = json.loads(text)
-        if result.get("isError") or document.get("error"):
+        if document.get("error"):
             raise ValueError(document)
         return document
 

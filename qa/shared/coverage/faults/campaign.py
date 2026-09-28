@@ -6,9 +6,21 @@ import hashlib
 import json
 from pathlib import Path
 
+REFERENCE_SCHEMA = "booley.coverage-campaign-reference/v1"
+
+
+def canonical(value: object) -> bytes:
+    """Encode exactly like Booley's point lines and reference: compact, sorted, UTF-8."""
+    return (
+        json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+        + b"\n"
+    )
+
 
 def rewrite_points(path: Path, document: dict, records: list[dict]) -> None:
-    raw = b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in records)
+    raw = b"".join(canonical(row) for row in records)
     compressed = gzip.compress(raw, mtime=0)
     path.write_bytes(compressed)
     document["point_store"].update(
@@ -58,14 +70,37 @@ def regular_owned(path: Path, owned: Path) -> None:
         raise ValueError("mutation destination must not share a hard link")
 
 
-def mutate(path: Path, owned: Path, mode: str) -> None:
+def nested_campaign(reference: Path, owned: Path) -> tuple[Path, dict]:
+    """Follow a Target reference to its nested V3 manifest inside the owned copy."""
+    document = json.loads(reference.read_text())
+    if document.get("$schema") != REFERENCE_SCHEMA:
+        raise ValueError(f"expected the Target coverage.json ({REFERENCE_SCHEMA})")
+    nested = document["coverage_campaign"]
+    if nested.get("path_base") != "origin_target":
+        raise ValueError("unsupported reference path_base")
+    path = reference.parent / nested["path"]
+    regular_owned(path, owned)
+    return path, document
+
+
+def rebind_reference(reference: Path, document: dict, campaign: Path) -> None:
+    """Update the reference envelope so validation reaches the mutated Campaign."""
+    raw = campaign.read_bytes()
+    document["coverage_campaign"].update(
+        bytes=len(raw), sha256="sha256:" + hashlib.sha256(raw).hexdigest()
+    )
+    reference.write_bytes(canonical(document))
+
+
+def mutate(reference: Path, owned: Path, mode: str) -> None:
     """Reject unmarked/outside paths; callers retain an untouched canonical archive."""
     owned = owned.resolve(strict=True)
     if not (owned / ".qa-coverage-fault-copy").is_file():
         raise ValueError("explicit disposable-copy marker required")
-    if not path.resolve(strict=True).is_relative_to(owned) or path.is_symlink():
+    if not reference.resolve(strict=True).is_relative_to(owned) or reference.is_symlink():
         raise ValueError("Campaign must be a regular file in the owned copy")
-    regular_owned(path, owned)
+    regular_owned(reference, owned)
+    path, reference_document = nested_campaign(reference, owned)
     regular_owned(path.parent / "coverage-points.jsonl.gz", owned)
     document = json.loads(path.read_text())
     points = path.parent / "coverage-points.jsonl.gz"
@@ -88,7 +123,8 @@ def mutate(path: Path, owned: Path, mode: str) -> None:
             document.pop("point_store")
     else:
         corrupt_manifest(mode, path, document, owned)
-    path.write_text(json.dumps(document, sort_keys=True) + "\n")
+    path.write_bytes(canonical(document))
+    rebind_reference(reference, reference_document, path)
 
 
 def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None:
@@ -132,7 +168,7 @@ def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode")
-    parser.add_argument("campaign", type=Path)
+    parser.add_argument("campaign", type=Path, help="Target coverage.json reference in the copy")
     parser.add_argument("--owned", type=Path, required=True)
     args = parser.parse_args()
     mutate(args.campaign, args.owned, args.mode)

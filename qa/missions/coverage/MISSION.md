@@ -34,6 +34,11 @@ recipes live in `../../shared/coverage/RUNBOOK.md`; skim it before area 1.
 - Sanity-check the independent oracle first: `python3 ../../shared/coverage/evaluator/controls.py <mode>`
   for `positive`, `hit-count`, `source-grouping`, `digest`, `rational-verdict` (positive accepts, each
   negative rejects). A broken oracle is a `qa-bug`; judge numbers by hand from `expected.json`.
+- Campaign paths: the Flow's `targets/<t>/coverage.json` is a reference, not the Campaign. The Analyst takes
+  it as-is; `measurements.py` and `approvals.py` take the nested V3 manifest it points to, and run ids are
+  `run:NNN:<test>`. Resolve both with RUNBOOK.md "Campaign paths".
+- Coverage Analyst CLI (there is no `booley flow coverage_analyst`):
+  `booley session enter -- python -m booley.specialists.coverage_analyst --campaign <t>/coverage.json [--instruction <q>] [--report-dir <owned>]`.
 - Produce the named baselines each area needs fresh, from the RUNBOOK.md table (e.g. `baseline.native` =
   `booley flow sim --target sim_toggle --test half --coverage` → pass, 4/8 toggle, `not_requested`). If one
   fails, record it and build the closest state manually instead of skipping the area.
@@ -81,8 +86,9 @@ cocotb batch verdicts reused as coverage truth.
 Intent: numbers must match `expected.json` exactly; windows and hooks must be enforced; broken native input
 must never become points.
 Try:
-- For each `expected.json` case run its Target/tests with `--coverage`, then check with (one `--native` per run):
-  `python3 ../../shared/coverage/evaluator/measurements.py <coverage.json> --expected ../../shared/coverage/expected.json --case <case> --native RUN=PATH`
+- For each `expected.json` case run its Target/tests with `--coverage`, then check the nested V3 manifest
+  (one `--native` per run, ids and paths per RUNBOOK.md "Campaign paths"):
+  `python3 ../../shared/coverage/evaluator/measurements.py <nested-v3>/coverage.json --expected ../../shared/coverage/expected.json --case <case> --native run:001:<test>=<campaign-dir>/native/raw/001-<test>.dat`
   Cases: zero 0/8,
   quarter 2/8, half 4/8, rise (one direction) 4/8, full 8/8, repeat 4/8 with higher hit counts, union 4+4 →
   8/8, overlap → 4/8, properties4 half 2/4 and full 4/4, properties16 half 2/16 (12.5%), threshold 50 pass
@@ -94,8 +100,9 @@ Try:
   harness, window keys in `[flows.sim]`, per-call window override.
 - Runtime hook faults (collection invalid): missing/duplicate start, missing/duplicate write, write before
   start, unwritable output file (run as the non-root runtime user, mode 0400).
-- Native faults via `sim_custom` tests `native-missing`, `native-stale`, `native-malformed`,
-  `native-incompatible` (rc2, sim truth kept); merged-file tamper via a `verilator_coverage` PATH wrapper;
+- Native faults via `sim_custom` tests `native-missing`, `native-malformed`, `native-incompatible`
+  (rc2, sim truth kept; `COV_RAW_FILE_STALE` is not exercised here); merged-file tamper via a
+  `verilator_coverage` PATH wrapper;
   first Target fails collection → second still runs, rc2; pre-sim edit of `rtl/coverage_dut.sv` or
   `coverage.core` after planning → drift rejected.
 Look for: averaged per-test percentages, reset-inflated counts, float rounding, stale or tampered data
@@ -130,7 +137,7 @@ Try:
 - Run `yosys -s ../../shared/coverage/proof/parity.ys` from the Project root (must prove induction), copy
   the log to `<approved-dir>/proof/parity.log`, then bind (repeat with `excluded` on the `sim_properties4`
   half Campaign):
-  `python3 ../../shared/coverage/faults/approvals.py unreachable <campaign> --project <p> --directory <approved-dir> --inputs ../../shared/coverage/approval-inputs.json`
+  `python3 ../../shared/coverage/faults/approvals.py unreachable <nested-v3>/coverage.json --project <p> --directory <approved-dir> --inputs ../../shared/coverage/approval-inputs.json`
   Gated `sim_waiver` `[run]` toggle @1 → two bit-zero points waived with provenance.
 - Anchors `rtl_repository` and `project_data_repository` (use a separately initialized project-data repo);
   approval digest change → new set digest, old Campaign unchanged; approval for one Target never leaks to
@@ -151,10 +158,11 @@ Try:
   the point store and recompute totals; `sim_multi` source rollups group by source path, not instance, for
   line/branch/expression/toggle. `sim_scale`: valid, compact sim response (pointer only); note
   bytes/time/RSS.
-- Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy> --owned <root>` then `booley flow coverage_analyst
-  --campaign <copy>` → rejected before the model: v1, v2, missing/changed points, truncated gzip, trailing
-  data, point count, sizes, digest, unsafe/absolute path, symlink, invalid final record, duplicate point,
-  wrong rollup/source rollup/evaluation, resource ceiling.
+- Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy>/coverage.json --owned <root>`
+  (Target reference; the script rebinds it), then run the Analyst CLI on that reference → rejected before
+  the model: v1, v2, missing/changed points, truncated gzip, trailing data, point count, sizes, digest,
+  unsafe/absolute path, symlink, invalid final record, duplicate point, wrong rollup/source
+  rollup/evaluation, resource ceiling.
 - Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage.json`, `rename
   …/simulation.json`, the Ticket `booley_state.json` acceptance write, terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;
@@ -194,7 +202,9 @@ Try:
   miss, acceptance blocked; ask the Analyst about that Campaign; a plain sim adds no coverage acceptance.
 - Let the developer add decoder choice 2 in TB only; recollect → pass; read Criteria/Satisfaction record for
   exact Campaign/Simulation pointers.
-- In a second disposable Ticket, pass then edit TB → old acceptance stale; recollect regains it. Ask for
+- In a second disposable Ticket, before handoff (or in an unaccepted review), pass then edit TB → old evidence
+  stale; recollect regains it. Separately, an edit after **accepted** review must be refused (`main`
+  unchanged) with clear guidance; there is no recollect route from accepted review. Ask for
   exclusions → advisory only. Deliver → clean TB-only committed diff and report.
 Look for: RTL or policy edits, stale acceptance honored, Analyst mutating Criteria.
 Depends on: area 1 working collection. Read the created Ticket's actual id/slug.
@@ -240,3 +250,9 @@ fixture Project, Tickets and branches in `resources.md`.
 - Compare response sizes as compact UTF-8 JSON, not pretty-printed files.
 - Publication retry = new invocation number; prune retry = same selection. Never delete a lock to get past
   an active producer.
+- Parallel sub-agents share the host session reaper cap (`[interactive] max_sessions`, default 4). Over the
+  cap, it stops the oldest live Sandbox sessions, including other agents' and other Projects'. Before
+  fanning out, count live sessions (`docker ps -q --filter label=booley.role=interactive | wc -l`) and
+  run at most `max_sessions - live` agents.
+- Parallel Claude agents share one 5-hour rate-limit window: four agents reached ~95% in one run. Check
+  the remaining allowance before fanning out, and prefer fewer agents over a mid-run stall.
