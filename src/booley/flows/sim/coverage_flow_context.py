@@ -118,5 +118,6 @@ def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, Coverag
 def _reject_legacy_coverage(key: str) -> None:
     if any(key == legacy or key.startswith(legacy + "_") for legacy in _LEGACY):
         raise ValueError(
-            f"Legacy {key}: replace with coverage: [{{targets: [...], metrics: {{...}}, tests: all}}]"
+            f"Legacy {key}: replace with COVERAGE: {{<target>: {{tests: all, metrics: "
+            "{<metric>: {min_pct: <number>}}}}}"
         )

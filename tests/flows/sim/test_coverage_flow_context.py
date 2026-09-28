@@ -39,3 +39,14 @@ def test_context_uses_checkout_local_legacy_config_over_cached_override(
     assert context.waiver_config is not None
     assert context.waiver_config.anchor == "rtl_repository"
     assert context.waiver_config.directory == "approved-waivers"
+
+
+def test_runtime_rejects_legacy_coverage_with_current_schema_hint() -> None:
+    with pytest.raises(ValueError) as caught:
+        coverage_flow_context._reject_legacy_coverage("coverage_toggle_sim_core")
+
+    message = str(caught.value)
+    assert "Legacy coverage_toggle_sim_core" in message
+    assert (
+        "COVERAGE: {<target>: {tests: all, metrics: {<metric>: {min_pct: <number>}}}}}"
+    ) in message

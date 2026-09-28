@@ -109,6 +109,148 @@ def test_coverage_rejects_zero_threshold() -> None:
     assert "greater than 0" in converted.diagnostics[0].message
 
 
+@pytest.mark.parametrize(
+    ("threshold", "rendered"),
+    [
+        ('"90"', 'string "90"'),
+        ("true", "boolean true"),
+        ("66%", 'string "66%"'),
+    ],
+)
+def test_coverage_reports_non_numeric_threshold(threshold: str, rendered: str) -> None:
+    ticket = _ticket(
+        "  COVERAGE: {sim_core: {tests: all, metrics: "
+        "{cover_property: {min_pct: " + threshold + "}}}}\n"
+    )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert f"cover_property.min_pct must be a number, got {rendered}" in message
+    assert "greater than 0" not in message
+
+
+def test_coverage_reports_unknown_policy_key_before_required_key() -> None:
+    ticket = _ticket(
+        "  COVERAGE: {sim_core: {tests: all, metrics: {line: {min_pct: 66, max_pct: 90}}}}\n"
+    )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert "unexpected policy keys include 'max_pct'" in message
+    assert "only 'min_pct' is allowed" in message
+
+
+def test_coverage_reports_duplicate_test_name() -> None:
+    ticket = _ticket(
+        "  COVERAGE: {sim_core: {tests: [smoke, smoke], metrics: {line: {min_pct: 90}}}}\n"
+    )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert "duplicate test names include 'smoke'" in message
+    assert "registered named tests" not in message
+
+
+def test_retired_coverage_criterion_reports_current_migration() -> None:
+    ticket = _ticket("  coverage_toggle: {sim_properties3: 50}\n")
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert "retired Criterion 'coverage_toggle'" in message
+    assert "COVERAGE: {sim_properties3: {tests: all, metrics: {toggle: {min_pct: 50}}}}" in message
+
+
+@pytest.mark.parametrize(
+    ("legacy_name", "native_metric"),
+    [
+        ("coverage_branch", "branch"),
+        ("coverage_expression", "expression"),
+        ("coverage_fsm", None),
+        ("coverage_value", None),
+        ("coverage_mean", None),
+    ],
+)
+def test_all_retired_coverage_criteria_report_current_migration(
+    legacy_name: str, native_metric: str | None
+) -> None:
+    converted = convert_ticket_document(
+        _ticket(f"  {legacy_name}: {{sim_properties3: 50}}\n"), _context()
+    )
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert f"retired Criterion '{legacy_name}'" in message
+    assert "COVERAGE:" in message
+    assert "tests: all" in message
+    if native_metric is None:
+        assert "choose a supported metric" in message
+        assert "cover_property" in message
+        assert f"{{{legacy_name.removeprefix('coverage_')}:" not in message
+    else:
+        assert f"{{{native_metric}: {{min_pct: 50}}}}" in message
+
+
+@pytest.mark.parametrize(
+    ("section", "legacy_name", "declaration"),
+    [
+        ("CRITERIA_MANDATORY", "coverage_toggle", "true"),
+        ("CRITERIA_OPTIONAL", "coverage_toggle", "true"),
+        ("CRITERIA_MANDATORY", "coverage_toggle_sim", "true"),
+    ],
+)
+def test_retired_coverage_detection_is_section_and_shape_independent(
+    section: str, legacy_name: str, declaration: str
+) -> None:
+    ticket = _ticket("  LINT: {core: clean}\n")
+    if section == "CRITERIA_MANDATORY":
+        ticket = ticket.replace("  LINT: {core: clean}\n", f"  {legacy_name}: {declaration}\n")
+    else:
+        ticket = ticket.replace(
+            "---\n\n## Description",
+            f"{section}:\n  {legacy_name}: {declaration}\n---\n\n## Description",
+        )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    assert f"retired Criterion '{legacy_name}'" in converted.diagnostics[0].message
+
+
+def test_uppercase_coverage_name_remains_a_project_scalar_criterion() -> None:
+    view = TicketAuthoringView(
+        resolve_target=lambda selector, _flow: selector,
+        tests_for_target=lambda _target: (),
+        project_scalar_criteria=frozenset({"COVERAGE_TOGGLE"}),
+    )
+    context = TicketConversionContext("draft", lambda _generated: view)
+
+    converted = convert_ticket_document(_ticket("  COVERAGE_TOGGLE: true\n"), context)
+
+    assert converted.document is not None
+    [criterion] = converted.document.spec.criteria
+    assert criterion.capability == "COVERAGE_TOGGLE"
+
+
+def test_retired_coverage_error_precedes_current_coverage_validation() -> None:
+    ticket = _ticket(
+        "  coverage_toggle: true\n"
+        "  COVERAGE: {sim_core: {tests: all, metrics: {line: {min_pct: bad}}}}\n"
+    )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    assert "retired Criterion 'coverage_toggle'" in converted.diagnostics[0].message
+
+
 def test_v2_serializer_round_trips_nested_criteria_and_policy() -> None:
     context = _context()
     original = convert_ticket_document(
@@ -334,13 +476,16 @@ def test_document_boundary_rejects_malformed_authoring(ticket: str, message: str
         ("  COVERAGE: {core: {tests: all}}\n", "exactly tests and metrics"),
         (
             "  COVERAGE: {core: {tests: [unknown], metrics: {line: {min_pct: 90}}}}\n",
-            "registered named tests",
+            "unregistered test names include 'unknown'",
         ),
         (
             "  COVERAGE: {core: {tests: all, metrics: {mystery: {min_pct: 90}}}}\n",
             "unknown metrics",
         ),
-        ("  COVERAGE: {core: {tests: all, metrics: {line: {max_pct: 90}}}}\n", "requires min_pct"),
+        (
+            "  COVERAGE: {core: {tests: all, metrics: {line: {max_pct: 90}}}}\n",
+            "unexpected policy keys include 'max_pct'",
+        ),
         ("  SYNTH: {core (new): {area_um2_max: 100}}\n", "needs a mandatory Flow Criterion"),
     ],
 )

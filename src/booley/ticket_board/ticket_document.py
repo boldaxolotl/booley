@@ -18,8 +18,12 @@ from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import AliasToken, AnchorToken, TagToken
 
 from booley.core.models import OnSuccess, TargetPlan, TargetPlanEntry, TargetPlanRole
-from booley.criteria.coverage import validate_coverage_metrics
-from booley.criteria.templates import _validate_criterion_params, encode_criterion_component
+from booley.criteria.coverage import COVERAGE_METRICS, validate_coverage_metrics
+from booley.criteria.templates import (
+    _validate_criterion_params,
+    encode_criterion_component,
+    find_retired_criteria,
+)
 from booley.criteria.thresholds import describe_threshold
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT, parse_timestamp
 from booley.targets.domain import FuseSocError, UnknownTargetError
@@ -59,6 +63,11 @@ _REVIEW_FOCUS = {
     "tb": frozenset({"quality"}),
 }
 _GENERATED_KEYS = frozenset({"machine", "acceptance_amendment", "created", "feature_branch"})
+_DIRECT_RETIRED_COVERAGE_METRICS = {
+    "coverage_branch": "branch",
+    "coverage_expression": "expression",
+    "coverage_toggle": "toggle",
+}
 
 
 @dataclass(frozen=True)
@@ -581,6 +590,7 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
         flags = _on_success(fields)
         mandatory = fields[_MANDATORY]
         optional = fields.get(_OPTIONAL, {})
+        _reject_retired_coverage_criteria(mandatory, optional)
         mentions = (
             *_targets_from_section(mandatory, _MANDATORY, locations),
             *_targets_from_section(optional, _OPTIONAL, locations),
@@ -620,6 +630,53 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
         )
     except (ValueError, OSError, yaml.YAMLError) as exc:
         return TicketConversion(locals().get("preview"), (_diagnostic(exc),), None)
+
+
+def _reject_retired_coverage_criteria(
+    mandatory: Mapping[str, Any], optional: Mapping[str, Any]
+) -> None:
+    for section in (mandatory, optional):
+        for key, declaration in section.items():
+            matches = [
+                name
+                for name, _hint in find_retired_criteria([key])
+                if name.startswith("coverage_")
+            ]
+            if not matches:
+                continue
+            retired = matches[0]
+            direct_metric = _DIRECT_RETIRED_COVERAGE_METRICS.get(retired)
+            if (
+                direct_metric is not None
+                and isinstance(declaration, Mapping)
+                and len(declaration) == 1
+            ):
+                target, threshold = next(iter(declaration.items()))
+                if (
+                    isinstance(target, str)
+                    and target.strip()
+                    and not isinstance(threshold, bool)
+                    and isinstance(threshold, (int, float))
+                    and math.isfinite(threshold)
+                    and 0 < threshold <= 100
+                ):
+                    migration = (
+                        "COVERAGE: {"
+                        + target
+                        + ": {tests: all, metrics: {"
+                        + direct_metric
+                        + ": {min_pct: "
+                        + str(threshold)
+                        + "}}}}"
+                    )
+                    raise ValueError(f"retired Criterion {key!r}; replace it with {migration!r}")
+            supported = ", ".join(sorted(COVERAGE_METRICS))
+            raise ValueError(
+                f"retired Criterion {key!r}; replace it with "
+                "'COVERAGE: {<target>: {tests: all, metrics: "
+                "{<metric>: {min_pct: <number>}}}}}' and choose a supported metric: "
+                f"{supported}"
+            )
 
 
 def serialize_ticket_document(document: TicketDocument, context: TicketConversionContext) -> str:
@@ -1114,18 +1171,7 @@ def _coverage_rows(
     raw = _nonempty_mapping(value, "COVERAGE")
     if set(raw) != {"tests", "metrics"}:
         raise ValueError("COVERAGE requires exactly tests and metrics")
-    tests = raw["tests"]
-    registered = set(view.tests_for_target(target))
-    if tests != "all" and (
-        not isinstance(tests, list)
-        or not tests
-        or any(not isinstance(test, str) for test in tests)
-        or len(tests) != len(set(tests))
-        or set(tests) - registered
-    ):
-        raise ValueError(f"COVERAGE {target!r} needs all or registered named tests")
-    if tests == "all" and not registered:
-        raise ValueError(f"COVERAGE {target!r} has no registered tests")
+    tests = _validate_coverage_tests(target, raw["tests"], set(view.tests_for_target(target)))
     metrics = validate_coverage_metrics(raw["metrics"], field="COVERAGE")
     rows = []
     for metric, policy in metrics.items():
@@ -1143,6 +1189,33 @@ def _coverage_rows(
             )
         )
     return tuple(rows)
+
+
+def _validate_coverage_tests(target: str, tests: object, registered: set[str]) -> str | list[str]:
+    if tests == "all":
+        if not registered:
+            raise ValueError(f"COVERAGE {target!r} has no registered tests")
+        return tests
+    if (
+        not isinstance(tests, list)
+        or not tests
+        or any(not isinstance(test, str) or not test.strip() for test in tests)
+    ):
+        raise ValueError(f"COVERAGE {target!r} tests must be all or nonempty names")
+    seen: set[str] = set()
+    duplicates = []
+    for test in tests:
+        if test in seen and test not in duplicates:
+            duplicates.append(test)
+        seen.add(test)
+    if duplicates:
+        rendered = ", ".join(repr(test) for test in duplicates)
+        raise ValueError(f"COVERAGE {target!r} duplicate test names include {rendered}")
+    unknown = [test for test in tests if test not in registered]
+    if unknown:
+        rendered = ", ".join(repr(test) for test in unknown)
+        raise ValueError(f"COVERAGE {target!r} unregistered test names include {rendered}")
+    return tests
 
 
 def _derive_target_plan(
