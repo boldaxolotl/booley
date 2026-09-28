@@ -2339,17 +2339,7 @@ class TestRunWithHeartbeat:
         proc_mock.wait.return_value = None
         mock_popen.return_value = proc_mock
 
-        with (
-            patch.dict("sys.modules", {"booley.runtime.heartbeat": None}),
-            patch(
-                "builtins.__import__",
-                side_effect=lambda name, *a, **kw: (
-                    (_ for _ in ()).throw(ImportError())
-                    if name == "booley.runtime.heartbeat"
-                    else __import__(name, *a, **kw)
-                ),
-            ),
-        ):
+        with patch.dict("sys.modules", {"booley.runtime.heartbeat": None}):
             result = tlr._run_with_heartbeat(
                 ["python", "-c", "pass"],
                 str(project_root),
