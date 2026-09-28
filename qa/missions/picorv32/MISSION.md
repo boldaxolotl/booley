@@ -44,12 +44,8 @@ Try:
 - Create paired run-owned destination branches (outer and Project-data). Commit the setup changes
   (Flows, EDA, FPGA Doctor Target) to the Project-data one. Both repos must be clean before area 4.
 - Build `firmware/firmware.hex` before the first Doctor run, since Doctor resolves the sim Target
-  against it. `booley doctor` should show no warnings. `--deep` should show only
-  `flow.synth-deep-warning:synth_core`, caused by upstream RTL or OpenROAD.
-- Merge `fixtures/doctor-synth-warning-waiver.toml` into `.booley_project/doctor-waivers.toml`,
-  keeping existing entries. Rerun and expect only `WAIVED`. The waiver must tolerate instance-name
-  noise but reject a changed meaning. Repeat `booley init`: no drift; the auth policy matches the
-  provider.
+  against it. `booley doctor` and `booley doctor --deep` should show no warnings. Repeat
+  `booley init`: no drift; the auth policy matches the provider.
 - Baseline: `booley targets`, Icarus sims (main, AXI, Wishbone, Dhrystone), Verilator lint, and
   physical synth all pass with fresh reports. The trees still match the setup branch and the pin.
 Look for: undocumented steps, a stale image, over- or under-matching waivers, stale reports, wrong
@@ -313,5 +309,3 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
   finishes too fast to interrupt, pass `+slow_steps=<n>`.
 - Bare-metal Spike needs `tohost`/`fromhost` symbols to exit. A Linux `ecall` exit only works under
   `pk`.
-- The synth deep-warning waiver in area 1 works around #816. Once #816 is fixed, drop the waiver and
-  expect a fully clean `doctor --deep`.

@@ -27,6 +27,7 @@ from booley.core.boundary import (
 from booley.flows.synth.backends.yosys.discovery import (
     DEFAULT_LIB_DIR,
     DEFAULT_LIBERTY,
+    abc_dont_use_cells,
     resolve_liberty,
 )
 from booley.flows.synth.backends.yosys.parsing import (
@@ -393,17 +394,30 @@ def _build_yosys_script(
         out_dir,
         design_name,
         abc_recipe,
+        dont_use=abc_dont_use_cells(liberty),
         abc_script=abc_script,
         abc_delay_ps=abc_delay_ps,
     )
 
-    # Step 6: run one structural check on the final mapped netlist. ``synth``
-    # runs CHECK internally more than once, so its log can contain repeated
-    # loop/driver warnings. Keeping this pass quiet and in its own artifact
-    # gives result interpretation an exact final count without duplicating it
-    # in yosys.log. Any earlier loop warning remains fatal even if absent here.
+    # Step 6: run one structural check on the final mapped netlist. Mapping
+    # consumes liberty data but does not load cell port directions into the
+    # design, so import tagged library modules around the check. Reject the
+    # reserved attribute up front and preserve a colliding existing module via
+    # -nooverwrite; deleting only tagged imports keeps library black boxes out
+    # of netlists and stats without reloading or perturbing the mapped design.
+    # ``synth`` runs CHECK internally more than once, so its log can contain
+    # repeated loop/driver warnings. Keeping this pass quiet and in its own
+    # artifact gives result interpretation an exact final count without
+    # duplicating it in yosys.log. Any earlier loop warning remains fatal even
+    # if absent here.
     check_out = q(out_dir + "/check_" + design_name + ".txt")
-    final_check = f"tee -q -o {check_out} check"
+    final_check = (
+        "select -assert-none =A:booley_check_library=1; "
+        "read_liberty -lib -nooverwrite -setattr booley_check_library "
+        f"{lib_path}; "
+        f"tee -q -o {check_out} check; "
+        "delete =A:booley_check_library=1"
+    )
 
     # Step 7: Write final netlists and statistics. The sta_* netlist keeps
     # OpenROAD on a plain structural dialect while the regular netlist preserves
@@ -427,6 +441,7 @@ def _build_abc_command(
     design_name: str,
     abc_recipe: str | None,
     *,
+    dont_use: tuple[str, ...] = (),
     abc_script: str | None = None,
     abc_delay_ps: int | None = None,
 ) -> str:
@@ -434,6 +449,8 @@ def _build_abc_command(
     q = _quote_yosys_path
     abc_log = q(out_dir + "/log_abc_" + design_name + ".txt")
     abc_base = f"tee -o {abc_log} abc -liberty {lib_path}"
+    for cell in dont_use:
+        abc_base += f" -dont_use {cell}"
     if abc_delay_ps is not None:
         abc_base += f" -D {abc_delay_ps}"
     pstats = ";print_stats"

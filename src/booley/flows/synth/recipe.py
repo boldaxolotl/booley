@@ -170,7 +170,7 @@ def synthesis_recipe_snapshot(
     synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
     liberty, _found = resolve_liberty_lenient(None)
     return {
-        "schema": 2,
+        "schema": 3,
         "target": target,
         "vlnv": resolved.vlnv,
         "toplevel": resolved.toplevel,

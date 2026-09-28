@@ -55,6 +55,20 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Clean liberty-mapped synthesis no longer receives false no-driver, ABC
+  multi-output, `IFP-0028`, `GPL-0302`, or `STA-0349` advisories from Booley's
+  generated Yosys and OpenROAD scripts. OpenROAD now removes every eligible
+  buffer, including hand-instantiated buffers without fixed or `dont_touch`
+  protection. Grid-aligned floorplan margins and whole-design buffer removal
+  can change PPA for every physical profile; the balanced and max-frequency
+  profiles additionally use 0.80 placement density, moving the PicoRV32
+  reference area from 23,516 to 23,531 um². Custom Liberty files must be
+  accepted by Yosys `read_liberty -lib` and provide usable pin directions.
+  Synthesis recipe schema 3 invalidates schema-2 fingerprints frozen at Ticket
+  intake. Affected baseline-comparison Tickets report incomplete recipe evidence;
+  run `booley board reset <slug> --reason "refresh synthesis recipe schema 3"`,
+  which archives prior runtime progress, then rerun the Ticket to freeze the new
+  fingerprint. ([#816](https://github.com/boldaxolotl/Booley/issues/816))
 - Invalid Coverage Campaign rejections now name a bounded, control-safe prefix
   of finding codes and locations, including the specific rollup field when it
   can be determined, while still rejecting before a Coverage Analyst model

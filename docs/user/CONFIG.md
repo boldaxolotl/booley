@@ -526,7 +526,7 @@ targets:
         # abc_delay_ps: 3333
       advanced_settings_openroad:
         utilization_pct: 50
-        placement_density: 0.75
+        placement_density: 0.80
     filesets: [rtl, timing_constraints, synth_memory]
     parameters: [SYNTH_MEMORY_SURROGATE]
     toplevel: top
@@ -574,8 +574,8 @@ overrides and deliberately remain backend-specific.
 | Profile | Yosys mapping | OpenROAD utilization / density |
 | --- | --- | --- |
 | `compact` | one default liberty-aware ABC pass | 40% / 0.65 |
-| `balanced` | one balanced liberty-aware ABC pass | 50% / 0.75 |
-| `max_frequency` | one fast liberty-aware ABC pass | 50% / 0.75 |
+| `balanced` | one balanced liberty-aware ABC pass | 50% / 0.80 |
+| `max_frequency` | one fast liberty-aware ABC pass | 50% / 0.80 |
 
 All profiles run `synth -noabc`, followed by `dfflibmap` and exactly one
 liberty-aware ABC pass. `--ppa-profile` and `--flatten`/`--no-flatten` override
@@ -591,9 +591,11 @@ produce migration errors rather than aliases. Replace them with `synth_mode`,
 **Upgrade note:** `balanced` is the new default and intentionally replaces the
 old implicit combination (generic ABC inside `synth`, default liberty ABC,
 40% utilization). Targets that care about stable PPA must select a profile
-explicitly. `compact` restores the old default liberty mapping and 40%/0.65
-physical settings; add `generic_abc_before_mapping = true` only when reproducing
-the old two-ABC-pass topology for a historical comparison.
+explicitly. `compact` retains the old default liberty mapping and 40%/0.65
+controls, but not pre-#816 physical results: every profile now uses grid-aligned
+core margins and working whole-design buffer removal. Use
+`generic_abc_before_mapping = true` only to restore the old two-ABC-pass mapping;
+establish a fresh physical baseline after upgrading.
 
 Target `flow_options.slang_options` is passed to `read_slang` verbatim.
 `--single-unit` is the
