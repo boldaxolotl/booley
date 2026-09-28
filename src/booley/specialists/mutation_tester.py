@@ -78,6 +78,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResul
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
+from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
 
 from .specialist import Specialist
@@ -1673,6 +1674,11 @@ replacement must differ, and every proposal must remain a single source edit.
         return subprocess.run(
             edam_layer.make_command(rel),
             cwd=work_dir,
+            env=relocate_python_artifacts(
+                os.environ,
+                python_artifact_root(os.environ, build_path / "python-artifacts"),
+                pytest_scope=f"mutation-build:{build_path.resolve()}",
+            ),
             capture_output=True,
             text=True,
             timeout=900,
@@ -1887,6 +1893,51 @@ replacement must differ, and every proposal must remain a single source edit.
             cmd += ["--run-cwd", run_cwd]
         return cmd
 
+    def _pinned_sim_command(
+        self,
+        target: str,
+        work_dir: Path,
+        build_path: Path,
+        tb_top: str,
+        *,
+        timeout: int = 300,
+        test_name: str | None = None,
+        cocotb_tests: tuple[str, ...] = (),
+    ) -> list[str]:
+        rel = self._bin_dir_rel(target, work_dir, build_path)
+        cocotb = self.cocotb_target(target, work_dir)
+        if cocotb is not None:
+            return self._cocotb_sim_cmd(
+                cocotb=cocotb,
+                rel=rel,
+                target=target,
+                work_dir=work_dir,
+                timeout=timeout,
+                test_names=cocotb_tests,
+            )
+        eda_tool = self.target_eda_tool(target, work_dir, build_path)
+        if eda_tool == "icarus":
+            return self._icarus_sim_cmd(
+                rel=rel,
+                target=target,
+                work_dir=work_dir,
+                timeout=timeout,
+                test_name=test_name,
+            )
+        if eda_tool == "verilator":
+            return self._verilator_sim_cmd(
+                rel=rel,
+                target=target,
+                work_dir=work_dir,
+                tb_top=tb_top,
+                timeout=timeout,
+                test_name=test_name,
+            )
+        raise UnsupportedSimTargetError(
+            f"mutation_tester: cached Target {target!r} resolves to unsupported "
+            f"EDA toolchain {eda_tool!r}"
+        )
+
     def _run_sim_pinned(
         self,
         target: str,
@@ -1898,54 +1949,24 @@ replacement must differ, and every proposal must remain a single source edit.
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess:
-        """Run the simulation image built in *build_path*.
-
-        Which run-half drives it depends on the Target: a Cocotb Target goes
-        through :mod:`booley.flows.sim.backends.cocotb`
-        (it needs cocotb's VPI environment); classic Targets use the run-half
-        matching the resolved toolchain (``iverilog_run`` for Icarus,
-        ``verilator_run`` for Verilator). Both exit non-zero on a FAIL verdict,
-        which the sweep reads as "mutation detected". Returns the run
-        :class:`~subprocess.CompletedProcess`.
-        """
-        rel = self._bin_dir_rel(target, work_dir, build_path)
-        cocotb = self.cocotb_target(target, work_dir)
-        if cocotb is not None:
-            cmd = self._cocotb_sim_cmd(
-                cocotb=cocotb,
-                rel=rel,
-                target=target,
-                work_dir=work_dir,
-                timeout=timeout,
-                test_names=cocotb_tests,
-            )
-        else:
-            eda_tool = self.target_eda_tool(target, work_dir, build_path)
-            if eda_tool == "icarus":
-                cmd = self._icarus_sim_cmd(
-                    rel=rel,
-                    target=target,
-                    work_dir=work_dir,
-                    timeout=timeout,
-                    test_name=test_name,
-                )
-            elif eda_tool == "verilator":
-                cmd = self._verilator_sim_cmd(
-                    rel=rel,
-                    target=target,
-                    work_dir=work_dir,
-                    tb_top=tb_top,
-                    timeout=timeout,
-                    test_name=test_name,
-                )
-            else:
-                raise UnsupportedSimTargetError(
-                    f"mutation_tester: cached Target {target!r} resolves to unsupported "
-                    f"EDA toolchain {eda_tool!r}"
-                )
+        """Run the simulation image built in *build_path*."""
+        cmd = self._pinned_sim_command(
+            target,
+            work_dir,
+            build_path,
+            tb_top,
+            timeout=timeout,
+            test_name=test_name,
+            cocotb_tests=cocotb_tests,
+        )
         return subprocess.run(
             cmd,
             cwd=work_dir,
+            env=relocate_python_artifacts(
+                os.environ,
+                python_artifact_root(os.environ, build_path / "python-artifacts"),
+                pytest_scope=f"mutation-run:{build_path.resolve()}",
+            ),
             capture_output=True,
             text=True,
             timeout=timeout,

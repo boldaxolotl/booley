@@ -728,7 +728,9 @@ class TestTryReadReport:
         (step_dir / "report.json").write_text("NOT JSON", encoding="utf-8")
         assert self._try_read_report() is None
 
-    def test_non_persisting_dry_run_does_not_attach_stale_report(self, monkeypatch):
+    def test_non_persisting_dry_run_does_not_attach_stale_report(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+
         async def fake_run(_cmd, timeout=600, env=None):
             del timeout, env
             return (

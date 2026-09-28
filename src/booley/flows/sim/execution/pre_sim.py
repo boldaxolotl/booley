@@ -17,7 +17,8 @@ from booley.runtime.platform_paths import (
     kill_process_tree,
     popen_new_group_kwargs,
 )
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
@@ -93,7 +94,12 @@ def _pre_sim_environment(
         environment["BOOLEY_PROJECT_DIR"] = str(resolve_project_dir(root))
     if len(test_names) == 1:
         environment["BOOLEY_TEST_NAME"] = test_names[0]
-    return environment
+    try:
+        cache_root = resolve_checkout_project_dir(root) / ".runtime" / "python-artifacts"
+    except (OSError, RuntimeError, ValueError):
+        cache_root = build_root / "python-artifacts"
+    scope = f"pre-sim:{handle.selector}:{resolved_run_cwd}:{' '.join(test_names)}"
+    return relocate_python_artifacts(environment, cache_root, pytest_scope=scope)
 
 
 def _invoke_pre_sim(

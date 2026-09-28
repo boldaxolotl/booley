@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -124,7 +125,10 @@ def _stub_cocotb_config_v2_0(arg_sets):
 
 class TestBuildCocotbEnv:
     def test_env_golden(self, tmp_path: Path):
-        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
+        ):
             env = crun._build_cocotb_env(
                 tmp_path,
                 "test_counter",
@@ -144,6 +148,28 @@ class TestBuildCocotbEnv:
         # Spike S1: the build dir is pinned on PYTHONPATH so a project
         # run_cwd cannot break the module import.
         assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path)
+        cache_root = tmp_path / "python-artifacts"
+        assert "PYTHONPYCACHEPREFIX" not in env
+        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+        pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
+        assert pytest_cache.parent == cache_root / "pytest"
+
+    def test_env_reuses_endpoint_runtime_for_pytest(self, tmp_path: Path):
+        runtime = tmp_path / "runtime"
+        with (
+            patch.dict(os.environ, {"BOOLEY_RUNTIME_DIR": str(runtime)}, clear=True),
+            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
+        ):
+            env = crun._build_cocotb_env(
+                tmp_path / "build",
+                "test_counter",
+                ["a"],
+                tmp_path / "attempt" / "results.xml",
+            )
+
+        pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
+        assert pytest_cache.parent == runtime / "python-artifacts" / "pytest"
+        assert str(tmp_path / "attempt") not in str(pytest_cache)
 
     def test_2x_dialect_sets_no_testcase(self, tmp_path: Path):
         # cocotb 2.x removed TESTCASE — the 2.x dialect must never set it.
