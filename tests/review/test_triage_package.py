@@ -20,7 +20,6 @@ from booley.criteria.templates import encode_criterion_component
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.review import triage_package as tp
-from booley.runtime.regular_file import open_regular_nofollow
 
 
 @dataclass(frozen=True)
@@ -108,7 +107,18 @@ def _never_freshness_eligible(*_args: object, **_kwargs: object) -> bool:
     return False
 
 
-def _facts(ctx: Context, *, run_economics: str = "unavailable") -> dict:
+def _test_coverage_report_resolver(report_root: Path, value: object) -> Path | None:
+    if not isinstance(value, dict) or not isinstance(value.get("path"), str):
+        return None
+    return report_root / value["path"]
+
+
+def _facts(
+    ctx: Context,
+    *,
+    run_economics: str = "unavailable",
+    freshness_eligible=verification_freshness_eligible,
+) -> dict:
     state = json.loads((ctx.log_dir / ".runtime" / "booley_state.json").read_text())
     scope_path = ctx.log_dir / ".runtime" / "scope_deviations.json"
     scope = json.loads(scope_path.read_text()) if scope_path.is_file() else {}
@@ -122,13 +132,13 @@ def _facts(ctx: Context, *, run_economics: str = "unavailable") -> dict:
     return tp.build_review_facts(
         ctx,
         evidence,
-        freshness_eligible=verification_freshness_eligible,
+        freshness_eligible=freshness_eligible,
         freshness_evaluator=partial(
             evaluate_verification_freshness,
             fingerprint_provider=compute_source_fingerprint,
         ),
         criterion_presenter=state_criterion_presentation,
-        regular_file_opener=open_regular_nofollow,
+        coverage_report_resolver=_test_coverage_report_resolver,
         run_economics=run_economics,
     )
 
@@ -161,7 +171,7 @@ def test_review_facts_consume_frozen_board_evidence(tmp_path: Path) -> None:
             fingerprint_provider=compute_source_fingerprint,
         ),
         criterion_presenter=state_criterion_presentation,
-        regular_file_opener=open_regular_nofollow,
+        coverage_report_resolver=_test_coverage_report_resolver,
     )
 
     assert "captured_only" in {row["criterion"] for row in facts["criteria"]}
@@ -200,7 +210,11 @@ def test_review_facts_project_live_staleness_without_mutating_evidence(
             "sim_pass_sim": {
                 "mandatory": True,
                 "met": True,
-                "detail": {SOURCE_FINGERPRINT_DETAIL_KEY: stamp},
+                "detail": {
+                    SOURCE_FINGERPRINT_DETAIL_KEY: stamp,
+                    "tests_passed": 3,
+                    "tests_total": 3,
+                },
             },
             "_report_submitted": {"mandatory": True, "met": True},
         }
@@ -223,7 +237,7 @@ def test_review_facts_project_live_staleness_without_mutating_evidence(
             fingerprint_provider=compute_source_fingerprint,
         ),
         criterion_presenter=state_criterion_presentation,
-        regular_file_opener=open_regular_nofollow,
+        coverage_report_resolver=_test_coverage_report_resolver,
     )
 
     rows = {row["criterion"]: row for row in facts["criteria"]}
@@ -231,6 +245,7 @@ def test_review_facts_project_live_staleness_without_mutating_evidence(
     assert rows["sim_pass_sim"]["freshness"] == "stale"
     assert rows["sim_pass_sim"]["changed_categories"] == ["tb"]
     assert rows["sim_pass_sim"]["status"] == "STALE (tb)"
+    assert "tests_passed" not in rows["sim_pass_sim"]["metric"]
     assert rows["_report_submitted"]["freshness"] == "stale"
     assert evidence.state() == state
 
@@ -261,7 +276,7 @@ def test_live_staleness_preserves_locked_submitted_report(tmp_path: Path) -> Non
             "changed",
         ),
         criterion_presenter=state_criterion_presentation,
-        regular_file_opener=open_regular_nofollow,
+        coverage_report_resolver=_test_coverage_report_resolver,
     )
 
     rows = {row["criterion"]: row for row in facts["criteria"]}
@@ -479,7 +494,7 @@ def test_mutation_criterion_links_to_preserved_campaign_report(tmp_path: Path, m
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    facts = _facts(ctx)
+    facts = _facts(ctx, freshness_eligible=_never_freshness_eligible)
     package = {**facts, "assessment": _assessment(), "html_path": None}
     rendered = tp.render_review_briefing(package, [])
     mutation = next(row for row in facts["criteria"] if row["criterion"] == mutation_key)
@@ -490,31 +505,50 @@ def test_mutation_criterion_links_to_preserved_campaign_report(tmp_path: Path, m
     assert f"[Mutation testing · sim_core]({report_link})" in rendered
 
 
-def test_ticket_v2_criteria_have_readable_review_presentation(tmp_path: Path) -> None:
-    ctx = _context(tmp_path)
-    target = "vendor:library:core:1#sim_generated"
+def _coverage_key(target: str) -> str:
+    return "_".join(
+        ("coverage", encode_criterion_component(target), encode_criterion_component("line"))
+    )
+
+
+def _coverage_entry(
+    target: str,
+    *,
+    covered: int,
+    eligible: int,
+    reference: dict[str, object] | None = None,
+    stale: bool = False,
+) -> dict[str, object]:
+    detail: dict[str, object] = {
+        "evaluation": {
+            "metrics": [
+                {
+                    "metric": "line",
+                    "covered_points": covered,
+                    "eligible_points": eligible,
+                    "actual_percent": 100 * covered / eligible,
+                }
+            ]
+        }
+    }
+    if reference is not None:
+        detail["coverage_campaign_reference"] = reference
+    return {
+        "mandatory": True,
+        "met": True,
+        "stale": stale,
+        "params": {"target": target, "metrics": {"line": {"min_pct": 90}}},
+        "detail": detail,
+    }
+
+
+def _presentation_criteria(
+    target: str, reference: dict[str, object]
+) -> tuple[dict[str, object], str, str, str]:
     sim_key = f"sim_pass_{encode_criterion_component(target)}"
-    coverage_key = "_".join(
-        (
-            "coverage",
-            encode_criterion_component(target),
-            encode_criterion_component("line"),
-        )
-    )
-    stale_coverage_key = "_".join(
-        (
-            "coverage",
-            encode_criterion_component("sim_old"),
-            encode_criterion_component("line"),
-        )
-    )
-    campaign = ctx.log_dir / ".runtime" / "flow-reports" / "sim" / "run-1" / "coverage.json"
-    campaign.parent.mkdir(parents=True)
-    campaign_bytes = b'{"coverage_campaign":{"path":"campaign.json"}}\n'
-    campaign.write_bytes(campaign_bytes)
-    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["criteria"] = {
+    coverage_key = _coverage_key(target)
+    stale_coverage_key = _coverage_key("sim_old")
+    criteria = {
         sim_key: {
             "mandatory": True,
             "met": True,
@@ -523,55 +557,10 @@ def test_ticket_v2_criteria_have_readable_review_presentation(tmp_path: Path) ->
             "detail": {"tests_passed": 3, "tests_total": 3},
         },
         coverage_key: {
-            "mandatory": True,
-            "met": True,
+            **_coverage_entry(target, covered=3, eligible=3, reference=reference),
             "presentation": {"label": "untrusted override"},
-            "params": {
-                "target": target,
-                "tests": ["smoke"],
-                "metrics": {"line": {"min_pct": 90}},
-            },
-            "detail": {
-                "coverage_campaign_reference": {
-                    "path_base": "reports_root",
-                    "path": "sim/run-1/coverage.json",
-                    "bytes": len(campaign_bytes),
-                    "sha256": "sha256:" + hashlib.sha256(campaign_bytes).hexdigest(),
-                    "nested_campaign_sha256": "sha256:" + "a" * 64,
-                },
-                "evaluation": {
-                    "metrics": [
-                        {
-                            "metric": "line",
-                            "covered_points": 3,
-                            "eligible_points": 3,
-                            "actual_percent": 100,
-                        }
-                    ]
-                },
-            },
         },
-        stale_coverage_key: {
-            "mandatory": True,
-            "met": True,
-            "stale": True,
-            "params": {
-                "target": "sim_old",
-                "metrics": {"line": {"min_pct": 90}},
-            },
-            "detail": {
-                "evaluation": {
-                    "metrics": [
-                        {
-                            "metric": "line",
-                            "covered_points": 9,
-                            "eligible_points": 10,
-                            "actual_percent": 90,
-                        }
-                    ]
-                }
-            },
-        },
+        stale_coverage_key: _coverage_entry("sim_old", covered=9, eligible=10, stale=True),
         "sim_pass_failed": {
             "mandatory": False,
             "met": False,
@@ -580,8 +569,29 @@ def test_ticket_v2_criteria_have_readable_review_presentation(tmp_path: Path) ->
             "detail": {"error_gist": "assertion failed", "reason": "bad result"},
         },
     }
-    state_path.write_text(json.dumps(state), encoding="utf-8")
+    return criteria, sim_key, coverage_key, stale_coverage_key
 
+
+def _presentation_case(tmp_path: Path) -> tuple[Context, dict, str, str, str, Path]:
+    ctx = _context(tmp_path)
+    campaign = ctx.log_dir / ".runtime" / "flow-reports" / "sim" / "run-1" / "coverage.json"
+    campaign.parent.mkdir(parents=True)
+    campaign_bytes = b'{"coverage_campaign":{"path":"campaign.json"}}\n'
+    campaign.write_bytes(campaign_bytes)
+    reference = {
+        "path_base": "reports_root",
+        "path": "sim/run-1/coverage.json",
+        "bytes": len(campaign_bytes),
+        "sha256": "sha256:" + hashlib.sha256(campaign_bytes).hexdigest(),
+        "nested_campaign_sha256": "sha256:" + "a" * 64,
+    }
+    criteria, sim_key, coverage_key, stale_coverage_key = _presentation_criteria(
+        "vendor:library:core:1#sim_generated", reference
+    )
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"] = criteria
+    state_path.write_text(json.dumps(state), encoding="utf-8")
     evidence = tp.ResolvedReviewEvidence.capture(
         state=state,
         scope={},
@@ -595,8 +605,13 @@ def test_ticket_v2_criteria_have_readable_review_presentation(tmp_path: Path) ->
         freshness_eligible=_never_freshness_eligible,
         freshness_evaluator=evaluate_verification_freshness,
         criterion_presenter=state_criterion_presentation,
-        regular_file_opener=open_regular_nofollow,
+        coverage_report_resolver=_test_coverage_report_resolver,
     )
+    return ctx, facts, sim_key, coverage_key, stale_coverage_key, campaign
+
+
+def test_ticket_v2_criteria_have_readable_review_facts(tmp_path: Path) -> None:
+    _, facts, _, coverage_key, stale_coverage_key, campaign = _presentation_case(tmp_path)
     rows = {row["criterion"]: row for row in facts["criteria"]}
     assert rows[coverage_key]["category"] == "Coverage"
     assert rows[coverage_key]["label"] == "Coverage · sim_generated"
@@ -607,6 +622,10 @@ def test_ticket_v2_criteria_have_readable_review_presentation(tmp_path: Path) ->
     assert "assertion failed" in rows["sim_pass_failed"]["metric"]
     assert "bad result" in rows["sim_pass_failed"]["metric"]
     assert facts["health"]["unverified_transitions"] == ["Simulation · sim_generated"]
+
+
+def test_ticket_v2_criteria_render_readable_review_briefing(tmp_path: Path) -> None:
+    ctx, facts, sim_key, coverage_key, _, campaign = _presentation_case(tmp_path)
 
     path = tp.write_triage_package(ctx, facts, _assessment(), None)
     package = tp.load_triage_package(path)

@@ -30,6 +30,10 @@ from booley.criteria.freshness import (
 )
 from booley.criteria.presentation import state_criterion_presentation
 from booley.criteria.state import DevelopmentState
+from booley.flows.sim.coverage_reference import (
+    CoverageCampaignReferenceError,
+    resolve_persisted_coverage_campaign_reference,
+)
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.review.generation import (
     ExplanationError,
@@ -52,7 +56,6 @@ from booley.runtime.agent import call_agent
 from booley.runtime.agent_config import get_backend_config, load_backend_config
 from booley.runtime.paths import skills_dir
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
-from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.acceptance_diagnostics import (
     AcceptanceHeadDrift,
@@ -108,6 +111,14 @@ def _read_review_mapping(path: Path, *, field: str) -> dict[str, Any]:
         return {}
 
 
+def _resolve_review_coverage_report(report_root: Path, value: object) -> Path | None:
+    """Resolve one authenticated Coverage report for review presentation."""
+    try:
+        return resolve_persisted_coverage_campaign_reference(report_root, value).reference_path
+    except CoverageCampaignReferenceError:
+        return None
+
+
 def _review_dirty_paths(ctx: ReviewPrepContext) -> list[str]:
     dirty = _git(ctx.worktree, "status", "--short").splitlines()
     if ctx.project_repository is not None:
@@ -161,7 +172,7 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
             fingerprint_provider=compute_source_fingerprint,
         ),
         criterion_presenter=state_criterion_presentation,
-        regular_file_opener=open_regular_nofollow,
+        coverage_report_resolver=_resolve_review_coverage_report,
     )
 
 

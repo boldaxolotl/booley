@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict, require_str
+from booley.core.boundary import BoundaryError, require_dict, require_str, require_str_value
 from booley.review.explanation import ExplanationError, StructuredExplanation
 
 PACKAGE_VERSION = 2
@@ -233,10 +233,15 @@ class CriterionRow:
         if any(not item for item in changed_categories):
             raise ReviewArtifactError("changed_categories must contain nonblank strings")
         criterion = require_str(row, "criterion")
-        label = row.get("label", criterion)
-        detail = row.get("detail", "")
-        if not isinstance(label, str) or not isinstance(detail, str):
-            raise ReviewArtifactError("criterion label and detail must be strings")
+        try:
+            label = require_str_value(row.get("label", criterion), field="criterion label")
+            detail = require_str_value(
+                row.get("detail", ""),
+                field="criterion detail",
+                allow_empty=True,
+            )
+        except BoundaryError as exc:
+            raise ReviewArtifactError(str(exc)) from exc
         return cls(
             category=require_str(row, "category"),
             criterion=criterion,

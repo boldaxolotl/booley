@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import shutil
 import subprocess
 import tempfile
@@ -42,7 +40,7 @@ class CriterionPresentation(Protocol):
 
 
 CriterionPresenter = Callable[[str, object, bool], CriterionPresentation]
-RegularFileOpener = Callable[[Path], int]
+CoverageReportResolver = Callable[[Path, object], Path | None]
 
 
 @dataclass(frozen=True)
@@ -245,11 +243,11 @@ def _criterion_report_path(
     worktree: Path,
     project_root: Path,
     log_dir: Path,
-    regular_file_opener: RegularFileOpener,
+    coverage_report_resolver: CoverageReportResolver,
 ) -> str | None:
     """Resolve a trusted ticket artifact that should open from a criterion."""
     if name.startswith("coverage_"):
-        return _coverage_report_path(entry, log_dir, regular_file_opener)
+        return _coverage_report_path(entry, log_dir, coverage_report_resolver)
     if not (name == "mutation_score" or name.startswith("mutation_score_")):
         return None
     detail = entry.get("detail")
@@ -266,66 +264,29 @@ def _criterion_report_path(
     return str(resolved) if resolved.is_file() else None
 
 
-def _coverage_reference(entry: Mapping[str, Any]) -> tuple[PurePosixPath, int, str] | None:
-    detail = entry.get("detail")
-    reference = detail.get("coverage_campaign_reference") if isinstance(detail, Mapping) else None
-    if not isinstance(reference, Mapping) or reference.get("path_base") != "reports_root":
-        return None
-    raw_path = reference.get("path")
-    expected_bytes = reference.get("bytes")
-    expected_digest = reference.get("sha256")
-    if not isinstance(raw_path, str) or type(expected_bytes) is not int or expected_bytes < 1:
-        return None
-    relative = PurePosixPath(raw_path)
-    if (
-        relative.is_absolute()
-        or not relative.parts
-        or any(part in {"", ".", ".."} for part in relative.parts)
-        or relative.as_posix() != raw_path
-    ):
-        return None
-    if not isinstance(expected_digest, str):
-        return None
-    return relative, expected_bytes, expected_digest
-
-
-def _read_regular_file(
-    path: Path, byte_limit: int, regular_file_opener: RegularFileOpener
-) -> bytes | None:
-    try:
-        descriptor = regular_file_opener(path)
-        with os.fdopen(descriptor, "rb") as handle:
-            return handle.read(byte_limit)
-    except OSError:
-        return None
-
-
 def _coverage_report_path(
     entry: Mapping[str, Any],
     log_dir: Path,
-    regular_file_opener: RegularFileOpener,
+    coverage_report_resolver: CoverageReportResolver,
 ) -> str | None:
-    reference = _coverage_reference(entry)
+    detail = entry.get("detail")
+    reference = detail.get("coverage_campaign_reference") if isinstance(detail, Mapping) else None
     if reference is None:
         return None
-    relative, expected_bytes, expected_digest = reference
     root = (log_dir / ".runtime" / "flow-reports").absolute()
-    candidate = root.joinpath(*relative.parts)
-    try:
-        candidate.resolve(strict=True).relative_to(root.resolve(strict=True))
-    except (OSError, ValueError):
-        return None
-    content = _read_regular_file(candidate, expected_bytes + 1, regular_file_opener)
-    if content is None:
-        return None
-    digest = "sha256:" + hashlib.sha256(content).hexdigest()
-    if len(content) != expected_bytes or digest != expected_digest:
-        return None
-    return str(candidate)
+    resolved = coverage_report_resolver(root, reference)
+    return str(resolved) if resolved is not None else None
 
 
-def _criterion_evidence(presentation: CriterionPresentation, value: Mapping[str, Any]) -> str:
+def _criterion_evidence(
+    presentation: CriterionPresentation,
+    value: Mapping[str, Any],
+    *,
+    freshness: str,
+) -> str:
     parts = [presentation.detail] if presentation.detail else []
+    if freshness == "stale":
+        return " · ".join(parts) or "persisted criterion state · booley_state.json"
     generic = _criterion_metric(value)
     if generic != "persisted criterion state · booley_state.json" or not parts:
         parts.append(generic)
@@ -368,7 +329,7 @@ def _criterion_row(
     project_root: Path,
     log_dir: Path,
     criterion_presenter: CriterionPresenter,
-    regular_file_opener: RegularFileOpener,
+    coverage_report_resolver: CoverageReportResolver,
     freshness: str,
     changed_categories: list[str],
 ) -> dict[str, Any]:
@@ -387,7 +348,7 @@ def _criterion_row(
         "outcome": _criterion_outcome(value),
         "freshness": freshness,
         "changed_categories": changed_categories,
-        "metric": _criterion_evidence(presentation, value),
+        "metric": _criterion_evidence(presentation, value, freshness=freshness),
         "availability": value.get("availability", "available"),
         "report_path": _criterion_report_path(
             name,
@@ -395,7 +356,7 @@ def _criterion_row(
             worktree=worktree,
             project_root=project_root,
             log_dir=log_dir,
-            regular_file_opener=regular_file_opener,
+            coverage_report_resolver=coverage_report_resolver,
         ),
     }
 
@@ -428,7 +389,7 @@ def _criteria(
     project_root: Path,
     log_dir: Path,
     criterion_presenter: CriterionPresenter,
-    regular_file_opener: RegularFileOpener,
+    coverage_report_resolver: CoverageReportResolver,
     freshness_eligible: Callable[..., bool],
     freshness_evaluator: Callable[..., Any],
 ) -> list[dict[str, Any]]:
@@ -459,7 +420,7 @@ def _criteria(
                 project_root=project_root,
                 log_dir=log_dir,
                 criterion_presenter=criterion_presenter,
-                regular_file_opener=regular_file_opener,
+                coverage_report_resolver=coverage_report_resolver,
                 freshness=freshness,
                 changed_categories=changed_categories,
             )
@@ -893,7 +854,7 @@ def build_review_facts(
     freshness_eligible: Callable[..., bool],
     freshness_evaluator: Callable[..., Any],
     criterion_presenter: CriterionPresenter,
-    regular_file_opener: RegularFileOpener,
+    coverage_report_resolver: CoverageReportResolver,
     run_economics: str = "unavailable",
 ) -> dict[str, Any]:
     """Build artifacts from Ticket Board-resolved evidence and immutable heads."""
@@ -955,7 +916,7 @@ def build_review_facts(
             project_root=ctx.project_root,
             log_dir=ctx.log_dir,
             criterion_presenter=criterion_presenter,
-            regular_file_opener=regular_file_opener,
+            coverage_report_resolver=coverage_report_resolver,
             freshness_eligible=freshness_eligible,
             freshness_evaluator=freshness_evaluator,
         ),
