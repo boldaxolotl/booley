@@ -10,8 +10,7 @@ from pathlib import Path
 import measurements
 
 
-def specimen(root: Path) -> tuple[Path, dict]:
-    """Construct the oracle's minimal public-field pair from literal 4/8 operands."""
+def _points() -> list[dict]:
     points = []
     for bit in range(4):
         for before in range(2):
@@ -28,14 +27,10 @@ def specimen(root: Path) -> tuple[Path, dict]:
                     "hits_by_run": {"r1": 1} if bit < 2 else {},
                 }
             )
-    rollup = {
-        "metric": "toggle",
-        "total_points": 8,
-        "eligible_points": 8,
-        "covered_points": 4,
-        "waived_points": 0,
-        "percent": 50,
-    }
+    return points
+
+
+def _manifest(header: dict, rollup: dict, compressed: bytes, raw: bytes) -> dict:
     source_metrics = [rollup] + [
         {
             "metric": metric,
@@ -47,20 +42,14 @@ def specimen(root: Path) -> tuple[Path, dict]:
         }
         for metric in ["line", "branch", "expression"]
     ]
-    header = {
-        "$schema": "booley.coverage-points/v1",
-        "campaign_id": "qa-control",
-        "target_identity": "booley:qa:coverage:1#sim_toggle",
-    }
-    raw = b"".join(json.dumps(row).encode() + b"\n" for row in [header, *points])
-    compressed = gzip.compress(raw, mtime=0)
-    (root / "coverage-points.jsonl.gz").write_bytes(compressed)
-    manifest = {
-        "$schema": "booley.coverage-campaign/v3",
+    return {
+        "$schema": "booley.coverage-campaign/v4",
         "campaign_id": "qa-control",
         "target": {"identity": header["target_identity"]},
         "tests": {"runs": [{"id": "r1", "test": "half"}]},
         "evaluation": {"status": "fail"},
+        "collection": {"status": "complete"},
+        "scoring": {"status": "valid", "reason": None},
         "rollups": [rollup],
         "source_rollups": [{"source": "rtl/toggle.sv", "rollups": source_metrics}],
         "point_store": {
@@ -71,6 +60,28 @@ def specimen(root: Path) -> tuple[Path, dict]:
             "sha256": "sha256:" + hashlib.sha256(compressed).hexdigest(),
         },
     }
+
+
+def specimen(root: Path) -> tuple[Path, dict]:
+    """Construct the oracle's minimal public-field pair from literal 4/8 operands."""
+    points = _points()
+    rollup = {
+        "metric": "toggle",
+        "total_points": 8,
+        "eligible_points": 8,
+        "covered_points": 4,
+        "waived_points": 0,
+        "percent": 50,
+    }
+    header = {
+        "$schema": "booley.coverage-points/v1",
+        "campaign_id": "qa-control",
+        "target_identity": "booley:qa:coverage:1#sim_toggle",
+    }
+    raw = b"".join(json.dumps(row).encode() + b"\n" for row in [header, *points])
+    compressed = gzip.compress(raw, mtime=0)
+    (root / "coverage-points.jsonl.gz").write_bytes(compressed)
+    manifest = _manifest(header, rollup, compressed, raw)
     path = root / "coverage.json"
     path.write_text(json.dumps(manifest))
     case = json.loads((Path(__file__).parents[1] / "expected.json").read_text())["threshold-above"]

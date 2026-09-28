@@ -12,6 +12,7 @@ from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
+from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
 from booley.flows.sim.coverage_reference import (
     CoverageCampaignReference,
     build_coverage_campaign_reference,
@@ -38,7 +39,7 @@ from .run_directory import (
     restore_run_directory,
 )
 from .scheduler import BoundedCampaignScheduler, ScheduledAttempt
-from .store import CampaignRecovery, CampaignStore
+from .store import CampaignRecovery, CampaignStore, WorkItemRecovery
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +201,22 @@ class CampaignOutcome:
     diagnostics: tuple[str, ...] = ()
 
 
+def _coverage_attempt_directory(
+    store: CampaignStore, recovered: WorkItemRecovery
+) -> tuple[SimulationResult, Path]:
+    result = recovered.result
+    assert result is not None
+    attempt = store.latest_attempt(recovered.work_item_id)
+    result_document = result.document
+    if attempt is None or attempt.document["attempt_id"] != result_document["attempt_id"]:
+        raise SimulationCampaignIntegrityError(
+            "coverage aggregate result has no matching Simulation Attempt"
+        )
+    directory = store.work_item_directory(recovered.work_item_id) / "attempts"
+    name = f"{result_document['attempt_ordinal']:04d}-{result_document['attempt_id']}"
+    return result, directory / name
+
+
 class SimulationCampaign:
     """Plan/preview/run one Target's durable serial campaign."""
 
@@ -331,18 +348,23 @@ class SimulationCampaign:
         result_document = result.document
         target = cast(Mapping[str, str], manifest.document["target"])
         origin = cast(Mapping[str, object], manifest.document["origin"])
-        reference = build_coverage_campaign_reference(
-            simulation_campaign_id=cast(str, manifest.document["campaign_id"]),
-            simulation_manifest_sha256=manifest_digest(manifest),
-            target_identity=f"{target['vlnv']}#{target['name']}",
-            target_selector=target["selector"],
-            origin_invocation_id=cast(int, origin["invocation_id"]),
-            producer_invocation_id=cast(int, result_document["producer_invocation_id"]),
-            simulation_work_item_id=work_item_id,
-            simulation_attempt_id=cast(str, result_document["attempt_id"]),
-            origin_target_directory=store.root.parent,
-            coverage_campaign_path=nested_path,
-        )
+        try:
+            reference = build_coverage_campaign_reference(
+                simulation_campaign_id=cast(str, manifest.document["campaign_id"]),
+                simulation_manifest_sha256=manifest_digest(manifest),
+                target_identity=f"{target['vlnv']}#{target['name']}",
+                target_selector=target["selector"],
+                origin_invocation_id=cast(int, origin["invocation_id"]),
+                producer_invocation_id=cast(int, result_document["producer_invocation_id"]),
+                simulation_work_item_id=work_item_id,
+                simulation_attempt_id=cast(str, result_document["attempt_id"]),
+                origin_target_directory=store.root.parent,
+                coverage_campaign_path=nested_path,
+            )
+        except CoverageCampaignStoreError as exc:
+            raise SimulationCampaignIntegrityError(
+                "nested Coverage Campaign cannot be authenticated"
+            ) from exc
         self._publication_checkpoint("before:coverage_reference")
         published_reference = publish_coverage_campaign_reference(
             store.root.parent / "coverage.json", reference
@@ -673,19 +695,7 @@ def _coverage_reference_source(
             "coverage aggregate must have one committed Simulation result"
         )
     recovered = completed[0]
-    result = recovered.result
-    assert result is not None
-    document = result.document
-    attempt = store.latest_attempt(recovered.work_item_id)
-    if attempt is None or attempt.document["attempt_id"] != document["attempt_id"]:
-        raise SimulationCampaignIntegrityError(
-            "coverage aggregate result has no matching Simulation Attempt"
-        )
-    attempt_directory = (
-        store.work_item_directory(recovered.work_item_id)
-        / "attempts"
-        / f"{document['attempt_ordinal']:04d}-{document['attempt_id']}"
-    )
+    result, attempt_directory = _coverage_attempt_directory(store, recovered)
     return recovered.work_item_id, result, attempt_directory / "coverage-campaign/coverage.json"
 
 

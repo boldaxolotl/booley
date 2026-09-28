@@ -40,6 +40,7 @@ FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "Fr
 
 _SCHEMA = "booley.coverage-campaign/v1"
 _SCORED_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
+_COLLECTION_STATUSES = frozenset({"complete", "collector_error", "incomplete", "incompatible"})
 SOURCE_ROLLUP_METRICS = ("line", "branch", "expression", "toggle")
 _ROLLUP_FIELDS = (
     "metric",
@@ -1193,6 +1194,14 @@ def _validate_collection(document: Mapping[str, object]) -> list[CoverageFinding
     assert isinstance(runs, list)
     by_id = {str(artifact["id"]): artifact for artifact in artifacts}
     findings = _validate_included_raw_artifacts(runs, by_id)
+    if collection["status"] not in _COLLECTION_STATUSES:
+        findings.append(
+            _error(
+                "COV_COLLECTION_STATUS_INVALID",
+                "/collection/status",
+                "Collection status is not a supported Campaign state.",
+            )
+        )
     findings.extend(_validate_complete_collection(runs, collection, normalization, by_id))
     return findings
 
@@ -1525,12 +1534,23 @@ def _outcome_semantic_findings(
     document: Mapping[str, object], structural_findings: tuple[CoverageFinding, ...]
 ) -> list[CoverageFinding]:
     findings: list[CoverageFinding] = []
-    if _sections_are_structurally_valid(structural_findings, "/points", "/rollups"):
-        expected_rollups = _calculate_rollups(document)
-        actual_rollups = document["rollups"]
-        assert isinstance(actual_rollups, list)
-        if actual_rollups != expected_rollups:
-            findings.append(_rollup_mismatch_finding(actual_rollups, expected_rollups))
+    if _sections_are_structurally_valid(structural_findings, "/points", "/rollups", "/collection"):
+        collection = document["collection"]
+        assert isinstance(collection, Mapping)
+        if collection["status"] == "complete":
+            expected_rollups = _calculate_rollups(document)
+            actual_rollups = document["rollups"]
+            assert isinstance(actual_rollups, list)
+            if actual_rollups != expected_rollups:
+                findings.append(_rollup_mismatch_finding(actual_rollups, expected_rollups))
+        elif document["rollups"]:
+            findings.append(
+                _error(
+                    "COV_INVALID_SCORING_ROLLUPS",
+                    "/rollups",
+                    "A non-complete Campaign must not publish scored rollups.",
+                )
+            )
     collection_dependencies = ("/tests", "/artifacts", "/collection", "/normalization")
     if _sections_are_structurally_valid(structural_findings, *collection_dependencies):
         findings.extend(_validate_collection(document))

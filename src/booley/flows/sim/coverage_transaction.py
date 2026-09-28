@@ -48,6 +48,7 @@ def _campaign(plan: CoverageTargetPlan, result: CoverageCollectionResult) -> Cov
     build = _build_metadata(plan, result)
     incompatible = result.native_format.compatibility == "incompatible"
     points = () if incompatible else result.points
+    scoreable = result.status == "complete" and not incompatible
     return CoverageCampaign(
         campaign_id=f"campaign:{plan.started_at}:{plan.invocation_dir.name}:{plan.handle.identity}",
         invocation=freeze_coverage_mapping(
@@ -70,7 +71,7 @@ def _campaign(plan: CoverageTargetPlan, result: CoverageCollectionResult) -> Cov
         artifacts=result.artifacts,
         normalization=_normalization(result),
         points=points,
-        rollups=derive_coverage_rollups(points),
+        rollups=derive_coverage_rollups(points) if scoreable else (),
         collection=_collection_metadata(result),
         findings=result.findings,
         evaluation=_ungated_evaluation(),

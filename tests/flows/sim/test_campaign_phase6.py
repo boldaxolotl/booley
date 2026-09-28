@@ -63,6 +63,9 @@ from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
+from tests.flows.sim.test_campaign_phase5_adversarial import _retain_v3_before_reference
+from tests.flows.sim.test_coverage_invocation import project
+from tests.flows.sim.test_coverage_transaction import NativeExecution
 
 _STAMP = "2026-09-22T00:00:00Z"
 
@@ -1051,6 +1054,36 @@ def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, s
 
     prune_invocation(reports, 1)
 
+    assert not (reports / "sim/1").exists()
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+
+
+def test_full_pruning_authenticates_and_removes_retained_valid_v3_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    _retain_v3_before_reference(monkeypatch)
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+    reports = tmp_path / "reports"
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
+    ).execute(
+        SimRequest(
+            target="sim_0",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=reports,
+        )
+    )
+    nested = next(reports.rglob("coverage-campaign/coverage.json"))
+    assert json.loads(nested.read_text())["$schema"] == "booley.coverage-campaign/v3"
+
+    prune_invocation(reports, 1)
+
+    assert result.exit_code == 0
     assert not (reports / "sim/1").exists()
     assert list((reports / "sim/.pruned-1").iterdir()) == []
 
