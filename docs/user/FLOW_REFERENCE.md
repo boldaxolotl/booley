@@ -420,25 +420,22 @@ the invocation `run_id`, its latest `timestamp`, the exact Target partition, and
 per-Target detail. An interrupted or failed invocation preserves already durable
 Targets and leaves the failed or unstarted Targets pending.
 
-New `coverage.json` manifests use `booley.coverage-campaign/v4`. They keep exact
-source/build/tool and suite fingerprints, independent per-run verdicts,
-capabilities, overall rollups, deterministic per-source-file rollups, percentages,
-stored evaluation, and a required `scoring` object. Complete compatible collection
-uses `{"status":"valid","reason":null}`. Any `collector_error`, `incomplete`, or
-`incompatible` collection uses `{"status":"invalid","reason":"<status>"}` and
-publishes empty `rollups` and `source_rollups`; exact points, native/hook artifacts,
-diagnostics, and findings remain available as non-score evidence. Source rollups cover line, branch, expression, and toggle
+New `coverage.json` manifests use `booley.coverage-campaign/v4`. They retain V3's
+fingerprints, verdicts, capabilities, evaluation, and valid rollups, and add required
+`scoring`: complete, compatible collection uses `valid` with a null reason; every
+other collection status uses `invalid` with that status as its reason and empty
+overall/source rollups. Compatible points and available native/hook evidence remain
+diagnostic; incompatible native evidence has no normalized points. Source rollups
+cover line, branch, expression, and toggle
 metrics, use the same eligibility and waiver rules as overall rollups, and group by
 source path rather than hierarchy. They are persisted only in `coverage.json`; the
 Simulation response remains compact and points to that file.
 Required `coverage-points.jsonl.gz` stores lossless point identities and sparse
 positive hit incidence; the manifest binds it by schema, exact relative path,
-compressed and uncompressed byte counts, point count, and SHA-256. Valid retained V3
-Campaigns remain readable. V3 Campaigns that carry scores behind non-complete
-collection are rejected and must be recollected. V1 and V2 remain below the hard
-schema cutoff.
-Pass consumers the exact
-`coverage.json` path; never pass or edit the point store directly.
+compressed and uncompressed byte counts, point count, and SHA-256. Valid V3 remains
+readable; score-bearing invalid V3 and all V1/V2 Campaigns require recollection.
+Pass consumers the exact `coverage.json` path; never pass or edit the point store
+directly.
 Native artifact paths are relative to the Target directory. New Simulation
 report references are relative to their containing report invocation or reports
 root, never to the producing work directory. There is no project-wide latest

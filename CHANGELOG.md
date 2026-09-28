@@ -28,11 +28,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
-- New Coverage Campaigns publish V4 with explicit scoring validity. Non-complete
-  collection retains diagnostic points and artifacts but publishes no overall or
-  per-source scores. Valid V3 Campaigns remain readable; score-bearing invalid V3
-  Campaigns are rejected and must be recollected. V1/V2 remain unsupported.
-
 - Projects that placed formal proof artifacts at `<anchor>/proofs/...` as a
   workaround must move them beneath
   `<anchor>/<approval-directory>/proofs/...`. Keep the authored proof reference

@@ -89,14 +89,11 @@ Verilator-native measurement, immutable Campaigns, deterministic Criteria,
 transactional waivers, canonical persistence, exact pruning, and the report-driven
 Coverage Analyst. The Analyst is exposed with an exact `coverage.json` input;
 it explains evidence and proposes advisory candidates without evaluating Criteria.
-V4 Campaign persistence adds explicit scoring validity: only complete collection
-keeps overall and deterministic per-source-file statistics; invalid collection
-retains diagnostic points while publishing empty summary inventories. Valid V3
-remains readable, score-bearing invalid V3 is rejected, and V1/V2 require recollection.
-V4 keeps score summaries in the manifest and lossless points in an integrity-linked
-compressed point store.
+V3 Campaign persistence keeps overall and deterministic per-source-file statistics
+in the manifest and lossless points in an integrity-linked compressed point store.
+V1 and V2 Campaigns are rejected at the schema boundary and must be recollected.
 The Coverage Analyst still receives every validated point. A deterministic, disclosed bounded
-evidence packet or query-driven Analyst remains future work; V4 does not silently sample evidence.
+evidence packet or query-driven Analyst remains future work; V3 does not silently sample evidence.
 The previous waveform/LLM scorer and mutable waiver cache have been removed.
 
 Simulation collection controls and the Coverage Criterion are public alongside

@@ -497,11 +497,9 @@ with `booley projects forget /exact/deleted/project`.
 ## Coverage Campaign diagnostics and retention
 
 Coverage collection requires explicit `sim --coverage` / `--cov` or MCP
-`coverage: true`. V4 keeps overall and per-source-file percentages and evaluation in the
+`coverage: true`. V3 keeps overall and per-source-file percentages and evaluation in the
 `coverage.json` manifest and exact points in required
-`coverage-points.jsonl.gz`. Check `scoring`: `valid` means collection was complete;
-`invalid` names the collection reason and requires both score inventories to be
-empty while diagnostic points and artifacts remain retained. Report retention is explicit: native-only pruning
+`coverage-points.jsonl.gz`. Report retention is explicit: native-only pruning
 keeps both Campaign files, `simulation.json`, and hook evidence; full
 invocation pruning removes all reports and prevents re-analysis. See the
 [exact retention commands](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
@@ -581,11 +579,8 @@ to compensate for an incorrect project-data path or for native-only pruning.
 Pass `coverage_analyst --campaign <reports>/sim/<number>/targets/<target>/coverage.json`.
 Target names, `latest`, the point-store path, waveforms, and legacy
 `coverage_report.json` are not Analyst inputs. A missing, changed, or invalid
-point store makes a V3 or V4 Campaign unusable for analysis. Valid V3 Campaigns
-remain readable; a score-bearing V3 Campaign whose collection is not complete is
-rejected and must be recollected. V1 and V2 are not readable. Collector-error and
-incompatible Campaigns are rejected before model use with the collection/scoring
-reason; repair the collection fault and recollect. A missing or incomplete
+point store makes a V3 Campaign unusable for analysis. V1 and V2 Campaigns are
+not readable; recollect coverage with the current Booley version. A missing or incomplete
 matching `simulation.json` means that Target is
 not ready for analysis; another Target still running does not block a completed one.
 Native-payload pruning preserves analysis. Full-invocation pruning removes the
