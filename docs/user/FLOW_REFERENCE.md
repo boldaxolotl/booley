@@ -392,8 +392,12 @@ threshold. Exit precedence is `2` for Coverage Preflight, collection, infrastruc
 persistence, incompatible-format, or blocked-evaluation errors; then `1` for a
 simulation failure or valid threshold miss; otherwise `0`, including ungated
 collection. Structured `detail.targets[selector]` retains each Target's
-`simulation`, `collection`, `evaluation`, and canonical `coverage_campaign`
-reference even when another Target dominates the exit code.
+`simulation`, `collection`, and `evaluation` truth even when a later publication
+failure or another Target dominates the exit code. The canonical
+`coverage_campaign` reference appears only after its public reference was
+successfully published and authenticated; failures before that publication omit
+it, while a failure at the subsequent `after:coverage_reference` checkpoint
+retains it.
 
 The default report root is `flow-reports` under the resolved project-data
 directory; `--report-dir` selects an explicit root. Each invocation owns:

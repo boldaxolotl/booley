@@ -621,7 +621,9 @@ the Campaign-bound evidence tool.
   point approval prevents all approvals for that Target from applying. Approvals
   naming a known Target outside the invocation are not checked against points by
   that run; unknown Target identities are rejected when the Approved Waiver Set
-  is loaded.
+  is loaded. An infrastructure or persistence error can also block a requested
+  evaluation without producing coverage findings. In that case, inspect the
+  Target's `error` and `collection` status, correct the failure, and rerun.
 - Legacy Criteria (`coverage_toggle`, `coverage_fsm`, `coverage_value`,
   `coverage_branch`, `coverage_expression`, `coverage_mean`) are rejected.
   Replace them with an uppercase, Target-keyed `COVERAGE` record such as
