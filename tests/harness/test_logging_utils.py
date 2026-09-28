@@ -97,6 +97,8 @@ def test_harness_warning_handler_uses_utc_formatter():
 def test_harness_and_transition_logs_record_same_utc_instant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    canonical = "2026-09-25T13:07:17Z"
+    created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
     original_tz = os.environ.get("TZ")
     monkeypatch.setenv("TZ", "America/Los_Angeles")
     monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
@@ -104,11 +106,15 @@ def test_harness_and_transition_logs_record_same_utc_instant(
     tickets_dir = tmp_path / "tickets"
     harness_log = tickets_dir / "logs/demo/human-logs/harness.log"
     try:
-        setup_file_logging(harness_log)
-        event_logger = logging.getLogger("test_timestamp_alignment")
-        event_logger.setLevel(logging.INFO)
-        event_logger.info("event")
         teardown_file_logging()
+        setup_file_logging(harness_log)
+        record = logging.LogRecord(
+            "test_timestamp_alignment", logging.INFO, "", 0, "event", (), None
+        )
+        record.created = created
+        logging.getLogger().handle(record)
+        teardown_file_logging()
+        monkeypatch.setattr("booley.ticket_board.io.now_iso", lambda: canonical)
         TicketIO(tickets_dir, project_root=tmp_path).append_transition(
             "demo", "ready", "active", "developer", "event"
         )
@@ -120,15 +126,16 @@ def test_harness_and_transition_logs_record_same_utc_instant(
             monkeypatch.setenv("TZ", original_tz)
         time.tzset()
 
-    harness_token = harness_log.read_text(encoding="utf-8").split()[0]
+    harness_line = next(
+        line
+        for line in harness_log.read_text(encoding="utf-8").splitlines()
+        if "test_timestamp_alignment" in line
+    )
+    harness_token = harness_line.split()[0]
     transition_log = tickets_dir / "logs/demo/human-logs/transitions.log"
     transition_token = transition_log.read_text(encoding="utf-8").split()[0]
-    assert harness_token.endswith("Z")
-    assert transition_token.endswith("Z")
-    difference = abs(
-        (parse_timestamp(harness_token) - parse_timestamp(transition_token)).total_seconds()
-    )
-    assert difference <= 2
+    assert parse_timestamp(harness_token) == parse_timestamp(canonical)
+    assert parse_timestamp(transition_token) == parse_timestamp(canonical)
 
 
 # ===========================================================================

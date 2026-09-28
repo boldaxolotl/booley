@@ -2453,7 +2453,7 @@ class TestTerseFormatter:
     def test_info_no_level_prefix(self):
         from booley.harness.logging_utils import TerseFormatter
 
-        fmt = TerseFormatter(datefmt="%H:%M:%S")
+        fmt = TerseFormatter()
         record = logging.LogRecord(
             "test",
             logging.INFO,
@@ -2472,7 +2472,7 @@ class TestTerseFormatter:
     def test_warning_includes_level(self):
         from booley.harness.logging_utils import TerseFormatter
 
-        fmt = TerseFormatter(datefmt="%H:%M:%S")
+        fmt = TerseFormatter()
         record = logging.LogRecord(
             "test",
             logging.WARNING,
@@ -2491,7 +2491,7 @@ class TestTerseFormatter:
     def test_error_includes_level(self):
         from booley.harness.logging_utils import TerseFormatter
 
-        fmt = TerseFormatter(datefmt="%H:%M:%S")
+        fmt = TerseFormatter()
         record = logging.LogRecord(
             "test",
             logging.ERROR,
@@ -2507,22 +2507,26 @@ class TestTerseFormatter:
         assert "ERROR" in result
 
 
-def test_dry_run_banner_labels_timestamp_as_utc(monkeypatch, capsys):
+def test_dry_run_banner_uses_aware_user_local_timestamp(monkeypatch, capsys):
     args = Namespace(count=0, dry_run=True, check_ready=False)
-    monkeypatch.setattr(tlr, "utc_now_rfc3339", lambda: "2026-09-25T13:07:17Z", raising=False)
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+    fixed = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC)
+    with patch.object(tlr, "datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed
 
-    tlr._print_banner(args)
+        tlr._print_banner(args)
 
-    assert "2026-09-25T13:07:17Z" in capsys.readouterr().out
+    assert "17:07:17 · 25 SEP 2026" in capsys.readouterr().out
 
 
-def test_limit_wait_labels_resume_estimate_as_utc(monkeypatch, capsys):
+def test_limit_wait_uses_aware_user_local_estimate(monkeypatch, capsys):
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
     monkeypatch.setattr(tlr.time, "time", lambda: 1_790_341_637.0)
     monkeypatch.setattr(tlr, "interruptible_sleep", lambda _seconds: True)
 
     assert tlr._handle_limit_wait(60) == "continue"
 
-    assert "until ~2026-09-25T13:08:17Z" in capsys.readouterr().out
+    assert "until ~17:08 · 25 SEP 2026" in capsys.readouterr().out
 
 
 # ===========================================================================
