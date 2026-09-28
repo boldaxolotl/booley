@@ -29,6 +29,7 @@ from booley.runtime.paths import skills_dir
 from booley.runtime.skill_links import SkillLinkReport
 
 MIN_GIT_VERSION = (2, 37, 2)
+RELATIVE_WORKTREE_MIN_GIT_VERSION = (2, 48, 0)
 DEV_CONTAINERS_EXTENSION_ID = "ms-vscode-remote.remote-containers"
 _GIT_VERSION_LINE = re.compile(
     r"^git version (?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
@@ -159,14 +160,13 @@ def _git_version_finding(line: str) -> BootstrapFinding:
             BootstrapState.ERROR,
             f"cannot determine a supported Git version; Git {minimum} or newer is required",
         )
-    version = tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
-    suffix = match.group("suffix")
-    if _GIT_PRERELEASE_SUFFIX.search(suffix):
+    if _GIT_PRERELEASE_SUFFIX.search(match.group("suffix")):
         return BootstrapFinding(
             "git",
             BootstrapState.ERROR,
             f"pre-release Git builds are not supported; install Git {minimum} or newer",
         )
+    version = tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
     if version < MIN_GIT_VERSION:
         detected = ".".join(str(part) for part in version)
         return BootstrapFinding(
@@ -176,6 +176,14 @@ def _git_version_finding(line: str) -> BootstrapFinding:
             "Upgrade Git and rerun booley bootstrap.",
         )
     return BootstrapFinding("git", BootstrapState.CURRENT, line[:80])
+
+
+def parse_git_version(line: str) -> tuple[int, int, int] | None:
+    """Return a stable Git version, accepting ordinary vendor suffixes."""
+    match = _GIT_VERSION_LINE.fullmatch(line.strip())
+    if match is None or _GIT_PRERELEASE_SUFFIX.search(match.group("suffix")):
+        return None
+    return tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
 
 
 def _tool_finding(name: str, version_arg: str) -> BootstrapFinding:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,6 +81,7 @@ def relocate_worktree(repository: Path, ref: str, source: Path, destination: Pat
     destination = destination.resolve()
     registered = _registered_worktrees(repository)
     if registered.get(destination) == ref:
+        refresh_relative_worktree_config(destination)
         _validate_destination(destination)
         return
     if registered.get(source) != ref:
@@ -98,7 +100,53 @@ def relocate_worktree(repository: Path, ref: str, source: Path, destination: Pat
             f"registered worktree and relocation destination are both unavailable: {source}"
         )
     _repair_registration(repository, ref, destination)
+    refresh_relative_worktree_config(destination)
     _validate_destination(destination)
+
+
+def refresh_relative_worktree_config(worktree: Path) -> None:
+    """Refresh path-valued worktree config after a relative worktree moves."""
+    pointer_file = worktree / ".git"
+    try:
+        pointer = pointer_file.read_text(encoding="utf-8").strip().removeprefix("gitdir: ")
+    except OSError as exc:
+        raise WorktreeRelocationError(f"could not read worktree registration: {exc}") from exc
+    if Path(pointer).is_absolute():
+        return
+    administration = (worktree / pointer).resolve()
+    config = administration / "config.worktree"
+    if not config.is_file():
+        return
+    core_worktree = os.path.relpath(worktree.resolve(), administration).replace(os.sep, "/")
+    _set_worktree_config(config, "core.worktree", core_worktree)
+    if _read_worktree_config(config, "core.hooksPath") is not None:
+        hooks = os.path.relpath(administration / "hooks", worktree.resolve()).replace(os.sep, "/")
+        _set_worktree_config(config, "core.hooksPath", hooks)
+
+
+def _read_worktree_config(config: Path, key: str) -> str | None:
+    result = subprocess.run(
+        ["git", "config", "--file", str(config), "--get", key],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_TIMEOUT_S,
+    )
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _set_worktree_config(config: Path, key: str, value: str) -> None:
+    result = subprocess.run(
+        ["git", "config", "--file", str(config), key, value],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_TIMEOUT_S,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise WorktreeRelocationError(f"could not refresh {key}: {detail}")
 
 
 def _validate_registration(move: WorktreeMove, registered: dict[Path, str]) -> None:

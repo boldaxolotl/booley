@@ -20,10 +20,13 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.harness.setup import git_hooks
 from booley.harness.setup.common import InitContext
 from booley.harness.setup.git_hooks import (
     WORKTREE_PRUNE_KEY,
     WORKTREE_PRUNE_VALUE,
+    WORKTREE_RELATIVE_KEY,
+    _step_worktree_link_policy,
     _step_worktree_prune_guard,
     read_worktree_prune_expire,
 )
@@ -151,6 +154,214 @@ class TestWorktreePruneGuardStep:
 
         assert ctx.results[-1].status == "skip"
         assert ctx.results[-1].detail == "not a git repo"
+
+
+class TestWorktreeLinkPolicyStep:
+    def test_both_capable_enables_outer_and_standalone_project_data(self, tmp_path: Path):
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        ctx = _ctx(tmp_path)
+
+        _step_worktree_link_policy(
+            ctx,
+            host_git_version=(2, 48, 0),
+            sandbox_git_version=(2, 53, 0),
+        )
+
+        assert (
+            _run_git(tmp_path, "config", "--local", "--get", WORKTREE_RELATIVE_KEY).stdout.strip()
+            == "true"
+        )
+        assert (
+            _run_git(
+                project_dir, "config", "--local", "--get", WORKTREE_RELATIVE_KEY
+            ).stdout.strip()
+            == "true"
+        )
+        assert ctx.results[-1].status == "ok"
+
+    @pytest.mark.parametrize("sandbox_version", [(2, 47, 9), None])
+    def test_old_or_unknown_side_uses_pre_opt_in_fallback(
+        self,
+        tmp_path: Path,
+        sandbox_version: tuple[int, int, int] | None,
+    ):
+        _git_init(tmp_path)
+        ctx = _ctx(tmp_path)
+
+        _step_worktree_link_policy(
+            ctx,
+            host_git_version=(2, 53, 0),
+            sandbox_git_version=sandbox_version,
+        )
+
+        assert (
+            _run_git(tmp_path, "config", "--local", "--get", WORKTREE_RELATIVE_KEY).stdout.strip()
+            == "false"
+        )
+        assert ctx.results[-1].status == "warn"
+        assert "absolute-link fallback" in ctx.results[-1].detail
+
+    def test_check_only_reports_without_mutation(self, tmp_path: Path):
+        _git_init(tmp_path)
+        ctx = _ctx(tmp_path, check_only=True)
+
+        _step_worktree_link_policy(
+            ctx,
+            host_git_version=(2, 53, 0),
+            sandbox_git_version=(2, 53, 0),
+        )
+
+        assert (
+            _run_git(
+                tmp_path, "config", "--local", "--get", WORKTREE_RELATIVE_KEY, check=False
+            ).returncode
+            != 0
+        )
+        assert ctx.results[-1].status == "warn"
+
+    def test_relative_extension_rejects_incompatible_downgrade(self, tmp_path: Path):
+        _git_init(tmp_path)
+        _run_git(tmp_path, "config", "core.repositoryFormatVersion", "1")
+        _run_git(tmp_path, "config", "extensions.relativeWorktrees", "true")
+        _run_git(tmp_path, "config", WORKTREE_RELATIVE_KEY, "true")
+        ctx = _ctx(tmp_path)
+
+        _step_worktree_link_policy(
+            ctx,
+            host_git_version=(2, 47, 9),
+            sandbox_git_version=(2, 53, 0),
+        )
+
+        assert (
+            _run_git(tmp_path, "config", "--local", "--get", WORKTREE_RELATIVE_KEY).stdout.strip()
+            == "true"
+        )
+        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].detail == "incompatible Git downgrade"
+
+    def test_second_repository_failure_rolls_back_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        original = git_hooks._set_local_config
+
+        def fail_second(repository: Path, value: str | None) -> str | None:
+            if repository == project_dir and value == "true":
+                return "injected failure"
+            return original(repository, value)
+
+        monkeypatch.setattr(git_hooks, "_set_local_config", fail_second)
+        ctx = _ctx(tmp_path)
+
+        _step_worktree_link_policy(
+            ctx,
+            host_git_version=(2, 53, 0),
+            sandbox_git_version=(2, 53, 0),
+        )
+
+        assert (
+            _run_git(
+                tmp_path,
+                "config",
+                "--local",
+                "--get",
+                WORKTREE_RELATIVE_KEY,
+                check=False,
+            ).returncode
+            != 0
+        )
+        assert ctx.results[-1].status == "warn"
+
+    def test_custom_project_data_repository_is_included(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        custom = tmp_path / "state"
+        custom.mkdir()
+        _git_init(custom)
+        monkeypatch.setattr(git_hooks, "resolve_checkout_project_dir", lambda _root: custom)
+
+        repositories = git_hooks.worktree_policy_repositories(tmp_path)
+
+        assert repositories == (tmp_path, custom)
+
+    def test_missing_project_data_keeps_outer_repository(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            git_hooks,
+            "resolve_checkout_project_dir",
+            lambda _root: (_ for _ in ()).throw(FileNotFoundError),
+        )
+
+        assert git_hooks.worktree_policy_repositories(tmp_path) == (tmp_path,)
+
+    def test_git_probe_errors_are_bounded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            git_hooks.subprocess,
+            "run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+        )
+
+        assert git_hooks.read_local_config(tmp_path, WORKTREE_RELATIVE_KEY) is None
+        assert git_hooks._host_git_version() is None
+        assert git_hooks._set_local_config(tmp_path, "true") == "unavailable"
+
+    def test_rollback_failure_is_reported(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        calls: list[tuple[Path, str | None]] = []
+        monkeypatch.setattr(git_hooks, "read_local_config", lambda *_args: None)
+
+        def fail_second_and_rollback(repository: Path, value: str | None) -> str | None:
+            calls.append((repository, value))
+            if repository == second:
+                return "write failed"
+            if repository == first and value is None:
+                return "rollback failed"
+            return None
+
+        monkeypatch.setattr(git_hooks, "_set_local_config", fail_second_and_rollback)
+
+        failures = git_hooks._reconcile_relative_policy((first, second), "true")
+
+        assert failures == [f"{second}: write failed", f"rollback {first}: rollback failed"]
+        assert calls == [(first, "true"), (second, "true"), (first, None)]
+
+    def test_prune_guard_reports_config_write_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        def run(args, **_kwargs):
+            if "rev-parse" in args:
+                return subprocess.CompletedProcess(args, 0, stdout=".git\n", stderr="")
+            if "--get" in args:
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="write failed")
+
+        monkeypatch.setattr(git_hooks.subprocess, "run", run)
+        ctx = _ctx(tmp_path)
+
+        _step_worktree_prune_guard(ctx)
+
+        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].detail == "git config failed"
+
+    def test_prune_guard_covers_standalone_project_data(self, tmp_path: Path):
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+
+        _step_worktree_prune_guard(_ctx(tmp_path))
+
+        assert read_worktree_prune_expire(tmp_path) == WORKTREE_PRUNE_VALUE
+        assert read_worktree_prune_expire(project_dir) == WORKTREE_PRUNE_VALUE
 
 
 class TestProjectCommitMsgHookVendoring:

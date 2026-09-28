@@ -20,6 +20,10 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from booley.harness.bootstrap import (
+    RELATIVE_WORKTREE_MIN_GIT_VERSION,
+    parse_git_version,
+)
 from booley.harness.setup.common import (
     InitContext,
     WriteOutcome,
@@ -57,7 +61,8 @@ from booley.harness.setup.project_git_hook_reconcile import (
 from booley.harness.setup.project_git_hook_reconcile import (
     step_project_git_hooks as _managed_step_project_git_hooks,
 )
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.runtime.project_repositories import is_standalone_git_repository
 
 
 def _step_git_hooks(ctx: InitContext) -> None:
@@ -333,6 +338,156 @@ def _step_line_endings(ctx: InitContext, project_dir: Path | None = None) -> Non
 
 WORKTREE_PRUNE_KEY = "gc.worktreePruneExpire"
 WORKTREE_PRUNE_VALUE = "never"
+WORKTREE_RELATIVE_KEY = "worktree.useRelativePaths"
+
+
+def worktree_policy_repositories(project_root: Path) -> tuple[Path, ...]:
+    """Return durable repositories that create Ticket Workspaces."""
+    repositories = [project_root]
+    try:
+        project_dir = resolve_checkout_project_dir(project_root)
+    except FileNotFoundError:
+        return tuple(repositories)
+    if project_dir != project_root and is_standalone_git_repository(project_dir):
+        repositories.append(project_dir)
+    return tuple(repositories)
+
+
+def read_local_config(repository: Path, key: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), "config", "--local", "--get", key],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _repository_uses_relative_extension(repository: Path) -> bool:
+    return read_local_config(repository, "extensions.relativeWorktrees") == "true"
+
+
+def _host_git_version() -> tuple[int, int, int] | None:
+    try:
+        result = subprocess.run(
+            ["git", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_git_version(result.stdout) if result.returncode == 0 else None
+
+
+def _set_local_config(repository: Path, value: str | None) -> str | None:
+    args = ["git", "-C", str(repository), "config", "--local"]
+    args += (
+        [WORKTREE_RELATIVE_KEY, value]
+        if value is not None
+        else ["--unset-all", WORKTREE_RELATIVE_KEY]
+    )
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)
+    if result.returncode not in ({0, 5} if value is None else {0}):
+        return result.stderr.strip() or "git config failed"
+    return None
+
+
+def _reconcile_relative_policy(repositories: tuple[Path, ...], desired: str) -> list[str]:
+    previous = {
+        repository: read_local_config(repository, WORKTREE_RELATIVE_KEY)
+        for repository in repositories
+    }
+    changed: list[Path] = []
+    for repository in repositories:
+        if error := _set_local_config(repository, desired):
+            failures = [f"{repository}: {error}"]
+            for completed in reversed(changed):
+                if rollback_error := _set_local_config(completed, previous[completed]):
+                    failures.append(f"rollback {completed}: {rollback_error}")
+            return failures
+        changed.append(repository)
+    return []
+
+
+def _worktree_policy_capable(
+    host_version: tuple[int, int, int] | None,
+    sandbox_version: tuple[int, int, int] | None,
+) -> bool:
+    minimum = RELATIVE_WORKTREE_MIN_GIT_VERSION
+    return (
+        host_version is not None
+        and sandbox_version is not None
+        and host_version >= minimum
+        and sandbox_version >= minimum
+    )
+
+
+def _step_worktree_link_policy(
+    ctx: InitContext,
+    *,
+    sandbox_git_version: tuple[int, int, int] | None,
+    host_git_version: tuple[int, int, int] | None = None,
+) -> None:
+    """Reconcile portable worktree creation after two-sided capability proof."""
+    ctx.step_banner("worktree link policy")
+    host_version = host_git_version if host_git_version is not None else _host_git_version()
+    capable = _worktree_policy_capable(host_version, sandbox_git_version)
+    repositories = worktree_policy_repositories(ctx.project_root)
+    incompatible = [repo for repo in repositories if _repository_uses_relative_extension(repo)]
+    if not capable and incompatible:
+        warn(
+            "relative worktrees are already enabled, but the host or Sandbox Git is "
+            "older than 2.48 or could not be verified; restore Git 2.48 or newer "
+            "before using or migrating this Project"
+        )
+        ctx.record("worktree_link_policy", "warn", "incompatible Git downgrade")
+        return
+
+    desired = "true" if capable else "false"
+    pending = [
+        repo for repo in repositories if read_local_config(repo, WORKTREE_RELATIVE_KEY) != desired
+    ]
+    if not pending:
+        skip(f"{WORKTREE_RELATIVE_KEY} already '{desired}'")
+        ctx.record("worktree_link_policy", "skip", f"already {desired}")
+        return
+    if ctx.check_only:
+        warn(
+            f"would set {WORKTREE_RELATIVE_KEY}={desired} in "
+            f"{len(pending)} Git repository/repositories"
+        )
+        ctx.record("worktree_link_policy", "warn", f"would set {desired}")
+        return
+
+    failures = _reconcile_relative_policy(tuple(pending), desired)
+    if failures:
+        warn("could not reconcile worktree link policy: " + "; ".join(failures))
+        ctx.record("worktree_link_policy", "warn", "git config failed")
+        return
+    _report_worktree_link_policy(ctx, capable=capable)
+
+
+def _report_worktree_link_policy(ctx: InitContext, *, capable: bool) -> None:
+    if capable:
+        ok("new Ticket Workspaces use relative links on host and in the Sandbox")
+        detail = "relative links enabled"
+    else:
+        warn(
+            "new Ticket Workspaces use the container-only absolute-link fallback; "
+            "do not run host `git worktree prune`"
+        )
+        detail = "absolute-link fallback"
+    ctx.record("worktree_link_policy", "ok" if capable else "warn", detail)
 
 
 def read_worktree_prune_expire(project_root: Path) -> str | None:
@@ -355,13 +510,7 @@ def read_worktree_prune_expire(project_root: Path) -> str | None:
 
 
 def _step_worktree_prune_guard(ctx: InitContext) -> None:
-    """Set ``gc.worktreePruneExpire=never`` on the project repo.
-
-    Ticket Mode worktrees are created in-container (ADR 0028 Decision 10), so
-    their git worktree metadata records container paths. A host-side
-    ``git gc`` cannot see those paths and would prune the registrations —
-    "never" makes worktree pruning explicit-only (``git worktree prune``).
-    """
+    """Keep automatic pruning disabled in every Ticket Workspace repository."""
     ctx.step_banner("worktree prune guard")
 
     # Confirm the project root is a git repo before touching its config.
@@ -377,7 +526,13 @@ def _step_worktree_prune_guard(ctx: InitContext) -> None:
         ctx.record("worktree_prune_guard", "skip", "not a git repo")
         return
 
-    if read_worktree_prune_expire(ctx.project_root) == WORKTREE_PRUNE_VALUE:
+    repositories = worktree_policy_repositories(ctx.project_root)
+    pending = [
+        repository
+        for repository in repositories
+        if read_worktree_prune_expire(repository) != WORKTREE_PRUNE_VALUE
+    ]
+    if not pending:
         skip(f"{WORKTREE_PRUNE_KEY} already '{WORKTREE_PRUNE_VALUE}'")
         ctx.record("worktree_prune_guard", "skip", "already set")
         return
@@ -387,20 +542,24 @@ def _step_worktree_prune_guard(ctx: InitContext) -> None:
         ctx.record("worktree_prune_guard", "warn", "would set")
         return
 
-    proc = subprocess.run(
-        ["git", "-C", str(ctx.project_root), "config", WORKTREE_PRUNE_KEY, WORKTREE_PRUNE_VALUE],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if proc.returncode != 0:
-        warn(f"could not set {WORKTREE_PRUNE_KEY}: {proc.stderr.strip()}")
+    failures: list[str] = []
+    for repository in pending:
+        proc = subprocess.run(
+            ["git", "-C", str(repository), "config", WORKTREE_PRUNE_KEY, WORKTREE_PRUNE_VALUE],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            failures.append(f"{repository}: {proc.stderr.strip()}")
+    if failures:
+        warn(f"could not set {WORKTREE_PRUNE_KEY}: {'; '.join(failures)}")
         ctx.record("worktree_prune_guard", "warn", "git config failed")
         return
 
     ok(
-        f"{WORKTREE_PRUNE_KEY}={WORKTREE_PRUNE_VALUE} (host `git gc` can no "
-        "longer prune in-container worktrees)"
+        f"{WORKTREE_PRUNE_KEY}={WORKTREE_PRUNE_VALUE} in {len(repositories)} "
+        "Git repository/repositories (automatic pruning disabled)"
     )
     ctx.record("worktree_prune_guard", "ok", "set")

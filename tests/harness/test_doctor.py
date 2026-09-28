@@ -12,6 +12,7 @@ import sys
 import tomllib
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,6 +28,7 @@ from booley.audit import (
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.harness import developer_probe, doctor, doctor_stamp, host_diagnostics
+from booley.harness.setup import readiness
 from booley.runtime import (
     auth_token,
     runtime_context,
@@ -216,7 +218,7 @@ def _patch_host_environment(monkeypatch, root: Path) -> None:
     _patch_bootstrap_current(monkeypatch)
 
 
-def _patch_environment(
+def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixture
     monkeypatch,
     root: Path,
     project_dir: Path,
@@ -274,6 +276,8 @@ def _patch_environment(
             return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
         if cmd[:3] == ["git", "rev-parse", "--git-common-dir"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
+        if cmd[:2] == ["git", "--version"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
         if cmd[:3] == [sys.executable, "-c", "import booley.ticket_board"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[1:3] == ["ps", "-aq"]:
@@ -283,8 +287,14 @@ def _patch_environment(
         if cmd[0] == "git" and "config" in cmd and "gc.worktreePruneExpire" in cmd:
             # Healthy default: the ADR 0028 worktree prune guard is set.
             return subprocess.CompletedProcess(cmd, 0, stdout="never\n", stderr="")
+        if cmd[0] == "git" and "config" in cmd and "worktree.useRelativePaths" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+        if cmd[0] == "git" and "config" in cmd and "extensions.relativeWorktrees" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
         if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["id", "-u"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{os.getuid()}\n", stderr="")
+        if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["git", "--version"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
         if cmd[1:3] == ["image", "inspect"] and "{{json .Config.Env}}" in cmd:
             # Healthy default: the sandbox image bakes the ADR 0028 runtime marker.
             return subprocess.CompletedProcess(
@@ -4221,6 +4231,263 @@ class TestWorktreePruneGuard:
         rec = _Rec()
         doctor._check_worktree_prune_guard(tmp_path, rec.p, rec.s, rec.f)
         assert rec.kinds() == {"pass"}
+
+
+class TestWorktreePortability:
+    def _project(self, root: Path):
+        project_dir = root / ".booley_project"
+        project_dir.mkdir(exist_ok=True)
+        return SimpleNamespace(project_root=root, project_dir=project_dir)
+
+    def test_two_capable_sides_and_enabled_policy_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "worktree.useRelativePaths", "true"],
+            check=True,
+        )
+        project = self._project(tmp_path)
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: (2, 53, 0))
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, "docker", "image", False)
+        )
+
+        assert not [item for item in report.findings if item.severity is Severity.FAIL]
+        assert not [item for item in report.findings if item.severity is Severity.WARN]
+        assert any("worktree.useRelativePaths=true" in item.message for item in report.findings)
+
+    def test_runtime_probe_reports_sandbox_and_unknown_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        project = self._project(tmp_path)
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: (2, 53, 0))
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", True)
+        )
+
+        messages = [item.message for item in report.findings]
+        assert any("Sandbox Git 2.53.0 supports" in message for message in messages)
+        assert any("host Git capability is unknown" in message for message in messages)
+
+    def test_probe_and_worktree_config_os_errors_are_bounded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        administration = tmp_path / "admin"
+        administration.mkdir()
+        (administration / "config.worktree").touch()
+        monkeypatch.setattr(
+            readiness.subprocess,
+            "run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+        )
+
+        assert readiness._git_version_at("git", "--version") is None
+        assert readiness._read_worktree_config(administration, "core.worktree") is None
+
+    def test_invalid_relative_extension_format_fails(self, tmp_path: Path):
+        findings = readiness.Findings()
+
+        readiness._report_repository_format(tmp_path, "invalid", True, findings)
+
+        report = findings.report()
+        assert [item for item in report.findings if item.severity is Severity.FAIL]
+
+    def test_unreadable_and_unresolvable_live_worktrees(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        project_dir = tmp_path / ".booley_project"
+        outer = project_dir / "worktrees" / "ticket"
+        ignored = project_dir / "worktrees" / "not-a-worktree"
+        outer.mkdir(parents=True)
+        ignored.mkdir()
+        (outer / ".git").touch()
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        monkeypatch.setattr(
+            readiness,
+            "resolve_checkout_project_dir",
+            lambda _root: (_ for _ in ()).throw(FileNotFoundError),
+        )
+
+        assert readiness._worktree_metadata_problems(outer) == (
+            "unreadable worktree registration",
+        )
+        assert readiness._live_worktree_paths(project) == (outer,)
+
+    def test_relative_live_worktree_reports_pass(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        worktree = project_dir / "worktrees" / "ticket"
+        administration = tmp_path / "admin"
+        worktree.mkdir(parents=True)
+        administration.mkdir()
+        (worktree / ".git").write_text(
+            f"gitdir: {os.path.relpath(administration, worktree)}\n", encoding="utf-8"
+        )
+        (administration / "gitdir").write_text(
+            f"{os.path.relpath(worktree / '.git', administration)}\n", encoding="utf-8"
+        )
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        findings = readiness.Findings()
+
+        readiness._inspect_live_worktrees(project, findings)
+
+        assert any(
+            item.severity is Severity.PASS and "metadata is relative" in item.message
+            for item in findings.report().findings
+        )
+
+    def test_old_sandbox_before_opt_in_warns_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "worktree.useRelativePaths", "false"],
+            check=True,
+        )
+        project = self._project(tmp_path)
+        versions = iter(((2, 53, 0), (2, 47, 9)))
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: next(versions))
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, "docker", "image", False)
+        )
+
+        warnings = [item.message for item in report.findings if item.severity is Severity.WARN]
+        assert any("container-only" in message for message in warnings)
+        assert any("do not run host `git worktree prune`" in message for message in warnings)
+        assert not [item for item in report.findings if item.severity is Severity.FAIL]
+
+    def test_old_side_after_repository_opt_in_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
+            check=True,
+        )
+        project = self._project(tmp_path)
+        versions = iter(((2, 53, 0), (2, 47, 9)))
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: next(versions))
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, "docker", "image", False)
+        )
+
+        failures = [item.message for item in report.findings if item.severity is Severity.FAIL]
+        assert len(failures) == 1
+        assert "repository format" in failures[0]
+
+    def test_live_metadata_reports_absolute_paths(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        worktree = project_dir / "worktrees" / "ticket"
+        administration = tmp_path / "admin"
+        worktree.mkdir(parents=True)
+        administration.mkdir()
+        (worktree / ".git").write_text(f"gitdir: {administration}\n", encoding="utf-8")
+        (administration / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", False)
+        )
+
+        messages = [item.message for item in report.findings]
+        assert any(
+            str(worktree) in message and "absolute .git pointer" in message for message in messages
+        )
+        assert any("absolute reverse gitdir" in message for message in messages)
+
+    def test_live_metadata_reads_worktree_config_not_shared_config(self, tmp_path: Path):
+        worktree = tmp_path / "worktree"
+        administration = tmp_path / ".git" / "worktrees" / "ticket"
+        worktree.mkdir()
+        administration.mkdir(parents=True)
+        pointer = os.path.relpath(administration, worktree)
+        reverse = os.path.relpath(worktree / ".git", administration)
+        (worktree / ".git").write_text(f"gitdir: {pointer}\n", encoding="utf-8")
+        (administration / "gitdir").write_text(f"{reverse}\n", encoding="utf-8")
+        subprocess.run(
+            [
+                "git",
+                "config",
+                "--file",
+                str(administration / "config.worktree"),
+                "core.worktree",
+                "../../../worktree",
+            ],
+            check=True,
+        )
+
+        problems = readiness._worktree_metadata_problems(worktree)
+
+        assert problems == ()
+
+    def test_live_metadata_includes_paired_project_data_worktree(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        outer = project_dir / "worktrees" / "ticket"
+        paired = outer / ".booley_project"
+        outer_admin = tmp_path / "outer-admin"
+        paired_admin = tmp_path / "paired-admin"
+        for worktree, administration in ((outer, outer_admin), (paired, paired_admin)):
+            worktree.mkdir(parents=True, exist_ok=True)
+            administration.mkdir()
+            (worktree / ".git").write_text(
+                f"gitdir: {os.path.relpath(administration, worktree)}\n", encoding="utf-8"
+            )
+            (administration / "gitdir").write_text(
+                f"{os.path.relpath(worktree / '.git', administration)}\n", encoding="utf-8"
+            )
+        subprocess.run(
+            [
+                "git",
+                "config",
+                "--file",
+                str(paired_admin / "config.worktree"),
+                "core.hooksPath",
+                str(paired_admin / "hooks"),
+            ],
+            check=True,
+        )
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+
+        paths = readiness._live_worktree_paths(project)
+        problems = readiness._worktree_metadata_problems(paired)
+
+        assert paths == (outer, paired)
+        assert problems == ("absolute core.hooksPath",)
+
+    def test_missing_docker_probe_after_opt_in_warns_instead_of_claiming_old_git(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
+            check=True,
+        )
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: (2, 53, 0))
+        project = self._project(tmp_path)
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", False)
+        )
+
+        assert not [item for item in report.findings if item.severity is Severity.FAIL]
+        assert any(
+            "could not be verified" in item.message
+            for item in report.findings
+            if item.severity is Severity.WARN
+        )
 
 
 class TestWorktreeCoreShadowGuard:

@@ -756,6 +756,14 @@ def _run_runtime_phase(
     """Run runtime-location, container, MCP, and Ticket Preflight parity checks."""
     progress("Sandbox/auth checks")
     sandbox_image = _sandbox_image(project)
+    if project is not None:
+        request = readiness.WorktreePortabilityRequest(
+            project=project,
+            docker_exe=docker_exe,
+            sandbox_image=sandbox_image,
+            inside_runtime=runtime_context.inside_session_runtime(),
+        )
+        reporter.diagnostics(readiness.inspect_worktree_portability(request))
     _check_runtime_location(
         docker_exe,
         sandbox_image,
@@ -930,17 +938,11 @@ def _check_worktree_prune_guard(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """ADR 0028 Decision 10: host ``git gc`` must never prune ticket worktrees.
-
-    Worktrees are created in-container, so their git metadata records
-    container paths the host cannot see; without ``gc.worktreePruneExpire=
-    never`` a host-side ``git gc`` silently drops those registrations.
-    ``booley init`` sets the knob; this check catches repos initialized
-    before ADR 0028 (or a user resetting their git config).
-    """
+    """Keep automatic pruning disabled for legacy and fallback worktrees."""
     from booley.harness.setup.git_hooks import (
         WORKTREE_PRUNE_KEY,
         WORKTREE_PRUNE_VALUE,
+        worktree_policy_repositories,
     )
 
     try:
@@ -954,29 +956,40 @@ def _check_worktree_prune_guard(
         if probe.returncode != 0:
             _skip("worktree prune guard: project root is not a git repo")
             return
-        got = subprocess.run(
-            ["git", "-C", str(project_root), "config", "--get", WORKTREE_PRUNE_KEY],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-        value = got.stdout.strip() if got.returncode == 0 else None
     except (FileNotFoundError, subprocess.SubprocessError):
         _skip("worktree prune guard: git unavailable")
         return
 
-    if value == WORKTREE_PRUNE_VALUE:
+    repositories = worktree_policy_repositories(project_root)
+    wrong: list[tuple[Path, str | None]] = []
+    try:
+        for repository in repositories:
+            got = subprocess.run(
+                ["git", "-C", str(repository), "config", "--get", WORKTREE_PRUNE_KEY],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            value = got.stdout.strip() if got.returncode == 0 else None
+            if value != WORKTREE_PRUNE_VALUE:
+                wrong.append((repository, value))
+    except (FileNotFoundError, subprocess.SubprocessError):
+        _skip("worktree prune guard: git unavailable")
+        return
+
+    if not wrong:
         _pass(
             f"{WORKTREE_PRUNE_KEY}={WORKTREE_PRUNE_VALUE} "
-            "(in-container worktrees safe from host git gc)"
+            f"in {len(repositories)} Ticket Workspace repository/repositories"
         )
         return
+    repository, value = wrong[0]
     detail = f"set to {value!r}" if value else "unset"
     _fail(
         f"{WORKTREE_PRUNE_KEY} is {detail} — a host-side `git gc` can prune "
-        "in-container ticket worktree registrations",
-        f"git -C {project_root} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
+        f"legacy or fallback Ticket Workspace registrations in {repository}",
+        f"git -C {repository} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
     )
 
 

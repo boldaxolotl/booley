@@ -509,6 +509,25 @@ def test_git_probe_rejects_prerelease_and_unparseable_versions(
     assert "Git 2.37.2 or newer" in finding.detail
 
 
+@pytest.mark.parametrize(
+    ("version_line", "expected"),
+    [
+        ("git version 2.47.9", (2, 47, 9)),
+        ("git version 2.48.0", (2, 48, 0)),
+        ("git version 2.53.0.windows.1", (2, 53, 0)),
+        ("git version 2.50.1 (Apple Git-155)", (2, 50, 1)),
+        ("git version 2.48.0-rc1", None),
+        ("git version 2.48.0.beta2", None),
+        ("git version unknown", None),
+    ],
+)
+def test_parse_git_version_is_strict_capability_evidence(
+    version_line: str,
+    expected: tuple[int, int, int] | None,
+) -> None:
+    assert bootstrap.parse_git_version(version_line) == expected
+
+
 def test_git_probe_reports_missing_and_execution_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

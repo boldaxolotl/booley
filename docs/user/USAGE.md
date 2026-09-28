@@ -856,13 +856,23 @@ after automatic retry. Because unexpected
 infrastructure errors also exit 1, automation should use the record's presence
 and disposition—not the exit status alone—to classify a normal Ticket ending.
 
-**Ticket worktrees live under `.booley_project/worktrees/<slug>`, but they are registered by their in-container path.** Booley is container-only, so the project is `/work` from git's point of view and the registrations record `/work/.booley_project/worktrees/...`. On the host those paths don't exist, so `git worktree list` shows every live ticket worktree as `prunable`:
+**Ticket Workspaces are host-addressable when both the host and Sandbox use Git
+2.48 or newer.** Run `booley init` after upgrading. New worktrees then use
+relative metadata, so host `git status` and `git worktree list` work normally.
+Older existing worktrees are not rewritten.
+
+With an older or unverified Git, new worktrees retain the container-only
+fallback and may appear `prunable` from the host:
 
 ```
 /work/.booley_project/worktrees/axi-fix  0000000 [detached HEAD] prunable
 ```
 
-That is cosmetic and expected — **do not "clean it up"**. A host-side `git worktree prune` deregisters a worktree an active ticket is still working in, and the run dies in confusing ways. Booley sets `gc.worktreePruneExpire=never` on the repo so background `git gc` can't do it by accident (`booley doctor` checks the setting), but an explicit `git worktree prune` you type yourself still wins. Let the ticket finish and let cleanup remove it, or run the prune from inside the Sandbox where the paths resolve.
+In fallback mode this is expected — **do not "clean it up"**. Use Git through
+the Sandbox; a host-side `git worktree prune` can deregister an active Ticket
+Workspace. After relative worktrees have been enabled, keep both Git clients at
+2.48 or newer. `booley doctor` reports fallback, incompatible downgrades, and
+non-portable live worktrees.
 
 **`.booley_project/` is usually its own git repo, and the outer repo ignores it.** That is the intended layout — your RTL history stays clean of Booley bookkeeping — but it means outer-repo git commands cannot see anything inside it. Restoring an edited `booley.toml` from the project root fails with a pathspec error that never mentions why:
 
