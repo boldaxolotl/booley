@@ -19,6 +19,7 @@ import pytest
 from booley.criteria.state import DevelopmentState
 from booley.harness.blocking import AgentTimeoutError
 from booley.harness.developer import (
+    PostDeveloperFinding,
     _resolve_ticket_disposition,
     _run_post_developer_hook,
     _transition_post_developer_finding,
@@ -506,6 +507,21 @@ def test_post_developer_hook_state_mutation_is_reprojected(tmp_path: Path):
         "developer",
         run_index=5,
     )
+
+
+def test_transition_projection_error_uses_guard_reason(tmp_path: Path):
+    ctx = _make_ctx(tmp_path)
+    finding = PostDeveloperFinding("handoff failed", "handoff context")
+    with (
+        patch(
+            "booley.ticket_board.criteria_acceptance.project_active_declared_block_reason",
+            side_effect=UnicodeDecodeError("utf-8", b"x", 0, 1, "invalid"),
+        ),
+        patch("booley.harness.developer.block_ticket") as block,
+    ):
+        _transition_post_developer_finding(ctx, tmp_path / "state.json", finding, 5)
+
+    block.assert_called_once_with(ctx, "handoff failed", "developer", run_index=5)
 
 
 def test_post_developer_hook_is_bounded_by_remaining_wall_time(tmp_path: Path):

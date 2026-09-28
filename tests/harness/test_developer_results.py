@@ -1,6 +1,5 @@
 """Explicit Ticket result coverage for developer orchestration branches."""
 
-import hashlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -91,6 +90,10 @@ class _Budget:
         return None
 
 
+async def _run_with_budget(coro, _budget):
+    return await coro
+
+
 def _patch_developer_path(monkeypatch, tmp_path: Path, *, agent_result):
     surface = SimpleNamespace(
         discovered_mcp_tools=[],
@@ -113,6 +116,7 @@ def _patch_developer_path(monkeypatch, tmp_path: Path, *, agent_result):
     )
     monkeypatch.setattr(developer, "_ensure_worktree_populated", lambda *_args: None)
     monkeypatch.setattr(developer, "DeveloperBudget", lambda *_args, **_kwargs: _Budget())
+    monkeypatch.setattr(developer, "run_with_developer_budget", _run_with_budget)
     monkeypatch.setattr(
         "booley.config.settings.load_developer_limits_config", lambda *_args: MagicMock()
     )
@@ -181,6 +185,28 @@ def _patch_worktree_mutators(monkeypatch) -> list[MagicMock]:
     return mutators
 
 
+def _assert_preserved_dirty_handoff(
+    ctx: TicketContext,
+    board_block: MagicMock,
+    source: Path,
+    before_bytes: bytes,
+    before_status: bytes,
+    mutators: list[MagicMock],
+) -> None:
+    assert board_block.call_args.kwargs["reason"] == (
+        "Need the maintainer to choose the reset behavior."
+    )
+    blocked_log = (ctx.logs_dir / "blocked.md").read_text(encoding="utf-8")
+    assert blocked_log.count("## Run 0 -- Blocked") == 1
+    assert "**Reason:** Need the maintainer to choose the reset behavior." in blocked_log
+    assert "### Secondary context" in blocked_log
+    assert "1 uncommitted file(s) preserved: M rtl/dut.sv" in blocked_log
+    assert source.read_bytes() == before_bytes
+    assert _porcelain_status(ctx.work_dir) == before_status
+    for mutator in mutators:
+        mutator.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_early_blocked_triage_error_preserves_result(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path, completed_steps=["setup"], worktree_path=tmp_path / "worktree")
@@ -231,7 +257,6 @@ async def test_blocked_reason_and_dirty_preserves_primary_and_worktree(
     state.save()
 
     before_bytes = source.read_bytes()
-    before_hash = hashlib.sha256(before_bytes).hexdigest()
     before_status = _porcelain_status(worktree)
 
     real_guardrails = developer._run_post_guardrails
@@ -249,19 +274,14 @@ async def test_blocked_reason_and_dirty_preserves_primary_and_worktree(
     result = await developer._run_developer_path(ctx, tmp_path)
 
     assert result.disposition == "blocked"
-    assert board_block.call_args.kwargs["reason"] == (
-        "Need the maintainer to choose the reset behavior."
+    _assert_preserved_dirty_handoff(
+        ctx,
+        board_block,
+        source,
+        before_bytes,
+        before_status,
+        mutators,
     )
-    blocked_log = (ctx.logs_dir / "blocked.md").read_text(encoding="utf-8")
-    assert blocked_log.count("## Run 0 -- Blocked") == 1
-    assert "**Reason:** Need the maintainer to choose the reset behavior." in blocked_log
-    assert "### Secondary context" in blocked_log
-    assert "1 uncommitted file(s) preserved: M rtl/dut.sv" in blocked_log
-    assert source.read_bytes() == before_bytes
-    assert hashlib.sha256(source.read_bytes()).hexdigest() == before_hash
-    assert _porcelain_status(worktree) == before_status
-    for mutator in mutators:
-        mutator.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -351,6 +371,58 @@ async def test_post_drain_path_error_preserves_declared_reason(tmp_path: Path, m
     assert block.call_args.kwargs["secondary_context"] == [
         "Developer Agent path error: RuntimeError: bookkeeping failed"
     ]
+
+
+def test_post_drain_projection_error_preserves_failure_transition(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path, worktree_path=tmp_path / "worktree")
+    failure = MagicMock()
+    monkeypatch.setattr(developer, "record_crash", MagicMock())
+    monkeypatch.setattr(developer, "fail_ticket", failure)
+    monkeypatch.setattr(developer.ticket_cli, "ticket_status", MagicMock(return_value="running"))
+    monkeypatch.setattr(
+        "booley.ticket_board.criteria_acceptance.project_active_declared_block_reason",
+        MagicMock(side_effect=OSError("state unreadable")),
+    )
+
+    result = developer._classify_developer_path_failure(
+        ctx,
+        tmp_path,
+        0,
+        RuntimeError("bookkeeping failed"),
+        state_path=tmp_path / "booley_state.json",
+        jobs_drained=True,
+    )
+
+    assert result.disposition == "failed"
+    failure.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_disposition_failure_does_not_use_declared_reason_precedence(
+    tmp_path: Path, monkeypatch
+):
+    ctx = _context(tmp_path, worktree_path=tmp_path / "worktree")
+    _write_active_block(ctx, "Need a maintainer decision.")
+    _patch_developer_path(
+        monkeypatch,
+        tmp_path,
+        agent_result=AgentResult(output="blocked", input_tokens=1, output_tokens=1),
+    )
+    monkeypatch.setattr(
+        developer,
+        "_resolve_ticket_disposition",
+        AsyncMock(side_effect=RuntimeError("disposition failed")),
+    )
+    block = MagicMock()
+    failure = MagicMock()
+    monkeypatch.setattr(developer, "block_ticket", block)
+    monkeypatch.setattr(developer, "fail_ticket", failure)
+
+    result = await developer._run_developer_path(ctx, tmp_path)
+
+    assert result.disposition == "failed"
+    block.assert_not_called()
+    failure.assert_called_once()
 
 
 @pytest.mark.asyncio

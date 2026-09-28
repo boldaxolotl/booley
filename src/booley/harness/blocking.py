@@ -84,28 +84,23 @@ class UserQuitError(Exception):
 _KIND_LABELS: dict[str, str] = {"blocked": "Blocked", "failed": "Failed", "crashed": "Crashed"}
 
 
-def _append_blocked_entry(
-    logs_dir: Path,
+def _blocked_entry_lines(
     reason: str,
     step: str,
     kind: Literal["blocked", "failed", "crashed"] = "blocked",
     run_index: int | None = None,
     questions: list[str] | None = None,
     secondary_context: list[str] | None = None,
-) -> None:
-    """Append an entry to the append-only blocked.md log.
+) -> list[str]:
+    """Build one append-only escalation-history entry.
 
     *reason* doubles as the "### Error" section body for "failed"/"crashed"
     kinds -- both callers already pass the same string for both roles.
     """
     from .logging_utils import now_iso
 
-    blocked_path = logs_dir / "blocked.md"
-    blocked_path.parent.mkdir(parents=True, exist_ok=True)
-
     run_label = f"Run {run_index}" if run_index is not None else "Setup"
     timestamp = format_human_datetime(now_iso(), seconds=True)
-
     lines = [f"## {run_label} -- {_KIND_LABELS[kind]} ({timestamp})", ""]
     lines.append(f"**Step:** {step}")
     lines.append(f"**Reason:** {reason}")
@@ -126,6 +121,29 @@ def _append_blocked_entry(
                     "",
                 ]
             )
+    return lines
+
+
+def _append_blocked_entry(
+    logs_dir: Path,
+    reason: str,
+    step: str,
+    kind: Literal["blocked", "failed", "crashed"] = "blocked",
+    run_index: int | None = None,
+    questions: list[str] | None = None,
+    secondary_context: list[str] | None = None,
+) -> None:
+    """Append an entry to the append-only blocked.md log."""
+    blocked_path = logs_dir / "blocked.md"
+    blocked_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = _blocked_entry_lines(
+        reason,
+        step,
+        kind,
+        run_index,
+        questions,
+        secondary_context,
+    )
 
     entry = "\n".join(lines) + "\n"
     header = (
