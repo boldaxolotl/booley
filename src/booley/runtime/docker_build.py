@@ -12,7 +12,11 @@ from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from typing import TextIO
 
-from booley.runtime.docker_capacity import ensure_docker_build_capacity
+from booley.runtime.docker_capacity import (
+    DockerBuildPlan,
+    DockerBuildRequest,
+    ensure_docker_build_capacity,
+)
 
 HEARTBEAT_INTERVAL_S = 60.0
 _QUEUE_SIZE = 256
@@ -100,7 +104,8 @@ def _diagnostics(
     guidance = (
         (
             "Docker storage filled during the build; free unused cache with "
-            "`docker builder prune`, then retry.",
+            "`docker builder prune` only if appropriate; pruning may evict layers "
+            "the retry would otherwise reuse.",
         )
         if storage_exhausted or any("no space left on device" in line.lower() for line in output)
         else ()
@@ -232,8 +237,15 @@ def run_docker_build(
     verbose: bool,
     timeout: float,
     output: TextIO | None = None,
+    current_request: DockerBuildRequest | None = None,
+    remaining_plan: DockerBuildPlan | None = None,
 ) -> DockerBuildResult:
     """Run one Docker build while keeping useful progress observable."""
-    ensure_docker_build_capacity(command, image=image)
+    ensure_docker_build_capacity(
+        command,
+        image=image,
+        current_request=current_request,
+        remaining_plan=remaining_plan,
+    )
     sink = sys.stdout if output is None else output
     return _run_captured(command, image=image, verbose=verbose, timeout=timeout, output=sink)

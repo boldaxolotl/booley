@@ -1094,12 +1094,15 @@ def _step_image_lifecycle(
         if ctx.force
         else ImageLifecycleIntent.ENSURE
     )
+    scope = ProjectImageScope(ctx.project_root, base_result)
     try:
-        result = reconcile_images(
-            ProjectImageScope(ctx.project_root, base_result),
-            intent,
-            verbose=ctx.verbose,
-        )
+        if intent is ImageLifecycleIntent.CHECK:
+            result = reconcile_images(scope, intent, verbose=ctx.verbose)
+        else:
+            try:
+                result = image_lifecycle.reconcile_planned(scope, intent, verbose=ctx.verbose)
+            except image_lifecycle.IncrementalPlanUnavailableError:
+                result = reconcile_images(scope, intent, verbose=ctx.verbose)
     except ImageLifecycleError as exc:
         err(str(exc))
         ctx.record("docker_image", "err", str(exc))
@@ -2236,9 +2239,7 @@ def _run_project_init_steps(
             return _print_summary(ctx)
         return _run_seed(ctx, selection)
 
-    # --scaffold: emit a runnable starter IP (RTL + TB + .core + populated
-    # config) before the regular steps, which then backfill around it. A
-    # refusal (existing design files) aborts the whole run — the user asked
+    # A refusal to scaffold aborts the run — the user asked
     # for a fresh scaffold and must decide, not get a half-initialized mix.
     if getattr(args, "scaffold", None) and not step_scaffold(ctx, args):
         return _print_summary(ctx)
