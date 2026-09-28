@@ -1,5 +1,6 @@
 """Public worktree-relocation boundary behavior."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -74,6 +75,22 @@ def test_relocation_replay_is_idempotent(tmp_path: Path) -> None:
 )
 def test_relocation_preserves_relative_registration(tmp_path: Path) -> None:
     repository, source, ref = _linked_worktree(tmp_path, relative=True)
+    administration = Path(_git(source, "rev-parse", "--git-dir"))
+    _git(source, "config", "extensions.worktreeConfig", "true")
+    _git(
+        source,
+        "config",
+        "--worktree",
+        "core.worktree",
+        os.path.relpath(source, administration),
+    )
+    _git(
+        source,
+        "config",
+        "--worktree",
+        "core.hooksPath",
+        os.path.relpath(administration / "hooks", source),
+    )
     destination = tmp_path / "nested/d"
 
     relocate_worktree(repository, ref, source, destination)
@@ -84,6 +101,12 @@ def test_relocation_preserves_relative_registration(tmp_path: Path) -> None:
     assert not Path(pointer).is_absolute()
     assert not Path(reverse).is_absolute()
     assert _git(destination, "status", "--short") == ""
+    assert _git(destination, "config", "--worktree", "--get", "core.worktree") == os.path.relpath(
+        destination, administration
+    )
+    assert _git(destination, "config", "--worktree", "--get", "core.hooksPath") == os.path.relpath(
+        administration / "hooks", destination
+    )
 
 
 def test_relocation_rejects_missing_state(tmp_path: Path) -> None:

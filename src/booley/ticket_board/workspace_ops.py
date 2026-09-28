@@ -20,6 +20,10 @@ from booley.runtime.project_dir import (
     runtime_dir,
 )
 from booley.runtime.project_prepare import prepare_project
+from booley.runtime.worktree_relocation import (
+    WorktreeRelocationError,
+    refresh_relative_worktree_config,
+)
 from booley.ticket_board.ticket_repositories import (
     TicketRepository,
     paired_project_repository,
@@ -663,6 +667,7 @@ def relocate_refresh_workspace(
                 "refreshed Ticket workspace disappeared during relocation"
             )
         _require_git(root, "worktree", "move", str(workspace.outer), str(canonical))
+        _refresh_moved_worktree(canonical)
     _restore_refresh_project(canonical, project_source, holding)
     if has_project and paired_project_repository(canonical) is None:
         raise TicketBaselineOperationError("refreshed paired project workspace is unavailable")
@@ -717,6 +722,7 @@ def _stage_refresh_project(
         raise TicketBaselineOperationError("paired project repository is unavailable")
     if not holding.exists():
         _require_git(project_source, "worktree", "move", str(paired.worktree), str(holding))
+        _refresh_moved_worktree(holding)
 
 
 def _restore_refresh_project(canonical: Path, project_source: Path | None, holding: Path) -> None:
@@ -731,6 +737,16 @@ def _restore_refresh_project(canonical: Path, project_source: Path | None, holdi
         str(holding),
         str(ticket_project_worktree(canonical)),
     )
+    _refresh_moved_worktree(ticket_project_worktree(canonical))
+
+
+def _refresh_moved_worktree(worktree: Path) -> None:
+    try:
+        refresh_relative_worktree_config(worktree)
+    except WorktreeRelocationError as exc:
+        raise TicketBaselineOperationError(
+            f"could not refresh moved Ticket Workspace metadata: {exc}"
+        ) from exc
 
 
 def load_refresh_source_workspace(

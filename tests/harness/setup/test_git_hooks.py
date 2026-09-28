@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.harness.setup import git_hooks
 from booley.harness.setup.common import InitContext
 from booley.harness.setup.git_hooks import (
     WORKTREE_PRUNE_KEY,
@@ -240,6 +241,55 @@ class TestWorktreeLinkPolicyStep:
         )
         assert ctx.results[-1].status == "warn"
         assert ctx.results[-1].detail == "incompatible Git downgrade"
+
+    def test_second_repository_failure_rolls_back_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        original = git_hooks._set_local_config
+
+        def fail_second(repository: Path, value: str | None) -> str | None:
+            if repository == project_dir and value == "true":
+                return "injected failure"
+            return original(repository, value)
+
+        monkeypatch.setattr(git_hooks, "_set_local_config", fail_second)
+        ctx = _ctx(tmp_path)
+
+        _step_worktree_link_policy(
+            ctx,
+            host_git_version=(2, 53, 0),
+            sandbox_git_version=(2, 53, 0),
+        )
+
+        assert (
+            _run_git(
+                tmp_path,
+                "config",
+                "--local",
+                "--get",
+                WORKTREE_RELATIVE_KEY,
+                check=False,
+            ).returncode
+            != 0
+        )
+        assert ctx.results[-1].status == "warn"
+
+    def test_custom_project_data_repository_is_included(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        custom = tmp_path / "state"
+        custom.mkdir()
+        _git_init(custom)
+        monkeypatch.setattr(git_hooks, "resolve_checkout_project_dir", lambda _root: custom)
+
+        repositories = git_hooks.worktree_policy_repositories(tmp_path)
+
+        assert repositories == (tmp_path, custom)
 
     def test_prune_guard_covers_standalone_project_data(self, tmp_path: Path):
         _git_init(tmp_path)

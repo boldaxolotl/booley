@@ -351,7 +351,7 @@ _parent_lock_acquire
 # Disable automatic submodule recursion. Python materializes exact gitlinks
 # after final branch selection without remotes or shared .git pointers.
 git -C "$CWD" config extensions.worktreeConfig true
-RELATIVE_WORKTREE_DIR=$("${PY[@]}" -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]).replace(os.sep, "/"))' "$WORKTREE_DIR" "$WORKTREE_GIT_DIR")
+RELATIVE_WORKTREE_DIR=$("${PY[@]}" -c 'import os,sys; print(os.path.relpath(os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])).replace(os.sep, "/"))' "$WORKTREE_DIR" "$WORKTREE_GIT_DIR")
 git_wt config --worktree core.worktree "$RELATIVE_WORKTREE_DIR"
 git_wt config --worktree submodule.recurse false
 git_wt config --worktree diff.ignoreSubmodules all

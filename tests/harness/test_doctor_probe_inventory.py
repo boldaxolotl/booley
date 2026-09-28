@@ -35,7 +35,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit).
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$)"
 )
 
 # The orchestrators whose call lists this ratchet pins. run_doctor is the
@@ -127,7 +127,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
         {
             "_check_memory_invariant",
             "_check_runtime_location",
-            "_check_worktree_portability",
+            "inspect_worktree_portability",
             "_run_container_checks",
             "_run_mcp_checks",
             "_run_ticket_preflight_parity_checks",

@@ -341,7 +341,7 @@ WORKTREE_PRUNE_VALUE = "never"
 WORKTREE_RELATIVE_KEY = "worktree.useRelativePaths"
 
 
-def _worktree_policy_repositories(project_root: Path) -> tuple[Path, ...]:
+def worktree_policy_repositories(project_root: Path) -> tuple[Path, ...]:
     """Return durable repositories that create Ticket Workspaces."""
     repositories = [project_root]
     try:
@@ -353,7 +353,7 @@ def _worktree_policy_repositories(project_root: Path) -> tuple[Path, ...]:
     return tuple(repositories)
 
 
-def _read_local_config(repository: Path, key: str) -> str | None:
+def read_local_config(repository: Path, key: str) -> str | None:
     try:
         result = subprocess.run(
             ["git", "-C", str(repository), "config", "--local", "--get", key],
@@ -369,7 +369,7 @@ def _read_local_config(repository: Path, key: str) -> str | None:
 
 
 def _repository_uses_relative_extension(repository: Path) -> bool:
-    return _read_local_config(repository, "extensions.relativeWorktrees") == "true"
+    return read_local_config(repository, "extensions.relativeWorktrees") == "true"
 
 
 def _host_git_version() -> tuple[int, int, int] | None:
@@ -386,6 +386,52 @@ def _host_git_version() -> tuple[int, int, int] | None:
     return parse_git_version(result.stdout) if result.returncode == 0 else None
 
 
+def _set_local_config(repository: Path, value: str | None) -> str | None:
+    args = ["git", "-C", str(repository), "config", "--local"]
+    args += (
+        [WORKTREE_RELATIVE_KEY, value]
+        if value is not None
+        else ["--unset-all", WORKTREE_RELATIVE_KEY]
+    )
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)
+    if result.returncode not in ({0, 5} if value is None else {0}):
+        return result.stderr.strip() or "git config failed"
+    return None
+
+
+def _reconcile_relative_policy(repositories: tuple[Path, ...], desired: str) -> list[str]:
+    previous = {
+        repository: read_local_config(repository, WORKTREE_RELATIVE_KEY)
+        for repository in repositories
+    }
+    changed: list[Path] = []
+    for repository in repositories:
+        if error := _set_local_config(repository, desired):
+            failures = [f"{repository}: {error}"]
+            for completed in reversed(changed):
+                if rollback_error := _set_local_config(completed, previous[completed]):
+                    failures.append(f"rollback {completed}: {rollback_error}")
+            return failures
+        changed.append(repository)
+    return []
+
+
+def _worktree_policy_capable(
+    host_version: tuple[int, int, int] | None,
+    sandbox_version: tuple[int, int, int] | None,
+) -> bool:
+    minimum = RELATIVE_WORKTREE_MIN_GIT_VERSION
+    return (
+        host_version is not None
+        and sandbox_version is not None
+        and host_version >= minimum
+        and sandbox_version >= minimum
+    )
+
+
 def _step_worktree_link_policy(
     ctx: InitContext,
     *,
@@ -395,13 +441,8 @@ def _step_worktree_link_policy(
     """Reconcile portable worktree creation after two-sided capability proof."""
     ctx.step_banner("worktree link policy")
     host_version = host_git_version if host_git_version is not None else _host_git_version()
-    capable = (
-        host_version is not None
-        and sandbox_git_version is not None
-        and host_version >= RELATIVE_WORKTREE_MIN_GIT_VERSION
-        and sandbox_git_version >= RELATIVE_WORKTREE_MIN_GIT_VERSION
-    )
-    repositories = _worktree_policy_repositories(ctx.project_root)
+    capable = _worktree_policy_capable(host_version, sandbox_git_version)
+    repositories = worktree_policy_repositories(ctx.project_root)
     incompatible = [repo for repo in repositories if _repository_uses_relative_extension(repo)]
     if not capable and incompatible:
         warn(
@@ -414,7 +455,7 @@ def _step_worktree_link_policy(
 
     desired = "true" if capable else "false"
     pending = [
-        repo for repo in repositories if _read_local_config(repo, WORKTREE_RELATIVE_KEY) != desired
+        repo for repo in repositories if read_local_config(repo, WORKTREE_RELATIVE_KEY) != desired
     ]
     if not pending:
         skip(f"{WORKTREE_RELATIVE_KEY} already '{desired}'")
@@ -428,33 +469,15 @@ def _step_worktree_link_policy(
         ctx.record("worktree_link_policy", "warn", f"would set {desired}")
         return
 
-    failures: list[str] = []
-    for repository in pending:
-        try:
-            result = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repository),
-                    "config",
-                    "--local",
-                    WORKTREE_RELATIVE_KEY,
-                    desired,
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            failures.append(f"{repository}: {exc}")
-            continue
-        if result.returncode != 0:
-            failures.append(f"{repository}: {result.stderr.strip() or 'git config failed'}")
+    failures = _reconcile_relative_policy(tuple(pending), desired)
     if failures:
         warn("could not reconcile worktree link policy: " + "; ".join(failures))
         ctx.record("worktree_link_policy", "warn", "git config failed")
         return
+    _report_worktree_link_policy(ctx, capable=capable)
+
+
+def _report_worktree_link_policy(ctx: InitContext, *, capable: bool) -> None:
     if capable:
         ok("new Ticket Workspaces use relative links on host and in the Sandbox")
         detail = "relative links enabled"
@@ -503,7 +526,7 @@ def _step_worktree_prune_guard(ctx: InitContext) -> None:
         ctx.record("worktree_prune_guard", "skip", "not a git repo")
         return
 
-    repositories = _worktree_policy_repositories(ctx.project_root)
+    repositories = worktree_policy_repositories(ctx.project_root)
     pending = [
         repository
         for repository in repositories

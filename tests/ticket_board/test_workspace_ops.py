@@ -956,6 +956,7 @@ def test_refresh_workspace_relocation_and_discard_cover_owned_state(
     monkeypatch.setattr(
         workspace_ops, "_require_git", lambda *args, **_kwargs: commands.append(args) or ""
     )
+    monkeypatch.setattr(workspace_ops, "_refresh_moved_worktree", lambda _path: None)
 
     workspace_ops.relocate_refresh_workspace(
         root, "ticket", "0" * 16, operation, workspace, has_project=False
@@ -1001,6 +1002,7 @@ def test_refresh_project_staging_restoration_and_participation_checks(
     monkeypatch.setattr(
         workspace_ops, "_require_git", lambda *args, **_kwargs: commands.append(args) or ""
     )
+    monkeypatch.setattr(workspace_ops, "_refresh_moved_worktree", lambda _path: None)
 
     workspace_ops._stage_refresh_project(workspace, project_source, holding)
     holding.mkdir()
@@ -1388,6 +1390,7 @@ def test_refresh_relocation_rejects_missing_checkout_and_repository_mismatch(
         )
     workspace.outer.mkdir()
     monkeypatch.setattr(workspace_ops, "_require_git", lambda *_args: "")
+    monkeypatch.setattr(workspace_ops, "_refresh_moved_worktree", lambda _path: None)
     monkeypatch.setattr(workspace_ops, "_restore_refresh_project", lambda *_args: None)
     with pytest.raises(
         workspace_ops.TicketBaselineOperationError, match="paired project workspace"

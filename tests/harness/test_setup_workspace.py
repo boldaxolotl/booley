@@ -95,6 +95,10 @@ def _assert_moved_worktree_portable(
     hooks_path = _git(moved_worktree, "config", "--worktree", "--get", "core.hooksPath")
     assert core_worktree.returncode == 0 and not Path(core_worktree.stdout.strip()).is_absolute()
     assert hooks_path.returncode == 0 and not Path(hooks_path.stdout.strip()).is_absolute()
+    repository_format = _git(moved_root, "config", "--get", "core.repositoryFormatVersion")
+    relative_extension = _git(moved_root, "config", "--get", "extensions.relativeWorktrees")
+    assert repository_format.stdout.strip() == "1"
+    assert relative_extension.stdout.strip() == "true"
     assert (administration / "hooks" / "pre-commit").is_file()
 
     with (moved_worktree / ".gitmodules").open("a", encoding="utf-8") as stream:
