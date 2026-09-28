@@ -247,7 +247,7 @@ def test_local_build_reuses_matching_runtime_base_for_candidate(
     candidate = calls[0][0][1]
     assert candidate.dockerfile.name == "Dockerfile"
     assert candidate.build_contexts == (
-        ("booley-runtime-base", "docker-image://sha256:runtime-base"),
+        ("booley-runtime-base", "docker-image://booley-runtime-base:local"),
     )
     assert candidate.parent_artifact == "sha256:runtime-base"
     assert candidate.build_args == (
@@ -255,6 +255,29 @@ def test_local_build_reuses_matching_runtime_base_for_candidate(
         "BOOLEY_RUNTIME_BASE_IMAGE=sha256:runtime-base",
     )
     assert "reusing booley-runtime-base:local (contract contract)" in capsys.readouterr().out
+
+
+def test_local_candidate_rejects_runtime_base_retag_during_build(tmp_path, monkeypatch) -> None:
+    resolved_ids = iter(("sha256:approved", "sha256:changed"))
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_image_id",
+        lambda _image: next(resolved_ids),
+    )
+    monkeypatch.setattr(init_docker_image, "_docker_build_image", lambda *_args: 0)
+    ctx = InitContext(project_root=tmp_path)
+
+    result = init_docker_image._build_local_sandbox_candidate(
+        ctx,
+        tmp_path / "Dockerfile",
+        tmp_path,
+        exists=True,
+        fingerprint="fingerprint",
+        runtime_base_id="sha256:approved",
+    )
+
+    assert result is None
+    assert ctx.results[-1].detail == "runtime-base identity changed"
 
 
 @pytest.mark.parametrize(

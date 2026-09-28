@@ -56,7 +56,8 @@ def pytest_collection_finish(session: pytest.Session) -> None:
 @pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node: Any, error: object | None) -> None:
     del error
-    duration = node.workeroutput.get("ci_collection_seconds")
+    worker_output = getattr(node, "workeroutput", None)
+    duration = worker_output.get("ci_collection_seconds") if worker_output is not None else None
     if isinstance(duration, int | float) and math.isfinite(duration) and duration >= 0:
         _COLLECTION_SECONDS.append(float(duration))
 

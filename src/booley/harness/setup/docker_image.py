@@ -680,16 +680,25 @@ def _build_local_sandbox_candidate(
     fingerprint: str | None,
     runtime_base_id: str,
 ) -> int | None:
+    if _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE) != runtime_base_id:
+        err("stable runtime-base tag changed before the Sandbox Image build")
+        ctx.record("docker_image", "err", "runtime-base identity changed")
+        return None
     build = _DockerBuildSpec(
         dockerfile=dockerfile,
         context=booley_root,
         exists=exists,
         fingerprint=fingerprint,
-        build_contexts=(("booley-runtime-base", f"docker-image://{runtime_base_id}"),),
+        build_contexts=(("booley-runtime-base", f"docker-image://{LOCAL_RUNTIME_BASE_IMAGE}"),),
         build_args=("--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={runtime_base_id}"),
         parent_artifact=runtime_base_id,
     )
-    return _docker_build_image(ctx, build)
+    returncode = _docker_build_image(ctx, build)
+    if returncode == 0 and _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE) != runtime_base_id:
+        err("stable runtime-base tag changed during the Sandbox Image build")
+        ctx.record("docker_image", "err", "runtime-base identity changed")
+        return None
+    return returncode
 
 
 def _short_contract(contract: str) -> str:
