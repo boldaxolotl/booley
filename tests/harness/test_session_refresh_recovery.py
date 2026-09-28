@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import os
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -935,6 +935,29 @@ def test_restore_keeps_journal_when_final_issuance_verification_fails(
         session_refresh.recover_project_locked(project)
 
     assert path.is_file()
+
+
+def test_restored_issuance_reports_recorded_to_observed_direction(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    _write_restore_journal(config, project)
+    spec = project / ".devcontainer" / "devcontainer.json"
+    spec.parent.mkdir()
+    spec.write_text('{"image":"sha256:prior"}\n', encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    journal = session_refresh._load_journal(project)
+    assert journal is not None
+    observed = replace(journal.prior_issuance, policy_revision=2)
+    monkeypatch.setattr(runtime_spec, "load_recovery_snapshot", lambda *_args: observed)
+
+    with pytest.raises(sr.SessionError, match="recorded predecessor") as raised:
+        session_refresh._verify_restored_journal(journal)
+
+    assert "policy_revision 1 -> 2" in str(raised.value)
+    assert "license_profile" not in str(raised.value)
 
 
 def test_read_only_commands_report_pending_recovery(tmp_path: Path) -> None:

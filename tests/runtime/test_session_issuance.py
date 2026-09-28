@@ -667,6 +667,65 @@ def test_recovery_snapshot_rejects_missing_keeper_image(issued, monkeypatch) -> 
         runtime_spec.load_recovery_snapshot(project, spec, path)
 
 
+def test_recovery_snapshot_reports_recorded_to_current_spec_direction(issued, monkeypatch) -> None:
+    project, spec, path, stamp = issued
+    monkeypatch.setattr(
+        runtime_spec,
+        "_load_stamp",
+        lambda _path: replace(stamp, spec_sha256="recorded"),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="prior Sandbox spec") as raised:
+        runtime_spec.load_recovery_snapshot(project, spec, path)
+
+    assert f"spec_sha256 'recorded' -> '{stamp.spec_sha256}'" in str(raised.value)
+    assert "project_root" not in str(raised.value)
+
+
+def test_authenticate_reports_recorded_to_current_spec_direction(issued, monkeypatch) -> None:
+    project, spec, path, stamp = issued
+    monkeypatch.setattr(
+        runtime_spec,
+        "_load_stamp",
+        lambda _path: replace(stamp, spec_sha256="recorded"),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="host-issued") as raised:
+        runtime_spec.authenticate(project, spec, path)
+
+    assert f"spec_sha256 'recorded' -> '{stamp.spec_sha256}'" in str(raised.value)
+    assert "project_root" not in str(raised.value)
+
+
+def test_prepared_policy_drift_reports_safe_issuance_field(issued, monkeypatch) -> None:
+    project, spec, _path, stamp = issued
+    inputs = runtime_spec.SessionSpecInputs(project / ".booley_project", (), (), None, None)
+    prepared = runtime_spec.PreparedSessionSpec(
+        spec,
+        "digest",
+        inputs,
+        replace(stamp, policy_revision=1),
+    )
+    leased = SimpleNamespace(build=SimpleNamespace(), runtime=SimpleNamespace())
+    monkeypatch.setattr(runtime_spec, "_spec_digest", lambda _spec: "digest")
+    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: False)
+    monkeypatch.setattr(
+        runtime_spec.eda_requirements,
+        "lease_build_requirements",
+        lambda *_args, **_kwargs: nullcontext(leased),
+    )
+    monkeypatch.setattr(runtime_spec, "_session_spec_inputs", lambda *_args: inputs)
+    monkeypatch.setattr(
+        runtime_spec, "_prospective_issuance", lambda *_args: replace(stamp, policy_revision=2)
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="policy changed") as raised:
+        runtime_spec.issue_prepared(project, prepared)
+
+    assert "policy_revision 1 -> 2" in str(raised.value)
+    assert "license_profile" not in str(raised.value)
+
+
 def test_no_eda_issuance_and_validation_never_open_authority_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
