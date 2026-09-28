@@ -32,6 +32,17 @@ class TriagePackageError(RuntimeError):
     """A triage package is incomplete, malformed, or cannot be prepared."""
 
 
+class CriterionPresentation(Protocol):
+    """Structured presentation returned by the Criteria-owned formatter."""
+
+    label: str
+    detail: str
+
+
+CriterionPresenter = Callable[[str, object, bool], CriterionPresentation]
+CoverageReportResolver = Callable[[Path, object], Path | None]
+
+
 @dataclass(frozen=True)
 class ResolvedReviewEvidence:
     """Immutable Ticket Board snapshot consumed by review generation."""
@@ -115,6 +126,7 @@ def _category(name: str) -> str:
         (("elab_",), "Elaboration"),
         (("sim_",), "Simulation"),
         (("cycle_count_",), "Simulation"),
+        (("coverage_",), "Coverage"),
         (("synthesis_", "synth_"), "Synthesis"),
         (("fpga_",), "FPGA"),
         (("mutation",), "Mutation"),
@@ -129,7 +141,17 @@ def _category(name: str) -> str:
 _CATEGORY_ORDER = {
     name: index
     for index, name in enumerate(
-        ("Lint", "Elaboration", "Simulation", "Synthesis", "FPGA", "Mutation", "Review", "Other")
+        (
+            "Lint",
+            "Elaboration",
+            "Simulation",
+            "Coverage",
+            "Synthesis",
+            "FPGA",
+            "Mutation",
+            "Review",
+            "Other",
+        )
     )
 }
 
@@ -220,9 +242,13 @@ def _criterion_report_path(
     *,
     worktree: Path,
     project_root: Path,
+    log_dir: Path,
+    coverage_report_resolver: CoverageReportResolver,
 ) -> str | None:
     """Resolve a trusted ticket artifact that should open from a criterion."""
-    if name != "mutation_score":
+    if name.startswith("coverage_"):
+        return _coverage_report_path(entry, log_dir, coverage_report_resolver)
+    if not (name == "mutation_score" or name.startswith("mutation_score_")):
         return None
     detail = entry.get("detail")
     artifacts = detail.get("artifacts") if isinstance(detail, Mapping) else None
@@ -236,6 +262,35 @@ def _criterion_report_path(
     except ValueError:
         return None
     return str(resolved) if resolved.is_file() else None
+
+
+def _coverage_report_path(
+    entry: Mapping[str, Any],
+    log_dir: Path,
+    coverage_report_resolver: CoverageReportResolver,
+) -> str | None:
+    detail = entry.get("detail")
+    reference = detail.get("coverage_campaign_reference") if isinstance(detail, Mapping) else None
+    if reference is None:
+        return None
+    root = (log_dir / ".runtime" / "flow-reports").absolute()
+    resolved = coverage_report_resolver(root, reference)
+    return str(resolved) if resolved is not None else None
+
+
+def _criterion_evidence(
+    presentation: CriterionPresentation,
+    value: Mapping[str, Any],
+    *,
+    freshness: str,
+) -> str:
+    parts = [presentation.detail] if presentation.detail else []
+    if freshness == "stale":
+        return " · ".join(parts) or "persisted criterion state · booley_state.json"
+    generic = _criterion_metric(value)
+    if generic != "persisted criterion state · booley_state.json" or not parts:
+        parts.append(generic)
+    return " · ".join(parts)
 
 
 def _live_criterion_freshness(
@@ -272,12 +327,18 @@ def _criterion_row(
     *,
     worktree: Path,
     project_root: Path,
+    log_dir: Path,
+    criterion_presenter: CriterionPresenter,
+    coverage_report_resolver: CoverageReportResolver,
     freshness: str,
     changed_categories: list[str],
 ) -> dict[str, Any]:
+    presentation = criterion_presenter(name, value, freshness == "stale")
     return {
         "category": _category(name),
         "criterion": name,
+        "label": presentation.label,
+        "detail": presentation.detail,
         "required": "mandatory" if value.get("mandatory", True) else "optional",
         "status": _criterion_status(
             value,
@@ -287,13 +348,15 @@ def _criterion_row(
         "outcome": _criterion_outcome(value),
         "freshness": freshness,
         "changed_categories": changed_categories,
-        "metric": _criterion_metric(value),
+        "metric": _criterion_evidence(presentation, value, freshness=freshness),
         "availability": value.get("availability", "available"),
         "report_path": _criterion_report_path(
             name,
             value,
             worktree=worktree,
             project_root=project_root,
+            log_dir=log_dir,
+            coverage_report_resolver=coverage_report_resolver,
         ),
     }
 
@@ -324,6 +387,9 @@ def _criteria(
     *,
     worktree: Path,
     project_root: Path,
+    log_dir: Path,
+    criterion_presenter: CriterionPresenter,
+    coverage_report_resolver: CoverageReportResolver,
     freshness_eligible: Callable[..., bool],
     freshness_evaluator: Callable[..., Any],
 ) -> list[dict[str, Any]]:
@@ -352,6 +418,9 @@ def _criteria(
                 value,
                 worktree=worktree,
                 project_root=project_root,
+                log_dir=log_dir,
+                criterion_presenter=criterion_presenter,
+                coverage_report_resolver=coverage_report_resolver,
                 freshness=freshness,
                 changed_categories=changed_categories,
             )
@@ -717,6 +786,7 @@ def _health(
     evidence: ResolvedReviewEvidence,
     state: Mapping[str, Any],
     scope: Mapping[str, Any],
+    criterion_presenter: CriterionPresenter,
 ) -> dict[str, Any]:
     timeline = state.get("timeline") if isinstance(state.get("timeline"), list) else []
     exit_2 = [
@@ -731,11 +801,13 @@ def _health(
         "missing_evidence": list(evidence.missing_evidence),
         "harness_paths": scope.get("harness_paths", []),
         "scope_undecidable": scope.get("decidable") is False,
-        "unverified_transitions": _unverified_transitions(state),
+        "unverified_transitions": _unverified_transitions(state, criterion_presenter),
     }
 
 
-def _unverified_transitions(state: Mapping[str, Any]) -> list[str]:
+def _unverified_transitions(
+    state: Mapping[str, Any], criterion_presenter: CriterionPresenter
+) -> list[str]:
     """Return passing fail->pass criteria whose failing leg was not observed."""
     criteria = state.get("criteria")
     if not isinstance(criteria, Mapping):
@@ -751,7 +823,7 @@ def _unverified_transitions(state: Mapping[str, Any]) -> list[str]:
             and params.get("from_state") == "fail"
             and value.get("ever_failed") is not True
         ):
-            names.append(name)
+            names.append(criterion_presenter(name, value, value.get("stale") is True).label)
     return sorted(names)
 
 
@@ -781,6 +853,8 @@ def build_review_facts(
     *,
     freshness_eligible: Callable[..., bool],
     freshness_evaluator: Callable[..., Any],
+    criterion_presenter: CriterionPresenter,
+    coverage_report_resolver: CoverageReportResolver,
     run_economics: str = "unavailable",
 ) -> dict[str, Any]:
     """Build artifacts from Ticket Board-resolved evidence and immutable heads."""
@@ -840,6 +914,9 @@ def build_review_facts(
             state,
             worktree=ctx.worktree,
             project_root=ctx.project_root,
+            log_dir=ctx.log_dir,
+            criterion_presenter=criterion_presenter,
+            coverage_report_resolver=coverage_report_resolver,
             freshness_eligible=freshness_eligible,
             freshness_evaluator=freshness_evaluator,
         ),
@@ -851,7 +928,7 @@ def build_review_facts(
         "changed_files": changes,
         "developer_report_path": str(ctx.log_dir / "REPORT.md"),
         "run_economics": run_economics,
-        "health": _health(evidence, state, scope),
+        "health": _health(evidence, state, scope, criterion_presenter),
     }
 
 
@@ -898,7 +975,7 @@ def _enforce_stale_criteria_blocker(assessment: dict[str, Any], facts: Mapping[s
         suffix = (
             f" ({', '.join(categories)})" if isinstance(categories, list) and categories else ""
         )
-        labels.append(f"{row.get('criterion', 'unknown')}{suffix}")
+        labels.append(f"{row.get('label', row.get('criterion', 'unknown'))}{suffix}")
     if not labels:
         return
     blocker = "Stale mandatory verification evidence: " + ", ".join(labels) + "."
@@ -1093,9 +1170,10 @@ def _render_criteria(lines: list[str], package: Mapping[str, Any]) -> None:
         ]
     )
     for row in package.get("criteria", []):
-        criterion = f"`{_markdown_text(row['criterion'])}`"
+        label = row.get("label", row["criterion"])
+        criterion = f"`{_markdown_text(label)}`"
         if isinstance(row.get("report_path"), str):
-            criterion = _markdown_link(row["criterion"], row["report_path"])
+            criterion = _markdown_link(label, row["report_path"])
         lines.append(
             f"| {_markdown_text(row['category'])} | {criterion} | "
             f"{_markdown_text(row['required'])} | {_markdown_text(row['status'])} | "

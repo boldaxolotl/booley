@@ -609,7 +609,8 @@ def test_blocked_request_generates_readable_unaccepted_package(blocked):
     assert briefing.status == "ready", briefing.message
     assert "unaccepted" in briefing.briefing
     assert "**approve**" not in briefing.briefing
-    assert "review_rtl_bugs_done" in briefing.briefing
+    assert "RTL bugs review" in briefing.briefing
+    assert "review_rtl_bugs_done" not in briefing.briefing
 
 
 @pytest.mark.parametrize("blocked", [{"live_freshness": True}], indirect=True)

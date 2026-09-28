@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_campaign_reference,
     publish_coverage_campaign_reference,
     resolve_coverage_campaign_reference,
+    resolve_persisted_coverage_campaign_reference,
 )
 from tests.flows.sim.coverage_campaign_test_support import (
     corrupt_v3_campaign_with_duplicate_negative_point,
@@ -118,6 +120,23 @@ def _facts_with_reference(value: CoverageCampaignReference) -> dict[str, object]
             },
             "document": json.loads(raw),
         },
+    }
+
+
+def _persisted_reference(
+    report_root: Path,
+    public_path: Path,
+    value: CoverageCampaignReference,
+) -> dict[str, object]:
+    raw = encode_coverage_campaign_reference(value)
+    nested = value.document["coverage_campaign"]
+    assert isinstance(nested, Mapping)
+    return {
+        "path_base": "reports_root",
+        "path": public_path.relative_to(report_root).as_posix(),
+        "bytes": len(raw),
+        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "nested_campaign_sha256": nested["sha256"],
     }
 
 
@@ -255,6 +274,67 @@ def test_resolver_authenticates_real_nested_campaign_at_exact_attempt_path(
     assert resolved.campaign_path == nested
     assert resolved.loaded.campaign.campaign_id == _valid_document()["campaign_id"]
     assert resolved.loaded.campaign.target.identity == _TARGET_IDENTITY
+
+
+def test_persisted_resolver_authenticates_outer_and_nested_references(tmp_path: Path) -> None:
+    report_root = tmp_path / "reports"
+    target = report_root / "sim" / "1" / "targets" / _TARGET_SELECTOR
+    nested = _nested_campaign(target)
+    value = _reference(target, nested)
+    public_path = target / "coverage.json"
+    publish_coverage_campaign_reference(public_path, value)
+
+    resolved = resolve_persisted_coverage_campaign_reference(
+        report_root,
+        _persisted_reference(report_root, public_path, value),
+    )
+
+    assert resolved.reference_path == public_path
+    assert resolved.campaign_path == nested
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("path_base", "origin_target"),
+        ("path", "../outside/coverage.json"),
+        ("bytes", True),
+        ("bytes", 1),
+        ("sha256", "sha256:" + "0" * 64),
+        ("nested_campaign_sha256", "sha256:" + "0" * 64),
+    ],
+)
+def test_persisted_resolver_rejects_wrapper_substitution(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    report_root = tmp_path / "reports"
+    target = report_root / "sim" / "1" / "targets" / _TARGET_SELECTOR
+    nested = _nested_campaign(target)
+    value = _reference(target, nested)
+    public_path = target / "coverage.json"
+    publish_coverage_campaign_reference(public_path, value)
+    persisted = _persisted_reference(report_root, public_path, value)
+    persisted[field] = replacement
+
+    with pytest.raises(CoverageCampaignReferenceError):
+        resolve_persisted_coverage_campaign_reference(report_root, persisted)
+
+
+def test_persisted_resolver_rejects_linked_public_reference(tmp_path: Path) -> None:
+    report_root = tmp_path / "reports"
+    target = report_root / "sim" / "1" / "targets" / _TARGET_SELECTOR
+    nested = _nested_campaign(target)
+    value = _reference(target, nested)
+    real_path = target / "real-coverage.json"
+    publish_coverage_campaign_reference(real_path, value)
+    public_path = target / "coverage.json"
+    public_path.symlink_to(real_path.name)
+    persisted = _persisted_reference(report_root, public_path, value)
+
+    with pytest.raises(CoverageCampaignReferenceError, match="contains a link"):
+        resolve_persisted_coverage_campaign_reference(report_root, persisted)
 
 
 def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path) -> None:

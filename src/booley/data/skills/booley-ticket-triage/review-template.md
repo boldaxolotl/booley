@@ -38,6 +38,7 @@
 | Lint | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
 | Elaboration | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
 | Simulation | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
+| Coverage | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
 | Synthesis | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
 | FPGA | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
 | Mutation | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |

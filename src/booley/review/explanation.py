@@ -198,7 +198,7 @@ def _section_cards(title: str, sections: tuple[ExplanationSection, ...]) -> str:
 def _criteria_table(package: Mapping[str, Any]) -> str:
     rows = "".join(
         "<tr>"
-        f"<td>{escape(str(row['criterion']))}</td>"
+        f"<td>{escape(str(row.get('label', row['criterion'])))}</td>"
         f"<td>{escape(str(row['outcome']))}</td>"
         f"<td>{escape(_freshness_label(row))}</td>"
         "</tr>"
