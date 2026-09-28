@@ -135,3 +135,135 @@ def test_detached_dependency_receipt_is_inventory_but_not_deletion_authority(tmp
     assert len(receipts) == 1
     assert receipts[0].authoritative is False
     assert dependency_receipt_files(copied_manifest) == {receipts[0].path.absolute()}
+
+
+def test_dependency_receipt_refuses_conflicting_existing_record(tmp_path):
+    from booley.flows.sim.campaign.dependency import register_campaign_dependency
+
+    origin, digest = _origin(tmp_path)
+    dependent = tmp_path / "reports/sim/2"
+    dependent.mkdir(parents=True)
+    receipt = register_campaign_dependency(
+        origin,
+        campaign_id=CAMPAIGN_ID,
+        manifest_sha256=digest,
+        dependent_invocation=dependent,
+    )
+    document = json.loads(receipt.read_text())
+    document["manifest_sha256"] = "sha256:" + "f" * 64
+    receipt.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="disagrees"):
+        register_campaign_dependency(
+            origin,
+            campaign_id=CAMPAIGN_ID,
+            manifest_sha256=digest,
+            dependent_invocation=dependent,
+        )
+
+
+def test_dependency_registry_refuses_non_directory_and_excessive_entries(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from booley.flows.sim.campaign.dependency import read_campaign_dependencies
+
+    origin, _digest = _origin(tmp_path)
+    registry = origin.parent / "dependency-receipts"
+    registry.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="unsafe"):
+        read_campaign_dependencies(origin)
+
+    registry.unlink()
+    registry.mkdir()
+    original = Path.iterdir
+
+    def excessive(path):
+        if path == registry:
+            return iter(registry / f"{index}.json" for index in range(1001))
+        return original(path)
+
+    monkeypatch.setattr(Path, "iterdir", excessive)
+    with pytest.raises(ValueError, match="too large"):
+        read_campaign_dependencies(origin)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("$schema", "wrong", "Malformed"),
+        ("dependent_invocation_id", 3, "Malformed"),
+        ("origin_invocation", 7, "invalid"),
+        ("origin_invocation", "relative/path", "not canonical"),
+    ],
+)
+def test_dependency_receipt_rejects_malformed_fields(tmp_path, field, value, message):
+    from booley.flows.sim.campaign.dependency import (
+        read_campaign_dependencies,
+        register_campaign_dependency,
+    )
+
+    origin, digest = _origin(tmp_path)
+    dependent = tmp_path / "reports/sim/2"
+    dependent.mkdir(parents=True)
+    receipt = register_campaign_dependency(
+        origin,
+        campaign_id=CAMPAIGN_ID,
+        manifest_sha256=digest,
+        dependent_invocation=dependent,
+    )
+    document = json.loads(receipt.read_text())
+    document[field] = value
+    receipt.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        read_campaign_dependencies(origin)
+
+
+@pytest.mark.parametrize(
+    "manifest_document",
+    [[], {"campaign_id": "fedcba98-7654-4def-8123-456789abcdef"}],
+)
+def test_dependency_receipt_reauthenticates_origin_manifest(tmp_path, manifest_document):
+    from booley.flows.sim.campaign.dependency import (
+        read_campaign_dependencies,
+        register_campaign_dependency,
+    )
+
+    origin, digest = _origin(tmp_path)
+    dependent = tmp_path / "reports/sim/2"
+    dependent.mkdir(parents=True)
+    register_campaign_dependency(
+        origin,
+        campaign_id=CAMPAIGN_ID,
+        manifest_sha256=digest,
+        dependent_invocation=dependent,
+    )
+    origin.write_text(json.dumps(manifest_document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="origin"):
+        read_campaign_dependencies(origin)
+
+
+def test_dependency_registration_requires_exact_paths(tmp_path):
+    from booley.flows.sim.campaign.dependency import register_campaign_dependency
+
+    origin, digest = _origin(tmp_path)
+    misplaced = tmp_path / "manifest.json"
+    misplaced.write_bytes(origin.read_bytes())
+    with pytest.raises(ValueError, match="exact"):
+        register_campaign_dependency(
+            misplaced,
+            campaign_id=CAMPAIGN_ID,
+            manifest_sha256=digest,
+            dependent_invocation=tmp_path / "reports/sim/2",
+        )
+
+    dependent = tmp_path / "reports/sim/zero"
+    dependent.mkdir(parents=True)
+    with pytest.raises(ValueError, match="positive numeric"):
+        register_campaign_dependency(
+            origin,
+            campaign_id=CAMPAIGN_ID,
+            manifest_sha256=digest,
+            dependent_invocation=dependent,
+        )

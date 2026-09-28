@@ -1,6 +1,7 @@
 """Retention exercised against actual canonical Campaigns and filesystem paths."""
 
 import json
+import re
 from dataclasses import replace
 
 import pytest
@@ -397,7 +398,7 @@ def test_full_pruning_detects_legacy_copied_projection_dependency(tmp_path):
         )
     )
 
-    with pytest.raises(CampaignRetentionError, match=str(projection.parents[2])):
+    with pytest.raises(CampaignRetentionError, match=re.escape(str(projection.parents[2]))):
         prune_invocation(tmp_path / "reports", 1)
 
     assert manifest.is_file()
@@ -633,3 +634,164 @@ def test_lock_sentinel_read_denial_is_an_error_without_mandatory_locks(tmp_path,
     monkeypatch.setattr(Path, "read_bytes", denied)
     with pytest.raises(PermissionError):
         campaign_retention._valid_lock_sentinel(lock)
+
+
+@pytest.mark.parametrize(
+    ("document", "message"),
+    [
+        ({"operation": "full-with-dependents", "origin": "x", "members": []}, "fields"),
+        (
+            {"$schema": "wrong", "operation": "full-with-dependents", "members": []},
+            "invalid",
+        ),
+        (
+            {
+                "$schema": "booley.simulation-prune-batch/v1",
+                "operation": "full-with-dependents",
+                "members": {},
+            },
+            "invalid",
+        ),
+        (
+            {
+                "$schema": "booley.simulation-prune-batch/v1",
+                "operation": "full-with-dependents",
+                "members": [1],
+            },
+            "member is invalid",
+        ),
+        (
+            {
+                "$schema": "booley.simulation-prune-batch/v1",
+                "operation": "full-with-dependents",
+                "members": ["relative/2"],
+            },
+            "not canonical",
+        ),
+    ],
+)
+def test_prune_batch_journal_rejects_malformed_boundaries(tmp_path, document, message):
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _read_prune_batch,
+    )
+
+    root = (tmp_path / "reports/sim/1").absolute()
+    root.mkdir(parents=True)
+    document["origin"] = str(root)
+    (root / ".prune-batch.json").write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match=message):
+        _read_prune_batch(root)
+
+
+def test_prune_batch_journal_rejects_ambiguous_and_unordered_members(tmp_path):
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _read_prune_batch,
+    )
+
+    root = (tmp_path / "reports/sim/1").absolute()
+    quarantine = root.with_name(".pruned-1")
+    root.mkdir(parents=True)
+    quarantine.mkdir()
+    document = {
+        "$schema": "booley.simulation-prune-batch/v1",
+        "operation": "full-with-dependents",
+        "origin": str(root),
+        "members": [],
+    }
+    for parent in (root, quarantine):
+        (parent / ".prune-batch.json").write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(CampaignRetentionError, match="ambiguous"):
+        _read_prune_batch(root)
+
+    (quarantine / ".prune-batch.json").unlink()
+    document["members"] = [str(root.with_name("3")), str(root.with_name("2"))]
+    (root / ".prune-batch.json").write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(CampaignRetentionError, match="membership"):
+        _read_prune_batch(root)
+
+
+def test_report_dependency_scan_tolerates_malformed_report_shapes(tmp_path):
+    from booley.flows.sim.campaign_retention import _report_references_campaign
+
+    campaign_id = "01234567-89ab-4def-8123-456789abcdef"
+    report = tmp_path / "reports/sim/2/report.json"
+    report.parent.mkdir(parents=True)
+    manifest = tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+
+    report.write_text("{}", encoding="utf-8")
+    assert not _report_references_campaign(report, manifest, campaign_id)
+    report.write_text(json.dumps({"detail": {"campaigns": {"sim_0": []}}}), encoding="utf-8")
+    assert not _report_references_campaign(report, manifest, campaign_id)
+
+
+def test_dependent_discovery_translates_invalid_receipt_registry(tmp_path):
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _dependent_invocations,
+    )
+
+    root = tmp_path / "reports/sim/1"
+    manifest = root / "targets/sim_0/campaign/manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"campaign_id": "01234567-89ab-4def-8123-456789abcdef"}),
+        encoding="utf-8",
+    )
+    (manifest.parent / "dependency-receipts").write_text("unsafe", encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match="registry is invalid"):
+        _dependent_invocations(root)
+
+
+def test_dependency_scanners_tolerate_malformed_legacy_artifacts(tmp_path):
+    from booley.flows.sim.campaign_retention import (
+        _projection_references_origin,
+        _report_references_origin,
+    )
+
+    report = tmp_path / "report.json"
+    report.write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("not json", encoding="utf-8")
+    assert not _report_references_origin(report, (manifest,))
+
+    projection = tmp_path / "simulation.json"
+    projection.write_text("not json", encoding="utf-8")
+    assert not _projection_references_origin(projection, (manifest,))
+
+
+def test_dependent_preflight_recognizes_terminal_and_journal_states(tmp_path):
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _preflight_invocation,
+    )
+
+    completed = tmp_path / "reports/sim/1"
+    completed.with_name(".pruned-1").mkdir(parents=True)
+    _preflight_invocation(completed, project_data=None)
+
+    missing = tmp_path / "reports/sim/2"
+    with pytest.raises(CampaignRetentionError, match="does not exist"):
+        _preflight_invocation(missing, project_data=None)
+
+    journaled = tmp_path / "reports/sim/3"
+    journaled.mkdir()
+    (journaled / ".prune.json").write_text(
+        json.dumps({"invocation": 3, "operation": "full"}), encoding="utf-8"
+    )
+    _preflight_invocation(journaled, project_data=None)
+
+
+def test_remaining_dependencies_reports_members_when_origin_is_missing(tmp_path):
+    from booley.flows.sim.campaign_retention import _remaining_dependencies
+
+    root = tmp_path / "reports/sim/1"
+    member = tmp_path / "reports/sim/2"
+    member.mkdir(parents=True)
+
+    assert _remaining_dependencies(root, (member,)) == (member,)
