@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +24,7 @@ from booley.flows.implementation_comparison import target_pair_plans_for_handles
 from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
+from tests.conftest import symlink_or_skip
 
 _BOOLEY_ENV_VARS = (
     "BOOLEY_CONTROL_PROJECT_ROOT",
@@ -450,6 +451,40 @@ def _fake_runtime_inspect(project, prepared):
     return SimpleNamespace(license_profile=None)
 
 
+def _init_git_project(project_root: Path) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["git", "init", str(project_root)],
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+
+
+def _stub_full_init_dependencies(
+    init_cmd: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    project_root: Path,
+) -> None:
+    for name in (
+        "_step_core_projections",
+        "_step_tickets",
+        "_step_auth",
+        "_step_git_hooks",
+        "_step_project_git_hooks",
+        "_step_worktree_prune_guard",
+        "_step_line_endings",
+        "_step_guidance_links",
+        "_step_project_inventory",
+        "_step_advisories",
+    ):
+        monkeypatch.setattr(init_cmd, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
+    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: project_root / "pdk")
+    monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", lambda *_args: None)
+
+
 class TestInitInteractive:
     """`_step_interactive` writes the untracked devcontainer spec, excludes
     Booley files, and (when docker is present) creates the long-lived objects.
@@ -673,11 +708,11 @@ class TestInitInteractive:
         assert ctx.results[-1].detail == "current"
 
     def test_check_only_writes_nothing(self, tmp_path, monkeypatch):
-        import subprocess
-
         from booley.harness import init_cmd
 
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        _init_git_project(tmp_path)
+        project_dir = init_cmd.project_dir_for_init(tmp_path)
+        project_dir.mkdir()
         monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
         monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
         ctx = init_cmd.InitContext(
@@ -692,29 +727,13 @@ class TestInitInteractive:
         self, tmp_path, monkeypatch
     ):
         import argparse
-        import subprocess
 
         from booley.harness import init_cmd
         from booley.runtime import session_issuance as runtime_spec
 
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        _init_git_project(tmp_path)
         monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-        for name in (
-            "_step_core_projections",
-            "_step_tickets",
-            "_step_auth",
-            "_step_git_hooks",
-            "_step_project_git_hooks",
-            "_step_worktree_prune_guard",
-            "_step_line_endings",
-            "_step_guidance_links",
-            "_step_project_inventory",
-            "_step_advisories",
-        ):
-            monkeypatch.setattr(init_cmd, name, lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
-        monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
-        monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", lambda *_args: None)
+        _stub_full_init_dependencies(init_cmd, monkeypatch, tmp_path)
         monkeypatch.setattr(
             runtime_spec,
             "preview",
@@ -745,13 +764,11 @@ class TestInitInteractive:
     def test_seed_check_only_fails_without_project_data(
         self, tmp_path, monkeypatch, explicit_override
     ):
-        import subprocess
-
         from booley.harness import init_cmd
         from booley.runtime import session_issuance as runtime_spec
 
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        project_dir = tmp_path / ".booley_project"
+        _init_git_project(tmp_path)
+        project_dir = init_cmd.project_dir_for_init(tmp_path)
         if explicit_override:
             monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
         else:
@@ -775,12 +792,10 @@ class TestInitInteractive:
         assert not (tmp_path / ".devcontainer").exists()
 
     def test_missing_init_owned_project_data_classification(self, tmp_path, monkeypatch):
-        import subprocess
-
         from booley.harness import init_cmd
 
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        target = tmp_path / ".booley_project"
+        _init_git_project(tmp_path)
+        target = init_cmd.project_dir_for_init(tmp_path)
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target))
 
@@ -794,11 +809,9 @@ class TestInitInteractive:
 
     @pytest.mark.parametrize("override", ["relative/project-data", "/external/project-data"])
     def test_nonlocal_project_data_is_not_init_owned(self, tmp_path, monkeypatch, override):
-        import subprocess
-
         from booley.harness import init_cmd
 
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        _init_git_project(tmp_path)
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", override)
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
 
@@ -806,30 +819,26 @@ class TestInitInteractive:
 
     @pytest.mark.parametrize("entry_kind", ["file", "symlink"])
     def test_existing_project_data_entry_is_not_missing(self, tmp_path, monkeypatch, entry_kind):
-        import subprocess
-
         from booley.harness import init_cmd
 
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        target = tmp_path / ".booley_project"
+        _init_git_project(tmp_path)
+        target = init_cmd.project_dir_for_init(tmp_path)
         if entry_kind == "file":
             target.write_text("not a directory", encoding="utf-8")
         else:
             destination = tmp_path / "project-data"
             destination.mkdir()
-            target.symlink_to(destination, target_is_directory=True)
+            symlink_or_skip(target, destination, target_is_directory=True)
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target))
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
 
         assert not init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
 
     def test_project_data_inspection_error_is_not_treated_as_missing(self, tmp_path, monkeypatch):
-        import subprocess
-
         from booley.harness import init_cmd
 
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        target = tmp_path / ".booley_project"
+        _init_git_project(tmp_path)
+        target = init_cmd.project_dir_for_init(tmp_path)
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target))
         original_lstat = Path.lstat
 
@@ -844,13 +853,11 @@ class TestInitInteractive:
         assert not init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
 
     def test_existing_project_data_preview_failure_remains_error(self, tmp_path, monkeypatch):
-        import subprocess
-
         from booley.harness import init_cmd
         from booley.runtime import session_issuance as runtime_spec
 
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        project_dir = tmp_path / ".booley_project"
+        _init_git_project(tmp_path)
+        project_dir = init_cmd.project_dir_for_init(tmp_path)
         project_dir.mkdir()
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
         monkeypatch.setattr(
