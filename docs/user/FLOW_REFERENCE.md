@@ -476,6 +476,17 @@ left untouched. Active selections also exit `2`. Retry an interrupted cleanup
 with the same exact selection. No age, size, or latest heuristic deletes evidence
 automatically.
 
+Full pruning refuses before mutation when later resume invocations depend on the
+selected origin. To remove those authenticated dependents and the origin in one
+retryable operation, add `--include-dependents`:
+
+```bash
+python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full --include-dependents
+```
+
+If pruning cannot authenticate a dependent, prune that dependent directly and
+retry the origin. Native-only pruning is unchanged.
+
 Retention distinguishes active, abandoned, and invalid evidence. If the invocation
 producer still owns its lock, wait for it to finish. If an exact resume owns a
 Campaign mutation lock, wait for the resume to finish. An authenticated pending or

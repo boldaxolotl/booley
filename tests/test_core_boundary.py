@@ -28,8 +28,10 @@ from booley.core.boundary import (
     require_int,
     require_list,
     require_opt_str,
+    require_sha256_digest,
     require_str,
     require_str_value,
+    require_uuid4,
 )
 
 NAN = float("nan")
@@ -121,6 +123,25 @@ class TestStr:
             require_str_value(1)
         with pytest.raises(BoundaryError):
             require_str_value("")
+
+    def test_require_sha256_digest_is_canonical(self):
+        digest = "sha256:" + "a" * 64
+        assert require_sha256_digest(digest) == digest
+        for invalid in ("a" * 64, "sha256:" + "A" * 64, "sha256:abc", 1):
+            with pytest.raises(BoundaryError):
+                require_sha256_digest(invalid)
+
+    def test_require_uuid4_is_lowercase_version_four(self):
+        value = "01234567-89ab-4def-8123-456789abcdef"
+        assert require_uuid4(value) == value
+        for invalid in (
+            "01234567-89ab-1def-8123-456789abcdef",
+            value.upper(),
+            "not-a-uuid",
+            1,
+        ):
+            with pytest.raises(BoundaryError):
+                require_uuid4(invalid)
 
 
 class TestRequireOptStr:

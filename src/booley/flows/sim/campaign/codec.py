@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from string import Formatter
@@ -22,7 +21,9 @@ from booley.core.boundary import (
     require_finite_number,
     require_int,
     require_list,
+    require_sha256_digest,
     require_str_value,
+    require_uuid4,
 )
 from booley.runtime.timefmt import parse_timestamp
 
@@ -309,26 +310,16 @@ def _require_nonnegative_int(value: object, field: str) -> int:
 
 def _require_digest(value: object, field: str) -> str:
     try:
-        parsed = require_str_value(value, field=field)
+        return require_sha256_digest(value, field=field)
     except BoundaryError as exc:
-        raise SimulationCampaignIntegrityError(str(exc)) from exc
-    if not _DIGEST_RE.fullmatch(parsed):
-        raise SimulationCampaignIntegrityError(f"{field} must be a sha256 digest")
-    return parsed
+        raise SimulationCampaignIntegrityError(f"{field} must be a sha256 digest") from exc
 
 
 def _require_uuid(value: object, field: str) -> str:
     try:
-        parsed_value = require_str_value(value, field=field)
+        return require_uuid4(value, field=field)
     except BoundaryError as exc:
-        raise SimulationCampaignIntegrityError(str(exc)) from exc
-    try:
-        parsed = uuid.UUID(parsed_value)
-    except ValueError as exc:
         raise SimulationCampaignIntegrityError(f"{field} must be lowercase UUIDv4") from exc
-    if parsed.version != 4 or str(parsed) != parsed_value:
-        raise SimulationCampaignIntegrityError(f"{field} must be lowercase UUIDv4")
-    return parsed_value
 
 
 def _require_variant_id(value: object) -> str:
