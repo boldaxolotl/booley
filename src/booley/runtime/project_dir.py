@@ -12,6 +12,7 @@ from booley.core.project_dir import (
     reset_cache,
     resolve_checkout_project_dir,
     resolve_project_dir,
+    resolve_project_dir_from_root,
 )
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "reset_cache",
     "resolve_checkout_project_dir",
     "resolve_project_dir",
+    "resolve_project_dir_from_root",
 ]
 
 
