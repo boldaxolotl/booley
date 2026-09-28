@@ -10,6 +10,7 @@ from booley.core.project_dir import (
     init_project_dir_scope,
     project_dir_for_init,
     reset_cache,
+    resolve_authoritative_project_dir,
     resolve_checkout_project_dir,
     resolve_project_dir,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "init_project_dir_scope",
     "project_dir_for_init",
     "reset_cache",
+    "resolve_authoritative_project_dir",
     "resolve_checkout_project_dir",
     "resolve_project_dir",
 ]

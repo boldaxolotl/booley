@@ -123,6 +123,28 @@ class TestDirectTicketOpsTio:
         tio = ops._tio(tmp_path)  # project_root differs from the env dir
         assert tio.tickets_dir == proj / "tickets"
 
+    def test_tio_ignores_unrelated_control_root(self, tmp_path: Path, monkeypatch):
+        project_dir = tmp_path / "generation" / ".booley_project"
+        (project_dir / "tickets").mkdir(parents=True)
+        monkeypatch.setenv("BOOLEY_CONTROL_PROJECT_ROOT", str(tmp_path / "control"))
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+
+        tio = DirectTicketOps()._tio(tmp_path)
+
+        assert tio.tickets_dir == project_dir / "tickets"
+
+    def test_tio_uses_matching_control_root(self, tmp_path: Path, monkeypatch):
+        control_tickets = tmp_path / ".booley_project" / "tickets"
+        control_tickets.mkdir(parents=True)
+        generation = tmp_path / "generation" / ".booley_project"
+        (generation / "tickets").mkdir(parents=True)
+        monkeypatch.setenv("BOOLEY_CONTROL_PROJECT_ROOT", str(tmp_path))
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(generation))
+
+        tio = DirectTicketOps()._tio(tmp_path)
+
+        assert tio.tickets_dir == control_tickets
+
     def test_tio_prefers_booley_project(self, tmp_path: Path, monkeypatch):
         """Without env overrides, should use .booley_project if it exists."""
         monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)

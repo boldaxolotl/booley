@@ -121,20 +121,30 @@ def detect_tickets_dir() -> Path:
 
 
 def tickets_dir_from_project_root(project_root: str | Path) -> Path:
-    """Resolve tickets directory from a project root path.
+    """Resolve the Ticket Board selected by one Project root.
 
-    Honors TICKETS_DIR env var for test isolation, then BOOLEY_PROJECT_DIR,
-    then convention (.booley_project/ sibling), then legacy fallback.
+    ``TICKETS_DIR`` is the explicit Ticket Board override. When the passed root
+    canonically matches ``BOOLEY_CONTROL_PROJECT_ROOT``, that root carries
+    control-plane authority and its Project directory wins over the generation
+    checkout in ``BOOLEY_PROJECT_DIR``. All other calls retain the ambient
+    Project-directory-first order required by the Sandbox's dual bind mounts.
     """
-    if "TICKETS_DIR" in os.environ:
-        return Path(os.environ["TICKETS_DIR"])
-    if "BOOLEY_PROJECT_DIR" in os.environ:
-        return Path(os.environ["BOOLEY_PROJECT_DIR"]) / "tickets"
-    project_root = Path(project_root)
-    sibling = project_root / ".booley_project"
+    tickets_dir = os.environ.get("TICKETS_DIR")
+    if tickets_dir:
+        return Path(tickets_dir)
+    root = Path(project_root).resolve()
+    control_root = os.environ.get("BOOLEY_CONTROL_PROJECT_ROOT")
+    if control_root and Path(control_root).resolve() == root:
+        from booley.runtime.project_dir import resolve_authoritative_project_dir
+
+        return resolve_authoritative_project_dir(root) / "tickets"
+    project_dir = os.environ.get("BOOLEY_PROJECT_DIR")
+    if project_dir:
+        return Path(project_dir) / "tickets"
+    sibling = root / ".booley_project"
     if sibling.is_dir():
         return sibling / "tickets"
-    return project_root / ".booley" / "project" / "tickets"
+    return root / ".booley" / "project" / "tickets"
 
 
 def detect_project_root() -> Path:

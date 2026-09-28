@@ -141,6 +141,15 @@ def resolve_project_dir(start: Path | None = None) -> Path:
     raise FileNotFoundError("No .booley_project/ found. Run 'booley init' to set up the project.")
 
 
+def _resolve_explicit_project_dir(root: Path) -> Path | None:
+    """Resolve a configured or co-located Project directory for one root."""
+    toml_result = _resolve_from_toml(root)
+    if toml_result is not None:
+        return toml_result
+    local = root / PROJECT_DIR_NAME
+    return local if local.is_dir() else None
+
+
 def resolve_checkout_project_dir(project_root: Path) -> Path:
     """Resolve config for one explicitly selected checkout.
 
@@ -150,13 +159,23 @@ def resolve_checkout_project_dir(project_root: Path) -> Path:
     without a local snapshot retain the normal resolution chain.
     """
     root = require_project_checkout(project_root)
-    toml_result = _resolve_from_toml(root)
-    if toml_result is not None:
-        return toml_result
-    local = root / PROJECT_DIR_NAME
-    if local.is_dir():
-        return local
+    explicit = _resolve_explicit_project_dir(root)
+    if explicit is not None:
+        return explicit
     return resolve_project_dir(root)
+
+
+def resolve_authoritative_project_dir(project_root: Path) -> Path:
+    """Resolve the Project directory owned by an authority-bearing root.
+
+    This resolver never consults ambient Project selection or the process cache.
+    Use it only when the caller's explicit root is itself the authority boundary.
+    """
+    root = require_project_checkout(project_root)
+    explicit = _resolve_explicit_project_dir(root)
+    if explicit is not None:
+        return explicit
+    return root / ".booley" / "project"
 
 
 def checkout_project_dir_relative_to(project_root: Path) -> Path:

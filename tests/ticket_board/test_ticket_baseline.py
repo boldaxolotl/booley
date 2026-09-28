@@ -337,6 +337,52 @@ def _paired_basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
 
 
+def test_reviewer_loads_running_ticket_from_paired_control_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.specialists.reviewer import _load_ticket_document
+
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    slug = "review-paired-ticket"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Review the paired Ticket",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+            body="## Description\n\nInspect the paired Project Ticket.\n",
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug) is True
+    queued = project_dir / "tickets" / "board" / "queue" / f"{slug}.md"
+    expected = tio.load_document(slug)
+    logs_dir = project_dir / "tickets" / "logs" / slug
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    runtime_ticket = logs_dir / "ticket.md"
+    runtime_ticket.write_text(queued.read_text(encoding="utf-8"), encoding="utf-8")
+    generation_project = tmp_path / "generation" / ".booley_project"
+    (generation_project / "tickets" / "board" / "queue").mkdir(parents=True)
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs_dir))
+    monkeypatch.setenv("BOOLEY_SLUG", slug)
+    monkeypatch.setenv("BOOLEY_CONTROL_PROJECT_ROOT", str(root))
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(generation_project))
+    monkeypatch.delenv("TICKETS_DIR", raising=False)
+    reset_cache()
+
+    document, source = _load_ticket_document()
+
+    assert document is not None
+    assert document.spec == expected.spec
+    assert document.spec.fields["summary"] == "Review the paired Ticket"
+    assert document.spec.body == "## Description\n\nInspect the paired Project Ticket.\n"
+    assert document.generated == expected.generated
+    assert source == str(runtime_ticket)
+
+
 def _initialized_paired_basis_project(
     tmp_path: Path,
     branch: str,
