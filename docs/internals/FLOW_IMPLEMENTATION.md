@@ -1067,11 +1067,11 @@ is unchanged, and an already `superseded` origin keeps its first `superseded_by`
 Missing, malformed, or concurrently changed origin progress prevents only that
 observational supersession; it never prevents manifest-authoritative recovery.
 
-Before Campaign mutation, the resume registers its reserved invocation in an
+Before Simulation Campaign mutation, the resume registers its reserved invocation in an
 origin-owned `dependency-receipts/` record. Registration is atomic and occurs
 under the same origin lock. A receipt is sufficient to block default pruning,
 including when resume publication later fails, but it authorizes dependent
-deletion only when the dependent report's Campaign owner and normalized
+deletion only when the dependent report's Simulation Campaign owner and normalized
 artifact path bind back to the exact origin. Manifest digest drift does not
 erase that structural dependency.
 
@@ -1107,8 +1107,10 @@ root explicitly; callers obtain project-data roots through
   `include_dependents=True`, retention locks the origin, discovers receipts and
   same-root migration reports, locks authenticated dependents in canonical-path
   order, repeats discovery, and preflights the complete deletion set before
-  mutation. Producer identities that cannot be reconciled remain a conservative
-  refusal.
+  mutation. Distinct producer invocation identities that cannot be reconciled
+  remain a conservative refusal. Historical cross-root resumes that reused the
+  origin's numeric invocation id contain no root identity and cannot be located;
+  prune that known dependent first before pruning the origin.
 
 Dependent-inclusive pruning writes an exact batch journal in the live origin,
 then removes dependents in canonical-path order and the origin last. Retry uses

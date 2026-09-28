@@ -2,6 +2,19 @@
 
 import hashlib
 import json
+import shutil
+
+import pytest
+
+CAMPAIGN_ID = "01234567-89ab-4def-8123-456789abcdef"
+
+
+def _origin(tmp_path):
+    origin = tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
+    origin.parent.mkdir(parents=True)
+    origin.write_text(json.dumps({"campaign_id": CAMPAIGN_ID}) + "\n", encoding="utf-8")
+    digest = "sha256:" + hashlib.sha256(origin.read_bytes()).hexdigest()
+    return origin, digest
 
 
 def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
@@ -10,17 +23,13 @@ def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
         register_campaign_dependency,
     )
 
-    origin = tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
-    origin.parent.mkdir(parents=True)
-    origin.write_text("{}\n", encoding="utf-8")
-    digest = "sha256:" + hashlib.sha256(origin.read_bytes()).hexdigest()
-    campaign_id = "01234567-89ab-4def-8123-456789abcdef"
+    origin, digest = _origin(tmp_path)
     dependents = (tmp_path / "reports/sim/2", tmp_path / "resumed/sim/1")
     for dependent in dependents:
         dependent.mkdir(parents=True)
         register_campaign_dependency(
             origin,
-            campaign_id=campaign_id,
+            campaign_id=CAMPAIGN_ID,
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
@@ -30,7 +39,8 @@ def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
         sorted((path.absolute() for path in dependents), key=str)
     )
     assert {item.origin_invocation for item in receipts} == {tmp_path / "reports/sim/1"}
-    assert {item.campaign_id for item in receipts} == {campaign_id}
+    assert {item.campaign_id for item in receipts} == {CAMPAIGN_ID}
+    assert all(item.authoritative for item in receipts)
     assert {item.manifest_sha256 for item in receipts} == {digest}
     for receipt in origin.parent.glob("dependency-receipts/*.json"):
         assert set(json.loads(receipt.read_text())) == {
@@ -42,3 +52,86 @@ def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
             "origin_invocation",
             "origin_target",
         }
+
+
+@pytest.mark.parametrize(
+    ("campaign_id", "digest"),
+    [
+        ("not-a-uuid", "sha256:" + "0" * 64),
+        (CAMPAIGN_ID, "sha256:not-a-digest"),
+    ],
+)
+def test_dependency_receipt_rejects_invalid_identity(tmp_path, campaign_id, digest):
+    from booley.flows.sim.campaign.dependency import register_campaign_dependency
+
+    origin, _actual = _origin(tmp_path)
+    dependent = tmp_path / "reports/sim/2"
+    dependent.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="invalid"):
+        register_campaign_dependency(
+            origin,
+            campaign_id=campaign_id,
+            manifest_sha256=digest,
+            dependent_invocation=dependent,
+        )
+
+
+def test_dependency_receipt_rejects_changed_oversized_and_linked_files(tmp_path):
+    from booley.flows.sim.campaign.dependency import (
+        DEPENDENCY_MAX_BYTES,
+        read_campaign_dependencies,
+        register_campaign_dependency,
+    )
+
+    origin, digest = _origin(tmp_path)
+    dependent = tmp_path / "reports/sim/2"
+    dependent.mkdir(parents=True)
+    receipt = register_campaign_dependency(
+        origin,
+        campaign_id=CAMPAIGN_ID,
+        manifest_sha256=digest,
+        dependent_invocation=dependent,
+    )
+    document = json.loads(receipt.read_text())
+    document["dependent_invocation_id"] = True
+    receipt.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="Malformed"):
+        read_campaign_dependencies(origin)
+
+    receipt.write_bytes(b"x" * (DEPENDENCY_MAX_BYTES + 1))
+    with pytest.raises(ValueError, match="Unsafe"):
+        read_campaign_dependencies(origin)
+
+    receipt.unlink()
+    target = tmp_path / "receipt.json"
+    target.write_text("{}", encoding="utf-8")
+    receipt.symlink_to(target)
+    with pytest.raises(ValueError, match="Unsafe"):
+        read_campaign_dependencies(origin)
+
+
+def test_detached_dependency_receipt_is_inventory_but_not_deletion_authority(tmp_path):
+    from booley.flows.sim.campaign.dependency import (
+        dependency_receipt_files,
+        read_campaign_dependencies,
+        register_campaign_dependency,
+    )
+
+    origin, digest = _origin(tmp_path)
+    dependent = tmp_path / "reports/sim/2"
+    dependent.mkdir(parents=True)
+    register_campaign_dependency(
+        origin,
+        campaign_id=CAMPAIGN_ID,
+        manifest_sha256=digest,
+        dependent_invocation=dependent,
+    )
+    copied = tmp_path / "copied/sim/1/targets/sim_0/campaign"
+    shutil.copytree(origin.parent, copied)
+    copied_manifest = copied / "manifest.json"
+
+    receipts = read_campaign_dependencies(copied_manifest)
+    assert len(receipts) == 1
+    assert receipts[0].authoritative is False
+    assert dependency_receipt_files(copied_manifest) == {receipts[0].path.absolute()}

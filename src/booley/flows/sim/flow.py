@@ -2444,12 +2444,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         observed: CampaignRecoveryStatus,
     ) -> EndpointOutcome:
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
+        if not isinstance(admission, AdmissionContext):
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text="sim: no admission context",
+                detail=_campaign_recovery_detail(observed),
+            )
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
-        preflight = self._campaign_resume_preflight(validated, observed, admission, invocation)
-        if preflight is not None:
-            return preflight
-        assert isinstance(admission, AdmissionContext)
+        dependency_error = self._prepare_campaign_resume_dependency(
+            validated, invocation, observed
+        )
+        if dependency_error is not None:
+            return dependency_error
         try:
             outcome, progress_error = self._execute_validated_resume(
                 validated, invocation, admission
@@ -2472,12 +2479,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         return result
 
-    def _campaign_resume_preflight(
+    def _prepare_campaign_resume_dependency(
         self,
         validated: ValidatedResumeManifest,
-        observed: CampaignRecoveryStatus,
-        admission: object | None,
         invocation: Path,
+        observed: CampaignRecoveryStatus,
     ) -> EndpointOutcome | None:
         from .campaign_reports import campaign_invocation_lock
 
@@ -2490,12 +2496,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign resume origin is busy: {exc}",
-                detail=_campaign_recovery_detail(observed),
-            )
-        if not isinstance(admission, AdmissionContext):
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text="sim: no admission context",
                 detail=_campaign_recovery_detail(observed),
             )
         try:

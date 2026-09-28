@@ -476,7 +476,7 @@ left untouched. Active selections also exit `2`. Retry an interrupted cleanup
 with the same exact selection. No age, size, or latest heuristic deletes evidence
 automatically.
 
-Full pruning also protects reports produced by later Campaign resumes. By
+Full pruning also protects reports produced by later Simulation Campaign resumes. By
 default, selecting an origin that still has dependent invocations exits `2`
 before mutation and names each dependent by full path and invocation number.
 Pass `--include-dependents` with `--full` to remove authenticated dependents
@@ -487,13 +487,19 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 ```
 
 Registered same-root and cross-root resumes participate in this operation.
-Older same-root resume reports are discovered directly; unlocatable legacy
-dependencies make pruning refuse rather than guess. A batch journal makes the
-exact operation retryable after interruption. Native-only pruning is unchanged
+Older same-root resume reports and copied projections are discovered directly;
+distinct unlocatable producer ids make pruning refuse rather than guess. A
+pre-receipt cross-root resume that reused the origin's numeric invocation id has
+no discoverable root identity; prune that known dependent first. A batch journal
+makes the exact operation retryable after interruption. Native-only pruning is unchanged
 because it retains the manifest, Simulation and Coverage references, and
 normalized point store used by dependent reports. Full pruning still makes any
 historical Criterion evidence that referred to the removed Coverage path
 non-reanalyzable; it does not rewrite mutable acceptance state.
+
+If a resume stopped after registering its receipt but before publishing an
+authenticating report, dependent-inclusive pruning refuses to guess. Full-prune
+that failed dependent invocation directly, then retry the origin operation.
 
 Retention distinguishes active, abandoned, and invalid evidence. If the invocation
 producer still owns its lock, wait for it to finish. If an exact resume owns a

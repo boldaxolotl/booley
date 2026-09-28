@@ -5,10 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_int,
+    require_sha256_digest,
+    require_str_value,
+    require_uuid4,
+)
 from booley.flows.sim.campaign_reports import is_report_link, write_campaign_json
 
 DEPENDENCY_SCHEMA = "booley.simulation-campaign-dependency/v1"
@@ -26,7 +33,7 @@ _FIELDS = {
 
 @dataclass(frozen=True, slots=True)
 class CampaignDependencyReceipt:
-    """One validated reverse edge from an origin Campaign to a resume invocation."""
+    """One validated reverse edge from an origin Simulation Campaign to a resume."""
 
     campaign_id: str
     manifest_sha256: str
@@ -35,6 +42,7 @@ class CampaignDependencyReceipt:
     dependent_invocation: Path
     dependent_invocation_id: int
     path: Path
+    authoritative: bool
 
 
 def register_campaign_dependency(
@@ -50,8 +58,8 @@ def register_campaign_dependency(
     origin_invocation = manifest.parents[3].absolute()
     dependent = dependent_invocation.absolute()
     dependent_id = _positive_invocation(dependent)
-    _uuid(campaign_id)
-    _digest(manifest_sha256)
+    _campaign_id(campaign_id)
+    _manifest_digest(manifest_sha256)
     key = hashlib.sha256(str(dependent).encode()).hexdigest()
     path = manifest.parent / "dependency-receipts" / f"{key}.json"
     document: dict[str, object] = {
@@ -93,22 +101,32 @@ def _decode_receipt(path: Path, manifest: Path) -> CampaignDependencyReceipt:
     document = _read_document(path)
     if set(document) != _FIELDS or document.get("$schema") != DEPENDENCY_SCHEMA:
         raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}")
-    campaign_id = document["campaign_id"]
-    manifest_sha256 = document["manifest_sha256"]
-    if not isinstance(campaign_id, str) or not isinstance(manifest_sha256, str):
-        raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}")
-    _uuid(campaign_id)
-    _digest(manifest_sha256)
+    try:
+        campaign_id = require_str_value(document["campaign_id"], field="campaign_id")
+        manifest_sha256 = require_str_value(document["manifest_sha256"], field="manifest_sha256")
+        dependent_id = require_int(
+            document["dependent_invocation_id"], field="dependent_invocation_id"
+        )
+    except BoundaryError as exc:
+        raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}") from exc
+    _campaign_id(campaign_id)
+    _manifest_digest(manifest_sha256)
     origin_invocation = _absolute_path(document["origin_invocation"], "origin invocation")
     origin_target = _absolute_path(document["origin_target"], "origin Target")
     dependent = _absolute_path(document["dependent_invocation"], "dependent invocation")
-    dependent_id = document["dependent_invocation_id"]
-    if type(dependent_id) is not int or dependent_id < 1 or dependent.name != str(dependent_id):
+    if dependent_id < 1 or dependent.name != str(dependent_id):
         raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}")
     current_target = manifest.parents[1].absolute()
     current_invocation = manifest.parents[3].absolute()
-    if origin_target != current_target or origin_invocation != current_invocation:
-        raise ValueError("Detached Campaign copy cannot authorize dependency deletion")
+    authoritative = origin_target == current_target and origin_invocation == current_invocation
+    if authoritative:
+        raw = manifest.read_bytes()
+        try:
+            manifest_document = require_dict(json.loads(raw), field="Simulation Campaign manifest")
+        except (BoundaryError, json.JSONDecodeError) as exc:
+            raise ValueError("Simulation Campaign dependency origin is invalid") from exc
+        if manifest_document.get("campaign_id") != campaign_id:
+            raise ValueError("Simulation Campaign dependency origin identity disagrees")
     return CampaignDependencyReceipt(
         campaign_id,
         manifest_sha256,
@@ -117,6 +135,7 @@ def _decode_receipt(path: Path, manifest: Path) -> CampaignDependencyReceipt:
         dependent,
         dependent_id,
         path,
+        authoritative,
     )
 
 
@@ -128,16 +147,20 @@ def _read_document(path: Path) -> dict[str, object]:
         or info.st_size > DEPENDENCY_MAX_BYTES
     ):
         raise ValueError(f"Unsafe Simulation Campaign dependency receipt: {path}")
-    document = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict):
-        raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}")
+    try:
+        document = require_dict(
+            json.loads(path.read_text(encoding="utf-8")),
+            field="Simulation Campaign dependency receipt",
+        )
+    except BoundaryError as exc:
+        raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}") from exc
     return document
 
 
 def _regular_manifest(path: Path) -> Path:
     manifest = path.absolute()
     if manifest.name != "manifest.json" or manifest.parent.name != "campaign":
-        raise ValueError("Dependency origin must be an exact Campaign manifest")
+        raise ValueError("Dependency origin must be an exact Simulation Campaign manifest")
     info = manifest.lstat()
     if is_report_link(manifest) or not stat.S_ISREG(info.st_mode):
         raise ValueError("Dependency origin manifest must be a regular file")
@@ -151,23 +174,25 @@ def _positive_invocation(path: Path) -> int:
 
 
 def _absolute_path(value: object, label: str) -> Path:
-    if not isinstance(value, str):
-        raise ValueError(f"Dependency {label} is invalid")
-    path = Path(value)
+    try:
+        parsed = require_str_value(value, field=f"dependency {label}")
+    except BoundaryError as exc:
+        raise ValueError(f"Dependency {label} is invalid") from exc
+    path = Path(parsed)
     if not path.is_absolute() or path != path.absolute() or ".." in path.parts:
         raise ValueError(f"Dependency {label} is not canonical")
     return path
 
 
-def _uuid(value: str) -> None:
-    if str(uuid.UUID(value)) != value:
-        raise ValueError("Dependency Campaign id is invalid")
-
-
-def _digest(value: str) -> None:
-    if len(value) != 71 or not value.startswith("sha256:"):
-        raise ValueError("Dependency manifest digest is invalid")
+def _campaign_id(value: object) -> str:
     try:
-        int(value[7:], 16)
-    except ValueError as exc:
+        return require_uuid4(value, field="dependency campaign_id")
+    except BoundaryError as exc:
+        raise ValueError("Dependency Simulation Campaign id is invalid") from exc
+
+
+def _manifest_digest(value: object) -> str:
+    try:
+        return require_sha256_digest(value, field="dependency manifest_sha256")
+    except BoundaryError as exc:
         raise ValueError("Dependency manifest digest is invalid") from exc

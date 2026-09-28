@@ -377,6 +377,33 @@ def test_full_pruning_rejects_unidentified_quarantine(tmp_path):
     assert (orphan / "valuable").read_text() == "unrelated"
 
 
+def test_full_pruning_detects_legacy_copied_projection_dependency(tmp_path):
+    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+
+    manifest = tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"campaign_id":"01234567-89ab-4def-8123-456789abcdef"}\n')
+    projection = tmp_path / "reports/sim/2/targets/sim_0/simulation.json"
+    projection.parent.mkdir(parents=True)
+    projection.write_text(
+        json.dumps(
+            {
+                "flow": "sim",
+                "target": "sim_0",
+                "target_identity": "acme:demo:counter:1#sim_0",
+                "complete": True,
+                "campaign_manifest": str(manifest),
+            }
+        )
+    )
+
+    with pytest.raises(CampaignRetentionError, match=str(projection.parents[2])):
+        prune_invocation(tmp_path / "reports", 1)
+
+    assert manifest.is_file()
+    assert projection.is_file()
+
+
 @pytest.mark.parametrize("defect", ["missing", "unidentified_quarantine", "changed_sidecar"])
 def test_native_pruning_does_not_adopt_unexplained_retention_state(tmp_path, defect):
     from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_native_payload

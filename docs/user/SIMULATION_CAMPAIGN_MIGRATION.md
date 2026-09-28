@@ -45,13 +45,15 @@ into an invocation that does not contain the Simulation Campaign.
 
 New resumes also publish an origin-owned reverse dependency receipt while the
 origin invocation is locked. The receipt records the canonical origin and
-dependent invocation paths and Campaign identity, allowing exact retention to
+dependent invocation paths and Simulation Campaign identity, allowing exact retention to
 find cross-report-root dependencies. It is refusal evidence only: deletion also
 requires the dependent report to authenticate back to that exact origin.
-Pre-receipt same-root reports remain discoverable from their `reports_root`
-references. An older cross-root or otherwise unlocatable resume cannot be
-guessed safely, so full pruning refuses when retained producer history cannot
-be reconciled with an authenticated dependent.
+Pre-receipt same-root reports and copied projections remain discoverable from
+their retained references. Full pruning refuses when a distinct retained
+producer identity cannot be reconciled with an authenticated dependent. A
+pre-receipt cross-root resume that reused the origin's numeric invocation id did
+not record its report root and cannot be distinguished from origin-produced
+attempts; prune that known dependent first before pruning the origin.
 
 The bounded MCP response exposes observation counts and at most 32 observation
 previews. Resolve the manifest and inspect its authenticated terminal results
