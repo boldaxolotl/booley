@@ -33,18 +33,20 @@ from booley.ticket_board.ticket_document import (
 
 
 class TestTs:
-    def test_format_hh_mm_ss(self):
+    def test_format_utc_rfc3339(self):
         from booley.harness.terminal import ts
 
         result = ts()
-        assert re.match(r"\d{2}:\d{2}:\d{2}$", result)
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", result)
 
     def test_returns_current_time(self):
         from booley.harness.terminal import ts
+        from booley.runtime.timefmt import parse_timestamp
 
-        before = datetime.now().strftime("%H:%M")
+        before = datetime.now(UTC)
         result = ts()
-        assert result.startswith(before[:4])  # at least HH:M matches
+        after = datetime.now(UTC)
+        assert before.replace(microsecond=0) <= parse_timestamp(result) <= after
 
 
 def test_doctor_parser_accepts_deep_flag():
@@ -2424,6 +2426,16 @@ class TestSetupLogging:
         )
         assert console.level == logging.INFO
 
+    @pytest.mark.parametrize("verbose", [False, True])
+    def test_handlers_use_same_utc_timestamp(self, project_root: Path, verbose: bool):
+        tlr.setup_logging(project_root, verbose=verbose)
+        record = logging.LogRecord("booley", logging.INFO, "", 0, "event", (), None)
+        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
+
+        formatted = [handler.format(record) for handler in tlr.logger.handlers]
+
+        assert all(line.startswith("2026-09-25T13:07:17Z") for line in formatted)
+
     def teardown_method(self):
         # Close file handlers to avoid ResourceWarning
         for h in tlr.logger.handlers[:]:
@@ -2441,7 +2453,7 @@ class TestTerseFormatter:
     def test_info_no_level_prefix(self):
         from booley.harness.logging_utils import TerseFormatter
 
-        fmt = TerseFormatter(datefmt="%H:%M:%S")
+        fmt = TerseFormatter()
         record = logging.LogRecord(
             "test",
             logging.INFO,
@@ -2451,14 +2463,16 @@ class TestTerseFormatter:
             (),
             None,
         )
+        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
         result = fmt.format(record)
+        assert result.startswith("2026-09-25T13:07:17Z")
         assert "hello world" in result
         assert "INFO" not in result
 
     def test_warning_includes_level(self):
         from booley.harness.logging_utils import TerseFormatter
 
-        fmt = TerseFormatter(datefmt="%H:%M:%S")
+        fmt = TerseFormatter()
         record = logging.LogRecord(
             "test",
             logging.WARNING,
@@ -2468,14 +2482,16 @@ class TestTerseFormatter:
             (),
             None,
         )
+        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
         result = fmt.format(record)
+        assert "2026-09-25T13:07:17Z" in result
         assert "WARNING" in result
         assert "bad thing" in result
 
     def test_error_includes_level(self):
         from booley.harness.logging_utils import TerseFormatter
 
-        fmt = TerseFormatter(datefmt="%H:%M:%S")
+        fmt = TerseFormatter()
         record = logging.LogRecord(
             "test",
             logging.ERROR,
@@ -2485,8 +2501,32 @@ class TestTerseFormatter:
             (),
             None,
         )
+        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
         result = fmt.format(record)
+        assert "2026-09-25T13:07:17Z" in result
         assert "ERROR" in result
+
+
+def test_dry_run_banner_uses_aware_user_local_timestamp(monkeypatch, capsys):
+    args = Namespace(count=0, dry_run=True, check_ready=False)
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+    fixed = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC)
+    with patch.object(tlr, "datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed
+
+        tlr._print_banner(args)
+
+    assert "17:07:17 · 25 SEP 2026" in capsys.readouterr().out
+
+
+def test_limit_wait_uses_aware_user_local_estimate(monkeypatch, capsys):
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+    monkeypatch.setattr(tlr.time, "time", lambda: 1_790_341_637.0)
+    monkeypatch.setattr(tlr, "interruptible_sleep", lambda _seconds: True)
+
+    assert tlr._handle_limit_wait(60) == "continue"
+
+    assert "until ~17:08 · 25 SEP 2026" in capsys.readouterr().out
 
 
 # ===========================================================================

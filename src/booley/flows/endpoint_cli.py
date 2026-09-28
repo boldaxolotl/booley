@@ -15,6 +15,7 @@ from booley.runtime.endpoint_execution import (
     ExecutionResult,
     execute_endpoint,
 )
+from booley.runtime.timefmt import UtcLogFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +148,11 @@ def main(endpoint, argv: list[str] | None = None) -> int:
 
 def cli(endpoint) -> None:
     """Entry point for ``if __name__ == '__main__'`` usage."""
+    handler = logging.StreamHandler()
+    handler.setFormatter(UtcLogFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        handlers=[handler],
     )
     sys.exit(endpoint.main())
 

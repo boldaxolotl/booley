@@ -82,7 +82,7 @@ def _setup_logging(verbose: bool) -> None:
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
     err = logging.StreamHandler(sys.stderr)
     err.setLevel(logging.WARNING)
-    err.setFormatter(TerseFormatter(datefmt="%H:%M:%S"))
+    err.setFormatter(TerseFormatter())
     root.addHandler(err)
 
     for noisy in ("claude_agent_sdk._internal", "httpx", "httpcore"):
