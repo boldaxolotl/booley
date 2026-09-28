@@ -9,6 +9,7 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import pytest
+from tests.lifecycle_lock_support import observe_lifecycle_contention
 
 from booley.eda.provisioning.licensing import flexnet_docker
 from booley.runtime import (
@@ -255,14 +256,14 @@ def _waiting_runtime_command(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
     runtime_command: str,
-    invoked: list[str],
+    events: list[str],
 ) -> Callable[[], object]:
     if runtime_command == "up":
         monkeypatch.setattr(session_runtime, "_recover_before_lifecycle", lambda *_args: None)
         monkeypatch.setattr(
             session_runtime,
             "_up_unlocked",
-            lambda *_args, **_kwargs: invoked.append("up"),
+            lambda *_args, **_kwargs: events.append("up"),
         )
 
         def run() -> object:
@@ -272,7 +273,7 @@ def _waiting_runtime_command(
     monkeypatch.setattr(
         session_refresh,
         "_refresh_unlocked",
-        lambda *_args, **_kwargs: invoked.append("refresh"),
+        lambda *_args, **_kwargs: events.append("refresh"),
     )
 
     def run() -> object:
@@ -326,9 +327,8 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     commit_entered = threading.Event()
     release_commit = threading.Event()
     grant_done = threading.Event()
-    runtime_waiting = threading.Event()
     runtime_done = threading.Event()
-    invoked: list[str] = []
+    events: list[str] = []
     errors: list[RuntimeError] = []
 
     @contextmanager
@@ -337,6 +337,7 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
             commit_entered.set()
             if not release_commit.wait(2):
                 raise RuntimeError("test grant gate timed out")
+            events.append("grant-commit")
             return "grant"
 
         yield commit
@@ -347,23 +348,15 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     grant = _start_grant_mutation(project, mutation, grant_done, errors)
     assert commit_entered.wait(2)
 
-    from booley.runtime import lifecycle_lock
-
-    real_wait = lifecycle_lock.wait_for_file_lock
-
-    def observed_wait(handle, *, timeout_s, on_wait=None) -> None:
-        runtime_waiting.set()
-        real_wait(handle, timeout_s=timeout_s, on_wait=on_wait)
-
-    monkeypatch.setattr(lifecycle_lock, "wait_for_file_lock", observed_wait)
-    operation = _waiting_runtime_command(project, monkeypatch, runtime_command, invoked)
+    runtime_waiting = observe_lifecycle_contention(monkeypatch)
+    operation = _waiting_runtime_command(project, monkeypatch, runtime_command, events)
     runtime = threading.Thread(
         target=_run_runtime_command,
         args=(operation, errors, runtime_done),
     )
     runtime.start()
     assert runtime_waiting.wait(2)
-    assert invoked == []
+    assert events == []
     assert not runtime_done.is_set()
 
     release_commit.set()
@@ -372,7 +365,7 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     assert grant_done.is_set()
     assert runtime_done.is_set()
     assert errors == []
-    assert invoked == [runtime_command]
+    assert events == ["grant-commit", runtime_command]
     assert issuance_invalidation.pending_invalidations() == ()
 
 

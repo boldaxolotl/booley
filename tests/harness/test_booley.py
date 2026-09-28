@@ -491,10 +491,6 @@ def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
     [
         (["bootstrap"], "bootstrap"),
         (["init"], "init"),
-        (["session", "up"], "session"),
-        (["doctor"], "doctor"),
-        (["auth"], "auth"),
-        (["eda", "grant", "revoke", "/project", "--kind", "vivado"], "eda"),
     ],
 )
 def test_main_renders_lifecycle_timeout_once_without_traceback(
@@ -527,6 +523,58 @@ def test_main_renders_lifecycle_timeout_once_without_traceback(
     assert captured.out == ""
     assert captured.err == f"ERROR: {failure}\n"
     assert "Traceback" not in captured.err
+
+
+def _configure_indirect_lifecycle_timeout(command, monkeypatch, failure) -> None:
+    if command == "doctor":
+        from booley.harness import doctor
+        from booley.runtime import session_runtime
+
+        def exercise_runtime(*_args, **_kwargs):
+            runtime = doctor._DoctorFlowRuntime(Path("/project"), "docker")
+            runtime.command(["true"])
+
+        monkeypatch.setattr(doctor, "run_doctor_result", exercise_runtime)
+        monkeypatch.setattr(session_runtime, "up", MagicMock(side_effect=failure))
+    elif command == "auth":
+        from booley.harness import auth_cmd
+
+        monkeypatch.setattr(auth_cmd, "_acquire", MagicMock(side_effect=failure))
+    else:
+        from booley.runtime import issuance_invalidation
+
+        monkeypatch.setattr(
+            issuance_invalidation,
+            "coordinate_mutation",
+            MagicMock(side_effect=failure),
+        )
+
+
+@pytest.mark.parametrize(
+    ("argv", "command"),
+    [
+        (["doctor"], "doctor"),
+        (["auth", "--app", "claude"], "auth"),
+        (["eda", "grant", "revoke", "/project", "--kind", "vivado"], "eda"),
+    ],
+)
+def test_indirect_lifecycle_timeout_reaches_main(argv, command, tmp_path, monkeypatch, capsys):
+    from booley.runtime.lifecycle_lock import LifecycleLockError
+
+    failure = LifecycleLockError("host Docker lifecycle timed out after waiting 120s")
+    args = tlr._build_parser().parse_args(argv)
+    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
+    monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
+    monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
+    _configure_indirect_lifecycle_timeout(command, monkeypatch, failure)
+
+    assert tlr.main() == 2
+    captured = capsys.readouterr()
+    assert captured.err.splitlines().count(f"ERROR: {failure}") == 1
+    assert "Traceback" not in captured.out + captured.err
 
 
 def test_projects_dispatch_precedes_active_project_discovery(monkeypatch):

@@ -8,7 +8,6 @@ rather than a hand-written dict.
 from __future__ import annotations
 
 import json
-import multiprocessing
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -24,19 +23,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime import session_spec
-from booley.runtime.file_lock import acquire_file_lock, release_file_lock
-
-
-def _hold_lifecycle_lock(path_text, ready, release) -> None:
-    path = Path(path_text)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        acquire_file_lock(handle)
-        handle.write("pid=41 operation=other lifecycle command\n")
-        handle.flush()
-        ready.set()
-        release.wait(5)
-        release_file_lock(handle)
+from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
 
 @pytest.fixture(autouse=True)
@@ -64,26 +51,9 @@ def test_session_up_waits_for_lifecycle_lock(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from booley.runtime import lifecycle_lock
-
     lock_path = tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
-    context = multiprocessing.get_context("spawn")
-    ready = context.Event()
-    release = context.Event()
-    holder = context.Process(
-        target=_hold_lifecycle_lock,
-        args=(str(lock_path), ready, release),
-    )
-    holder.start()
-    waiting = threading.Event()
+    waiting = observe_lifecycle_contention(monkeypatch)
     invoked: list[str] = []
-    real_wait = lifecycle_lock.wait_for_file_lock
-
-    def observed_wait(handle, *, timeout_s, on_wait=None) -> None:
-        waiting.set()
-        real_wait(handle, timeout_s=timeout_s, on_wait=on_wait)
-
-    monkeypatch.setattr(lifecycle_lock, "wait_for_file_lock", observed_wait)
     monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_args: None)
     monkeypatch.setattr(
         sr,
@@ -91,20 +61,15 @@ def test_session_up_waits_for_lifecycle_lock(
         lambda *_args, **_kwargs: invoked.append("up") or "sandbox",
     )
 
-    try:
-        assert ready.wait(5)
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            result = executor.submit(sr.up, workspace)
-            assert waiting.wait(2)
-            assert not result.done()
-            release.set()
-            assert result.result(timeout=5) == "sandbox"
-    finally:
-        release.set()
-        holder.join(5)
-        if holder.is_alive():
-            holder.terminate()
-            holder.join(5)
+    with (
+        held_lifecycle_lock(lock_path) as holder,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        result = executor.submit(sr.up, workspace)
+        assert waiting.wait(2)
+        assert not result.done()
+        holder.release()
+        assert result.result(timeout=5) == "sandbox"
 
     assert invoked == ["up"]
     assert "host Docker lifecycle is busy" in caplog.text

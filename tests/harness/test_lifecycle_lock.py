@@ -2,32 +2,14 @@
 
 from __future__ import annotations
 
-import multiprocessing
 import os
-import threading
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import pytest
 
 from booley.runtime import lifecycle_lock
 from booley.runtime.file_lock import LockContentionError, LockTimeoutError
-
-
-def _hold_lock(path_text, ready, release) -> None:
-    from booley.runtime.file_lock import acquire_file_lock, release_file_lock
-
-    path = Path(path_text)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        acquire_file_lock(handle)
-        handle.seek(0)
-        handle.truncate()
-        handle.write("pid=41 operation=booley init\n")
-        handle.flush()
-        ready.set()
-        release.wait(5)
-        release_file_lock(handle)
+from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
 
 def test_host_lifecycle_lock_records_owner(tmp_path, monkeypatch) -> None:
@@ -43,37 +25,21 @@ def test_host_lifecycle_lock_records_owner(tmp_path, monkeypatch) -> None:
 def test_host_lifecycle_lock_waits_for_current_owner(tmp_path, monkeypatch, caplog) -> None:
     monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path)
     lock_path = tmp_path / "locks" / "docker-lifecycle.lock"
-    context = multiprocessing.get_context("spawn")
-    ready = context.Event()
-    release = context.Event()
-    holder = context.Process(target=_hold_lock, args=(str(lock_path), ready, release))
-    holder.start()
-    waiting = threading.Event()
-    real_wait = lifecycle_lock.wait_for_file_lock
-
-    def observed_wait(handle, *, timeout_s, on_wait=None) -> None:
-        waiting.set()
-        real_wait(handle, timeout_s=timeout_s, on_wait=on_wait)
+    waiting = observe_lifecycle_contention(monkeypatch)
 
     def acquire() -> None:
         with lifecycle_lock.host_lifecycle_lock("session up"):
             pass
 
-    monkeypatch.setattr(lifecycle_lock, "wait_for_file_lock", observed_wait)
-    try:
-        assert ready.wait(5)
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            acquired = executor.submit(acquire)
-            assert waiting.wait(2)
-            assert not acquired.done()
-            release.set()
-            acquired.result(timeout=5)
-    finally:
-        release.set()
-        holder.join(5)
-        if holder.is_alive():
-            holder.terminate()
-            holder.join(5)
+    with (
+        held_lifecycle_lock(lock_path, "pid=41 operation=booley init") as holder,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        acquired = executor.submit(acquire)
+        assert waiting.wait(2)
+        assert not acquired.done()
+        holder.release()
+        acquired.result(timeout=5)
 
     assert "pid=41 operation=booley init" in caplog.text
     assert f"waiting up to {lifecycle_lock.DEFAULT_WAIT_TIMEOUT_SECONDS:g}s" in caplog.text
