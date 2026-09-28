@@ -9,7 +9,11 @@ from functools import partial
 from pathlib import Path
 from urllib.parse import quote
 
-from booley.criteria.freshness import VerificationFreshness, evaluate_verification_freshness
+from booley.criteria.freshness import (
+    VerificationFreshness,
+    evaluate_verification_freshness,
+    verification_freshness_eligible,
+)
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.review import triage_package as tp
@@ -110,6 +114,7 @@ def _facts(ctx: Context, *, run_economics: str = "unavailable") -> dict:
     return tp.build_review_facts(
         ctx,
         evidence,
+        freshness_eligible=verification_freshness_eligible,
         freshness_evaluator=partial(
             evaluate_verification_freshness,
             fingerprint_provider=compute_source_fingerprint,
@@ -140,6 +145,7 @@ def test_review_facts_consume_frozen_board_evidence(tmp_path: Path) -> None:
     facts = tp.build_review_facts(
         ctx,
         evidence,
+        freshness_eligible=verification_freshness_eligible,
         freshness_evaluator=partial(
             evaluate_verification_freshness,
             fingerprint_provider=compute_source_fingerprint,
@@ -199,6 +205,7 @@ def test_review_facts_project_live_staleness_without_mutating_evidence(
     facts = tp.build_review_facts(
         ctx,
         evidence,
+        freshness_eligible=verification_freshness_eligible,
         freshness_evaluator=partial(
             evaluate_verification_freshness,
             fingerprint_provider=compute_source_fingerprint,
@@ -233,6 +240,7 @@ def test_live_staleness_preserves_locked_submitted_report(tmp_path: Path) -> Non
     facts = tp.build_review_facts(
         ctx,
         evidence,
+        freshness_eligible=verification_freshness_eligible,
         freshness_evaluator=lambda *_args, **_kwargs: VerificationFreshness(
             True,
             ("tb",),

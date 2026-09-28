@@ -13,7 +13,6 @@ from typing import Any, Protocol
 from urllib.parse import quote
 
 from booley.core.boundary import BoundaryError, require_dict, require_str
-from booley.criteria.freshness import verification_freshness_eligible
 from booley.review.artifact import ReviewArtifactError, ReviewPackage
 from booley.review.explanation import StructuredExplanation
 
@@ -244,12 +243,13 @@ def _live_criterion_freshness(
     value: Mapping[str, Any],
     *,
     worktree: Path,
+    freshness_eligible: Callable[..., bool],
     freshness_evaluator: Callable[..., Any],
     fingerprints: dict[str | None, dict],
 ) -> tuple[str, list[str], bool]:
     freshness = _criterion_freshness(value)
     changed_categories = _persisted_changed_categories(value)
-    if not verification_freshness_eligible(
+    if not freshness_eligible(
         name,
         value,
         include_unobserved_review=False,
@@ -324,6 +324,7 @@ def _criteria(
     *,
     worktree: Path,
     project_root: Path,
+    freshness_eligible: Callable[..., bool],
     freshness_evaluator: Callable[..., Any],
 ) -> list[dict[str, Any]]:
     raw = state.get("criteria")
@@ -339,6 +340,7 @@ def _criteria(
             name,
             value,
             worktree=worktree,
+            freshness_eligible=freshness_eligible,
             freshness_evaluator=freshness_evaluator,
             fingerprints=fingerprints,
         )
@@ -777,6 +779,7 @@ def build_review_facts(
     ctx: TriageContext,
     evidence: ResolvedReviewEvidence,
     *,
+    freshness_eligible: Callable[..., bool],
     freshness_evaluator: Callable[..., Any],
     run_economics: str = "unavailable",
 ) -> dict[str, Any]:
@@ -837,6 +840,7 @@ def build_review_facts(
             state,
             worktree=ctx.worktree,
             project_root=ctx.project_root,
+            freshness_eligible=freshness_eligible,
             freshness_evaluator=freshness_evaluator,
         ),
         "review_dispositions": collect_review_dispositions(state.get("criteria", {})),

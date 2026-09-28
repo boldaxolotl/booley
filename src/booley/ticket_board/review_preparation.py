@@ -153,6 +153,7 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
         ctx,
         evidence,
         run_economics=_usage_summary(ctx),
+        freshness_eligible=verification_freshness_eligible,
         freshness_evaluator=partial(
             evaluate_verification_freshness,
             fingerprint_provider=compute_source_fingerprint,
