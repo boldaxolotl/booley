@@ -80,6 +80,33 @@ def test_block_ticket_without_questions(mock_block, sample_ctx):
     )
     # No questions file should be created
     assert not (sample_ctx.logs_dir / "questions.md").exists()
+    assert "### Secondary context" not in (sample_ctx.logs_dir / "blocked.md").read_text(
+        encoding="utf-8"
+    )
+
+
+@patch("booley.harness.blocking.ticket_cli.block")
+def test_block_ticket_records_secondary_context_without_changing_board_reason(
+    mock_block, sample_ctx
+):
+    block_ticket(
+        sample_ctx,
+        reason="Need a protocol decision.",
+        step="developer",
+        run_index=2,
+        secondary_context=["1 uncommitted file(s) preserved: M rtl/dut.sv"],
+    )
+
+    mock_block.assert_called_once_with(
+        sample_ctx.project_root,
+        sample_ctx.slug,
+        reason="Need a protocol decision.",
+        step="developer",
+    )
+    content = (sample_ctx.logs_dir / "blocked.md").read_text(encoding="utf-8")
+    assert "**Reason:** Need a protocol decision." in content
+    assert "### Secondary context" in content
+    assert "1 uncommitted file(s) preserved: M rtl/dut.sv" in content
 
 
 @patch("booley.harness.blocking.ticket_cli.block")
