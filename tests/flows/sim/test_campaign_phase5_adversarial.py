@@ -18,6 +18,7 @@ from booley.flows.sim.campaign.codec import (
 )
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
+    CampaignPublicationError,
     NewCampaignRunRequest,
     ResumeCampaignRunRequest,
     SimulationCampaign,
@@ -524,9 +525,11 @@ def test_coverage_campaign_rejects_score_bearing_invalid_v3_nested_result(
     _retain_v3_before_reference(monkeypatch, invalid_scores=True)
 
     with pytest.raises(
-        SimulationCampaignIntegrityError, match="nested Coverage Campaign cannot be authenticated"
-    ):
+        CampaignPublicationError, match="nested Coverage Campaign cannot be authenticated"
+    ) as caught:
         _run_coverage_campaign(tmp_path, NativeExecution())
+
+    assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
 
 
 def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_time(

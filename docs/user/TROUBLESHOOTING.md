@@ -626,8 +626,10 @@ the Campaign-bound evidence tool.
   Target's `error` and `collection` status, correct the failure, and rerun.
 - Legacy Criteria (`coverage_toggle`, `coverage_fsm`, `coverage_value`,
   `coverage_branch`, `coverage_expression`, `coverage_mean`) are rejected.
-  Replace them with the `coverage` record in CONFIG.md; no silent translation
-  or waveform scoring remains.
+  Replace them with an uppercase, Target-keyed `COVERAGE` record such as
+  `COVERAGE: {sim_core: {tests: all, metrics: {toggle: {min_pct: 50}}}}`;
+  replace `all` with an exact registered suite when needed. Choose only a
+  supported native metric; no silent translation or waveform scoring remains.
 - Missing `sim_<target>.json`: flat Simulation projections were removed. Follow
   the exact numbered report pointer. Missing `coverage_report.json` or mutable
   `coverage_waivers.json` is expected; use a canonical Campaign and the configured
