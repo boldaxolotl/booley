@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from booley.core.models import AgentResult
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.ticket_board import review_preparation as rp
 from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
@@ -598,6 +600,75 @@ def test_source_fingerprint_changes_when_run_evidence_changes(tmp_path: Path, mo
     report.write_text("second\n", encoding="utf-8")
 
     assert rp._source_fingerprint(ctx) != before
+
+
+def test_source_fingerprint_tracks_repeated_edits_with_same_porcelain_status(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    _create_git_snapshot(
+        worktree,
+        {
+            "rtl/dut.sv": "module dut; endmodule\n",
+            "tb/tb.sv": "module tb; endmodule\n",
+            "design.core": (
+                "CAPI=2:\nname: ::design:0\nfilesets:\n"
+                "  rtl: {files: [rtl/dut.sv]}\n"
+                "  tb: {files: [tb/tb.sv], tags: [tb]}\n"
+                "targets:\n  sim: {filesets: [rtl, tb], toplevel: tb}\n"
+            ),
+        },
+    )
+    ctx = replace(_ctx(tmp_path), worktree=worktree)
+    ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state_path.parent.mkdir(parents=True)
+    stamp = compute_source_fingerprint(worktree, target="sim")
+    state_path.write_text(
+        json.dumps(
+            {
+                "criteria": {
+                    "sim_pass_sim": {
+                        "mandatory": True,
+                        "met": True,
+                        "detail": {
+                            SOURCE_FINGERPRINT_DETAIL_KEY: {
+                                "categories": ["rtl", "tb"],
+                                "target": "sim",
+                                "fingerprint": stamp,
+                            }
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    tb = worktree / "tb" / "tb.sv"
+    tb.write_text("module tb; // first\nendmodule\n", encoding="utf-8")
+    first = rp._source_fingerprint(ctx)
+    tb.write_text("module tb; // second\nendmodule\n", encoding="utf-8")
+
+    assert _git(worktree, "status", "--short") == "M tb/tb.sv"
+    assert rp._source_fingerprint(ctx) != first
+
+
+def test_report_disabled_package_rejects_inputs_changed_while_building_facts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ctx = _ctx(tmp_path)
+    ctx.runtime_dir.mkdir(parents=True)
+    monkeypatch.setattr(rp, "_build_review_facts", lambda _ctx: {})
+    monkeypatch.setattr(rp, "_source_fingerprint", lambda _ctx: "changed")
+
+    with pytest.raises(rp.ReviewPrepConcurrentChangeError, match="facts were built"):
+        rp._prepare_report_disabled_package(
+            ctx,
+            "prompt",
+            "original",
+            0.0,
+        )
 
 
 def test_source_fingerprint_ignores_human_logs_written_by_review_prep(tmp_path: Path, monkeypatch):

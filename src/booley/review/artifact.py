@@ -217,6 +217,7 @@ class CriterionRow:
     outcome: str
     freshness: str
     metric: str
+    changed_categories: tuple[str, ...] = ()
     availability: str = "available"
 
     @classmethod
@@ -225,14 +226,18 @@ class CriterionRow:
         required_value = row.get("required")
         if required_value not in {"mandatory", "optional"}:
             raise ReviewArtifactError("criterion required must be mandatory or optional")
+        changed_categories = _strings(row.get("changed_categories", []), "changed_categories")
+        if any(not item for item in changed_categories):
+            raise ReviewArtifactError("changed_categories must contain nonblank strings")
         return cls(
-            require_str(row, "category"),
-            require_str(row, "criterion"),
-            required_value == "mandatory",
-            _enum(row, "outcome", CRITERION_OUTCOMES),
-            _enum(row, "freshness", CRITERION_FRESHNESS),
-            require_str(row, "metric"),
-            _enum(
+            category=require_str(row, "category"),
+            criterion=require_str(row, "criterion"),
+            required=required_value == "mandatory",
+            outcome=_enum(row, "outcome", CRITERION_OUTCOMES),
+            freshness=_enum(row, "freshness", CRITERION_FRESHNESS),
+            metric=require_str(row, "metric"),
+            changed_categories=tuple(sorted(set(changed_categories))),
+            availability=_enum(
                 {"availability": row.get("availability", "available")},
                 "availability",
                 {"available", "unavailable"},
@@ -240,7 +245,10 @@ class CriterionRow:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        status = "STALE" if self.freshness == "stale" else self.outcome.replace("_", " ")
+        status = self.outcome.replace("_", " ")
+        if self.freshness == "stale":
+            suffix = f" ({', '.join(self.changed_categories)})" if self.changed_categories else ""
+            status = f"STALE{suffix}"
         if self.availability == "unavailable":
             status = "unavailable (no observation)"
         return {
@@ -249,6 +257,7 @@ class CriterionRow:
             "required": "mandatory" if self.required else "optional",
             "outcome": self.outcome,
             "freshness": self.freshness,
+            "changed_categories": list(self.changed_categories),
             "status": status,
             "metric": self.metric,
             "availability": self.availability,
