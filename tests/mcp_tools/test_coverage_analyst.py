@@ -1,6 +1,8 @@
 """Exact-path Coverage Analyst wrapper with real Campaign/source files."""
 
 import copy
+import gzip
+import hashlib
 import json
 from pathlib import Path
 
@@ -51,6 +53,43 @@ def persist_campaign(root: Path):
     return path
 
 
+def corrupt_v3_campaign_with_duplicate_negative_point(
+    campaign_path: Path, *, run_id: str = "run:reset"
+) -> None:
+    manifest = json.loads(campaign_path.read_text(encoding="utf-8"))
+    points_path = campaign_path.parent / manifest["point_store"]["path"]
+    records = [json.loads(line) for line in gzip.decompress(points_path.read_bytes()).splitlines()]
+    duplicate = copy.deepcopy(records[-1])
+    duplicate["hits_by_run"] = {run_id: -1}
+    records.append(duplicate)
+    raw = b"".join(
+        json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        + b"\n"
+        for record in records
+    )
+    compressed = gzip.compress(raw, mtime=0)
+    points_path.write_bytes(compressed)
+    manifest["point_store"].update(
+        sha256="sha256:" + hashlib.sha256(compressed).hexdigest(),
+        bytes=len(compressed),
+        uncompressed_bytes=len(raw),
+        point_count=2,
+    )
+    rollup_values = {
+        "total_points": 2,
+        "eligible_points": 2,
+        "covered_points": 1,
+        "waived_points": 0,
+        "percent": 50.0,
+    }
+    manifest["rollups"][0].update(rollup_values)
+    manifest["source_rollups"][0]["rollups"][0].update(rollup_values)
+    campaign_path.write_text(
+        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 class Model:
     def __init__(self):
         self.calls = []
@@ -60,6 +99,49 @@ class Model:
         return AgentResult(
             structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
         )
+
+
+def test_cli_reports_invalid_v3_findings_before_calling_model(tmp_path: Path) -> None:
+    path = persist_campaign(tmp_path)
+    corrupt_v3_campaign_with_duplicate_negative_point(path)
+    model = Model()
+
+    outcome = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert outcome.exit_code == 2
+    assert model.calls == []
+    assert "COV_POINT_ID_DUPLICATE at /points/1/id" in outcome.outcome.report_text
+    assert (
+        "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset"
+        in outcome.outcome.report_text
+    )
+    assert outcome.outcome.detail == {}
+
+
+def test_cli_invalid_v3_report_is_bounded_and_control_safe(tmp_path: Path) -> None:
+    path = persist_campaign(tmp_path)
+    run_id = "run:bad\n\t\x1b[31m" + "x" * 2_000
+    corrupt_v3_campaign_with_duplicate_negative_point(path, run_id=run_id)
+    model = Model()
+
+    outcome = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert outcome.exit_code == 2
+    assert model.calls == []
+    report_text = outcome.outcome.report_text
+    assert len(report_text) <= 1_100
+    assert "\\n" in report_text
+    assert "\\t" in report_text
+    assert "\\u001b" in report_text
+    assert "..." in report_text
+    assert "\n" not in report_text
+    assert "\r" not in report_text
+    assert "\t" not in report_text
+    assert "\x1b" not in report_text
 
 
 def _successful_claude_query(options_seen):

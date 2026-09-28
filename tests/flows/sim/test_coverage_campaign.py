@@ -7,7 +7,9 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from booley.flows.sim.coverage_campaign import (
+    _VALIDATION_MESSAGE_MAX_CHARS,
     CoverageCampaignValidationError,
+    CoverageFinding,
     DurableTargetIdentity,
     decode_coverage_campaign,
     encode_coverage_campaign,
@@ -360,8 +362,37 @@ def test_decoder_aggregates_semantic_findings_with_stable_json_pointers() -> Non
         ("COV_POINT_ID_INCOMPLETE", "/points/0/id"),
         ("COV_POINT_RUN_UNKNOWN", "/points/0/hits_by_run/run:ghost"),
         ("COV_POINT_HIT_NONPOSITIVE", "/points/0/hits_by_run/run:ghost"),
-        ("COV_ROLLUP_MISMATCH", "/rollups"),
+        ("COV_ROLLUP_MISMATCH", "/rollups/0/percent"),
     ]
+    message = str(caught.value)
+    assert "COV_SCHEMA_VERSION_UNSUPPORTED at /$schema" in message
+    assert "COV_TARGET_MISMATCH at /target/identity" in message
+    assert "COV_DECLARED_TEST_DUPLICATE at /tests/declared/1" in message
+    assert "COV_SELECTED_TEST_UNDECLARED" not in message
+    assert message.endswith("+9 more")
+
+
+def test_invalid_campaign_message_is_bounded_and_control_safe() -> None:
+    pointer = "/points/0/hits_by_run/run:bad\n\t\x1b[31m" + "x" * 2_000
+    finding = CoverageFinding(
+        severity="error",
+        code="COV_POINT_RUN_UNKNOWN",
+        pointer=pointer,
+        message="Unknown run id.\r" + "y" * 2_000,
+    )
+
+    error = CoverageCampaignValidationError((finding,))
+
+    assert len(str(error)) <= _VALIDATION_MESSAGE_MAX_CHARS
+    assert "\\n" in str(error)
+    assert "\\t" in str(error)
+    assert "\\u001b" in str(error)
+    assert "..." in str(error)
+    assert "\n" not in str(error)
+    assert "\r" not in str(error)
+    assert "\t" not in str(error)
+    assert "\x1b" not in str(error)
+    assert error.findings[0].pointer == pointer
 
 
 def test_decoder_rejects_duplicate_most_specific_point_identity() -> None:
@@ -377,6 +408,72 @@ def test_decoder_rejects_duplicate_most_specific_point_identity() -> None:
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
         ("COV_POINT_ID_DUPLICATE", "/points/1/id")
+    ]
+
+
+def test_invalid_campaign_message_names_all_point_defects_in_stable_order() -> None:
+    document = _valid_document()
+    duplicate = copy.deepcopy(document["points"][0])
+    duplicate["hits_by_run"] = {"run:reset": -1}
+    document["points"].append(duplicate)
+    document["rollups"][0].update(
+        {
+            "total_points": 2,
+            "eligible_points": 2,
+            "covered_points": 1,
+            "waived_points": 0,
+            "percent": 50.0,
+        }
+    )
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    error = caught.value
+    duplicate_text = "COV_POINT_ID_DUPLICATE at /points/1/id"
+    hit_text = "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset"
+    assert duplicate_text in str(error)
+    assert hit_text in str(error)
+    assert str(error).index(duplicate_text) < str(error).index(hit_text)
+    assert [(finding.code, finding.pointer) for finding in error.findings] == [
+        ("COV_POINT_ID_DUPLICATE", "/points/1/id"),
+        ("COV_POINT_HIT_NONPOSITIVE", "/points/1/hits_by_run/run:reset"),
+    ]
+
+
+def test_rollup_mismatch_names_first_differing_field_and_metric() -> None:
+    document = _valid_document()
+    document["rollups"][0]["percent"] = 99.0
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_ROLLUP_MISMATCH", "/rollups/0/percent")
+    ]
+    assert "metric line" in caught.value.findings[0].message
+    assert "COV_ROLLUP_MISMATCH at /rollups/0/percent" in str(caught.value)
+    assert "metric line" in str(caught.value)
+
+
+def test_rollup_inventory_mismatch_keeps_aggregate_pointer() -> None:
+    document = _valid_document()
+    document["rollups"].append(copy.deepcopy(document["rollups"][0]))
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_ROLLUP_MISMATCH", "/rollups")
     ]
 
 

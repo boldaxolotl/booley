@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -12,6 +14,7 @@ from booley.flows.sim import coverage_reference
 from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
 from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.coverage_campaign import (
+    CoverageCampaignValidationError,
     DurableTargetIdentity,
     decode_coverage_campaign,
 )
@@ -62,6 +65,41 @@ def _reference(origin_target: Path, nested: Path) -> CoverageCampaignReference:
         simulation_attempt_id=_SIMULATION_ATTEMPT_ID,
         origin_target_directory=origin_target,
         coverage_campaign_path=nested,
+    )
+
+
+def _corrupt_nested_campaign_with_duplicate_negative_point(campaign_path: Path) -> None:
+    manifest = json.loads(campaign_path.read_text(encoding="utf-8"))
+    points_path = campaign_path.parent / manifest["point_store"]["path"]
+    records = [json.loads(line) for line in gzip.decompress(points_path.read_bytes()).splitlines()]
+    duplicate = copy.deepcopy(records[-1])
+    duplicate["hits_by_run"] = {"run:reset": -1}
+    records.append(duplicate)
+    raw = b"".join(
+        json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        + b"\n"
+        for record in records
+    )
+    compressed = gzip.compress(raw, mtime=0)
+    points_path.write_bytes(compressed)
+    manifest["point_store"].update(
+        sha256="sha256:" + hashlib.sha256(compressed).hexdigest(),
+        bytes=len(compressed),
+        uncompressed_bytes=len(raw),
+        point_count=2,
+    )
+    rollup_values = {
+        "total_points": 2,
+        "eligible_points": 2,
+        "covered_points": 1,
+        "waived_points": 0,
+        "percent": 50.0,
+    }
+    manifest["rollups"][0].update(rollup_values)
+    manifest["source_rollups"][0]["rollups"][0].update(rollup_values)
+    campaign_path.write_text(
+        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -251,6 +289,33 @@ def test_resolver_authenticates_real_nested_campaign_at_exact_attempt_path(
     assert resolved.campaign_path == nested
     assert resolved.loaded.campaign.campaign_id == _valid_document()["campaign_id"]
     assert resolved.loaded.campaign.target.identity == _TARGET_IDENTITY
+
+
+def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path) -> None:
+    target = tmp_path / "targets" / _TARGET_SELECTOR
+    nested = _nested_campaign(target)
+    reference = _reference(target, nested)
+    _corrupt_nested_campaign_with_duplicate_negative_point(nested)
+    nested_bytes = nested.read_bytes()
+    reference = decode_coverage_campaign_reference(
+        _rewrite_reference(reference, ("coverage_campaign", "bytes"), len(nested_bytes))
+    )
+    reference = decode_coverage_campaign_reference(
+        _rewrite_reference(
+            reference,
+            ("coverage_campaign", "sha256"),
+            "sha256:" + hashlib.sha256(nested_bytes).hexdigest(),
+        )
+    )
+    path = target / "coverage.json"
+    publish_coverage_campaign_reference(path, reference)
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        resolve_coverage_campaign_reference(path)
+
+    message = str(caught.value)
+    assert "COV_POINT_ID_DUPLICATE at /points/1/id" in message
+    assert "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset" in message
 
 
 def test_resolver_decodes_authenticated_reference_bytes_during_path_swap(
