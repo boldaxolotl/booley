@@ -414,6 +414,53 @@ def test_infrastructure_failure_preserves_completed_simulation_truth(tmp_path, f
     assert campaign.evaluation["status"] == "not_requested"
     simulation = json.loads(outcome.simulation_path.read_text())
     assert [run["verdict"] for run in simulation["tests"]] == expected
+    assert simulation["passed"] is (failure_at == "merge")
+    assert simulation["simulation"] == ("pass" if failure_at == "merge" else "inconclusive")
+
+
+def test_merge_failure_keeps_simulation_truth_when_later_publication_fails(tmp_path):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class MergeUnavailable(NativeExecution):
+        def command(self, request):
+            return SimulationCommandResult(1, stderr="merge executable unavailable")
+
+    def checkpoint(boundary):
+        if boundary == "after:coverage_campaign":
+            raise OSError("injected post-merge publication failure")
+
+    outcome = run_coverage_target(
+        plan,
+        MergeUnavailable(),
+        Progress(),
+        publication_checkpoint=checkpoint,
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.detail["passed"] is True
+    assert outcome.detail["simulation"] == "pass"
+    assert outcome.detail["collection"] == "infrastructure_error"
+    assert outcome.detail["evaluation"] == "not_requested"
+    assert outcome.detail["error"] == "injected post-merge publication failure"
+
+
+def test_build_infrastructure_failure_does_not_invent_a_simulation_verdict(tmp_path):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class Unavailable(NativeExecution):
+        def build(self, request):
+            return SimulationBuildResult(False, "builder unavailable", infrastructure_error=True)
+
+    outcome = run_coverage_target(plan, Unavailable(), Progress())
+
+    assert outcome.exit_code == 2
+    assert outcome.detail["passed"] is None
+    assert outcome.detail["simulation"] == "not_run"
+    assert outcome.detail["collection"] == "infrastructure_error"
 
 
 def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp_path):
@@ -433,7 +480,8 @@ def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp
     outcome = run_coverage_target(plan, execution, Progress())
     assert outcome.exit_code == 2
     assert outcome.abort_remaining is True
-    assert outcome.detail["simulation"] == "inconclusive"
+    assert outcome.detail["simulation"] == "not_run"
+    assert outcome.detail["passed"] is None
     assert outcome.campaign_path.is_file()
 
 
@@ -537,8 +585,13 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     assert outcome.simulation_path.exists() == (
         boundary not in {"point_store", "campaign", "simulation"}
     )
-    assert outcome.detail["evaluation"] == "fail"
+    expected_evaluation = "blocked" if boundary in {"point_store", "campaign"} else "fail"
+    assert outcome.detail["evaluation"] == expected_evaluation
     assert outcome.detail["simulation"] == "fail"
+    assert outcome.detail["passed"] is False
+    assert outcome.detail["collection"] == (
+        "infrastructure_error" if boundary in {"point_store", "campaign"} else "complete"
+    )
 
 
 def test_target_transaction_never_resumes_existing_native_state(tmp_path):

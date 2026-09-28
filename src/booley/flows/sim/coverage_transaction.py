@@ -141,8 +141,32 @@ def run_coverage_target(
     """Publish Campaign, Simulation, acceptance and state, then checkpoint progress."""
     assert plan.invocation_dir is not None and plan.collection_request is not None
     root = embedded_root or target_report_directory(plan.invocation_dir, plan.handle.selector)
+    outcome = _execute_coverage_transaction(
+        plan,
+        execution,
+        root,
+        embedded=embedded_root is not None,
+        publication_checkpoint=publication_checkpoint,
+    )
+    return _checkpoint_progress(progress, outcome)
+
+
+def _execute_coverage_transaction(
+    plan: CoverageTargetPlan,
+    execution: SimulationExecutionPort,
+    root: Path,
+    *,
+    embedded: bool,
+    publication_checkpoint: Callable[[str], None] | None,
+) -> CoverageTargetOutcome:
     result = None
     campaign = None
+    campaign_published = False
+
+    def record_campaign_publication() -> None:
+        nonlocal campaign_published
+        campaign_published = True
+
     try:
         validate_coverage_sources(plan)
         _start_target(root)
@@ -154,11 +178,20 @@ def run_coverage_target(
             result,
             root,
             campaign,
-            embedded=embedded_root is not None,
+            embedded=embedded,
             publication_checkpoint=publication_checkpoint,
+            campaign_published=record_campaign_publication,
         )
     except (OSError, ValueError, AcceptanceRecordingError) as exc:
-        outcome = _transaction_error(plan, root, result, exc, campaign)
+        return _transaction_error(
+            plan, root, result, exc, campaign, campaign_published=campaign_published
+        )
+    return outcome
+
+
+def _checkpoint_progress(
+    progress: CoverageProgressSink, outcome: CoverageTargetOutcome
+) -> CoverageTargetOutcome:
     try:
         progress.completed(outcome)
     except OSError as exc:
@@ -194,13 +227,16 @@ def _publish(
     *,
     embedded: bool,
     publication_checkpoint: Callable[[str], None] | None,
+    campaign_published: Callable[[], None],
 ) -> CoverageTargetOutcome:
     campaign_path, simulation_path = root / "coverage.json", root / "simulation.json"
     checkpoint = publication_checkpoint or (lambda _boundary: None)
     checkpoint("before:coverage_campaign")
     publish_coverage_campaign(root, campaign)
+    campaign_published()
     checkpoint("after:coverage_campaign")
-    passed = bool(result.runs) and all(run.simulation_verdict == "pass" for run in result.runs)
+    observed = _has_completed_run(result)
+    passed = all(run.simulation_verdict == "pass" for run in result.runs) if observed else None
     detail = _simulation_projection(plan, campaign, result, passed)
     if not embedded:
         write_campaign_json(simulation_path, detail)
@@ -246,7 +282,9 @@ def _evaluate(plan: CoverageTargetPlan, campaign: CoverageCampaign) -> CoverageC
     return evaluate_coverage_campaign(campaign, plan.criterion, waivers)
 
 
-def _transaction_error(plan, root, result, exc, campaign) -> CoverageTargetOutcome:
+def _transaction_error(
+    plan, root, result, exc, campaign, *, campaign_published: bool
+) -> CoverageTargetOutcome:
     detail = {
         "target": plan.handle.selector,
         "passed": None,
@@ -256,22 +294,23 @@ def _transaction_error(plan, root, result, exc, campaign) -> CoverageTargetOutco
         "error": str(exc),
         "abort_remaining": True,
     }
-    if campaign is not None:
-        detail["evaluation"] = campaign.evaluation["status"]
     if isinstance(exc, CoverageCampaignValidationError):
         detail["findings"] = [
             {"code": f.code, "pointer": f.pointer, "message": f.message} for f in exc.findings
         ]
     if result is not None:
+        observed = _has_completed_run(result)
         detail.update(
-            passed=all(run.simulation_verdict == "pass" for run in result.runs),
-            tests=[
-                {"test": run.test, "simulation_verdict": run.simulation_verdict}
-                for run in result.runs
-            ],
-            collection=result.status,
-            simulation=_simulation_status(result),
+            passed=(
+                all(run.simulation_verdict == "pass" for run in result.runs) if observed else None
+            ),
+            tests=[_coverage_test_projection(run) for run in result.runs],
+            simulation=_simulation_status(result) if observed else "not_run",
         )
+        if campaign_published and campaign is not None and not result.infrastructure_error:
+            if campaign.collection["status"] != "collector_error":
+                detail["collection"] = campaign.collection["status"]
+            detail["evaluation"] = campaign.evaluation["status"]
     return CoverageTargetOutcome(
         plan.handle.selector,
         2,
@@ -280,6 +319,10 @@ def _transaction_error(plan, root, result, exc, campaign) -> CoverageTargetOutco
         freeze_coverage_mapping(detail),
         True,
     )
+
+
+def _has_completed_run(result: CoverageCollectionResult) -> bool:
+    return any(run.attributes.get("execution") != "not_completed" for run in result.runs)
 
 
 def _collection_metadata(result: CoverageCollectionResult) -> Mapping[str, FrozenJson]:
@@ -315,7 +358,7 @@ def _simulation_projection(
     plan: CoverageTargetPlan,
     campaign: CoverageCampaign,
     result: CoverageCollectionResult,
-    passed: bool,
+    passed: bool | None,
 ) -> dict[str, object]:
     tests = [_coverage_test_projection(run) for run in result.runs]
     document: dict[str, object] = {
@@ -328,10 +371,14 @@ def _simulation_projection(
         "tb_top": plan.collection_request.target.toplevel if plan.collection_request else "",
         "eda_tool": "verilator",
         "passed": passed,
-        "simulation": _simulation_status(result),
+        "simulation": _simulation_status(result) if passed is not None else "not_run",
         "abort_remaining": result.infrastructure_error,
         "tests": tests,
-        "collection": campaign.collection["status"],
+        "collection": (
+            "infrastructure_error"
+            if result.infrastructure_error
+            else campaign.collection["status"]
+        ),
         "evaluation": campaign.evaluation["status"],
         "coverage_campaign": "coverage.json",
     }

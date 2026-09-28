@@ -140,14 +140,24 @@ from .campaign import (
     validate_resume_manifest,
 )
 from .campaign.codec import MANIFEST_MAX_BYTES
-from .campaign.coverage_execution import CoverageAggregateExecutor, _CoverageAggregateError
+from .campaign.coordinator import CampaignPublicationError
+from .campaign.coverage_execution import (
+    CoverageAggregateExecutor,
+    _CoverageAggregateError,
+    project_coverage_failure,
+)
 from .campaign.flow_planning import (
     plan_coarse_simulation_campaign,
     plan_ordinary_hdl_campaign,
 )
+from .campaign.model import simulation_status_from_observations
 from .campaign.planning import manifest_digest
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
-from .coverage_reference import MAX_REFERENCE_BYTES, resolve_coverage_campaign_reference
+from .coverage_reference import (
+    MAX_REFERENCE_BYTES,
+    authenticate_coverage_campaign_owner,
+    resolve_coverage_campaign_reference,
+)
 from .execution import (
     DefaultSelection,
     NamedTests,
@@ -751,36 +761,178 @@ def _coverage_compatibility_targets(
         public = outcome.manifest_path.parents[1] / "coverage.json"
         selector = str(outcome.target["selector"])
         campaign = resolved[selector]
-        reference = _report_artifact_reference(
-            public,
-            report_invocation=report_invocation,
-            external_origin_target=public.parent,
-            kind="coverage_campaign_reference",
-            owner=str(outcome.acceptance_facts.document["campaign_id"]),
-            maximum=MAX_REFERENCE_BYTES,
-        )
-        targets[selector] = {
+        target = {
             "target": selector,
-            "passed": outcome.aggregate_grade == "pass",
-            "simulation": _campaign_simulation_status(outcome),
+            "passed": _campaign_passed(outcome),
+            "simulation": simulation_status_from_observations(outcome.observations),
             "collection": campaign.collection["status"],
             "evaluation": campaign.evaluation["status"],
             "abort_remaining": False,
-            "coverage_campaign": reference,
         }
+        reference = _coverage_reference_artifact(
+            public,
+            report_invocation,
+            str(outcome.acceptance_facts.document["campaign_id"]),
+        )
+        if reference is not None:
+            target["coverage_campaign"] = reference
+        targets[selector] = target
     return targets
 
 
-def _campaign_simulation_status(outcome: CampaignOutcome) -> str:
-    executions = {str(item["execution"]) for item in outcome.observations}
-    functional = {str(item["functional"]) for item in outcome.observations}
-    for state in ("crash", "timeout"):
-        if state in executions:
-            return state
-    for verdict in ("fail", "inconclusive", "pass"):
-        if verdict in functional:
-            return verdict
-    return "not_run"
+def _campaign_passed(outcome: CampaignOutcome) -> bool | None:
+    status = simulation_status_from_observations(outcome.observations)
+    return None if status == "not_run" else outcome.aggregate_grade == "pass"
+
+
+def _failed_campaign_outcome_projection(
+    outcome: CampaignOutcome,
+    report_invocation: Path | None,
+    fallback_evaluation: str,
+) -> dict[str, object]:
+    """Preserve Simulation truth and expose coverage truth only when authenticated."""
+    selector = str(outcome.target["selector"])
+    detail: dict[str, object] = {
+        "target": selector,
+        "passed": _campaign_passed(outcome),
+        "simulation": simulation_status_from_observations(outcome.observations),
+        "collection": "infrastructure_error",
+        "evaluation": fallback_evaluation,
+        "abort_remaining": True,
+    }
+    if outcome.coverage_reference is None:
+        return detail
+    public = outcome.manifest_path.parents[1] / "coverage.json"
+    try:
+        resolved = resolve_coverage_campaign_reference(public)
+        authenticate_coverage_campaign_owner(resolved)
+    except (OSError, ValueError):
+        return detail
+    if resolved.reference.document != outcome.coverage_reference:
+        return detail
+    campaign = resolved.loaded.campaign
+    detail.update(
+        collection=campaign.collection["status"],
+        evaluation=campaign.evaluation["status"],
+    )
+    _attach_failure_reference(
+        detail,
+        public,
+        report_invocation,
+        str(outcome.acceptance_facts.document["campaign_id"]),
+    )
+    return detail
+
+
+def _coverage_reference_artifact(
+    public: Path, report_invocation: Path | None, owner: str
+) -> dict[str, object] | None:
+    return _report_artifact_reference(
+        public,
+        report_invocation=report_invocation,
+        external_origin_target=public.parent,
+        kind="coverage_campaign_reference",
+        owner=owner,
+        maximum=MAX_REFERENCE_BYTES,
+    )
+
+
+def _attach_failure_reference(
+    detail: dict[str, object],
+    public: Path,
+    report_invocation: Path | None,
+    owner: str,
+) -> None:
+    try:
+        reference = _coverage_reference_artifact(public, report_invocation, owner)
+    except (OSError, ValueError):
+        return
+    if reference is not None:
+        detail["coverage_campaign"] = reference
+
+
+def _coverage_failed_target(
+    failed: str,
+    error: Exception,
+    evaluation: str,
+    recovered: tuple[dict[str, object], bool] | None,
+    retained: dict[str, object] | None,
+) -> dict[str, object]:
+    if isinstance(error, _CoverageAggregateError):
+        detail = {str(key): _structured_json(value) for key, value in error.detail.items()}
+    elif recovered is not None:
+        detail = recovered[0]
+    elif retained is not None:
+        detail = retained
+    else:
+        detail = {
+            "target": failed,
+            "passed": None,
+            "simulation": "not_run",
+            "collection": "infrastructure_error",
+            "evaluation": evaluation,
+        }
+    detail.update(error=str(error), abort_remaining=True)
+    return detail
+
+
+def _unmatched_coverage_failure(
+    outcomes: Sequence[CampaignOutcome], targets: Mapping[str, object], error: Exception
+) -> EndpointOutcome:
+    return EndpointOutcome(
+        exit_code=EXIT_ERROR,
+        detail={
+            "coverage": True,
+            "campaigns": _campaign_structured_details(outcomes),
+            "targets": dict(targets),
+        },
+        report_text=(
+            "Simulation Campaign coverage execution failed: cannot match failed "
+            f"Target to the prepared Coverage plan ({error})"
+        ),
+    )
+
+
+def _coverage_failure_outcome(
+    outcomes: Sequence[CampaignOutcome],
+    targets: Mapping[str, object],
+    pending: list[str],
+    error: Exception,
+    report_invocation: Path | None,
+) -> EndpointOutcome:
+    return EndpointOutcome(
+        exit_code=EXIT_ERROR,
+        detail={
+            "coverage": True,
+            "campaigns": _campaign_structured_details(outcomes, report_invocation),
+            "targets": dict(targets),
+            "pending_targets": pending,
+        },
+        report_text=f"Simulation Campaign coverage execution failed: {error}",
+    )
+
+
+def _coverage_failure_evidence(
+    error: Exception,
+    failed_outcome: CampaignOutcome | None,
+    report_invocation: Path | None,
+    evaluation: str,
+) -> tuple[tuple[dict[str, object], bool] | None, dict[str, object] | None]:
+    recovered = (
+        project_coverage_failure(error.context)
+        if isinstance(error, CampaignPublicationError)
+        else None
+    )
+    retained = (
+        _failed_campaign_outcome_projection(
+            failed_outcome,
+            report_invocation,
+            evaluation,
+        )
+        if failed_outcome is not None
+        else None
+    )
+    return recovered, retained
 
 
 def _coverage_campaign_exit_code(
@@ -2294,27 +2446,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
-        from .campaign_reports import campaign_invocation_lock
-
-        # reserve_invocation_dir already holds this invocation's producer lock;
-        # also own the resumed origin so pruning cannot remove it mid-resume.
-        origin_invocation = validated.path.parents[3]
-        try:
-            self.context.publication_resources.enter_context(
-                campaign_invocation_lock(origin_invocation)
-            )
-        except (OSError, ValueError) as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Campaign resume origin is busy: {exc}",
-                detail=_campaign_recovery_detail(observed),
-            )
-        if not isinstance(admission, AdmissionContext):
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text="sim: no admission context",
-                detail=_campaign_recovery_detail(observed),
-            )
+        preflight = self._campaign_resume_preflight(validated, observed, admission)
+        if preflight is not None:
+            return preflight
+        assert isinstance(admission, AdmissionContext)
         try:
             outcome, progress_error = self._execute_validated_resume(
                 validated, invocation, admission
@@ -2325,14 +2460,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 _fresh_campaign_recovery_detail(validated, observed),
             )
         except (OSError, ValueError, RuntimeError) as exc:
-            detail = _fresh_campaign_recovery_detail(validated, observed)
-            if isinstance(exc, ProgressPublicationError):
-                detail["progress_error"] = str(exc)
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Campaign resume failed: {exc}",
-                detail=detail,
-            )
+            return self._campaign_resume_failure(validated, observed, invocation, exc)
         result = self._campaign_endpoint_outcome([outcome])
         result.detail.update(_campaign_recovery_detail(outcome.recovery))
         if progress_error is not None:
@@ -2343,6 +2471,68 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 path=invocation / "progress.json",
             )
         return result
+
+    def _campaign_resume_preflight(
+        self,
+        validated: ValidatedResumeManifest,
+        observed: CampaignRecoveryStatus,
+        admission: object | None,
+    ) -> EndpointOutcome | None:
+        from .campaign_reports import campaign_invocation_lock
+
+        # The destination lock is already held; also retain the resumed origin.
+        try:
+            self.context.publication_resources.enter_context(
+                campaign_invocation_lock(validated.path.parents[3])
+            )
+        except (OSError, ValueError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign resume origin is busy: {exc}",
+                detail=_campaign_recovery_detail(observed),
+            )
+        if isinstance(admission, AdmissionContext):
+            return None
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            report_text="sim: no admission context",
+            detail=_campaign_recovery_detail(observed),
+        )
+
+    def _campaign_resume_failure(
+        self,
+        validated: ValidatedResumeManifest,
+        observed: CampaignRecoveryStatus,
+        invocation: Path,
+        error: Exception,
+    ) -> EndpointOutcome:
+        detail = _fresh_campaign_recovery_detail(validated, observed)
+        if isinstance(error, ProgressPublicationError):
+            detail["progress_error"] = str(error)
+        target = None
+        selector = None
+        if isinstance(error, _CoverageAggregateError):
+            target = {str(key): _structured_json(value) for key, value in error.detail.items()}
+            selector = str(target["target"])
+        elif isinstance(error, CampaignPublicationError):
+            recovered = project_coverage_failure(error.context)
+            if recovered is not None:
+                target, selector = recovered[0], error.context.target_selector
+                if recovered[1]:
+                    _attach_failure_reference(
+                        target,
+                        error.context.target_root / "coverage.json",
+                        invocation,
+                        error.context.campaign_id,
+                    )
+        if target is not None and selector is not None:
+            target["error"] = str(error)
+            detail["targets"] = {selector: target}
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            report_text=f"Simulation Campaign resume failed: {error}",
+            detail=detail,
+        )
 
     def _execute_validated_resume(
         self,
@@ -2771,7 +2961,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 _retain_coverage_campaign(progress, outcome)
             except (OSError, ValueError) as exc:
                 return self._coverage_campaign_failure(
-                    outcomes[:-1], requests, index, request, exc
+                    outcomes[:-1], requests, index, request, exc, failed_outcome=outcome
                 )
             try:
                 progress.checkpoint()
@@ -2796,6 +2986,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         index: int,
         request: NewCampaignRunRequest,
         error: Exception,
+        *,
+        failed_outcome: CampaignOutcome | None = None,
     ) -> EndpointOutcome:
         """Report a fatal aggregate without inventing a terminal Simulation result."""
         self.context._simulation_campaign_outcomes = tuple(outcomes)
@@ -2806,39 +2998,29 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         failed = _coverage_request_selector(request)
         evaluation = self._coverage_failure_evaluation(request, error)
         if evaluation is None:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                detail={
-                    "coverage": True,
-                    "campaigns": _campaign_structured_details(outcomes),
-                    "targets": targets,
-                },
-                report_text=(
-                    "Simulation Campaign coverage execution failed: cannot match failed "
-                    f"Target to the prepared Coverage plan ({error})"
-                ),
+            return _unmatched_coverage_failure(outcomes, targets, error)
+        recovered, retained = _coverage_failure_evidence(
+            error,
+            failed_outcome,
+            self.context._reserved_invocation_dir,
+            evaluation,
+        )
+        failed_target = _coverage_failed_target(failed, error, evaluation, recovered, retained)
+        targets[failed] = failed_target
+        if recovered is not None and recovered[1] and isinstance(error, CampaignPublicationError):
+            _attach_failure_reference(
+                failed_target,
+                error.context.target_root / "coverage.json",
+                self.context._reserved_invocation_dir,
+                error.context.campaign_id,
             )
-        targets[failed] = {
-            "target": failed,
-            "passed": None,
-            "simulation": "not_run",
-            "collection": "infrastructure_error",
-            "evaluation": evaluation,
-            "error": str(error),
-            "abort_remaining": True,
-        }
         pending = [failed, *[_coverage_request_selector(item) for item in requests[index + 1 :]]]
-        return EndpointOutcome(
-            exit_code=EXIT_ERROR,
-            detail={
-                "coverage": True,
-                "campaigns": _campaign_structured_details(
-                    outcomes, self.context._reserved_invocation_dir
-                ),
-                "targets": targets,
-                "pending_targets": pending,
-            },
-            report_text=f"Simulation Campaign coverage execution failed: {error}",
+        return _coverage_failure_outcome(
+            outcomes,
+            targets,
+            pending,
+            error,
+            self.context._reserved_invocation_dir,
         )
 
     def _coverage_failure_evaluation(
@@ -2846,7 +3028,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> str | None:
         """Preserve nested evaluation or derive policy before an outcome exists."""
         if isinstance(error, _CoverageAggregateError):
-            return error.evaluation_status
+            return cast(str, error.detail["evaluation"])
         target = _coverage_request_target(request)
         identity = f"{target['vlnv']}#{target['name']}"
         matches = [

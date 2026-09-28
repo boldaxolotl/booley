@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
@@ -11,7 +12,13 @@ from typing import cast
 
 from booley.flows.sim.campaign.bundle import authenticate_executable_snapshot
 from booley.flows.sim.campaign_durability import durable_directory
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity
+from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
+from booley.flows.sim.coverage_reference import (
+    authenticate_coverage_campaign_owner,
+    resolve_coverage_campaign_reference,
+)
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import (
     SimulationInfrastructureFailure,
@@ -34,13 +41,14 @@ from booley.flows.sim.verilator_coverage import (
 )
 
 from .codec import SimulationCampaignIntegrityError, encode_executable_snapshot
-from .coordinator import SerialWorkExecutor, WorkExecutionRequest
+from .coordinator import CampaignFailureContext, SerialWorkExecutor, WorkExecutionRequest
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
     ExecutableSnapshot,
     SimulationResult,
     SimulatorBundle,
+    simulation_status_from_observations,
 )
 from .run_directory import RunDirectory, claimed_run_directory
 from .serial_execution import (
@@ -65,11 +73,47 @@ class _NoProgress:
 
 
 class _CoverageAggregateError(SimulationCampaignIntegrityError):
-    """A nested Coverage Campaign failed with a validated evaluation status."""
+    """A nested Coverage Campaign failed with validated Target facts."""
 
-    def __init__(self, message: str, evaluation_status: str) -> None:
+    def __init__(self, message: str, detail: Mapping[str, object]) -> None:
         super().__init__(message)
-        self.evaluation_status = evaluation_status
+        self.detail = _validated_failure_detail(detail)
+
+    @property
+    def evaluation_status(self) -> str:
+        return cast(str, self.detail["evaluation"])
+
+
+def _validated_failure_detail(detail: Mapping[str, object]) -> Mapping[str, object]:
+    simulation = detail.get("simulation")
+    collection = detail.get("collection")
+    evaluation = detail.get("evaluation")
+    if simulation not in {"pass", "fail", "timeout", "crash", "inconclusive", "not_run"}:
+        if simulation == "elab_error":
+            simulation = "fail"
+        else:
+            raise SimulationCampaignIntegrityError(
+                "native coverage collection returned an invalid simulation status"
+            )
+    if collection == "collector_error":
+        collection = "infrastructure_error"
+    if collection not in {"complete", "partial", "incompatible", "infrastructure_error"}:
+        raise SimulationCampaignIntegrityError(
+            "native coverage collection returned an invalid collection status"
+        )
+    if evaluation not in {"pass", "fail", "blocked", "not_requested"}:
+        raise SimulationCampaignIntegrityError(
+            "native coverage collection returned an invalid evaluation status"
+        )
+    validated = {
+        **detail,
+        "simulation": simulation,
+        "collection": collection,
+        "evaluation": evaluation,
+        "abort_remaining": True,
+    }
+    validated.pop("coverage_campaign", None)
+    return validated
 
 
 @dataclass(slots=True)
@@ -129,14 +173,9 @@ def _raise_if_coverage_aborted(
     message = outcome.detail.get("error")
     if message is None and build_result is not None:
         message = build_result.output
-    status = outcome.detail.get("evaluation")
-    if status not in {"pass", "fail", "blocked", "not_requested"}:
-        raise SimulationCampaignIntegrityError(
-            "native coverage collection returned an invalid evaluation status"
-        )
     raise _CoverageAggregateError(
         str(message or "native coverage collection failed"),
-        cast(str, status),
+        outcome.detail,
     )
 
 
@@ -500,4 +539,109 @@ def _coverage_evidence(
     return references
 
 
-__all__ = ["CoverageAggregateExecutor"]
+def project_coverage_failure(
+    context: CampaignFailureContext,
+) -> tuple[dict[str, object], bool] | None:
+    """Recover compact Target facts from one exact authenticated failed attempt."""
+    try:
+        detail = _failure_projection(context)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return detail, _safe_reference_matches_context(context)
+
+
+def _failure_projection(context: CampaignFailureContext) -> dict[str, object]:
+    document = context.result.document
+    if not _result_matches_context(document, context):
+        raise ValueError("Simulation result does not match failure context")
+    campaign_path = _failure_campaign_path(context)
+    raw = campaign_path.read_bytes()
+    if not _nested_evidence_matches(document, context, raw):
+        raise ValueError("nested Coverage Campaign evidence is invalid")
+    campaign = load_coverage_campaign(
+        campaign_path, DurableTargetIdentity(context.target_identity)
+    ).campaign
+    observations = cast(tuple[Mapping[str, object], ...], document["observations"])
+    simulation = simulation_status_from_observations(observations)
+    return {
+        "target": context.target_selector,
+        "passed": None if simulation == "not_run" else simulation == "pass",
+        "simulation": simulation,
+        "collection": campaign.collection["status"],
+        "evaluation": campaign.evaluation["status"],
+        "tests": [_failure_test(item) for item in observations],
+        "abort_remaining": True,
+    }
+
+
+def _result_matches_context(
+    document: Mapping[str, object], context: CampaignFailureContext
+) -> bool:
+    return (
+        document["campaign_id"] == context.campaign_id
+        and document["work_item_id"] == context.work_item_id
+        and document["attempt_id"] == context.attempt_id
+        and document["attempt_ordinal"] == context.attempt_ordinal
+        and document["producer_invocation_id"] == context.producer_invocation_id
+    )
+
+
+def _failure_campaign_path(context: CampaignFailureContext) -> Path:
+    _, work_ordinal, work_digest = context.work_item_id.split(":")
+    return (
+        context.target_root
+        / "campaign"
+        / "work-items"
+        / f"{int(work_ordinal) + 1:04d}-{work_digest}"
+        / "attempts"
+        / f"{context.attempt_ordinal:04d}-{context.attempt_id}"
+        / "coverage-campaign"
+        / "coverage.json"
+    )
+
+
+def _nested_evidence_matches(
+    document: Mapping[str, object], context: CampaignFailureContext, raw: bytes
+) -> bool:
+    evidence = cast(tuple[Mapping[str, object], ...], document["evidence"])
+    nested = [item for item in evidence if item["kind"] == "coverage_campaign_manifest"]
+    return (
+        len(nested) == 1
+        and nested[0]["path"] == "coverage-campaign/coverage.json"
+        and nested[0]["bytes"] == len(raw)
+        and nested[0]["sha256"] == "sha256:" + hashlib.sha256(raw).hexdigest()
+        and nested[0]["owner"] == context.attempt_id
+    )
+
+
+def _failure_test(item: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "name": item["test"],
+        "verdict": item["functional"],
+        "passed": item["functional"] == "pass",
+    }
+
+
+def _safe_reference_matches_context(context: CampaignFailureContext) -> bool:
+    try:
+        return _reference_matches_context(context)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def _reference_matches_context(context: CampaignFailureContext) -> bool:
+    if context.coverage_reference is None:
+        return False
+    resolved = resolve_coverage_campaign_reference(context.target_root / "coverage.json")
+    authenticate_coverage_campaign_owner(resolved)
+    document = resolved.reference.document
+    return (
+        document == context.coverage_reference.document
+        and document["simulation_campaign_id"] == context.campaign_id
+        and document["simulation_work_item_id"] == context.work_item_id
+        and document["simulation_attempt_id"] == context.attempt_id
+        and document["producer_invocation_id"] == context.producer_invocation_id
+    )
+
+
+__all__ = ["CoverageAggregateExecutor", "project_coverage_failure"]
