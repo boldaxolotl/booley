@@ -13,6 +13,7 @@ from types import MappingProxyType
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
+from booley.core.differences import format_differences
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _PARTICIPANT_FIELDS = {
@@ -475,7 +476,13 @@ def validate_journal(
     if require_str(journal, "ticket") != slug:
         raise BoundaryError(f"acceptance journal does not belong to Ticket {slug!r}")
     if journal.get("participants") != participants:
-        raise BoundaryError("recorded repository participants changed after acceptance began")
+        raise BoundaryError(
+            "recorded repository participants changed after acceptance began: "
+            + format_differences(
+                {"participants": participants},
+                {"participants": journal.get("participants")},
+            )
+        )
     if set(journal) != _JOURNAL_FIELDS:
         raise BoundaryError("acceptance journal has invalid fields")
     if journal.get("schema") != 5:

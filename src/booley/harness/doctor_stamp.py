@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.core.differences import format_differences
 from booley.harness.doctor_waivers import WAIVER_FILENAME
 from booley.runtime import runtime_context
 from booley.runtime.devcontainer import devcontainer_path
@@ -177,10 +178,19 @@ def check_stamp_advisory(
     if version_message := _version_drift_message(stamp):
         return StampAdvisory(version_message, requires_action=True)
 
-    if stamp.get("fingerprint") != compute_fingerprint(project_dir, project_root):
+    recorded_fingerprint = stamp.get("fingerprint")
+    current_fingerprint = compute_fingerprint(project_dir, project_root)
+    if recorded_fingerprint != current_fingerprint:
+        if isinstance(recorded_fingerprint, dict):
+            differences = format_differences(recorded_fingerprint, current_fingerprint)
+        else:
+            differences = format_differences(
+                {"recorded_fingerprint": recorded_fingerprint},
+                {"recorded_fingerprint": current_fingerprint},
+            )
         return StampAdvisory(
             f"Doctor config or devcontainer.json changed since the last clean "
-            f"`booley doctor` run ({passed_on}) -- re-run `booley doctor`"
+            f"`booley doctor` run ({passed_on}; {differences}) -- re-run `booley doctor`"
         )
 
     age_days = ((now or datetime.now(tz=UTC)) - passed_at).days

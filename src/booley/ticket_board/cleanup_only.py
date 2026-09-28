@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.core.differences import format_differences
 from booley.runtime.project_dir import runtime_dir
 
 from .helpers import validate_ticket_slug
@@ -126,12 +127,22 @@ def cleanup_only_sources(
         return None
     sources = dict(record["sources"])
     if sources != dict(expected_sources):
-        raise CleanupOnlyError("cleanup journal sources differ from accepted Ticket heads")
+        raise CleanupOnlyError(
+            "cleanup journal sources differ from accepted Ticket heads: "
+            + format_differences(expected_sources, sources)
+        )
     for participant in basis.participants:
         repository = _repository(root, participant)
         ref = _source_ref(slug, basis, participant.role)
-        if _ref_sha(repository, ref) != sources[participant.role]:
-            raise CleanupOnlyError(f"accepted source pin {ref} is unavailable or changed")
+        current = _ref_sha(repository, ref)
+        if current != sources[participant.role]:
+            raise CleanupOnlyError(
+                f"accepted source pin {ref} is unavailable or changed: "
+                + format_differences(
+                    {participant.role: sources[participant.role]},
+                    {participant.role: current},
+                )
+            )
     return sources
 
 
@@ -143,7 +154,13 @@ def _retire_participant(root: Path, participant: BasisParticipant, source: str) 
     if current is None:
         return
     if current != source:
-        raise CleanupOnlyError(f"Ticket ref {participant.ticket_ref} changed before cleanup")
+        raise CleanupOnlyError(
+            f"Ticket ref {participant.ticket_ref} changed before cleanup: "
+            + format_differences(
+                {participant.role: source},
+                {participant.role: current},
+            )
+        )
     checkout = worktree_for_ref(repository, participant.ticket_ref)
     if checkout is not None:
         _git(repository, "worktree", "remove", str(checkout))
@@ -164,7 +181,10 @@ def advance_cleanup_only(
     if record is None:
         sources = validate_current_basis_refs(root, basis)
         if sources != dict(expected_sources):
-            raise CleanupOnlyError("Ticket heads changed after accepted review")
+            raise CleanupOnlyError(
+                "Ticket heads changed after accepted review: "
+                + format_differences(expected_sources, sources)
+            )
         _pin_sources(root, slug, basis, sources)
         record = {
             "schema": 1,

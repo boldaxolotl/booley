@@ -20,6 +20,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.core.differences import format_differences
 from booley.runtime import project_image
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
@@ -229,6 +230,15 @@ class InputSnapshot:
     """Compatibility inputs revalidated before prepared tags are adopted."""
 
     identities: tuple[tuple[str, str, str, str | None], ...]
+
+
+def _input_snapshot_mapping(snapshot: InputSnapshot) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for reference, effective_inputs, recipe_fingerprint, parent_key in snapshot.identities:
+        values[f"{reference}.effective_inputs"] = effective_inputs
+        values[f"{reference}.recipe_fingerprint"] = recipe_fingerprint
+        values[f"{reference}.parent_compatibility_key"] = parent_key
+    return values
 
 
 @dataclass(frozen=True, slots=True)
@@ -1102,7 +1112,13 @@ def validate(
         artifact_policy=prepared.plan.nodes[-1].acquisition_policy,
     )
     if current.input_snapshot != prepared.input_snapshot:
-        raise ImageLifecycleError("image inputs changed while candidates were being prepared")
+        raise ImageLifecycleError(
+            "image inputs changed while candidates were being prepared: "
+            + format_differences(
+                _input_snapshot_mapping(prepared.input_snapshot),
+                _input_snapshot_mapping(current.input_snapshot),
+            )
+        )
     for image in prepared.candidates:
         if image.candidate_reference == image.reference:
             continue

@@ -107,6 +107,11 @@ def test_prior_booley_version_makes_sidecar_image_pending(
     finding = sidecars._reconcile_image(spec, Intent.CHECK, docker)
 
     assert finding.state is sidecars.SidecarState.PENDING
+    assert sidecars.LABEL_BOOLEY_VERSION in finding.detail
+    assert f"{sidecars._image_labels(spec)[sidecars.LABEL_BOOLEY_VERSION]} -> 0.0.0" in (
+        finding.detail
+    )
+    assert sidecars.LABEL_SOURCE_FINGERPRINT not in finding.detail
     assert docker.calls == []
 
 
@@ -153,6 +158,8 @@ def test_unstamped_container_with_exact_role_is_stale_not_foreign(
 
     assert finding.state is sidecars.SidecarState.PENDING
     assert "stale" in finding.detail
+    assert "source_fingerprint policy -> <none>" in finding.detail
+    assert "image_identity" not in finding.detail
     assert docker.calls == []
 
 

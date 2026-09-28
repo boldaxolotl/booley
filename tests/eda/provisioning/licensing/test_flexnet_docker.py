@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.eda.provisioning.licensing import flexnet_docker
 from booley.eda.provisioning.licensing.flexnet_docker import (
     OUTBOUND_NETWORK_LABEL,
     PRIVATE_NETWORK_LABEL,
@@ -456,7 +457,7 @@ def test_resume_validation_checks_labels_health_authority_and_network_separation
             return _result(stdout=json.dumps(decoded))
         return result
 
-    with pytest.raises(RelayDockerError, match="labels differ from host issuance"):
+    with pytest.raises(RelayDockerError, match="labels differ from host issuance") as caught:
         validate_relay(
             resources,
             "session-container",
@@ -464,6 +465,32 @@ def test_resume_validation_checks_labels_health_authority_and_network_separation
             issuance_labels=labels,
             runner=inspect_with_extra_label,
         )
+    assert "unexpected_label_keys [] -> [booley.spec-digest-old]" in str(caught.value)
+    assert "stale" not in str(caught.value)
+
+
+def test_container_identity_drift_names_both_image_fields() -> None:
+    resources = resources_for_session("session-a")
+    state = json.loads(
+        _relay_state(
+            resources,
+            state_overrides={"Image": "sha256:" + "b" * 64},
+            config_overrides={"Image": "sha256:" + "c" * 64},
+        )
+    )[0]
+
+    with pytest.raises(RelayDockerError, match="image identity") as caught:
+        flexnet_docker._validate_container_identity(
+            state,
+            state["Config"],
+            state["HostConfig"],
+            state["Mounts"],
+            IMAGE_ID,
+        )
+
+    message = str(caught.value)
+    assert f"state_image {IMAGE_ID} -> {'sha256:' + 'b' * 64}" in message
+    assert f"config_image {IMAGE_ID} -> {'sha256:' + 'c' * 64}" in message
 
 
 def test_resume_validation_rejects_session_on_outbound_network() -> None:
@@ -508,7 +535,7 @@ def test_resume_validation_rejects_session_on_outbound_network() -> None:
             )
         return _result(stdout="true" if name == resources.private_network else "false")
 
-    with pytest.raises(RelayDockerError, match=r"Sandbox is attached.*outbound"):
+    with pytest.raises(RelayDockerError, match="network membership") as caught:
         validate_relay(
             resources,
             "session-container",
@@ -516,6 +543,8 @@ def test_resume_validation_rejects_session_on_outbound_network() -> None:
             issuance_labels=(),
             runner=inspect,
         )
+    assert "outbound_network_present false -> true" in str(caught.value)
+    assert "private_network_present" not in str(caught.value)
 
 
 @pytest.mark.parametrize(

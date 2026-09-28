@@ -204,7 +204,9 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
         lambda *_args: None,
     )
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
-    assert "different Board Ticket generation" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "different Board Ticket generation" in error
+    assert "different true -> <missing>" in error
 
 
 def test_restoring_frozen_heads_resumes_later_snapshot_validation(

@@ -200,7 +200,7 @@ def test_issue_prepared_rejects_authority_drift_before_persisting(
         runtime_spec.SessionSpecInputs(project, (), (), None, None),
         prospective,
     )
-    changed = runtime_spec.SessionSpecInputs(project, (), (), None, "changed")
+    changed = runtime_spec.SessionSpecInputs(project, (), (), "vivado-new", "license-new")
     leased = SimpleNamespace(build=SimpleNamespace(), runtime=SimpleNamespace())
     persist = Mock()
     prepare_dependencies = Mock(side_effect=pytest.fail)
@@ -220,8 +220,11 @@ def test_issue_prepared_rejects_authority_drift_before_persisting(
     )
     monkeypatch.setattr(runtime_spec, "_persist_prepared", persist)
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="authority changed"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="authority changed") as caught:
         runtime_spec.issue_prepared(project, prepared)
+
+    assert "installation_name <none> -> vivado-new" in str(caught.value)
+    assert "license_profile_name <none> -> license-new" in str(caught.value)
 
     prepare_dependencies.assert_not_called()
     persist.assert_not_called()
@@ -940,11 +943,14 @@ def test_validate_rejects_missing_issued_image_keeper(issued, monkeypatch) -> No
 
 
 def test_validate_rejects_runtime_image_digest_drift(issued, monkeypatch) -> None:
-    project, spec, path, _stamp = issued
+    project, spec, path, stamp = issued
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:other")
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="tag/digest has drifted"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="tag/digest has drifted") as caught:
         runtime_spec.validate(project, spec, path)
+
+    assert f"image_id {stamp.image_id} -> sha256:other" in str(caught.value)
+    assert "; image " not in str(caught.value)
 
 
 def test_validate_rejects_keeper_for_another_project(issued, monkeypatch) -> None:

@@ -21,6 +21,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.core.differences import format_differences
 from booley.runtime import interactive_docker as legacy
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.platform_paths import host_path_from_docker_mount
@@ -269,16 +270,24 @@ def _reconcile_image(spec: _ImageSpec, intent: Intent, docker: _DockerPort) -> S
             return SidecarFinding(
                 spec.resource, SidecarState.CURRENT, f"{spec.reference} is current"
             )
-        detail = f"{spec.reference} is missing or stale"
+        if current is None:
+            detail = f"{spec.reference} is missing"
+        elif not is_current:
+            actual = {key: current[1].get(key) for key in expected}
+            detail = f"{spec.reference} is stale: {format_differences(expected, actual)}"
+        else:
+            detail = f"{spec.reference} refresh requested"
         if intent is Intent.CHECK:
             return SidecarFinding(spec.resource, SidecarState.PENDING, detail)
         _build_image(spec, expected, docker)
         verified = _inspect_image(spec.reference, docker)
-        if verified is None or any(
-            verified[1].get(key) != value for key, value in expected.items()
-        ):
+        if verified is None:
+            raise SidecarError(f"{spec.reference} build completed but the image is missing")
+        actual = {key: verified[1].get(key) for key in expected}
+        if actual != expected:
             raise SidecarError(
-                f"{spec.reference} build completed without expected provenance labels"
+                f"{spec.reference} build completed without expected provenance labels: "
+                + format_differences(expected, actual)
             )
         return SidecarFinding(spec.resource, SidecarState.CHANGED, f"reconciled {spec.reference}")
     except SidecarError as exc:
@@ -465,10 +474,25 @@ def _reconcile_container(
         if current and state.running and not network_missing:
             return SidecarFinding(spec.resource, SidecarState.CURRENT, f"{spec.name} is current")
         if intent is Intent.CHECK:
+            expected_state = {
+                "exists": True,
+                "image_identity": image_state[0],
+                "source_fingerprint": fingerprint,
+                "running": True,
+                "required_network_present": True,
+            }
+            actual_state = {
+                "exists": state.exists,
+                "image_identity": state.image_id if state.exists else None,
+                "source_fingerprint": (state.labels or {}).get(LABEL_POLICY_FINGERPRINT),
+                "running": state.running,
+                "required_network_present": not network_missing,
+            }
             return SidecarFinding(
                 spec.resource,
                 SidecarState.PENDING,
-                f"{spec.name} is missing, stopped, or stale",
+                f"{spec.name} is missing, stopped, or stale: "
+                + format_differences(expected_state, actual_state),
             )
         _apply_container(spec.name, state, current, list(spec.run_args), docker)
         _ensure_container_network(spec.name, spec.required_network, docker)

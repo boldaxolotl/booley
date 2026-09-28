@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
+from booley.core.differences import format_differences
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -49,6 +50,20 @@ class AcceptanceSnapshot:
     participant_heads: dict[str, str]
     criteria: dict[str, dict[str, Any]]
     evidence: tuple[dict[str, Any], ...]
+
+
+def _snapshot_mapping(snapshot: AcceptanceSnapshot) -> dict[str, object]:
+    return {
+        "digest": snapshot.digest,
+        "slug": snapshot.slug,
+        "ticket_type": snapshot.ticket_type,
+        "execution_id": snapshot.execution_id,
+        "accepted_at": snapshot.accepted_at,
+        "ticket_identity": snapshot.ticket_identity,
+        "participant_heads": snapshot.participant_heads,
+        "criteria": snapshot.criteria,
+        "evidence": snapshot.evidence,
+    }
 
 
 @dataclass(frozen=True)
@@ -1223,7 +1238,20 @@ def bind_review_package(
         # The caller holds the Ticket publication lock; acceptance stays write-once.
         accepted = read_acceptance(root)
         if accepted.snapshot != snapshot:
-            raise AcceptanceLedgerError("cannot rebind a different Criteria Satisfaction Record")
+            recorded = (
+                _snapshot_mapping(accepted.snapshot)
+                if accepted.snapshot is not None
+                else {"snapshot": None}
+            )
+            actual = (
+                _snapshot_mapping(snapshot)
+                if accepted.snapshot is not None
+                else {"snapshot": _snapshot_mapping(snapshot)}
+            )
+            raise AcceptanceLedgerError(
+                "cannot rebind a different Criteria Satisfaction Record: "
+                + format_differences(recorded, actual)
+            )
         atomic_replace_bytes(path, binding + b"\n")
     else:
         _write_once(path, binding + b"\n")
@@ -1249,7 +1277,13 @@ def validate_review_package_binding(log_dir: Path, snapshot: AcceptanceSnapshot)
             "briefing_sha256": hashlib.sha256(briefing_bytes).hexdigest(),
         }
         if any(binding.get(key) != value for key, value in actual.items()):
-            raise ValueError("bound review artifacts changed")
+            raise ValueError(
+                "bound review artifacts changed: "
+                + format_differences(
+                    {key: binding.get(key) for key in actual},
+                    actual,
+                )
+            )
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise AcceptanceLedgerError(f"invalid review package binding: {exc}") from exc
 
@@ -1258,12 +1292,21 @@ def _validate_manifest_identity(manifest: Mapping[str, Any], snapshot: Acceptanc
     manifest_generation = manifest.get("ticket_generation")
     snapshot_generation = snapshot.ticket_identity.get("generation")
     if not isinstance(manifest_generation, str) or manifest_generation != snapshot_generation:
-        raise ValueError("review package names a different Ticket generation")
+        raise ValueError(
+            "review package names a different Ticket generation: "
+            + format_differences(
+                {"ticket_generation": snapshot_generation},
+                {"ticket_generation": manifest_generation},
+            )
+        )
     heads = {"outer": manifest.get("head_sha")}
     if "project_head_sha" in manifest:
         heads["project"] = manifest.get("project_head_sha")
     if _participant_heads(heads) != snapshot.participant_heads:
-        raise ValueError("review package heads disagree with the Criteria Satisfaction Record")
+        raise ValueError(
+            "review package heads disagree with the Criteria Satisfaction Record: "
+            + format_differences(snapshot.participant_heads, _participant_heads(heads))
+        )
 
 
 def read_acceptance(log_dir: Path) -> AcceptanceReadResult:

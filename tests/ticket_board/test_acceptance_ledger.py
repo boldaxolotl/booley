@@ -630,5 +630,7 @@ def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_p
     different_snapshot = replace(snapshot, execution_id="generation-2")
     with pytest.raises(
         AcceptanceLedgerError, match="cannot rebind a different Criteria Satisfaction Record"
-    ):
+    ) as caught:
         bind_review_package(log_dir, different_snapshot, replace_existing=True)
+    assert "execution_id generation-1 -> generation-2" in str(caught.value)
+    assert "participant_heads" not in str(caught.value)

@@ -350,6 +350,32 @@ def test_validate_rejects_candidates_changed_after_preparation(
         lifecycle.validate(prepared, docker=docker)
 
 
+def test_validate_names_every_changed_image_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+    changed_snapshot = lifecycle.InputSnapshot(
+        ((*planned.input_snapshot.identities[0][:3], "changed-input"),)
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "plan",
+        lambda *_args, **_kwargs: replace(planned, input_snapshot=changed_snapshot),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="inputs changed") as caught:
+        lifecycle.validate(prepared, docker=docker)
+
+    message = str(caught.value)
+    assert ".parent_compatibility_key" in message
+    assert "changed-input" in message
+
+
 def test_incremental_adapter_build_inputs_cover_each_image_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
