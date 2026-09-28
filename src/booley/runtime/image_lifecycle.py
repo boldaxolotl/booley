@@ -1326,10 +1326,28 @@ def _base_parent_current(origin: str, recorded_parent: str, docker: DockerPort) 
     if not is_local_image_id(recorded_parent):
         return False
     expected_contract = _expected_image_build_contracts().runtime_base
-    stable_contract = docker.label(STABLE_RUNTIME_BASE_IMAGE, "io.booley.runtime-base.contract")
+    stable_contract = docker.label(STABLE_RUNTIME_BASE_IMAGE, LABEL_RUNTIME_BASE_CONTRACT)
+    return runtime_base_provenance_current(
+        docker.image_id(STABLE_RUNTIME_BASE_IMAGE),
+        stable_contract,
+        expected_contract,
+        expected_image_id=recorded_parent,
+    )
+
+
+def runtime_base_provenance_current(
+    image_id: str | None,
+    actual_contract: str | None,
+    expected_contract: str,
+    *,
+    expected_image_id: str | None = None,
+) -> bool:
+    """Whether one runtime-base observation proves the expected artifact."""
     return (
-        stable_contract == expected_contract
-        and docker.image_id(STABLE_RUNTIME_BASE_IMAGE) == recorded_parent
+        image_id is not None
+        and is_local_image_id(image_id)
+        and actual_contract == expected_contract
+        and (expected_image_id is None or image_id == expected_image_id)
     )
 
 

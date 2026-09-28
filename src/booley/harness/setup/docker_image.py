@@ -35,6 +35,7 @@ from booley.runtime.build_stamp import (
 )
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
 from booley.runtime.image_build_contracts import source_image_build_contracts
+from booley.runtime.image_lifecycle import runtime_base_provenance_current
 from booley.runtime.image_provenance import (
     LABEL_ARTIFACT_ROLE,
     LABEL_BUILD_ORIGIN,
@@ -145,9 +146,20 @@ def _docker_image_exists(image: str = DOCKER_IMAGE) -> bool:
 
 def _docker_image_id(image: str) -> str | None:
     """Return *image*'s immutable Docker ID, or ``None`` when unavailable."""
+    result = _run_docker_image_inspect(image, "{{.Id}}")
+    if result is None:
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _run_docker_image_inspect(
+    image: str, format_template: str
+) -> subprocess.CompletedProcess[str] | None:
+    """Run one bounded Docker image inspection without interpreting its output."""
     try:
-        result = subprocess.run(
-            ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
+        return subprocess.run(
+            ["docker", "image", "inspect", "--format", format_template, image],
             capture_output=True,
             text=True,
             timeout=15,
@@ -155,8 +167,6 @@ def _docker_image_id(image: str) -> str | None:
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
-    value = result.stdout.strip()
-    return value if result.returncode == 0 and value else None
 
 
 # --- Image staleness guard (build-fingerprint label) -----------------------
@@ -221,22 +231,8 @@ def _image_build_fingerprint(booley_root: Path) -> str | None:
 
 def _image_label(image: str, label: str) -> str | None:
     """Return *image*'s *label* value, or ``None`` if absent/unavailable."""
-    try:
-        result = subprocess.run(
-            [
-                "docker",
-                "image",
-                "inspect",
-                "-f",
-                f'{{{{ index .Config.Labels "{label}" }}}}',
-                image,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
+    result = _run_docker_image_inspect(image, f'{{{{ index .Config.Labels "{label}" }}}}')
+    if result is None:
         return None
     if result.returncode != 0:
         return None
@@ -247,33 +243,24 @@ def _image_label(image: str, label: str) -> str | None:
 
 def _inspect_runtime_base() -> _RuntimeBaseInspection:
     """Read the runtime-base identity and contract in one Docker inspection."""
-    try:
-        result = subprocess.run(
-            [
-                "docker",
-                "image",
-                "inspect",
-                LOCAL_RUNTIME_BASE_IMAGE,
-                "--format",
-                "{{json .}}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return _RuntimeBaseInspection(None, None, "invalid provenance")
+    result = _run_docker_image_inspect(LOCAL_RUNTIME_BASE_IMAGE, "{{json .}}")
+    if result is None:
+        return _RuntimeBaseInspection(None, None, "inspection failed")
     if result.returncode != 0:
-        reason = "missing" if "no such image" in result.stderr.lower() else "invalid provenance"
+        stderr = getattr(result, "stderr", "")
+        reason = "missing" if "no such image" in stderr.lower() else "inspection failed"
         return _RuntimeBaseInspection(None, None, reason)
     try:
         inspected = json.loads(result.stdout)
+        if not isinstance(inspected, dict):
+            raise ValueError("Docker inspection is not an object")
         image_id = inspected.get("Id")
         config = inspected.get("Config")
         labels = config.get("Labels") if isinstance(config, dict) else None
         contract = labels.get(LABEL_RUNTIME_BASE_CONTRACT) if isinstance(labels, dict) else None
-    except (AttributeError, json.JSONDecodeError):
+        if image_id is not None and not isinstance(image_id, str):
+            raise ValueError("Docker inspection ID is not a string")
+    except (AttributeError, json.JSONDecodeError, ValueError):
         return _RuntimeBaseInspection(None, None, "invalid provenance")
     return _RuntimeBaseInspection(
         image_id if isinstance(image_id, str) else None,
@@ -295,7 +282,7 @@ def _runtime_base_disposition(
         return _RuntimeBaseDisposition(contract, inspection.image_id, "invalid provenance")
     if inspection.contract is None:
         return _RuntimeBaseDisposition(contract, inspection.image_id, "invalid provenance")
-    if inspection.contract != contract:
+    if not runtime_base_provenance_current(inspection.image_id, inspection.contract, contract):
         return _RuntimeBaseDisposition(contract, inspection.image_id, "contract changed")
     return _RuntimeBaseDisposition(contract, inspection.image_id, None)
 
@@ -328,7 +315,16 @@ def _prepare_runtime_base(
             disposition.expected_contract,
         ):
             return None
-        runtime_base_id = _inspect_runtime_base().image_id
+        inspection = _inspect_runtime_base()
+        if not runtime_base_provenance_current(
+            inspection.image_id,
+            inspection.contract,
+            disposition.expected_contract,
+        ):
+            err("rebuilt stable runtime-base provenance does not match its expected contract")
+            ctx.record("docker_image", "err", "runtime-base provenance mismatch")
+            return None
+        runtime_base_id = inspection.image_id
     if runtime_base_id is None or not is_local_image_id(runtime_base_id):
         err("could not resolve a valid stable runtime-base artifact")
         ctx.record("docker_image", "err", "runtime-base identity missing")
@@ -684,14 +680,8 @@ def _step_docker_image(
         _docker_check_only(ctx, exists)
         return
 
-    # Pull-first strategy (skip if --force requests fresh local build)
-    if allow_pull and not ctx.force:
-        version = expected_version
-        if _try_pull_image(version):
-            ok(f"{DOCKER_IMAGE} pulled from registry (v{version})")
-            ctx.record("docker_image", "ok", "pulled")
-            return
-        info("pre-built image unavailable, building locally (~20 min)")
+    if _pull_base_image(ctx, expected_version, allow_pull=allow_pull):
+        return
 
     _docker_local_build(
         ctx,
@@ -700,6 +690,18 @@ def _step_docker_image(
         fingerprint,
         rebuild_runtime_base=rebuild_runtime_base,
     )
+
+
+def _pull_base_image(ctx: InitContext, version: str, *, allow_pull: bool) -> bool:
+    """Try the pull-first source for the base image when policy permits it."""
+    if not allow_pull or ctx.force:
+        return False
+    if _try_pull_image(version):
+        ok(f"{DOCKER_IMAGE} pulled from registry (v{version})")
+        ctx.record("docker_image", "ok", "pulled")
+        return True
+    info("pre-built image unavailable, building locally (~20 min)")
+    return False
 
 
 def _docker_cli_ready(ctx: InitContext) -> bool:
@@ -777,12 +779,36 @@ def _docker_local_build(
     if not _docker_build_wheel(ctx, booley_root, preserve_stamp=preserve_build_stamp):
         return
 
+    _build_local_candidate(
+        ctx,
+        dockerfile,
+        booley_root,
+        exists=exists,
+        fingerprint=fingerprint,
+        runtime_base_id=runtime_base_id,
+    )
+
+
+def _build_local_candidate(
+    ctx: InitContext,
+    dockerfile: Path,
+    booley_root: Path,
+    *,
+    exists: bool,
+    fingerprint: str | None,
+    runtime_base_id: str,
+) -> None:
+    """Build the thin Sandbox Image candidate from one verified runtime base."""
+    if _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE) != runtime_base_id:
+        err("stable runtime-base tag changed before the Sandbox Image build")
+        ctx.record("docker_image", "err", "runtime-base identity changed")
+        return
     build = _DockerBuildSpec(
         dockerfile=dockerfile,
         context=booley_root,
         exists=exists,
         fingerprint=fingerprint,
-        build_contexts=(("booley-runtime-base", f"docker-image://{runtime_base_id}"),),
+        build_contexts=(("booley-runtime-base", f"docker-image://{LOCAL_RUNTIME_BASE_IMAGE}"),),
         build_args=("--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={runtime_base_id}"),
         parent_artifact=runtime_base_id,
     )
@@ -793,6 +819,10 @@ def _docker_local_build(
     if returncode != 0:
         err("docker build failed — re-run with -v for full output")
         ctx.record("docker_image", "err", "build failed")
+        return
+    if _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE) != runtime_base_id:
+        err("stable runtime-base tag changed during the Sandbox Image build")
+        ctx.record("docker_image", "err", "runtime-base identity changed")
         return
 
     ok(f"{DOCKER_IMAGE} image built successfully")

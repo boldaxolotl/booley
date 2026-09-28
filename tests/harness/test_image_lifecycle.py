@@ -1271,6 +1271,23 @@ def test_check_rejects_local_base_when_stable_contract_changed(tmp_path: Path, m
     assert result.status is lifecycle.Status.STALE
 
 
+def test_runtime_base_provenance_requires_recorded_parent_identity() -> None:
+    expected_id = "sha256:" + "9" * 64
+
+    assert lifecycle.runtime_base_provenance_current(
+        expected_id,
+        "stable-contract",
+        "stable-contract",
+        expected_image_id=expected_id,
+    )
+    assert not lifecycle.runtime_base_provenance_current(
+        "sha256:" + "8" * 64,
+        "stable-contract",
+        "stable-contract",
+        expected_image_id=expected_id,
+    )
+
+
 def test_packaged_install_rejects_exact_local_parent_when_contract_is_unavailable(
     tmp_path: Path, monkeypatch
 ):
