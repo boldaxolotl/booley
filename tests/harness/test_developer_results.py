@@ -1,13 +1,17 @@
 """Explicit Ticket result coverage for developer orchestration branches."""
 
+import hashlib
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from booley.criteria.state import DevelopmentState
 from booley.harness import developer
 from booley.harness.models import AgentResult, TicketContext
+from booley.ticket_board.paths import ticket_runtime_file
 
 
 def _context(tmp_path: Path, **overrides) -> TicketContext:
@@ -116,14 +120,65 @@ def _patch_developer_path(monkeypatch, tmp_path: Path, *, agent_result):
     monkeypatch.setattr(developer, "_invoke_developer_agent", invoke)
     monkeypatch.setattr(developer, "_drain_outstanding_ticket_jobs", AsyncMock())
     monkeypatch.setattr(developer, "_record_agent_result", lambda *_args: None)
-    monkeypatch.setattr(developer, "_run_post_guardrails", lambda *_args: False)
-    monkeypatch.setattr(developer, "_run_post_developer_hook", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(developer, "_run_post_guardrails", lambda *_args: None)
+    monkeypatch.setattr(developer, "_run_post_developer_hook", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(developer, "maybe_auto_retry", lambda *_args: False)
     monkeypatch.setattr(developer, "_prepare_blocked_triage", AsyncMock())
     monkeypatch.setattr(developer, "record_crash", MagicMock())
     monkeypatch.setattr(developer, "fail_ticket", MagicMock())
     monkeypatch.setattr(developer.ticket_cli, "ticket_status", MagicMock(return_value="running"))
     return invoke
+
+
+def _write_active_block(ctx: TicketContext, reason: str) -> Path:
+    state_path = ticket_runtime_file(ctx.logs_dir, "booley_state.json")
+    state = DevelopmentState.load(state_path)
+    state.slug = ctx.slug
+    state.work_dir = str(ctx.work_dir)
+    state.init_criteria({"sim_pass": True, "_blocked_reason": False})
+    state.set_criterion("_blocked_reason", True, detail={"reason": reason})
+    state.save()
+    return state_path
+
+
+def _init_dirty_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=worktree, check=True)
+    source = worktree / "rtl" / "dut.sv"
+    source.parent.mkdir()
+    source.write_text("module dut; endmodule\n", encoding="utf-8")
+    subprocess.run(["git", "add", "rtl/dut.sv"], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=worktree, check=True)
+    source.write_text("module dut; wire unfinished; endmodule\n", encoding="utf-8")
+    return worktree, source
+
+
+def _porcelain_status(worktree: Path) -> bytes:
+    return subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def _patch_worktree_mutators(monkeypatch) -> list[MagicMock]:
+    mutators = [MagicMock() for _ in range(4)]
+    for name, mock in zip(
+        (
+            "_commit_ticket_paths",
+            "_reset_worktree_if_dirty",
+            "_restore_worktree",
+            "_clean_worktree",
+        ),
+        mutators,
+        strict=True,
+    ):
+        monkeypatch.setattr(developer, name, mock, raising=False)
+    return mutators
 
 
 @pytest.mark.asyncio
@@ -154,6 +209,62 @@ async def test_agent_invocation_failure_returns_failed(tmp_path: Path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_blocked_reason_and_dirty_preserves_primary_and_worktree(
+    tmp_path: Path, monkeypatch
+):
+    worktree, source = _init_dirty_worktree(tmp_path)
+    ctx = _context(
+        tmp_path,
+        worktree_path=worktree,
+        scope_raw=["rtl/dut.sv"],
+    )
+    state_path = ticket_runtime_file(ctx.logs_dir, "booley_state.json")
+    state = DevelopmentState.load(state_path)
+    state.slug = ctx.slug
+    state.work_dir = str(worktree)
+    state.init_criteria({"sim_pass": True, "_blocked_reason": False})
+    state.set_criterion(
+        "_blocked_reason",
+        True,
+        detail={"reason": "Need the maintainer to choose the reset behavior."},
+    )
+    state.save()
+
+    before_bytes = source.read_bytes()
+    before_hash = hashlib.sha256(before_bytes).hexdigest()
+    before_status = _porcelain_status(worktree)
+
+    real_guardrails = developer._run_post_guardrails
+    _patch_developer_path(
+        monkeypatch,
+        tmp_path,
+        agent_result=AgentResult(output="blocked", input_tokens=1, output_tokens=1),
+    )
+    monkeypatch.setattr(developer, "_run_post_guardrails", real_guardrails)
+    monkeypatch.setattr(developer, "_report_scope_deviations", MagicMock())
+    board_block = MagicMock()
+    monkeypatch.setattr(developer.ticket_cli, "block", board_block)
+    mutators = _patch_worktree_mutators(monkeypatch)
+
+    result = await developer._run_developer_path(ctx, tmp_path)
+
+    assert result.disposition == "blocked"
+    assert board_block.call_args.kwargs["reason"] == (
+        "Need the maintainer to choose the reset behavior."
+    )
+    blocked_log = (ctx.logs_dir / "blocked.md").read_text(encoding="utf-8")
+    assert blocked_log.count("## Run 0 -- Blocked") == 1
+    assert "**Reason:** Need the maintainer to choose the reset behavior." in blocked_log
+    assert "### Secondary context" in blocked_log
+    assert "1 uncommitted file(s) preserved: M rtl/dut.sv" in blocked_log
+    assert source.read_bytes() == before_bytes
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == before_hash
+    assert _porcelain_status(worktree) == before_status
+    for mutator in mutators:
+        mutator.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("boundary", ["guardrail", "hook"])
 async def test_post_developer_block_returns_blocked(tmp_path: Path, monkeypatch, boundary: str):
     ctx = _context(tmp_path, worktree_path=tmp_path / "worktree")
@@ -162,14 +273,84 @@ async def test_post_developer_block_returns_blocked(tmp_path: Path, monkeypatch,
         tmp_path,
         agent_result=AgentResult(output="done", input_tokens=1, output_tokens=1),
     )
+    monkeypatch.setattr(developer, "block_ticket", MagicMock())
     if boundary == "guardrail":
-        monkeypatch.setattr(developer, "_run_post_guardrails", lambda *_args: True)
+        monkeypatch.setattr(
+            developer,
+            "_run_post_guardrails",
+            lambda *_args: developer.PostDeveloperFinding("handoff failed", "handoff failed"),
+        )
     else:
-        monkeypatch.setattr(developer, "_run_post_developer_hook", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            developer,
+            "_run_post_developer_hook",
+            lambda *_args, **_kwargs: developer.PostDeveloperFinding("hook failed", "hook failed"),
+        )
 
     result = await developer._run_developer_path(ctx, tmp_path)
 
     assert result.disposition == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_post_hook_finding_reprojects_declared_reason(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path, worktree_path=tmp_path / "worktree")
+    _write_active_block(ctx, "Need a maintainer decision.")
+    _patch_developer_path(
+        monkeypatch,
+        tmp_path,
+        agent_result=AgentResult(output="blocked", input_tokens=1, output_tokens=1),
+    )
+    monkeypatch.setattr(
+        developer,
+        "_run_post_developer_hook",
+        lambda *_args, **_kwargs: developer.PostDeveloperFinding(
+            "post-developer hook: failed", "post-developer hook: failed"
+        ),
+    )
+    block = MagicMock()
+    monkeypatch.setattr(developer, "block_ticket", block)
+
+    result = await developer._run_developer_path(ctx, tmp_path)
+
+    assert result.disposition == "blocked"
+    block.assert_called_once_with(
+        ctx,
+        "Need a maintainer decision.",
+        "developer",
+        run_index=0,
+        secondary_context=["post-developer hook: failed"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_drain_path_error_preserves_declared_reason(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path, worktree_path=tmp_path / "worktree")
+    _write_active_block(ctx, "Need a maintainer decision.")
+    _patch_developer_path(
+        monkeypatch,
+        tmp_path,
+        agent_result=AgentResult(output="blocked", input_tokens=1, output_tokens=1),
+    )
+    monkeypatch.setattr(
+        developer,
+        "_record_agent_result",
+        MagicMock(side_effect=RuntimeError("bookkeeping failed")),
+    )
+    block = MagicMock()
+    retry = MagicMock(return_value=False)
+    monkeypatch.setattr(developer, "block_ticket", block)
+    monkeypatch.setattr(developer, "maybe_auto_retry", retry)
+
+    result = await developer._run_developer_path(ctx, tmp_path)
+
+    assert result.disposition == "blocked"
+    developer.record_crash.assert_called_once()
+    retry.assert_called_once()
+    assert block.call_args.args[1] == "Need a maintainer decision."
+    assert block.call_args.kwargs["secondary_context"] == [
+        "Developer Agent path error: RuntimeError: bookkeeping failed"
+    ]
 
 
 @pytest.mark.asyncio
@@ -183,7 +364,12 @@ async def test_guardrail_block_wins_over_followup_budget_check(tmp_path: Path, m
     budget = MagicMock()
     budget.raise_if_exhausted.side_effect = [None, AssertionError("must not run after block")]
     monkeypatch.setattr(developer, "DeveloperBudget", lambda *_args, **_kwargs: budget)
-    monkeypatch.setattr(developer, "_run_post_guardrails", lambda *_args: True)
+    monkeypatch.setattr(
+        developer,
+        "_run_post_guardrails",
+        lambda *_args: developer.PostDeveloperFinding("handoff failed", "handoff failed"),
+    )
+    monkeypatch.setattr(developer, "block_ticket", MagicMock())
 
     result = await developer._run_developer_path(ctx, tmp_path)
 
@@ -255,10 +441,15 @@ async def test_finalizer_error_preserves_classified_result(tmp_path: Path, monke
         tmp_path,
         agent_result=AgentResult(output="done", input_tokens=1, output_tokens=1),
     )
-    monkeypatch.setattr(developer, "_run_post_guardrails", lambda *_args: True)
+    monkeypatch.setattr(
+        developer,
+        "_run_post_guardrails",
+        lambda *_args: developer.PostDeveloperFinding("handoff failed", "handoff failed"),
+    )
     monkeypatch.setattr(
         developer, "maybe_auto_retry", MagicMock(side_effect=RuntimeError("finalizer failed"))
     )
+    monkeypatch.setattr(developer, "block_ticket", MagicMock())
 
     result = await developer._run_developer_path(ctx, tmp_path)
 

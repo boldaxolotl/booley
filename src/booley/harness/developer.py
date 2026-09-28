@@ -155,6 +155,14 @@ class TicketRunResult:
         )
 
 
+@dataclass(frozen=True)
+class PostDeveloperFinding:
+    """A handoff finding with standalone and secondary-context wording."""
+
+    reason: str
+    secondary_context: str
+
+
 def _ticket_run_result(slug: str, disposition: TicketRunDisposition) -> TicketRunResult:
     """Build a result without inventing review-only artifact paths."""
     return TicketRunResult(slug=slug, disposition=disposition)
@@ -1190,8 +1198,8 @@ def _guard_scorer_restore_artifacts(
     state_path: Path,
     scorer_artifacts: list[str],
     run_index: int,
-) -> bool:
-    """Block on scorer-consumed files deleted under a `` [new]`` glob. True => block."""
+) -> PostDeveloperFinding:
+    """Return a finding for scorer-consumed files deleted under a `` [new]`` glob."""
     from .colors import yellow
 
     reason, all_done = _record_scorer_dirty_guardrail(
@@ -1200,10 +1208,9 @@ def _guard_scorer_restore_artifacts(
         scorer_artifacts,
         run_index=run_index,
     )
-    block_ticket(ctx, reason, "developer", run_index=run_index)
     label = "[DONE_BUT_DIRTY]" if all_done else "[BLOCK]"
     terminal.raw(f"  {yellow(label)} scorer files deleted but not committable")
-    return True
+    return PostDeveloperFinding(reason, reason)
 
 
 def _check_ticket_dirty_statuses(ctx: TicketContext) -> list[DirtyFile]:
@@ -1233,8 +1240,8 @@ def _run_post_guardrails(
     ctx: TicketContext,
     state_path: Path,
     run_index: int,
-) -> bool:
-    """Run post-developer guardrails. Returns True if ticket was blocked."""
+) -> PostDeveloperFinding | None:
+    """Run post-developer guardrails and return the first finding."""
     from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
     from .colors import yellow
@@ -1248,26 +1255,19 @@ def _run_post_guardrails(
             dirty = _check_ticket_dirty_statuses(ctx)
         except TicketWorkspaceError as exc:
             logger.warning("Cannot inspect uncommitted edits for %s: %s", ctx.slug, exc)
-            block_ticket(
-                ctx,
-                f"Cannot inspect uncommitted edits before handoff: {exc}",
-                "developer",
-                run_index=run_index,
-            )
+            reason = f"Cannot inspect uncommitted edits before handoff: {exc}"
             terminal.raw(f"  {yellow('[BLOCK]')} cannot inspect uncommitted edits")
             # Triage is told to read the deviation report; leaving none behind
             # on the block path is exactly when a missing file is most confusing.
             _report_scope_deviations(ctx)
-            return True
+            return PostDeveloperFinding(reason, reason)
         # A deletion under a `` [new]`` glob can be worktree fallout rather than
         # authored work. If the scorer reads it, preserve the more specific
         # reproducibility diagnosis before the general dirty-handoff block.
         artifacts = [e.path for e in dirty if is_restore_artifact(ctx.scope_raw, e.path, e.status)]
         scorer_artifacts = [path for path in artifacts if _is_scorer_consumed_path(path)]
-        if scorer_artifacts and _guard_scorer_restore_artifacts(
-            ctx, state_path, scorer_artifacts, run_index
-        ):
-            return True
+        if scorer_artifacts:
+            return _guard_scorer_restore_artifacts(ctx, state_path, scorer_artifacts, run_index)
         if dirty:
             preview = ", ".join(
                 f"{entry.status.strip() or entry.status} {entry.path}" for entry in dirty[:5]
@@ -1277,16 +1277,14 @@ def _run_post_guardrails(
                 len(dirty),
                 preview,
             )
-            block_ticket(
-                ctx,
+            finding = PostDeveloperFinding(
                 "Developer Agent stopped with uncommitted changes. Commit or restore "
                 f"every file before handoff: {preview}",
-                "developer",
-                run_index=run_index,
+                f"{len(dirty)} uncommitted file(s) preserved: {preview}",
             )
             terminal.raw(f"  {yellow('[BLOCK]')} uncommitted changes remain at handoff")
             _report_scope_deviations(ctx)
-            return True
+            return finding
 
         _report_scope_deviations(ctx)
 
@@ -1294,16 +1292,16 @@ def _run_post_guardrails(
         # nested-`rtl/rtl/` check runs on every ticket. Gating it on
         # `_scope_expects_rtl_output` would let a verification ticket leave
         # malformed `rtl/rtl/dut.sv` output unremarked.
-        if _guard_malformed_rtl_output(ctx, run_index):
-            return True
+        malformed = _guard_malformed_rtl_output(ctx, run_index)
+        if malformed is not None:
+            return malformed
 
-        if _scope_expects_rtl_output(ctx.scope_raw) and _guard_live_rtl_output(
-            ctx,
-            run_index,
-        ):
-            return True
+        if _scope_expects_rtl_output(ctx.scope_raw):
+            live_rtl = _guard_live_rtl_output(ctx, run_index)
+            if live_rtl is not None:
+                return live_rtl
 
-    return False
+    return None
 
 
 def _report_scope_deviations(ctx: TicketContext) -> None:
@@ -1355,21 +1353,20 @@ def _report_scope_deviations(ctx: TicketContext) -> None:
         terminal.raw(f"  {yellow('SCOPE')} {len(deviations)} file(s) outside ticket scope")
 
 
-def _guard_malformed_rtl_output(ctx: TicketContext, run_index: int) -> bool:
-    """Block on nested ``rtl/rtl/`` output anywhere in the worktree. True => block."""
+def _guard_malformed_rtl_output(ctx: TicketContext, run_index: int) -> PostDeveloperFinding | None:
+    """Return a finding for nested ``rtl/rtl/`` output anywhere in the worktree."""
     from .colors import yellow
 
     nested_rtl = _nested_rtl_output_files(ctx.worktree_path)
     if not nested_rtl:
-        return False
+        return None
     reason = _record_malformed_rtl_guardrail(ctx, nested_rtl, run_index=run_index)
-    block_ticket(ctx, reason, "developer", run_index=run_index)
     terminal.raw(f"  {yellow('[BLOCK]')} malformed nested RTL output")
-    return True
+    return PostDeveloperFinding(reason, reason)
 
 
-def _guard_live_rtl_output(ctx: TicketContext, run_index: int) -> bool:
-    """Verify live RTL output exists after handoff. True => block.
+def _guard_live_rtl_output(ctx: TicketContext, run_index: int) -> PostDeveloperFinding | None:
+    """Verify live RTL output exists after handoff and return a finding.
 
     Malformed nesting is checked separately by :func:`_guard_malformed_rtl_output`,
     which is not gated on Scope.
@@ -1378,25 +1375,17 @@ def _guard_live_rtl_output(ctx: TicketContext, run_index: int) -> bool:
 
     status = git_run(ctx.worktree_path, ["status", "--porcelain", "--ignore-submodules"])
     if status.returncode != 0:
-        block_ticket(
-            ctx,
+        reason = (
             "Cannot verify live RTL output because git status failed: "
-            f"{(status.stderr or status.stdout).strip()}",
-            "developer",
-            run_index=run_index,
+            f"{(status.stderr or status.stdout).strip()}"
         )
         terminal.raw(f"  {yellow('[BLOCK]')} cannot verify live RTL output")
-        return True
+        return PostDeveloperFinding(reason, reason)
     if not _has_live_rtl_output(ctx.worktree_path):
-        block_ticket(
-            ctx,
-            "No live RTL output found under active worktree rtl/**/*.sv|*.v at handoff.",
-            "developer",
-            run_index=run_index,
-        )
+        reason = "No live RTL output found under active worktree rtl/**/*.sv|*.v at handoff."
         terminal.raw(f"  {yellow('[BLOCK]')} no live RTL output")
-        return True
-    return False
+        return PostDeveloperFinding(reason, reason)
+    return None
 
 
 async def _prepare_review_handoff(
@@ -1716,6 +1705,7 @@ async def _run_developer_path(
     state_path = migrate_runtime_file(ctx.logs_dir, "booley_state.json")
     run_index = 0
     budget: DeveloperBudget | None = None
+    jobs_drained = False
 
     try:
         is_crash_recovery, crash_transcript, run_index, transcript_path = _detect_crash_recovery(
@@ -1784,23 +1774,26 @@ async def _run_developer_path(
             return _ticket_run_result(ctx.slug, "failed")
 
         await _drain_outstanding_ticket_jobs(ctx, budget)
+        jobs_drained = True
 
         _record_agent_result(result, state_path, ctx)
         budget.raise_if_exhausted()
 
-        guardrail_blocked = _run_post_guardrails(ctx, state_path, run_index)
-        if guardrail_blocked:
+        guardrail_finding = _run_post_guardrails(ctx, state_path, run_index)
+        if guardrail_finding is not None:
+            _transition_post_developer_finding(ctx, state_path, guardrail_finding, run_index)
             return _ticket_run_result(ctx.slug, "blocked")
         budget.raise_if_exhausted()
 
-        hook_blocked = _run_post_developer_hook(
+        hook_finding = _run_post_developer_hook(
             ctx,
             state_path,
             ctx.logs_dir,
             run_index=run_index,
             budget=budget,
         )
-        if hook_blocked:
+        if hook_finding is not None:
+            _transition_post_developer_finding(ctx, state_path, hook_finding, run_index)
             return _ticket_run_result(ctx.slug, "blocked")
         budget.raise_if_exhausted()
         return await run_with_developer_budget(
@@ -1814,7 +1807,14 @@ async def _run_developer_path(
             budget,
         )
     except Exception as e:  # noqa: BLE001 - path boundary returns an explicit disposition
-        return _classify_developer_path_failure(ctx, project_root, run_index, e)
+        return _classify_developer_path_failure(
+            ctx,
+            project_root,
+            run_index,
+            e,
+            state_path=state_path,
+            jobs_drained=jobs_drained,
+        )
     finally:
         if budget is not None:
             budget.finish()
@@ -1858,11 +1858,36 @@ async def _finalize_blocked_ticket_result(
     return result
 
 
+def _transition_post_developer_finding(
+    ctx: TicketContext,
+    state_path: Path,
+    finding: PostDeveloperFinding,
+    run_index: int,
+) -> None:
+    """Block with the active declared reason and retain later diagnostic context."""
+    from booley.ticket_board.criteria_acceptance import project_active_declared_block_reason
+
+    declared_reason = project_active_declared_block_reason(state_path, work_dir=ctx.work_dir)
+    if declared_reason is None:
+        block_ticket(ctx, finding.reason, "developer", run_index=run_index)
+        return
+    block_ticket(
+        ctx,
+        declared_reason,
+        "developer",
+        run_index=run_index,
+        secondary_context=[finding.secondary_context],
+    )
+
+
 def _classify_developer_path_failure(
     ctx: TicketContext,
     project_root: Path,
     run_index: int,
     error: Exception,
+    *,
+    state_path: Path | None = None,
+    jobs_drained: bool = False,
 ) -> TicketRunResult:
     """Record a path failure without masking it after a durable Board move."""
     reason = f"Developer Agent path error: {type(error).__name__}: {error}"
@@ -1882,6 +1907,25 @@ def _classify_developer_path_failure(
         return _ticket_run_result(ctx.slug, "done")
     if status in {None, "running"}:
         try:
+            if status == "running" and jobs_drained and state_path is not None:
+                from booley.ticket_board.criteria_acceptance import (
+                    project_active_declared_block_reason,
+                )
+
+                declared_reason = project_active_declared_block_reason(
+                    state_path, work_dir=ctx.work_dir
+                )
+            else:
+                declared_reason = None
+            if declared_reason is not None:
+                block_ticket(
+                    ctx,
+                    declared_reason,
+                    "developer",
+                    run_index=run_index,
+                    secondary_context=[reason],
+                )
+                return _ticket_run_result(ctx.slug, "blocked")
             fail_ticket(ctx, reason, "developer", run_index=run_index, crashed=True)
         except Exception:
             logger.exception("Could not transition failed Ticket %s out of running", ctx.slug)
@@ -1968,8 +2012,8 @@ def _execute_hook(
     env: dict[str, str],
     run_index: int | None,
     budget: DeveloperBudget | None = None,
-) -> bool:
-    """Execute hook subprocess. Return True when it blocks the ticket."""
+) -> PostDeveloperFinding | None:
+    """Execute hook subprocess and return a finding when it fails."""
     from .colors import yellow
 
     timeout_seconds = 900.0
@@ -1996,22 +2040,22 @@ def _execute_hook(
             err_msg = result.stderr.strip() or f"exit code {result.returncode}"
             logger.warning("Post-developer hook failed: %s", err_msg)
             terminal.raw(f"  {yellow('[HOOK]')} post-developer failed: {err_msg}")
-            block_ticket(ctx, f"post-developer hook: {err_msg}", "developer", run_index=run_index)
-            return True
+            reason = f"post-developer hook: {err_msg}"
+            return PostDeveloperFinding(reason, reason)
         logger.info("Post-developer hook completed successfully")
-        return False
+        return None
     except subprocess.TimeoutExpired as exc:
         if budget is not None and wall_limited:
             raise budget.timeout_error("wall") from exc
         logger.error("Post-developer hook timed out (900s)")
         terminal.raw(f"  {yellow('[HOOK]')} post-developer timed out")
-        block_ticket(ctx, "post-developer hook timed out", "developer", run_index=run_index)
-        return True
+        reason = "post-developer hook timed out"
+        return PostDeveloperFinding(reason, reason)
     except Exception as e:
         logger.error("Post-developer hook error: %s", e, exc_info=True)
         terminal.raw(f"  {yellow('[HOOK]')} error: {e}")
-        block_ticket(ctx, f"post-developer hook error: {e}", "developer", run_index=run_index)
-        return True
+        reason = f"post-developer hook error: {e}"
+        return PostDeveloperFinding(reason, reason)
 
 
 async def _drain_outstanding_ticket_jobs(
@@ -2038,16 +2082,16 @@ def _run_post_developer_hook(
     logs_dir: Path,
     run_index: int | None = None,
     budget: DeveloperBudget | None = None,
-) -> bool:
+) -> PostDeveloperFinding | None:
     """Run .booley_project/hooks/post-developer.{sh,py} if it exists.
 
-    Returns True when the hook blocks the ticket. Hook stdout/stderr is logged.
+    Returns a finding when the hook blocks the ticket. Hook output is logged.
     """
     from .colors import dim
 
     hook = _find_hook_script(ctx)
     if hook is None:
-        return False
+        return None
 
     logger.info("Running post-developer hook: %s", hook)
     terminal.raw(f"  {dim('post-developer hook')} {hook.name}")

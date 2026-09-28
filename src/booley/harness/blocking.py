@@ -91,6 +91,7 @@ def _append_blocked_entry(
     kind: Literal["blocked", "failed", "crashed"] = "blocked",
     run_index: int | None = None,
     questions: list[str] | None = None,
+    secondary_context: list[str] | None = None,
 ) -> None:
     """Append an entry to the append-only blocked.md log.
 
@@ -109,6 +110,8 @@ def _append_blocked_entry(
     lines.append(f"**Step:** {step}")
     lines.append(f"**Reason:** {reason}")
     lines.append("")
+    if secondary_context:
+        lines.extend(["### Secondary context", "", *secondary_context, ""])
     if kind != "blocked":
         lines.extend(["### Error", "", reason, ""])
     if questions:
@@ -143,13 +146,20 @@ def block_ticket(
     step: str,
     questions: list[str] | None = None,
     run_index: int | None = None,
+    secondary_context: list[str] | None = None,
 ) -> None:
     """Block ticket and append entry to blocked.md."""
     logger.warning("Blocking %s at %s: %s", ctx.slug, step, reason)
     ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
     ticket_cli.block(ctx.project_root, ctx.slug, reason=reason, step=step, **ownership)
     _append_blocked_entry(
-        ctx.logs_dir, reason, step, "blocked", run_index=run_index, questions=questions
+        ctx.logs_dir,
+        reason,
+        step,
+        "blocked",
+        run_index=run_index,
+        questions=questions,
+        secondary_context=secondary_context,
     )
 
 
