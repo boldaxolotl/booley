@@ -116,7 +116,9 @@ and fractional seconds, but new persisted values use the canonical form.
 Human-visible dates use uppercase English three-letter months regardless of
 process locale: `10 AUG 2026`. Combined timestamps use the user's local time
 as `HH:MM[:SS] · DD MMM YYYY`. Use `booley.runtime.timefmt`; do not hand-roll another
-format string.
+format string. Persisted diagnostic log prefixes and their mirrored Console
+prefixes instead use canonical UTC RFC 3339 `Z` timestamps so events can be
+correlated across files.
 
 ## Verification
 

@@ -27,7 +27,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -75,7 +75,7 @@ from booley.runtime.project_repositories import (
     inspect_symbolic_branch,
     is_git_worktree_root,
 )
-from booley.runtime.timefmt import format_human_datetime
+from booley.runtime.timefmt import UtcLogFormatter, format_human_datetime
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 
@@ -174,17 +174,12 @@ def setup_logging(project_root: Path, verbose: bool = False) -> None:
     console = logging.StreamHandler(sys.stdout)
     if verbose:
         console.setLevel(logging.DEBUG)
-        console.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(levelname)-8s %(message)s",
-                datefmt="%H:%M:%S",
-            )
-        )
+        console.setFormatter(UtcLogFormatter("%(asctime)s %(levelname)-8s %(message)s"))
     else:
         console.setLevel(logging.INFO)
         from booley.harness.logging_utils import TerseFormatter
 
-        console.setFormatter(TerseFormatter(datefmt="%H:%M:%S"))
+        console.setFormatter(TerseFormatter())
     logger.addHandler(console)
 
     # File handler (full timestamps, always DEBUG).
@@ -195,9 +190,7 @@ def setup_logging(project_root: Path, verbose: bool = False) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
-    from booley.harness.logging_utils import HumanDateFormatter
-
-    fh.setFormatter(HumanDateFormatter("%(asctime)s %(levelname)-8s %(message)s"))
+    fh.setFormatter(UtcLogFormatter("%(asctime)s %(levelname)-8s %(message)s"))
     logger.addHandler(fh)
 
     logger.setLevel(logging.DEBUG)
@@ -2039,7 +2032,8 @@ def _print_banner(args: argparse.Namespace) -> None:
     print("  ╭━━━━━━━━━╮")
     print(f"  ┃  {bold_amber('0')}   {bold_amber('0')}  ┃  {booley_name}")
     print(f"  ┃    ᴗ    ┃  {dim(mode_label)}")
-    print(f"  ╰┯┯┯┯─┯┯┯┯╯  {dim(format_human_datetime(datetime.now(), seconds=True))}")
+    banner_time = format_human_datetime(datetime.now(UTC), seconds=True)
+    print(f"  ╰┯┯┯┯─┯┯┯┯╯  {dim(banner_time)}")
 
 
 @dataclass
@@ -2268,7 +2262,8 @@ def _check_fast_failure(
 
 def _handle_limit_wait(limit_wait: int) -> str:
     """Sleep through a subscription limit cooldown; returns 'continue' or 'break'."""
-    resume_time = datetime.fromtimestamp(time.time() + limit_wait).strftime("%H:%M")
+    resume_instant = datetime.fromtimestamp(time.time() + limit_wait, tz=UTC)
+    resume_time = format_human_datetime(resume_instant)
     logger.debug(
         "Subscription limit detected -- sleeping %ds (until ~%s)", limit_wait, resume_time
     )
