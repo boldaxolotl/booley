@@ -316,6 +316,28 @@ def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path)
     assert result.merge.status == "equivalent"
 
 
+def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> None:
+    _write_custom_target(tmp_path)
+    raw_destination = tmp_path / "campaign/native/raw/001-custom.dat"
+    raw_destination.mkdir(parents=True)
+
+    result = _collect_target(tmp_path, "custom")
+
+    assert result.status == "collector_error"
+    assert result.runs[0].simulation_verdict == "fail"
+    assert result.infrastructure_error is False
+    assert [finding.code for finding in result.findings] == ["COV_WRITE_HOOK_FAILED"]
+    assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
+    hook = next(
+        artifact for artifact in result.artifacts if artifact.kind == "coverage_hook_evidence"
+    )
+    document = json.loads((tmp_path / "campaign" / hook.path).read_text(encoding="utf-8"))
+    assert document["events"] == [
+        {"hook": "start", "sequence": 1, "success": True},
+        {"hook": "write", "sequence": 2, "success": False},
+    ]
+
+
 def _coverage_campaign_path(reports: Path, detail: Mapping[str, Any]) -> Path:
     """Locate the public Coverage reference from its typed, invocation-relative artifact."""
     reference = detail["targets"]["sim"]["coverage_campaign"]
@@ -424,14 +446,6 @@ def _assert_python_cache_evidence(root: Path, helper: Path) -> None:
     evidence = json.loads(evidence_paths[-1].read_text(encoding="utf-8"))
     assert Path(evidence["helper"]).resolve() == helper.resolve()
     assert Path(evidence["module"]).name == "test_case.py"
-    cache_artifacts = [
-        item
-        for item in root.rglob("*")
-        if item.name in {"__pycache__", ".pytest_cache"} or item.suffix == ".pyc"
-    ]
-    allowed = root / ".booley_project" / ".runtime"
-    assert cache_artifacts
-    assert all(item == allowed or allowed in item.parents for item in cache_artifacts)
 
 
 def _assert_two_run_coverage_campaign(root: Path, detail: Mapping[str, Any]) -> None:

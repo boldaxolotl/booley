@@ -2776,4 +2776,7 @@ def test_endpoint_environment_without_project_uses_runtime_fallback(
     environment = mcp_server._endpoint_subprocess_env()
 
     assert environment["BOOLEY_RUNTIME_DIR"]
-    assert environment["PYTHONPYCACHEPREFIX"].endswith("python-artifacts/bytecode")
+    assert Path(environment["PYTHONPYCACHEPREFIX"]).parts[-2:] == (
+        "python-artifacts",
+        "bytecode",
+    )

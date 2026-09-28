@@ -149,12 +149,12 @@ class TestBuildCocotbEnv:
         # run_cwd cannot break the module import.
         assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path)
         cache_root = tmp_path / "python-artifacts"
-        assert env["PYTHONPYCACHEPREFIX"] == str(cache_root / "bytecode")
+        assert "PYTHONPYCACHEPREFIX" not in env
+        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
         pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
         assert pytest_cache.parent == cache_root / "pytest"
-        assert "PYTHONDONTWRITEBYTECODE" not in env
 
-    def test_env_reuses_endpoint_runtime_for_bytecode(self, tmp_path: Path):
+    def test_env_reuses_endpoint_runtime_for_pytest(self, tmp_path: Path):
         runtime = tmp_path / "runtime"
         with (
             patch.dict(os.environ, {"BOOLEY_RUNTIME_DIR": str(runtime)}, clear=True),
@@ -167,8 +167,9 @@ class TestBuildCocotbEnv:
                 tmp_path / "attempt" / "results.xml",
             )
 
-        assert env["PYTHONPYCACHEPREFIX"] == str(runtime / "python-artifacts" / "bytecode")
-        assert str(tmp_path / "attempt") not in env["PYTHONPYCACHEPREFIX"]
+        pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
+        assert pytest_cache.parent == runtime / "python-artifacts" / "pytest"
+        assert str(tmp_path / "attempt") not in str(pytest_cache)
 
     def test_2x_dialect_sets_no_testcase(self, tmp_path: Path):
         # cocotb 2.x removed TESTCASE — the 2.x dialect must never set it.

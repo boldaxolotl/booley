@@ -27,6 +27,21 @@ def test_relocation_copies_environment_and_sets_exact_destinations(tmp_path: Pat
     assert not (tmp_path / "cache root").exists()
 
 
+def test_relocation_can_disable_bytecode_for_embedded_python(tmp_path: Path) -> None:
+    relocated = relocate_python_artifacts(
+        {
+            "PYTHONPYCACHEPREFIX": "inherited",
+            "PYTHONDONTWRITEBYTECODE": "0",
+        },
+        tmp_path,
+        write_bytecode=False,
+    )
+
+    assert "PYTHONPYCACHEPREFIX" not in relocated
+    assert relocated["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert f"cache_dir={tmp_path / 'pytest'}" in relocated["PYTEST_ADDOPTS"]
+
+
 @pytest.mark.parametrize(
     "existing",
     [

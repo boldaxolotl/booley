@@ -426,6 +426,7 @@ def _build_cocotb_env(
         env,
         cache_root,
         pytest_scope=f"cocotb:{module}:{build_dir.resolve()}",
+        write_bytecode=False,
     )
 
 

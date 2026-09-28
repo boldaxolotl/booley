@@ -22,10 +22,16 @@ def relocate_python_artifacts(
     cache_root: Path,
     *,
     pytest_scope: str | None = None,
+    write_bytecode: bool = True,
 ) -> dict[str, str]:
-    """Copy *environment* and redirect bytecode and pytest caches."""
+    """Copy *environment*, control bytecode, and redirect pytest caches."""
     relocated = dict(environment)
-    relocated["PYTHONPYCACHEPREFIX"] = str(cache_root / "bytecode")
+    if write_bytecode:
+        relocated.pop("PYTHONDONTWRITEBYTECODE", None)
+        relocated["PYTHONPYCACHEPREFIX"] = str(cache_root / "bytecode")
+    else:
+        relocated.pop("PYTHONPYCACHEPREFIX", None)
+        relocated["PYTHONDONTWRITEBYTECODE"] = "1"
     options = _pytest_options(relocated.get("PYTEST_ADDOPTS", ""))
     pytest_root = cache_root / "pytest"
     if pytest_scope:
