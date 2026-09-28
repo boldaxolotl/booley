@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
@@ -250,14 +251,12 @@ def test_runtime_coordinates_grant_mutation_order_inside_lifecycle_lock(
     assert identities and set(identities) == {project_identity}
 
 
-def _assert_runtime_start_is_blocked(
+def _waiting_runtime_command(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
     runtime_command: str,
-) -> None:
-    from booley.runtime import lifecycle_lock
-
-    invoked = []
+    invoked: list[str],
+) -> Callable[[], object]:
     if runtime_command == "up":
         monkeypatch.setattr(session_runtime, "_recover_before_lifecycle", lambda *_args: None)
         monkeypatch.setattr(
@@ -265,17 +264,55 @@ def _assert_runtime_start_is_blocked(
             "_up_unlocked",
             lambda *_args, **_kwargs: invoked.append("up"),
         )
-        with pytest.raises(lifecycle_lock.LifecycleLockError, match="lifecycle is busy"):
-            session_runtime.up(project)
-    else:
-        monkeypatch.setattr(
-            session_refresh,
-            "_refresh_unlocked",
-            lambda *_args, **_kwargs: invoked.append("refresh"),
-        )
-        with pytest.raises(lifecycle_lock.LifecycleLockError, match="lifecycle is busy"):
-            session_refresh.refresh(project, object())
-    assert invoked == []
+
+        def run() -> object:
+            return session_runtime.up(project)
+
+        return run
+    monkeypatch.setattr(
+        session_refresh,
+        "_refresh_unlocked",
+        lambda *_args, **_kwargs: invoked.append("refresh"),
+    )
+
+    def run() -> object:
+        return session_refresh.refresh(project, object())
+
+    return run
+
+
+def _run_runtime_command(
+    operation: Callable[[], object],
+    errors: list[RuntimeError],
+    done: threading.Event,
+) -> None:
+    try:
+        operation()
+    except RuntimeError as exc:  # pragma: no cover - asserted by the caller
+        errors.append(exc)
+    finally:
+        done.set()
+
+
+def _start_grant_mutation(project, mutation, done, errors) -> threading.Thread:
+    def run_grant() -> None:
+        try:
+            issuance_invalidation.coordinate_mutation(
+                operation="grant revoke",
+                resolve_project_identity=lambda: str(project),
+                mutation=mutation,
+                cleanup_resources=lambda _identity: (),
+                invalidate_before_mutation=True,
+                cleanup_after_mutation=False,
+            )
+        except RuntimeError as exc:  # pragma: no cover - asserted by the caller
+            errors.append(exc)
+        finally:
+            done.set()
+
+    grant = threading.Thread(target=run_grant)
+    grant.start()
+    return grant
 
 
 @pytest.mark.parametrize("runtime_command", ["up", "refresh"])
@@ -289,6 +326,9 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     commit_entered = threading.Event()
     release_commit = threading.Event()
     grant_done = threading.Event()
+    runtime_waiting = threading.Event()
+    runtime_done = threading.Event()
+    invoked: list[str] = []
     errors: list[RuntimeError] = []
 
     @contextmanager
@@ -304,30 +344,35 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
     monkeypatch.setattr(session_issuance, "invalidate_project", lambda _identity: None)
 
-    def run_grant() -> None:
-        try:
-            issuance_invalidation.coordinate_mutation(
-                operation="grant revoke",
-                resolve_project_identity=lambda: str(project),
-                mutation=mutation,
-                cleanup_resources=lambda _identity: (),
-                invalidate_before_mutation=True,
-                cleanup_after_mutation=False,
-            )
-        except RuntimeError as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
-        finally:
-            grant_done.set()
-
-    grant = threading.Thread(target=run_grant)
-    grant.start()
+    grant = _start_grant_mutation(project, mutation, grant_done, errors)
     assert commit_entered.wait(2)
-    _assert_runtime_start_is_blocked(project, monkeypatch, runtime_command)
+
+    from booley.runtime import lifecycle_lock
+
+    real_wait = lifecycle_lock.wait_for_file_lock
+
+    def observed_wait(handle, *, timeout_s, on_wait=None) -> None:
+        runtime_waiting.set()
+        real_wait(handle, timeout_s=timeout_s, on_wait=on_wait)
+
+    monkeypatch.setattr(lifecycle_lock, "wait_for_file_lock", observed_wait)
+    operation = _waiting_runtime_command(project, monkeypatch, runtime_command, invoked)
+    runtime = threading.Thread(
+        target=_run_runtime_command,
+        args=(operation, errors, runtime_done),
+    )
+    runtime.start()
+    assert runtime_waiting.wait(2)
+    assert invoked == []
+    assert not runtime_done.is_set()
 
     release_commit.set()
     grant.join(2)
+    runtime.join(2)
     assert grant_done.is_set()
+    assert runtime_done.is_set()
     assert errors == []
+    assert invoked == [runtime_command]
     assert issuance_invalidation.pending_invalidations() == ()
 
 

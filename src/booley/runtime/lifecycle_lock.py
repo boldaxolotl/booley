@@ -19,6 +19,7 @@ from booley.runtime.file_lock import (
 
 _LOCK_DIR = "locks"
 _LOCK_NAME = "docker-lifecycle.lock"
+DEFAULT_WAIT_TIMEOUT_SECONDS = 120.0
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,9 @@ def _lock_owner(handle: TextIO) -> str:
 def host_lifecycle_lock(
     operation: str,
     *,
-    wait_timeout_s: float | None = None,
+    wait_timeout_s: float | None = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> Iterator[None]:
-    """Hold the host-wide lock, optionally waiting for bounded contention."""
+    """Hold the host-wide lock, waiting by default for bounded contention."""
     directory = config_dir() / _LOCK_DIR
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = directory / _LOCK_NAME

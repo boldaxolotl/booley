@@ -486,6 +486,49 @@ def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
     assert tlr.main() == 17
 
 
+@pytest.mark.parametrize(
+    ("argv", "command"),
+    [
+        (["bootstrap"], "bootstrap"),
+        (["init"], "init"),
+        (["session", "up"], "session"),
+        (["doctor"], "doctor"),
+        (["auth"], "auth"),
+        (["eda", "grant", "revoke", "/project", "--kind", "vivado"], "eda"),
+    ],
+)
+def test_main_renders_lifecycle_timeout_once_without_traceback(
+    argv, command, tmp_path, monkeypatch, capsys
+):
+    from booley.runtime.lifecycle_lock import LifecycleLockError
+
+    args = tlr._build_parser().parse_args(argv)
+    failure = LifecycleLockError(
+        "host Docker lifecycle is busy (pid=41 operation=project init); "
+        "timed out after waiting 120s"
+    )
+
+    def raise_timeout(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
+    monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
+    monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
+    if command == "bootstrap":
+        monkeypatch.setattr(tlr, "run_bootstrap", raise_timeout)
+    else:
+        monkeypatch.setitem(tlr._EARLY_COMMANDS, command, raise_timeout)
+
+    assert tlr.main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"ERROR: {failure}\n"
+    assert "Traceback" not in captured.err
+
+
 def test_projects_dispatch_precedes_active_project_discovery(monkeypatch):
     from booley.projects import cli as project_inventory_cli
 
@@ -3078,6 +3121,32 @@ def test_at_cap_session_start_reports_status_two_without_success(
     captured = capsys.readouterr()
     assert "interactive.max_sessions=1" in captured.err
     assert "Sandbox ready" not in captured.out
+
+
+def test_session_lifecycle_timeout_reaches_main_boundary(tmp_path, monkeypatch):
+    from booley.runtime.lifecycle_lock import LifecycleLockError
+
+    args = tlr._build_parser().parse_args(["session", "up"])
+
+    def raise_timeout(*_args, **_kwargs):
+        raise LifecycleLockError("host Docker lifecycle timed out")
+
+    monkeypatch.setattr(tlr, "_session_up", raise_timeout)
+
+    with pytest.raises(LifecycleLockError, match="lifecycle timed out"):
+        tlr._cmd_session(args, tmp_path)
+
+
+def test_session_plain_runtime_error_remains_one_line(tmp_path, monkeypatch, capsys):
+    args = tlr._build_parser().parse_args(["session", "up"])
+
+    def raise_runtime_error(*_args, **_kwargs):
+        raise RuntimeError("image refresh failed")
+
+    monkeypatch.setattr(tlr, "_session_up", raise_runtime_error)
+
+    assert tlr._cmd_session(args, tmp_path) == 2
+    assert capsys.readouterr().err == "ERROR: image refresh failed\n"
 
 
 @pytest.mark.parametrize(

@@ -68,6 +68,7 @@ from booley.harness.subscription_limit import detect_subscription_limit
 from booley.harness.terminal import status, status_indent
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
+from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
 from booley.runtime.project_dir import PROJECT_DIR_NAME
 from booley.runtime.project_repositories import (
@@ -1620,6 +1621,8 @@ def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
     except FileNotFoundError:
         print("ERROR: docker not found on PATH.", file=sys.stderr)
         return 2
+    except LifecycleLockError:
+        raise
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -2545,8 +2548,8 @@ def _host_install_authority_error(command: str | None) -> str | None:
     return host_install_error(skills_dir())
 
 
-def main() -> int:  # noqa: PLR0911 -- CLI coordinator; returns preserve each command's exit code
-    """Entry point: parse CLI, handle early exits, set up runtime, run ticket loop."""
+def _dispatch_main() -> int:  # noqa: PLR0911 -- preserves command exit codes
+    """Parse CLI, handle early exits, set up runtime, and run the ticket loop."""
     args = _parse_cli()
     command = _effective_command(args)
 
@@ -2590,6 +2593,15 @@ def main() -> int:  # noqa: PLR0911 -- CLI coordinator; returns preserve each co
     venv_py = _setup_runtime(args, project_root)
     _print_banner(args)
     return _ticket_loop(args, project_root, venv_py)
+
+
+def main() -> int:
+    """Run the CLI with one rendering boundary for lifecycle contention."""
+    try:
+        return _dispatch_main()
+    except LifecycleLockError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
