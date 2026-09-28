@@ -590,7 +590,7 @@ class TestDevcontainerSpecStaleness:
         # Real temporary-directory Git inspection reports no tracked spec.
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
         monkeypatch.setattr(
-            inspection.image_identity,
+            inspection.idk,
             "compare_issued_selection",
             lambda *_args, **_kwargs: inspection.image_identity.Comparison(
                 inspection.image_identity.Status.UNKNOWN
@@ -630,7 +630,7 @@ class TestDevcontainerSpecStaleness:
         # Real temporary-directory Git inspection reports no tracked spec.
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
         monkeypatch.setattr(
-            inspection.image_identity,
+            inspection.idk,
             "compare_issued_selection",
             lambda *_args, **_kwargs: inspection.image_identity.Comparison(
                 inspection.image_identity.Status.MATCH
@@ -658,6 +658,35 @@ class TestDevcontainerSpecStaleness:
 
         assert rec.fails() == []
         assert not any(level == "warn" for level, _message in rec.events)
+
+    def test_logical_image_switch_warns(self, tmp_path, monkeypatch):
+        old_id = "sha256:" + "a" * 64
+        dc.write_devcontainer(
+            tmp_path,
+            dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id),
+        )
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
+        monkeypatch.setattr(
+            inspection.idk,
+            "compare_issued_selection",
+            lambda *_args, **_kwargs: inspection.image_identity.Comparison(
+                inspection.image_identity.Status.MISMATCH,
+                "sandbox_flavor standard -> riscv",
+            ),
+        )
+        rec = _Rec()
+
+        _record_report(
+            inspection.inspect_runtime(
+                inspection.RuntimeInspectionRequest(tmp_path, dc.SANDBOX_IMAGE, None)
+            ).configuration,
+            passed=rec.p,
+            warned=rec.w,
+            failed=rec.f,
+            noted=rec.n,
+        )
+
+        assert any(level == "warn" and "stale" in message for level, message in rec.events)
 
     def test_agent_app_drift_fails(self, tmp_path, monkeypatch):
         # The picorv32 shape, hit live 2026-07-27: the project switched to

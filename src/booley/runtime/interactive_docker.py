@@ -23,7 +23,7 @@ from booley.config.settings import InteractiveConfig
 from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT
 
 if TYPE_CHECKING:
-    from booley.runtime.image_identity import ImageMetadata
+    from booley.runtime.image_identity import Comparison, ImageMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +195,38 @@ def inspect_image_metadata(
     except json.JSONDecodeError:
         return None
     return decode_image_metadata(reference, document)
+
+
+def compare_issued_build(image: str, *, executable: str = "docker") -> Comparison:
+    """Compare one exact issued image with the canonical host installation."""
+    from booley.runtime.image_identity import (
+        Comparison,
+        Status,
+        build_identity,
+        compare_build_identity,
+        current_host_build_identity,
+    )
+
+    expected = current_host_build_identity()
+    observed = inspect_image_metadata(image, executable=executable)
+    if expected is None or observed is None:
+        return Comparison(Status.UNKNOWN)
+    return compare_build_identity(expected, build_identity(observed))
+
+
+def compare_issued_selection(
+    issued_reference: str,
+    configured_reference: str,
+    *,
+    executable: str = "docker",
+) -> Comparison:
+    """Inspect and compare issued/configured selection without mutation."""
+    from booley.runtime.image_identity import compare_logical_selection
+
+    def inspect(reference: str) -> ImageMetadata | None:
+        return inspect_image_metadata(reference, executable=executable)
+
+    return compare_logical_selection(issued_reference, configured_reference, inspect)
 
 
 def _container_image_matches(container: str, image: str) -> bool | None:

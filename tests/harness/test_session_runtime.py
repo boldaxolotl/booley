@@ -2765,7 +2765,12 @@ class TestImageDriftWarning:
             return sr.image_identity.ImageMetadata(
                 reference,
                 digest if reference == digest else "sha256:" + "b" * 64,
-                {"io.booley.sandbox.selection-fingerprint": fingerprint},
+                {
+                    "io.booley.provenance.schema": "3",
+                    "io.booley.artifact.role": "wheel-overlay",
+                    "io.booley.build.recipe-fingerprint": "wheel-recipe",
+                    "io.booley.sandbox.selection-fingerprint": fingerprint,
+                },
                 {},
             )
 
@@ -2785,7 +2790,7 @@ class TestImageDriftWarning:
             sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
         )
         monkeypatch.setattr(
-            sr.image_identity,
+            sr.idk,
             "compare_issued_selection",
             lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
         )
@@ -2845,13 +2850,13 @@ class TestStaleBooleyBakeWarning:
 
     def test_unknown_identity_is_silent(self, caplog):
         result = sr.image_identity.Comparison(sr.image_identity.Status.UNKNOWN)
-        with patch.object(sr.image_identity, "compare_issued_build", return_value=result):
+        with patch.object(sr.idk, "compare_issued_build", return_value=result):
             sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
         assert "stale Booley code" not in caplog.text
 
     def test_match_is_silent(self, caplog):
         result = sr.image_identity.Comparison(sr.image_identity.Status.MATCH)
-        with patch.object(sr.image_identity, "compare_issued_build", return_value=result):
+        with patch.object(sr.idk, "compare_issued_build", return_value=result):
             sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
         assert "stale Booley code" not in caplog.text
 

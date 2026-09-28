@@ -184,7 +184,7 @@ def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findin
     if not isinstance(spec_image, str) or spec_image == request.image:
         return True
     if immutable_spec:
-        comparison = image_identity.compare_issued_selection(
+        comparison = idk.compare_issued_selection(
             spec_image, request.image, executable=request.docker_exe or "docker"
         )
     else:
@@ -423,7 +423,7 @@ def _list_issued_containers(
 
 def _check_runtime_booley_version(docker_exe: str, image: str, report: Findings) -> None:
     """Require comparable host and issued-image Booley identities to agree."""
-    result = image_identity.compare_issued_build(image, executable=docker_exe)
+    result = idk.compare_issued_build(image, executable=docker_exe)
     if result.status is image_identity.Status.MISMATCH:
         report.fail(
             f"host and issued Sandbox Image contain different Booley code ({result.detail})",

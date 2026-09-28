@@ -133,17 +133,26 @@ def test_decode_rejects_unbounded_metadata() -> None:
 
     assert identity.decode_image_metadata("issued", document) is None
 
+    oversized_environment = [{"Id": "sha256:issued", "Config": {"Env": ["X=" + "x" * 20_000]}}]
+    assert identity.decode_image_metadata("issued", oversized_environment) is None
+
 
 def test_final_selection_fingerprint_survives_pruned_ancestry() -> None:
+    fingerprint = "f" * 64
     old = _metadata(
         "sha256:old",
         image_id="sha256:old",
-        labels={"io.booley.sandbox.selection-fingerprint": "same"},
+        labels={
+            "io.booley.provenance.schema": "3",
+            "io.booley.artifact.role": "wheel-overlay",
+            "io.booley.build.recipe-fingerprint": "recipe-wheel",
+            "io.booley.sandbox.selection-fingerprint": fingerprint,
+        },
     )
     moved = _metadata(
         "tag",
         image_id="sha256:new",
-        labels={"io.booley.sandbox.selection-fingerprint": "same"},
+        labels=dict(old.labels),
     )
 
     result = identity.compare_logical_selection(
@@ -151,13 +160,6 @@ def test_final_selection_fingerprint_survives_pruned_ancestry() -> None:
     )
 
     assert result.status is identity.Status.MATCH
-    assert (
-        identity.decode_image_metadata(
-            "issued",
-            [{"Id": "sha256:issued", "Config": {"Env": ["X=" + "x" * 20_000]}}],
-        )
-        is None
-    )
 
 
 def test_equal_stamped_selection_fingerprints_ignore_image_ids() -> None:
@@ -165,12 +167,17 @@ def test_equal_stamped_selection_fingerprints_ignore_image_ids() -> None:
     issued = _metadata(
         "sha256:issued",
         image_id="sha256:old",
-        labels={"io.booley.sandbox.selection-fingerprint": fingerprint},
+        labels={
+            "io.booley.provenance.schema": "3",
+            "io.booley.artifact.role": "wheel-overlay",
+            "io.booley.build.recipe-fingerprint": "recipe-wheel",
+            "io.booley.sandbox.selection-fingerprint": fingerprint,
+        },
     )
     configured = _metadata(
         "booley-sandbox",
         image_id="sha256:new",
-        labels={"io.booley.sandbox.selection-fingerprint": fingerprint},
+        labels=dict(issued.labels),
     )
 
     result = identity.compare_logical_selection(
@@ -181,6 +188,60 @@ def test_equal_stamped_selection_fingerprints_ignore_image_ids() -> None:
     )
 
     assert result.status is identity.Status.MATCH
+
+
+def test_malformed_selection_fingerprint_is_unknown() -> None:
+    issued = _same_source_graph("a")
+    configured = _same_source_graph("b")
+    issued["sha256:a2"].labels["io.booley.sandbox.selection-fingerprint"] = "not-a-sha256"
+    configured["tag"].labels["io.booley.sandbox.selection-fingerprint"] = "f" * 64
+
+    result = identity.compare_logical_selection("sha256:a2", "tag", issued.get, configured.get)
+
+    assert result.status is identity.Status.UNKNOWN
+
+
+def test_inherited_fingerprint_does_not_hide_derived_image_recipe() -> None:
+    fingerprint = "f" * 64
+    base = _node("sha256:base", "wheel-overlay", "sha256:parent")
+    base.labels["io.booley.sandbox.selection-fingerprint"] = fingerprint
+    derived = _node("sha256:derived", "wheel-overlay", "sha256:base")
+    derived.labels["io.booley.sandbox.selection-fingerprint"] = fingerprint
+    derived.labels["io.booley.build.recipe-fingerprint"] = "project-recipe"
+    graph = {"sha256:base": base, "configured": derived}
+
+    result = identity.compare_logical_selection("sha256:base", "configured", graph.get, graph.get)
+
+    assert result.status is identity.Status.MISMATCH
+    assert "recipe_fingerprint" in result.detail
+
+
+def test_mixed_schema_three_and_legacy_ancestry_is_unknown() -> None:
+    final = _node("sha256:final", "wheel-overlay", "sha256:legacy")
+    legacy = _metadata(
+        "sha256:legacy",
+        image_id="sha256:legacy",
+        labels={"io.booley.build.recipe-fingerprint": "legacy-recipe"},
+    )
+    graph = {"sha256:final": final, "tag": final, "sha256:legacy": legacy}
+
+    result = identity.compare_logical_selection("sha256:final", "tag", graph.get, graph.get)
+
+    assert result.status is identity.Status.UNKNOWN
+
+
+def test_registry_digest_parent_is_a_terminal_selection_fact() -> None:
+    left = _same_source_graph("a", registry_parent=True)
+    right = _same_source_graph("b", registry_parent=True)
+    right["tag"].labels["io.booley.build.parent-artifact"] = (
+        "example.test/booley@sha256:" + "d" * 64
+    )
+
+    same = identity.compare_logical_selection("sha256:a2", "tag", left.get, left.get)
+    changed = identity.compare_logical_selection("sha256:a2", "tag", left.get, right.get)
+
+    assert same.status is identity.Status.MATCH
+    assert changed.status is identity.Status.MISMATCH
 
 
 def test_schema_three_graph_ignores_changed_image_and_parent_ids() -> None:
@@ -212,17 +273,12 @@ def test_changed_project_inputs_mismatch() -> None:
     assert "effective_inputs" in result.detail
 
 
-def test_pruned_parent_and_registry_parent_are_unknown_not_stale() -> None:
+def test_pruned_parent_is_unknown_not_stale() -> None:
     pruned = _same_source_graph("a")
     del pruned["sha256:a1"]
-    registry = _same_source_graph("b", registry_parent=True)
 
     assert (
         identity.compare_logical_selection("sha256:a2", "tag", pruned.get, pruned.get).status
-        is identity.Status.UNKNOWN
-    )
-    assert (
-        identity.compare_logical_selection("sha256:b2", "tag", registry.get, registry.get).status
         is identity.Status.UNKNOWN
     )
 

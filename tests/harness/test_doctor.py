@@ -245,7 +245,7 @@ def _patch_environment(
         lambda _root: "booley-session-test",
     )
     monkeypatch.setattr(
-        doctor.image_identity,
+        doctor.idk,
         "compare_issued_build",
         lambda *_args, **_kwargs: doctor.image_identity.Comparison(
             doctor.image_identity.Status.MATCH
@@ -463,7 +463,7 @@ def test_doctor_fails_when_issued_runtime_has_different_booley_identity(
         runtime_booley_version="9.9.9",
     )
     monkeypatch.setattr(
-        doctor.inspection.image_identity,
+        doctor.inspection.idk,
         "compare_issued_build",
         lambda *_args, **_kwargs: doctor.inspection.image_identity.Comparison(
             doctor.inspection.image_identity.Status.MISMATCH,
@@ -4040,7 +4040,7 @@ def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monk
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_identity,
+        doctor.idk,
         "compare_issued_build",
         lambda *_args, **_kwargs: doctor.image_identity.Comparison(
             doctor.image_identity.Status.MISMATCH,
@@ -4062,7 +4062,7 @@ def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkey
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_identity,
+        doctor.idk,
         "compare_issued_build",
         lambda *_args, **_kwargs: doctor.image_identity.Comparison(
             doctor.image_identity.Status.MATCH
@@ -4085,7 +4085,7 @@ def test_image_bakes_current_booley_warns_when_provenance_is_stale(tmp_path, mon
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_identity,
+        doctor.idk,
         "compare_issued_build",
         lambda *_args, **_kwargs: doctor.image_identity.Comparison(
             doctor.image_identity.Status.MISMATCH, "revision old -> new"
@@ -4106,7 +4106,7 @@ def test_image_bakes_current_booley_passes_when_provenance_is_current(tmp_path, 
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_identity,
+        doctor.idk,
         "compare_issued_build",
         lambda *_args, **_kwargs: doctor.image_identity.Comparison(
             doctor.image_identity.Status.MATCH
@@ -4148,7 +4148,7 @@ def test_image_bakes_current_booley_silent_when_undeterminable(tmp_path, monkeyp
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_identity,
+        doctor.idk,
         "compare_issued_build",
         lambda *_args, **_kwargs: doctor.image_identity.Comparison(
             doctor.image_identity.Status.UNKNOWN

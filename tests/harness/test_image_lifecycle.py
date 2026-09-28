@@ -220,6 +220,24 @@ def test_incremental_plan_produces_a_true_noop_for_current_graph(
     assert all(step.action is lifecycle.PlanAction.REUSE for step in current.steps)
 
 
+def test_legacy_check_misclassifies_current_role_graph_as_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Characterize why issued-image diagnostics must not call legacy reconcile."""
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    current = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    _install_planned_graph(docker, current.nodes)
+
+    legacy = lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK, docker=docker
+    )
+
+    assert legacy.status is lifecycle.Status.STALE
+
+
 def test_source_and_release_final_images_share_selection_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -729,6 +747,23 @@ def test_runtime_release_parent_validation_and_adapter_guards(
         lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
 
 
+def test_published_release_without_selection_label_still_verifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    node = lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
+    parent = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "d" * 64
+    labels = _registry_labels(node, parent)
+    labels.pop(lifecycle.LABEL_LOGICAL_SELECTION_FINGERPRINT)
+    labels[lifecycle.LABEL_WHEEL_SHA256] = "e" * 64
+    docker = FakeDocker({"release": ("sha256:" + "a" * 64, labels)})
+
+    prepared = lifecycle._verify_prepared_image(node, "release", None, docker)
+
+    assert prepared.image_id == "sha256:" + "a" * 64
+
+
 def test_incremental_adapter_release_pull_and_project_recipe_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -918,6 +953,31 @@ def test_official_release_project_requirements_use_local_overlay_only(
         lifecycle.PlanAction.PULL,
         lifecycle.PlanAction.BUILD,
     ]
+
+
+def test_hybrid_project_selection_fingerprint_includes_release_flavor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    standard = _project(tmp_path / "standard")
+    riscv = _project(tmp_path / "riscv", "booley-sandbox-riscv")
+    for root in (standard, riscv):
+        (root / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
+        config = root / ".booley_project" / "booley.toml"
+        configured = "booley-sandbox-riscv" if root == riscv else "booley-sandbox"
+        config.write_text(
+            f'[sandbox]\nimage = "{configured}"\npip_requirements = ["requirements.txt"]\n',
+            encoding="utf-8",
+        )
+    contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+
+    standard_graph = lifecycle._hybrid_release_graph(standard, "same-project", contracts)
+    riscv_graph = lifecycle._hybrid_release_graph(riscv, "same-project", contracts)
+
+    assert (
+        standard_graph[-1].logical_selection_fingerprint
+        != riscv_graph[-1].logical_selection_fingerprint
+    )
 
 
 def test_official_release_default_project_requirements_use_standard_overlay(

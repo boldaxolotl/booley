@@ -751,7 +751,11 @@ def _stamp_logical_selection(
         )
         for node in nodes
     )
-    fingerprint = logical_selection_fingerprint_for_chain(selected, projection)
+    fingerprint = logical_selection_fingerprint_for_chain(
+        selected,
+        projection,
+        initial_parent_key=nodes[0].logical_selection_fingerprint or "",
+    )
     return (*nodes[:-1], replace(nodes[-1], logical_selection_fingerprint=fingerprint))
 
 
@@ -1088,7 +1092,10 @@ def _prepared_provenance(node: ImageNode, parent_artifact: str | None) -> dict[s
     }
     if node.wheel_source_fingerprint is not None:
         required[LABEL_WHEEL_SOURCE_FINGERPRINT] = node.wheel_source_fingerprint
-    if node.logical_selection_fingerprint is not None:
+    if (
+        node.logical_selection_fingerprint is not None
+        and node.acquisition_policy is not ArtifactPolicy.VERIFIED_RELEASE_ONLY
+    ):
         required[LABEL_LOGICAL_SELECTION_FINGERPRINT] = node.logical_selection_fingerprint
     required.update(_image_contract_labels(node))
     if parent_artifact is not None:

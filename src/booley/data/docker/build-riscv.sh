@@ -53,10 +53,10 @@ RISCV_ID="$(docker image inspect booley-sandbox-riscv-substrate:local --format '
 OVERLAY_RECIPE="$(PYTHONPATH="$BOOLEY_ROOT/src" "$FP_PY" -P -c \
   'import sys; from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path(sys.argv[1]),)))' \
   "$SCRIPT_DIR/Dockerfile.wheel")"
-BASE_INPUTS="$(docker image inspect booley-runtime-base:local --format '{{ index .Config.Labels "io.booley.artifact.effective-inputs" }}')"
-BASE_RECIPE="$(docker image inspect booley-runtime-base:local --format '{{ index .Config.Labels "io.booley.build.recipe-fingerprint" }}')"
-STANDARD_INPUTS="$(docker image inspect booley-sandbox-standard-substrate:local --format '{{ index .Config.Labels "io.booley.artifact.effective-inputs" }}')"
-STANDARD_RECIPE="$(docker image inspect booley-sandbox-standard-substrate:local --format '{{ index .Config.Labels "io.booley.build.recipe-fingerprint" }}')"
+BASE_INPUTS="$(docker image inspect booley-runtime-base:local --format '{{ with index .Config.Labels "io.booley.artifact.effective-inputs" }}{{ . }}{{ end }}')"
+BASE_RECIPE="$(docker image inspect booley-runtime-base:local --format '{{ with index .Config.Labels "io.booley.build.recipe-fingerprint" }}{{ . }}{{ end }}')"
+STANDARD_INPUTS="$(docker image inspect booley-sandbox-standard-substrate:local --format '{{ with index .Config.Labels "io.booley.artifact.effective-inputs" }}{{ . }}{{ end }}')"
+STANDARD_RECIPE="$(docker image inspect booley-sandbox-standard-substrate:local --format '{{ with index .Config.Labels "io.booley.build.recipe-fingerprint" }}{{ . }}{{ end }}')"
 SELECTION_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$FP_PY" -P -c \
   'import sys; from booley.runtime.image_identity import logical_selection_fingerprint_for_chain as fingerprint; values=sys.argv[2:]; print(fingerprint(sys.argv[1], tuple(tuple(values[index:index+5]) for index in range(0, len(values), 5))))' \
   booley-sandbox-riscv \

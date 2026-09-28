@@ -17,9 +17,7 @@ from booley.runtime import inspection, runtime_context, session_issuance
 from booley.runtime.project_dir import reset_cache
 
 
-@pytest.fixture(params=[False, True], ids=["no-active-eda", "active-image-eda"])
-def issued_environment(request, tmp_path, monkeypatch):
-    active = request.param
+def _configured_project(tmp_path, monkeypatch, *, active: bool):
     project = tmp_path / "project"
     data = project / ".booley_project"
     data.mkdir(parents=True)
@@ -32,9 +30,15 @@ def issued_environment(request, tmp_path, monkeypatch):
     executable = _install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(executable.parent))
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    return project
+
+
+def _fake_runtime_transport(monkeypatch):
     calls = []
     observations = {
         "image": "sha256:" + "a" * 64,
+        "revision": "abc123",
+        "wheel_source": "wheel-source",
         "inspection_error": None,
         "listing_error": False,
     }
@@ -62,8 +66,8 @@ def issued_environment(request, tmp_path, monkeypatch):
                     "Config": {
                         "Labels": {
                             "org.opencontainers.image.version": "1.0",
-                            "org.opencontainers.image.revision": "abc123",
-                            "io.booley.wheel.source-fingerprint": "wheel-source",
+                            "org.opencontainers.image.revision": observations["revision"],
+                            "io.booley.wheel.source-fingerprint": observations["wheel_source"],
                         },
                         "Env": [],
                     },
@@ -75,6 +79,10 @@ def issued_environment(request, tmp_path, monkeypatch):
         pytest.fail(f"unexpected command: {argv}")
 
     monkeypatch.setattr(subprocess, "run", run)
+    return observations, calls
+
+
+def _issue_runtime_request(project, *, active: bool):
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
@@ -84,14 +92,22 @@ def issued_environment(request, tmp_path, monkeypatch):
     session_issuance.seal(project, spec)
     path = dc.write_devcontainer(project, spec)
     session_issuance.issue(project, spec, path)
-    calls.clear()
-    inspection_request = inspection.RuntimeInspectionRequest(
+    return inspection.RuntimeInspectionRequest(
         project,
-        observations["image"],
+        "sha256:" + "a" * 64,
         "docker",
         eda={"vivado": EdaConfig("vivado")},
         fpga_enabled=active,
     )
+
+
+@pytest.fixture(params=[False, True], ids=["no-active-eda", "active-image-eda"])
+def issued_environment(request, tmp_path, monkeypatch):
+    active = request.param
+    project = _configured_project(tmp_path, monkeypatch, active=active)
+    observations, calls = _fake_runtime_transport(monkeypatch)
+    inspection_request = _issue_runtime_request(project, active=active)
+    calls.clear()
     return inspection_request, observations, calls
 
 
@@ -144,6 +160,19 @@ def test_identity_inspection_timeout_is_unknown_and_keeps_live_checks(issued_env
     report = inspection.inspect_runtime(request).issuance
     assert not any("different Booley code" in f.message for f in report.findings)
     assert any("no stale live" in f.message for f in report.findings)
+
+
+def test_identity_mismatch_reports_revision_and_source_values(issued_environment):
+    request, observations, _ = issued_environment
+    observations["revision"] = "def456"
+    observations["wheel_source"] = "wheel-other"
+
+    report = inspection.inspect_runtime(request).issuance
+
+    failure = next(f for f in report.findings if "different Booley code" in f.message)
+    assert failure.severity is Severity.FAIL
+    assert "revision abc123 -> def456" in failure.message
+    assert "wheel_source_fingerprint wheel-source -> wheel-other" in failure.message
 
 
 def test_failed_live_enumeration_is_not_an_empty_success(issued_environment):

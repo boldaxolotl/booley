@@ -374,7 +374,7 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
     if spec_image == expected:
         return
     comparison = (
-        image_identity.compare_issued_selection(spec_image, expected)
+        idk.compare_issued_selection(spec_image, expected)
         if is_local_image_id(spec_image)
         else image_identity.Comparison(image_identity.Status.MISMATCH)
     )
@@ -399,7 +399,7 @@ def _warn_on_stale_booley_bake(spec: dict) -> None:
     image = spec.get("image")
     if not isinstance(image, str) or not image:
         return
-    result = image_identity.compare_issued_build(image)
+    result = idk.compare_issued_build(image)
     if result.status is image_identity.Status.MISMATCH:
         logger.warning(
             "issued Sandbox Image '%s' contains stale Booley code (%s). Rebuild "

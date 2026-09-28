@@ -1708,7 +1708,7 @@ def _check_image_bakes_current_booley(
         issued_image = spec.get("image") if isinstance(spec, dict) else None
         if not isinstance(issued_image, str) or not issued_image:
             return
-        result = image_identity.compare_issued_build(issued_image, executable=docker_exe)
+        result = idk.compare_issued_build(issued_image, executable=docker_exe)
         if result.status is image_identity.Status.MISMATCH:
             _warn(
                 f"issued Sandbox Image '{issued_image}' bakes Booley sources that no longer "
