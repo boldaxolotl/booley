@@ -712,6 +712,15 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     assert list(result.outcome.detail["campaigns"]) == ["sim_2", "sim_0", "sim_1"]
     assert result.outcome.detail["targets"]["sim_2"]["collection"] == "complete"
     campaign_id = result.outcome.detail["campaigns"]["sim_1"]["campaign_id"]
+    campaign_path = next(
+        (tmp_path / "reports/sim/1/targets/sim_1").rglob("coverage-campaign/coverage.json")
+    )
+    invalid_manifest = json.loads(campaign_path.read_text())
+    assert invalid_manifest["scoring"] == {
+        "status": "invalid",
+        "reason": "collector_error",
+    }
+    assert invalid_manifest["rollups"] == []
     headline = _target_headline(result.outcome.report_text, "sim_1")
     assert headline == (
         "sim_1: simulation PASS · coverage collection COLLECTOR_ERROR "
@@ -2088,7 +2097,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     report = analyst.coverage_analyst(campaign).to_dict()
     assert report["$schema"] == "booley.coverage-analysis/v2"
     assert report["observed_evidence"]["campaign_manifest"]["$schema"] == (
-        "booley.coverage-campaign/v3"
+        "booley.coverage-campaign/v4"
     )
     assert "points" not in report["observed_evidence"]
     assert report["observed_evidence"]["point_store_sha256"].startswith("sha256:")
@@ -2096,7 +2105,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     assert len(model.calls) == 1
     prompt = json.loads(model.calls[0].prompt)
     assert "campaign" not in prompt
-    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v3"
+    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v4"
     assert prompt["campaign_reference"]["point_count"] == 1
     assert "points" not in prompt
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before

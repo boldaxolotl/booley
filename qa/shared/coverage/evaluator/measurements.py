@@ -22,7 +22,7 @@ def read_campaign(path: Path) -> tuple[dict, list[dict]]:
     """Read the bounded public pair and independently verify its integrity."""
     require(path.stat().st_size <= 16 * 1024 * 1024, "manifest size ceiling")
     manifest = json.loads(path.read_text())
-    require(manifest["$schema"] == "booley.coverage-campaign/v3", "expected V3")
+    require(manifest["$schema"] == "booley.coverage-campaign/v4", "expected V4")
     ref = manifest["point_store"]
     require(ref["path"] == "coverage-points.jsonl.gz", "noncanonical point path")
     points_path = path.parent / ref["path"]
@@ -43,7 +43,30 @@ def read_campaign(path: Path) -> tuple[dict, list[dict]]:
     require(header["target_identity"] == manifest["target"]["identity"], "Target binding")
     require(len(points) == ref["point_count"], "point count mismatch")
     require(len({p["id"] for p in points}) == len(points), "duplicate points")
+    verify_scoring(manifest, points)
     return manifest, points
+
+
+def verify_scoring(manifest: dict, points: list[dict]) -> None:
+    """Validate collection/scoring state before any score arithmetic."""
+    collection = manifest["collection"]["status"]
+    require(
+        collection in {"complete", "collector_error", "incomplete", "incompatible"},
+        "invalid collection status",
+    )
+    expected = (
+        {"status": "valid", "reason": None}
+        if collection == "complete"
+        else {"status": "invalid", "reason": collection}
+    )
+    require(manifest["scoring"] == expected, "scoring state contradiction")
+    if expected["status"] == "invalid":
+        require(not manifest["rollups"], "invalid overall score inventory")
+        require(not manifest["source_rollups"], "invalid source score inventory")
+        counts(points)
+        return
+    verify_rollups(manifest["rollups"], points)
+    verify_sources(manifest, points)
 
 
 def counts(points: list[dict]) -> tuple[int, int, int, int]:
@@ -194,8 +217,7 @@ def verify_known_answer(manifest: dict, points: list[dict], case: dict) -> dict:
         )
     covered = sum(bool(p["hits_by_run"]) for p in population)
     require((covered, len(population)) == tuple(case["fraction"]), "known fraction mismatch")
-    verify_rollups(manifest["rollups"], points)
-    verify_sources(manifest, points)
+    verify_scoring(manifest, points)
     ratio = Fraction(100 * covered, len(population))
     if "min_pct" in case:
         verdict = "pass" if ratio >= Fraction(str(case["min_pct"])) else "fail"

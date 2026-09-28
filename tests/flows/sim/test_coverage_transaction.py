@@ -78,7 +78,9 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert outcome.exit_code == 0
     assert len(execution.runs) == 2
     document = json.loads(outcome.campaign_path.read_text())
-    assert document["$schema"] == "booley.coverage-campaign/v3"
+    assert document["$schema"] == "booley.coverage-campaign/v4"
+    assert document["scoring"] == {"status": "valid", "reason": None}
+    assert document["source_rollups"]
     assert "points" not in document
     campaign = load_coverage_campaign(
         outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
@@ -157,6 +159,125 @@ def test_coverage_cli_renders_one_concise_line_per_pre_sim_firing(tmp_path: Path
 
 
 import pytest
+
+
+@pytest.mark.parametrize(
+    ("failure", "events", "expected_finding", "gated"),
+    [
+        ("missing_start", None, "COV_WINDOW_HOOK_MISSING", False),
+        (
+            "duplicate_start",
+            [
+                {"hook": "start", "sequence": 1, "success": True},
+                {"hook": "start", "sequence": 2, "success": True},
+            ],
+            "COV_WINDOW_HOOK_DUPLICATE",
+            True,
+        ),
+        (
+            "duplicate_write",
+            [
+                {"hook": "write", "sequence": 1, "success": True},
+                {"hook": "write", "sequence": 2, "success": True},
+            ],
+            "COV_WRITE_HOOK_DUPLICATE",
+            False,
+        ),
+    ],
+)
+def test_invalid_hook_evidence_withholds_scores_but_retains_diagnostics(
+    tmp_path: Path,
+    failure: str,
+    events: list[dict[str, object]] | None,
+    expected_finding: str,
+    gated: bool,
+) -> None:
+    from fractions import Fraction
+
+    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+
+    context = project(tmp_path)
+    if gated:
+        criterion = CoverageCriterion(
+            DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+            (CoverageThreshold("line", Fraction(100)),),
+            ("reset",),
+        )
+        context = replace(context, criteria={"coverage_sim_0": criterion})
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), ("reset",)), context
+    )
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    request = plan.collection_request
+    assert request is not None
+    custom_main = failure == "duplicate_write"
+    target = replace(
+        request.target,
+        harness="custom_main" if custom_main else "generated_main",
+        custom_main_hooks=("write_hook",) if custom_main else (),
+    )
+    plan = replace(
+        plan,
+        collection_request=replace(
+            request,
+            target=target,
+            reset_included=custom_main,
+        ),
+    )
+
+    class InvalidHookExecution(NativeExecution):
+        def run(self, request):
+            self.runs.append(request)
+            request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+            request.raw_path.write_text(self.payload(self.hits), encoding="utf-8")
+            if events is not None:
+                assert request.hook_evidence_path is not None
+                request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                request.hook_evidence_path.write_text(
+                    json.dumps(
+                        {
+                            "$schema": "booley.coverage-hook/v1",
+                            "run_id": request.run_id,
+                            "events": events,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            return SimulationRunResult("pass")
+
+    outcome = run_coverage_target(plan, InvalidHookExecution(), Progress())
+
+    assert outcome.exit_code == 2
+    document = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
+    assert document["$schema"] == "booley.coverage-campaign/v4"
+    assert document["collection"]["status"] == "collector_error"
+    assert document["scoring"] == {"status": "invalid", "reason": "collector_error"}
+    assert document["rollups"] == []
+    assert document["source_rollups"] == []
+    assert document["point_store"]["point_count"] > 0
+    assert any(item["kind"] == "raw_native" for item in document["artifacts"])
+    if events is not None:
+        assert (
+            any(item["kind"] == "coverage_hook_evidence" for item in document["artifacts"])
+            is False
+        )
+    assert expected_finding in {item["code"] for item in document["findings"]}
+    loaded = load_coverage_campaign(
+        outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
+    ).campaign
+    assert loaded.points
+    assert loaded.rollups == ()
+    if gated:
+        assert loaded.evaluation["status"] == "blocked"
+        assert loaded.evaluation["metrics"] == ()
+        assert all(
+            item["code"] != "COV_EVAL_EMPTY_DENOMINATOR"
+            for item in loaded.evaluation["diagnostics"]
+        )
+    simulation = json.loads(outcome.simulation_path.read_text(encoding="utf-8"))
+    assert simulation["passed"] is True
+    assert simulation["collection"] == "collector_error"
+    assert outcome.detail["collection"] == "collector_error"
 
 
 @pytest.mark.parametrize(

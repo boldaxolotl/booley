@@ -426,6 +426,30 @@ def _run_coverage_campaign(root: Path, native: NativeExecution, *, runtime_input
     return outcome, CampaignStore(invocation / "targets/sim_0/campaign")
 
 
+def _rewrite_nested_coverage_v3(path: Path, *, invalid_scores: bool = False) -> None:
+    document = json.loads(path.read_text())
+    if document["$schema"] == "booley.coverage-campaign/v4":
+        document["$schema"] = "booley.coverage-campaign/v3"
+        del document["scoring"]
+    if invalid_scores:
+        document["collection"]["status"] = "collector_error"
+        document["normalization"]["status"] = "partial"
+    path.write_text(json.dumps(document))
+
+
+def _retain_v3_before_reference(monkeypatch: pytest.MonkeyPatch, *, invalid_scores=False) -> None:
+    from booley.flows.sim import coverage_transaction
+
+    original = coverage_transaction.publish_coverage_campaign
+
+    def publish_v3_campaign(target_dir, campaign):
+        paths = original(target_dir, campaign)
+        _rewrite_nested_coverage_v3(paths.campaign, invalid_scores=invalid_scores)
+        return paths
+
+    monkeypatch.setattr(coverage_transaction, "publish_coverage_campaign", publish_v3_campaign)
+
+
 def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     tmp_path: Path,
 ) -> None:
@@ -434,6 +458,71 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
 
     assert outcome.complete is True
     assert native.executed_original is False
+
+
+def test_coverage_resume_reuses_retained_valid_v3_nested_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _retain_v3_before_reference(monkeypatch)
+    plan, target = _coverage_campaign_plan(tmp_path)
+    native = NativeExecution()
+    executor = CoverageAggregateExecutor(
+        plans={target.handle.identity: target},
+        execution_factory=lambda _plan, _options, _commands, _access: native,
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    campaign = SimulationCampaign(executor)
+    first = campaign.run(
+        NewCampaignRunRequest(
+            plan,
+            tmp_path,
+            invocation.parent,
+            CampaignPolicy(),
+            invocation,
+            _unmanaged(),
+        )
+    )
+    store = CampaignStore(invocation / "targets/sim_0/campaign")
+    node = ValidatedManifestNode(
+        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
+    )
+    validated = ValidatedResumeManifest(
+        node,
+        (),
+        (target.handle,),
+        (ValidatedTargetBinding(node, tmp_path.resolve(), target.handle),),
+    )
+
+    resumed = campaign.run(
+        ResumeCampaignRunRequest(
+            validated,
+            plan,
+            tmp_path,
+            invocation.parent,
+            CampaignPolicy(),
+            invocation,
+            _unmanaged(),
+        )
+    )
+
+    assert first.complete is True
+    assert resumed.complete is True
+    assert len(native.runs) == 2
+    assert resumed.coverage_reference["coverage_campaign"]["schema"] == (
+        "booley.coverage-campaign/v3"
+    )
+
+
+def test_coverage_campaign_rejects_score_bearing_invalid_v3_nested_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _retain_v3_before_reference(monkeypatch, invalid_scores=True)
+
+    with pytest.raises(
+        SimulationCampaignIntegrityError, match="nested Coverage Campaign cannot be authenticated"
+    ):
+        _run_coverage_campaign(tmp_path, NativeExecution())
 
 
 def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_time(

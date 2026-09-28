@@ -41,6 +41,7 @@ def test_incomplete_usable_campaign_keeps_independent_simulation_truth():
     document = _valid_document()
     document["collection"]["status"] = "incomplete"
     document["normalization"]["status"] = "partial"
+    document["rollups"] = []
     document["tests"]["runs"][0]["simulation_verdict"] = "fail"
     document["collector"]["capabilities"][0].update(collection="supported", scoring="scored_v1")
     campaign = decode_coverage_campaign(
@@ -57,6 +58,22 @@ def test_incomplete_usable_campaign_keeps_independent_simulation_truth():
     assert any("incomplete" in item for item in report["limitations"])
     assert report["observed_evidence"]["tests"]["runs"][0]["simulation_verdict"] == "fail"
     assert report["closure_recommendation"] == "ungated_no_recommendation"
+
+
+def test_collector_error_rejects_before_model_invocation_with_reason():
+    document = _valid_document()
+    document["collection"]["status"] = "collector_error"
+    document["normalization"]["status"] = "partial"
+    document["rollups"] = []
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    calls = []
+
+    with pytest.raises(CoverageAnalysisError, match="collector_error"):
+        CoverageAnalyzer(calls.append).analyze_coverage_campaign(campaign, None, "")
+
+    assert calls == []
 
 
 @pytest.mark.parametrize("change", ["nonterminal", "point_free", "incompatible", "invalid"])

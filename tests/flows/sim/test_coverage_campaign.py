@@ -647,6 +647,7 @@ def test_incompatible_native_format_requires_blocked_collection_and_evaluation()
         "merge": {"status": "not_attempted", "artifact": None},
         "diagnostics": [],
     }
+    document["rollups"] = []
     document["evaluation"]["status"] = "not_requested"
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
@@ -981,6 +982,7 @@ def test_decoder_rejects_unknown_run_states() -> None:
         "merge": {"status": "not_attempted", "artifact": None},
         "diagnostics": [],
     }
+    document["rollups"] = []
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
         decode_coverage_campaign(
@@ -992,3 +994,43 @@ def test_decoder_rejects_unknown_run_states() -> None:
         ("COV_SIMULATION_VERDICT_INVALID", "/tests/runs/0/simulation_verdict"),
         ("COV_RUN_COLLECTION_STATE_INVALID", "/tests/runs/0/collection"),
     ]
+
+
+def test_noncomplete_campaign_retains_points_without_rollups() -> None:
+    document = _valid_document()
+    document["collection"]["status"] = "collector_error"
+    document["normalization"]["status"] = "partial"
+    document["rollups"] = []
+
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+
+    assert campaign.points
+    assert campaign.rollups == ()
+
+
+def test_noncomplete_campaign_rejects_scored_rollups() -> None:
+    document = _valid_document()
+    document["collection"]["status"] = "collector_error"
+    document["normalization"]["status"] = "partial"
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(document, DurableTargetIdentity(document["target"]["identity"]))
+
+    assert ("COV_INVALID_SCORING_ROLLUPS", "/rollups") in {
+        (finding.code, finding.pointer) for finding in caught.value.findings
+    }
+
+
+def test_campaign_rejects_unknown_collection_status() -> None:
+    document = _valid_document()
+    document["collection"]["status"] = "future"
+    document["rollups"] = []
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(document, DurableTargetIdentity(document["target"]["identity"]))
+
+    assert ("COV_COLLECTION_STATUS_INVALID", "/collection/status") in {
+        (finding.code, finding.pointer) for finding in caught.value.findings
+    }

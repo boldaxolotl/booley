@@ -998,14 +998,17 @@ sealed, approving, editing, adding, deleting, or replacing an approval file or
 one of its referenced formal proof artifacts requires `return-to-draft`; the new
 Ticket generation records a fresh protected-input baseline.
 
-The canonical Target directory holds the V3 `coverage.json` manifest, required
+The canonical Target directory holds the V4 `coverage.json` manifest, required
 `coverage-points.jsonl.gz`, `simulation.json`, `native/raw/`, `native/merged/`,
 and hook sidecars. The manifest is the canonical entry point and contains
 provenance, overall rollups, deterministic source-file rollups, percentages,
-collection, and evaluation without inline Coverage Points. Source rollups cover
+collection, evaluation, and required scoring state without inline Coverage Points.
+Collection is scoreable only when complete and compatible. Otherwise both summary
+inventories are empty while point/native/hook evidence remains retained. Source rollups cover
 line, branch, expression, and toggle with overall eligibility and waiver policy;
 they never aggregate by instance hierarchy. It integrity-binds the compressed JSON
-Lines point store. V1 and V2 Campaigns are rejected and must be recollected. Native paths in the Campaign
+Lines point store. Readers accept valid V3 and V4, reject score-bearing invalid V3,
+and reject V1/V2. Native paths in the Campaign
 are relative to that Target directory. `booley.simulation-report/v2` artifact
 references use `report_invocation` or `reports_root`, resolved from the containing
 `report.json`; cross-root resume references instead use `external_origin_target`,
@@ -1019,10 +1022,11 @@ exact completed Target Campaign without publishing policy evidence.
 The point store is flushed and committed without replacement before
 `coverage.json`; the manifest is published last as the Campaign commit marker.
 Deep readers validate its path, schema, byte counts, point count, digest, every
-point, recomputed rollups, and evaluation before accepting point-dependent
+point, scoring/collection state, and evaluation before accepting point-dependent
 evidence. Deep readers also recompute the exact source-file distribution; summary
 readers validate source ordering, metric ordering, arithmetic, and reconciliation
-with overall rollups. Contract failures expose stable `COV_*` error codes. Summary readers
+with overall rollups only for valid scoring. Invalid scoring requires both inventories
+to be empty. Criteria blocks on collection before denominator/metric work. Contract failures expose stable `COV_*` error codes. Summary readers
 validate manifest-local facts without opening point
 storage. Campaign and Simulation publication precede Criterion evidence. Coverage
 observations use transaction-qualified ledger sequence directories. Their
@@ -1141,7 +1145,8 @@ rewritten by retention, and a Campaign lock never recreates a renamed Campaign r
 ### Coverage Analysis after Simulation
 
 The Coverage Analyst consumes the exact retained Target `coverage.json`, deep-loads
-its V3 integrity-linked point store, and checks its
+its V3/V4 integrity-linked point store, rejects collector-error or incompatible
+scoring before provider invocation, and checks its
 matching completed Simulation projection. It is a separate advisory invocation;
 it never calls Simulation or publishes Criterion evidence. Phase 5's native
 pruning leaves its input usable, while full pruning removes that input. The

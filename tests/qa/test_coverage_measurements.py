@@ -66,6 +66,8 @@ def half_campaign():
     }
     manifest = {
         "target": {"identity": "booley:qa:coverage:1#sim_toggle"},
+        "collection": {"status": "complete"},
+        "scoring": {"status": "valid", "reason": None},
         "tests": {"runs": [{"id": "r1", "test": "half"}]},
         "rollups": [rollup],
         "source_rollups": source_rows(points, [rollup]),
@@ -81,6 +83,30 @@ def test_hand_authored_half_has_eight_directional_points():
         "eligible": 8,
         "exact_percent": "50",
     }
+
+
+def test_invalid_scoring_accepts_retained_points_with_empty_summaries():
+    manifest, points, _ = half_campaign()
+    manifest["collection"]["status"] = "collector_error"
+    manifest["scoring"] = {"status": "invalid", "reason": "collector_error"}
+    manifest["rollups"] = []
+    manifest["source_rollups"] = []
+
+    oracle.verify_scoring(manifest, points)
+
+
+@pytest.mark.parametrize("field", ["rollups", "source_rollups"])
+def test_invalid_scoring_rejects_smuggled_summary(field):
+    manifest, points, _ = half_campaign()
+    retained = copy.deepcopy(manifest[field])
+    manifest["collection"]["status"] = "collector_error"
+    manifest["scoring"] = {"status": "invalid", "reason": "collector_error"}
+    manifest["rollups"] = []
+    manifest["source_rollups"] = []
+    manifest[field] = retained
+
+    with pytest.raises(ValueError, match=r"invalid .* score inventory"):
+        oracle.verify_scoring(manifest, points)
 
 
 def test_same_percentage_with_wrong_denominator_is_rejected():
@@ -168,6 +194,8 @@ def test_cover_properties_need_no_source_rollup():
     ]
     manifest = {
         "target": {"identity": "booley:qa:coverage:1#sim_properties4"},
+        "collection": {"status": "complete"},
+        "scoring": {"status": "valid", "reason": None},
         "tests": {"runs": [{"id": "r", "test": "half"}]},
         "source_rollups": source_rows(points, []),
         "rollups": [

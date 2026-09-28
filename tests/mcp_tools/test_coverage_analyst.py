@@ -129,7 +129,7 @@ def _successful_claude_query(options_seen):
     return query
 
 
-def persist_large_v3_campaign(root: Path, point_count: int = 2_000) -> Path:
+def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path:
     from booley.flows.sim.coverage_campaign import (
         DurableTargetIdentity,
         _point_id,
@@ -175,8 +175,8 @@ def persist_large_v3_campaign(root: Path, point_count: int = 2_000) -> Path:
     return paths.campaign
 
 
-def test_large_v3_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tmp_path):
-    path = persist_large_v3_campaign(tmp_path)
+def test_large_current_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tmp_path):
+    path = persist_large_current_campaign(tmp_path)
     calls = []
 
     def bounded_model(params):
@@ -203,13 +203,13 @@ def test_large_v3_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tm
     assert result.outcome.detail["observed_evidence"]["point_store_sha256"].startswith("sha256:")
 
 
-def test_persisted_v3_analysis_does_not_encode_the_complete_campaign(tmp_path, monkeypatch):
+def test_persisted_current_analysis_does_not_encode_the_complete_campaign(tmp_path, monkeypatch):
     from booley.specialists import coverage_analysis
 
     path = persist_campaign(tmp_path)
 
     def reject_full_encode(campaign):
-        raise AssertionError("persisted V3 analysis must reuse validated summary evidence")
+        raise AssertionError("persisted analysis must reuse validated summary evidence")
 
     monkeypatch.setattr(coverage_analysis, "encode_coverage_campaign", reject_full_encode)
 
@@ -218,6 +218,47 @@ def test_persisted_v3_analysis_does_not_encode_the_complete_campaign(tmp_path, m
     )
 
     assert result.exit_code == 0
+
+
+def test_retained_v3_analysis_uses_bounded_evidence_envelope(tmp_path: Path) -> None:
+    path = persist_campaign(tmp_path)
+    manifest = json.loads(path.read_text())
+    manifest["$schema"] = "booley.coverage-campaign/v3"
+    del manifest["scoring"]
+    path.write_text(json.dumps(manifest))
+    model = Model()
+
+    result = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 0
+    assert model.calls[0].nested_mcp_tools == ["coverage_evidence"]
+    prompt = json.loads(model.calls[0].prompt)
+    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v3"
+
+
+def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
+    tmp_path: Path,
+) -> None:
+    document = _valid_document()
+    document["collection"]["status"] = "collector_error"
+    document["normalization"]["status"] = "partial"
+    document["rollups"] = []
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    target_dir = tmp_path / "reports/sim/12/targets/sim_counter"
+    path = publish_coverage_campaign(target_dir, campaign).campaign
+    model = Model()
+
+    result = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert model.calls == []
+    assert "collector_error" in result.outcome.report_text
 
 
 def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):

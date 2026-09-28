@@ -56,11 +56,13 @@ def specimen(root: Path) -> tuple[Path, dict]:
     compressed = gzip.compress(raw, mtime=0)
     (root / "coverage-points.jsonl.gz").write_bytes(compressed)
     manifest = {
-        "$schema": "booley.coverage-campaign/v3",
+        "$schema": "booley.coverage-campaign/v4",
         "campaign_id": "qa-control",
         "target": {"identity": header["target_identity"]},
         "tests": {"runs": [{"id": "r1", "test": "half"}]},
         "evaluation": {"status": "fail"},
+        "collection": {"status": "complete"},
+        "scoring": {"status": "valid", "reason": None},
         "rollups": [rollup],
         "source_rollups": [{"source": "rtl/toggle.sv", "rollups": source_metrics}],
         "point_store": {

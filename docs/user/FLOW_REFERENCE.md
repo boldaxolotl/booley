@@ -420,17 +420,23 @@ the invocation `run_id`, its latest `timestamp`, the exact Target partition, and
 per-Target detail. An interrupted or failed invocation preserves already durable
 Targets and leaves the failed or unstarted Targets pending.
 
-New `coverage.json` manifests use `booley.coverage-campaign/v3`. They keep exact
+New `coverage.json` manifests use `booley.coverage-campaign/v4`. They keep exact
 source/build/tool and suite fingerprints, independent per-run verdicts,
 capabilities, overall rollups, deterministic per-source-file rollups, percentages,
-and stored evaluation. Source rollups cover line, branch, expression, and toggle
+stored evaluation, and a required `scoring` object. Complete compatible collection
+uses `{"status":"valid","reason":null}`. Any `collector_error`, `incomplete`, or
+`incompatible` collection uses `{"status":"invalid","reason":"<status>"}` and
+publishes empty `rollups` and `source_rollups`; exact points, native/hook artifacts,
+diagnostics, and findings remain available as non-score evidence. Source rollups cover line, branch, expression, and toggle
 metrics, use the same eligibility and waiver rules as overall rollups, and group by
 source path rather than hierarchy. They are persisted only in `coverage.json`; the
 Simulation response remains compact and points to that file.
 Required `coverage-points.jsonl.gz` stores lossless point identities and sparse
 positive hit incidence; the manifest binds it by schema, exact relative path,
-compressed and uncompressed byte counts, point count, and SHA-256. V1 and V2
-Campaigns are rejected at a hard schema cutoff; recollect coverage to produce V3.
+compressed and uncompressed byte counts, point count, and SHA-256. Valid retained V3
+Campaigns remain readable. V3 Campaigns that carry scores behind non-complete
+collection are rejected and must be recollected. V1 and V2 remain below the hard
+schema cutoff.
 Pass consumers the exact
 `coverage.json` path; never pass or edit the point store directly.
 Native artifact paths are relative to the Target directory. New Simulation

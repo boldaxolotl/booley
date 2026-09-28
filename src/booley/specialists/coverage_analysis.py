@@ -23,6 +23,7 @@ from booley.flows.sim.coverage_campaign import (
 )
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V3,
+    CAMPAIGN_SCHEMA_V4,
     CoverageCampaignSummary,
 )
 from booley.flows.sim.coverage_evidence import is_coverage_point_reference
@@ -83,7 +84,10 @@ def _analysis_envelope(
             **({"point_store": point_store} if point_store is not None else {}),
         }
     }
-    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V3:
+    if summary is None or summary.source_schema not in {
+        CAMPAIGN_SCHEMA_V3,
+        CAMPAIGN_SCHEMA_V4,
+    }:
         observed = encode_coverage_campaign(campaign)
         return _AnalysisEnvelope("booley.coverage-analysis/v1", reference, observed), target
     assert manifest is not None
@@ -385,7 +389,11 @@ def _eligibility(campaign: CoverageCampaign) -> tuple[str, list[str]]:
     if campaign.collector.native_format.get("compatibility") != "compatible":
         raise CoverageAnalysisError("Incompatible native evidence cannot be analyzed")
     if campaign.collection["status"] not in {"complete", "incomplete"}:
-        raise CoverageAnalysisError("Campaign collection is not terminal")
+        reason = campaign.collection["status"]
+        raise CoverageAnalysisError(
+            f"Campaign scoring is invalid because collection status is {reason!r}; "
+            "repair the collector failure and recollect coverage"
+        )
     if campaign.normalization["status"] not in {
         "complete",
         "complete_with_unknown_records",

@@ -210,6 +210,15 @@ particular error code/field proving that boundary; an unrelated earlier parse
 error does not show the deeper validation works. Restore by discarding only that
 copy, recreating it from the original, and successfully analyzing the valid pair.
 
+Current controls require V4. A complete collection has `scoring.status=valid`, a
+null reason, and exact overall/source reconciliation. An invalid collection has
+`scoring.status=invalid`, the exact collection status as its reason, empty
+`rollups`/`source_rollups`, and still-valid point/native integrity. Run
+`invalid-overall-score` and `invalid-source-score` faults to prove either smuggled
+inventory is rejected. Convert a separate valid copy to V3 by changing only the
+schema and removing `scoring`; it must remain readable. A non-complete V3 copy
+that retains scores must be rejected. V1/V2 remain recollection cases.
+
 Analyst path faults use the exact invalid form in their name. Missing-argument
 omits --campaign; target-name uses sim_hdl; latest uses literal latest;
 point-store and waveform use the actual owned gzip and VCD paths; legacy-flat-report

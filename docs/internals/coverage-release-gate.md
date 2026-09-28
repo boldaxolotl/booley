@@ -15,7 +15,7 @@ The release does not introduce a waveform scorer or approve Waiver Candidates.
 |---|---|
 | Interactive Mode | `tests/flows/sim/test_coverage_flow.py`: collect through `SimulateFlow`, then invoke the Analyst with the produced exact path; model transport is substituted and project bytes remain unchanged. |
 | Ticket Mode | The same suite checks independent persisted Simulation/Coverage verdicts for pass/pass, fail/pass, pass/fail, fail/fail, and collector-blocked combinations. Transaction fault tests cover every publication boundary. |
-| Campaign V3 storage | `tests/flows/sim/test_coverage_campaign_store.py` checks summary-only reads, deterministic source rollups, exact deep-load equivalence, the V1/V2 hard cutoff, resource ceilings, tamper rejection, safe paths, and create-if-absent publication. Retention and Analyst tests require the integrity-linked point store. |
+| Campaign V4 storage and scoring validity | `tests/flows/sim/test_coverage_campaign_store.py` checks summary-only reads, valid/invalid scoring state, withheld invalid overall/source inventories, deterministic valid source rollups, valid V3 compatibility, invalid score-bearing V3 rejection, the V1/V2 hard cutoff, exact deep-load equivalence, resource ceilings, tamper rejection, safe paths, and create-if-absent publication. Retention and Analyst tests require the integrity-linked point store. |
 | Public contracts | CLI aliases and help, MCP boolean schema, exposed Criterion catalog, generated references, docs-schema tests, and transport schema fixture. |
 | Python | Full `tests/` suite with the hosted platform/marker matrix; inspect all skips. |
 | Quality | `ruff check src/ tests/`, `ruff format --check .`, and `pyright`, using the exact pinned quality tools. |
@@ -37,7 +37,8 @@ load took 26.27 seconds and 205,726,188 peak bytes; full Analyst composition too
 the structural test requires near-constant manifest size, summary reads with no point-store access,
 lossless deep loading, and compression below the serialized Analyst payload.
 
-V3 intentionally adds source-file rollups to the manifest, so manifest size now scales
+V4 retains V3 source-file rollups for valid scoring and withholds them for invalid
+scoring, so a valid manifest's size scales
 with the number of distinct source paths rather than the number of Coverage Points. A
 16 MiB publication and read ceiling bounds that growth.
 

@@ -154,7 +154,9 @@ Try:
 - Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy> --owned <root>` then `booley flow coverage_analyst
   --campaign <copy>` → rejected before the model: v1, v2, missing/changed points, truncated gzip, trailing
   data, point count, sizes, digest, unsafe/absolute path, symlink, invalid final record, duplicate point,
-  wrong rollup/source rollup/evaluation, resource ceiling.
+  wrong rollup/source rollup/evaluation, invalid-overall-score, invalid-source-score, resource ceiling.
+  Also retain one valid V3 copy: summary/deep read, nested resume, analysis and full pruning must accept it;
+  a score-bearing non-complete V3 copy must fail authentication.
 - Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage.json`, `rename
   …/simulation.json`, the Ticket `booley_state.json` acceptance write, terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;

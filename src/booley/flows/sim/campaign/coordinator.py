@@ -12,6 +12,7 @@ from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
+from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
 from booley.flows.sim.coverage_reference import (
     CoverageCampaignReference,
     build_coverage_campaign_reference,
@@ -331,18 +332,23 @@ class SimulationCampaign:
         result_document = result.document
         target = cast(Mapping[str, str], manifest.document["target"])
         origin = cast(Mapping[str, object], manifest.document["origin"])
-        reference = build_coverage_campaign_reference(
-            simulation_campaign_id=cast(str, manifest.document["campaign_id"]),
-            simulation_manifest_sha256=manifest_digest(manifest),
-            target_identity=f"{target['vlnv']}#{target['name']}",
-            target_selector=target["selector"],
-            origin_invocation_id=cast(int, origin["invocation_id"]),
-            producer_invocation_id=cast(int, result_document["producer_invocation_id"]),
-            simulation_work_item_id=work_item_id,
-            simulation_attempt_id=cast(str, result_document["attempt_id"]),
-            origin_target_directory=store.root.parent,
-            coverage_campaign_path=nested_path,
-        )
+        try:
+            reference = build_coverage_campaign_reference(
+                simulation_campaign_id=cast(str, manifest.document["campaign_id"]),
+                simulation_manifest_sha256=manifest_digest(manifest),
+                target_identity=f"{target['vlnv']}#{target['name']}",
+                target_selector=target["selector"],
+                origin_invocation_id=cast(int, origin["invocation_id"]),
+                producer_invocation_id=cast(int, result_document["producer_invocation_id"]),
+                simulation_work_item_id=work_item_id,
+                simulation_attempt_id=cast(str, result_document["attempt_id"]),
+                origin_target_directory=store.root.parent,
+                coverage_campaign_path=nested_path,
+            )
+        except CoverageCampaignStoreError as exc:
+            raise SimulationCampaignIntegrityError(
+                "nested Coverage Campaign cannot be authenticated"
+            ) from exc
         self._publication_checkpoint("before:coverage_reference")
         published_reference = publish_coverage_campaign_reference(
             store.root.parent / "coverage.json", reference
