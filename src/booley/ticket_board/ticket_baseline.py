@@ -26,6 +26,10 @@ from booley.core.boundary import (
 )
 from booley.core.differences import format_differences
 from booley.core.models import TargetPlan, TargetPlanError, TargetPlanRole
+from booley.fusesoc.core_projection import (
+    is_generated_isolated_core,
+    is_generated_projected_core,
+)
 from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     checkout_project_dir_relative_to,
@@ -1480,11 +1484,20 @@ def _repository_changed_paths(
         generated = {
             path
             for path in candidates
-            if not _same_generated_path(
+            if not _strict_projection_pair(
+                repository,
+                generated_reference,
+                path,
+            )
+            and not _same_generated_path(
                 repository / path,
                 generated_reference / path,
                 live_checkout_root=generated_checkout_root,
             )
+        }
+    else:
+        generated = {
+            path for path in generated if not _strict_projection(repository, repository / path)
         }
     changed.update(generated)
     return {
@@ -1495,6 +1508,25 @@ def _repository_changed_paths(
             for prefix in excluded_prefixes
         )
     }
+
+
+def _strict_projection_pair(live_root: Path, reference_root: Path, relative: str) -> bool:
+    live = live_root / relative
+    reference = reference_root / relative
+    live_exists = live.exists() or live.is_symlink()
+    reference_exists = reference.exists() or reference.is_symlink()
+    if live_exists and not _strict_projection(live_root, live):
+        return False
+    if reference_exists and not _strict_projection(reference_root, reference):
+        return False
+    return live_exists or reference_exists
+
+
+def _strict_projection(repository: Path, path: Path) -> bool:
+    project_root = repository.parent if repository.name == PROJECT_DIR_NAME else repository
+    return is_generated_projected_core(project_root, path) or is_generated_isolated_core(
+        project_root, path
+    )
 
 
 def _collect_repository_paths(

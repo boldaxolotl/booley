@@ -16,11 +16,17 @@ from typing import Any
 import yaml
 
 from booley.core.differences import format_differences
-from booley.runtime.project_dir import runtime_dir
+from booley.fusesoc.core_projection import (
+    CoreProjectionError,
+    is_generated_isolated_core,
+    is_generated_projected_core,
+)
+from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 from booley.ticket_board.criteria_projection import project_ticket_criteria
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
 from .acceptance_path_policy import is_static_acceptance_path
+from .acceptance_validation import prepare_acceptance_checkout
 from .amendment_proposal import AmendmentProposal
 from .amendment_v2 import build_v2_amendment_proposal
 from .basis_publication import load_basis_publication
@@ -33,6 +39,7 @@ from .ticket_baseline import (
     PATH_POLICY,
     BasisParticipant,
     TicketBaseline,
+    TicketBaselineError,
     assert_live_inputs_unchanged,
     canonical_json,
     load_ticket_baseline_from_document,
@@ -133,6 +140,9 @@ def _status_snapshot(
     basis: TicketBaseline,
     scope: list[str],
     repositories: dict[str, tuple[Path, Path]],
+    *,
+    generated_reference: Path | None = None,
+    expected_ignored: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     snapshots: dict[str, Any] = {}
     protected = set(PATH_POLICY.discover(root))
@@ -142,22 +152,109 @@ def _status_snapshot(
             raise AmendmentError(f"{role} Ticket Workspace has an unresolved Git conflict")
         raw = _git(checkout, "status", "--porcelain=v1", "-z", "--untracked-files=all")
         entries = parse_porcelain_v1_z(raw)
+        reference = _reference_repository(generated_reference, role)
+        expected = (expected_ignored or {}).get(role, {})
+        ignored: dict[str, Any] = {}
+        retained: list[GitStatusEntry] = []
         files: dict[str, str | None] = {}
         for entry in entries:
+            identity = _ignored_generated_identity(
+                role,
+                entry,
+                checkout,
+                reference,
+                protected,
+                expected.get(entry.path),
+            )
+            if identity is not None:
+                ignored[entry.path] = identity
+                continue
             _check_checkpoint_path(role, entry, scope, protected, checkout)
+            retained.append(entry)
             path = checkout / entry.path
             files[entry.path] = (
                 hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
             )
+        if expected_ignored is not None and set(ignored) != set(expected):
+            raise AmendmentError(f"{role} generated source changed after the approved preview")
         snapshots[role] = {
             "head": head,
             "index_sha256": hashlib.sha256(
                 _git(checkout, "ls-files", "-s", "-z").encode()
             ).hexdigest(),
-            "entries": [asdict(item) for item in entries],
+            "entries": [asdict(item) for item in retained],
             "files": files,
+            "ignored_generated": ignored,
         }
     return snapshots
+
+
+def _reference_repository(reference: Path | None, role: str) -> Path | None:
+    if reference is None or role == "outer":
+        return reference
+    return reference / checkout_project_dir_relative_to(reference)
+
+
+def _ignored_generated_identity(
+    role: str,
+    entry: GitStatusEntry,
+    checkout: Path,
+    reference: Path | None,
+    protected: set[str],
+    expected: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if entry.status != "??" or entry.source_path is not None:
+        return None
+    path = checkout / entry.path
+    if expected is not None:
+        actual = _generated_identity(checkout, path, expected.get("kind") == "projection")
+        if actual != expected:
+            raise AmendmentError(f"{role} generated source {entry.path!r} changed")
+        return actual
+    if _strict_projection(checkout, path):
+        return {"kind": "projection"}
+    if reference is None or not _protected_generated_path(role, entry.path, protected):
+        return None
+    live_identity = _generated_identity(checkout, path, False)
+    reference_identity = _generated_identity(reference, reference / entry.path, False)
+    if live_identity is not None and live_identity == reference_identity:
+        return live_identity
+    return None
+
+
+def _generated_identity(
+    repository: Path, path: Path, require_projection: bool
+) -> dict[str, Any] | None:
+    if require_projection:
+        return {"kind": "projection"} if _strict_projection(repository, path) else None
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return {
+            "kind": "reference",
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "executable": bool(path.stat().st_mode & 0o111),
+        }
+    except OSError:
+        return None
+
+
+def _strict_projection(repository: Path, path: Path) -> bool:
+    project_root = repository.parent if repository.name == ".booley_project" else repository
+    return is_generated_projected_core(project_root, path) or is_generated_isolated_core(
+        project_root, path
+    )
+
+
+def _protected_generated_path(role: str, local: str, protected: set[str]) -> bool:
+    composite = f".booley_project/{local}" if role == "project" else local
+    return (
+        is_static_acceptance_path(composite)
+        or composite == "FUSESOC_IGNORE"
+        or composite.endswith("/FUSESOC_IGNORE")
+        or composite in protected
+        or any(composite.startswith(path.rstrip("/") + "/") for path in protected)
+    )
 
 
 def _check_checkpoint_path(
@@ -211,11 +308,24 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
     fields, body = dict(document.spec.fields), document.spec.body
     basis = load_ticket_baseline_from_document(root, slug, document)
     heads = validate_current_basis_refs(root, basis)
-    proposal = _validated_proposal(root, slug, basis, document, request)
-    revised_document = _converted_proposal(root, slug, document, proposal)
     repositories = _repositories(root, basis)
     prior_scope = fields.get("scope", [])
-    source_state = _status_snapshot(root, basis, prior_scope, repositories)
+    with tempfile.TemporaryDirectory(prefix="booley-amend-preview-") as directory:
+        try:
+            reference = materialize_basis_checkout(root, basis, Path(directory) / "basis")
+            prepare_acceptance_checkout(root, reference, slug=slug, ticket_path=ticket)
+            assert_live_inputs_unchanged(basis, root, reference)
+        except (TicketBaselineError, CoreProjectionError, OSError, ValueError) as exc:
+            raise AmendmentError(str(exc)) from exc
+        proposal = _validated_proposal(root, slug, basis, document, request, reference)
+        revised_document = _converted_proposal(root, slug, document, proposal)
+        source_state = _status_snapshot(
+            root,
+            basis,
+            prior_scope,
+            repositories,
+            generated_reference=reference,
+        )
     _validate_preview_heads(heads, source_state)
     state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
     _preflight_state(state_path, proposal)
@@ -260,21 +370,23 @@ def _converted_proposal(
 
 
 def _validated_proposal(
-    root: Path, slug: str, basis: TicketBaseline, document: TicketDocument, request: Any
+    root: Path,
+    slug: str,
+    basis: TicketBaseline,
+    document: TicketDocument,
+    request: Any,
+    reference: Path,
 ) -> AmendmentProposal:
     spec = document.spec
-    with tempfile.TemporaryDirectory(prefix="booley-amend-preview-") as directory:
-        reference = materialize_basis_checkout(root, basis, Path(directory) / "basis")
-        assert_live_inputs_unchanged(basis, root, reference)
-        with ticket_conversion_context(root, slug, "executable") as context:
-            view = context.resolve_view({"machine": basis.ticket_identity()})
-            proposal = build_v2_amendment_proposal(spec, request, root, view)
-        candidate = {**proposal.fields, **document.generated}
-        revised = _convert_ticket(root, slug, _render_ticket(candidate, spec.body))
-        errors = validate_ticket_spec(revised.spec, project_root=reference)
-        if errors:
-            raise AmendmentError("invalid amended Ticket: " + "; ".join(errors))
-        return proposal
+    with ticket_conversion_context(root, slug, "executable") as context:
+        view = context.resolve_view({"machine": basis.ticket_identity()})
+        proposal = build_v2_amendment_proposal(spec, request, root, view)
+    candidate = {**proposal.fields, **document.generated}
+    revised = _convert_ticket(root, slug, _render_ticket(candidate, spec.body))
+    errors = validate_ticket_spec(revised.spec, project_root=reference)
+    if errors:
+        raise AmendmentError("invalid amended Ticket: " + "; ".join(errors))
+    return proposal
 
 
 def _preflight_state(path: Path, proposal: AmendmentProposal) -> None:
@@ -351,7 +463,12 @@ def apply_amendment(tio: Any, slug: str, request: Any, expected_preview: str) ->
             tio._validate_return_to_draft_preconditions(slug, check_owner=False)
             if load_basis_publication(root, slug) is not None:
                 raise AmendmentError("another Ticket baseline publication is pending")
-            preview, _proposal = _inspection(tio, slug, request)
+            try:
+                preview, _proposal = _inspection(tio, slug, request)
+            except AmendmentError as exc:
+                raise AmendmentError(
+                    "amendment preview is stale; preview the current proposal"
+                ) from exc
             if preview["digest"] != expected_preview:
                 raise AmendmentError("amendment preview is stale; preview the current proposal")
             journal = {
@@ -412,9 +529,13 @@ def _prepare_amendment_participants(
             continue
         owner, checkout = repositories[role]
         expected = journal["source_state"][role]
-        actual = _status_snapshot(root, old, journal["prior_scope"], {role: (owner, checkout)})[
-            role
-        ]
+        actual = _status_snapshot(
+            root,
+            old,
+            journal["prior_scope"],
+            {role: (owner, checkout)},
+            expected_ignored={role: expected.get("ignored_generated", {})},
+        )[role]
         if actual != expected:
             raise AmendmentError(f"{role} source changed after the approved preview")
         commits = _prepare_participant(
