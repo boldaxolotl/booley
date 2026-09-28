@@ -426,6 +426,7 @@ def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path
             "nangate_pdk_root": "pdk",
             "agent_app": "codex",
             "runtime_image_id": result.selected_id,
+            "init_will_create_project_dir": True,
         }
     ]
     assert remembered == [tmp_path]

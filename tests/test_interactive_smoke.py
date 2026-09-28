@@ -678,6 +678,7 @@ class TestInitInteractive:
         from booley.harness import init_cmd
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
         monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
         ctx = init_cmd.InitContext(
             project_root=tmp_path, check_only=True, force=False, verbose=False, interactive=False
@@ -686,6 +687,189 @@ class TestInitInteractive:
         assert not (tmp_path / ".devcontainer").exists()
         statuses = {r.name: r.status for r in ctx.results}
         assert statuses.get("interactive") == "warn"
+
+    def test_full_init_check_only_reports_missing_owned_project_data_as_pending(
+        self, tmp_path, monkeypatch
+    ):
+        import argparse
+        import subprocess
+
+        from booley.harness import init_cmd
+        from booley.runtime import session_issuance as runtime_spec
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        for name in (
+            "_step_core_projections",
+            "_step_tickets",
+            "_step_auth",
+            "_step_git_hooks",
+            "_step_project_git_hooks",
+            "_step_worktree_prune_guard",
+            "_step_line_endings",
+            "_step_guidance_links",
+            "_step_project_inventory",
+            "_step_advisories",
+        ):
+            monkeypatch.setattr(init_cmd, name, lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
+        monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
+        monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", lambda *_args: None)
+        monkeypatch.setattr(
+            runtime_spec,
+            "preview",
+            lambda *_args, **_kwargs: pytest.fail("mount inspection should not run"),
+        )
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+        args = argparse.Namespace(seed=False, scaffold=None, skip_credentials=False)
+        selection = init_cmd.AgentSelection("codex", "subscription")
+
+        with init_cmd.init_project_dir_scope(tmp_path):
+            rc = init_cmd._run_project_init_steps(
+                ctx,
+                args,
+                selection,
+                tmp_path / ".booley_project" / "booley.toml",
+                None,
+            )
+
+        results = {result.name: result for result in ctx.results}
+        assert rc == 1
+        assert results["project_dir"].status == "warn"
+        assert results["interactive"].status == "warn"
+        assert results["interactive"].detail == "project directory would be created first"
+        assert not (tmp_path / ".booley_project").exists()
+        assert not (tmp_path / ".devcontainer").exists()
+
+    @pytest.mark.parametrize("explicit_override", [False, True])
+    def test_seed_check_only_fails_without_project_data(
+        self, tmp_path, monkeypatch, explicit_override
+    ):
+        import subprocess
+
+        from booley.harness import init_cmd
+        from booley.runtime import session_issuance as runtime_spec
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        project_dir = tmp_path / ".booley_project"
+        if explicit_override:
+            monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        else:
+            monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
+        monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
+
+        def strict_preview(project, *_args, **_kwargs):
+            runtime_spec.authorized_project_data_source(project)
+            pytest.fail("missing Project data unexpectedly passed validation")
+
+        monkeypatch.setattr(runtime_spec, "preview", strict_preview)
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+
+        rc = init_cmd._run_seed(ctx, init_cmd.AgentSelection("codex", "subscription"))
+
+        assert rc == 2
+        assert ctx.results[-1].name == "interactive"
+        assert ctx.results[-1].status == "err"
+        assert not project_dir.exists()
+        assert not (tmp_path / ".devcontainer").exists()
+
+    def test_missing_init_owned_project_data_classification(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from booley.harness import init_cmd
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        target = tmp_path / ".booley_project"
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target))
+
+        assert init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
+        assert not init_cmd._init_owned_project_dir_missing(
+            ctx, init_will_create_project_dir=False
+        )
+
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", "")
+        assert init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
+
+    @pytest.mark.parametrize("override", ["relative/project-data", "/external/project-data"])
+    def test_nonlocal_project_data_is_not_init_owned(self, tmp_path, monkeypatch, override):
+        import subprocess
+
+        from booley.harness import init_cmd
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", override)
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+
+        assert not init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
+
+    @pytest.mark.parametrize("entry_kind", ["file", "symlink"])
+    def test_existing_project_data_entry_is_not_missing(self, tmp_path, monkeypatch, entry_kind):
+        import subprocess
+
+        from booley.harness import init_cmd
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        target = tmp_path / ".booley_project"
+        if entry_kind == "file":
+            target.write_text("not a directory", encoding="utf-8")
+        else:
+            destination = tmp_path / "project-data"
+            destination.mkdir()
+            target.symlink_to(destination, target_is_directory=True)
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target))
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+
+        assert not init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
+
+    def test_project_data_inspection_error_is_not_treated_as_missing(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from booley.harness import init_cmd
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        target = tmp_path / ".booley_project"
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target))
+        original_lstat = Path.lstat
+
+        def denied_lstat(path):
+            if path == target:
+                raise PermissionError("denied")
+            return original_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", denied_lstat)
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+
+        assert not init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
+
+    def test_existing_project_data_preview_failure_remains_error(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from booley.harness import init_cmd
+        from booley.runtime import session_issuance as runtime_spec
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        monkeypatch.setattr(
+            runtime_spec,
+            "preview",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                runtime_spec.RuntimeSpecError("Project-data mount source is unavailable")
+            ),
+        )
+        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+
+        init_cmd._step_interactive(
+            ctx,
+            nangate_pdk_root=tmp_path / "pdk",
+            init_will_create_project_dir=True,
+        )
+
+        assert ctx.results[-1].name == "interactive"
+        assert ctx.results[-1].status == "err"
 
     def test_check_only_reports_current_initialized_state_without_mutation(
         self, tmp_path, monkeypatch
