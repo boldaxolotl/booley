@@ -124,7 +124,7 @@ def test_legacy_coverage_criteria_are_hard_rejected(legacy_name: str) -> None:
         (
             legacy_name,
             "replace it with 'COVERAGE: {<target>: {tests: all, metrics: "
-            "{<metric>: {min_pct: <number>}}}}}'",
+            "{<metric>: {min_pct: <number>}}}}'",
         )
     ]
 

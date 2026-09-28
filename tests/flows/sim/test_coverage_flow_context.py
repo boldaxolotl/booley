@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON
 from booley.flows.sim import coverage_flow_context
 from booley.runtime.project_dir import reset_cache, resolve_project_dir
 
@@ -41,12 +42,30 @@ def test_context_uses_checkout_local_legacy_config_over_cached_override(
     assert context.waiver_config.directory == "approved-waivers"
 
 
-def test_runtime_rejects_legacy_coverage_with_current_schema_hint() -> None:
+def test_runtime_rejects_legacy_coverage_with_current_schema_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "checkout"
+    (root / ".booley_project").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    monkeypatch.setattr(
+        coverage_flow_context.TargetCatalog,
+        "build",
+        lambda _root: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        coverage_flow_context,
+        "load_test_configuration_field",
+        lambda *_args: {},
+    )
+    state = SimpleNamespace(
+        criteria={"coverage_toggle_sim_core": SimpleNamespace(params={})},
+        flow_key_aliases={},
+    )
+
     with pytest.raises(ValueError) as caught:
-        coverage_flow_context._reject_legacy_coverage("coverage_toggle_sim_core")
+        coverage_flow_context.coverage_project_context(root, state)
 
     message = str(caught.value)
     assert "Legacy coverage_toggle_sim_core" in message
-    assert (
-        "COVERAGE: {<target>: {tests: all, metrics: {<metric>: {min_pct: <number>}}}}}"
-    ) in message
+    assert COVERAGE_MIGRATION_SKELETON in message

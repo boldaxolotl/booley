@@ -10,8 +10,9 @@ from booley.config.coverage_waiver_inputs import parse_coverage_waiver_config
 from booley.config.project_config import load_test_configuration_field
 from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
-from booley.criteria.coverage import validate_coverage_metrics
+from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON, validate_coverage_metrics
 from booley.criteria.state import DevelopmentState
+from booley.criteria.templates import find_retired_criteria
 from booley.flows.execution_persistence import AcceptanceRecorder, NoAcceptanceRecorder
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
@@ -20,15 +21,6 @@ from .coverage_acceptance import CoverageAcceptance
 from .coverage_campaign import DurableTargetIdentity
 from .coverage_invocation import CoverageProjectContext
 from .coverage_policy import CoverageCriterion, CoverageThreshold
-
-_LEGACY = (
-    "coverage_toggle",
-    "coverage_fsm",
-    "coverage_value",
-    "coverage_branch",
-    "coverage_expression",
-    "coverage_mean",
-)
 
 
 def coverage_project_context(root: Path, state: DevelopmentState) -> CoverageProjectContext:
@@ -116,8 +108,6 @@ def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, Coverag
 
 
 def _reject_legacy_coverage(key: str) -> None:
-    if any(key == legacy or key.startswith(legacy + "_") for legacy in _LEGACY):
-        raise ValueError(
-            f"Legacy {key}: replace with COVERAGE: {{<target>: {{tests: all, metrics: "
-            "{<metric>: {min_pct: <number>}}}}}"
-        )
+    matches = find_retired_criteria([key])
+    if any(name.startswith("coverage_") for name, _hint in matches):
+        raise ValueError(f"Legacy {key}: replace with {COVERAGE_MIGRATION_SKELETON}")

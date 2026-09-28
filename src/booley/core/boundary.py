@@ -45,6 +45,7 @@ __all__ = [
     "require_bool_value",
     "require_dict",
     "require_finite_number",
+    "require_finite_number_value",
     "require_int",
     "require_list",
     "require_opt_str",
@@ -214,7 +215,9 @@ def _finite_number(value: Any) -> int | float | None:
     """
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)) and math.isfinite(value):
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
         return value
     return None
 
@@ -274,6 +277,19 @@ def require_finite_number(value: Any, *, field: str) -> float:
     if number is None:
         raise BoundaryError(f"{field} must be a finite number, got {value!r}")
     return float(number)
+
+
+def require_finite_number_value(value: Any, *, field: str) -> int | float:
+    """Return a finite number without changing its authored numeric type.
+
+    Unlike :func:`require_finite_number`, this validator does not coerce ints
+    to floats. It is therefore safe for arbitrarily large Python integers and
+    for boundaries where the original int/float distinction is persisted.
+    """
+    number = _finite_number(value)
+    if number is None:
+        raise BoundaryError(f"{field} must be a finite number, got {value!r}")
+    return number
 
 
 def as_positive_int(value: Any, default: int, *, field: str | None = None) -> int:

@@ -40,6 +40,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS, describe_threshold
 from booley.targets import target_naming
 
@@ -108,10 +109,7 @@ def has_relative_qor_threshold(params: dict[str, Any]) -> bool:
 # authored before a rename fails fast with the exact fix. An unrecognized key
 # is otherwise silently created as *optional*, downgrading a mandatory
 # Criterion to a no-op; hence a hard error, not a warning.
-_COVERAGE_MIGRATION_HINT = (
-    "replace it with 'COVERAGE: {<target>: {tests: all, metrics: "
-    "{<metric>: {min_pct: <number>}}}}}'"
-)
+_COVERAGE_MIGRATION_HINT = f"replace it with {COVERAGE_MIGRATION_SKELETON!r}"
 RETIRED_CRITERIA: dict[str, str] = {
     "plan_done": "remove it; the planner specialists were pruned",
     "plan_created": "remove it; the planner specialists were pruned",

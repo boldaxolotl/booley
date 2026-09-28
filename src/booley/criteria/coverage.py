@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Mapping
 
+from booley.core.boundary import BoundaryError, require_finite_number_value
+
 COVERAGE_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
+COVERAGE_MIGRATION_SKELETON = (
+    "COVERAGE: {<target>: {tests: all, metrics: {<metric>: {min_pct: <number>}}}}"
+)
 
 
 def _describe_value(value: object) -> str:
@@ -43,13 +47,15 @@ def validate_coverage_metrics(value: object, *, field: str) -> dict[str, dict[st
         if "min_pct" not in policy:
             raise ValueError(f"{field}: {metric} requires min_pct")
         threshold = policy["min_pct"]
-        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+        try:
+            number = require_finite_number_value(threshold, field=f"{field}: {metric}.min_pct")
+        except BoundaryError:
+            if isinstance(threshold, float):
+                raise ValueError(f"{field}: {metric}.min_pct must be finite") from None
             raise ValueError(
                 f"{field}: {metric}.min_pct must be a number, got {_describe_value(threshold)}"
-            )
-        if not math.isfinite(threshold):
-            raise ValueError(f"{field}: {metric}.min_pct must be finite")
-        if not 0 < threshold <= 100:
+            ) from None
+        if not 0 < number <= 100:
             raise ValueError(f"{field}: {metric}.min_pct must be greater than 0 and at most 100")
-        result[str(metric)] = {"min_pct": threshold}
+        result[str(metric)] = {"min_pct": number}
     return result

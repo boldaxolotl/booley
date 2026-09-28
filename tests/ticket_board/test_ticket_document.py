@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from booley.runtime.project_dir import reset_cache, resolve_project_dir
 from booley.targets.domain import UnknownTargetError
@@ -166,6 +168,32 @@ def test_retired_coverage_criterion_reports_current_migration() -> None:
     message = converted.diagnostics[0].message
     assert "retired Criterion 'coverage_toggle'" in message
     assert "COVERAGE: {sim_properties3: {tests: all, metrics: {toggle: {min_pct: 50}}}}" in message
+
+
+def test_retired_coverage_migration_is_valid_yaml_for_complex_target() -> None:
+    target = "vendor:library:sim_core:1.0"
+    converted = convert_ticket_document(
+        _ticket(f'  coverage_toggle: {{"{target}": 1.0e-5}}\n'), _context()
+    )
+
+    assert converted.document is None
+    migration_repr = converted.diagnostics[0].message.split("replace it with ", 1)[1]
+    migration = ast.literal_eval(migration_repr)
+    parsed = yaml.safe_load(migration)
+    assert parsed == {
+        "COVERAGE": {target: {"tests": "all", "metrics": {"toggle": {"min_pct": 1.0e-5}}}}
+    }
+
+
+def test_retired_coverage_large_integer_falls_back_to_generic_hint() -> None:
+    converted = convert_ticket_document(
+        _ticket(f"  coverage_toggle: {{sim_properties3: {10**1000}}}\n"), _context()
+    )
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert "retired Criterion 'coverage_toggle'" in message
+    assert "<metric>: {min_pct: <number>}" in message
 
 
 @pytest.mark.parametrize(

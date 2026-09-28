@@ -25,3 +25,11 @@ def test_nonfinite_threshold_is_reported_as_a_finiteness_error(threshold: float)
             {"line": {"min_pct": threshold}},
             field="COVERAGE",
         )
+
+
+def test_large_integer_threshold_is_reported_as_a_range_error() -> None:
+    with pytest.raises(ValueError, match="must be greater than 0 and at most 100"):
+        validate_coverage_metrics(
+            {"line": {"min_pct": 10**1000}},
+            field="COVERAGE",
+        )

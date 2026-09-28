@@ -17,8 +17,13 @@ import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import AliasToken, AnchorToken, TagToken
 
+from booley.core.boundary import BoundaryError, require_finite_number_value
 from booley.core.models import OnSuccess, TargetPlan, TargetPlanEntry, TargetPlanRole
-from booley.criteria.coverage import COVERAGE_METRICS, validate_coverage_metrics
+from booley.criteria.coverage import (
+    COVERAGE_METRICS,
+    COVERAGE_MIGRATION_SKELETON,
+    validate_coverage_metrics,
+)
 from booley.criteria.templates import (
     _validate_criterion_params,
     encode_criterion_component,
@@ -652,29 +657,33 @@ def _reject_retired_coverage_criteria(
                 and len(declaration) == 1
             ):
                 target, threshold = next(iter(declaration.items()))
+                try:
+                    number = require_finite_number_value(
+                        threshold, field=f"retired Criterion {key!r} threshold"
+                    )
+                except BoundaryError:
+                    number = None
                 if (
                     isinstance(target, str)
                     and target.strip()
-                    and not isinstance(threshold, bool)
-                    and isinstance(threshold, (int, float))
-                    and math.isfinite(threshold)
-                    and 0 < threshold <= 100
+                    and number is not None
+                    and 0 < number <= 100
                 ):
+                    record = {
+                        target: {
+                            "tests": "all",
+                            "metrics": {direct_metric: {"min_pct": number}},
+                        }
+                    }
                     migration = (
-                        "COVERAGE: {"
-                        + target
-                        + ": {tests: all, metrics: {"
-                        + direct_metric
-                        + ": {min_pct: "
-                        + str(threshold)
-                        + "}}}}"
+                        "COVERAGE: "
+                        + yaml.safe_dump(record, default_flow_style=True, sort_keys=False).strip()
                     )
                     raise ValueError(f"retired Criterion {key!r}; replace it with {migration!r}")
             supported = ", ".join(sorted(COVERAGE_METRICS))
             raise ValueError(
                 f"retired Criterion {key!r}; replace it with "
-                "'COVERAGE: {<target>: {tests: all, metrics: "
-                "{<metric>: {min_pct: <number>}}}}}' and choose a supported metric: "
+                f"{COVERAGE_MIGRATION_SKELETON!r} and choose a supported metric: "
                 f"{supported}"
             )
 
