@@ -16,8 +16,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from booley.criteria.state import DevelopmentState
 from booley.harness.blocking import AgentTimeoutError
-from booley.harness.developer import _resolve_ticket_disposition, _run_post_developer_hook
+from booley.harness.developer import (
+    PostDeveloperFinding,
+    _resolve_ticket_disposition,
+    _run_post_developer_hook,
+    _transition_post_developer_finding,
+)
 from booley.harness.models import OnSuccess, TicketContext
 from booley.ticket_board.criteria_acceptance import CriteriaVerdict
 from booley.ticket_board.review_lifecycle import ReviewPrepError, ReviewPrepOutcome
@@ -449,16 +455,73 @@ def test_post_developer_hook_failure_returns_blocked(tmp_path: Path):
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw"),
     ):
-        blocked = _run_post_developer_hook(
+        finding = _run_post_developer_hook(
             ctx,
             tmp_path / "state.json",
             tmp_path / "logs",
             run_index=4,
         )
 
-    assert blocked is True
-    block.assert_called_once()
-    assert block.call_args.args[1] == "post-developer hook: bad rtl"
+    assert finding is not None
+    assert finding.reason == "post-developer hook: bad rtl"
+    block.assert_not_called()
+
+
+def test_post_developer_hook_state_mutation_is_reprojected(tmp_path: Path):
+    ctx = _make_ctx(tmp_path)
+    ctx.worktree_path = tmp_path / "worktree"
+    ctx.worktree_path.mkdir()
+    hook = tmp_path / ".booley_project" / "hooks" / "post-developer.py"
+    hook.parent.mkdir(parents=True)
+    hook.write_text("raise SystemExit(2)\n", encoding="utf-8")
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria({"implementation_complete": True, "_blocked_reason": False})
+    state.set_criterion("_blocked_reason", True, detail={"reason": "Stale pre-hook reason."})
+    state.save()
+
+    def clear_reason(*_args, **_kwargs):
+        updated = DevelopmentState.load(state_path)
+        updated.set_criterion("_blocked_reason", False)
+        updated.save()
+        return MagicMock(returncode=2, stdout="", stderr="hook failed")
+
+    with (
+        patch("booley.harness.developer.subprocess.run", side_effect=clear_reason),
+        patch.dict(os.environ, {"BOOLEY_PROJECT_DIR": ""}, clear=False),
+        patch("booley.harness.developer.block_ticket") as block,
+        patch("booley.harness.developer.terminal.raw"),
+    ):
+        finding = _run_post_developer_hook(
+            ctx,
+            state_path,
+            tmp_path / "logs",
+            run_index=5,
+        )
+        assert finding is not None
+        _transition_post_developer_finding(ctx, state_path, finding, 5)
+
+    block.assert_called_once_with(
+        ctx,
+        "post-developer hook: hook failed",
+        "developer",
+        run_index=5,
+    )
+
+
+def test_transition_projection_error_uses_guard_reason(tmp_path: Path):
+    ctx = _make_ctx(tmp_path)
+    finding = PostDeveloperFinding("handoff failed", "handoff context")
+    with (
+        patch(
+            "booley.ticket_board.criteria_acceptance.project_active_declared_block_reason",
+            side_effect=UnicodeDecodeError("utf-8", b"x", 0, 1, "invalid"),
+        ),
+        patch("booley.harness.developer.block_ticket") as block,
+    ):
+        _transition_post_developer_finding(ctx, tmp_path / "state.json", finding, 5)
+
+    block.assert_called_once_with(ctx, "handoff failed", "developer", run_index=5)
 
 
 def test_post_developer_hook_is_bounded_by_remaining_wall_time(tmp_path: Path):

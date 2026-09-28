@@ -254,7 +254,9 @@ def _has_matching_failing_evidence(entry) -> bool:
     return False
 
 
-def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
+def _enforce_acceptance_evidence(
+    state, *, work_dir: Path | None, persist: bool = True
+) -> list[str]:
     """Fail closed on evidence that cannot satisfy the recorded Ticket baseline."""
     if not getattr(state, "strict_criteria", False):
         return []
@@ -281,7 +283,8 @@ def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
 
     if rejected:
         _invalidate_submitted_report(state, now=now)
-        state.save()
+        if persist:
+            state.save()
         logger.warning(
             "Rejected insufficient Criterion evidence for %s: %s",
             state.slug,
@@ -339,7 +342,9 @@ def _refresh_verification_entry(
     return True
 
 
-def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]:
+def refresh_verification_freshness(
+    state, *, work_dir: Path | None, persist: bool = True
+) -> list[str]:
     """Persistently invalidate passing checks whose source fingerprint drifted."""
     resolved_work_dir = work_dir
     if resolved_work_dir is None and getattr(state, "work_dir", ""):
@@ -373,7 +378,8 @@ def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]
             state.slug,
             ", ".join(stale_keys),
         )
-        state.save()
+        if persist:
+            state.save()
     return stale_keys
 
 
@@ -428,6 +434,60 @@ def _compute_criteria_stats(
     }
 
 
+def _active_declared_block_reason(state, stats: dict) -> str | None:
+    """Return the active Developer Agent-declared reason for this projection."""
+    all_mandatory_met = stats["mandatory_met"] == stats["mandatory"]
+    blocked_entry = state.criteria.get("_blocked_reason")
+    if blocked_entry and blocked_entry.met and not all_mandatory_met:
+        return blocked_entry.detail.get("reason", "blocked by agent")
+    return None
+
+
+def project_active_declared_block_reason(state_path: Path, *, work_dir: Path | None) -> str | None:
+    """Project current acceptance state without persisting invalidations."""
+    from booley.criteria.state import DevelopmentState
+
+    state = DevelopmentState.load(state_path)
+    if not state.criteria:
+        return None
+    refresh_verification_freshness(state, work_dir=work_dir, persist=False)
+    _enforce_acceptance_evidence(state, work_dir=work_dir, persist=False)
+    return _active_declared_block_reason(state, _compute_criteria_stats(state.criteria))
+
+
+def _missing_mandatory_verdict(state, base: dict) -> CriteriaVerdict:
+    """Fail a state whose visible mandatory Criteria set is empty."""
+    logger.warning(
+        "State for %s has no visible mandatory criteria -- failing instead "
+        "of treating 0/0 as success.",
+        _state_slug_for_log(state),
+    )
+    return CriteriaVerdict(
+        disposition="failed",
+        unmet_mandatory=["_mandatory_criteria_missing"],
+        **base,
+    )
+
+
+def _all_mandatory_met_verdict(state, stats: dict, base: dict) -> CriteriaVerdict:
+    """Apply the Developer Report gate after all mandatory Criteria pass."""
+    report_error = _run_report_gate_error(state)
+    if report_error:
+        logger.warning(
+            "All visible mandatory criteria met for %s, but %s -- "
+            "failing so the Developer Agent resubmits the report on the next run.",
+            state.slug,
+            report_error,
+        )
+        return CriteriaVerdict(
+            disposition="failed",
+            unmet_mandatory=[_REPORT_CRITERION],
+            **base,
+        )
+    logger.info("All %d mandatory criteria met for %s", stats["mandatory"], state.slug)
+    return CriteriaVerdict(disposition="review", **base)
+
+
 def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
     """Decide ticket disposition from criteria stats and blocked reason."""
     all_mandatory_met = stats["mandatory_met"] == stats["mandatory"]
@@ -439,40 +499,16 @@ def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
     }
 
     # Check _blocked_reason — only when mandatory criteria are NOT all met.
-    blocked_entry = state.criteria.get("_blocked_reason")
-    if blocked_entry and blocked_entry.met and not all_mandatory_met:
-        reason = blocked_entry.detail.get("reason", "blocked by agent")
+    reason = _active_declared_block_reason(state, stats)
+    if reason is not None:
         logger.info("Ticket %s blocked: %s", state.slug, reason)
         return CriteriaVerdict(disposition="blocked", blocked_reason=reason, **base)
 
     if stats["mandatory"] == 0 and not getattr(state, "authorized_zero_mandatory_basis_id", ""):
-        logger.warning(
-            "State for %s has no visible mandatory criteria -- failing instead "
-            "of treating 0/0 as success.",
-            _state_slug_for_log(state),
-        )
-        return CriteriaVerdict(
-            disposition="failed",
-            unmet_mandatory=["_mandatory_criteria_missing"],
-            **base,
-        )
+        return _missing_mandatory_verdict(state, base)
 
     if all_mandatory_met:
-        report_error = _run_report_gate_error(state)
-        if report_error:
-            logger.warning(
-                "All visible mandatory criteria met for %s, but %s -- "
-                "failing so the developer resubmits the report on the next run.",
-                state.slug,
-                report_error,
-            )
-            return CriteriaVerdict(
-                disposition="failed",
-                unmet_mandatory=[_REPORT_CRITERION],
-                **base,
-            )
-        logger.info("All %d mandatory criteria met for %s", stats["mandatory"], state.slug)
-        return CriteriaVerdict(disposition="review", **base)
+        return _all_mandatory_met_verdict(state, stats, base)
 
     logger.warning(
         "%d/%d mandatory criteria unmet for %s: %s",
@@ -545,5 +581,6 @@ __all__ = [
     "build_criteria_summary_lines",
     "check_criteria_acceptance",
     "format_criteria_verdict",
+    "project_active_declared_block_reason",
     "refresh_verification_freshness",
 ]
