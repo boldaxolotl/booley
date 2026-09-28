@@ -533,11 +533,7 @@ def _step_docker_image(
     allow_pull: bool = True,
     rebuild_runtime_base: bool | None = None,
 ) -> None:
-    """Build/refresh the project-agnostic ``booley-sandbox`` base image.
-
-    *selected_image* is the project's resolved ``[sandbox].image`` and is used
-    only to explain this step's relationship to it; the base is built either way.
-    """
+    """Build or refresh ``booley-sandbox``; *selected_image* is explanatory only."""
     ctx.step_banner("Docker image")
     if not _docker_cli_ready(ctx):
         return
@@ -654,16 +650,14 @@ def _docker_local_build(
     if not _docker_build_wheel(ctx, booley_root, preserve_stamp=preserve_build_stamp):
         return
 
-    build = _DockerBuildSpec(
-        dockerfile=dockerfile,
-        context=booley_root,
+    returncode = _build_local_sandbox_candidate(
+        ctx,
+        dockerfile,
+        booley_root,
         exists=exists,
         fingerprint=fingerprint,
-        build_contexts=(("booley-runtime-base", f"docker-image://{runtime_base_id}"),),
-        build_args=("--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={runtime_base_id}"),
-        parent_artifact=runtime_base_id,
+        runtime_base_id=runtime_base_id,
     )
-    returncode = _docker_build_image(ctx, build)
     if returncode is None:
         return  # error already recorded
 
@@ -675,6 +669,27 @@ def _docker_local_build(
     ok(f"{DOCKER_IMAGE} image built successfully")
     _report_build_cache()
     ctx.record("docker_image", "ok", "built")
+
+
+def _build_local_sandbox_candidate(
+    ctx: InitContext,
+    dockerfile: Path,
+    booley_root: Path,
+    *,
+    exists: bool,
+    fingerprint: str | None,
+    runtime_base_id: str,
+) -> int | None:
+    build = _DockerBuildSpec(
+        dockerfile=dockerfile,
+        context=booley_root,
+        exists=exists,
+        fingerprint=fingerprint,
+        build_contexts=(("booley-runtime-base", f"docker-image://{runtime_base_id}"),),
+        build_args=("--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={runtime_base_id}"),
+        parent_artifact=runtime_base_id,
+    )
+    return _docker_build_image(ctx, build)
 
 
 def _short_contract(contract: str) -> str:

@@ -1392,6 +1392,31 @@ def test_packaged_distribution_missing_base_pulls_verified_release(
     assert result.status is lifecycle.Status.CHANGED
 
 
+def _distribution_local_build_recorder(docker: FakeDocker, calls: list[tuple]):
+    def local_build(
+        _ctx,
+        docker_dir,
+        exists,
+        fingerprint,
+        *,
+        preserve_build_stamp=False,
+        rebuild_runtime_base=False,
+    ) -> None:
+        calls.append((docker_dir, exists, fingerprint, preserve_build_stamp, rebuild_runtime_base))
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            "0.2.6",
+            fingerprint,
+        )
+        FakeBuilder(docker).build(
+            lifecycle._base_node(payload),
+            force=False,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
+
+    return local_build
+
+
 def test_development_distribution_missing_base_builds_locally(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1407,33 +1432,12 @@ def test_development_distribution_missing_base_builds_locally(
     def _context():
         yield context_root
 
-    def _local_build(
-        ctx,
-        docker_dir,
-        exists,
-        fingerprint,
-        *,
-        preserve_build_stamp=False,
-        rebuild_runtime_base=False,
-    ):
-        calls.append(
-            (
-                docker_dir,
-                exists,
-                fingerprint,
-                preserve_build_stamp,
-                rebuild_runtime_base,
-            )
-        )
-        payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", fingerprint)
-        FakeBuilder(docker).build(
-            lifecycle._base_node(payload),
-            force=False,
-            source=lifecycle.ArtifactSource.LOCAL_BUILD,
-        )
-
     monkeypatch.setattr(harness_lifecycle, "extracted_development_context", _context)
-    monkeypatch.setattr(init_docker_image, "_docker_local_build", _local_build)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_local_build",
+        _distribution_local_build_recorder(docker, calls),
+    )
     monkeypatch.setattr(
         harness_lifecycle,
         "embedded_official_release",
@@ -1863,6 +1867,32 @@ def test_source_reconcile_separates_outer_replacement_from_runtime_base_refresh(
     assert calls == [(True, expected)]
 
 
+def _extracted_build_recorder(docker: FakeDocker, calls: list[tuple]):
+    def build_base(
+        context,
+        docker_dir,
+        _exists,
+        _fingerprint,
+        *,
+        preserve_build_stamp=False,
+        rebuild_runtime_base=False,
+    ) -> None:
+        calls.append((docker_dir, preserve_build_stamp, rebuild_runtime_base))
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            "0.2.6",
+            "payload-new",
+        )
+        FakeBuilder(docker).build(
+            lifecycle._base_node(payload),
+            force=True,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
+        context.record("docker_image", "ok", "built")
+
+    return build_base
+
+
 def test_extracted_development_reconcile_passes_runtime_base_refresh_separately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1899,30 +1929,12 @@ def test_extracted_development_reconcile_passes_runtime_base_refresh_separately(
 
     calls: list[tuple[Path, bool, bool]] = []
 
-    def build_base(
-        context,
-        docker_dir,
-        _exists,
-        _fingerprint,
-        *,
-        preserve_build_stamp=False,
-        rebuild_runtime_base=False,
-    ) -> None:
-        calls.append((docker_dir, preserve_build_stamp, rebuild_runtime_base))
-        payload = lifecycle.PayloadProvenance(
-            lifecycle.PROVENANCE_SCHEMA,
-            "0.2.6",
-            "payload-new",
-        )
-        FakeBuilder(docker).build(
-            lifecycle._base_node(payload),
-            force=True,
-            source=lifecycle.ArtifactSource.LOCAL_BUILD,
-        )
-        context.record("docker_image", "ok", "built")
-
     monkeypatch.setattr(harness_lifecycle, "extracted_development_context", extracted_context)
-    monkeypatch.setattr(init_docker_image, "_docker_local_build", build_base)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_local_build",
+        _extracted_build_recorder(docker, calls),
+    )
 
     harness_lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH)
 

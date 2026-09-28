@@ -188,9 +188,7 @@ def test_docker_build_command_reuses_local_parent_labels(tmp_path, monkeypatch):
     )
 
 
-def test_local_build_reuses_matching_runtime_base_for_candidate(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def _matching_runtime_base_build(tmp_path, monkeypatch):
     docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
     docker_dir.mkdir(parents=True)
     (docker_dir / "Dockerfile.base").write_text("FROM scratch\n", encoding="utf-8")
@@ -234,6 +232,13 @@ def test_local_build_reuses_matching_runtime_base_for_candidate(
         return 0
 
     monkeypatch.setattr(init_docker_image, "_docker_build_image", fake_build)
+    return docker_dir, calls
+
+
+def test_local_build_reuses_matching_runtime_base_for_candidate(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    docker_dir, calls = _matching_runtime_base_build(tmp_path, monkeypatch)
     ctx = InitContext(project_root=tmp_path)
 
     init_docker_image._docker_local_build(ctx, docker_dir, exists=False, fingerprint="fp")
