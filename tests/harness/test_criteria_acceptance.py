@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.criteria.freshness import verification_freshness_eligible
 from booley.criteria.state import (
     DevelopmentState,
 )
@@ -986,6 +987,50 @@ def test_read_only_freshness_evaluator_reports_tb_drift_without_mutation(
     assert result.changed_categories == ("tb",)
     assert "sources changed" in result.reason
     assert repr(entry) == before
+
+
+def test_freshness_eligibility_distinguishes_gate_from_review_placeholders() -> None:
+    pending_review = _FakeCriterion(met=False, mandatory=True)
+    assert verification_freshness_eligible(
+        "review_rtl_bugs_done",
+        pending_review,
+        include_unobserved_review=True,
+    )
+    assert not verification_freshness_eligible(
+        "review_rtl_bugs_done",
+        pending_review,
+        include_unobserved_review=False,
+    )
+    assert not verification_freshness_eligible(
+        "sim_pass_sim",
+        _FakeCriterion(met=True, mandatory=False),
+        include_unobserved_review=True,
+    )
+
+
+def test_read_only_freshness_evaluator_normalizes_malformed_project_config(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "booley.toml").write_text("[broken", encoding="utf-8")
+    entry = _FakeCriterion(
+        met=True,
+        mandatory=True,
+        detail={SOURCE_FINGERPRINT_DETAIL_KEY: {"categories": ["rtl"]}},
+    )
+
+    result = evaluate_verification_freshness(
+        "sim_pass_sim",
+        entry,
+        work_dir=tmp_path,
+        fingerprint_provider=compute_source_fingerprint,
+    )
+
+    assert result.stale
+    assert result.changed_categories == ("rtl", "tb")
+    assert result.current_evidence_identity
+    assert "can no longer be resolved" in result.reason
 
 
 def test_read_only_freshness_evaluator_prefers_version_4_reviewer_receipt(

@@ -19,12 +19,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.core.boundary import as_str_list
-from booley.criteria.categories import (
-    verification_fingerprint_categories as _verification_fingerprint_categories,
-)
 from booley.criteria.freshness import (
     VerificationFreshness,
     evaluate_verification_freshness,
+    verification_freshness_eligible,
 )
 
 # NOTE: DevelopmentState is imported function-locally (not here) because the
@@ -353,12 +351,11 @@ def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]
     stale_keys: list[str] = []
     fingerprints: dict[str | None, dict] = {}
     for key, entry in state.criteria.items():
-        is_review = key.startswith(("review_rtl_", "review_tb_"))
-        if key.startswith("_") or (not entry.met and not is_review):
-            continue
-        if not entry.mandatory and not is_review:
-            continue
-        if not _verification_fingerprint_categories(key):
+        if not verification_freshness_eligible(
+            key,
+            entry,
+            include_unobserved_review=True,
+        ):
             continue
         if _refresh_verification_entry(
             key,

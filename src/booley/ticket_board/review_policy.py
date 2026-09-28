@@ -1,4 +1,4 @@
-"""Resolve live Ticket review policy into dependency-neutral receipt values."""
+"""Compatibility facade for the Ticket Board's established Reviewer policy API."""
 
 from __future__ import annotations
 
@@ -8,5 +8,5 @@ from booley.criteria.freshness import review_policy_digest as _review_policy_dig
 
 
 def review_policy_digest(work_dir: Path, category: str) -> str:
-    """Return the current policy identity used by one Reviewer invocation."""
+    """Preserve the public import path while delegating shared freshness policy."""
     return _review_policy_digest(work_dir, category)

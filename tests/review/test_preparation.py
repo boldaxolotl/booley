@@ -648,6 +648,24 @@ def test_source_fingerprint_tracks_repeated_edits_with_same_porcelain_status(
     assert rp._source_fingerprint(ctx) != first
 
 
+def test_report_disabled_package_rejects_inputs_changed_while_building_facts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ctx = _ctx(tmp_path)
+    ctx.runtime_dir.mkdir(parents=True)
+    monkeypatch.setattr(rp, "_build_review_facts", lambda _ctx: {})
+    monkeypatch.setattr(rp, "_source_fingerprint", lambda _ctx: "changed")
+
+    with pytest.raises(rp.ReviewPrepConcurrentChangeError, match="facts were built"):
+        rp._prepare_report_disabled_package(
+            ctx,
+            "prompt",
+            "original",
+            0.0,
+        )
+
+
 def test_source_fingerprint_ignores_human_logs_written_by_review_prep(tmp_path: Path, monkeypatch):
     ctx = _ctx(tmp_path)
     ctx.worktree.mkdir()

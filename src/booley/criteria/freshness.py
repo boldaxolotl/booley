@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +41,35 @@ class VerificationFreshness:
 def _entry_detail(entry: Any) -> Mapping[str, Any]:
     detail = entry.get("detail") if isinstance(entry, Mapping) else entry.detail
     return detail if isinstance(detail, Mapping) else {}
+
+
+def _entry_value(entry: Any, name: str, default: Any = None) -> Any:
+    return (
+        entry.get(name, default) if isinstance(entry, Mapping) else getattr(entry, name, default)
+    )
+
+
+def verification_freshness_eligible(
+    key: str,
+    entry: Any,
+    *,
+    include_unobserved_review: bool,
+) -> bool:
+    """Return whether one Criterion participates in live freshness evaluation."""
+    if key.startswith("_") or not verification_fingerprint_categories(key):
+        return False
+    is_review = key.startswith(("review_rtl_", "review_tb_"))
+    if is_review:
+        observed = any(
+            (
+                _entry_value(entry, "met") is True,
+                _entry_value(entry, "ever_failed") is True,
+                _entry_value(entry, "stale") is True,
+                bool(_entry_detail(entry)),
+            )
+        )
+        return include_unobserved_review or observed
+    return _entry_value(entry, "mandatory", True) and _entry_value(entry, "met") is True
 
 
 def _identity(value: object) -> str:
@@ -81,14 +111,21 @@ def _review_freshness(
             detail, work_dir, tb_policy_digest=policy_digest
         )
     except ReviewTicketError as exc:
-        return VerificationFreshness(
-            True, tuple(sorted(categories)), str(exc), review_dimensions=("ticket",)
-        )
-    except (FuseSocError, OSError) as exc:
+        reason = str(exc)
         return VerificationFreshness(
             True,
             tuple(sorted(categories)),
-            f"Reviewer source context can no longer be resolved: {exc}",
+            reason,
+            current_evidence_identity=_identity({"error": reason}),
+            review_dimensions=("ticket",),
+        )
+    except (FuseSocError, OSError, tomllib.TOMLDecodeError) as exc:
+        reason = f"Reviewer source context can no longer be resolved: {exc}"
+        return VerificationFreshness(
+            True,
+            tuple(sorted(categories)),
+            reason,
+            current_evidence_identity=_identity({"error": reason}),
             review_dimensions=("source_context",),
         )
     identity = _identity(identity_value)
@@ -121,12 +158,16 @@ def _source_freshness(
         if target not in fingerprints:
             fingerprints[target] = fingerprint_provider(work_dir, target=target)
         current = fingerprints[target]
-    except FuseSocError as exc:
+    except (FuseSocError, tomllib.TOMLDecodeError) as exc:
+        reason = (
+            f"Target-specific source fingerprint can no longer be resolved: {exc}. "
+            "Re-run the relevant Flow or Specialist with a valid Target."
+        )
         return VerificationFreshness(
             True,
             tuple(sorted(categories)),
-            f"Target-specific source fingerprint can no longer be resolved: {exc}. "
-            "Re-run the relevant Flow or Specialist with a valid Target.",
+            reason,
+            current_evidence_identity=_identity({"error": reason}),
         )
     except OSError:
         logger.debug("Could not compute final source fingerprint", exc_info=True)

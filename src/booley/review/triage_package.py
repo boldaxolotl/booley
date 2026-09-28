@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from urllib.parse import quote
 
 from booley.core.boundary import BoundaryError, require_dict, require_str
+from booley.criteria.freshness import verification_freshness_eligible
 from booley.review.artifact import ReviewArtifactError, ReviewPackage
 from booley.review.explanation import StructuredExplanation
 
@@ -238,6 +239,86 @@ def _criterion_report_path(
     return str(resolved) if resolved.is_file() else None
 
 
+def _live_criterion_freshness(
+    name: str,
+    value: Mapping[str, Any],
+    *,
+    worktree: Path,
+    freshness_evaluator: Callable[..., Any],
+    fingerprints: dict[str | None, dict],
+) -> tuple[str, list[str], bool]:
+    freshness = _criterion_freshness(value)
+    changed_categories = _persisted_changed_categories(value)
+    if not verification_freshness_eligible(
+        name,
+        value,
+        include_unobserved_review=False,
+    ):
+        return freshness, changed_categories, False
+    result = freshness_evaluator(
+        name,
+        value,
+        work_dir=worktree,
+        fingerprints=fingerprints,
+    )
+    if result is None or not result.stale:
+        return freshness, changed_categories, False
+    return "stale", list(result.changed_categories), True
+
+
+def _criterion_row(
+    name: str,
+    value: Mapping[str, Any],
+    *,
+    worktree: Path,
+    project_root: Path,
+    freshness: str,
+    changed_categories: list[str],
+) -> dict[str, Any]:
+    return {
+        "category": _category(name),
+        "criterion": name,
+        "required": "mandatory" if value.get("mandatory", True) else "optional",
+        "status": _criterion_status(
+            value,
+            freshness=freshness,
+            changed_categories=changed_categories,
+        ),
+        "outcome": _criterion_outcome(value),
+        "freshness": freshness,
+        "changed_categories": changed_categories,
+        "metric": _criterion_metric(value),
+        "availability": value.get("availability", "available"),
+        "report_path": _criterion_report_path(
+            name,
+            value,
+            worktree=worktree,
+            project_root=project_root,
+        ),
+    }
+
+
+def _project_submitted_report_staleness(
+    rows: list[dict[str, Any]],
+    raw: Mapping[str, Any],
+    changed_categories: set[str],
+) -> None:
+    report = raw.get("_report_submitted")
+    if not changed_categories or not isinstance(report, Mapping) or report.get("locked") is True:
+        return
+    for row in rows:
+        if row["criterion"] != "_report_submitted" or row["outcome"] != "met":
+            continue
+        row["freshness"] = "stale"
+        row["changed_categories"] = sorted(changed_categories)
+        row["metric"] = "Verification evidence became stale after this report was submitted."
+        row["status"] = _criterion_status(
+            {"met": True},
+            freshness="stale",
+            changed_categories=row["changed_categories"],
+        )
+
+
 def _criteria(
     state: Mapping[str, Any],
     *,
@@ -248,74 +329,32 @@ def _criteria(
     raw = state.get("criteria")
     if not isinstance(raw, dict):
         return []
-    rows = []
+    rows: list[dict[str, Any]] = []
     fingerprints: dict[str | None, dict] = {}
     newly_stale_categories: set[str] = set()
     for name, value in raw.items():
         if (name.startswith("_") and name != "_report_submitted") or not isinstance(value, dict):
             continue
-        category = _category(name)
-        freshness = _criterion_freshness(value)
-        changed_categories = _persisted_changed_categories(value)
-        is_review = name.startswith(("review_rtl_", "review_tb_"))
-        observable = any(
-            (
-                value.get("met") is True,
-                value.get("ever_failed") is True,
-                value.get("stale") is True,
-                bool(value.get("detail")),
-            )
+        freshness, changed_categories, newly_stale = _live_criterion_freshness(
+            name,
+            value,
+            worktree=worktree,
+            freshness_evaluator=freshness_evaluator,
+            fingerprints=fingerprints,
         )
-        eligible = not name.startswith("_") and (
-            (is_review and observable)
-            or (value.get("mandatory", True) and value.get("met") is True)
-        )
-        if eligible:
-            result = freshness_evaluator(
+        if newly_stale:
+            newly_stale_categories.update(changed_categories)
+        rows.append(
+            _criterion_row(
                 name,
                 value,
-                work_dir=worktree,
-                fingerprints=fingerprints,
+                worktree=worktree,
+                project_root=project_root,
+                freshness=freshness,
+                changed_categories=changed_categories,
             )
-            if result is not None and result.stale:
-                freshness = "stale"
-                changed_categories = list(result.changed_categories)
-                newly_stale_categories.update(result.changed_categories)
-        rows.append(
-            {
-                "category": category,
-                "criterion": name,
-                "required": "mandatory" if value.get("mandatory", True) else "optional",
-                "status": _criterion_status(
-                    value,
-                    freshness=freshness,
-                    changed_categories=changed_categories,
-                ),
-                "outcome": _criterion_outcome(value),
-                "freshness": freshness,
-                "changed_categories": changed_categories,
-                "metric": _criterion_metric(value),
-                "availability": value.get("availability", "available"),
-                "report_path": _criterion_report_path(
-                    name,
-                    value,
-                    worktree=worktree,
-                    project_root=project_root,
-                ),
-            }
         )
-    if newly_stale_categories:
-        for row in rows:
-            if row["criterion"] != "_report_submitted" or row["outcome"] != "met":
-                continue
-            row["freshness"] = "stale"
-            row["changed_categories"] = sorted(newly_stale_categories)
-            row["metric"] = "Verification evidence became stale after this report was submitted."
-            row["status"] = _criterion_status(
-                {"met": True},
-                freshness="stale",
-                changed_categories=row["changed_categories"],
-            )
+    _project_submitted_report_staleness(rows, raw, newly_stale_categories)
     return sorted(rows, key=lambda row: (_CATEGORY_ORDER[row["category"]], row["criterion"]))
 
 

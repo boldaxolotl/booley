@@ -22,8 +22,10 @@ from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import AgentCallParams, AgentResult
-from booley.criteria.categories import verification_fingerprint_categories
-from booley.criteria.freshness import evaluate_verification_freshness
+from booley.criteria.freshness import (
+    evaluate_verification_freshness,
+    verification_freshness_eligible,
+)
 from booley.criteria.state import DevelopmentState
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.review.generation import (
@@ -85,26 +87,17 @@ def _usage_summary(ctx: ReviewPrepContext) -> str:
     return result.stdout.strip() if result.returncode == 0 else "unavailable"
 
 
-def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
-    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
-    if ctx.inspection is not None:
-        state = ctx.inspection["state"]
-    else:
-        try:
-            state = require_dict(
-                json.loads(state_path.read_text(encoding="utf-8")),
-                field="review state",
-            )
-        except (OSError, json.JSONDecodeError, BoundaryError):
-            state = {}
-    scope_path = ctx.log_dir / ".runtime" / "scope_deviations.json"
+def _read_review_mapping(path: Path, *, field: str) -> dict[str, Any]:
     try:
-        scope = require_dict(
-            json.loads(scope_path.read_text(encoding="utf-8")),
-            field="review scope",
+        return require_dict(
+            json.loads(path.read_text(encoding="utf-8")),
+            field=field,
         )
     except (OSError, json.JSONDecodeError, BoundaryError):
-        scope = {}
+        return {}
+
+
+def _review_dirty_paths(ctx: ReviewPrepContext) -> list[str]:
     dirty = _git(ctx.worktree, "status", "--short").splitlines()
     if ctx.project_repository is not None:
         dirty.extend(
@@ -115,6 +108,20 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
                 "--short",
             ).splitlines()
         )
+    return dirty
+
+
+def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = (
+        ctx.inspection["state"]
+        if ctx.inspection is not None
+        else _read_review_mapping(state_path, field="review state")
+    )
+    scope = _read_review_mapping(
+        ctx.log_dir / ".runtime" / "scope_deviations.json",
+        field="review scope",
+    )
     crashes = sorted(
         str(path) for path in (ctx.log_dir / ".runtime" / "developer").glob("*.crash.json")
     )
@@ -129,7 +136,7 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
     evidence = ResolvedReviewEvidence.capture(
         state=state,
         scope=scope,
-        dirty_worktree=dirty,
+        dirty_worktree=_review_dirty_paths(ctx),
         developer_crashes=crashes,
         missing_evidence=missing,
     )
@@ -612,19 +619,11 @@ def _verification_evidence_identity(ctx: ReviewPrepContext) -> bytes:
     for key, entry in sorted(criteria.items()):
         if not isinstance(key, str) or not isinstance(entry, Mapping):
             continue
-        is_review = key.startswith(("review_rtl_", "review_tb_"))
-        observable = any(
-            (
-                entry.get("met") is True,
-                entry.get("ever_failed") is True,
-                entry.get("stale") is True,
-                bool(entry.get("detail")),
-            )
-        )
-        eligible = (is_review and observable) or (
-            entry.get("mandatory", True) and entry.get("met") is True
-        )
-        if not eligible or not verification_fingerprint_categories(key):
+        if not verification_freshness_eligible(
+            key,
+            entry,
+            include_unobserved_review=False,
+        ):
             continue
         result = evaluate_verification_freshness(
             key,
@@ -1280,6 +1279,11 @@ def _prepare_report_disabled_package(
 ) -> ReviewPrepOutcome:
     """Persist the same typed package without making the optional model call."""
     facts = _build_review_facts(ctx)
+    _require_unchanged(
+        ctx,
+        source_sha,
+        "live review inputs changed while review facts were built",
+    )
     _write_json(ctx.runtime_dir / "facts.json", facts)
     briefing_path = write_triage_package(
         ctx,
@@ -1288,7 +1292,6 @@ def _prepare_report_disabled_package(
         None,
         None,
     )
-    source_sha = _source_fingerprint(ctx)
     duration = time.monotonic() - started
     manifest = _base_manifest(ctx, prompt_sha, source_sha, "ready")
     manifest.update(
@@ -1311,6 +1314,7 @@ def _prepare_report_disabled_package(
 def _write_ready_manifest(
     ctx: ReviewPrepContext,
     prompt_sha: str,
+    source_sha: str,
     briefing_path: Path,
     html_path: Path | None,
     prepared: PreparedReviewOutput,
@@ -1318,7 +1322,7 @@ def _write_ready_manifest(
     duration: float,
 ) -> None:
     """Persist integrity metadata for one completed model-generated package."""
-    manifest = _base_manifest(ctx, prompt_sha, _source_fingerprint(ctx), "ready")
+    manifest = _base_manifest(ctx, prompt_sha, source_sha, "ready")
     manifest.update(
         {
             "briefing_path": str(briefing_path),
@@ -1342,6 +1346,7 @@ def _write_ready_manifest(
 def _persist_model_review(
     ctx: ReviewPrepContext,
     prompt_sha: str,
+    source_sha: str,
     facts: dict[str, Any],
     prepared: PreparedReviewOutput,
     result: AgentResult,
@@ -1368,6 +1373,7 @@ def _persist_model_review(
     _write_ready_manifest(
         ctx,
         prompt_sha,
+        source_sha,
         briefing_path,
         html_path,
         prepared,
@@ -1395,9 +1401,13 @@ async def _prepare_model_review(
     try:
         evidence = _collect_git_evidence(ctx)
         facts = _build_review_facts(ctx)
+        _require_unchanged(
+            ctx,
+            source_sha,
+            "live review inputs changed while review facts were built",
+        )
         _write_json(ctx.runtime_dir / "facts.json", facts)
         package = _build_evidence_package(ctx, source_sha, evidence)
-        source_sha = _source_fingerprint(ctx)
         with _agent_workspace(ctx, package) as workspace:
             _require_unchanged(
                 ctx,
@@ -1417,6 +1427,7 @@ async def _prepare_model_review(
         return _persist_model_review(
             ctx,
             prompt_sha,
+            source_sha,
             facts,
             prepared,
             result,

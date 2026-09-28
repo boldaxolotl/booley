@@ -9,7 +9,7 @@ from functools import partial
 from pathlib import Path
 from urllib.parse import quote
 
-from booley.criteria.freshness import evaluate_verification_freshness
+from booley.criteria.freshness import VerificationFreshness, evaluate_verification_freshness
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.review import triage_package as tp
@@ -212,6 +212,37 @@ def test_review_facts_project_live_staleness_without_mutating_evidence(
     assert rows["sim_pass_sim"]["status"] == "STALE (tb)"
     assert rows["_report_submitted"]["freshness"] == "stale"
     assert evidence.state() == state
+
+
+def test_live_staleness_preserves_locked_submitted_report(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    state = {
+        "criteria": {
+            "sim_pass_sim": {"mandatory": True, "met": True},
+            "_report_submitted": {"mandatory": True, "met": True, "locked": True},
+        }
+    }
+    evidence = tp.ResolvedReviewEvidence.capture(
+        state=state,
+        scope={},
+        dirty_worktree=[],
+        developer_crashes=[],
+        missing_evidence=[],
+    )
+
+    facts = tp.build_review_facts(
+        ctx,
+        evidence,
+        freshness_evaluator=lambda *_args, **_kwargs: VerificationFreshness(
+            True,
+            ("tb",),
+            "changed",
+        ),
+    )
+
+    rows = {row["criterion"]: row for row in facts["criteria"]}
+    assert rows["sim_pass_sim"]["freshness"] == "stale"
+    assert rows["_report_submitted"]["freshness"] == "current"
 
 
 def test_stale_mandatory_freshness_forces_hold_once() -> None:
