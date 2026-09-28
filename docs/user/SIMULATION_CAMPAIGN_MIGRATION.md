@@ -43,6 +43,16 @@ the caller resolves from the separately supplied origin Target directory. Resume
 reports declare `external_origin_campaign`; they no longer copy a `simulation.json`
 into an invocation that does not contain the Simulation Campaign.
 
+New resumes also publish an origin-owned reverse dependency receipt while the
+origin invocation is locked. The receipt records the canonical origin and
+dependent invocation paths and Campaign identity, allowing exact retention to
+find cross-report-root dependencies. It is refusal evidence only: deletion also
+requires the dependent report to authenticate back to that exact origin.
+Pre-receipt same-root reports remain discoverable from their `reports_root`
+references. An older cross-root or otherwise unlocatable resume cannot be
+guessed safely, so full pruning refuses when retained producer history cannot
+be reconciled with an authenticated dependent.
+
 The bounded MCP response exposes observation counts and at most 32 observation
 previews. Resolve the manifest and inspect its authenticated terminal results
 when complete evidence is needed. Existing `simulation.json` compatibility keys remain, with independent
@@ -67,6 +77,10 @@ Project-local simulator concurrency, counting the already-admitted outer
 Simulation Job; its default of one remains serial.
 
 ## Recovery and retention
+
+Full pruning refuses while resume dependents survive. Use
+`--full --include-dependents` only when all those invocations should be removed;
+the retryable operation removes authenticated dependents before their origin.
 
 Preview recovery before mutating anything:
 

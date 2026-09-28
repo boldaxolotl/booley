@@ -1267,6 +1267,76 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     prune_invocation(reports, 1)
 
 
+def test_full_pruning_refuses_resume_dependent_unless_explicitly_included(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        prune_invocation,
+    )
+
+    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
+    assert result.exit_code == 0
+
+    with pytest.raises(CampaignRetentionError, match=str(reports / "sim/2")):
+        prune_invocation(reports, 1)
+
+    assert manifest.is_file()
+    assert (reports / "sim/2/report.json").is_file()
+    prune_invocation(reports, 1, include_dependents=True)
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+    assert list((reports / "sim/.pruned-2").iterdir()) == []
+
+
+def test_cross_root_resume_dependency_is_registered_and_pruned(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        prune_invocation,
+    )
+
+    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    resumed = tmp_path / "resumed"
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed))
+    assert result.exit_code == 0
+
+    with pytest.raises(CampaignRetentionError, match=str(resumed / "sim/1")):
+        prune_invocation(reports, 1)
+
+    prune_invocation(reports, 1, include_dependents=True)
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+    assert list((resumed / "sim/.pruned-1").iterdir()) == []
+
+
+def test_same_root_legacy_resume_without_receipt_is_still_detected(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        prune_invocation,
+    )
+
+    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
+    assert result.exit_code == 0
+    receipts = manifest.parent / "dependency-receipts"
+    for receipt in receipts.iterdir():
+        receipt.unlink()
+    receipts.rmdir()
+
+    with pytest.raises(CampaignRetentionError, match=str(reports / "sim/2")):
+        prune_invocation(reports, 1)
+
+    prune_invocation(reports, 1, include_dependents=True)
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+    assert list((reports / "sim/.pruned-2").iterdir()) == []
+
+
 def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
     reports, _request = _interrupt_coverage_invocation(
         tmp_path, monkeypatch, selected=("wrap",), skipped=("wrap",)

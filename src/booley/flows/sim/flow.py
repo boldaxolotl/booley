@@ -2446,7 +2446,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
-        preflight = self._campaign_resume_preflight(validated, observed, admission)
+        preflight = self._campaign_resume_preflight(validated, observed, admission, invocation)
         if preflight is not None:
             return preflight
         assert isinstance(admission, AdmissionContext)
@@ -2477,6 +2477,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         validated: ValidatedResumeManifest,
         observed: CampaignRecoveryStatus,
         admission: object | None,
+        invocation: Path,
     ) -> EndpointOutcome | None:
         from .campaign_reports import campaign_invocation_lock
 
@@ -2491,13 +2492,28 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 report_text=f"Simulation Campaign resume origin is busy: {exc}",
                 detail=_campaign_recovery_detail(observed),
             )
-        if isinstance(admission, AdmissionContext):
-            return None
-        return EndpointOutcome(
-            exit_code=EXIT_ERROR,
-            report_text="sim: no admission context",
-            detail=_campaign_recovery_detail(observed),
-        )
+        if not isinstance(admission, AdmissionContext):
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text="sim: no admission context",
+                detail=_campaign_recovery_detail(observed),
+            )
+        try:
+            from .campaign.dependency import register_campaign_dependency
+
+            register_campaign_dependency(
+                validated.path,
+                campaign_id=cast(str, validated.manifest.document["campaign_id"]),
+                manifest_sha256=validated.sha256,
+                dependent_invocation=invocation,
+            )
+        except (OSError, ValueError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign resume dependency failed: {exc}",
+                detail=_campaign_recovery_detail(observed),
+            )
+        return None
 
     def _campaign_resume_failure(
         self,

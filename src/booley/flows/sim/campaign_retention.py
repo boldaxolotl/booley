@@ -32,6 +32,11 @@ from .campaign import (
     retained_campaign_lock,
 )
 from .campaign.codec import MANIFEST_MAX_BYTES
+from .campaign.dependency import (
+    CampaignDependencyReceipt,
+    dependency_receipt_files,
+    read_campaign_dependencies,
+)
 from .campaign_reports import (
     campaign_invocation_lock,
     is_report_link,
@@ -61,6 +66,13 @@ _MANDATORY_FILE_LOCKS = sys.platform == "win32"
 class _CampaignEligibility:
     status: RetainedCampaignStatus
     abandoned: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _DependentInvocation:
+    path: Path
+    receipt: CampaignDependencyReceipt | None
+    authenticated: bool
 
 
 @contextmanager
@@ -230,12 +242,220 @@ def _validate_unpruned(directory: Path, campaign: CoverageCampaign) -> None:
 
 
 def prune_invocation(
-    reports_root: Path, invocation: int, *, project_data: Path | None = None
+    reports_root: Path,
+    invocation: int,
+    *,
+    project_data: Path | None = None,
+    include_dependents: bool = False,
 ) -> None:
-    """Remove exactly one invocation, retaining only an empty number tombstone."""
+    """Remove one invocation, optionally including authenticated resume dependents."""
     root = _invocation(reports_root, invocation)
     with _retention_invocation_lock(root):
+        dependencies = _dependent_invocations(root)
+        live = tuple(item for item in dependencies if not _completed_tombstone(item.path))
+        if live and not include_dependents:
+            names = ", ".join(f"{item.path} (invocation {item.path.name})" for item in live)
+            raise CampaignRetentionError(f"Invocation has dependent resumes: {names}")
+        if not include_dependents:
+            _prune_invocation(root, project_data=project_data)
+            return
+        _prune_invocation_batch(root, dependencies, project_data=project_data)
+
+
+def _prune_invocation_batch(
+    root: Path,
+    dependencies: tuple[_DependentInvocation, ...],
+    *,
+    project_data: Path | None,
+) -> None:
+    members = tuple(sorted((item.path for item in dependencies), key=str))
+    journal_path = root / ".prune-batch.json"
+    document: dict[str, object] = {
+        "$schema": "booley.simulation-prune-batch/v1",
+        "operation": "full-with-dependents",
+        "origin": str(root.absolute()),
+        "members": [str(path.absolute()) for path in members],
+    }
+    if journal_path.exists() and _read_object(journal_path) != document:
+        raise CampaignRetentionError("Pruning batch journal membership disagrees")
+    by_path = {item.path: item for item in dependencies}
+    with ExitStack() as stack:
+        for member in members:
+            if _completed_tombstone(member):
+                continue
+            item = by_path[member]
+            if not item.authenticated:
+                raise CampaignRetentionError(
+                    f"Dependent report does not authenticate to the origin Campaign: {member}"
+                )
+            stack.enter_context(_retention_invocation_lock(member))
+        refreshed = _dependent_invocations(root)
+        if tuple(item.path for item in refreshed) != tuple(item.path for item in dependencies):
+            raise CampaignRetentionError("Simulation Campaign dependencies changed during pruning")
+        for member in (*members, root):
+            if not _completed_tombstone(member):
+                _preflight_invocation(member)
+        if not journal_path.exists():
+            write_campaign_json(journal_path, document)
+        for member in members:
+            _prune_invocation(member, project_data=project_data)
+        remaining = tuple(
+            item.path
+            for item in _dependent_invocations(root)
+            if not _completed_tombstone(item.path)
+        )
+        if remaining:
+            raise CampaignRetentionError(
+                f"Unselected Simulation Campaign dependency remains: {remaining[0]}"
+            )
         _prune_invocation(root, project_data=project_data)
+
+
+def _preflight_invocation(root: Path) -> None:
+    _safe_tree(root)
+    quarantine = root.with_name(f".pruned-{root.name}")
+    _safe_tree(quarantine)
+    if _completed_tombstone(root):
+        return
+    if not root.is_dir():
+        raise CampaignRetentionError(f"Dependent invocation does not exist: {root}")
+    if _matching_prune_journal(root):
+        return
+    if not _empty_abandoned_reservation(root):
+        _validate_invocation_targets(root)
+        _validate_invocation_inventory(root)
+
+
+def _completed_tombstone(root: Path) -> bool:
+    quarantine = root.with_name(f".pruned-{root.name}")
+    return not root.exists() and quarantine.is_dir() and not any(quarantine.iterdir())
+
+
+def _dependent_invocations(root: Path) -> tuple[_DependentInvocation, ...]:
+    found: dict[Path, _DependentInvocation] = {}
+    manifests = tuple(sorted(root.glob("targets/*/campaign/manifest.json")))
+    for manifest in manifests:
+        try:
+            receipts = read_campaign_dependencies(manifest)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise CampaignRetentionError(
+                f"Campaign dependency registry is invalid: {exc}"
+            ) from exc
+        for receipt in receipts:
+            authenticated = _authenticate_dependent_report(receipt)
+            found[receipt.dependent_invocation] = _DependentInvocation(
+                receipt.dependent_invocation, receipt, authenticated
+            )
+    for report in sorted(root.parent.glob("[1-9]*/report.json")):
+        dependent = report.parent.absolute()
+        if dependent == root.absolute() or dependent in found:
+            continue
+        if _report_references_origin(report, manifests):
+            found[dependent] = _DependentInvocation(dependent, None, True)
+    _reject_unknown_producers(root, found)
+    return tuple(found[path] for path in sorted(found, key=str))
+
+
+def _authenticate_dependent_report(receipt: CampaignDependencyReceipt) -> bool:
+    report = receipt.dependent_invocation / "report.json"
+    if not report.is_file():
+        return _completed_tombstone(receipt.dependent_invocation)
+    return _report_references_campaign(
+        report,
+        receipt.origin_target / "campaign/manifest.json",
+        receipt.campaign_id,
+        external_origin_target=receipt.origin_target,
+    )
+
+
+def _report_references_origin(report: Path, manifests: tuple[Path, ...]) -> bool:
+    for manifest in manifests:
+        try:
+            document = _read_object(manifest)
+            campaign_id = document.get("campaign_id")
+            if isinstance(campaign_id, str) and _report_references_campaign(
+                report, manifest, campaign_id
+            ):
+                return True
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    return False
+
+
+def _reject_unknown_producers(root: Path, found: Mapping[Path, _DependentInvocation]) -> None:
+    origin_id = int(root.name)
+    accounted = {int(path.name) for path in found}
+    accounted.update(
+        int(path.name.removeprefix(".pruned-"))
+        for path in root.parent.glob(".pruned-[1-9]*")
+        if path.is_dir()
+        and not any(path.iterdir())
+        and path.name.removeprefix(".pruned-").isdecimal()
+    )
+    patterns = (
+        "targets/*/campaign/work-items/*/attempts/*/attempt.json",
+        "targets/*/campaign/work-items/*/attempts/*/result.json",
+    )
+    producers: set[int] = set()
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            try:
+                producer = _read_object(path).get("producer_invocation_id")
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if type(producer) is int and producer > 0:
+                producers.add(producer)
+    unknown = sorted(producers - accounted - {origin_id})
+    if unknown:
+        raise CampaignRetentionError(
+            "Simulation Campaign has an unlocatable dependent producer invocation: "
+            + ", ".join(str(item) for item in unknown)
+        )
+
+
+def _report_references_campaign(
+    report_path: Path,
+    manifest: Path,
+    campaign_id: str,
+    *,
+    external_origin_target: Path | None = None,
+) -> bool:
+    try:
+        report = _read_object(report_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    detail = report.get("detail")
+    campaigns = detail.get("campaigns") if isinstance(detail, dict) else None
+    if not isinstance(campaigns, dict):
+        return False
+    for value in campaigns.values():
+        if not isinstance(value, dict) or value.get("campaign_id") != campaign_id:
+            continue
+        artifacts = value.get("artifacts")
+        reference = artifacts.get("manifest") if isinstance(artifacts, dict) else None
+        if not isinstance(reference, dict):
+            continue
+        if (
+            reference.get("owner") != campaign_id
+            or reference.get("kind") != "simulation_campaign_manifest"
+            or not isinstance(reference.get("path"), str)
+        ):
+            continue
+        base_name = reference.get("path_base")
+        if base_name == "reports_root":
+            base = report_path.parent.parent.parent
+        elif base_name == "external_origin_target" and external_origin_target is not None:
+            base = external_origin_target
+        else:
+            continue
+        candidate = (base / cast(str, reference["path"])).absolute()
+        try:
+            contained = candidate.is_relative_to(base.absolute())
+        except ValueError:
+            contained = False
+        if contained and candidate == manifest.absolute():
+            return True
+    return False
 
 
 def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
@@ -245,7 +465,9 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
     if root.exists():
         if quarantine.exists():
             raise CampaignRetentionError("Ambiguous invocation pruning state")
-        if _empty_abandoned_reservation(root):
+        if _matching_prune_journal(root):
+            root.rename(quarantine)
+        elif _empty_abandoned_reservation(root):
             write_campaign_json(
                 root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
             )
@@ -271,6 +493,16 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
         else:
             child.unlink()
     journal.unlink()
+
+
+def _matching_prune_journal(root: Path) -> bool:
+    journal = root / ".prune.json"
+    if not journal.exists():
+        return False
+    return _read_object(journal) == {
+        "invocation": int(root.name),
+        "operation": "full",
+    }
 
 
 def _prune_published_invocation(root: Path, project_data: Path | None) -> None:
@@ -488,6 +720,17 @@ def _validate_invocation_inventory(root: Path) -> None:
     targets = progress["targets"]
     assert isinstance(targets, list)
     expected = {(root / "progress.json").absolute()}
+    batch = root / ".prune-batch.json"
+    if batch.exists():
+        document = _read_object(batch)
+        if (
+            document.get("$schema") != "booley.simulation-prune-batch/v1"
+            or document.get("operation") != "full-with-dependents"
+            or document.get("origin") != str(root.absolute())
+            or not isinstance(document.get("members"), list)
+        ):
+            raise CampaignRetentionError("Pruning batch journal is invalid")
+        expected.add(batch.absolute())
     progress_lock = root / ".progress.lock"
     if progress_lock.exists():
         if not _valid_lock_sentinel(progress_lock):
@@ -527,6 +770,12 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
         status = inspect_retained_campaign(manifest)
         expected.update(status.retention_files)
         expected.update(authenticate_retained_campaign_inventory(status))
+        try:
+            expected.update(dependency_receipt_files(manifest))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise CampaignRetentionError(
+                f"Campaign dependency registry is invalid: {exc}"
+            ) from exc
         for coverage in status.coverage_directories:
             expected.update(_campaign_coverage_files(coverage))
         lock = campaign / ".lock"
@@ -795,10 +1044,22 @@ def main() -> None:
             "marker-checked cleanup of owned templated run directories"
         ),
     )
+    parser.add_argument(
+        "--include-dependents",
+        action="store_true",
+        help="With --full, also remove authenticated resume dependents before the origin",
+    )
     args = parser.parse_args()
+    if args.include_dependents and not args.full:
+        parser.error("--include-dependents is only valid with --full")
     try:
         if args.full:
-            prune_invocation(args.reports_root, args.invocation, project_data=args.project_data)
+            prune_invocation(
+                args.reports_root,
+                args.invocation,
+                project_data=args.project_data,
+                include_dependents=args.include_dependents,
+            )
         else:
             prune_native_payload(args.reports_root, args.invocation, args.native_target)
     except (OSError, ValueError) as exc:

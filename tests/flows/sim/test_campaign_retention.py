@@ -134,6 +134,20 @@ def test_full_pruning_accepts_abandoned_nonterminal_progress(tmp_path):
     assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
 
 
+def test_full_pruning_resumes_from_live_root_prune_journal(tmp_path):
+    from booley.flows.sim.campaign_reports import write_campaign_json
+    from booley.flows.sim.campaign_retention import prune_invocation
+
+    campaign(tmp_path)
+    invocation = tmp_path / "reports/sim/1"
+    write_campaign_json(invocation / ".prune.json", {"invocation": 1, "operation": "full"})
+
+    prune_invocation(tmp_path / "reports", 1)
+
+    assert not invocation.exists()
+    assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
+
+
 def test_full_pruning_rejects_contradictory_progress(tmp_path):
     from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 
@@ -502,6 +516,37 @@ def test_maintenance_cli_help_scopes_project_data_to_nonstandard_full_pruning():
     help_text = " ".join(result.stdout.split()).replace("--reports- root", "--reports-root")
     assert "verify canonical ownership for --full" in help_text
     assert "not required for --native-target" in help_text
+    assert "--include-dependents" in help_text
+
+
+def test_maintenance_cli_rejects_include_dependents_with_native_target(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[3] / "src")}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "booley.flows.sim.campaign_retention",
+            "--reports-root",
+            str(tmp_path / "reports"),
+            "--invocation",
+            "1",
+            "--native-target",
+            "sim_0",
+            "--include-dependents",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=environment,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "only valid with --full" in result.stderr
 
 
 def test_project_data_inference_accepts_only_standard_report_roots(tmp_path, monkeypatch):
