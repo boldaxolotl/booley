@@ -31,9 +31,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.core.differences import format_differences
-from booley.runtime import auth_token, project_image
+from booley.runtime import auth_token, image_identity, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
+from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 
 if TYPE_CHECKING:
@@ -370,14 +371,20 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
     spec_image = spec.get("image")
     if not isinstance(spec_image, str) or not spec_image:
         return
-    # Issuance pins devcontainer.json to an immutable ID while booley.toml
-    # normally retains the human-facing tag. Compare what both names resolve
-    # to; string inequality alone turns every freshly issued spec into a false
-    # stale warning.
-    spec_id = idk.image_id(spec_image)
-    expected_id = idk.image_id(expected)
-    images_match = bool(spec_id and expected_id and spec_id == expected_id)
-    if spec_image != expected and not images_match:
+    if spec_image == expected:
+        return
+    comparison = (
+        image_identity.compare_issued_selection(spec_image, expected)
+        if is_local_image_id(spec_image)
+        else image_identity.Comparison(image_identity.Status.MISMATCH)
+    )
+    if comparison.status is image_identity.Status.MATCH:
+        logger.debug(
+            "[sandbox].image tag %r moved to an equivalent Sandbox Image; "
+            "the issued immutable image remains current",
+            expected,
+        )
+    elif comparison.status is image_identity.Status.MISMATCH:
         logger.warning(
             "devcontainer.json image '%s' != [sandbox].image '%s' — this session "
             "runs the stale spec image. Re-run `booley init --seed`, then "
@@ -387,17 +394,18 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
         )
 
 
-def _warn_on_stale_booley_bake(workspace: Path) -> None:
-    """Warn when the managed Sandbox Image is stale by authoritative provenance."""
-    from booley.runtime.image_lifecycle import Intent, ProjectImageScope, Status, reconcile
-
-    result = reconcile(ProjectImageScope(workspace), Intent.CHECK)
-    if result.status is Status.STALE:
+def _warn_on_stale_booley_bake(spec: dict) -> None:
+    """Warn only when the issued immutable image proves code drift."""
+    image = spec.get("image")
+    if not isinstance(image, str) or not image:
+        return
+    result = image_identity.compare_issued_build(image)
+    if result.status is image_identity.Status.MISMATCH:
         logger.warning(
-            "sandbox image '%s' was built from Booley sources that no longer "
-            "match this checkout — the session runs stale Booley code. Rebuild "
+            "issued Sandbox Image '%s' contains stale Booley code (%s). Rebuild "
             "with `booley session refresh`.",
-            result.selected_reference,
+            image,
+            result.detail,
         )
 
 
@@ -871,7 +879,7 @@ def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequ
         )
     profile = _requested_issued_license(workspace, issuance)
     _preflight(spec, license_required=profile is not None)
-    _warn_on_stale_booley_bake(workspace)
+    _warn_on_stale_booley_bake(spec)
     return _UpRequest(
         spec,
         issuance,

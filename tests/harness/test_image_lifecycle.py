@@ -220,6 +220,32 @@ def test_incremental_plan_produces_a_true_noop_for_current_graph(
     assert all(step.action is lifecycle.PlanAction.REUSE for step in current.steps)
 
 
+def test_source_and_release_final_images_share_selection_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+
+    source = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    release = lifecycle.plan(
+        lifecycle.ProjectImageScope(root),
+        docker=docker,
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert source.nodes[-1].logical_selection_fingerprint
+    assert (
+        source.nodes[-1].logical_selection_fingerprint
+        == release.nodes[-1].logical_selection_fingerprint
+    )
+    assert (
+        dict(release.nodes[-1].expected_labels)[lifecycle.LABEL_LOGICAL_SELECTION_FINGERPRINT]
+        == release.nodes[-1].logical_selection_fingerprint
+    )
+
+
 def test_incremental_plan_propagates_standard_change_only_to_descendants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

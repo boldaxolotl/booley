@@ -17,9 +17,13 @@ import logging
 import re
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from booley.config.settings import InteractiveConfig
 from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT
+
+if TYPE_CHECKING:
+    from booley.runtime.image_identity import ImageMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +172,29 @@ def image_id_strict(name: str) -> str | None:
         "cannot inspect issued Sandbox Image keeper: "
         + (detail or "docker image inspect returned no image ID")
     )
+
+
+def inspect_image_metadata(
+    reference: str,
+    *,
+    executable: str = "docker",
+) -> ImageMetadata | None:
+    """Return bounded labels/environment for exactly *reference*, or ``None``."""
+    from booley.runtime.image_identity import decode_image_metadata
+
+    try:
+        result = _run_docker(["image", "inspect", reference], timeout=15, executable=executable)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    if len(result.stdout) > 1_048_576:
+        return None
+    try:
+        document = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return decode_image_metadata(reference, document)
 
 
 def _container_image_matches(container: str, image: str) -> bool | None:

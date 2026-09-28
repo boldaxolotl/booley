@@ -244,15 +244,11 @@ def _patch_environment(
         "up",
         lambda _root: "booley-session-test",
     )
-    # Keep the suite hermetic: the host-clock check (F-5) probes an HTTP Date
-    # header over the real network.
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda _root, _intent: doctor.image_lifecycle.LifecycleResult(
-            "booley-sandbox",
-            "sha256:fixture",
-            doctor.image_lifecycle.Status.CURRENT,
+        doctor.image_identity,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MATCH
         ),
     )
 
@@ -454,7 +450,7 @@ def test_doctor_failing_run_does_not_record_stamp(tmp_path, monkeypatch):
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
-def test_doctor_fails_when_issued_runtime_has_different_booley_version(
+def test_doctor_fails_when_issued_runtime_has_different_booley_identity(
     tmp_path,
     monkeypatch,
     capsys,
@@ -466,12 +462,22 @@ def test_doctor_fails_when_issued_runtime_has_different_booley_version(
         project_dir,
         runtime_booley_version="9.9.9",
     )
+    monkeypatch.setattr(
+        doctor.inspection.image_identity,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.inspection.image_identity.Comparison(
+            doctor.inspection.image_identity.Status.MISMATCH,
+            "version 1.0 -> 9.9.9; revision abc123 -> def456; "
+            "wheel_source_fingerprint current -> stale",
+        ),
+    )
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
     output = capsys.readouterr().out
     assert rc == 1
-    assert f"host Booley {__version__} != Sandbox Booley 9.9.9" in output
+    assert "revision abc123 -> def456" in output
+    assert "wheel_source_fingerprint current -> stale" in output
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
@@ -4019,8 +4025,10 @@ targets:
 # ---------------------------------------------------------------------------
 
 
-def _image_lifecycle_result(image: str, status) -> object:
-    return doctor.image_lifecycle.LifecycleResult(image, "sha256:test", status)
+def _write_issued_image_spec(project_root: Path) -> None:
+    path = project_root / ".devcontainer" / "devcontainer.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"image": "sha256:issued"}), encoding="utf-8")
 
 
 def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monkeypatch):
@@ -4030,16 +4038,20 @@ def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monk
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.STALE),
+        doctor.image_identity,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MISMATCH,
+            "revision old -> new; wheel_source_fingerprint old -> new",
+        ),
     )
 
     warns: list[str] = []
     passes: list[str] = []
     doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert warns and "image provenance differs" in warns[0]
+    assert warns and "revision old -> new" in warns[0]
     assert not passes
 
 
@@ -4048,10 +4060,13 @@ def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkey
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.CURRENT),
+        doctor.image_identity,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MATCH
+        ),
     )
     # The mtime fallback must not run; poison it to prove that.
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1 / 0)
@@ -4059,7 +4074,7 @@ def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkey
     warns: list[str] = []
     passes: list[str] = []
     doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert passes and "exactly this checkout" in passes[0]
+    assert passes and "current Booley sources" in passes[0]
     assert not warns
 
 
@@ -4068,10 +4083,13 @@ def test_image_bakes_current_booley_warns_when_provenance_is_stale(tmp_path, mon
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.STALE),
+        doctor.image_identity,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MISMATCH, "revision old -> new"
+        ),
     )
 
     warns: list[str] = []
@@ -4086,16 +4104,19 @@ def test_image_bakes_current_booley_passes_when_provenance_is_current(tmp_path, 
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.CURRENT),
+        doctor.image_identity,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MATCH
+        ),
     )
 
     warns: list[str] = []
     passes: list[str] = []
     doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert passes and "exactly this checkout" in passes[0]
+    assert passes and "current Booley sources" in passes[0]
     assert not warns
 
 
@@ -4125,10 +4146,13 @@ def test_image_bakes_current_booley_silent_when_undeterminable(tmp_path, monkeyp
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.EXTERNAL),
+        doctor.image_identity,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.UNKNOWN
+        ),
     )
 
     warns: list[str] = []

@@ -9,7 +9,6 @@ import subprocess
 import pytest
 from tests.runtime.test_session_issuance import _install_trusted_validator
 
-from booley import __version__
 from booley.audit.diagnostic_results import Severity
 from booley.config.eda import EdaConfig
 from booley.eda.provisioning import authority
@@ -34,20 +33,45 @@ def issued_environment(request, tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(executable.parent))
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     calls = []
-    observations = {"image": "sha256:" + "a" * 64, "version": __version__, "listing_error": False}
+    observations = {
+        "image": "sha256:" + "a" * 64,
+        "inspection_error": None,
+        "listing_error": False,
+    }
+    host_identity = inspection.image_identity.BooleyBuildIdentity(
+        "1.0", "abc123", None, "wheel-source"
+    )
+    monkeypatch.setattr(
+        inspection.image_identity,
+        "current_host_build_identity",
+        lambda: host_identity,
+    )
 
     def run(argv, **kwargs):
         calls.append((list(argv), kwargs))
         if argv[0] == "git":
             return subprocess.CompletedProcess(argv, 1, "", "not a git repository")
         if argv[1:3] == ["image", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0, observations["image"], "")
+            if "--format" in argv:
+                return subprocess.CompletedProcess(argv, 0, observations["image"], "")
+            if isinstance(observations["inspection_error"], Exception):
+                raise observations["inspection_error"]
+            document = [
+                {
+                    "Id": observations["image"],
+                    "Config": {
+                        "Labels": {
+                            "org.opencontainers.image.version": "1.0",
+                            "org.opencontainers.image.revision": "abc123",
+                            "io.booley.wheel.source-fingerprint": "wheel-source",
+                        },
+                        "Env": [],
+                    },
+                }
+            ]
+            return subprocess.CompletedProcess(argv, 0, json.dumps(document), "")
         if argv[1:3] == ["ps", "-aq"]:
             return subprocess.CompletedProcess(argv, int(observations["listing_error"]), "", "")
-        if argv[1:3] == ["run", "--rm"]:
-            if isinstance(observations["version"], Exception):
-                raise observations["version"]
-            return subprocess.CompletedProcess(argv, 0, observations["version"], "")
         pytest.fail(f"unexpected command: {argv}")
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -89,10 +113,13 @@ def test_inspection_preserves_stamp_and_conditional_authority_effects(issued_env
         # The authority owner can immediately reacquire its lock after inspection.
         with authority.resolve_for_issuance(request.project_root, False):
             pass
-    version_call = next((argv, kw) for argv, kw in calls if argv[1:3] == ["run", "--rm"])
-    assert version_call[1]["timeout"] == 30
-    assert "--pull=never" in version_call[0]
-    assert version_call[0][version_call[0].index("--network") + 1] == "none"
+    identity_call = next(
+        (argv, kw)
+        for argv, kw in calls
+        if argv[1:3] == ["image", "inspect"] and "--format" not in argv
+    )
+    assert identity_call[1]["timeout"] == 15
+    assert identity_call[0][-1] == request.image
 
 
 def test_owner_detects_issuance_drift_without_doctor_wiring_changes(issued_environment):
@@ -106,16 +133,16 @@ def test_owner_detects_issuance_drift_without_doctor_wiring_changes(issued_envir
         f.severity is Severity.FAIL and "host issuance is invalid" in f.message
         for f in report.findings
     )
-    assert not any(argv[1:3] == ["run", "--rm"] for argv, _ in calls)
-
-
-def test_version_probe_timeout_is_a_finding_and_retains_the_command_deadline(issued_environment):
-    request, observations, _ = issued_environment
-    observations["version"] = subprocess.TimeoutExpired("docker", 30)
-    report = inspection.inspect_runtime(request).issuance
-    assert any(
-        f.severity is Severity.FAIL and "could not read" in f.message for f in report.findings
+    assert not any(
+        argv[1:3] == ["image", "inspect"] and "--format" not in argv for argv, _ in calls
     )
+
+
+def test_identity_inspection_timeout_is_unknown_and_keeps_live_checks(issued_environment):
+    request, observations, _ = issued_environment
+    observations["inspection_error"] = subprocess.TimeoutExpired("docker", 15)
+    report = inspection.inspect_runtime(request).issuance
+    assert not any("different Booley code" in f.message for f in report.findings)
     assert any("no stale live" in f.message for f in report.findings)
 
 
