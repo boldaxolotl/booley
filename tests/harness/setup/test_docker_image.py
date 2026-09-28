@@ -349,7 +349,7 @@ def test_runtime_base_acquisition_rebuilds_for_each_negative_decision(
     monkeypatch.setattr(
         init_docker_image,
         "_docker_build_runtime_base",
-        lambda *_args: builds.append("Dockerfile.base") or True,
+        lambda *_args, **_kwargs: builds.append("Dockerfile.base") or True,
     )
     ctx = InitContext(project_root=tmp_path)
 
@@ -399,7 +399,9 @@ def test_runtime_base_acquisition_fails_closed_when_build_fails(tmp_path, monkey
         lambda _root: SimpleNamespace(runtime_base="current-contract"),
     )
     monkeypatch.setattr(init_docker_image, "_docker_image_id", lambda _image: None)
-    monkeypatch.setattr(init_docker_image, "_docker_build_runtime_base", lambda *_args: False)
+    monkeypatch.setattr(
+        init_docker_image, "_docker_build_runtime_base", lambda *_args, **_kwargs: False
+    )
     ctx = InitContext(project_root=tmp_path)
 
     assert (
@@ -422,7 +424,9 @@ def test_runtime_base_acquisition_fails_closed_when_built_identity_is_missing(
         lambda _root: SimpleNamespace(runtime_base="current-contract"),
     )
     monkeypatch.setattr(init_docker_image, "_docker_image_id", lambda _image: None)
-    monkeypatch.setattr(init_docker_image, "_docker_build_runtime_base", lambda *_args: True)
+    monkeypatch.setattr(
+        init_docker_image, "_docker_build_runtime_base", lambda *_args, **_kwargs: True
+    )
     ctx = InitContext(project_root=tmp_path)
 
     result = init_docker_image._acquire_runtime_base(
@@ -434,6 +438,56 @@ def test_runtime_base_acquisition_fails_closed_when_built_identity_is_missing(
 
     assert result is None
     assert ctx.results[-1].detail == "runtime-base identity missing"
+
+
+def test_local_capacity_plan_omits_reusable_runtime_base(tmp_path, monkeypatch) -> None:
+    base = tmp_path / "Dockerfile.base"
+    sandbox = tmp_path / "Dockerfile"
+    base.write_text("FROM scratch\n", encoding="utf-8")
+    sandbox.write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.setattr(
+        init_docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base="contract"),
+    )
+    monkeypatch.setattr(init_docker_image, "_docker_image_id", lambda _image: "sha256:base")
+    monkeypatch.setattr(init_docker_image, "_image_label", lambda *_args: "contract")
+
+    requests = init_docker_image._local_build_capacity_requests(
+        base,
+        sandbox,
+        tmp_path,
+        "payload",
+        rebuild_runtime_base=False,
+    )
+
+    assert [request.managed_image for request in requests] == ["Sandbox Image"]
+
+
+def test_local_capacity_plan_orders_runtime_base_before_sandbox(tmp_path, monkeypatch) -> None:
+    base = tmp_path / "Dockerfile.base"
+    sandbox = tmp_path / "Dockerfile"
+    base.write_text("FROM scratch\n", encoding="utf-8")
+    sandbox.write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.setattr(
+        init_docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base="contract"),
+    )
+    monkeypatch.setattr(init_docker_image, "_docker_image_id", lambda _image: None)
+
+    requests = init_docker_image._local_build_capacity_requests(
+        base,
+        sandbox,
+        tmp_path,
+        "payload",
+        rebuild_runtime_base=False,
+    )
+
+    assert [request.managed_image for request in requests] == [
+        "runtime base",
+        "Sandbox Image",
+    ]
 
 
 def test_runtime_base_build_receives_precomputed_contract(tmp_path, monkeypatch) -> None:
@@ -876,6 +930,7 @@ class TestReportBuildCache:
         assert "docker build cache: 29.3GB" in joined
         assert "29.3GB reclaimable" in joined
         assert "docker builder prune" in joined
+        assert "evict layers" in joined
 
     def test_no_prune_hint_when_small(self, monkeypatch):
         self._fake_df(monkeypatch, "Build Cache\t2.0GB\t2.0GB\n")

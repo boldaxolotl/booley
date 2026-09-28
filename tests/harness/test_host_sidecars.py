@@ -325,14 +325,14 @@ def test_reconcile_sidecars_returns_early_for_image_network_and_proxy_errors(
     monkeypatch.setattr(sidecars, "_docker_adapter", FakeDocker)
     monkeypatch.setattr(sidecars, "_image_specs", lambda _root: (spec, spec))
     image_error = sidecars.SidecarFinding("image", sidecars.SidecarState.ERROR, "bad")
-    monkeypatch.setattr(sidecars, "_reconcile_image", lambda *_args: image_error)
+    monkeypatch.setattr(sidecars, "_reconcile_image", lambda *_args, **_kwargs: image_error)
     result = sidecars.reconcile_sidecars(InteractiveHostPolicy(), Intent.CHECK)
     assert result.findings == (image_error,)
     assert not result.ready
 
     image_ok = sidecars.SidecarFinding("image", sidecars.SidecarState.CURRENT, "ok")
     network_error = sidecars.SidecarFinding("network", sidecars.SidecarState.ERROR, "bad")
-    monkeypatch.setattr(sidecars, "_reconcile_image", lambda *_args: image_ok)
+    monkeypatch.setattr(sidecars, "_reconcile_image", lambda *_args, **_kwargs: image_ok)
     monkeypatch.setattr(sidecars, "_reconcile_network", lambda *_args: network_error)
     result = sidecars.reconcile_sidecars(InteractiveHostPolicy(), Intent.CHECK)
     assert result.findings[-1] is network_error
@@ -368,7 +368,7 @@ def test_reconcile_sidecars_builds_both_container_specs(monkeypatch: pytest.Monk
     monkeypatch.setattr(
         sidecars,
         "_reconcile_image",
-        lambda spec, *_args: sidecars.SidecarFinding(
+        lambda spec, *_args, **_kwargs: sidecars.SidecarFinding(
             spec.resource, sidecars.SidecarState.CURRENT, "ok"
         ),
     )
@@ -407,6 +407,7 @@ def test_image_reconciliation_current_builds_and_verifies(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sidecars, "ensure_docker_build_capacity", lambda *_args, **_kwargs: None)
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text("FROM scratch\n", encoding="utf-8")
     spec = sidecars._ImageSpec("image", "image", "kind", dockerfile, tmp_path, ())
@@ -429,6 +430,7 @@ def test_image_reconciliation_rejects_unverified_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sidecars, "ensure_docker_build_capacity", lambda *_args, **_kwargs: None)
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text("FROM scratch\n", encoding="utf-8")
     spec = sidecars._ImageSpec("image", "image", "kind", dockerfile, tmp_path, ())
@@ -454,7 +456,10 @@ def test_image_ownership_rejects_wrong_kind(tmp_path: Path) -> None:
     assert "io.booley.sidecar.kind kind -> other" in str(caught.value)
 
 
-def test_build_image_reports_docker_failure(tmp_path: Path) -> None:
+def test_build_image_reports_docker_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sidecars, "ensure_docker_build_capacity", lambda *_args, **_kwargs: None)
     spec = sidecars._ImageSpec("image", "image", "kind", tmp_path, tmp_path, ())
     with pytest.raises(sidecars.SidecarError, match="failed to build"):
         sidecars._build_image(spec, {"label": "value"}, FakeDocker(_cp(1, stderr="bad")))

@@ -45,6 +45,41 @@ def test_project_init_preflight_coordinator_fits_on_a_screen() -> None:
     assert len(inspect.getsourcelines(init_cmd._run_init_unlocked)[0]) <= 50
 
 
+def test_deferred_image_capacity_refusal_occurs_before_any_image_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = SimpleNamespace()
+    bootstrap_result = bootstrap.BootstrapResult(Intent.ENSURE, (), policy=policy)
+    lifecycle_plan = SimpleNamespace()
+    mutations = []
+    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: lifecycle_plan)
+    monkeypatch.setattr(
+        init_cmd.host_sidecars,
+        "plan_image_builds",
+        lambda *_args, **_kwargs: (SimpleNamespace(),),
+    )
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "prepare",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("capacity refused")),
+    )
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "commit",
+        lambda *_args: mutations.append("commit"),
+    )
+    monkeypatch.setattr(
+        init_cmd.host_sidecars,
+        "reconcile_sidecars",
+        lambda *_args, **_kwargs: mutations.append("sidecars"),
+    )
+    ctx = init_cmd.InitContext(project_root=tmp_path)
+
+    assert init_cmd._reconcile_deferred_images(ctx, bootstrap_result) is None
+    assert mutations == []
+    assert any(result.status == "err" for result in ctx.results)
+
+
 def _host_setup_run(
     operation: str,
     tmp_path: Path,

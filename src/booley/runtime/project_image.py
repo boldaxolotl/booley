@@ -32,6 +32,7 @@ from booley.config.sandbox import (
     project_sandbox_image,
 )
 from booley.runtime.docker_build import run_docker_build
+from booley.runtime.docker_capacity import DockerBuildPlan, DockerBuildRequest
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
@@ -435,7 +436,14 @@ def write_project_image_files(
 # ---------------------------------------------------------------------------
 
 
-def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) -> bool:
+def build_project_image(
+    image: str,
+    docker_dir: Path,
+    *,
+    verbose: bool = False,
+    capacity_request: DockerBuildRequest | None = None,
+    capacity_plan: DockerBuildPlan | None = None,
+) -> bool:
     """``docker build`` the generated image. Context is *docker_dir* (small, no
     repo .dockerignore interference). Returns success."""
     dockerfile = docker_dir / "Dockerfile"
@@ -468,6 +476,8 @@ def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) 
             image=image,
             verbose=verbose,
             timeout=1800,
+            current_request=capacity_request,
+            remaining_plan=capacity_plan,
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         logger.error("project image build failed: %s", exc)

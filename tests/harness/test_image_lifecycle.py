@@ -12,6 +12,7 @@ import pytest
 
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import image_lifecycle as lifecycle
+from booley.runtime.docker_capacity import BuildEstimateClass, DockerBuildRequest
 
 
 class FakeDocker:
@@ -54,6 +55,79 @@ class FakeDocker:
     def remove_tag(self, image: str) -> None:
         self.mutations.append(("remove_tag", image))
         self.images.pop(image, None)
+
+
+def test_capacity_plan_projects_only_build_steps_by_role(tmp_path: Path) -> None:
+    def node(reference, role):
+        return SimpleNamespace(
+            reference=reference,
+            role=role,
+            build=SimpleNamespace(recipe_fingerprint=f"recipe-{reference}"),
+            effective_inputs=f"inputs-{reference}",
+            runtime_base_contract=None,
+            standard_substrate_contract=None,
+        )
+
+    nodes = (
+        node("reuse", lifecycle.ImageRole.RUNTIME_BASE),
+        node("heavy", lifecycle.ImageRole.PROJECT_OVERLAY),
+        node("pull", lifecycle.ImageRole.WHEEL_OVERLAY),
+        node("thin", lifecycle.ImageRole.WHEEL_OVERLAY),
+    )
+    steps = tuple(
+        SimpleNamespace(action=action)
+        for action in (
+            lifecycle.PlanAction.REUSE,
+            lifecycle.PlanAction.BUILD,
+            lifecycle.PlanAction.PULL,
+            lifecycle.PlanAction.BUILD,
+        )
+    )
+    plan = SimpleNamespace(nodes=nodes, steps=steps, project_root=tmp_path)
+
+    projected = harness_lifecycle.capacity_plan(plan)
+
+    assert projected is not None
+    assert [request.managed_image for request in projected.requests] == ["heavy", "thin"]
+    assert projected.requests[0].estimate_class is BuildEstimateClass.HEAVYWEIGHT
+    assert projected.requests[1].estimate_class is BuildEstimateClass.THIN_OVERLAY
+    assert projected.requests[1].cache_evidence.reference == "thin"
+
+
+def test_prepare_checks_project_and_sidecar_plan_before_runtime_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node = SimpleNamespace(
+        reference="base",
+        role=lifecycle.ImageRole.RUNTIME_BASE,
+        build=SimpleNamespace(recipe_fingerprint="recipe"),
+        effective_inputs="inputs",
+        runtime_base_contract=None,
+        standard_substrate_contract=None,
+        acquisition_policy=lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    lifecycle_plan = SimpleNamespace(
+        nodes=(node,),
+        steps=(SimpleNamespace(action=lifecycle.PlanAction.BUILD),),
+        project_root=tmp_path,
+    )
+    sidecar = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    observed = []
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "ensure_docker_build_capacity",
+        lambda *_args, **kwargs: observed.extend(kwargs["remaining_plan"].requests),
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "prepare",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    harness_lifecycle.prepare(lifecycle_plan, future_requests=(sidecar,))
+
+    assert [request.managed_image for request in observed] == ["base", "proxy"]
 
 
 class FakeBuilder:

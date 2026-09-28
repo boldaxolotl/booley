@@ -10,6 +10,7 @@ import pytest
 
 from booley.config.host_config import HostConfigError, InteractiveHostPolicy
 from booley.harness import bootstrap, bootstrap_cli
+from booley.runtime.docker_capacity import BuildEstimateClass, DockerBuildRequest
 from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult, Status
 
 
@@ -21,6 +22,8 @@ def _wire_current(
     monkeypatch: pytest.MonkeyPatch, *, stub_vscode_extension: bool = True
 ) -> list[str]:
     calls: list[str] = []
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: ())
+    monkeypatch.setattr(bootstrap.host_sidecars, "plan_image_builds", lambda _intent: ())
     monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
     monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     monkeypatch.setattr(
@@ -100,6 +103,41 @@ def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.Monke
     ]
     assert result.ready
     assert result.exit_status == 0
+
+
+def test_bootstrap_refuses_aggregate_image_plan_before_first_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _wire_current(monkeypatch)
+    base = DockerBuildRequest("runtime base", "base")
+    sandbox = DockerBuildRequest("Sandbox Image", "sandbox")
+    proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    reaper = DockerBuildRequest("reaper", "reaper", BuildEstimateClass.THIN_OVERLAY)
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: (base, sandbox))
+    monkeypatch.setattr(
+        bootstrap.host_sidecars,
+        "plan_image_builds",
+        lambda _intent: (proxy, reaper),
+    )
+    observed = []
+
+    def refuse(*_args, **kwargs):
+        observed.extend(kwargs["remaining_plan"].requests)
+        raise bootstrap.DockerCapacityError("capacity refused")
+
+    monkeypatch.setattr(bootstrap, "ensure_docker_build_capacity", refuse)
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert [request.managed_image for request in observed] == [
+        "runtime base",
+        "Sandbox Image",
+        "proxy",
+        "reaper",
+    ]
+    assert "base-image" not in calls
+    assert "sidecars" not in calls
+    assert result.findings[-1].resource == "image-capacity"
 
 
 def test_noncanonical_install_stops_before_host_mutation(

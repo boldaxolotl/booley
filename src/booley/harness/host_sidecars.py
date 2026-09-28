@@ -23,6 +23,13 @@ from booley.core.boundary import (
 )
 from booley.core.differences import format_differences
 from booley.runtime import interactive_docker as legacy
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildPlan,
+    DockerBuildRequest,
+    DockerCacheEvidence,
+    ensure_docker_build_capacity,
+)
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.platform_paths import host_path_from_docker_mount
 
@@ -161,6 +168,7 @@ def reconcile_sidecars(
     intent: Intent,
     *,
     booley_root: Path | None = None,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> SidecarResult:
     """Inspect or converge all global Docker objects in dependency order."""
     docker = _docker_adapter()
@@ -170,7 +178,7 @@ def reconcile_sidecars(
         return SidecarResult((SidecarFinding("sidecar-images", SidecarState.ERROR, str(exc)),))
     findings: list[SidecarFinding] = []
     for spec in specs:
-        finding = _reconcile_image(spec, intent, docker)
+        finding = _reconcile_image(spec, intent, docker, capacity_plan=capacity_plan)
         findings.append(finding)
         if finding.state is SidecarState.ERROR:
             return SidecarResult(tuple(findings))
@@ -211,6 +219,34 @@ def reconcile_sidecars(
         )
     )
     return SidecarResult(tuple(findings))
+
+
+def plan_image_builds(
+    intent: Intent,
+    *,
+    booley_root: Path | None = None,
+    docker: _DockerPort | None = None,
+) -> tuple[DockerBuildRequest, ...]:
+    """Inspect sidecar images and return the ordered builds without mutation."""
+    resolved_docker = docker or _docker_adapter()
+    requests = []
+    for spec in _image_specs(booley_root):
+        current = _inspect_image(spec.reference, resolved_docker)
+        _verify_image_ownership(spec, current)
+        labels = _image_labels(spec)
+        is_current = current is not None and all(
+            current[1].get(key) == value for key, value in labels.items()
+        )
+        if not is_current or intent is Intent.REFRESH:
+            requests.append(
+                DockerBuildRequest(
+                    spec.reference,
+                    spec.reference,
+                    BuildEstimateClass.THIN_OVERLAY,
+                    DockerCacheEvidence(spec.reference, tuple(labels.items())),
+                )
+            )
+    return tuple(requests)
 
 
 def _image_specs(booley_root: Path | None) -> tuple[_ImageSpec, _ImageSpec]:
@@ -257,7 +293,13 @@ def _image_labels(spec: _ImageSpec) -> dict[str, str]:
     }
 
 
-def _reconcile_image(spec: _ImageSpec, intent: Intent, docker: _DockerPort) -> SidecarFinding:
+def _reconcile_image(
+    spec: _ImageSpec,
+    intent: Intent,
+    docker: _DockerPort,
+    *,
+    capacity_plan: DockerBuildPlan | None = None,
+) -> SidecarFinding:
     try:
         current = _inspect_image(spec.reference, docker)
         _verify_image_ownership(spec, current)
@@ -279,7 +321,15 @@ def _reconcile_image(spec: _ImageSpec, intent: Intent, docker: _DockerPort) -> S
             detail = f"{spec.reference} refresh requested"
         if intent is Intent.CHECK:
             return SidecarFinding(spec.resource, SidecarState.PENDING, detail)
-        _build_image(spec, expected, docker)
+        tail = capacity_plan
+        if tail is not None:
+            index = next(
+                index
+                for index, request in enumerate(tail.requests)
+                if request.output_tag == spec.reference
+            )
+            tail = DockerBuildPlan(tail.requests[index:])
+        _build_image(spec, expected, docker, capacity_plan=tail)
         verified = _inspect_image(spec.reference, docker)
         if verified is None:
             raise SidecarError(f"{spec.reference} build completed but the image is missing")
@@ -311,11 +361,33 @@ def _verify_image_ownership(
         )
 
 
-def _build_image(spec: _ImageSpec, labels: dict[str, str], docker: _DockerPort) -> None:
+def _build_image(
+    spec: _ImageSpec,
+    labels: dict[str, str],
+    docker: _DockerPort,
+    *,
+    capacity_plan: DockerBuildPlan | None = None,
+) -> None:
     args = ["build", "-t", spec.reference, "-f", str(spec.dockerfile)]
     for key, value in labels.items():
         args += ["--label", f"{key}={value}"]
     args.append(str(spec.context))
+    request = (
+        capacity_plan.requests[0]
+        if capacity_plan is not None
+        else DockerBuildRequest(
+            spec.reference,
+            spec.reference,
+            BuildEstimateClass.THIN_OVERLAY,
+            DockerCacheEvidence(spec.reference, tuple(labels.items())),
+        )
+    )
+    ensure_docker_build_capacity(
+        ("docker", "build"),
+        image=spec.reference,
+        current_request=request,
+        remaining_plan=capacity_plan or DockerBuildPlan((request,)),
+    )
     result = docker.run(args, timeout=600)
     if result.returncode:
         raise SidecarError(f"failed to build {spec.reference}: {_failure_detail(result)}")
