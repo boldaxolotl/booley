@@ -234,19 +234,9 @@ A command-backed `BooleyFlow` overrides `_add_args`, `_build_command`, and
 override `_run()` instead. The minimal Custom Flow below uses the command-backed
 contract without backend-specific machinery.
 
-Before importing a Project endpoint, the MCP server redirects Python bytecode
-and pytest caches into `BOOLEY_RUNTIME_DIR/python-artifacts/` (or the active
-Project's `.runtime/python-artifacts/` fallback). A command-backed Custom Flow
-reapplies that policy after `_extra_subprocess_env()` before launching the
-`_build_command()` child. A direct Custom Flow that overrides `_run()` is
-already protected by the endpoint interpreter, including its initial module
-import. Pytest features remain enabled through a final `cache_dir` override;
-bytecode is shared beneath the runtime root while pytest state is scoped by
-endpoint name so related reruns retain `--lf` and stepwise state. Project code
-must not depend on `__pycache__`, `.pytest_cache`, or another cache path inside
-the source checkout. The same endpoint environment
-also reaches Specialist provider children; they do not use these pytest paths,
-but they retain the source-clean bytecode policy.
+Booley redirects Python bytecode and pytest caches for Project endpoints and
+their subprocesses to runtime storage. Custom Flows must not depend on cache
+files in the source checkout.
 
 | Method | Responsibility |
 |--------|----------------|
