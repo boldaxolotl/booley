@@ -25,6 +25,9 @@ from booley.runtime.agent_errors import (
 )
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
+from tests.flows.sim.coverage_campaign_test_support import (
+    corrupt_v3_campaign_with_duplicate_negative_point,
+)
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 
@@ -60,6 +63,49 @@ class Model:
         return AgentResult(
             structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
         )
+
+
+def test_cli_reports_invalid_v3_findings_before_calling_model(tmp_path: Path) -> None:
+    path = persist_campaign(tmp_path)
+    corrupt_v3_campaign_with_duplicate_negative_point(path)
+    model = Model()
+
+    outcome = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert outcome.exit_code == 2
+    assert model.calls == []
+    assert "COV_POINT_ID_DUPLICATE at /points/1/id" in outcome.outcome.report_text
+    assert (
+        "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset"
+        in outcome.outcome.report_text
+    )
+    assert outcome.outcome.detail == {}
+
+
+def test_cli_invalid_v3_report_is_bounded_and_control_safe(tmp_path: Path) -> None:
+    path = persist_campaign(tmp_path)
+    run_id = "run:bad\n\t\x1b[31m" + "x" * 2_000
+    corrupt_v3_campaign_with_duplicate_negative_point(path, run_id=run_id)
+    model = Model()
+
+    outcome = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert outcome.exit_code == 2
+    assert model.calls == []
+    report_text = outcome.outcome.report_text
+    assert len(report_text) <= 1_100
+    assert "\\n" in report_text
+    assert "\\t" in report_text
+    assert "\\u001b" in report_text
+    assert "..." in report_text
+    assert "\n" not in report_text
+    assert "\r" not in report_text
+    assert "\t" not in report_text
+    assert "\x1b" not in report_text
 
 
 def _successful_claude_query(options_seen):

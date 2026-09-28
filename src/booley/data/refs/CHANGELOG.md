@@ -55,6 +55,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Invalid Coverage Campaign rejections now name a bounded, control-safe prefix
+  of finding codes and locations, including the specific rollup field when it
+  can be determined, while still rejecting before a Coverage Analyst model
+  call. ([#799](https://github.com/boldaxolotl/Booley/issues/799))
 - Custom-main coverage now retains failed native-write hook evidence and reports
   the write failure instead of a missing or incompatible database. A write
   before the start hook is reported as an ordering violation rather than as a
