@@ -32,7 +32,8 @@ def _lock_owner(handle: TextIO) -> str:
     """Return the recorded owner when the platform permits a contended read."""
     try:
         handle.seek(0)
-        return handle.read().strip() or "another Booley command"
+        owner = handle.read().strip()
+        return owner if owner.isprintable() else "another Booley command"
     except OSError:
         return "another Booley command"
 
