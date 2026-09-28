@@ -214,7 +214,7 @@ class _NoEdaExecutor:
             "functional": "not_observed",
             "assertions": "not_observed",
             "assertion_count": 0,
-            "detail": {},
+            "detail": {"reason": "synthetic no-EDA build failure"},
             "cycle_count": None,
         }
         document = {
@@ -750,6 +750,8 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     assert first_state.criteria["sim_pass_sim"].met is False
     assert len(first_state.acceptance_transactions) == 1
     projection = outcome.manifest_path.parents[1] / "simulation.json"
+    projection_document = json.loads(projection.read_bytes())
+    assert projection_document["tests"][0]["error_tail"] == ("synthetic no-EDA build failure")
     first_projection = projection.read_bytes()
     first_ledger = _ledger_bytes(tmp_path / "logs")
     assert any("intents" in path.parts for path in first_ledger)
@@ -765,6 +767,17 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     assert projection.read_bytes() == first_projection
     assert final_state.acceptance_transactions == first_state.acceptance_transactions
     assert final_state.criteria["sim_pass_sim"].met is False
+
+
+def test_campaign_projection_error_tail_rejects_malformed_detail(tmp_path: Path) -> None:
+    outcome, invocation = _one_item_outcome(tmp_path)
+    malformed_observation = dict(outcome.observations[0], detail=[])
+    malformed = replace(outcome, observations=(malformed_observation,))
+    state = DevelopmentState.load(tmp_path / "state.json")
+    recorder = TicketAcceptanceRecorder(log_dir=tmp_path / "logs", ticket_identity={})
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="detail"):
+        record_campaign_acceptance(_acceptance_endpoint(state, recorder, invocation), (malformed,))
 
 
 def _named_campaign_outcome(tmp_path: Path):
