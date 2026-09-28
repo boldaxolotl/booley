@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -149,8 +150,25 @@ class TestBuildCocotbEnv:
         assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path)
         cache_root = tmp_path / "python-artifacts"
         assert env["PYTHONPYCACHEPREFIX"] == str(cache_root / "bytecode")
-        assert env["PYTEST_ADDOPTS"] == f"-o cache_dir={cache_root / 'pytest'}"
+        pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
+        assert pytest_cache.parent == cache_root / "pytest"
         assert "PYTHONDONTWRITEBYTECODE" not in env
+
+    def test_env_reuses_endpoint_runtime_for_bytecode(self, tmp_path: Path):
+        runtime = tmp_path / "runtime"
+        with (
+            patch.dict(os.environ, {"BOOLEY_RUNTIME_DIR": str(runtime)}, clear=True),
+            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
+        ):
+            env = crun._build_cocotb_env(
+                tmp_path / "build",
+                "test_counter",
+                ["a"],
+                tmp_path / "attempt" / "results.xml",
+            )
+
+        assert env["PYTHONPYCACHEPREFIX"] == str(runtime / "python-artifacts" / "bytecode")
+        assert str(tmp_path / "attempt") not in env["PYTHONPYCACHEPREFIX"]
 
     def test_2x_dialect_sets_no_testcase(self, tmp_path: Path):
         # cocotb 2.x removed TESTCASE — the 2.x dialect must never set it.

@@ -370,6 +370,25 @@ class TestSubprocessResult:
 
 
 class TestResourceEvidence:
+    def test_local_execution_without_project_data_uses_temp_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.criteria.state import DevelopmentState
+        from booley.runtime.project_dir import reset_cache
+
+        state_file = tmp_path / "state.json"
+        DevelopmentState.load(state_file).save()
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+        reset_cache()
+        flow = EchoFlow()
+        with patch.dict(os.environ, _env_with_state(state_file), clear=True):
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+
+        result = flow._execute_local([sys.executable, "-c", "print('ok')"])
+
+        assert result.returncode == 0
+
     def test_local_execution_relocates_python_and_pytest_caches(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

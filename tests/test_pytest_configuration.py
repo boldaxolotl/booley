@@ -697,11 +697,6 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "test_verilator_coverage_collector_smoke.py" in coverage["run"]
     assert "assert_junit.py" in coverage["run"]
     assert "--min-tests 19 --max-skips 0" in coverage["run"]
-    smoke_source = (
-        REPOSITORY_ROOT / "tests/smoke/test_verilator_coverage_collector_smoke.py"
-    ).read_text(encoding="utf-8")
-    assert '@pytest.mark.parametrize("coverage", [False, True])' in smoke_source
-    assert 'git", "status", "--porcelain=v1", "-uall"' in smoke_source
     ticket_mode = next(step for step in validations if step["name"].startswith("Run Ticket Mode"))
     assert "install -d -m 0777" in ticket_mode["run"]
     assert '"${VALIDATION_TMP}/alias-project"' in ticket_mode["run"]
@@ -715,6 +710,9 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     cleanup_wrapper = ".github/scripts/run_with_container_cleanup.sh"
     assert all(cleanup_wrapper in step["run"] for step in validations)
 
+
+def test_image_validation_cleanup_wrapper_terminates_containers() -> None:
+    cleanup_wrapper = ".github/scripts/run_with_container_cleanup.sh"
     wrapper = (REPOSITORY_ROOT / cleanup_wrapper).read_text(encoding="utf-8")
     assert 'setsid -- "$@" &' in wrapper
     assert "trap 'terminate INT 130' INT" in wrapper

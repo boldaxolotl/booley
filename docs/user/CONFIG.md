@@ -295,9 +295,11 @@ Target.
 Python started by Pre-Sim Commands writes bytecode and pytest state only under
 `$BOOLEY_PROJECT_DIR/.runtime/python-artifacts/`. Booley reserves
 `PYTHONPYCACHEPREFIX` for the `bytecode/` subtree and appends a final pytest
-`cache_dir` override for the `pytest/` subtree. Pytest's cache provider remains
-enabled, so `--lf`, `--ff`, `--nf`, stepwise, `--cache-clear`, and
-`--cache-show` continue to work; only the storage location changes.
+`cache_dir` override for a scoped directory below the `pytest/` subtree. Pytest's
+cache provider remains enabled, so `--lf`, `--ff`, `--nf`, stepwise,
+`--cache-clear`, and `--cache-show` continue to work. Stable execution-surface
+scopes keep related reruns together without sharing state across unrelated
+Targets or Booley Flows; only the storage location changes.
 
 Their working directory is the **repo root** — *not* `run_cwd`, and not the
 build tree. Write paths relative to the repo root, or `cd "$BOOLEY_RUN_CWD"`
@@ -1515,11 +1517,11 @@ What differs from an SV Target:
   factory pattern and defers name-checking to `results.xml` at run time.
 
 Cocotb and any Project helpers it imports retain normal Python bytecode and
-pytest cache behavior, but their caches are redirected beside that run's
-`results.xml`, below the Booley-owned report/work tree in
-`python-artifacts/{bytecode,pytest}`. The Project source checkout therefore
-does not acquire `__pycache__`, `.pyc`, or `.pytest_cache` entries during a
-plain or coverage Simulation Flow run.
+pytest cache behavior, but their caches are redirected into the active
+Project's `.runtime/python-artifacts/` tree. Bytecode is shared across runs,
+while pytest state uses a stable Cocotb Target/build scope. The Project source
+checkout therefore does not acquire `__pycache__`, `.pyc`, or `.pytest_cache`
+entries during a plain or coverage Simulation Flow run.
 
 ### Baking the cocotb stack into the image
 

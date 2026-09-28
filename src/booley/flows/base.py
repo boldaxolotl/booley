@@ -33,7 +33,7 @@ from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, ExecutionResult
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
@@ -207,6 +207,70 @@ class _ProcessTreeMemoryMonitor:
             self._sample()
 
 
+def _process_resource_evidence(
+    scope: Any,
+    proc: subprocess.Popen,
+    monitor: _ProcessTreeMemoryMonitor,
+    oom_before: int | None,
+) -> tuple[float | None, int]:
+    _finish_supervised_process(scope, proc)
+    peak_rss_mb = monitor.finish()
+    oom_after = _cgroup_oom_kill_count()
+    oom_delta = (
+        max(0, oom_after - oom_before) if oom_before is not None and oom_after is not None else 0
+    )
+    return peak_rss_mb, oom_delta
+
+
+def _communicate_local_process(
+    cmd: list[str],
+    proc: subprocess.Popen,
+    scope: Any,
+    monitor: _ProcessTreeMemoryMonitor,
+    oom_before: int | None,
+    started: float,
+    timeout: int,
+) -> SubprocessResult:
+    from booley.runtime.platform_paths import kill_process_tree
+
+    with proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            elapsed = time.monotonic() - started
+            logger.warning("Command timed out after %.1fs: %s", elapsed, " ".join(cmd))
+            kill_process_tree(proc)
+            stdout, stderr = _drain_after_kill(proc)
+            peak_rss_mb, oom_kill_delta = _process_resource_evidence(
+                scope, proc, monitor, oom_before
+            )
+            return SubprocessResult(
+                returncode=-1,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=True,
+                duration_s=elapsed,
+                peak_rss_mb=peak_rss_mb,
+                oom_kill_delta=oom_kill_delta,
+            )
+        except BaseException:
+            logger.warning("Interrupted; killing the process tree of: %s", " ".join(cmd))
+            kill_process_tree(proc)
+            monitor.finish()
+            _finish_supervised_process(scope, proc)
+            raise
+        elapsed = time.monotonic() - started
+        peak_rss_mb, oom_kill_delta = _process_resource_evidence(scope, proc, monitor, oom_before)
+        return SubprocessResult(
+            returncode=proc.returncode,
+            stdout=_decode_output(stdout),
+            stderr=_decode_output(stderr),
+            duration_s=elapsed,
+            peak_rss_mb=peak_rss_mb,
+            oom_kill_delta=oom_kill_delta,
+        )
+
+
 class FlowMechanics:
     """Base for deterministic Booley Flows that run subprocesses.
 
@@ -268,31 +332,8 @@ class FlowMechanics:
         return self.args.work_dir
 
     def _execute_local(self, cmd: list[str], *, timeout: int | None = None) -> SubprocessResult:
-        """Run a command locally, killing the WHOLE tree on timeout.
-
-        ``subprocess.run(..., timeout=...)`` only kills the direct child — for
-        every mechanical Flow that child is a ``make``/``sh`` shim whose real
-        work is a grandchild (``python -m booley.flows.sim.backends.verilator`` and the
-        ``V<top>`` binary it supervises, yosys+abc, sv2v, ...). Those get
-        reparented to init on a timeout and keep burning a core forever
-        (observed: 99.9% CPU for 38+ minutes after a simulate timeout, F-13).
-        So the child is spawned in its own process group
-        (``popen_new_group_kwargs``) and the timeout path reaps the group via
-        ``kill_process_tree`` BEFORE draining the pipes — draining first would
-        block on a pipe the still-live grandchild holds open.
-
-        The same group split makes Ctrl-C the *other* orphan path: ``setsid``
-        takes the child out of the terminal's foreground process group, so a
-        SIGINT from the tty reaches only Booley. ``subprocess.run`` handles that
-        with an ``except: process.kill(); raise`` around ``communicate()``; this
-        does the same with the tree-wide kill, catching ``BaseException`` so a
-        ``KeyboardInterrupt`` cannot walk out of here leaving yosys+abc running
-        under init.
-        """
+        """Run locally and reap the whole process tree on timeout or interruption."""
         import sys as _sys
-        import time
-
-        from booley.runtime.platform_paths import kill_process_tree
 
         # python3 is not on PATH on Windows; use the running interpreter.
         if cmd and cmd[0] == "python3" and _sys.platform == "win32":
@@ -300,9 +341,15 @@ class FlowMechanics:
 
         timeout = self._get_timeout() if timeout is None else timeout
         cwd = self._get_cwd()
+        env = {**os.environ, **self._extra_subprocess_env()}
+        try:
+            cache_root = resolve_checkout_project_dir(cwd) / ".runtime" / "python-artifacts"
+        except (OSError, RuntimeError, ValueError):
+            cache_root = Path(tempfile.gettempdir()) / "booley-python-artifacts"
         env = relocate_python_artifacts(
-            {**os.environ, **self._extra_subprocess_env()},
-            resolve_project_dir(cwd) / ".runtime" / "python-artifacts",
+            env,
+            cache_root,
+            pytest_scope=f"flow:{getattr(self, 'name', type(self).__name__)}:{cwd.resolve()}",
         )
         cmd, scope = _prepare_supervised_command(cmd, env)
         start = time.monotonic()
@@ -312,59 +359,9 @@ class FlowMechanics:
             return SubprocessResult(returncode=-1)
         memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
         memory_monitor.start()
-
-        def resource_evidence() -> tuple[float | None, int]:
-            _finish_supervised_process(scope, proc)
-            peak_rss_mb = memory_monitor.finish()
-            oom_after = _cgroup_oom_kill_count()
-            oom_delta = (
-                max(0, oom_after - oom_before)
-                if oom_before is not None and oom_after is not None
-                else 0
-            )
-            return peak_rss_mb, oom_delta
-
-        # `with proc` closes the pipes and reaps on every exit path, exactly as
-        # subprocess.run does.
-        with proc:
-            try:
-                stdout, stderr = proc.communicate(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                elapsed = time.monotonic() - start
-                logger.warning("Command timed out after %.1fs: %s", elapsed, " ".join(cmd))
-                kill_process_tree(proc)
-                stdout, stderr = _drain_after_kill(proc)
-                peak_rss_mb, oom_kill_delta = resource_evidence()
-                return SubprocessResult(
-                    returncode=-1,
-                    stdout=stdout,
-                    stderr=stderr,
-                    timed_out=True,
-                    duration_s=elapsed,
-                    peak_rss_mb=peak_rss_mb,
-                    oom_kill_delta=oom_kill_delta,
-                )
-            except BaseException:
-                # KeyboardInterrupt above all: the child is in its own session,
-                # so the tty's SIGINT never reached it. Without this the whole
-                # toolchain (yosys+abc, the run-half + its V<top>) survives
-                # Booley's exit reparented to init — the exact orphan class the
-                # process-group spawn was added to prevent (F-13).
-                logger.warning("Interrupted; killing the process tree of: %s", " ".join(cmd))
-                kill_process_tree(proc)
-                memory_monitor.finish()
-                _finish_supervised_process(scope, proc)
-                raise
-            elapsed = time.monotonic() - start
-            peak_rss_mb, oom_kill_delta = resource_evidence()
-            return SubprocessResult(
-                returncode=proc.returncode,
-                stdout=_decode_output(stdout),
-                stderr=_decode_output(stderr),
-                duration_s=elapsed,
-                peak_rss_mb=peak_rss_mb,
-                oom_kill_delta=oom_kill_delta,
-            )
+        return _communicate_local_process(
+            cmd, proc, scope, memory_monitor, oom_before, start, timeout
+        )
 
     def _execute(self, cmd: list[str], *, timeout: int | None = None) -> SubprocessResult:
         """Run a subprocess locally (inside the Sandbox, ADR 0028)."""

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.runtime.python_artifacts import relocate_python_artifacts
+from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 
 
 def test_relocation_copies_environment_and_sets_exact_destinations(tmp_path: Path) -> None:
@@ -54,3 +54,38 @@ def test_relocation_is_idempotent(tmp_path: Path) -> None:
     once = relocate_python_artifacts({"PYTEST_ADDOPTS": "--lf"}, tmp_path)
 
     assert relocate_python_artifacts(once, tmp_path) == once
+
+
+def test_scoped_pytest_cache_keeps_shared_bytecode_root(tmp_path: Path) -> None:
+    first = relocate_python_artifacts({}, tmp_path, pytest_scope="first/run")
+    second = relocate_python_artifacts({}, tmp_path, pytest_scope="second/run")
+
+    assert first["PYTHONPYCACHEPREFIX"] == second["PYTHONPYCACHEPREFIX"]
+    assert first["PYTEST_ADDOPTS"] != second["PYTEST_ADDOPTS"]
+    assert "first/run" not in first["PYTEST_ADDOPTS"]
+
+
+def test_malformed_pytest_addopts_does_not_break_non_pytest_children(tmp_path: Path) -> None:
+    relocated = relocate_python_artifacts({"PYTEST_ADDOPTS": "'unterminated"}, tmp_path)
+
+    assert shlex.split(relocated["PYTEST_ADDOPTS"]) == [
+        "-o",
+        f"cache_dir={tmp_path / 'pytest'}",
+    ]
+
+
+def test_artifact_root_prefers_runtime_then_project_then_fallback(tmp_path: Path) -> None:
+    fallback = tmp_path / "fallback"
+    project = tmp_path / "project-data"
+    runtime = tmp_path / "runtime"
+
+    assert python_artifact_root({}, fallback) == fallback
+    assert python_artifact_root({"BOOLEY_PROJECT_DIR": str(project)}, fallback) == (
+        project / ".runtime" / "python-artifacts"
+    )
+    assert (
+        python_artifact_root(
+            {"BOOLEY_PROJECT_DIR": str(project), "BOOLEY_RUNTIME_DIR": str(runtime)}, fallback
+        )
+        == runtime / "python-artifacts"
+    )

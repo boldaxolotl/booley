@@ -241,8 +241,12 @@ reapplies that policy after `_extra_subprocess_env()` before launching the
 `_build_command()` child. A direct Custom Flow that overrides `_run()` is
 already protected by the endpoint interpreter, including its initial module
 import. Pytest features remain enabled through a final `cache_dir` override;
-Project code must not depend on `__pycache__`, `.pytest_cache`, or another
-cache path inside the source checkout.
+bytecode is shared beneath the runtime root while pytest state is scoped by
+endpoint name so related reruns retain `--lf` and stepwise state. Project code
+must not depend on `__pycache__`, `.pytest_cache`, or another cache path inside
+the source checkout. The same endpoint environment
+also reaches Specialist provider children; they do not use these pytest paths,
+but they retain the source-clean bytecode policy.
 
 | Method | Responsibility |
 |--------|----------------|

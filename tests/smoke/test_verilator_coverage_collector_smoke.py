@@ -361,17 +361,9 @@ def test_real_coverage_flow_publishes_canonical_campaign(
     assert campaign.points
 
 
-@pytest.mark.parametrize("coverage", [False, True])
-def test_real_cocotb_flow_uses_one_process_per_selected_test(
-    tmp_path: Path, coverage: bool
-) -> None:
+def _prepare_cocotb_cache_project(root: Path) -> Path:
     from tests.fixtures.verilator_acceptance.flow_fixture import write_project
 
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
-    from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.request import SimRequest
-
-    root = tmp_path / "project"
     write_project(root, "cocotb", "pass")
     helper = root / "project_helper.py"
     helper.write_text("EXPECTED = 42\n", encoding="utf-8")
@@ -413,25 +405,20 @@ def test_real_cocotb_flow_uses_one_process_per_selected_test(
         cwd=root,
         check=True,
     )
-    baseline = subprocess.run(
+    return helper
+
+
+def _git_status(root: Path) -> str:
+    return subprocess.run(
         ["git", "status", "--porcelain=v1", "-uall"],
         cwd=root,
         check=True,
         capture_output=True,
         text=True,
     ).stdout
-    result = SimulateFlow().execute(
-        SimRequest(target="sim", work_dir=root, coverage=coverage, report_dir=root / "reports")
-    )
-    assert result.exit_code == 0, result.outcome
-    after = subprocess.run(
-        ["git", "status", "--porcelain=v1", "-uall"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    assert after == baseline
+
+
+def _assert_python_cache_evidence(root: Path, helper: Path) -> None:
     evidence_paths = list((root / "reports").rglob("python-imports.json"))
     assert evidence_paths
     evidence = json.loads(evidence_paths[-1].read_text(encoding="utf-8"))
@@ -442,21 +429,42 @@ def test_real_cocotb_flow_uses_one_process_per_selected_test(
         for item in root.rglob("*")
         if item.name in {"__pycache__", ".pytest_cache"} or item.suffix == ".pyc"
     ]
-    allowed_roots = (root / "reports", root / ".booley_project" / ".runtime")
+    allowed = root / ".booley_project" / ".runtime"
     assert cache_artifacts
-    assert all(
-        any(item == allowed or allowed in item.parents for allowed in allowed_roots)
-        for item in cache_artifacts
+    assert all(item == allowed or allowed in item.parents for item in cache_artifacts)
+
+
+def _assert_two_run_coverage_campaign(root: Path, detail: Mapping[str, Any]) -> None:
+    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+
+    resolved = resolve_coverage_campaign_reference(
+        _coverage_campaign_path(root / "reports", detail)
     )
+    campaign = resolved.loaded.campaign
+    assert len(campaign.runs) == 2
+    raw = [artifact for artifact in campaign.artifacts if artifact.kind == "raw_native"]
+    assert len({artifact.path for artifact in raw}) == 2
+    assert {run.test for run in campaign.runs} == {"another", "check"}
+
+
+@pytest.mark.parametrize("coverage", [False, True])
+def test_real_cocotb_flow_uses_one_process_per_selected_test(
+    tmp_path: Path, coverage: bool
+) -> None:
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+
+    root = tmp_path / "project"
+    helper = _prepare_cocotb_cache_project(root)
+    baseline = _git_status(root)
+    result = SimulateFlow().execute(
+        SimRequest(target="sim", work_dir=root, coverage=coverage, report_dir=root / "reports")
+    )
+    assert result.exit_code == 0, result.outcome
+    assert _git_status(root) == baseline
+    _assert_python_cache_evidence(root, helper)
     if coverage:
-        resolved = resolve_coverage_campaign_reference(
-            _coverage_campaign_path(root / "reports", result.outcome.detail)
-        )
-        campaign = resolved.loaded.campaign
-        assert len(campaign.runs) == 2
-        raw = [artifact for artifact in campaign.artifacts if artifact.kind == "raw_native"]
-        assert len({artifact.path for artifact in raw}) == 2
-        assert {run.test for run in campaign.runs} == {"another", "check"}
+        _assert_two_run_coverage_campaign(root, result.outcome.detail)
 
 
 def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:

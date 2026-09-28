@@ -709,6 +709,8 @@ def test_elab_and_sim_run_verilator_binary(tmp_path: Path, monkeypatch):
 
 def test_build_and_adapter_parent_relocate_python_artifacts(tmp_path: Path, monkeypatch):
     captured: list[tuple[list[str], dict[str, str]]] = []
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
 
     def _fake_run(cmd, *args, **kwargs):
         captured.append((list(cmd), kwargs["env"]))
@@ -723,11 +725,11 @@ def test_build_and_adapter_parent_relocate_python_artifacts(tmp_path: Path, monk
     endpoint._run_elab("default", tmp_path, build_dir)
     endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
 
-    expected = build_dir / "python-artifacts"
+    expected = runtime / "python-artifacts"
     assert len(captured) == 2
     for _cmd, environment in captured:
         assert environment["PYTHONPYCACHEPREFIX"] == str(expected / "bytecode")
-        assert environment["PYTEST_ADDOPTS"].endswith(f"-o cache_dir={expected / 'pytest'}")
+        assert f"cache_dir={expected / 'pytest'}" in environment["PYTEST_ADDOPTS"]
 
 
 def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):

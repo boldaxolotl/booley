@@ -30,6 +30,7 @@ import os
 import shlex
 import socket
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -1135,15 +1136,28 @@ async def _wait_with_queue_credit(
                 active_used += time.monotonic() - started
 
 
-def _endpoint_subprocess_env(**overrides: str) -> dict[str, str]:
+def _endpoint_subprocess_env(
+    *, pytest_scope: str = "endpoint", **overrides: str
+) -> dict[str, str]:
     """Return the child environment after MCP composes runtime persistence."""
     env = {**os.environ, **overrides}
     logs_dir = env.get("BOOLEY_LOGS_DIR", "")
     if logs_dir and not env.get("BOOLEY_RUNTIME_DIR"):
         env["BOOLEY_RUNTIME_DIR"] = str(ticket_runtime_dir(logs_dir))
     runtime = env.get("BOOLEY_RUNTIME_DIR")
-    runtime_root = Path(runtime) if runtime else resolve_project_dir() / ".runtime"
-    return relocate_python_artifacts(env, runtime_root / "python-artifacts")
+    if runtime:
+        runtime_root = Path(runtime)
+    else:
+        try:
+            runtime_root = resolve_project_dir() / ".runtime"
+        except (OSError, RuntimeError, ValueError):
+            runtime_root = Path(tempfile.gettempdir()) / "booley-runtime"
+        env["BOOLEY_RUNTIME_DIR"] = str(runtime_root)
+    return relocate_python_artifacts(
+        env,
+        runtime_root / "python-artifacts",
+        pytest_scope=pytest_scope,
+    )
 
 
 async def _run_subprocess(
@@ -2790,6 +2804,7 @@ class _JobManager:
                 timeout=timeout,
                 on_spawn=lambda pid: self._stamp_pid(rec, pid),
                 env=_endpoint_subprocess_env(
+                    pytest_scope=name,
                     BOOLEY_RUN_ID=rec.run_id,
                     BOOLEY_DISPLAY_INVOCATION_ID=rec.run_id,
                     BOOLEY_SLOT_TIMEOUT_S=str(timeout),
@@ -2833,6 +2848,7 @@ class _JobManager:
                 # carries the real watchdog budget to the child's slot claim
                 # so the holder-deadline reap has a sound anchor.
                 env=_endpoint_subprocess_env(
+                    pytest_scope=name,
                     BOOLEY_RUN_ID=run_id,
                     BOOLEY_SLOT_TIMEOUT_S=str(timeout),
                 ),
@@ -3371,7 +3387,10 @@ async def _run_inline_endpoint(
         result = await _run_subprocess(
             cmd,
             timeout=timeout,
-            env=_endpoint_subprocess_env(BOOLEY_DISPLAY_INVOCATION_ID=identity.invocation_id),
+            env=_endpoint_subprocess_env(
+                pytest_scope=name,
+                BOOLEY_DISPLAY_INVOCATION_ID=identity.invocation_id,
+            ),
         )
     except asyncio.CancelledError:
         _write_synthetic_endpoint_end(name, 0, identity=identity, outcome="aborted")
