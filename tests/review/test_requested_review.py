@@ -3,6 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from booley.harness.booley import _cmd_board_show
 from booley.ticket_board.cli_handlers import _cmd_move_ticket
 from booley.ticket_board.io import TicketIO
 
@@ -28,6 +29,8 @@ from typing import ClassVar
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.ticket_board import review_preparation as prep
 from booley.ticket_board.logs import save_progress
 from booley.ticket_board.review_lifecycle import request_review_command
@@ -45,6 +48,63 @@ def _on_success(options):
         if enabled:
             actions.append(action)
     return f"[{', '.join(actions)}]"
+
+
+def _add_live_freshness_target(root: Path, project: Path) -> None:
+    from tests.ticket_board.test_ticket_baseline import _git
+
+    (root / "rtl").mkdir()
+    (root / "tb").mkdir()
+    (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    (root / "tb" / "tb.sv").write_text("module tb; endmodule\n")
+    (root / "design.core").write_text(
+        "CAPI=2:\nname: ::design:0\nfilesets:\n"
+        "  rtl: {files: [rtl/dut.sv]}\n"
+        "  tb: {files: [tb/tb.sv], tags: [tb]}\n"
+        "targets:\n  sim:\n    flow: sim\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl, tb]\n    toplevel: tb\n",
+        encoding="utf-8",
+    )
+    (project / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n', encoding="utf-8")
+    _git(root, "add", "design.core", "rtl/dut.sv", "tb/tb.sv")
+    _git(root, "add", "-f", ".booley_project/tests.toml")
+    _git(root, "commit", "-m", "Add verification target")
+
+
+def _initialize_live_freshness_state(state: DevelopmentState, worktree: Path) -> None:
+    from booley.criteria.templates import CriteriaTemplate
+
+    template = CriteriaTemplate.from_yaml(
+        {
+            "mandatory": {
+                "sim_pass": ["sim"],
+                "coverage": [
+                    {
+                        "targets": ["sim"],
+                        "tests": "all",
+                        "metrics": {"line": {"min_pct": 80}},
+                    }
+                ],
+            }
+        }
+    )
+    criteria = {**template.expand([]), "_report_submitted": True}
+    state.init_criteria(criteria, criterion_params=template.expand_params([]), strict=True)
+    fingerprint = compute_source_fingerprint(worktree, target="sim")
+    for key in ("sim_pass_sim", "coverage_sim"):
+        state.set_criterion(
+            key,
+            True,
+            detail={
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl", "tb"],
+                    "target": "sim",
+                    "fingerprint": fingerprint,
+                }
+            },
+        )
+    state.set_criterion("_report_submitted", True)
 
 
 def _register_implementation_criterion(root: Path, project: Path, *, paired: bool) -> None:
@@ -83,7 +143,13 @@ if __name__ == "__main__":
     _git(repository, "commit", "-m", "Register fixture criterion")
 
 
-def _initialize_blocked_state(tio: TicketIO, worktree: Path, declared: str) -> None:
+def _initialize_blocked_state(
+    tio: TicketIO,
+    worktree: Path,
+    declared: str,
+    *,
+    live_freshness: bool = False,
+) -> None:
     """Create the fixture's durable blocked-review evidence."""
     from booley.criteria.templates import CriteriaTemplate
 
@@ -93,9 +159,12 @@ def _initialize_blocked_state(tio: TicketIO, worktree: Path, declared: str) -> N
     (log_dir / "ticket.md").write_bytes((tio.tickets_dir / board["file"]).read_bytes())
     state = DevelopmentState.load(log_dir / ".runtime" / "booley_state.json")
     state.slug, state.ticket_type, state.work_dir = "demo", "feature", str(worktree)
-    criteria = CriteriaTemplate.from_yaml({"mandatory": {declared: True}}).expand([])
-    criteria["_report_submitted"] = True
-    state.init_criteria(criteria, strict=True)
+    if live_freshness:
+        _initialize_live_freshness_state(state, worktree)
+    else:
+        criteria = CriteriaTemplate.from_yaml({"mandatory": {declared: True}}).expand([])
+        criteria["_report_submitted"] = True
+        state.init_criteria(criteria, strict=True)
     state.save()
     save_progress(
         tio.logs_dir,
@@ -118,11 +187,21 @@ def blocked(tmp_path, monkeypatch, request):
     declared = options.get("criterion", "review_rtl_bugs_done")
     if declared == "implementation_done":
         _register_implementation_criterion(root, project, paired=bool(options.get("paired")))
-    criterion = (
-        "IMPLEMENTATION_DONE: true"
-        if declared == "implementation_done"
-        else "REVIEW: {rtl: {bugs: done}}"
-    )
+    live_freshness = options.get("live_freshness", False)
+    if live_freshness:
+        _add_live_freshness_target(root, project)
+        criteria_field = (
+            "CRITERIA_MANDATORY:\n"
+            "  SIM: {sim: {all: pass}}\n"
+            "  COVERAGE: {sim: {tests: all, metrics: {line: {min_pct: 80}}}}\n"
+        )
+    else:
+        criterion = (
+            "IMPLEMENTATION_DONE: true"
+            if declared == "implementation_done"
+            else "REVIEW: {rtl: {bugs: done}}"
+        )
+        criteria_field = f"CRITERIA_MANDATORY: {{{criterion}}}\n"
     project_ref = "project_destination_ref: refs/heads/main\n" if options.get("paired") else ""
     path = tio.create_ticket_document(
         "demo",
@@ -131,16 +210,21 @@ def blocked(tmp_path, monkeypatch, request):
         "type: feature\n"
         "branch: main\n"
         f"{project_ref}"
-        "scope: [README.md]\n"
+        f"scope: [{'design.core, rtl/dut.sv, tb/tb.sv' if live_freshness else 'README.md'}]\n"
         f"on_success: {_on_success(options)}\n"
-        f"CRITERIA_MANDATORY: {{{criterion}}}\n"
+        f"{criteria_field}"
         "---\n\n## Description\nInspect incomplete work.\n",
     )
     assert path is not None
     assert tio.enqueue_ticket("demo")
     assert tio.move_ticket_file("demo", "blocked")
     worktree = project / "worktrees" / "demo"
-    _initialize_blocked_state(tio, worktree, declared)
+    _initialize_blocked_state(
+        tio,
+        worktree,
+        declared,
+        live_freshness=live_freshness,
+    )
     yield root, tio, worktree
     reset_cache()
 
@@ -526,6 +610,40 @@ def test_blocked_request_generates_readable_unaccepted_package(blocked):
     assert "unaccepted" in briefing.briefing
     assert "**approve**" not in briefing.briefing
     assert "review_rtl_bugs_done" in briefing.briefing
+
+
+@pytest.mark.parametrize("blocked", [{"live_freshness": True}], indirect=True)
+def test_requested_review_and_board_show_project_live_stale_criteria_read_only(blocked, capsys):
+    from tests.ticket_board.test_ticket_baseline import _git
+
+    root, tio, worktree = blocked
+    tb = worktree / "tb" / "tb.sv"
+    tb.write_text("module tb; // comment-only change\nendmodule\n", encoding="utf-8")
+    _git(worktree, "add", "tb/tb.sv")
+    _git(worktree, "commit", "-m", "Edit testbench comment")
+    state_path = tio.logs_dir / "demo" / ".runtime" / "booley_state.json"
+    before = state_path.read_bytes()
+
+    outcome = asyncio.run(request_review_command(root, "demo", reason="Inspect freshness"))
+
+    assert outcome.ready, outcome.message
+    package = json.loads(outcome.package_path.read_text())
+    rows = {row["criterion"]: row for row in package["criteria"]}
+    for key in ("sim_pass_sim", "coverage_sim"):
+        assert rows[key]["outcome"] == "met"
+        assert rows[key]["freshness"] == "stale"
+        assert rows[key]["changed_categories"] == ["tb"]
+        assert rows[key]["status"] == "STALE (tb)"
+    assert rows["_report_submitted"]["freshness"] == "stale"
+    assert state_path.read_bytes() == before
+
+    args = SimpleNamespace(slug="demo", no_open_diffs=True)
+    assert _cmd_board_show(args, root) == 0
+    rendered = capsys.readouterr().out
+    assert rendered.count("STALE (tb)") >= 2
+    assert "**Recommendation:** hold" in rendered
+    assert "Stale mandatory verification evidence" in rendered
+    assert state_path.read_bytes() == before
 
 
 def test_dirty_request_preserves_work_and_blocked_state(blocked):

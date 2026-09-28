@@ -46,6 +46,7 @@ def test_render_escapes_agent_text_and_owns_active_content() -> None:
                 "criterion": "review_security_done",
                 "outcome": "met",
                 "freshness": "stale",
+                "changed_categories": ["tb", "rtl<script>"],
             }
         ],
     }
@@ -59,7 +60,7 @@ def test_render_escapes_agent_text_and_owns_active_content() -> None:
     assert rendered.count("<script>") == 1
     assert "Content-Security-Policy" in rendered
     assert "review_security_done" in rendered
-    assert "<td>met</td><td>stale</td>" in rendered
+    assert "<td>met</td><td>STALE (tb, rtl&lt;script&gt;)</td>" in rendered
 
 
 @pytest.mark.parametrize("quiz_size", [0, 4, 6])

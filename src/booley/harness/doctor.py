@@ -47,7 +47,6 @@ from booley.fusesoc import (
 from booley.harness import (
     doctor_stamp,
     host_diagnostics,
-    image_lifecycle,
     nangate_pdk,
     upgrade_cli,
     upgrade_review,
@@ -76,6 +75,7 @@ from booley.harness.setup.line_endings import (
 from booley.harness.setup.readiness import ProjectAudit
 from booley.runtime import (
     auth_token,
+    image_identity,
     inspection,
     project_repositories,
     runtime_context,
@@ -1699,22 +1699,26 @@ def _check_image_bakes_current_booley(
     if image not in (DOCKER_IMAGE, generated, *FLAVOR_IMAGES):
         return
     if project is not None:
-        result = image_lifecycle.reconcile(
-            image_lifecycle.ProjectImageScope(project.project_root),
-            image_lifecycle.Intent.CHECK,
-        )
-        if result.status is image_lifecycle.Status.STALE:
+        try:
+            spec = json.loads(
+                dc.devcontainer_path(project.project_root).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return
+        issued_image = spec.get("image") if isinstance(spec, dict) else None
+        if not isinstance(issued_image, str) or not issued_image:
+            return
+        result = idk.compare_issued_build(issued_image, executable=docker_exe)
+        if result.status is image_identity.Status.MISMATCH:
             _warn(
-                f"'{image}' bakes Booley sources that no longer match this "
-                "checkout (image provenance differs); the sandbox runs "
+                f"issued Sandbox Image '{issued_image}' bakes Booley sources that no longer "
+                f"match the canonical host installation ({result.detail}); the sandbox runs "
                 "stale code (egress is locked, so it can't pip-install the "
                 "fix). Rebuild with booley session refresh."
             )
             return
-        if result.status is image_lifecycle.Status.CURRENT:
-            _pass(f"'{image}' bakes exactly this checkout's Booley sources")
-            return
-        if result.status is image_lifecycle.Status.EXTERNAL:
+        if result.status is image_identity.Status.MATCH:
+            _pass(f"issued Sandbox Image '{issued_image}' bakes current Booley sources")
             return
 
 

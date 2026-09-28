@@ -5,9 +5,17 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from urllib.parse import quote
 
+from booley.criteria.freshness import (
+    VerificationFreshness,
+    evaluate_verification_freshness,
+    verification_freshness_eligible,
+)
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.review import triage_package as tp
 
 
@@ -103,7 +111,16 @@ def _facts(ctx: Context, *, run_economics: str = "unavailable") -> dict:
         developer_crashes=[],
         missing_evidence=[],
     )
-    return tp.build_review_facts(ctx, evidence, run_economics=run_economics)
+    return tp.build_review_facts(
+        ctx,
+        evidence,
+        freshness_eligible=verification_freshness_eligible,
+        freshness_evaluator=partial(
+            evaluate_verification_freshness,
+            fingerprint_provider=compute_source_fingerprint,
+        ),
+        run_economics=run_economics,
+    )
 
 
 def test_review_facts_consume_frozen_board_evidence(tmp_path: Path) -> None:
@@ -125,7 +142,15 @@ def test_review_facts_consume_frozen_board_evidence(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    facts = tp.build_review_facts(ctx, evidence)
+    facts = tp.build_review_facts(
+        ctx,
+        evidence,
+        freshness_eligible=verification_freshness_eligible,
+        freshness_evaluator=partial(
+            evaluate_verification_freshness,
+            fingerprint_provider=compute_source_fingerprint,
+        ),
+    )
 
     assert "captured_only" in {row["criterion"] for row in facts["criteria"]}
     assert facts["health"] == {
@@ -137,6 +162,117 @@ def test_review_facts_consume_frozen_board_evidence(tmp_path: Path) -> None:
         "scope_undecidable": True,
         "unverified_transitions": [],
     }
+
+
+def test_review_facts_project_live_staleness_without_mutating_evidence(
+    tmp_path: Path,
+) -> None:
+    ctx = _context(tmp_path)
+    (ctx.worktree / "design.core").write_text(
+        "CAPI=2:\nname: ::design:0\nfilesets:\n"
+        "  rtl: {files: [rtl/new.sv]}\n"
+        "  tb: {files: [tb/tb.sv], tags: [tb]}\n"
+        "targets:\n  sim: {filesets: [rtl, tb], toplevel: tb}\n",
+        encoding="utf-8",
+    )
+    (ctx.worktree / "tb").mkdir()
+    tb = ctx.worktree / "tb" / "tb.sv"
+    tb.write_text("module tb; endmodule\n", encoding="utf-8")
+    stamp = {
+        "categories": ["rtl", "tb"],
+        "target": "sim",
+        "fingerprint": compute_source_fingerprint(ctx.worktree, target="sim"),
+    }
+    state = {
+        "criteria": {
+            "sim_pass_sim": {
+                "mandatory": True,
+                "met": True,
+                "detail": {SOURCE_FINGERPRINT_DETAIL_KEY: stamp},
+            },
+            "_report_submitted": {"mandatory": True, "met": True},
+        }
+    }
+    evidence = tp.ResolvedReviewEvidence.capture(
+        state=state,
+        scope={},
+        dirty_worktree=[],
+        developer_crashes=[],
+        missing_evidence=[],
+    )
+    tb.write_text("module tb; // changed\nendmodule\n", encoding="utf-8")
+
+    facts = tp.build_review_facts(
+        ctx,
+        evidence,
+        freshness_eligible=verification_freshness_eligible,
+        freshness_evaluator=partial(
+            evaluate_verification_freshness,
+            fingerprint_provider=compute_source_fingerprint,
+        ),
+    )
+
+    rows = {row["criterion"]: row for row in facts["criteria"]}
+    assert rows["sim_pass_sim"]["outcome"] == "met"
+    assert rows["sim_pass_sim"]["freshness"] == "stale"
+    assert rows["sim_pass_sim"]["changed_categories"] == ["tb"]
+    assert rows["sim_pass_sim"]["status"] == "STALE (tb)"
+    assert rows["_report_submitted"]["freshness"] == "stale"
+    assert evidence.state() == state
+
+
+def test_live_staleness_preserves_locked_submitted_report(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    state = {
+        "criteria": {
+            "sim_pass_sim": {"mandatory": True, "met": True},
+            "_report_submitted": {"mandatory": True, "met": True, "locked": True},
+        }
+    }
+    evidence = tp.ResolvedReviewEvidence.capture(
+        state=state,
+        scope={},
+        dirty_worktree=[],
+        developer_crashes=[],
+        missing_evidence=[],
+    )
+
+    facts = tp.build_review_facts(
+        ctx,
+        evidence,
+        freshness_eligible=verification_freshness_eligible,
+        freshness_evaluator=lambda *_args, **_kwargs: VerificationFreshness(
+            True,
+            ("tb",),
+            "changed",
+        ),
+    )
+
+    rows = {row["criterion"]: row for row in facts["criteria"]}
+    assert rows["sim_pass_sim"]["freshness"] == "stale"
+    assert rows["_report_submitted"]["freshness"] == "current"
+
+
+def test_stale_mandatory_freshness_forces_hold_once() -> None:
+    facts = {
+        "scope": {"deviations": []},
+        "criteria": [
+            {
+                "criterion": "sim_pass_sim",
+                "required": "mandatory",
+                "freshness": "stale",
+                "changed_categories": ["tb"],
+            }
+        ],
+    }
+
+    assessment = tp.validate_assessment(_assessment(), facts)
+    assessment = tp.validate_assessment(assessment, facts)
+
+    assert assessment["recommendation"] == "hold"
+    assert assessment["decision_blockers"] == [
+        "Stale mandatory verification evidence: sim_pass_sim (tb)."
+    ]
 
 
 def test_review_facts_materialize_rename_pair_and_oldest_first_commits(

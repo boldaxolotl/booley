@@ -61,6 +61,7 @@ def _package() -> dict:
                 "required": "optional",
                 "outcome": "met",
                 "freshness": "stale",
+                "changed_categories": ["tb", "rtl", "tb"],
                 "metric": "done independently of freshness",
             }
         ],
@@ -106,6 +107,27 @@ def test_outcome_and_freshness_remain_independent() -> None:
 
     assert package.criteria[0].outcome == "met"
     assert package.criteria[0].freshness == "stale"
+    assert package.criteria[0].changed_categories == ("rtl", "tb")
+    assert package.to_dict()["criteria"][0]["status"] == "STALE (rtl, tb)"
+
+
+def test_legacy_criterion_without_changed_categories_still_parses() -> None:
+    value = _package()
+    del value["criteria"][0]["changed_categories"]
+
+    row = ReviewPackage.parse(value).criteria[0]
+
+    assert row.changed_categories == ()
+    assert row.to_dict()["status"] == "STALE"
+
+
+@pytest.mark.parametrize("value", ["tb", ["tb", 1], [""]])
+def test_malformed_changed_categories_are_rejected(value: object) -> None:
+    package = _package()
+    package["criteria"][0]["changed_categories"] = value
+
+    with pytest.raises(ReviewArtifactError, match="changed_categories"):
+        ReviewPackage.parse(package)
 
 
 @pytest.mark.parametrize(

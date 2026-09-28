@@ -2752,23 +2752,69 @@ class TestImageDriftWarning:
 
         assert "[sandbox].image" not in caplog.text
 
-    def test_pinned_digest_different_from_configured_tag_warns(
+    def test_same_source_tag_move_is_silent(self, workspace: Path, caplog, monkeypatch):
+
+        digest = "sha256:" + "a" * 64
+        monkeypatch.setattr(
+            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+        )
+        fingerprint = "f" * 64
+
+        def inspect(reference: str, *, executable: str = "docker"):
+            del executable
+            return sr.image_identity.ImageMetadata(
+                reference,
+                digest if reference == digest else "sha256:" + "b" * 64,
+                {
+                    "io.booley.provenance.schema": "3",
+                    "io.booley.artifact.role": "wheel-overlay",
+                    "io.booley.build.recipe-fingerprint": "wheel-recipe",
+                    "io.booley.sandbox.selection-fingerprint": fingerprint,
+                },
+                {},
+            )
+
+        monkeypatch.setattr(sr.idk, "inspect_image_metadata", inspect)
+
+        with caplog.at_level("DEBUG"):
+            sr._warn_on_image_drift({"image": digest}, workspace)
+
+        assert not any(record.levelname == "WARNING" for record in caplog.records)
+        assert "moved to an equivalent Sandbox Image" in caplog.text
+
+    def test_logically_different_configured_image_warns(
         self, workspace: Path, caplog, monkeypatch
     ):
-
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
             sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
         )
         monkeypatch.setattr(
             sr.idk,
-            "image_id",
-            lambda image: digest if image == digest else "sha256:" + "b" * 64,
+            "compare_issued_selection",
+            lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
         )
 
         sr._warn_on_image_drift({"image": digest}, workspace)
 
         assert "!= [sandbox].image 'booley-sandbox-riscv'" in caplog.text
+
+    def test_rebuilt_external_image_warns_despite_inherited_labels(
+        self, workspace: Path, caplog, monkeypatch
+    ):
+        digest = "sha256:" + "a" * 64
+        monkeypatch.setattr(
+            sr.project_image, "project_sandbox_image", lambda _root: "custom-sandbox"
+        )
+        monkeypatch.setattr(
+            sr.idk,
+            "compare_issued_reference",
+            lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
+        )
+
+        sr._warn_on_image_drift({"image": digest}, workspace)
+
+        assert "!= [sandbox].image 'custom-sandbox'" in caplog.text
 
     def test_no_project_config_is_silent(self, wired, caplog):
         # No .booley_project at all: the resolver falls back to the base image,
@@ -2797,40 +2843,38 @@ class TestStaleBooleyBakeWarning:
     Booley code. Advisory only — no verdict (pip install, unlabeled image) must
     stay silent."""
 
-    def test_mismatch_warns_and_names_the_fix(self, workspace, caplog):
-        from booley.runtime import image_lifecycle
-
-        result = image_lifecycle.LifecycleResult(
-            "booley-sandbox", "sha256:old", image_lifecycle.Status.STALE
+    def test_mismatch_warns_names_fields_and_fix(self, caplog, monkeypatch):
+        expected = sr.image_identity.BooleyBuildIdentity("1.0", "abc123", None, "current")
+        observed = sr.image_identity.ImageMetadata(
+            "sha256:issued",
+            "sha256:issued",
+            {
+                "org.opencontainers.image.version": "1.0",
+                "org.opencontainers.image.revision": "def456",
+                "io.booley.wheel.source-fingerprint": "stale",
+            },
+            {},
         )
-        with patch.object(image_lifecycle, "reconcile", return_value=result) as reconcile:
-            sr._warn_on_stale_booley_bake(workspace)
+        monkeypatch.setattr(sr.image_identity, "current_host_build_identity", lambda: expected)
+        monkeypatch.setattr(sr.idk, "inspect_image_metadata", lambda *_args, **_kwargs: observed)
 
-        reconcile.assert_called_once_with(
-            image_lifecycle.ProjectImageScope(workspace),
-            image_lifecycle.Intent.CHECK,
-        )
+        sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
+
         assert "stale Booley code" in caplog.text
+        assert "revision abc123 -> def456" in caplog.text
+        assert "wheel_source_fingerprint current -> stale" in caplog.text
         assert "booley session refresh" in caplog.text
 
-    def test_external_image_is_silent(self, workspace, caplog):
-        from booley.runtime import image_lifecycle
-
-        result = image_lifecycle.LifecycleResult(
-            "custom/image", None, image_lifecycle.Status.EXTERNAL
-        )
-        with patch.object(image_lifecycle, "reconcile", return_value=result):
-            sr._warn_on_stale_booley_bake(workspace)
+    def test_unknown_identity_is_silent(self, caplog):
+        result = sr.image_identity.Comparison(sr.image_identity.Status.UNKNOWN)
+        with patch.object(sr.idk, "compare_issued_build", return_value=result):
+            sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
         assert "stale Booley code" not in caplog.text
 
-    def test_match_is_silent(self, workspace, caplog):
-        from booley.runtime import image_lifecycle
-
-        result = image_lifecycle.LifecycleResult(
-            "booley-sandbox", "sha256:new", image_lifecycle.Status.CURRENT
-        )
-        with patch.object(image_lifecycle, "reconcile", return_value=result):
-            sr._warn_on_stale_booley_bake(workspace)
+    def test_match_is_silent(self, caplog):
+        result = sr.image_identity.Comparison(sr.image_identity.Status.MATCH)
+        with patch.object(sr.idk, "compare_issued_build", return_value=result):
+            sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
         assert "stale Booley code" not in caplog.text
 
 
