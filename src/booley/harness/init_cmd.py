@@ -216,7 +216,9 @@ def _ticket_creation_skeleton() -> str:
 #
 # Only *fixed-name*, Booley-owned transient dirs belong here — patterns that are
 # correct for every project. ``flow-reports/`` is durable Flow evidence that is
-# transient to Git. ``.runtime/`` (dotted) is the scratch/EDA build
+# transient to Git. ``logs/`` holds pre-intake diagnostics, while
+# ``.baseline-wt-*/`` covers temporary baseline worktrees whose best-effort
+# cleanup may be interrupted. ``.runtime/`` (dotted) is the scratch/EDA build
 # root (``resolve_project_dir()/".runtime"``, holds the multi-GB edalize tree);
 # ``runtime/`` (no dot) is the container-lifetime bookkeeping dir — the doctor
 # stamp (``runtime/doctor_stamp.json``), the developer probe, and the job-slot
@@ -232,6 +234,8 @@ def _ticket_creation_skeleton() -> str:
 PROJECT_GITIGNORE_PATTERNS = (
     "tmp/",
     "flow-reports/",
+    "logs/",
+    ".baseline-wt-*/",
     "tickets/logs/",
     "tickets/locks/",
     ".interactive_logs/",

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Collection
 from pathlib import Path
 
 from booley.runtime.filesystem_utils import safe_rmtree
@@ -145,13 +146,73 @@ def worktree_is_clean(
     Callers may exempt one Harness-owned, unstaged Ticket Board rename. Staged
     paths and every unrelated change remain blocking.
     """
-    r = git("-C", wt_path, "status", "--porcelain", "-z", "--untracked-files=all")
-    if not r or r.returncode != 0:
-        return False
-    for entry in parse_porcelain_v1_z(r.stdout):
-        if not _is_allowed_unstaged_rename(wt_path, entry, allowed_unstaged_rename):
-            return False
-    return True
+    blockers = worktree_blocking_changes(
+        wt_path,
+        allowed_unstaged_rename=allowed_unstaged_rename,
+    )
+    return blockers == ()
+
+
+def _path_components(path: str, *, ignore_case: bool) -> tuple[str, ...]:
+    normalized = path.replace("\\", "/").removeprefix("./").rstrip("/")
+    components = tuple(part for part in normalized.split("/") if part and part != ".")
+    if ignore_case:
+        return tuple(part.casefold() for part in components)
+    return components
+
+
+def _paths_overlap(
+    left: str,
+    right: str,
+    *,
+    ignore_case: bool,
+) -> bool:
+    left_components = _path_components(left, ignore_case=ignore_case)
+    right_components = _path_components(right, ignore_case=ignore_case)
+    common = min(len(left_components), len(right_components))
+    return bool(common) and left_components[:common] == right_components[:common]
+
+
+def _core_ignore_case(wt_path: str) -> bool:
+    result = git("-C", wt_path, "config", "--bool", "--get", "core.ignoreCase")
+    return bool(result and result.returncode == 0 and result.stdout.strip() == "true")
+
+
+def worktree_blocking_changes(
+    wt_path: str,
+    *,
+    allowed_unstaged_rename: tuple[str | Path, str | Path] | None = None,
+    candidate_paths: Collection[str] | None = None,
+) -> tuple[GitStatusEntry, ...] | None:
+    """Return blocking checkout changes, or ``None`` when status cannot be read.
+
+    With candidate context, unrelated untracked paths are safe because a
+    fast-forward cannot overwrite them. Staged and tracked changes always
+    block, as do untracked paths that overlap a candidate path.
+    """
+    result = git("-C", wt_path, "status", "--porcelain", "-z", "--untracked-files=all")
+    if not result or result.returncode != 0:
+        return None
+    try:
+        entries = parse_porcelain_v1_z(result.stdout)
+    except ValueError:
+        return None
+    ignore_case = candidate_paths is not None and _core_ignore_case(wt_path)
+    blockers: list[GitStatusEntry] = []
+    for entry in entries:
+        if _is_allowed_unstaged_rename(wt_path, entry, allowed_unstaged_rename):
+            continue
+        if (
+            candidate_paths is not None
+            and entry.status == "??"
+            and not any(
+                _paths_overlap(entry.path, candidate_path, ignore_case=ignore_case)
+                for candidate_path in candidate_paths
+            )
+        ):
+            continue
+        blockers.append(entry)
+    return tuple(blockers)
 
 
 def remove_worktree(wt_path: str) -> None:

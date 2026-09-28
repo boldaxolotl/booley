@@ -21,7 +21,7 @@ from typing import Literal
 from booley.core.differences import format_differences
 from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 
-from ..git_ops import worktree_is_clean
+from ..git_ops import worktree_blocking_changes, worktree_is_clean
 from ..target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
@@ -493,10 +493,38 @@ def _publish_candidate(
         )
     checkout = _checked_out_at(repository, participant.destination_ref)
     if checkout is not None:
-        if not worktree_is_clean(str(checkout), allowed_unstaged_rename=allowed_board_rename):
+        changed_paths_result = _git(
+            repository,
+            "diff",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            expected,
+            desired,
+            "--",
+        )
+        if changed_paths_result.returncode != 0:
+            detail = (changed_paths_result.stderr or changed_paths_result.stdout).strip()
+            raise AcceptanceOperationError(
+                f"could not inspect paths changed by acceptance candidate for "
+                f"{participant.destination_ref}: {detail}"
+            )
+        candidate_paths = tuple(path for path in changed_paths_result.stdout.split("\0") if path)
+        blockers = worktree_blocking_changes(
+            str(checkout),
+            allowed_unstaged_rename=allowed_board_rename,
+            candidate_paths=candidate_paths,
+        )
+        if blockers is None:
+            raise AcceptanceOperationError(
+                f"cannot publish {participant.destination_ref}: could not inspect "
+                f"checkout status at {checkout}"
+            )
+        if blockers:
+            summary = ", ".join(f"{entry.status} {entry.path}" for entry in blockers[:5])
             raise AcceptanceOperationError(
                 f"cannot publish {participant.destination_ref}: its checkout at "
-                f"{checkout} has changes outside this Ticket's board transition"
+                f"{checkout} has blocking changes: {summary}"
             )
         _require_git(checkout, "merge", "--ff-only", desired)
         return
