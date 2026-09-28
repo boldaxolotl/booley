@@ -99,6 +99,72 @@ class TestRuntimeBaseInspection:
         assert init_docker_image._inspect_runtime_base().failure_reason == "inspection failed"
 
 
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (None, None),
+        (SimpleNamespace(returncode=1, stdout="sha256:" + "a" * 64), None),
+        (SimpleNamespace(returncode=0, stdout="\n"), None),
+        (
+            SimpleNamespace(returncode=0, stdout="sha256:" + "a" * 64 + "\n"),
+            "sha256:" + "a" * 64,
+        ),
+    ],
+)
+def test_docker_image_id_interprets_inspection_result(monkeypatch, result, expected) -> None:
+    monkeypatch.setattr(init_docker_image, "_run_docker_image_inspect", lambda *_args: result)
+
+    assert init_docker_image._docker_image_id("image:tag") == expected
+
+
+def test_prepare_runtime_base_records_contract_failure(tmp_path, monkeypatch) -> None:
+    def fail(*_args, **_kwargs):
+        raise ValueError("invalid contract")
+
+    monkeypatch.setattr(init_docker_image, "_runtime_base_disposition", fail)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert (
+        init_docker_image._prepare_runtime_base(
+            ctx, tmp_path / "Dockerfile.base", tmp_path, rebuild_runtime_base=False
+        )
+        is None
+    )
+    assert ctx.results[-1].detail == "runtime-base contract failed"
+
+
+def test_prepare_runtime_base_stops_after_failed_rebuild(tmp_path, monkeypatch) -> None:
+    disposition = init_docker_image._RuntimeBaseDisposition("c" * 64, None, "missing")
+    monkeypatch.setattr(
+        init_docker_image, "_runtime_base_disposition", lambda *_args, **_kwargs: disposition
+    )
+    monkeypatch.setattr(init_docker_image, "_docker_build_runtime_base", lambda *_args: False)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert (
+        init_docker_image._prepare_runtime_base(
+            ctx, tmp_path / "Dockerfile.base", tmp_path, rebuild_runtime_base=False
+        )
+        is None
+    )
+
+
+def test_prepare_runtime_base_rejects_missing_reusable_identity(tmp_path, monkeypatch) -> None:
+    disposition = init_docker_image._RuntimeBaseDisposition("c" * 64, None, None)
+    monkeypatch.setattr(
+        init_docker_image, "_runtime_base_disposition", lambda *_args, **_kwargs: disposition
+    )
+    ctx = InitContext(project_root=tmp_path)
+
+    assert (
+        init_docker_image._prepare_runtime_base(
+            ctx, tmp_path / "Dockerfile.base", tmp_path, rebuild_runtime_base=False
+        )
+        is None
+    )
+    assert ctx.results[-1].detail == "runtime-base identity missing"
+
+
 # ---------------------------------------------------------------------------
 # _image_build_fingerprint
 # ---------------------------------------------------------------------------
@@ -545,6 +611,72 @@ def test_local_build_rejects_runtime_base_tag_change_before_candidate(
     init_docker_image._docker_local_build(ctx, docker_dir, exists=True, fingerprint="fp")
 
     assert ctx.results[-1].detail == "runtime-base identity changed"
+
+
+def test_local_build_rejects_runtime_base_tag_change_during_candidate(
+    tmp_path, monkeypatch
+) -> None:
+    docker_dir = _seed_local_build_tree(tmp_path)
+    contract = "c" * 64
+    inspected_id = "sha256:" + "a" * 64
+    changed_id = "sha256:" + "b" * 64
+    image_ids = iter((inspected_id, changed_id))
+    monkeypatch.setattr(
+        init_docker_image,
+        "_inspect_runtime_base",
+        lambda: init_docker_image._RuntimeBaseInspection(inspected_id, contract),
+    )
+    monkeypatch.setattr(init_docker_image, "_docker_image_id", lambda *_args: next(image_ids))
+    monkeypatch.setattr(init_docker_image, "_docker_build_wheel", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(init_docker_image, "_docker_build_image", lambda *_args: 0)
+    monkeypatch.setattr(
+        init_docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base=contract),
+    )
+    ctx = InitContext(project_root=tmp_path)
+
+    init_docker_image._docker_local_build(ctx, docker_dir, exists=True, fingerprint="fp")
+
+    assert ctx.results[-1].detail == "runtime-base identity changed"
+
+
+def test_image_step_stops_after_successful_registry_pull(tmp_path, monkeypatch) -> None:
+    docker_dir = _seed_local_build_tree(tmp_path)
+    monkeypatch.setattr(init_docker_image, "_docker_cli_ready", lambda _ctx: True)
+    monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda: False)
+    monkeypatch.setattr(init_docker_image, "_image_build_fingerprint", lambda _root: "fp")
+    monkeypatch.setattr(init_docker_image, "_expected_version", lambda _root: "0.2.6")
+    monkeypatch.setattr(init_docker_image, "_prepare_existing_base_image", lambda *_a, **_k: False)
+    monkeypatch.setattr(init_docker_image, "_pull_base_image", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_local_build",
+        lambda *_a, **_k: pytest.fail("local build must not start"),
+    )
+
+    init_docker_image._step_docker_image(InitContext(project_root=tmp_path))
+
+
+def test_pull_base_image_records_success(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(init_docker_image, "_try_pull_image", lambda _version: True)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_docker_image._pull_base_image(ctx, "0.2.6", allow_pull=True) is True
+    assert ctx.results[-1].detail == "pulled"
+
+
+def test_pull_base_image_reports_unavailable_image(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setattr(init_docker_image, "_try_pull_image", lambda _version: False)
+
+    assert (
+        init_docker_image._pull_base_image(
+            InitContext(project_root=tmp_path), "0.2.6", allow_pull=True
+        )
+        is False
+    )
+    assert "pre-built image unavailable" in capsys.readouterr().out
 
 
 def test_forced_image_step_can_reuse_matching_runtime_base(tmp_path, monkeypatch) -> None:
