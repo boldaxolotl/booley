@@ -12,6 +12,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Protocol
 
+from booley.core.boundary import as_positive_int
+
 from .coverage_campaign import (
     CoverageArtifact,
     CoverageCapability,
@@ -419,11 +421,17 @@ def _collect_run_evidence(
     raw_result = _read_raw_artifact(request, context, result.verdict)
     if isinstance(raw_result, _CollectedRun):
         if hook_error is not None and hook_error.code == "COV_WRITE_HOOK_FAILED":
+            raw_artifact = raw_result.artifact
+            if raw_artifact is not None and raw_artifact.state in {
+                "incompatible",
+                "unqueryable",
+            }:
+                raw_artifact = replace(raw_artifact, state="write_failed")
             return _hook_failure_run(
                 request,
                 context,
                 result.verdict,
-                raw_result.artifact,
+                raw_artifact,
                 raw_result.records,
                 hook_artifact,
                 hook_error,
@@ -761,20 +769,24 @@ def _validate_hook_events(events: object, require_start: bool, require_write: bo
     assert isinstance(events, list)
     starts = _hook_events(events, "start")
     writes = _hook_events(events, "write")
-    if require_start and require_write and starts and writes:
-        start_sequence = _valid_hook_sequence(starts[0])
-        write_sequence = _valid_hook_sequence(writes[0])
-        if (
-            start_sequence is not None
-            and write_sequence is not None
-            and start_sequence >= write_sequence
-        ):
-            raise _HookEvidenceError(
-                "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
-                "Custom-main start_hook must run before write_hook.",
-            )
+    if (
+        require_start
+        and require_write
+        and starts
+        and writes
+        and starts[0].get("success") is True
+        and writes[0].get("success") is True
+    ):
+        _require_hook_order(
+            _valid_hook_sequence(starts[0]),
+            _valid_hook_sequence(writes[0]),
+        )
     start_sequence = _require_hook(starts, "WINDOW") if require_start else None
     write_sequence = _require_hook(writes, "WRITE") if require_write else None
+    _require_hook_order(start_sequence, write_sequence)
+
+
+def _require_hook_order(start_sequence: int | None, write_sequence: int | None) -> None:
     if (
         start_sequence is not None
         and write_sequence is not None
@@ -787,10 +799,7 @@ def _validate_hook_events(events: object, require_start: bool, require_write: bo
 
 
 def _valid_hook_sequence(event: Mapping[str, object]) -> int | None:
-    sequence = event.get("sequence")
-    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
-        return None
-    return sequence
+    return as_positive_int(event.get("sequence"), 0) or None
 
 
 def _hook_events(events: list[object], name: str) -> list[dict[str, object]]:
@@ -813,8 +822,8 @@ def _require_hook(events: list[dict[str, object]], code_stem: str) -> int:
             f"COV_{code_stem}_HOOK_FAILED",
             f"Coverage {code_stem.lower()} hook did not complete successfully.",
         )
-    sequence = events[0].get("sequence")
-    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+    sequence = as_positive_int(events[0].get("sequence"), 0)
+    if not sequence:
         raise _HookEvidenceError(
             "COV_WINDOW_HOOK_INVALID",
             "Coverage hook evidence has an invalid event sequence.",

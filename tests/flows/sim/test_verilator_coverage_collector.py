@@ -874,6 +874,10 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
     assert result.native_format.compatibility == "unknown"
     assert result.merge.status == "not_run"
     assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
+    raw_artifacts = [artifact for artifact in result.artifacts if artifact.kind == "raw_native"]
+    assert [artifact.state for artifact in raw_artifacts] == (
+        [] if raw_payload is None else ["write_failed"]
+    )
     hook = next(
         artifact for artifact in result.artifacts if artifact.kind == "coverage_hook_evidence"
     )
@@ -903,6 +907,20 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
                 {"hook": "write", "sequence": 3, "success": True},
             ],
             "COV_WRITE_HOOK_DUPLICATE",
+        ),
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": False},
+                {"hook": "start", "sequence": 2, "success": True},
+            ],
+            "COV_WRITE_HOOK_FAILED",
+        ),
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": True},
+                {"hook": "start", "sequence": 2, "success": False},
+            ],
+            "COV_WINDOW_HOOK_FAILED",
         ),
         (
             [
