@@ -374,6 +374,38 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     assert flow_schema(flow)["properties"]["coverage"]["type"] == "boolean"
 
 
+def test_coverage_simulation_projection_error_tail_is_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+
+    for verdict, exit_code in (("pass", 0), ("fail", 1)):
+        root = tmp_path / verdict
+        root.mkdir()
+        project(root)
+        data = root / ".booley_project"
+        data.mkdir()
+        (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+        result = SimulateFlow(
+            coverage_execution=lambda *_args, verdict=verdict: NativeExecution(verdict=verdict)
+        ).execute(
+            SimRequest(
+                target="sim_0",
+                work_dir=root,
+                coverage=True,
+                report_dir=root / "reports",
+            )
+        )
+
+        assert result.exit_code == exit_code
+        projection = json.loads((root / "reports/sim/1/targets/sim_0/simulation.json").read_text())
+        error_tail = projection["tests"][0]["error_tail"]
+        if verdict == "pass":
+            assert error_tail == ""
+        else:
+            assert error_tail == "coverage simulation fail"
+            assert "{" not in error_tail
+
+
 def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
