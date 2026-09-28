@@ -1035,12 +1035,15 @@ Ordinary nontransactional ledger observations retain their existing semantics.
 
 Terminal progress follows the state save. If its normal write fails, the Flow
 retries once with `phase: aborted`; the committed Campaign and Criteria remain
-valid and the command returns 2 even when that repair succeeds. Persistence errors
-retain the independently measured simulation, collection, and evaluation truths
-in the structured result; an error does not turn a measured verdict into a
-policy `blocked` verdict. Report paths are usable only when their publication
-succeeded. No later stage runs after an earlier publication failure, except for
-an observational error checkpoint.
+valid and the command returns 2 even when that repair succeeds. Before the nested
+Coverage Campaign commit marker is published, a persistence error retains any
+observed simulation verdict but reports collection as `infrastructure_error` and
+blocks a requested evaluation. After that commit, later Simulation Campaign,
+reference, summary, acceptance, report, or progress publication failures retain
+the durable collection and evaluation truths as well as the simulation verdict;
+they do not turn a committed evaluation into `blocked`. Report paths are usable
+only when their publication succeeded. No later stage runs after an earlier
+publication failure, except for an observational error checkpoint.
 
 All Simulation progress producers normalize a failed terminal publication onto
 the result already assembled from durable Target or Campaign outcomes. They do

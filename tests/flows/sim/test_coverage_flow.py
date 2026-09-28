@@ -795,6 +795,33 @@ def test_pre_outcome_coverage_failure_uses_prepared_policy(
     assert result.outcome.detail["targets"][target]["evaluation"] == expected
 
 
+def test_nested_coverage_publication_failure_preserves_simulation_truth(tmp_path, monkeypatch):
+    _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+
+    def checkpoint(boundary):
+        if boundary == "before:coverage_campaign":
+            raise OSError("injected nested Coverage Campaign publication failure")
+
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution(),
+        campaign_publication_checkpoint=checkpoint,
+    ).execute(
+        SimRequest(
+            target="sim_custom",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 2
+    detail = result.outcome.detail["targets"]["sim_custom"]
+    assert detail["passed"] is True
+    assert detail["simulation"] == "pass"
+    assert detail["collection"] == "infrastructure_error"
+    assert detail["evaluation"] == "blocked"
+
+
 def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator", "icarus"))
@@ -1317,7 +1344,7 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
     ).execute(request)
     assert interrupted.exit_code == 2
     public = reports / "sim/1/targets/sim_0/coverage.json"
-    return reports, runs, public, execution_factory
+    return reports, runs, public, execution_factory, interrupted
 
 
 @pytest.mark.parametrize(
@@ -1325,6 +1352,10 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
     [
         ("before:coverage_campaign", False, True),
         ("after:coverage_campaign", False, True),
+        ("before:simulation_result", False, True),
+        ("after:simulation_result", False, False),
+        ("before:summary_replace", False, False),
+        ("after:summary_replace", False, False),
         ("before:coverage_reference", False, False),
         ("after:coverage_reference", True, False),
     ],
@@ -1334,10 +1365,18 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
 ):
     from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 
-    reports, runs, public, execution_factory = _crash_coverage_publication(
+    reports, runs, public, execution_factory, interrupted = _crash_coverage_publication(
         tmp_path, monkeypatch, boundary
     )
     assert public.exists() is published
+    failed = interrupted.outcome.detail["targets"]["sim_0"]
+    assert failed["passed"] is True
+    assert failed["simulation"] == "pass"
+    assert failed["collection"] == (
+        "infrastructure_error" if boundary == "before:coverage_campaign" else "complete"
+    )
+    assert failed["evaluation"] == "not_requested"
+    assert ("coverage_campaign" in failed) is (boundary == "after:coverage_reference")
     completed_runs = tuple(runs)
     manifest = public.parent / "campaign/manifest.json"
 
@@ -1351,9 +1390,72 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
     nested_campaigns = list(
         public.parent.glob("campaign/work-items/*/attempts/*/coverage-campaign/coverage.json")
     )
-    expected_campaigns = 2 if boundary == "after:coverage_campaign" else 1
+    expected_campaigns = 2 if reruns and boundary != "before:coverage_campaign" else 1
     assert len(nested_campaigns) == expected_campaigns
     assert all(load_coverage_campaign(path).campaign.campaign_id for path in nested_campaigns)
+
+
+def test_resumed_coverage_publication_failure_preserves_current_attempt_truth(
+    tmp_path, monkeypatch
+):
+    reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
+        tmp_path, monkeypatch, "after:simulation_result"
+    )
+    armed = True
+
+    def checkpoint(boundary):
+        nonlocal armed
+        if armed and boundary == "before:summary_replace":
+            armed = False
+            raise OSError("injected resumed summary failure")
+
+    resumed = SimulateFlow(
+        coverage_execution=execution_factory,
+        campaign_publication_checkpoint=checkpoint,
+    ).execute(
+        SimRequest(
+            resume_from=public.parent / "campaign/manifest.json",
+            work_dir=tmp_path,
+            report_dir=reports,
+        )
+    )
+
+    assert resumed.exit_code == 2
+    detail = resumed.outcome.detail["targets"]["sim_0"]
+    assert detail["passed"] is True
+    assert detail["simulation"] == "pass"
+    assert detail["collection"] == "complete"
+    assert detail["evaluation"] == "not_requested"
+
+
+def test_retention_failure_preserves_in_memory_campaign_truth(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    def fail_retention(_progress, _outcome):
+        raise OSError("injected retention failure")
+
+    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", fail_retention)
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
+    ).execute(
+        SimRequest(
+            target="sim_0",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 2
+    detail = result.outcome.detail["targets"]["sim_0"]
+    assert detail["passed"] is True
+    assert detail["simulation"] == "pass"
+    assert detail["collection"] == "complete"
+    assert detail["evaluation"] == "not_requested"
 
 
 def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatch):

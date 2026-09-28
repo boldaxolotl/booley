@@ -414,6 +414,25 @@ def test_infrastructure_failure_preserves_completed_simulation_truth(tmp_path, f
     assert campaign.evaluation["status"] == "not_requested"
     simulation = json.loads(outcome.simulation_path.read_text())
     assert [run["verdict"] for run in simulation["tests"]] == expected
+    assert simulation["passed"] is (failure_at == "merge")
+    assert simulation["simulation"] == ("pass" if failure_at == "merge" else "inconclusive")
+
+
+def test_build_infrastructure_failure_does_not_invent_a_simulation_verdict(tmp_path):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class Unavailable(NativeExecution):
+        def build(self, request):
+            return SimulationBuildResult(False, "builder unavailable", infrastructure_error=True)
+
+    outcome = run_coverage_target(plan, Unavailable(), Progress())
+
+    assert outcome.exit_code == 2
+    assert outcome.detail["passed"] is None
+    assert outcome.detail["simulation"] == "not_run"
+    assert outcome.detail["collection"] == "infrastructure_error"
 
 
 def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp_path):
@@ -433,7 +452,8 @@ def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp
     outcome = run_coverage_target(plan, execution, Progress())
     assert outcome.exit_code == 2
     assert outcome.abort_remaining is True
-    assert outcome.detail["simulation"] == "inconclusive"
+    assert outcome.detail["simulation"] == "not_run"
+    assert outcome.detail["passed"] is None
     assert outcome.campaign_path.is_file()
 
 
@@ -537,8 +557,13 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     assert outcome.simulation_path.exists() == (
         boundary not in {"point_store", "campaign", "simulation"}
     )
-    assert outcome.detail["evaluation"] == "fail"
+    expected_evaluation = "blocked" if boundary in {"point_store", "campaign"} else "fail"
+    assert outcome.detail["evaluation"] == expected_evaluation
     assert outcome.detail["simulation"] == "fail"
+    assert outcome.detail["passed"] is False
+    assert outcome.detail["collection"] == (
+        "infrastructure_error" if boundary in {"point_store", "campaign"} else "complete"
+    )
 
 
 def test_target_transaction_never_resumes_existing_native_state(tmp_path):

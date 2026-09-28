@@ -6,7 +6,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol, cast, overload
 
@@ -57,6 +57,30 @@ class CampaignPolicy:
 
 class SimulationCampaignCancellationError(RuntimeError):
     """The borrowed endpoint admission requested orderly campaign shutdown."""
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignFailureContext:
+    """Exact completed attempt available when later Campaign publication fails."""
+
+    target_root: Path
+    campaign_id: str
+    target_identity: str
+    target_selector: str
+    work_item_id: str
+    attempt_id: str
+    attempt_ordinal: int
+    producer_invocation_id: int
+    result: SimulationResult
+    coverage_reference: CoverageCampaignReference | None = None
+
+
+class CampaignPublicationError(RuntimeError):
+    """A publication failed after a Simulation result became available."""
+
+    def __init__(self, message: str, context: CampaignFailureContext) -> None:
+        super().__init__(message)
+        self.context = context
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,18 +279,30 @@ class SimulationCampaign:
             )
             self._run_pending(store, manifest, recovery, request)
             self._raise_if_cancelled(request)
-            self._publication_checkpoint("before:summary_replace")
-            summary = _regenerate_summary(
-                store,
-                manifest,
-                authenticated_manifest_sha256,
-            )
-            self._publication_checkpoint("after:summary_replace")
-            coverage_reference = self._publish_coverage_reference(
-                store,
-                manifest,
-                authenticated_manifest_sha256,
-            )
+            current = _scan_recovery(store, manifest, authenticated_manifest_sha256)
+            failure_context = _campaign_failure_context(store, manifest, current)
+            published_reference: list[CoverageCampaignReference] = []
+            try:
+                self._publication_checkpoint("before:summary_replace")
+                summary = _regenerate_summary(
+                    store,
+                    manifest,
+                    authenticated_manifest_sha256,
+                )
+                self._publication_checkpoint("after:summary_replace")
+                coverage_reference = self._publish_coverage_reference(
+                    store,
+                    manifest,
+                    authenticated_manifest_sha256,
+                    published_reference.append,
+                )
+            except (OSError, ValueError, RuntimeError) as exc:
+                if failure_context is None:
+                    raise
+                reference = published_reference[0] if published_reference else None
+                raise CampaignPublicationError(
+                    str(exc), replace(failure_context, coverage_reference=reference)
+                ) from exc
             final_recovery = _scan_recovery(
                 store,
                 manifest,
@@ -284,6 +320,7 @@ class SimulationCampaign:
         store: CampaignStore,
         manifest: SimulationCampaignManifest,
         authenticated_manifest_sha256: str | None,
+        record_published: Callable[[CoverageCampaignReference], None] | None = None,
     ) -> CoverageCampaignReference | None:
         workload = cast(Mapping[str, object], manifest.document["workload"])
         if workload["coverage"] is not True:
@@ -323,11 +360,13 @@ class SimulationCampaign:
             coverage_campaign_path=nested_path,
         )
         self._publication_checkpoint("before:coverage_reference")
-        published = publish_coverage_campaign_reference(
+        published_reference = publish_coverage_campaign_reference(
             store.root.parent / "coverage.json", reference
         )
+        if record_published is not None:
+            record_published(published_reference)
         self._publication_checkpoint("after:coverage_reference")
-        return published
+        return published_reference
 
     def publish_new(self, request: NewCampaignRunRequest) -> Path:
         """Atomically publish one planned manifest without starting work."""
@@ -540,7 +579,22 @@ class SimulationCampaign:
                 f"child execution cancelled before result publication: {scope.execution_id}"
             )
         _validate_scheduled_result(result, attempt, work_item_id)
-        self._publish_scheduled_result(store, attempt, work_item_id, result)
+        try:
+            self._publish_scheduled_result(store, attempt, work_item_id, result)
+        except (OSError, ValueError, RuntimeError) as exc:
+            target = cast(Mapping[str, str], manifest.document["target"])
+            context = CampaignFailureContext(
+                store.root.parent,
+                cast(str, manifest.document["campaign_id"]),
+                f"{target['vlnv']}#{target['name']}",
+                target["selector"],
+                work_item_id,
+                attempt.attempt_id,
+                attempt.ordinal,
+                invocation,
+                result,
+            )
+            raise CampaignPublicationError(str(exc), context) from exc
 
     @staticmethod
     def _work_execution_request(
@@ -594,6 +648,33 @@ def _invocation_number(directory: Path) -> int:
         raise SimulationCampaignIntegrityError(
             "campaign invocation directory must end in a numeric id"
         ) from exc
+
+
+def _campaign_failure_context(
+    store: CampaignStore,
+    manifest: SimulationCampaignManifest,
+    recovery: CampaignRecovery,
+) -> CampaignFailureContext | None:
+    workload = cast(Mapping[str, object], manifest.document["workload"])
+    completed = [item for item in recovery.items if item.result is not None]
+    if workload.get("coverage") is not True or len(completed) != 1:
+        return None
+    recovered = completed[0]
+    result = recovered.result
+    assert result is not None
+    document = result.document
+    target = cast(Mapping[str, str], manifest.document["target"])
+    return CampaignFailureContext(
+        store.root.parent,
+        cast(str, manifest.document["campaign_id"]),
+        f"{target['vlnv']}#{target['name']}",
+        target["selector"],
+        recovered.work_item_id,
+        cast(str, document["attempt_id"]),
+        cast(int, document["attempt_ordinal"]),
+        cast(int, document["producer_invocation_id"]),
+        result,
+    )
 
 
 def _scheduled_collision_key(
