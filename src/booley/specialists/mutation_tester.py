@@ -78,6 +78,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResul
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
+from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
 
 from .specialist import Specialist
@@ -1673,6 +1674,7 @@ replacement must differ, and every proposal must remain a single source edit.
         return subprocess.run(
             edam_layer.make_command(rel),
             cwd=work_dir,
+            env=relocate_python_artifacts(os.environ, build_path / "python-artifacts"),
             capture_output=True,
             text=True,
             timeout=900,
@@ -1946,6 +1948,7 @@ replacement must differ, and every proposal must remain a single source edit.
         return subprocess.run(
             cmd,
             cwd=work_dir,
+            env=relocate_python_artifacts(os.environ, build_path / "python-artifacts"),
             capture_output=True,
             text=True,
             timeout=timeout,

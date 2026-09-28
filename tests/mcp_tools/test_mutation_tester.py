@@ -707,6 +707,29 @@ def test_elab_and_sim_run_verilator_binary(tmp_path: Path, monkeypatch):
     assert "--trace" not in sim_cmd
 
 
+def test_build_and_adapter_parent_relocate_python_artifacts(tmp_path: Path, monkeypatch):
+    captured: list[tuple[list[str], dict[str, str]]] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append((list(cmd), kwargs["env"]))
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    _patch_resolve_target(monkeypatch)
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
+
+    expected = build_dir / "python-artifacts"
+    assert len(captured) == 2
+    for _cmd, environment in captured:
+        assert environment["PYTHONPYCACHEPREFIX"] == str(expected / "bytecode")
+        assert environment["PYTEST_ADDOPTS"].endswith(f"-o cache_dir={expected / 'pytest'}")
+
+
 def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
     captured: list[list[str]] = []
 

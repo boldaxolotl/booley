@@ -696,7 +696,12 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "test_verilator_release_matrix.py" in coverage["run"]
     assert "test_verilator_coverage_collector_smoke.py" in coverage["run"]
     assert "assert_junit.py" in coverage["run"]
-    assert "--min-tests 18 --max-skips 0" in coverage["run"]
+    assert "--min-tests 19 --max-skips 0" in coverage["run"]
+    smoke_source = (
+        REPOSITORY_ROOT / "tests/smoke/test_verilator_coverage_collector_smoke.py"
+    ).read_text(encoding="utf-8")
+    assert '@pytest.mark.parametrize("coverage", [False, True])' in smoke_source
+    assert 'git", "status", "--porcelain=v1", "-uall"' in smoke_source
     ticket_mode = next(step for step in validations if step["name"].startswith("Run Ticket Mode"))
     assert "install -d -m 0777" in ticket_mode["run"]
     assert '"${VALIDATION_TMP}/alias-project"' in ticket_mode["run"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -360,7 +361,10 @@ def test_real_coverage_flow_publishes_canonical_campaign(
     assert campaign.points
 
 
-def test_real_cocotb_flow_uses_one_process_per_selected_test(tmp_path: Path) -> None:
+@pytest.mark.parametrize("coverage", [False, True])
+def test_real_cocotb_flow_uses_one_process_per_selected_test(
+    tmp_path: Path, coverage: bool
+) -> None:
     from tests.fixtures.verilator_acceptance.flow_fixture import write_project
 
     from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
@@ -369,28 +373,90 @@ def test_real_cocotb_flow_uses_one_process_per_selected_test(tmp_path: Path) -> 
 
     root = tmp_path / "project"
     write_project(root, "cocotb", "pass")
+    helper = root / "project_helper.py"
+    helper.write_text("EXPECTED = 42\n", encoding="utf-8")
     path = root / "test_case.py"
     original = path.read_text()
     path.write_text(
-        original
+        "import json\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "import pytest\n"
+        "pytest.register_assert_rewrite('project_helper')\n"
+        "import project_helper\n"
+        "assert project_helper.EXPECTED == 42\n"
+        "Path(os.environ['COCOTB_RESULTS_FILE']).with_name('python-imports.json').write_text(\n"
+        "    json.dumps({'module': __file__, 'helper': project_helper.__file__}),\n"
+        "    encoding='utf-8',\n"
+        ")\n"
+        + original
         + "\n"
         + original[original.index("@cocotb.test()") :].replace(
             "async def check(", "async def another("
         )
     )
     (root / ".booley_project/tests.toml").write_text('[sim]\ntests = ["check", "another"]\n')
+    (root / ".gitignore").write_text(".booley_project/.runtime/\nreports/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Booley Test",
+            "-c",
+            "user.email=booley@example.invalid",
+            "commit",
+            "-qm",
+            "baseline",
+        ],
+        cwd=root,
+        check=True,
+    )
+    baseline = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-uall"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
     result = SimulateFlow().execute(
-        SimRequest(target="sim", work_dir=root, coverage=True, report_dir=root / "reports")
+        SimRequest(target="sim", work_dir=root, coverage=coverage, report_dir=root / "reports")
     )
     assert result.exit_code == 0, result.outcome
-    resolved = resolve_coverage_campaign_reference(
-        _coverage_campaign_path(root / "reports", result.outcome.detail)
+    after = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-uall"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert after == baseline
+    evidence_paths = list((root / "reports").rglob("python-imports.json"))
+    assert evidence_paths
+    evidence = json.loads(evidence_paths[-1].read_text(encoding="utf-8"))
+    assert Path(evidence["helper"]).resolve() == helper.resolve()
+    assert Path(evidence["module"]).name == "test_case.py"
+    cache_artifacts = [
+        item
+        for item in root.rglob("*")
+        if item.name in {"__pycache__", ".pytest_cache"} or item.suffix == ".pyc"
+    ]
+    allowed_roots = (root / "reports", root / ".booley_project" / ".runtime")
+    assert cache_artifacts
+    assert all(
+        any(item == allowed or allowed in item.parents for allowed in allowed_roots)
+        for item in cache_artifacts
     )
-    campaign = resolved.loaded.campaign
-    assert len(campaign.runs) == 2
-    raw = [artifact for artifact in campaign.artifacts if artifact.kind == "raw_native"]
-    assert len({artifact.path for artifact in raw}) == 2
-    assert {run.test for run in campaign.runs} == {"another", "check"}
+    if coverage:
+        resolved = resolve_coverage_campaign_reference(
+            _coverage_campaign_path(root / "reports", result.outcome.detail)
+        )
+        campaign = resolved.loaded.campaign
+        assert len(campaign.runs) == 2
+        raw = [artifact for artifact in campaign.artifacts if artifact.kind == "raw_native"]
+        assert len({artifact.path for artifact in raw}) == 2
+        assert {run.test for run in campaign.runs} == {"another", "check"}
 
 
 def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:

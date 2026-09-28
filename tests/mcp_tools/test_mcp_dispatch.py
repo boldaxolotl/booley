@@ -2692,3 +2692,46 @@ def test_late_interactive_logging_and_job_completion_keep_the_selected_root(tmp_
     assert "EXIT_CODE: 0" in _text(
         asyncio.run(mcp_server._dispatch_poll({"run_id": run_id}, restarted))
     )
+
+
+def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The endpoint interpreter is protected before a Custom Flow is imported."""
+    import asyncio
+
+    from booley.runtime.project_dir import reset_cache
+
+    module = tmp_path / "direct_custom_flow.py"
+    module.write_text(
+        "from pathlib import Path\n"
+        "IMPORTED_FROM = __file__\n"
+        "def _run():\n"
+        "    Path('direct-ran').write_text(IMPORTED_FROM, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    for name in (
+        "PYTHONPYCACHEPREFIX",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+    reset_cache()
+
+    environment = mcp_server._endpoint_subprocess_env()
+    code, _stdout, stderr, timed_out = asyncio.run(
+        mcp_server._run_subprocess(
+            [sys.executable, "-c", "import direct_custom_flow; direct_custom_flow._run()"],
+            env=environment,
+        )
+    )
+
+    assert code == 0 and not timed_out, stderr
+    assert (tmp_path / "direct-ran").read_text(encoding="utf-8") == str(module)
+    runtime = tmp_path / ".runtime" / "python-artifacts"
+    assert any((runtime / "bytecode").rglob("direct_custom_flow*.pyc"))
+    assert not (tmp_path / "__pycache__").exists()

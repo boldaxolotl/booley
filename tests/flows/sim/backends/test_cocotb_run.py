@@ -124,7 +124,10 @@ def _stub_cocotb_config_v2_0(arg_sets):
 
 class TestBuildCocotbEnv:
     def test_env_golden(self, tmp_path: Path):
-        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
+        ):
             env = crun._build_cocotb_env(
                 tmp_path,
                 "test_counter",
@@ -144,6 +147,10 @@ class TestBuildCocotbEnv:
         # Spike S1: the build dir is pinned on PYTHONPATH so a project
         # run_cwd cannot break the module import.
         assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path)
+        cache_root = tmp_path / "python-artifacts"
+        assert env["PYTHONPYCACHEPREFIX"] == str(cache_root / "bytecode")
+        assert env["PYTEST_ADDOPTS"] == f"-o cache_dir={cache_root / 'pytest'}"
+        assert "PYTHONDONTWRITEBYTECODE" not in env
 
     def test_2x_dialect_sets_no_testcase(self, tmp_path: Path):
         # cocotb 2.x removed TESTCASE — the 2.x dialect must never set it.

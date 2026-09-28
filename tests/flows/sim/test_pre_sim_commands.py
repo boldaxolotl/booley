@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -200,3 +201,39 @@ def test_timeout_is_preserved_as_pre_sim_evidence(tmp_path: Path) -> None:
 
     assert evidence is not None
     assert evidence.status == "timed_out"
+
+
+def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, monkeypatch) -> None:
+    handle = _handle(tmp_path)
+    helper = tmp_path / "project_helper.py"
+    helper.write_text("VALUE = 42\n", encoding="utf-8")
+    nested = tmp_path / "test_nested.py"
+    nested.write_text("def test_cache_feature():\n    assert True\n", encoding="utf-8")
+    for name in (
+        "PYTHONPYCACHEPREFIX",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    evidence = run_pre_sim_commands(
+        handle,
+        test_names=("smoke",),
+        build_root=tmp_path / "build",
+        eda_tool="icarus",
+        timeout_s=30,
+        commands=(
+            f'"{sys.executable}" -c "import project_helper; assert project_helper.VALUE == 42"',
+            f'"{sys.executable}" -m pytest --lf -q "{nested}"',
+        ),
+    )
+
+    assert evidence is not None and evidence.status == "passed", evidence
+    runtime = tmp_path / ".runtime" / "python-artifacts"
+    assert any((runtime / "bytecode").rglob("*.pyc"))
+    assert any((runtime / "pytest").rglob("*"))
+    assert not (tmp_path / "__pycache__").exists()
+    assert not list(tmp_path.glob("*.pyc"))
+    assert not (tmp_path / ".pytest_cache").exists()

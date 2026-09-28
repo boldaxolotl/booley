@@ -97,6 +97,8 @@ from booley.runtime.process_group import (
     terminate_adopted_process_group,
     terminate_async_process_group,
 )
+from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.runtime.timefmt import compact_utc_now, format_human_datetime, utc_now_rfc3339
 from booley.ticket_board.paths import ticket_runtime_dir
 
@@ -1139,7 +1141,9 @@ def _endpoint_subprocess_env(**overrides: str) -> dict[str, str]:
     logs_dir = env.get("BOOLEY_LOGS_DIR", "")
     if logs_dir and not env.get("BOOLEY_RUNTIME_DIR"):
         env["BOOLEY_RUNTIME_DIR"] = str(ticket_runtime_dir(logs_dir))
-    return env
+    runtime = env.get("BOOLEY_RUNTIME_DIR")
+    runtime_root = Path(runtime) if runtime else resolve_project_dir() / ".runtime"
+    return relocate_python_artifacts(env, runtime_root / "python-artifacts")
 
 
 async def _run_subprocess(

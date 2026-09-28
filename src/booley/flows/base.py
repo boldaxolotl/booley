@@ -33,6 +33,8 @@ from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, ExecutionResult
+from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
 
@@ -298,8 +300,10 @@ class FlowMechanics:
 
         timeout = self._get_timeout() if timeout is None else timeout
         cwd = self._get_cwd()
-        env = os.environ.copy()
-        env.update(self._extra_subprocess_env())
+        env = relocate_python_artifacts(
+            {**os.environ, **self._extra_subprocess_env()},
+            resolve_project_dir(cwd) / ".runtime" / "python-artifacts",
+        )
         cmd, scope = _prepare_supervised_command(cmd, env)
         start = time.monotonic()
         oom_before = _cgroup_oom_kill_count()

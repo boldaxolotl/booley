@@ -370,6 +370,44 @@ class TestSubprocessResult:
 
 
 class TestResourceEvidence:
+    def test_local_execution_relocates_python_and_pytest_caches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        helper = tmp_path / "custom_helper.py"
+        helper.write_text("VALUE = 7\n", encoding="utf-8")
+        nested = tmp_path / "test_custom.py"
+        nested.write_text("def test_custom():\n    assert True\n", encoding="utf-8")
+        for name in (
+            "PYTHONPYCACHEPREFIX",
+            "PYTHONDONTWRITEBYTECODE",
+            "PYTEST_ADDOPTS",
+            "PYTEST_XDIST_WORKER",
+            "PYTEST_XDIST_TESTRUNUID",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        from booley.criteria.state import DevelopmentState
+
+        state_file = tmp_path / "state.json"
+        DevelopmentState.load(state_file).save()
+        flow = EchoFlow()
+        with patch.dict(os.environ, _env_with_state(state_file)):
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+        script = (
+            "import custom_helper, subprocess, sys; "
+            "assert custom_helper.VALUE == 7; "
+            f"raise SystemExit(subprocess.run([sys.executable, '-m', 'pytest', '--lf', "
+            f"'-q', {str(nested)!r}]).returncode)"
+        )
+
+        result = flow._execute_local([sys.executable, "-c", script], timeout=30)
+
+        assert result.returncode == 0, result.stderr
+        runtime = tmp_path / ".runtime" / "python-artifacts"
+        assert any((runtime / "bytecode").rglob("*.pyc"))
+        assert any((runtime / "pytest").rglob("*"))
+        assert not (tmp_path / "__pycache__").exists()
+        assert not (tmp_path / ".pytest_cache").exists()
+
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
     def test_local_execution_measures_descendant_rss(self, tmp_path: Path):
         state_file = tmp_path / "state.json"

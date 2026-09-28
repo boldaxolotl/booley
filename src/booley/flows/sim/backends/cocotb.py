@@ -59,6 +59,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.runtime.python_artifacts import relocate_python_artifacts
+
 if TYPE_CHECKING:
     from booley.flows.sim.run_guard import DiskBudgetGuard, SimTimeStallGuard
 
@@ -419,7 +421,7 @@ def _build_cocotb_env(
     # dir (where copyto staged the module) so a project run_cwd can't break it.
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{build_dir}{os.pathsep}{existing}" if existing else str(build_dir)
-    return env
+    return relocate_python_artifacts(env, results_file.parent / "python-artifacts")
 
 
 def _build_run_cmd(
