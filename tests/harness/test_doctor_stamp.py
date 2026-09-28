@@ -107,13 +107,18 @@ class TestCheckStamp:
     def test_edited_booley_toml_invalidates_stamp(self, tmp_path):
         project_dir = _write_project(tmp_path)
         doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
+        recorded = doctor_stamp.compute_fingerprint(project_dir, tmp_path)
         (project_dir / "booley.toml").write_text('[project]\nname = "edited"\n', encoding="utf-8")
+        observed = doctor_stamp.compute_fingerprint(project_dir, tmp_path)
 
         msg = doctor_stamp.check_stamp(project_dir, tmp_path)
 
         assert msg is not None
         assert "changed since the last clean" in msg
-        assert "booley_toml_sha256" in msg
+        assert (
+            f"booley_toml_sha256 '{recorded['booley_toml_sha256']}' -> "
+            f"'{observed['booley_toml_sha256']}'"
+        ) in msg
         assert "devcontainer_json_sha256" not in msg
         assert "-- re-run `booley doctor`" in msg
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -192,8 +193,11 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     tio = _review_tio(tmp_path)
+    current_identity = tio.load_basis("ticket").ticket_identity()
+    recorded_identity = deepcopy(current_identity)
+    recorded_identity["generation"] = "1" * 32
     snapshot = SimpleNamespace(
-        ticket_identity={"different": True}, participant_heads={"outer": "a" * 40}
+        ticket_identity=recorded_identity, participant_heads={"outer": "a" * 40}
     )
     monkeypatch.setattr(
         "booley.ticket_board.acceptance_ledger.read_acceptance",
@@ -206,8 +210,29 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
     error = capsys.readouterr().err
     assert "different Board Ticket generation" in error
-    assert "different" in error
-    assert "generation" in error
+    assert f"generation '{'1' * 32}' -> '{current_identity['generation']}'" in error
+    assert "schema" not in error
+
+
+def test_completion_snapshot_keeps_generic_error_for_unprojected_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tio = _review_tio(tmp_path)
+    identity = {**tio.load_basis("ticket").ticket_identity(), "unknown": "changed"}
+    snapshot = SimpleNamespace(ticket_identity=identity, participant_heads={"outer": "a" * 40})
+    monkeypatch.setattr(
+        "booley.ticket_board.acceptance_ledger.read_acceptance",
+        lambda *_args: SimpleNamespace(kind="accepted", snapshot=snapshot),
+    )
+    monkeypatch.setattr(
+        "booley.ticket_board.acceptance_ledger.validate_review_package_binding",
+        lambda *_args: None,
+    )
+
+    assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
+    assert "different Board Ticket generation\n" in capsys.readouterr().err
 
 
 def test_restoring_frozen_heads_resumes_later_snapshot_validation(

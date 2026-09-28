@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.core.boundary import require_dict
-from booley.core.differing_fields import format_differing_fields
+from booley.core.differing_fields import append_differing_fields, format_differing_fields
 from booley.criteria.state import DevelopmentState
 from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import is_pid_alive
@@ -389,6 +389,41 @@ def _generation_disposition(
     return "unaccepted"
 
 
+def _validate_accepted_regeneration(
+    tio: TicketIO,
+    slug: str,
+    prior: dict[str, Any] | None,
+    ctx: prep.ReviewPrepContext,
+) -> bool:
+    assert ctx.inspection is not None
+    accepted = read_acceptance(tio.logs_dir / slug)
+    if accepted.kind != "accepted":
+        return False
+    if accepted.snapshot is None:
+        raise ReviewEntryError("Criteria Satisfaction Record is corrupt: missing snapshot")
+    basis = tio.load_basis(slug)
+    worktrees = {"outer": ctx.worktree}
+    if ctx.project_repository is not None:
+        worktrees["project"] = ctx.project_repository.worktree
+    locations = participant_head_locations(
+        ((row.role, row.ticket_ref) for row in basis.participants), worktrees
+    )
+    drift = compare_accepted_heads(
+        accepted.snapshot.participant_heads, ctx.inspection["heads"], locations
+    )
+    if drift is not None:
+        raise StaleAcceptanceError(drift)
+    if prior is None or prior["state"] != ctx.inspection["state"]:
+        raise ReviewEntryError(
+            append_differing_fields(
+                "accepted review inspection disagrees with the Criteria Satisfaction Record",
+                {} if prior is None else {"state": prior["state"]},
+                {"state": ctx.inspection["state"]},
+            )
+        )
+    return True
+
+
 def _validate_regeneration(
     tio: TicketIO,
     slug: str,
@@ -400,34 +435,7 @@ def _validate_regeneration(
     if action != "regenerate":
         return
     assert ctx.inspection is not None
-    accepted = read_acceptance(tio.logs_dir / slug)
-    if accepted.kind == "accepted":
-        if accepted.snapshot is None:
-            raise ReviewEntryError("Criteria Satisfaction Record is corrupt: missing snapshot")
-        basis = tio.load_basis(slug)
-        worktrees = {"outer": ctx.worktree}
-        if ctx.project_repository is not None:
-            worktrees["project"] = ctx.project_repository.worktree
-        locations = participant_head_locations(
-            ((row.role, row.ticket_ref) for row in basis.participants),
-            worktrees,
-        )
-        drift = compare_accepted_heads(
-            accepted.snapshot.participant_heads,
-            ctx.inspection["heads"],
-            locations,
-        )
-        if drift is not None:
-            raise StaleAcceptanceError(drift)
-        if prior is None or prior["state"] != ctx.inspection["state"]:
-            differences = format_differing_fields(
-                {} if prior is None else {"state": prior["state"]},
-                {"state": ctx.inspection["state"]},
-            )
-            raise ReviewEntryError(
-                "accepted review inspection disagrees with the Criteria Satisfaction Record "
-                f"({differences})"
-            )
+    if _validate_accepted_regeneration(tio, slug, prior, ctx):
         return
     if (
         prior is None

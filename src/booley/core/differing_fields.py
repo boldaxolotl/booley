@@ -16,3 +16,13 @@ def format_differing_fields(expected: Mapping[str, object], actual: Mapping[str,
         actual_text = "<missing>" if actual_value is missing else repr(actual_value)
         differences.append(f"{field} {expected_text} -> {actual_text}")
     return "; ".join(differences)
+
+
+def append_differing_fields(
+    message: str,
+    expected: Mapping[str, object],
+    actual: Mapping[str, object],
+) -> str:
+    """Append safe named differences, retaining *message* when none are projectable."""
+    differences = format_differing_fields(expected, actual)
+    return f"{message} ({differences})" if differences else message

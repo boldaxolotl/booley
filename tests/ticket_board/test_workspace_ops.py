@@ -1428,8 +1428,7 @@ def test_reset_rejects_stale_plan_and_wrong_worktree_identity(
         workspace_ops.TicketBaselineOperationError, match="does not match"
     ) as raised:
         workspace_ops.reset_basis_worktrees(tmp_path, "ticket", basis, "main", plan=plan)
-    assert "basis_id" in str(raised.value)
-    assert "stale" in str(raised.value)
+    assert f"basis_id 'stale' -> '{basis.basis_id}'" in str(raised.value)
     assert "requested_branch" not in str(raised.value)
     outer = tmp_path / "outer"
     outer.mkdir()

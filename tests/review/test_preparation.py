@@ -335,8 +335,10 @@ def test_review_snapshot_heads_requires_frozen_exact_participants(tmp_path: Path
         "read_acceptance",
         lambda _log_dir: SimpleNamespace(kind="accepted", snapshot=snapshot, reason=""),
     )
-    with pytest.raises(rp.ReviewPrepError, match="different Ticket"):
+    with pytest.raises(rp.ReviewPrepError, match="different Ticket") as raised:
         rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis)
+    assert f"generation '{'f' * 32}' -> '{identity['generation']}'" in str(raised.value)
+    assert "schema" not in str(raised.value)
     snapshot.ticket_identity = identity
     assert rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis) == {
         "outer": "c" * 40,
@@ -377,6 +379,27 @@ def test_review_repositories_reject_heads_outside_accepted_snapshot(tmp_path: Pa
             {"outer": "e" * 40},
             accepted_heads=True,
         )
+
+
+def test_review_repositories_report_live_head_direction(tmp_path: Path, monkeypatch) -> None:
+    basis = _basis()
+    monkeypatch.setattr(
+        rp,
+        "validate_current_basis_refs",
+        lambda *_args: {"outer": "c" * 40},
+    )
+    monkeypatch.setattr(
+        rp,
+        "_resolve_outer_review_repository",
+        lambda *_args: (tmp_path, "d" * 40),
+    )
+    monkeypatch.setattr(rp, "_resolve_project_review_repository", lambda *_args: None)
+
+    with pytest.raises(rp.ReviewPrepError, match="live review checkouts") as raised:
+        rp._resolve_review_repositories(tmp_path, basis, None)
+
+    assert f"outer '{'c' * 40}' -> '{'d' * 40}'" in str(raised.value)
+    assert "project" not in str(raised.value)
 
 
 def test_write_output_normalizes_empty_fields_and_missing_scope_rows(tmp_path: Path):

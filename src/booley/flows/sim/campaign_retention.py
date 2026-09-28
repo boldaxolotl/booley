@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from booley.core.differing_fields import format_differing_fields
+from booley.core.differing_fields import append_differing_fields, format_differing_fields
 from booley.flows.progress_lifecycle import validate_progress_shape
 from booley.runtime.file_lock import LockContentionError
 
@@ -110,6 +110,37 @@ def _read_object(path: Path) -> dict[str, object]:
     return document
 
 
+def _validate_campaign_selection(root: Path, selector: str, campaign: CoverageCampaign) -> None:
+    recorded = {"target.selector": selector, "invocation.id": int(root.name)}
+    observed = {
+        "target.selector": campaign.target.selector,
+        "invocation.id": campaign.invocation["id"],
+    }
+    if recorded != observed:
+        raise CampaignRetentionError(
+            append_differing_fields(
+                "Campaign identity disagrees with the exact selection", recorded, observed
+            )
+        )
+
+
+def _validate_public_projection(target: Path, campaign: CoverageCampaign) -> None:
+    projection = _read_object(target / "simulation.json")
+    recorded = {"target_identity": campaign.target.identity, "complete": True}
+    observed = {
+        "target_identity": projection.get("target_identity"),
+        "complete": projection.get("complete"),
+    }
+    if recorded != observed:
+        raise CampaignRetentionError(
+            append_differing_fields(
+                "Simulation projection is missing or belongs to another Target",
+                recorded,
+                observed,
+            )
+        )
+
+
 def _target(
     root: Path, selector: str, *, require_projection: bool = True
 ) -> tuple[Path, LoadedCoverageCampaign]:
@@ -135,34 +166,10 @@ def _target(
         loaded = load_coverage_campaign(public_path)
         storage = target
     campaign = loaded.campaign
-    if campaign.target.selector != selector or campaign.invocation["id"] != int(root.name):
-        differences = format_differing_fields(
-            {"target.selector": selector, "invocation.id": int(root.name)},
-            {
-                "target.selector": campaign.target.selector,
-                "invocation.id": campaign.invocation["id"],
-            },
-        )
-        raise CampaignRetentionError(
-            f"Campaign identity disagrees with the exact selection ({differences})"
-        )
+    _validate_campaign_selection(root, selector, campaign)
     if not require_projection:
         return storage, loaded
-    projection = _read_object(target / "simulation.json")
-    if (
-        projection.get("target_identity") != campaign.target.identity
-        or projection.get("complete") is not True
-    ):
-        differences = format_differing_fields(
-            {"target_identity": campaign.target.identity, "complete": True},
-            {
-                "target_identity": projection.get("target_identity"),
-                "complete": projection.get("complete"),
-            },
-        )
-        raise CampaignRetentionError(
-            f"Simulation projection is missing or belongs to another Target ({differences})"
-        )
+    _validate_public_projection(target, campaign)
     return storage, loaded
 
 

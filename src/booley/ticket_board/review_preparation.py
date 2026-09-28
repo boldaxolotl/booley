@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict
-from booley.core.differing_fields import format_differing_fields
+from booley.core.differing_fields import append_differing_fields, format_differing_fields
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.review.generation import (
@@ -336,13 +336,12 @@ def _review_snapshot_heads(
             "Criteria Satisfaction Record is corrupt: participants disagree with Ticket baseline"
         )
     if accepted.snapshot.ticket_identity != basis.ticket_identity():
-        differences = format_differing_fields(
-            ticket_identity_diagnostic_fields(basis.ticket_identity()),
-            ticket_identity_diagnostic_fields(accepted.snapshot.ticket_identity),
-        )
         raise ReviewPrepError(
-            "Criteria Satisfaction Record is corrupt: names a different Ticket generation "
-            f"({differences})"
+            append_differing_fields(
+                "Criteria Satisfaction Record is corrupt: names a different Ticket generation",
+                ticket_identity_diagnostic_fields(accepted.snapshot.ticket_identity),
+                ticket_identity_diagnostic_fields(basis.ticket_identity()),
+            )
         )
     return accepted.snapshot.participant_heads
 

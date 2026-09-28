@@ -23,7 +23,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
-from booley.core.differing_fields import format_differing_fields
+from booley.core.differing_fields import append_differing_fields, format_differing_fields
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
@@ -304,39 +304,40 @@ def _decode_replay_metadata(
     return version, transaction_id, phase, direction, target, payload
 
 
+def _raise_journal_identity_error(
+    message: str, recorded: dict[str, object], observed: dict[str, object]
+) -> None:
+    raise sr.SessionError(append_differing_fields(message, recorded, observed))
+
+
 def _validate_journal_identities(journal: _RefreshJournal) -> None:
     if journal.prior_issuance.project_root != str(journal.project_root):
-        differences = format_differing_fields(
+        _raise_journal_identity_error(
+            "Session refresh journal prior issuance belongs to another Project",
             {"project_root": str(journal.project_root)},
             {"project_root": journal.prior_issuance.project_root},
         )
-        raise sr.SessionError(
-            f"Session refresh journal prior issuance belongs to another Project ({differences})"
-        )
     if journal.snapshot.image_id != journal.prior_issuance.image_id:
-        differences = format_differing_fields(
+        _raise_journal_identity_error(
+            "Session refresh journal predecessor identities disagree",
             {"image_id": journal.prior_issuance.image_id},
             {"image_id": journal.snapshot.image_id},
-        )
-        raise sr.SessionError(
-            f"Session refresh journal predecessor identities disagree ({differences})"
         )
     if journal.prior_runtime is not None and (
         journal.prior_runtime.image_id != journal.prior_issuance.image_id
     ):
-        differences = format_differing_fields(
+        _raise_journal_identity_error(
+            "Session refresh journal predecessor image identities disagree",
             {"image_id": journal.prior_issuance.image_id},
             {"image_id": journal.prior_runtime.image_id},
-        )
-        raise sr.SessionError(
-            f"Session refresh journal predecessor image identities disagree ({differences})"
         )
     replacement = journal.replacement_issuance
     if replacement is not None and (
         replacement.project_root != str(journal.project_root)
         or replacement.image_id != journal.target_image_id
     ):
-        differences = format_differing_fields(
+        _raise_journal_identity_error(
+            "Session refresh journal replacement identities disagree",
             {
                 "project_root": str(journal.project_root),
                 "image_id": journal.target_image_id,
@@ -345,9 +346,6 @@ def _validate_journal_identities(journal: _RefreshJournal) -> None:
                 "project_root": replacement.project_root,
                 "image_id": replacement.image_id,
             },
-        )
-        raise sr.SessionError(
-            f"Session refresh journal replacement identities disagree ({differences})"
         )
     if journal.direction is _RecoveryDirection.COMMITTED_FORWARD and (
         journal.phase is not _RefreshPhase.VERIFIED

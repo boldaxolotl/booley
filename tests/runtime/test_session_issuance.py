@@ -225,6 +225,15 @@ def test_issue_prepared_rejects_authority_drift_before_persisting(
     assert "license_profile None -> 'changed'" in str(raised.value)
     assert "fixed_container_environment" not in str(raised.value)
 
+    secret_inputs = runtime_spec.SessionSpecInputs(
+        project, (), (("EDA_LICENSE", "secret-server"),), None, None
+    )
+    monkeypatch.setattr(runtime_spec, "_session_spec_inputs", lambda *_args: secret_inputs)
+    with pytest.raises(runtime_spec.RuntimeSpecError) as hidden:
+        runtime_spec.issue_prepared(project, prepared)
+    assert str(hidden.value) == "Sandbox authority changed after its specification was prepared"
+    assert "secret-server" not in str(hidden.value)
+
     prepare_dependencies.assert_not_called()
     persist.assert_not_called()
 
@@ -497,6 +506,27 @@ def issued(
     path = dc.write_devcontainer(project, spec)
     stamp = runtime_spec.issue(project, spec, path)
     return project, spec, path, stamp
+
+
+def test_issuance_diagnostic_projection_is_an_explicit_safe_allowlist(issued) -> None:
+    _project, _spec, _path, stamp = issued
+
+    assert tuple(runtime_spec.issuance_diagnostic_fields(stamp)) == (
+        "version",
+        "project_root",
+        "spec_sha256",
+        "image",
+        "image_id",
+        "keeper_image",
+        "policy_revision",
+        "installation",
+        "license_profile",
+        "wrapper_sha256",
+        "relay_image_id",
+        "validator_sha256",
+        "file_sha256",
+        "project_data_source",
+    )
 
 
 def test_every_project_requires_exact_host_stamp(issued) -> None:
@@ -947,8 +977,26 @@ def test_validate_rejects_runtime_image_digest_drift(issued, monkeypatch) -> Non
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="tag/digest has drifted") as raised:
         runtime_spec.validate(project, spec, path)
-    assert "image_id" in str(raised.value)
-    assert "sha256:other" in str(raised.value)
+    assert "image_id 'sha256:image' -> 'sha256:other'" in str(raised.value)
+    assert "image " not in str(raised.value)
+
+
+def test_grant_drift_reports_only_safe_names(issued) -> None:
+    _project, _spec, _path, stamp = issued
+    recorded = replace(stamp, installation="old-install", license_profile="old-profile")
+    requirements = SimpleNamespace(
+        installation=SimpleNamespace(name="new-install", source="secret-path"),
+        license_profile=SimpleNamespace(name="new-profile", server="secret-server"),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Project grant") as raised:
+        runtime_spec._validate_grant_identity(recorded, requirements)
+
+    message = str(raised.value)
+    assert "installation 'old-install' -> 'new-install'" in message
+    assert "license_profile 'old-profile' -> 'new-profile'" in message
+    assert "secret-path" not in message
+    assert "secret-server" not in message
 
 
 def test_validate_rejects_keeper_for_another_project(issued, monkeypatch) -> None:

@@ -145,6 +145,22 @@ def _version_drift_message(stamp: dict) -> str | None:
     )
 
 
+def _config_drift_advisory(
+    stored: object, current: Mapping[str, object], passed_on: str
+) -> StampAdvisory | None:
+    if stored == current:
+        return None
+    details = ""
+    if isinstance(stored, Mapping) and all(isinstance(key, str) for key in stored):
+        differences = format_differing_fields(stored, current)
+        if differences:
+            details = f": {differences}"
+    return StampAdvisory(
+        f"Doctor config or devcontainer.json changed since the last clean "
+        f"`booley doctor` run ({passed_on}){details} -- re-run `booley doctor`"
+    )
+
+
 def check_stamp_advisory(
     project_dir: Path,
     project_root: Path,
@@ -180,18 +196,8 @@ def check_stamp_advisory(
 
     stored_fingerprint = stamp.get("fingerprint")
     current_fingerprint = compute_fingerprint(project_dir, project_root)
-    if stored_fingerprint != current_fingerprint:
-        details = ""
-        if isinstance(stored_fingerprint, Mapping) and all(
-            isinstance(key, str) for key in stored_fingerprint
-        ):
-            differences = format_differing_fields(stored_fingerprint, current_fingerprint)
-            if differences:
-                details = f": {differences}"
-        return StampAdvisory(
-            f"Doctor config or devcontainer.json changed since the last clean "
-            f"`booley doctor` run ({passed_on}){details} -- re-run `booley doctor`"
-        )
+    if advisory := _config_drift_advisory(stored_fingerprint, current_fingerprint, passed_on):
+        return advisory
 
     age_days = ((now or datetime.now(tz=UTC)) - passed_at).days
     if age_days > max_age_days:

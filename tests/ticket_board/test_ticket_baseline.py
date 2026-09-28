@@ -1493,6 +1493,39 @@ def test_board_basis_rejects_stale_runtime_ticket_snapshot(tmp_path: Path) -> No
         tio.load_basis("transaction", runtime_ticket_path=runtime_ticket)
 
 
+def test_board_basis_reports_runtime_ticket_generation_direction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tio = TicketIO(tmp_path / "tickets", project_root=tmp_path)
+    board_ticket = tmp_path / "board.md"
+    runtime_ticket = tmp_path / "runtime.md"
+    board_ticket.write_text("board", encoding="utf-8")
+    runtime_ticket.write_text("runtime", encoding="utf-8")
+    monkeypatch.setattr(
+        "booley.ticket_board.io.find_ticket_file",
+        lambda *_args, **_kwargs: (board_ticket, "queue"),
+    )
+    monkeypatch.setattr(tio, "_convert_ticket", lambda *_args: object())
+    identities = iter(({"generation": "current"}, {"generation": "recorded"}))
+
+    def load_identity(*_args):
+        identity = next(identities)
+        return SimpleNamespace(ticket_identity=lambda: identity)
+
+    monkeypatch.setattr(
+        ticket_baseline_module,
+        "load_ticket_baseline_from_document",
+        load_identity,
+    )
+
+    with pytest.raises(TicketBaselineError, match="runtime Ticket") as raised:
+        tio.load_basis("ticket", runtime_ticket_path=runtime_ticket)
+
+    message = str(raised.value)
+    assert "generation 'recorded' -> 'current'" in message
+    assert "schema" not in message
+
+
 @pytest.mark.parametrize(
     "board_dir", ["queue", "waiting", "active", "blocked", "review", "done", "archived"]
 )

@@ -1492,6 +1492,119 @@ def test_accepted_regeneration_rejects_changed_inputs(tmp_path, monkeypatch):
     assert "booley board reset demo" in diagnostic
 
 
+def test_accepted_regeneration_reports_inspection_state_direction(tmp_path, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    participant = SimpleNamespace(role="outer", ticket_ref="refs/heads/ticket/demo")
+    basis = SimpleNamespace(participants=(participant,))
+    tio = SimpleNamespace(logs_dir=tmp_path, load_basis=lambda _slug: basis)
+    ctx = SimpleNamespace(
+        inspection={"heads": {"outer": "a" * 40}, "state": "current"},
+        worktree=tmp_path,
+        project_repository=None,
+    )
+    monkeypatch.setattr(
+        review_lifecycle,
+        "read_acceptance",
+        lambda _path: SimpleNamespace(
+            kind="accepted",
+            snapshot=SimpleNamespace(participant_heads={"outer": "a" * 40}),
+        ),
+    )
+
+    with pytest.raises(ReviewEntryError, match="inspection disagrees") as raised:
+        review_lifecycle._validate_regeneration(
+            tio, "demo", "regenerate", {"state": "recorded"}, ctx
+        )
+
+    assert "state 'recorded' -> 'current'" in str(raised.value)
+    assert "head.outer" not in str(raised.value)
+
+
+def test_unaccepted_regeneration_reports_state_and_head_direction(tmp_path, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    tio = SimpleNamespace(logs_dir=tmp_path)
+    ctx = SimpleNamespace(
+        inspection={"heads": {"outer": "b" * 40}, "state": "current"},
+        worktree=tmp_path,
+        project_repository=None,
+    )
+    monkeypatch.setattr(
+        review_lifecycle,
+        "read_acceptance",
+        lambda _path: SimpleNamespace(kind="unavailable"),
+    )
+
+    with pytest.raises(ReviewEntryError, match="inspection changed") as raised:
+        review_lifecycle._validate_regeneration(
+            tio,
+            "demo",
+            "regenerate",
+            {"heads": {"outer": "a" * 40}, "state": "recorded"},
+            ctx,
+        )
+
+    message = str(raised.value)
+    assert f"head.outer '{'a' * 40}' -> '{'b' * 40}'" in message
+    assert "state 'recorded' -> 'current'" in message
+
+
+def test_review_capture_reports_generation_head_direction(tmp_path, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    basis = SimpleNamespace(ticket_identity=lambda: {"generation": "generation"})
+    tio = SimpleNamespace(
+        find_ticket=lambda _slug: {"execution_id": "execution"},
+        _load_basis_unlocked=lambda _slug: basis,
+    )
+    ctx = SimpleNamespace(
+        slug="demo",
+        inspection={"execution_id": "execution"},
+        ticket_generation="generation",
+        project_root=tmp_path,
+        head_sha="a" * 40,
+        project_repository=None,
+    )
+    monkeypatch.setattr(review_lifecycle, "_quiescent", lambda *_args: None)
+    monkeypatch.setattr(
+        review_lifecycle.prep,
+        "_resolve_context",
+        lambda *_args, **_kwargs: SimpleNamespace(head_sha="b" * 40, project_repository=None),
+    )
+
+    with pytest.raises(ReviewEntryError, match="heads changed") as raised:
+        review_lifecycle._check_capture(tio, ctx, "capture")
+
+    assert f"outer.head '{'a' * 40}' -> '{'b' * 40}'" in str(raised.value)
+
+
+def test_interrupted_acceptance_reports_head_direction(tmp_path, monkeypatch):
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    ctx = SimpleNamespace(
+        log_dir=tmp_path,
+        inspection={"heads": {"outer": "b" * 40}},
+    )
+    monkeypatch.setattr(
+        review_lifecycle,
+        "read_acceptance",
+        lambda _path: SimpleNamespace(
+            kind="accepted",
+            snapshot=SimpleNamespace(participant_heads={"outer": "a" * 40}),
+        ),
+    )
+
+    with pytest.raises(ReviewEntryError, match="interrupted acceptance") as raised:
+        review_lifecycle._publish_acceptance(ctx, {})
+
+    assert f"outer '{'a' * 40}' -> '{'b' * 40}'" in str(raised.value)
+
+
 def test_review_lifecycle_reports_missing_and_stale_selection(tmp_path, monkeypatch):
     from booley.ticket_board import review_lifecycle
     from booley.ticket_board.review_records import ReviewEntryError
@@ -1548,8 +1661,9 @@ def test_selected_accepted_heads_must_match_criteria_satisfaction_record(tmp_pat
         ),
     )
 
-    with pytest.raises(ReviewEntryError, match="package is corrupt"):
+    with pytest.raises(ReviewEntryError, match="package is corrupt") as raised:
         review_lifecycle._selected_context(tio, "demo")
+    assert f"outer '{'a' * 40}' -> '{'b' * 40}'" in str(raised.value)
 
 
 def test_approval_recovery_translates_stale_acceptance(monkeypatch, tmp_path):

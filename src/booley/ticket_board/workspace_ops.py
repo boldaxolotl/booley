@@ -12,7 +12,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from booley.core.differing_fields import format_differing_fields
+from booley.core.differing_fields import append_differing_fields
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
@@ -1830,20 +1830,20 @@ def reset_basis_worktrees(
         or current_plan.basis_id != basis.basis_id
         or current_plan.requested_branch != requested_branch
     ):
-        differences = format_differing_fields(
-            {
-                "root": str(root),
-                "basis_id": basis.basis_id,
-                "requested_branch": requested_branch,
-            },
-            {
-                "root": str(current_plan.root),
-                "basis_id": current_plan.basis_id,
-                "requested_branch": current_plan.requested_branch,
-            },
-        )
         raise TicketBaselineOperationError(
-            f"Ticket baseline reset plan does not match this request ({differences})"
+            append_differing_fields(
+                "Ticket baseline reset plan does not match this request",
+                {
+                    "root": str(current_plan.root),
+                    "basis_id": current_plan.basis_id,
+                    "requested_branch": current_plan.requested_branch,
+                },
+                {
+                    "root": str(root),
+                    "basis_id": basis.basis_id,
+                    "requested_branch": requested_branch,
+                },
+            )
         )
     _apply_basis_reset(current_plan, basis, slug)
 

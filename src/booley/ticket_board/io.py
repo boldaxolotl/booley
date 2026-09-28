@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from booley.core.differing_fields import format_differing_fields
+from booley.core.differing_fields import append_differing_fields
 from booley.ticket_board.ticket_repositories import TicketWorkspace, TicketWorkspaceError
 
 if TYPE_CHECKING:
@@ -301,13 +301,12 @@ class TicketIO:
             raise TicketBaselineError(str(exc)) from exc
         snapshot = load_ticket_baseline_from_document(self._project_root, slug, snapshot_document)
         if snapshot.ticket_identity() != basis.ticket_identity():
-            differences = format_differing_fields(
-                ticket_identity_diagnostic_fields(basis.ticket_identity()),
-                ticket_identity_diagnostic_fields(snapshot.ticket_identity()),
-            )
             raise TicketBaselineError(
-                "acceptance-input-change-required: runtime Ticket names another generation "
-                f"({differences})"
+                append_differing_fields(
+                    "acceptance-input-change-required: runtime Ticket names another generation",
+                    ticket_identity_diagnostic_fields(snapshot.ticket_identity()),
+                    ticket_identity_diagnostic_fields(basis.ticket_identity()),
+                )
             )
         return basis
 
