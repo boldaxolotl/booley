@@ -43,10 +43,16 @@ from booley.runtime.image_provenance import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["project_image_name", "project_sandbox_image"]
+__all__ = ["is_managed_sandbox_image", "project_image_name", "project_sandbox_image"]
 
 BASE_IMAGE = SANDBOX_IMAGE
 MANAGED_PROJECT_PARENT = "booley-project-parent"
+
+
+def is_managed_sandbox_image(project_root: Path, image: str) -> bool:
+    """Return whether Booley owns the selected image's provenance contract."""
+    return image in {BASE_IMAGE, "booley-sandbox-riscv", project_image_name(project_root)}
+
 
 # Packages the base sandbox image pins and manages (ADR 0019). A project
 # requirements pin on any of these shadows the image's version at build time

@@ -2799,6 +2799,23 @@ class TestImageDriftWarning:
 
         assert "!= [sandbox].image 'booley-sandbox-riscv'" in caplog.text
 
+    def test_rebuilt_external_image_warns_despite_inherited_labels(
+        self, workspace: Path, caplog, monkeypatch
+    ):
+        digest = "sha256:" + "a" * 64
+        monkeypatch.setattr(
+            sr.project_image, "project_sandbox_image", lambda _root: "custom-sandbox"
+        )
+        monkeypatch.setattr(
+            sr.idk,
+            "compare_issued_reference",
+            lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
+        )
+
+        sr._warn_on_image_drift({"image": digest}, workspace)
+
+        assert "!= [sandbox].image 'custom-sandbox'" in caplog.text
+
     def test_no_project_config_is_silent(self, wired, caplog):
         # No .booley_project at all: the resolver falls back to the base image,
         # which is exactly what the generated spec carries — no drift.

@@ -229,6 +229,23 @@ def compare_issued_selection(
     return compare_logical_selection(issued_reference, configured_reference, inspect)
 
 
+def compare_issued_reference(
+    issued_reference: str,
+    configured_reference: str,
+    *,
+    executable: str = "docker",
+) -> Comparison:
+    """Compare exact IDs when no trusted logical provenance contract exists."""
+    from booley.runtime.image_identity import Comparison, Status
+
+    issued = inspect_image_metadata(issued_reference, executable=executable)
+    configured = inspect_image_metadata(configured_reference, executable=executable)
+    if issued is None or configured is None:
+        return Comparison(Status.UNKNOWN)
+    status = Status.MATCH if issued.image_id == configured.image_id else Status.MISMATCH
+    return Comparison(status)
+
+
 def _container_image_matches(container: str, image: str) -> bool | None:
     """Whether *container* was created from *image*'s current resolved ID.
 

@@ -373,11 +373,12 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
         return
     if spec_image == expected:
         return
-    comparison = (
-        idk.compare_issued_selection(spec_image, expected)
-        if is_local_image_id(spec_image)
-        else image_identity.Comparison(image_identity.Status.MISMATCH)
-    )
+    if not is_local_image_id(spec_image):
+        comparison = image_identity.Comparison(image_identity.Status.MISMATCH)
+    elif project_image.is_managed_sandbox_image(workspace, expected):
+        comparison = idk.compare_issued_selection(spec_image, expected)
+    else:
+        comparison = idk.compare_issued_reference(spec_image, expected)
     if comparison.status is image_identity.Status.MATCH:
         logger.debug(
             "[sandbox].image tag %r moved to an equivalent Sandbox Image; "

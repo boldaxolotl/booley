@@ -31,7 +31,13 @@ from booley.eda.provisioning.policies.vivado import (
     SUPPORTED_VERSION,
     wrapper_sha256,
 )
-from booley.runtime import auth_token, image_identity, runtime_context, session_runtime
+from booley.runtime import (
+    auth_token,
+    image_identity,
+    project_image,
+    runtime_context,
+    session_runtime,
+)
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
@@ -183,8 +189,14 @@ def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findin
     )
     if not isinstance(spec_image, str) or spec_image == request.image:
         return True
-    if immutable_spec:
+    if immutable_spec and project_image.is_managed_sandbox_image(
+        request.project_root, request.image
+    ):
         comparison = idk.compare_issued_selection(
+            spec_image, request.image, executable=request.docker_exe or "docker"
+        )
+    elif immutable_spec:
+        comparison = idk.compare_issued_reference(
             spec_image, request.image, executable=request.docker_exe or "docker"
         )
     else:
