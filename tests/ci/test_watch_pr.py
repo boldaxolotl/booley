@@ -90,6 +90,31 @@ def check(
     return watch_pr.Check(name, bucket, bucket, link, head_sha, attempt, started_at, workflow)
 
 
+def producer_run(
+    workflow: str = "Tests",
+    event: str = "pull_request",
+    status: str = "in_progress",
+    *,
+    conclusion: str | None = None,
+    head_sha: str = HEAD,
+    attempt: int = 1,
+    created_at: str = "2026-09-28T10:00:00Z",
+    database_id: int = 100,
+    url: str = "https://ci.example/run/100",
+) -> watch_pr.ProducerRun:
+    return watch_pr.ProducerRun(
+        workflow,
+        event,
+        status,
+        conclusion,
+        head_sha,
+        attempt,
+        created_at,
+        database_id,
+        url,
+    )
+
+
 def snapshot(
     *,
     head: str | None = HEAD,
@@ -100,6 +125,7 @@ def snapshot(
     required_check_names: set[str] | None = None,
     mergify_state: str | None = None,
     comments: tuple[watch_pr.Comment, ...] = (),
+    producer_runs: tuple[watch_pr.ProducerRun, ...] = (),
 ) -> watch_pr.Snapshot:
     return watch_pr.Snapshot(
         URL,
@@ -111,6 +137,7 @@ def snapshot(
         frozenset(required_check_names or set()),
         mergify_state,
         comments,
+        producer_runs,
     )
 
 
@@ -121,6 +148,7 @@ def run_watch(
     mode: str,
     timeout: int = 200,
     expected_head: str | None = HEAD,
+    producer_registration_grace: int = 120,
 ) -> watch_pr.WatchResult:
     return watch_pr.watch(
         transport,
@@ -129,12 +157,24 @@ def run_watch(
         pr=7,
         timeout_seconds=timeout,
         expected_head=expected_head,
+        producer_registration_grace_seconds=producer_registration_grace,
         clock=clock,
     )
 
 
 def test_ci_waits_for_required_checks_and_uses_sixty_second_cadence() -> None:
-    transport = FakeTransport(ci=[snapshot(), snapshot(checks=(check(bucket="pass"),))])
+    transport = FakeTransport(
+        ci=[
+            snapshot(
+                required_check_names={"ci-required"},
+                producer_runs=(producer_run(),),
+            ),
+            snapshot(
+                checks=(check(bucket="pass"),),
+                required_check_names={"ci-required"},
+            ),
+        ]
+    )
     clock = FakeClock()
 
     result = run_watch(transport, clock, mode="ci")
@@ -144,14 +184,82 @@ def test_ci_waits_for_required_checks_and_uses_sixty_second_cadence() -> None:
     assert transport.query_count == 2
 
 
-def test_ci_empty_checks_never_establish_success() -> None:
-    transport = FakeTransport(ci=[snapshot(), snapshot()])
+def test_ci_empty_required_rules_fail_closed() -> None:
+    transport = FakeTransport(ci=[snapshot()])
+
+    with pytest.raises(watch_pr.WatchError, match="no required checks"):
+        run_watch(transport, FakeClock(), mode="ci", timeout=100)
+
+
+def test_ci_reports_required_checks_missing_when_producer_never_registers() -> None:
+    state = snapshot(required_check_names={"ci-required", "confidential-content"})
+    transport = FakeTransport(ci=[state, state, state])
+
+    result = run_watch(transport, FakeClock(), mode="ci", timeout=180)
+
+    assert result.outcome == "required_checks_missing"
+    assert result.missing_checks == ("ci-required", "confidential-content")
+
+
+def test_ci_waits_beyond_registration_grace_while_producer_is_running() -> None:
+    pending = snapshot(
+        required_check_names={"ci-required"},
+        producer_runs=(producer_run(),),
+    )
+    passed = snapshot(
+        checks=(check(bucket="pass"),),
+        required_check_names={"ci-required"},
+    )
+    transport = FakeTransport(ci=[pending, pending, pending, passed])
     clock = FakeClock()
 
-    result = run_watch(transport, clock, mode="ci", timeout=100)
+    result = run_watch(transport, clock, mode="ci", timeout=240)
 
-    assert result.outcome == "timeout"
-    assert clock.sleeps == [60, 40]
+    assert result.outcome == "ci_passed"
+    assert clock.sleeps == [60, 60, 60]
+
+
+def test_ci_reports_completed_producer_that_did_not_publish_context() -> None:
+    state = snapshot(
+        required_check_names={"confidential-content"},
+        producer_runs=(
+            producer_run(
+                workflow="Confidential content",
+                event="pull_request_target",
+                status="completed",
+                conclusion="success",
+            ),
+        ),
+    )
+
+    result = run_watch(FakeTransport(ci=[state]), FakeClock(), mode="ci")
+
+    assert result.outcome == "required_checks_missing"
+    assert result.missing_checks == ("confidential-content",)
+    assert result.links == ("https://ci.example/run/100",)
+
+
+def test_ci_does_not_accept_producer_from_another_head_or_event() -> None:
+    state = snapshot(
+        required_check_names={"ci-required"},
+        producer_runs=(
+            producer_run(head_sha=NEXT_HEAD),
+            producer_run(event="push", database_id=101),
+        ),
+    )
+
+    result = run_watch(
+        FakeTransport(ci=[state, state, state]), FakeClock(), mode="ci", timeout=180
+    )
+
+    assert result.outcome == "required_checks_missing"
+
+
+def test_ci_rejects_required_context_without_a_producer_mapping() -> None:
+    state = snapshot(required_check_names={"new-required-context"})
+
+    with pytest.raises(watch_pr.WatchError, match="no producer mapping"):
+        run_watch(FakeTransport(ci=[state]), FakeClock(), mode="ci")
 
 
 def test_ci_waits_for_required_check_that_has_not_appeared() -> None:
@@ -317,6 +425,26 @@ def test_malformed_external_response_is_rejected() -> None:
         )
 
 
+def test_producer_runs_are_parsed_from_structured_fields() -> None:
+    parsed = watch_pr._parse_producer_runs(
+        [
+            {
+                "workflowName": "Tests",
+                "event": "pull_request",
+                "status": "in_progress",
+                "conclusion": "",
+                "headSha": HEAD,
+                "attempt": 2,
+                "createdAt": "2026-09-28T10:00:00Z",
+                "databaseId": 123,
+                "url": "https://ci.example/run/123",
+            }
+        ]
+    )
+
+    assert parsed == (producer_run(attempt=2, database_id=123, url="https://ci.example/run/123"),)
+
+
 def test_paginated_comments_are_flattened_for_control_baselining() -> None:
     parsed = watch_pr._snapshot_from_json(
         {
@@ -354,6 +482,23 @@ def test_transient_reads_are_retried_at_most_three_times() -> None:
     assert clock.sleeps == [1, 2]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
+def test_checks_accept_empty_stdout_for_an_expected_nonzero_exit(tmp_path: Path) -> None:
+    executable = write_fake_gh(tmp_path, "raise SystemExit(1)\n")
+    transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
+
+    assert transport._checks("example/repo", 7, 10) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
+def test_checks_reject_malformed_nonempty_stdout(tmp_path: Path) -> None:
+    executable = write_fake_gh(tmp_path, "print('{')\nraise SystemExit(1)\n")
+    transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
+
+    with pytest.raises(watch_pr.WatchError, match="invalid JSON"):
+        transport._checks("example/repo", 7, 10)
+
+
 def test_every_outcome_has_an_explicit_exit_mapping() -> None:
     mapped = set(watch_pr.EXIT_CODES) | {watch_pr.Outcome.CANCELLED}
 
@@ -372,6 +517,8 @@ def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path
         f"    print(json.dumps({{'url': {long_url!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'baseRefName': 'main', 'labels': [], 'statusCheckRollup': []}}))\n"
         "elif sys.argv[1:3] == ['pr', 'checks']:\n"
         "    print(json.dumps([{'name': 'ci-required', 'state': 'SUCCESS', 'bucket': 'pass', 'link': 'https://ci.example/run/1', 'startedAt': None, 'completedAt': None, 'workflow': 'CI'}]))\n"
+        "elif sys.argv[1:3] == ['run', 'list']:\n"
+        "    print('[]')\n"
         "elif sys.argv[1] == 'api':\n"
         "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n"
         "else:\n"
@@ -391,6 +538,8 @@ def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path
             HEAD,
             "--timeout-seconds",
             "5",
+            "--producer-registration-grace-seconds",
+            "5",
         ],
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
         capture_output=True,
@@ -409,7 +558,8 @@ def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path
     commands = log.read_text(encoding="utf-8").splitlines()
     assert "--required" in "\n".join(commands)
     assert all(
-        line.split()[:2] in (["pr", "view"], ["pr", "checks"]) or line.split()[0] == "api"
+        line.split()[:2] in (["pr", "view"], ["pr", "checks"], ["run", "list"])
+        or line.split()[0] == "api"
         for line in commands
     )
 
@@ -438,6 +588,33 @@ def test_cli_rejects_overlong_repo_without_echoing_it() -> None:
     assert result.returncode == 2
     assert repo not in result.stderr
     assert all(len(line) <= watch_pr.MAX_OUTPUT_LINE_LENGTH for line in result.stderr.splitlines())
+
+
+def test_cli_rejects_registration_grace_longer_than_ci_timeout() -> None:
+    result = subprocess.run(
+        [
+            "python3",
+            str(SCRIPT),
+            "--repo",
+            "example/repo",
+            "--pr",
+            "7",
+            "--mode",
+            "ci",
+            "--expected-head",
+            HEAD,
+            "--timeout-seconds",
+            "60",
+            "--producer-registration-grace-seconds",
+            "61",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "no greater than the CI timeout" in result.stderr
 
 
 def test_cancel_terminates_active_child_process() -> None:
@@ -472,6 +649,8 @@ def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
         f"    print(json.dumps({{'url': {URL!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'baseRefName': 'main', 'labels': [], 'statusCheckRollup': []}}))\n"
         "elif sys.argv[1:3] == ['pr', 'checks']:\n"
         "    print('[]')\n"
+        "elif sys.argv[1:3] == ['run', 'list']:\n"
+        "    print('[]')\n"
         "elif sys.argv[1] == 'api':\n"
         "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n",
     )
@@ -489,6 +668,8 @@ def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
             HEAD,
             "--timeout-seconds",
             "120",
+            "--producer-registration-grace-seconds",
+            "60",
         ],
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
         stdout=subprocess.PIPE,

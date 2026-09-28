@@ -33,6 +33,7 @@ MAX_HEAD_LENGTH = 64
 MAX_OUTPUT_LINE_LENGTH = 16_384
 MAX_PR_NUMBER = 2_147_483_647
 MAX_TIMEOUT_SECONDS = 31 * 24 * 60 * 60
+MAX_PRODUCER_REGISTRATION_GRACE_SECONDS = 60 * 60
 QUEUE_POLL_SECONDS = 10 * 60
 CI_POLL_SECONDS = 60
 RETRY_DELAYS = (1, 2)
@@ -43,6 +44,23 @@ TRANSIENT_ERROR = re.compile(
 IMMEDIATE_ERROR = re.compile(
     r"(?:auth|permission|forbidden|unauthor|invalid|unknown field|schema)", re.I
 )
+REQUIRED_CHECK_PRODUCERS = {
+    "ci-required": ("Tests", "pull_request"),
+    "confidential-content": ("Confidential content", "pull_request_target"),
+}
+ACTIVE_PRODUCER_STATUSES = {"in_progress", "pending", "queued", "requested", "waiting"}
+PRODUCER_STATUSES = ACTIVE_PRODUCER_STATUSES | {
+    "action_required",
+    "cancelled",
+    "completed",
+    "failure",
+    "neutral",
+    "skipped",
+    "stale",
+    "startup_failure",
+    "success",
+    "timed_out",
+}
 
 
 class WatchError(RuntimeError):
@@ -89,6 +107,19 @@ class Comment:
 
 
 @dataclass(frozen=True)
+class ProducerRun:
+    workflow: str
+    event: str
+    status: str
+    conclusion: str | None
+    head_sha: str
+    attempt: int
+    created_at: str
+    database_id: int
+    url: str
+
+
+@dataclass(frozen=True)
 class Snapshot:
     url: str
     state: str
@@ -99,6 +130,7 @@ class Snapshot:
     required_check_names: frozenset[str] = frozenset()
     mergify_state: str | None = None
     comments: tuple[Comment, ...] = ()
+    producer_runs: tuple[ProducerRun, ...] = ()
 
 
 class Outcome(StrEnum):
@@ -110,6 +142,7 @@ class Outcome(StrEnum):
     HEAD_CHANGED = "head_changed"
     CLOSED = "closed"
     CHECK_FAILED = "check_failed"
+    REQUIRED_CHECKS_MISSING = "required_checks_missing"
     QUEUE_FAILED = "queue_failed"
     DEQUEUED = "dequeued"
     COMPETING_CONTROL = "competing_control"
@@ -122,12 +155,18 @@ class Decision:
     terminal: bool
     links: tuple[str, ...] = ()
     next_wait_seconds: int | None = None
+    missing_checks: tuple[str, ...] = ()
 
 
 @dataclass
 class QueueMemory:
     baseline_comment_ids: set[str] = field(default_factory=set)
     initialized: bool = False
+
+
+@dataclass
+class CiMemory:
+    unregistered_since: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -138,6 +177,7 @@ class WatchResult:
     elapsed_seconds: int
     query_count: int
     links: tuple[str, ...]
+    missing_checks: tuple[str, ...] = ()
 
 
 class SystemClock:
@@ -278,6 +318,39 @@ def _parse_required_check_names(value: Any) -> frozenset[str]:
     return frozenset(names)
 
 
+def _parse_producer_runs(value: Any) -> tuple[ProducerRun, ...]:
+    runs: list[ProducerRun] = []
+    for index, raw in enumerate(_json_list(value, "workflow runs")):
+        entry = _json_object(raw, f"workflow runs[{index}]")
+        conclusion = _text(
+            entry.get("conclusion"), f"workflow runs[{index}].conclusion", optional=True
+        )
+        try:
+            attempt = require_int(entry.get("attempt"), field=f"workflow runs[{index}].attempt")
+            database_id = require_int(
+                entry.get("databaseId"), field=f"workflow runs[{index}].databaseId"
+            )
+        except BoundaryError as error:
+            raise WatchError(f"invalid workflow runs[{index}] response") from error
+        status = _text(entry.get("status"), f"workflow runs[{index}].status").lower()
+        if status not in PRODUCER_STATUSES:
+            raise WatchError(f"invalid workflow runs[{index}].status value")
+        runs.append(
+            ProducerRun(
+                workflow=_text(entry.get("workflowName"), f"workflow runs[{index}].workflowName"),
+                event=_text(entry.get("event"), f"workflow runs[{index}].event"),
+                status=status,
+                conclusion=conclusion.lower() if conclusion else None,
+                head_sha=_text(entry.get("headSha"), f"workflow runs[{index}].headSha"),
+                attempt=attempt,
+                created_at=_text(entry.get("createdAt"), f"workflow runs[{index}].createdAt"),
+                database_id=database_id,
+                url=_text(entry.get("url"), f"workflow runs[{index}].url"),
+            )
+        )
+    return tuple(runs)
+
+
 def _snapshot_from_json(
     pull: Any,
     checks: Any,
@@ -285,6 +358,7 @@ def _snapshot_from_json(
     *,
     require_comments: bool,
     required_check_names: frozenset[str] = frozenset(),
+    producer_runs: tuple[ProducerRun, ...] = (),
 ) -> Snapshot:
     pr = _json_object(pull, "pull request")
     url = _text(pr.get("url"), "pull request.url")
@@ -313,6 +387,7 @@ def _snapshot_from_json(
         required_check_names=required_check_names,
         mergify_state=mergify_state,
         comments=parsed_comments,
+        producer_runs=producer_runs,
     )
 
 
@@ -338,7 +413,14 @@ class GhTransport:
             except ProcessLookupError:
                 pass
 
-    def _run(self, args: Sequence[str], remaining: float, *, accepted: set[int]) -> Any:
+    def _run(
+        self,
+        args: Sequence[str],
+        remaining: float,
+        *,
+        accepted: set[int],
+        allow_empty: bool = False,
+    ) -> Any:
         if self.cancelled:
             raise CancelledWatchError("cancelled")
         if remaining <= 0:
@@ -370,13 +452,20 @@ class GhTransport:
             if _is_transient(message):
                 raise ConnectionError(message)
             raise WatchError("gh read failed")
+        if allow_empty and not stdout.strip():
+            return []
         try:
             return json.loads(stdout)
         except json.JSONDecodeError as error:
             raise WatchError("gh returned invalid JSON") from error
 
     def _read(
-        self, args: Sequence[str], deadline: float, *, accepted: set[int] | None = None
+        self,
+        args: Sequence[str],
+        deadline: float,
+        *,
+        accepted: set[int] | None = None,
+        allow_empty: bool = False,
     ) -> Any:
         if accepted is None:
             accepted = {0}
@@ -386,7 +475,7 @@ class GhTransport:
                 raise CancelledWatchError("cancelled")
             remaining = deadline - self._clock.monotonic()
             try:
-                return self._run(args, remaining, accepted=accepted)
+                return self._run(args, remaining, accepted=accepted, allow_empty=allow_empty)
             except ConnectionError as error:
                 last_error = error
                 if attempt == 2:
@@ -413,7 +502,27 @@ class GhTransport:
             ["pr", "checks", str(pr), "--repo", repo, "--required", "--json", fields],
             deadline,
             accepted={0, 1, 8},
+            allow_empty=True,
         )
+
+    def _producer_runs(self, repo: str, head: str, deadline: float) -> tuple[ProducerRun, ...]:
+        fields = "databaseId,workflowName,event,status,conclusion,headSha,attempt,createdAt,url"
+        value = self._read(
+            [
+                "run",
+                "list",
+                "--repo",
+                repo,
+                "--commit",
+                head,
+                "--limit",
+                "100",
+                "--json",
+                fields,
+            ],
+            deadline,
+        )
+        return _parse_producer_runs(value)
 
     def _comments(self, repo: str, pr: int, deadline: float) -> Any:
         path = f"repos/{repo}/issues/{pr}/comments?per_page=100"
@@ -425,9 +534,24 @@ class GhTransport:
         if str(first_obj.get("state", "")).lower() == "closed":
             return _snapshot_from_json(first, [], [], require_comments=False)
         first_head = _text(first_obj.get("headRefOid"), "pull request.headRefOid", optional=True)
+        if first_head is None:
+            raise WatchError("open pull request has no head SHA")
         base_branch = _text(first_obj.get("baseRefName"), "pull request.baseRefName")
         required_check_names = self._required_checks(repo, base_branch, deadline)
         checks = self._checks(repo, pr, deadline)
+        provisional = _snapshot_from_json(
+            first,
+            checks,
+            [],
+            require_comments=False,
+            required_check_names=required_check_names,
+        )
+        observed_names = {
+            check.name for check in _latest_checks(provisional.checks, provisional.head_sha)
+        }
+        producer_runs = ()
+        if not required_check_names.issubset(observed_names):
+            producer_runs = self._producer_runs(repo, first_head, deadline)
         final = self._pull(repo, pr, deadline)
         final_obj = _json_object(final, "pull request")
         final_head = _text(final_obj.get("headRefOid"), "pull request.headRefOid", optional=True)
@@ -440,6 +564,7 @@ class GhTransport:
             [],
             require_comments=False,
             required_check_names=required_check_names,
+            producer_runs=producer_runs,
         )
 
     def queue_snapshot(self, repo: str, pr: int, deadline: float) -> Snapshot:
@@ -530,6 +655,72 @@ def classify_ci(snapshot: Snapshot, expected_head: str) -> Decision:
     return Decision(Outcome.PENDING, False)
 
 
+def _latest_producer_run(
+    runs: Iterable[ProducerRun],
+    *,
+    expected_head: str,
+    workflow: str,
+    event: str,
+) -> ProducerRun | None:
+    matching = [
+        run
+        for run in runs
+        if run.head_sha == expected_head and run.workflow == workflow and run.event == event
+    ]
+    if not matching:
+        return None
+    return max(matching, key=lambda run: (run.created_at, run.attempt, run.database_id))
+
+
+def classify_missing_producers(
+    snapshot: Snapshot,
+    expected_head: str,
+    memory: CiMemory,
+    *,
+    now: float,
+    registration_grace_seconds: int,
+) -> Decision:
+    """Distinguish late check registration from a workflow that never published it."""
+    if not snapshot.required_check_names:
+        raise WatchError("no required checks were returned by branch rules")
+    current = _latest_checks(snapshot.checks, expected_head)
+    missing = snapshot.required_check_names - {check.name for check in current}
+    for name in tuple(memory.unregistered_since):
+        if name not in missing:
+            del memory.unregistered_since[name]
+
+    terminal: list[str] = []
+    links: list[str] = []
+    for name in sorted(missing):
+        producer = REQUIRED_CHECK_PRODUCERS.get(name)
+        if producer is None:
+            raise WatchError(f"no producer mapping for required check {name}")
+        run = _latest_producer_run(
+            snapshot.producer_runs,
+            expected_head=expected_head,
+            workflow=producer[0],
+            event=producer[1],
+        )
+        if run is not None:
+            memory.unregistered_since.pop(name, None)
+            if run.status not in ACTIVE_PRODUCER_STATUSES:
+                terminal.append(name)
+                links.append(run.url)
+            continue
+        first_missing = memory.unregistered_since.setdefault(name, now)
+        if now - first_missing >= registration_grace_seconds:
+            terminal.append(name)
+
+    if terminal:
+        return Decision(
+            Outcome.REQUIRED_CHECKS_MISSING,
+            True,
+            links=_bounded_links(links),
+            missing_checks=tuple(terminal),
+        )
+    return Decision(Outcome.PENDING, False)
+
+
 def _control_comments(comments: Iterable[Comment]) -> tuple[Comment, ...]:
     return tuple(
         comment for comment in comments if comment.author and CONTROL_COMMAND.search(comment.body)
@@ -583,6 +774,7 @@ def _summary(result: WatchResult) -> str:
         "elapsed_seconds": result.elapsed_seconds,
         "query_count": result.query_count,
         "links": list(_bounded_links(result.links)),
+        "missing_checks": list(result.missing_checks),
     }
     summary = json.dumps(payload, separators=(",", ":"))
     assert len(summary) <= MAX_OUTPUT_LINE_LENGTH
@@ -603,6 +795,7 @@ def _result(
         max(0, int(clock.monotonic() - started)),
         transport.query_count,
         (),
+        (),
     )
 
 
@@ -620,6 +813,7 @@ def _result_with_links(
         max(0, int(clock.monotonic() - started)),
         transport.query_count,
         decision.links,
+        decision.missing_checks,
     )
 
 
@@ -631,7 +825,9 @@ def _watch_ci(
     expected_head: str,
     deadline: float,
     started: float,
+    producer_registration_grace_seconds: int,
 ) -> WatchResult:
+    memory = CiMemory()
     snapshot: Snapshot | None = None
     while clock.monotonic() < deadline:
         try:
@@ -645,6 +841,15 @@ def _watch_ci(
                 transport,
             )
         decision = classify_ci(snapshot, expected_head)
+        if decision.terminal:
+            return _result_with_links(decision, snapshot, started, clock, transport)
+        decision = classify_missing_producers(
+            snapshot,
+            expected_head,
+            memory,
+            now=clock.monotonic(),
+            registration_grace_seconds=producer_registration_grace_seconds,
+        )
         if decision.terminal:
             return _result_with_links(decision, snapshot, started, clock, transport)
         remaining = deadline - clock.monotonic()
@@ -690,6 +895,7 @@ def watch(
     timeout_seconds: int,
     expected_head: str | None,
     clock: Clock,
+    producer_registration_grace_seconds: int = 300,
 ) -> WatchResult:
     """Run one watcher with an overall monotonic deadline."""
     if timeout_seconds <= 0:
@@ -700,7 +906,16 @@ def watch(
     deadline = started + timeout_seconds
     if mode == "ci":
         assert expected_head is not None
-        return _watch_ci(transport, clock, repo, pr, expected_head, deadline, started)
+        return _watch_ci(
+            transport,
+            clock,
+            repo,
+            pr,
+            expected_head,
+            deadline,
+            started,
+            producer_registration_grace_seconds,
+        )
     if mode == "queue":
         return _watch_queue(transport, clock, repo, pr, deadline, started)
     raise ValueError(f"unsupported mode: {mode}")
@@ -714,6 +929,7 @@ EXIT_CODES = {
     Outcome.HEAD_CHANGED: 1,
     Outcome.CLOSED: 1,
     Outcome.CHECK_FAILED: 1,
+    Outcome.REQUIRED_CHECKS_MISSING: 1,
     Outcome.QUEUE_FAILED: 1,
     Outcome.DEQUEUED: 1,
     Outcome.COMPETING_CONTROL: 1,
@@ -734,6 +950,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", required=True, choices=("ci", "queue"))
     parser.add_argument("--expected-head")
     parser.add_argument("--timeout-seconds", required=True, type=int)
+    parser.add_argument("--producer-registration-grace-seconds", type=int, default=300)
     return parser
 
 
@@ -752,6 +969,15 @@ def _validate_args(args: argparse.Namespace) -> None:
         not args.expected_head or not re.fullmatch(r"[0-9a-fA-F]{7,64}", args.expected_head)
     ):
         raise ValueError("--expected-head must be a hexadecimal commit SHA in ci mode")
+    if args.mode == "ci" and not (
+        0
+        < args.producer_registration_grace_seconds
+        <= min(MAX_PRODUCER_REGISTRATION_GRACE_SECONDS, args.timeout_seconds)
+    ):
+        raise ValueError(
+            "--producer-registration-grace-seconds must be positive, no greater than "
+            "the CI timeout, and at most one hour"
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -784,6 +1010,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_seconds=args.timeout_seconds,
             expected_head=args.expected_head,
             clock=clock,
+            producer_registration_grace_seconds=args.producer_registration_grace_seconds,
         )
     except CancelledWatchError:
         result = _result(Outcome.CANCELLED, None, started, clock, transport)

@@ -69,7 +69,8 @@ the documented cold-cache validation time:
 ```bash
 python3 .github/scripts/watch_pr.py \
   --repo OWNER/REPO --pr <number> --mode ci \
-  --expected-head <40-character-sha> --timeout-seconds 7200
+  --expected-head <40-character-sha> --timeout-seconds 7200 \
+  --producer-registration-grace-seconds 300
 ```
 
 For an owned queued PR, include predecessor wait in the caller-selected
@@ -89,12 +90,44 @@ every 60 seconds and queue state every ten minutes. An expired deadline is
 unresolved observation, not proof of failure; choose a new deadline explicitly
 rather than restarting automatically.
 
-CI outcomes are `ci_passed` (exit 0), `check_failed`, `closed`, or
-`head_changed` (exit 1), `timeout` (exit 124), and `observation_error` (exit 2).
-Only required checks reported as `pass` satisfy CI. Missing, pending, skipped,
-or neutral checks remain unresolved; a cancelled required check is actionable.
-The expected head is checked before and after each status read, and results
-from an explicitly different head are ignored.
+CI outcomes are `ci_passed` (exit 0), `check_failed`, `closed`, `head_changed`,
+or `required_checks_missing` (exit 1), `timeout` (exit 124), and
+`observation_error` (exit 2). Only required checks reported as `pass` satisfy
+CI. Pending, skipped, or neutral checks remain unresolved; a cancelled required
+check is actionable. The expected head is checked before and after each status
+read, and results from an explicitly different head are ignored.
+
+Required contexts can register after a workflow starts. For each required
+context that is absent, the watcher therefore looks for its configured Actions
+producer on the exact expected head, workflow name, and event. A queued or
+running producer remains pending without a registration deadline. A completed
+producer that did not publish its context is immediately
+`required_checks_missing`. When no matching producer exists, the registration
+grace starts; it defaults to five minutes and must not exceed either one hour or
+the overall CI deadline. An unreadable producer response, an empty required-rule
+response, or an unknown required-context mapping fails closed as
+`observation_error`. The final summary names missing contexts and includes
+available producer-run links.
+
+When `required_checks_missing` says there is no producer run, first verify that
+the PR is an ordinary, open, non-draft PR, is not queued, and still has the
+expected head. The owning agent may then make exactly one guarded retry by
+recording the tree, creating and pushing an empty commit, and verifying that the
+tree did not change:
+
+```bash
+git rev-parse HEAD^{tree}
+git commit --allow-empty -m "ci: retrigger required workflows"
+git rev-parse HEAD^{tree}
+git push
+```
+
+Do not use GitHub's update-branch operation or `workflow_dispatch` for this
+recovery. Never mutate a queued PR. If a matching producer is queued or running,
+keep waiting; if it completed without the required context, report a CI incident
+instead of retrying. If the single empty-commit retry also has no producer,
+report an incident and stop. Because an empty commit preserves `HEAD^{tree}`, it
+does not invalidate a completed local verification tied to that tree.
 
 Queue outcomes are `merged` (exit 0), `dequeued`, `closed`, `check_failed`,
 `queue_failed`, or `competing_control` (exit 1), `timeout` (exit 124), and
