@@ -3,6 +3,16 @@
 from collections.abc import Mapping
 
 
+def _format_value(value: object) -> str:
+    """Render strings readably without doubling path separators."""
+    if not isinstance(value, str):
+        return repr(value)
+    escaped = (
+        value.replace("'", "\\'").replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+    )
+    return f"'{escaped}'"
+
+
 def format_differing_fields(expected: Mapping[str, object], actual: Mapping[str, object]) -> str:
     """Return named differences between caller-selected safe fields."""
     missing = object()
@@ -12,8 +22,8 @@ def format_differing_fields(expected: Mapping[str, object], actual: Mapping[str,
         actual_value = actual.get(field, missing)
         if expected_value == actual_value:
             continue
-        expected_text = "<missing>" if expected_value is missing else repr(expected_value)
-        actual_text = "<missing>" if actual_value is missing else repr(actual_value)
+        expected_text = "<missing>" if expected_value is missing else _format_value(expected_value)
+        actual_text = "<missing>" if actual_value is missing else _format_value(actual_value)
         differences.append(f"{field} {expected_text} -> {actual_text}")
     return "; ".join(differences)
 
