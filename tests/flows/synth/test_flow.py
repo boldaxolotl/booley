@@ -55,7 +55,9 @@ from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.recipe import (
     BASELINE_REF_PARAM,
     default_recipe_args,
+    synthesis_recipe_changes,
     synthesis_recipe_snapshot,
+    synthesis_recipe_snapshot_fingerprint,
 )
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import parse_synth_diagnostics
@@ -2665,8 +2667,16 @@ class TestBuildSynthCmd:
             default_recipe_args(),
             target="lite",
         )
-        assert snapshot["schema"] == 2
+        assert snapshot["schema"] == 3
         assert "default_clock_ps" not in snapshot
+
+        previous = {**snapshot, "schema": 2}
+        assert synthesis_recipe_snapshot_fingerprint(previous) != (
+            synthesis_recipe_snapshot_fingerprint(snapshot)
+        )
+        assert synthesis_recipe_changes(previous, snapshot) == [
+            {"path": "schema", "before": 2, "after": 3}
+        ]
 
     def test_default_ppa_profile_forwarded(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state

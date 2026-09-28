@@ -92,12 +92,13 @@ class TestWriteScript:
         assert "Nangate45_stdcell.lef" in text
         assert "initialize_floorplan -utilization 45.000" in text
         assert "FreePDK45_38x28_10R_NP_162NW_34O" in text
+        assert "-core_space {2.8 2.8 2.09 2.09}" in text
+        assert "-core_space 2.0" not in text
         # make_tracks is mandatory — the vendored tech LEF ships no TRACKS, so
         # without it place_pins dies with PPL-0021 (regression guard).
         assert "make_tracks" in text
-        # Select the intended whole flat netlist explicitly. OpenROAD changed
-        # the meaning of a no-argument remove_buffers call in 26Q3.
-        assert "remove_buffers [get_cells *]" in text
+        assert "remove_buffers" in text.splitlines()
+        assert "remove_buffers [get_cells *]" not in text
 
     def test_clockless_sdc_is_runtime_input_error(self, tmp_path):
         text = self._write(tmp_path)

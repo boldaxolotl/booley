@@ -8,9 +8,12 @@ logger -werror "parameter \\SYNTHESIS (0|[0-9]+'s?0+)[[:space:]]*$"
 tee -o effective_params_dut.il dump -n dut
 synth -top dut -noabc -flatten
 dfflibmap -liberty /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib
-tee -o ./log_abc_dut.txt abc -liberty /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib -script +strash;ifraig;balance;rewrite;rewrite,-z;balance;refactor;balance;rewrite;map;print_stats
+tee -o ./log_abc_dut.txt abc -liberty /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib -dont_use FA_X1 -dont_use HA_X1 -script +strash;ifraig;balance;rewrite;rewrite,-z;balance;refactor;balance;rewrite;map;print_stats
 opt
+select -assert-none =A:booley_check_library=1
+read_liberty -lib -nooverwrite -setattr booley_check_library /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib
 tee -q -o ./check_dut.txt check
+delete =A:booley_check_library=1
 write_verilog ./synth_dut.v
 setundef -zero
 splitnets

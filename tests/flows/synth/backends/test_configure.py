@@ -180,6 +180,23 @@ class TestTimingArgs:
         assert args.placement_density == 0.72
         assert args.repair_hold is True
 
+    def test_profile_aware_explicit_density_override_is_preserved(self):
+        from booley.flows.synth.backends import configure as mod
+
+        args = mod._build_parser().parse_args(
+            [
+                "configure",
+                "-t",
+                "top",
+                "--ppa-profile",
+                "balanced",
+                "--placement-density",
+                "0.72",
+            ]
+        )
+        _profile, _yosys, openroad = mod._resolve_ppa_settings(args)
+        assert openroad.placement_density == 0.72
+
     def test_conflicting_abc_controls_are_clean_config_error(self):
         from booley.flows.synth.backends.configure import _build_parser, _resolve_ppa_settings
 

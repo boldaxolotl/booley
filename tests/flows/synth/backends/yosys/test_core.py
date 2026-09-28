@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -51,6 +53,103 @@ class TestResolveLiberty:
         )
         with pytest.raises(SystemExit):
             syn_core.resolve_liberty(None)
+
+
+class TestNangateAbcPolicy:
+    @staticmethod
+    def _script(liberty: Path) -> str:
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        return syn_core._build_yosys_script(
+            [Path("/work/dut.v")],
+            "dut",
+            liberty,
+            Path("/work/out"),
+            False,
+            None,
+            None,
+        )
+
+    @pytest.mark.parametrize(
+        "basename",
+        [
+            "NangateOpenCellLibrary_typical_ccs.lib",
+            "NangateOpenCellLibrary_typical.lib",
+        ],
+    )
+    def test_supported_nangate_libraries_exclude_multi_output_cells(self, basename):
+        script = self._script(Path("/pdk") / basename)
+        assert "abc -liberty" in script
+        assert "-dont_use FA_X1 -dont_use HA_X1" in script
+
+    def test_unrelated_library_has_no_nangate_exclusions(self):
+        script = self._script(Path("/pdk/other.lib"))
+        assert "-dont_use FA_X1" not in script
+        assert "-dont_use HA_X1" not in script
+
+
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="requires the pinned Yosys executable")
+class TestFinalCheckImportIsolation:
+    @staticmethod
+    def _liberty(tmp_path: Path) -> Path:
+        liberty = tmp_path / "other.lib"
+        liberty.write_text(
+            """library(test) {
+  cell(BUF_X1) {
+    area: 1;
+    pin(A) { direction: input; }
+    pin(Z) { direction: output; function: \"A\"; }
+  }
+}
+""",
+            encoding="utf-8",
+        )
+        return liberty
+
+    @staticmethod
+    def _run(tmp_path: Path, rtl: str) -> subprocess.CompletedProcess[str]:
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        source = tmp_path / "dut.v"
+        source.write_text(rtl, encoding="utf-8")
+        script = syn_core._build_yosys_script(
+            [source],
+            "dut",
+            TestFinalCheckImportIsolation._liberty(tmp_path),
+            tmp_path,
+            False,
+            None,
+            None,
+        )
+        script_path = tmp_path / "synth.ys"
+        script_path.write_text("\n".join(script.split("; ")) + "\n", encoding="utf-8")
+        return subprocess.run(
+            ["yosys", "-q", "-s", str(script_path)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_existing_library_cell_module_is_preserved(self, tmp_path):
+        result = self._run(
+            tmp_path,
+            "module BUF_X1(input A, output Z); assign Z = A; endmodule\n"
+            "module dut(input A, output Z); BUF_X1 u_buf(.A(A), .Z(Z)); endmodule\n",
+        )
+        assert result.returncode == 0, result.stderr
+        output = (tmp_path / "synth_dut.v").read_text(encoding="utf-8")
+        assert "module BUF_X1" in output
+
+    def test_reserved_attribute_collision_fails_before_deletion(self, tmp_path):
+        result = self._run(
+            tmp_path,
+            "(* booley_check_library = 1 *) module marker(input A, output Z); "
+            "assign Z = A; endmodule\n"
+            "module dut(input A, output Z); marker u_marker(.A(A), .Z(Z)); endmodule\n",
+        )
+        assert result.returncode != 0
+        assert "Assertion failed" in result.stderr
 
 
 # ---------------------------------------------------------------------------

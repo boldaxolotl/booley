@@ -126,11 +126,27 @@ class TestConfigureSynthesis:
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         script = (plan.build_dir / "synth.ys").read_text(encoding="utf-8")
 
-        check = "tee -q -o ./check_dut.txt check"
-        assert check in script
-        assert script.index("abc -liberty") < script.index(check)
-        assert script.index("opt\n") < script.index(check)
-        assert script.index(check) < script.index("write_verilog")
+        lines = script.splitlines()
+        abc_index = next(i for i, line in enumerate(lines) if "abc -liberty" in line)
+        assert lines[abc_index + 1 : abc_index + 7] == [
+            "opt",
+            "select -assert-none =A:booley_check_library=1",
+            "read_liberty -lib -nooverwrite -setattr booley_check_library "
+            "/opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib",
+            "tee -q -o ./check_dut.txt check",
+            "delete =A:booley_check_library=1",
+            "write_verilog ./synth_dut.v",
+        ]
+        assert not any(
+            token in script
+            for token in (
+                "design -save",
+                "design -load",
+                "design -delete",
+                "design -push",
+                "design -pop",
+            )
+        )
 
     def test_enabled_define_guard_precedes_mapping(self, tmp_path: Path):
         spec = dataclasses.replace(_spec(tmp_path), defines=("ENABLE_ZBB=1", "TRACE=0"))
@@ -518,7 +534,7 @@ class TestResolveSpec:
         assert spec.abc_recipe == "balanced"
         assert spec.generic_abc_before_mapping is False
         assert spec.timing.utilization_pct == 50.0
-        assert spec.timing.placement_density == 0.75
+        assert spec.timing.placement_density == 0.80
 
     def test_compact_profile_resolves_both_backend_recipes(self, tmp_path: Path):
         (tmp_path / "rtl").mkdir()
