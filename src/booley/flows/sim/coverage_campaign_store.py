@@ -55,6 +55,29 @@ MAX_POINTS = 1_000_000
 MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 _SHA256_PREFIX = "sha256:"
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SUMMARY_FIELDS = frozenset(
+    {
+        "$schema",
+        "campaign_id",
+        "invocation",
+        "target",
+        "collector",
+        "build",
+        "coverage_window",
+        "fingerprints",
+        "source_closure",
+        "tests",
+        "artifacts",
+        "normalization",
+        "point_store",
+        "rollups",
+        "source_rollups",
+        "scoring",
+        "collection",
+        "findings",
+        "evaluation",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -540,27 +563,7 @@ def _summary(
     expected_target: DurableTargetIdentity,
     manifest_sha256: str,
 ) -> CoverageCampaignSummary:
-    expected = {
-        "$schema",
-        "campaign_id",
-        "invocation",
-        "target",
-        "collector",
-        "build",
-        "coverage_window",
-        "fingerprints",
-        "source_closure",
-        "tests",
-        "artifacts",
-        "normalization",
-        "point_store",
-        "rollups",
-        "source_rollups",
-        "scoring",
-        "collection",
-        "findings",
-        "evaluation",
-    }
+    expected = set(_SUMMARY_FIELDS)
     schema = document.get("$schema")
     if schema == CAMPAIGN_SCHEMA_V3:
         expected.remove("scoring")

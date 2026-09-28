@@ -450,6 +450,18 @@ def _retain_v3_before_reference(monkeypatch: pytest.MonkeyPatch, *, invalid_scor
     monkeypatch.setattr(coverage_transaction, "publish_coverage_campaign", publish_v3_campaign)
 
 
+def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
+    node = ValidatedManifestNode(
+        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
+    )
+    return ValidatedResumeManifest(
+        node,
+        (),
+        (target.handle,),
+        (ValidatedTargetBinding(node, root.resolve(), target.handle),),
+    )
+
+
 def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     tmp_path: Path,
 ) -> None:
@@ -484,15 +496,7 @@ def test_coverage_resume_reuses_retained_valid_v3_nested_campaign(
         )
     )
     store = CampaignStore(invocation / "targets/sim_0/campaign")
-    node = ValidatedManifestNode(
-        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
-    )
-    validated = ValidatedResumeManifest(
-        node,
-        (),
-        (target.handle,),
-        (ValidatedTargetBinding(node, tmp_path.resolve(), target.handle),),
-    )
+    validated = _validated_resume(store, plan, target, tmp_path)
 
     resumed = campaign.run(
         ResumeCampaignRunRequest(

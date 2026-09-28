@@ -39,7 +39,7 @@ from .run_directory import (
     restore_run_directory,
 )
 from .scheduler import BoundedCampaignScheduler, ScheduledAttempt
-from .store import CampaignRecovery, CampaignStore
+from .store import CampaignRecovery, CampaignStore, WorkItemRecovery
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +199,22 @@ class CampaignOutcome:
     acceptance_ready: bool
     recovery: CampaignRecoveryStatus
     diagnostics: tuple[str, ...] = ()
+
+
+def _coverage_attempt_directory(
+    store: CampaignStore, recovered: WorkItemRecovery
+) -> tuple[SimulationResult, Path]:
+    result = recovered.result
+    assert result is not None
+    attempt = store.latest_attempt(recovered.work_item_id)
+    result_document = result.document
+    if attempt is None or attempt.document["attempt_id"] != result_document["attempt_id"]:
+        raise SimulationCampaignIntegrityError(
+            "coverage aggregate result has no matching Simulation Attempt"
+        )
+    directory = store.work_item_directory(recovered.work_item_id) / "attempts"
+    name = f"{result_document['attempt_ordinal']:04d}-{result_document['attempt_id']}"
+    return result, directory / name
 
 
 class SimulationCampaign:

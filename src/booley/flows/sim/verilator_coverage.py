@@ -83,8 +83,15 @@ class _NativeFormatError(ValueError):
 class _HookEvidenceError(ValueError):
     """A Coverage Window hook contract failed for one simulator process."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        artifact: CoverageArtifact | None = None,
+    ) -> None:
         self.code = code
+        self.artifact = artifact
         super().__init__(message)
 
 
@@ -679,9 +686,9 @@ def _run_failure(
     state: str | None = None,
     artifact: CoverageArtifact | None = None,
     records: tuple[_NativeRecord, ...] = (),
+    hook_artifact: CoverageArtifact | None = None,
     pointer: str = "raw_artifact",
     attributes: Mapping[str, FrozenJson] | None = None,
-    hook_artifact: CoverageArtifact | None = None,
 ) -> _CollectedRun:
     artifact_id = f"artifact:raw:{context.index:03d}" if state else None
     if state is not None:
@@ -721,10 +728,6 @@ def _load_hook_evidence(
         return None, _HookEvidenceError(
             "COV_WINDOW_HOOK_MISSING", "Coverage start hook produced no fresh evidence."
         )
-    try:
-        document = _read_hook_document(context.hook_path, context.run_id)
-    except _HookEvidenceError as exc:
-        return None, exc
     artifact = _artifact(
         context.hook_path,
         request.artifact_root,
@@ -733,6 +736,7 @@ def _load_hook_evidence(
         run_id=context.run_id,
     )
     try:
+        document = _read_hook_document(context.hook_path, context.run_id)
         _validate_hook_events(
             document["events"],
             require_start=not request.reset_included,

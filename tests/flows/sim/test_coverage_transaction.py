@@ -1,14 +1,19 @@
 import json
 import tempfile
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
+import pytest
+
+from booley.flows.sim.campaign_retention import _coverage_owned_files
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, freeze_coverage_mapping
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
 )
+from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import PreSimEvidence
 from booley.flows.sim.flow import SimulateFlow
@@ -18,6 +23,7 @@ from booley.flows.sim.verilator_coverage import (
     SimulationCommandResult,
     SimulationRunResult,
 )
+from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.test_coverage_invocation import project
 
 
@@ -158,9 +164,6 @@ def test_coverage_cli_renders_one_concise_line_per_pre_sim_firing(tmp_path: Path
     assert "sim_0: pre-sim=passed test=wrap duration=0.250s" in rendered
 
 
-import pytest
-
-
 @pytest.mark.parametrize(
     ("failure", "events", "expected_finding", "gated"),
     [
@@ -192,10 +195,13 @@ def test_invalid_hook_evidence_withholds_scores_but_retains_diagnostics(
     expected_finding: str,
     gated: bool,
 ) -> None:
-    from fractions import Fraction
+    plan = _invalid_hook_plan(tmp_path, failure, gated)
+    outcome = run_coverage_target(plan, InvalidHookExecution(events), Progress())
+    _assert_invalid_hook_campaign(outcome, plan, events, expected_finding, gated)
+    _assert_invalid_hook_consumers(tmp_path, outcome)
 
-    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
 
+def _invalid_hook_plan(tmp_path: Path, failure: str, gated: bool):
     context = project(tmp_path)
     if gated:
         criterion = CoverageCriterion(
@@ -216,37 +222,38 @@ def test_invalid_hook_evidence_withholds_scores_but_retains_diagnostics(
         harness="custom_main" if custom_main else "generated_main",
         custom_main_hooks=("write_hook",) if custom_main else (),
     )
-    plan = replace(
+    return replace(
         plan,
-        collection_request=replace(
-            request,
-            target=target,
-            reset_included=custom_main,
-        ),
+        collection_request=replace(request, target=target, reset_included=custom_main),
     )
 
-    class InvalidHookExecution(NativeExecution):
-        def run(self, request):
-            self.runs.append(request)
-            request.raw_path.parent.mkdir(parents=True, exist_ok=True)
-            request.raw_path.write_text(self.payload(self.hits), encoding="utf-8")
-            if events is not None:
-                assert request.hook_evidence_path is not None
-                request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
-                request.hook_evidence_path.write_text(
-                    json.dumps(
-                        {
-                            "$schema": "booley.coverage-hook/v1",
-                            "run_id": request.run_id,
-                            "events": events,
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-            return SimulationRunResult("pass")
 
-    outcome = run_coverage_target(plan, InvalidHookExecution(), Progress())
+class InvalidHookExecution(NativeExecution):
+    def __init__(self, events: list[dict[str, object]] | None) -> None:
+        super().__init__()
+        self.events = events
 
+    def run(self, request):
+        self.runs.append(request)
+        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+        request.raw_path.write_text(self.payload(self.hits), encoding="utf-8")
+        if self.events is not None:
+            assert request.hook_evidence_path is not None
+            request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            request.hook_evidence_path.write_text(
+                json.dumps(
+                    {
+                        "$schema": "booley.coverage-hook/v1",
+                        "run_id": request.run_id,
+                        "events": self.events,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return SimulationRunResult("pass")
+
+
+def _assert_invalid_hook_campaign(outcome, plan, events, expected_finding, gated) -> None:
     assert outcome.exit_code == 2
     document = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
     assert document["$schema"] == "booley.coverage-campaign/v4"
@@ -257,16 +264,17 @@ def test_invalid_hook_evidence_withholds_scores_but_retains_diagnostics(
     assert document["point_store"]["point_count"] > 0
     assert any(item["kind"] == "raw_native" for item in document["artifacts"])
     if events is not None:
-        assert (
-            any(item["kind"] == "coverage_hook_evidence" for item in document["artifacts"])
-            is False
-        )
+        assert any(item["kind"] == "coverage_hook_evidence" for item in document["artifacts"])
     assert expected_finding in {item["code"] for item in document["findings"]}
-    loaded = load_coverage_campaign(
+    persisted = load_coverage_campaign(
         outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
-    ).campaign
+    )
+    loaded = persisted.campaign
     assert loaded.points
     assert loaded.rollups == ()
+    target_dir = outcome.campaign_path.parent
+    owned = _coverage_owned_files(target_dir, target_dir, persisted)
+    assert all(path.absolute() in owned for path in target_dir.glob("hooks/*.json"))
     if gated:
         assert loaded.evaluation["status"] == "blocked"
         assert loaded.evaluation["metrics"] == ()
@@ -274,10 +282,27 @@ def test_invalid_hook_evidence_withholds_scores_but_retains_diagnostics(
             item["code"] != "COV_EVAL_EMPTY_DENOMINATOR"
             for item in loaded.evaluation["diagnostics"]
         )
+
+
+def _assert_invalid_hook_consumers(tmp_path: Path, outcome: CoverageTargetOutcome) -> None:
     simulation = json.loads(outcome.simulation_path.read_text(encoding="utf-8"))
     assert simulation["passed"] is True
     assert simulation["collection"] == "collector_error"
     assert outcome.detail["collection"] == "collector_error"
+    reporting = replace(
+        outcome,
+        campaign_path=tmp_path / "missing-coverage.json",
+        simulation_path=tmp_path / "missing-simulation.json",
+    )
+    assert "collection=collector_error" in SimulateFlow()._coverage_result([reporting]).report_text
+    provider_calls = []
+    analyst = CoverageAnalystSpecialist(model=provider_calls.append)
+    result = analyst.execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(outcome.campaign_path)]
+    )
+    assert result.exit_code == 2
+    assert provider_calls == []
+    assert getattr(analyst, "_evidence_campaign_path", None) is None
 
 
 @pytest.mark.parametrize(
