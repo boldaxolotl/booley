@@ -1412,6 +1412,10 @@ strings, and names must be
 shell-exportable identifiers (`[A-Za-z_][A-Za-z0-9_]*`). `--dry-run` previews
 the exact `export` lines.
 
+Booley reserves `PYTHONPYCACHEPREFIX` and pytest's `cache_dir`, overriding
+Target values so Python artifacts stay under the Project runtime directory
+instead of the source checkout. Pytest cache features remain enabled.
+
 Design fields never appear in `booley.toml`, and neither do the source-category
 directory listings: RTL vs testbench source dirs are derived from the `.core`
 filesets (the `tags:[tb]` partition marks the TB sources). What lives

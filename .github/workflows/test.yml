@@ -1186,7 +1186,7 @@ jobs:
               -o cache_dir=/validation-tmp/pytest-cache &&
               python /work/.github/scripts/assert_junit.py
               /validation-tmp/coverage-release.xml --label coverage-release
-              --min-tests 18 --max-skips 0"
+              --min-tests 19 --max-skips 0"
 
           - name: Run native FST/Verilator cross-validation
             env:

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.targets.domain import TargetHandle
@@ -79,6 +82,35 @@ def test_batch_environment_has_selected_set_without_single_test_name(tmp_path: P
     environment = run.call_args.kwargs["env"]
     assert "BOOLEY_TEST_NAME" not in environment
     assert environment["BOOLEY_TEST_NAMES"] == "reset count"
+
+
+def test_uninitialized_checkout_uses_build_cache_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime.project_dir import reset_cache
+
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    reset_cache()
+    handle = cast(
+        TargetHandle,
+        SimpleNamespace(project_root=tmp_path.resolve(), selector="lite"),
+    )
+    build_root = tmp_path / "build" / "lite"
+    run = MagicMock(return_value=_completed())
+
+    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
+        evidence = run_pre_sim_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=build_root,
+            eda_tool="icarus",
+            timeout_s=5,
+            commands=("true",),
+        )
+
+    assert evidence is not None and evidence.status == "passed"
+    environment = run.call_args.kwargs["env"]
+    assert environment["PYTHONPYCACHEPREFIX"] == str(build_root / "python-artifacts" / "bytecode")
 
 
 def test_explicit_run_cwd_overrides_live_project_configuration(tmp_path: Path) -> None:
@@ -200,3 +232,43 @@ def test_timeout_is_preserved_as_pre_sim_evidence(tmp_path: Path) -> None:
 
     assert evidence is not None
     assert evidence.status == "timed_out"
+
+
+def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, monkeypatch) -> None:
+    from booley.runtime.project_dir import reset_cache
+
+    handle = _handle(tmp_path)
+    helper = tmp_path / "project_helper.py"
+    helper.write_text("VALUE = 42\n", encoding="utf-8")
+    nested = tmp_path / "test_nested.py"
+    nested.write_text("def test_cache_feature():\n    assert True\n", encoding="utf-8")
+    for name in (
+        "PYTHONPYCACHEPREFIX",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+    reset_cache()
+
+    evidence = run_pre_sim_commands(
+        handle,
+        test_names=("smoke",),
+        build_root=tmp_path / "build",
+        eda_tool="icarus",
+        timeout_s=30,
+        commands=(
+            f'"{sys.executable}" -c "import project_helper; assert project_helper.VALUE == 42"',
+            f'"{sys.executable}" -m pytest --lf -q "{nested}"',
+        ),
+    )
+
+    assert evidence is not None and evidence.status == "passed", evidence
+    runtime = tmp_path / ".booley_project" / ".runtime" / "python-artifacts"
+    assert any((runtime / "bytecode").rglob("*.pyc"))
+    assert any((runtime / "pytest").rglob("*"))
+    assert not (tmp_path / "__pycache__").exists()
+    assert not list(tmp_path.glob("*.pyc"))
+    assert not (tmp_path / ".pytest_cache").exists()

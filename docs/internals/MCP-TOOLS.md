@@ -234,6 +234,10 @@ A command-backed `BooleyFlow` overrides `_add_args`, `_build_command`, and
 override `_run()` instead. The minimal Custom Flow below uses the command-backed
 contract without backend-specific machinery.
 
+Booley redirects Python bytecode and pytest caches for Project endpoints and
+their subprocesses to runtime storage. Custom Flows must not depend on cache
+files in the source checkout.
+
 | Method | Responsibility |
 |--------|----------------|
 | `_add_args()` | Add Flow-specific CLI arguments |
