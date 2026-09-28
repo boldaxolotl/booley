@@ -104,7 +104,10 @@ class TestDueReason:
         _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
         (project_dir / "booley.toml").write_text("[project]\nname = 'edited'\n", encoding="utf-8")
 
-        assert auto_doctor.due_reason(tmp_path) == "Doctor inputs changed"
+        reason = auto_doctor.due_reason(tmp_path)
+        assert reason is not None
+        assert reason.startswith("Doctor inputs changed: booley_toml_sha256 ")
+        assert "tests.toml_sha256" not in reason
 
     def test_upgrade_review_state_change_invalidates_result(self, tmp_path: Path):
         project_dir = _project(tmp_path)
@@ -113,7 +116,30 @@ class TestDueReason:
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"schema": 1, "reviewed_through": "1.0.0"}), encoding="utf-8")
 
+        reason = auto_doctor.due_reason(tmp_path)
+        assert reason is not None
+        assert reason.startswith("Doctor inputs changed: upgrade_review_sha256 ")
+
+    @pytest.mark.parametrize("malformed", [None, []])
+    def test_malformed_fingerprint_keeps_generic_reason(self, malformed, tmp_path: Path):
+        _project(tmp_path)
+        payload = _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
+        payload["fingerprint"] = malformed
+        auto_doctor.report_path(tmp_path / ".booley_project").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+
         assert auto_doctor.due_reason(tmp_path) == "Doctor inputs changed"
+
+    def test_non_string_fingerprint_key_keeps_generic_reason(self) -> None:
+        assert (
+            auto_doctor._existing_report_due_reason(
+                {"fingerprint": {1: "bad"}},
+                {"field": "current"},
+                datetime.now(tz=UTC),
+            )
+            == "Doctor inputs changed"
+        )
 
 
 def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monkeypatch):

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from booley.core.differing_fields import format_differing_fields
 from booley.flows.progress_lifecycle import validate_progress_shape
 from booley.runtime.file_lock import LockContentionError
 
@@ -135,7 +136,16 @@ def _target(
         storage = target
     campaign = loaded.campaign
     if campaign.target.selector != selector or campaign.invocation["id"] != int(root.name):
-        raise CampaignRetentionError("Campaign identity disagrees with the exact selection")
+        differences = format_differing_fields(
+            {"target.selector": selector, "invocation.id": int(root.name)},
+            {
+                "target.selector": campaign.target.selector,
+                "invocation.id": campaign.invocation["id"],
+            },
+        )
+        raise CampaignRetentionError(
+            f"Campaign identity disagrees with the exact selection ({differences})"
+        )
     if not require_projection:
         return storage, loaded
     projection = _read_object(target / "simulation.json")
@@ -143,8 +153,15 @@ def _target(
         projection.get("target_identity") != campaign.target.identity
         or projection.get("complete") is not True
     ):
+        differences = format_differing_fields(
+            {"target_identity": campaign.target.identity, "complete": True},
+            {
+                "target_identity": projection.get("target_identity"),
+                "complete": projection.get("complete"),
+            },
+        )
         raise CampaignRetentionError(
-            "Simulation projection is missing or belongs to another Target"
+            f"Simulation projection is missing or belongs to another Target ({differences})"
         )
     return storage, loaded
 
@@ -686,7 +703,11 @@ def _validate_projection_identity(
         "target_identity": status.target_identity,
     }
     if any(projection.document.get(key) != value for key, value in expected.items()):
-        raise CampaignRetentionError("Simulation Campaign projection identity disagrees")
+        actual = {key: projection.document.get(key) for key in expected}
+        differences = format_differing_fields(expected, actual)
+        raise CampaignRetentionError(
+            f"Simulation Campaign projection identity disagrees ({differences})"
+        )
     if projection.trust is ProjectionTrust.TARGET_CONSISTENT_LEGACY and (
         type(projection.document.get("passed")) is not bool
         or type(projection.document.get("inconclusive")) is not bool

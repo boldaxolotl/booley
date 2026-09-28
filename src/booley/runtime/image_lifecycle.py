@@ -20,6 +20,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.core.differing_fields import format_differing_fields
 from booley.runtime import project_image
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
@@ -835,6 +836,20 @@ def _snapshot(nodes: tuple[ImageNode, ...]) -> InputSnapshot:
     )
 
 
+def _snapshot_fields(snapshot: InputSnapshot) -> dict[str, object]:
+    names = (
+        "reference",
+        "effective_inputs",
+        "recipe_fingerprint",
+        "parent_compatibility_key",
+    )
+    return {
+        f"node[{index}].{name}": value
+        for index, identity in enumerate(snapshot.identities)
+        for name, value in zip(names, identity, strict=True)
+    }
+
+
 def _planned_reason(
     node: ImageNode,
     docker: DockerPort,
@@ -1102,7 +1117,12 @@ def validate(
         artifact_policy=prepared.plan.nodes[-1].acquisition_policy,
     )
     if current.input_snapshot != prepared.input_snapshot:
-        raise ImageLifecycleError("image inputs changed while candidates were being prepared")
+        differences = format_differing_fields(
+            _snapshot_fields(prepared.input_snapshot), _snapshot_fields(current.input_snapshot)
+        )
+        raise ImageLifecycleError(
+            f"image inputs changed while candidates were being prepared ({differences})"
+        )
     for image in prepared.candidates:
         if image.candidate_reference == image.reference:
             continue

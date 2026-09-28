@@ -23,6 +23,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.core.differing_fields import format_differing_fields
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
@@ -290,26 +291,64 @@ def _decode_replay_metadata(
         raise sr.SessionError(
             f"Session refresh journal replay metadata is invalid: {exc}"
         ) from exc
-    if version not in {1, _JOURNAL_VERSION} or project_root != str(expected_root):
-        raise sr.SessionError("Session refresh journal identity or version is invalid")
+    expected = {"project_root": str(expected_root)}
+    actual: dict[str, object] = {"project_root": project_root}
+    if version not in {1, _JOURNAL_VERSION}:
+        expected["version"] = (1, _JOURNAL_VERSION)
+        actual["version"] = version
+    if actual != expected:
+        differences = format_differing_fields(expected, actual)
+        raise sr.SessionError(
+            f"Session refresh journal identity or version is invalid ({differences})"
+        )
     return version, transaction_id, phase, direction, target, payload
 
 
 def _validate_journal_identities(journal: _RefreshJournal) -> None:
     if journal.prior_issuance.project_root != str(journal.project_root):
-        raise sr.SessionError("Session refresh journal prior issuance belongs to another Project")
+        differences = format_differing_fields(
+            {"project_root": str(journal.project_root)},
+            {"project_root": journal.prior_issuance.project_root},
+        )
+        raise sr.SessionError(
+            f"Session refresh journal prior issuance belongs to another Project ({differences})"
+        )
     if journal.snapshot.image_id != journal.prior_issuance.image_id:
-        raise sr.SessionError("Session refresh journal predecessor identities disagree")
+        differences = format_differing_fields(
+            {"image_id": journal.prior_issuance.image_id},
+            {"image_id": journal.snapshot.image_id},
+        )
+        raise sr.SessionError(
+            f"Session refresh journal predecessor identities disagree ({differences})"
+        )
     if journal.prior_runtime is not None and (
         journal.prior_runtime.image_id != journal.prior_issuance.image_id
     ):
-        raise sr.SessionError("Session refresh journal predecessor image identities disagree")
+        differences = format_differing_fields(
+            {"image_id": journal.prior_issuance.image_id},
+            {"image_id": journal.prior_runtime.image_id},
+        )
+        raise sr.SessionError(
+            f"Session refresh journal predecessor image identities disagree ({differences})"
+        )
     replacement = journal.replacement_issuance
     if replacement is not None and (
         replacement.project_root != str(journal.project_root)
         or replacement.image_id != journal.target_image_id
     ):
-        raise sr.SessionError("Session refresh journal replacement identities disagree")
+        differences = format_differing_fields(
+            {
+                "project_root": str(journal.project_root),
+                "image_id": journal.target_image_id,
+            },
+            {
+                "project_root": replacement.project_root,
+                "image_id": replacement.image_id,
+            },
+        )
+        raise sr.SessionError(
+            f"Session refresh journal replacement identities disagree ({differences})"
+        )
     if journal.direction is _RecoveryDirection.COMMITTED_FORWARD and (
         journal.phase is not _RefreshPhase.VERIFIED
         or replacement is None
@@ -506,7 +545,13 @@ def _verify_restored_journal(journal: _RefreshJournal) -> None:
     except runtime_spec.RuntimeSpecError as exc:
         raise sr.SessionError(f"restored host issuance did not verify: {exc}") from exc
     if issuance != journal.prior_issuance:
-        raise sr.SessionError("restored host issuance differs from the recorded predecessor")
+        differences = format_differing_fields(
+            runtime_spec.issuance_diagnostic_fields(journal.prior_issuance),
+            runtime_spec.issuance_diagnostic_fields(issuance),
+        )
+        raise sr.SessionError(
+            f"restored host issuance differs from the recorded predecessor ({differences})"
+        )
     if journal.prior_runtime is not None:
         sr.verify_restored_refresh_session(journal.prior_runtime, recovery=True)
 

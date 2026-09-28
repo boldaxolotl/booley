@@ -1424,8 +1424,13 @@ def test_reset_rejects_stale_plan_and_wrong_worktree_identity(
     basis = TicketBaseline((_participant(),))
     plan = _reset_plan(tmp_path, basis, tmp_path / "destination")
     plan.basis_id = "stale"
-    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="does not match"):
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="does not match"
+    ) as raised:
         workspace_ops.reset_basis_worktrees(tmp_path, "ticket", basis, "main", plan=plan)
+    assert "basis_id" in str(raised.value)
+    assert "stale" in str(raised.value)
+    assert "requested_branch" not in str(raised.value)
     outer = tmp_path / "outer"
     outer.mkdir()
     monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: False)

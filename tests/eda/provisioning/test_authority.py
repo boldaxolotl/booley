@@ -144,6 +144,24 @@ def test_issuance_does_not_mount_a_stale_installation_grant(
         pass
 
 
+def test_revalidation_names_the_drifted_installation_field(
+    tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _ = _registered(tmp_path)
+    record = authority.load_state().installations["vivado_2025_2"]
+    monkeypatch.setattr(
+        authority,
+        "inspect_installation",
+        lambda *_args, **_kwargs: Inspection(Path(record.source), "2026.1", record.architecture),
+    )
+
+    with pytest.raises(authority.InstallationValidationError) as raised:
+        authority._revalidate_installation(record, project)
+
+    assert "version '2025.2' -> '2026.1'" in str(raised.value)
+    assert "architecture" not in str(raised.value)
+
+
 def test_exact_project_identity_does_not_authorize_copy(
     tmp_path: Path, private_state: Path
 ) -> None:

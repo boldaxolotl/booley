@@ -162,6 +162,29 @@ def ticket_machine_digest(machine: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(payload)).hexdigest()
 
 
+def ticket_identity_diagnostic_fields(identity: Mapping[str, Any]) -> dict[str, object]:
+    """Project Ticket identity onto bounded fields safe for diagnostics."""
+    projected: dict[str, object] = {
+        key: identity[key]
+        for key in ("schema", "generation", "authored_sha256")
+        if key in identity
+    }
+    baseline = identity.get("baseline")
+    if isinstance(baseline, Mapping):
+        for role, raw_participant in sorted(baseline.items(), key=lambda item: str(item[0])):
+            if not isinstance(role, str) or not isinstance(raw_participant, Mapping):
+                continue
+            for field in ("commit", "ticket_ref", "destination_ref", "destination_commit"):
+                if field in raw_participant:
+                    projected[f"baseline.{role}.{field}"] = raw_participant[field]
+    for field in ("providers", "amendment"):
+        if field in identity:
+            projected[f"{field}.sha256"] = hashlib.sha256(
+                canonical_json(identity[field])
+            ).hexdigest()
+    return projected
+
+
 def ticket_baseline_from_fields(fields: Mapping[str, Any], body: str) -> TicketBaseline:
     """Validate machine metadata and return its pinned repository identities."""
     if "acceptance_basis" in fields:

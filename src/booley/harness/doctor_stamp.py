@@ -31,11 +31,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.core.differing_fields import format_differing_fields
 from booley.harness.doctor_waivers import WAIVER_FILENAME
 from booley.runtime import runtime_context
 from booley.runtime.devcontainer import devcontainer_path
@@ -177,10 +178,19 @@ def check_stamp_advisory(
     if version_message := _version_drift_message(stamp):
         return StampAdvisory(version_message, requires_action=True)
 
-    if stamp.get("fingerprint") != compute_fingerprint(project_dir, project_root):
+    stored_fingerprint = stamp.get("fingerprint")
+    current_fingerprint = compute_fingerprint(project_dir, project_root)
+    if stored_fingerprint != current_fingerprint:
+        details = ""
+        if isinstance(stored_fingerprint, Mapping) and all(
+            isinstance(key, str) for key in stored_fingerprint
+        ):
+            differences = format_differing_fields(stored_fingerprint, current_fingerprint)
+            if differences:
+                details = f": {differences}"
         return StampAdvisory(
             f"Doctor config or devcontainer.json changed since the last clean "
-            f"`booley doctor` run ({passed_on}) -- re-run `booley doctor`"
+            f"`booley doctor` run ({passed_on}){details} -- re-run `booley doctor`"
         )
 
     age_days = ((now or datetime.now(tz=UTC)) - passed_at).days

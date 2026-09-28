@@ -27,6 +27,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.core.differing_fields import format_differing_fields
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
@@ -114,6 +115,25 @@ class SessionSpecInputs:
     fixed_container_environment: tuple[tuple[str, str], ...]
     installation_name: str | None
     license_profile_name: str | None
+
+
+def issuance_diagnostic_fields(issuance: Issuance | None) -> dict[str, object]:
+    """Project a Sandbox issuance onto bounded, operator-safe identity fields."""
+    if issuance is None:
+        return {}
+    return {field.name: getattr(issuance, field.name) for field in fields(Issuance)}
+
+
+def _session_spec_input_fields(inputs: SessionSpecInputs) -> dict[str, object]:
+    values: dict[str, object] = {
+        "project_data_source": str(inputs.project_data_source),
+        "installation": inputs.installation_name,
+        "license_profile": inputs.license_profile_name,
+    }
+    for index, (source, destination) in enumerate(inputs.trusted_eda_mounts):
+        values[f"trusted_eda_mount[{index}].source"] = source
+        values[f"trusted_eda_mount[{index}].destination"] = destination
+    return values
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,12 +271,21 @@ def load_recovery_snapshot(project_root: Path, spec: dict[str, Any], spec_path: 
     """Authenticate the exact prior issuance without consulting current grants."""
     project = project_root.resolve(strict=True)
     issuance = _load_stamp(_stamp_read_path(project))
-    if (
-        issuance.project_root != str(project)
-        or issuance.file_sha256 != _file_sha256(spec_path)
-        or issuance.spec_sha256 != _spec_digest(spec)
-    ):
-        raise RuntimeSpecError("prior Sandbox spec differs from its issuance stamp")
+    expected = {
+        "project_root": str(project),
+        "file_sha256": _file_sha256(spec_path),
+        "spec_sha256": _spec_digest(spec),
+    }
+    actual = {
+        "project_root": issuance.project_root,
+        "file_sha256": issuance.file_sha256,
+        "spec_sha256": issuance.spec_sha256,
+    }
+    if actual != expected:
+        differences = format_differing_fields(actual, expected)
+        raise RuntimeSpecError(
+            f"prior Sandbox spec differs from its issuance stamp ({differences})"
+        )
     expected_keeper = keeper_image(project)
     if issuance.keeper_image != expected_keeper:
         raise RuntimeSpecError("prior Sandbox keeper belongs to a different Project")
@@ -539,9 +568,15 @@ def issue_prepared(
             project,
             vivado_enabled=flow_enabled("fpga", project),
         ) as leased:
-            if prepared.inputs != _session_spec_inputs(project, leased.build):
+            current_inputs = _session_spec_inputs(project, leased.build)
+            if prepared.inputs != current_inputs:
+                differences = format_differing_fields(
+                    _session_spec_input_fields(prepared.inputs),
+                    _session_spec_input_fields(current_inputs),
+                )
                 raise RuntimeSpecError(
-                    "Sandbox authority changed after its specification was prepared"
+                    "Sandbox authority changed after its specification was prepared "
+                    f"({differences})"
                 )
             prospective = _prospective_issuance(
                 project,
@@ -551,8 +586,12 @@ def issue_prepared(
                 prepared.inputs.project_data_source,
             )
             if prepared.prospective_issuance != prospective:
+                differences = format_differing_fields(
+                    issuance_diagnostic_fields(prepared.prospective_issuance),
+                    issuance_diagnostic_fields(prospective),
+                )
                 raise RuntimeSpecError(
-                    "Sandbox policy changed after its specification was prepared"
+                    f"Sandbox policy changed after its specification was prepared ({differences})"
                 )
             requirements = eda_requirements.prepare_runtime_dependencies(
                 project,
@@ -768,10 +807,18 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
         ) as requirements:
             _validate_generated_spec(project, spec, requirements, stamp)
             _validate_bind_sources(spec["mounts"])
-            if stamp.image != spec.get("image") or stamp.image_id != _resolve_image_id(
-                stamp.image
-            ):
-                raise RuntimeSpecError("Sandbox Image tag/digest has drifted since issuance")
+            observed_image_id = _resolve_image_id(stamp.image)
+            if stamp.image != spec.get("image") or stamp.image_id != observed_image_id:
+                observed = {
+                    "image": spec.get("image"),
+                    "image_id": observed_image_id,
+                }
+                differences = format_differing_fields(
+                    {"image": stamp.image, "image_id": stamp.image_id}, observed
+                )
+                raise RuntimeSpecError(
+                    f"Sandbox Image tag/digest has drifted since issuance ({differences})"
+                )
             expected_keeper = keeper_image(project)
             if stamp.keeper_image != expected_keeper:
                 raise RuntimeSpecError("Sandbox Image keeper differs from this Project")
@@ -791,7 +838,19 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
                 stamp.installation != expected_installation
                 or stamp.license_profile != expected_profile
             ):
-                raise RuntimeSpecError("Project grant differs from the issued Sandbox spec")
+                differences = format_differing_fields(
+                    {
+                        "installation": stamp.installation,
+                        "license_profile": stamp.license_profile,
+                    },
+                    {
+                        "installation": expected_installation,
+                        "license_profile": expected_profile,
+                    },
+                )
+                raise RuntimeSpecError(
+                    f"Project grant differs from the issued Sandbox spec ({differences})"
+                )
             if stamp.policy_revision != requirements.policy_revision:
                 raise RuntimeSpecError("Sandbox EDA policy revision has drifted")
             if stamp.relay_image_id != requirements.relay_image_id:
@@ -811,12 +870,21 @@ def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> I
     """Authenticate immutable host issuance fields without trusting bind sources."""
     project = project_root.resolve(strict=True)
     stamp = _load_stamp(_stamp_read_path(project))
-    if (
-        stamp.project_root != str(project)
-        or stamp.file_sha256 != _file_sha256(spec_path)
-        or stamp.spec_sha256 != _spec_digest(spec)
-    ):
-        raise RuntimeSpecError("devcontainer.json differs from its host-issued specification")
+    recorded = {
+        "project_root": stamp.project_root,
+        "file_sha256": stamp.file_sha256,
+        "spec_sha256": stamp.spec_sha256,
+    }
+    observed = {
+        "project_root": str(project),
+        "file_sha256": _file_sha256(spec_path),
+        "spec_sha256": _spec_digest(spec),
+    }
+    if recorded != observed:
+        differences = format_differing_fields(recorded, observed)
+        raise RuntimeSpecError(
+            f"devcontainer.json differs from its host-issued specification ({differences})"
+        )
     _validate_initialize_command(project, spec.get("initializeCommand"))
     validator = _initialize_executable(spec)
     if stamp.validator_sha256 != _file_sha256(validator):

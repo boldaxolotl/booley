@@ -18,12 +18,13 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.core.differing_fields import format_differing_fields
 from booley.harness import doctor_stamp
 from booley.runtime.file_lock import try_file_lock
 from booley.runtime.project_dir import resolve_project_dir
@@ -165,7 +166,12 @@ def _existing_report_due_reason(
     now: datetime,
 ) -> str | None:
     """Evaluate age and input drift for a parsed prior report."""
-    if report.get("fingerprint") != fingerprint:
+    stored = report.get("fingerprint")
+    if stored != fingerprint:
+        if isinstance(stored, Mapping) and all(isinstance(key, str) for key in stored):
+            differences = format_differing_fields(stored, fingerprint)
+            if differences:
+                return f"Doctor inputs changed: {differences}"
         return "Doctor inputs changed"
     checked_at = _parse_time(report.get("checked_at"))
     if checked_at is None:

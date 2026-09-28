@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.core.differing_fields import format_differing_fields
 from booley.ticket_board.ticket_repositories import TicketWorkspace, TicketWorkspaceError
 
 if TYPE_CHECKING:
@@ -272,7 +273,11 @@ class TicketIO:
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
     ) -> TicketBaseline:
         from .amendment import pending_amendment
-        from .ticket_baseline import TicketBaselineError, load_ticket_baseline_from_document
+        from .ticket_baseline import (
+            TicketBaselineError,
+            load_ticket_baseline_from_document,
+            ticket_identity_diagnostic_fields,
+        )
 
         if pending_amendment(self._project_root, slug) is not None:
             raise TicketBaselineError("amendment publication is pending; execution is not ready")
@@ -296,8 +301,13 @@ class TicketIO:
             raise TicketBaselineError(str(exc)) from exc
         snapshot = load_ticket_baseline_from_document(self._project_root, slug, snapshot_document)
         if snapshot.ticket_identity() != basis.ticket_identity():
+            differences = format_differing_fields(
+                ticket_identity_diagnostic_fields(basis.ticket_identity()),
+                ticket_identity_diagnostic_fields(snapshot.ticket_identity()),
+            )
             raise TicketBaselineError(
-                "acceptance-input-change-required: runtime Ticket names another generation"
+                "acceptance-input-change-required: runtime Ticket names another generation "
+                f"({differences})"
             )
         return basis
 

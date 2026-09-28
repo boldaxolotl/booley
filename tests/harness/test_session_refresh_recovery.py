@@ -857,8 +857,10 @@ def test_journal_rejects_mismatched_predecessor_identities(
     _rewrite_journal_value(path, keys, invalid)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
 
-    with pytest.raises(sr.SessionError, match=message):
+    with pytest.raises(sr.SessionError, match=message) as raised:
         session_refresh.recover_project_locked(project)
+    assert keys[-1] in str(raised.value)
+    assert str(invalid) in str(raised.value)
 
 
 def test_journal_rejects_mismatched_or_incomplete_replacement(tmp_path: Path, monkeypatch) -> None:
@@ -870,8 +872,10 @@ def test_journal_rejects_mismatched_or_incomplete_replacement(tmp_path: Path, mo
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
 
     _rewrite_journal_value(path, ("replacement_issuance", "image_id"), "sha256:different")
-    with pytest.raises(sr.SessionError, match="replacement identities disagree"):
+    with pytest.raises(sr.SessionError, match="replacement identities disagree") as raised:
         session_refresh.recover_project_locked(project)
+    assert "image_id" in str(raised.value)
+    assert "sha256:different" in str(raised.value)
 
     config = tmp_path / "incomplete-config"
     path = _write_restore_journal(config, project)

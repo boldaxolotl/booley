@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict
+from booley.core.differing_fields import format_differing_fields
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.review.generation import (
@@ -62,6 +63,7 @@ from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     TicketBaseline,
     TicketBaselineError,
+    ticket_identity_diagnostic_fields,
     validate_current_basis_refs,
 )
 from booley.ticket_board.ticket_jobs import wait_for_ticket_jobs
@@ -334,8 +336,13 @@ def _review_snapshot_heads(
             "Criteria Satisfaction Record is corrupt: participants disagree with Ticket baseline"
         )
     if accepted.snapshot.ticket_identity != basis.ticket_identity():
+        differences = format_differing_fields(
+            ticket_identity_diagnostic_fields(basis.ticket_identity()),
+            ticket_identity_diagnostic_fields(accepted.snapshot.ticket_identity),
+        )
         raise ReviewPrepError(
-            "Criteria Satisfaction Record is corrupt: names a different Ticket generation"
+            "Criteria Satisfaction Record is corrupt: names a different Ticket generation "
+            f"({differences})"
         )
     return accepted.snapshot.participant_heads
 
@@ -378,7 +385,10 @@ def _resolve_review_repositories(
     if repository is not None:
         actual_heads["project"] = repository.head_sha
     if actual_heads != current_heads:
-        raise ReviewPrepError("live review checkouts disagree with Ticket baseline refs")
+        differences = format_differing_fields(current_heads, actual_heads)
+        raise ReviewPrepError(
+            f"live review checkouts disagree with Ticket baseline refs ({differences})"
+        )
     worktrees = {"outer": worktree}
     if repository is not None:
         worktrees["project"] = repository.worktree
@@ -424,9 +434,10 @@ def _review_selection(
     if selected["ticket_generation"] != basis.ticket_identity()["generation"]:
         raise ReviewPrepError("review entry belongs to a different Ticket generation")
     if snapshot_heads is not None and selected["heads"] != snapshot_heads:
+        differences = format_differing_fields(snapshot_heads, selected["heads"])
         raise ReviewPrepError(
             "selected review package is corrupt: heads disagree with the "
-            "Criteria Satisfaction Record"
+            f"Criteria Satisfaction Record ({differences})"
         )
     return selected, selected["heads"], snapshot_heads is not None
 

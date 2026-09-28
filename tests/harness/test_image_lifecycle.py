@@ -350,6 +350,69 @@ def test_validate_rejects_candidates_changed_after_preparation(
         lifecycle.validate(prepared, docker=docker)
 
 
+@pytest.mark.parametrize(
+    ("index", "field"),
+    [
+        (0, "reference"),
+        (1, "effective_inputs"),
+        (2, "recipe_fingerprint"),
+        (3, "parent_compatibility_key"),
+    ],
+)
+def test_validate_names_changed_snapshot_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, index: int, field: str
+) -> None:
+    recorded_identity = ("image:old", "inputs-old", "recipe-old", "parent-old")
+    changed = list(recorded_identity)
+    changed[index] = f"{field}-new"
+    recorded = lifecycle.InputSnapshot((recorded_identity,))
+    current = lifecycle.InputSnapshot((tuple(changed),))
+    prepared = SimpleNamespace(
+        plan=SimpleNamespace(
+            project_root=tmp_path,
+            nodes=(SimpleNamespace(acquisition_policy=lifecycle.ArtifactPolicy.LOCAL_ONLY),),
+        ),
+        input_snapshot=recorded,
+        candidates=(),
+    )
+    monkeypatch.setattr(
+        lifecycle, "plan", lambda *_args, **_kwargs: SimpleNamespace(input_snapshot=current)
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError) as raised:
+        lifecycle.validate(prepared, docker=FakeDocker({}))
+
+    assert f"node[0].{field}" in str(raised.value)
+    assert recorded_identity[index] in str(raised.value)
+    assert changed[index] in str(raised.value)
+
+
+def test_validate_reports_order_only_snapshot_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = ("image:first", "inputs-first", "recipe-first", None)
+    second = ("image:second", "inputs-second", "recipe-second", "parent")
+    recorded = lifecycle.InputSnapshot((first, second))
+    current = lifecycle.InputSnapshot((second, first))
+    prepared = SimpleNamespace(
+        plan=SimpleNamespace(
+            project_root=tmp_path,
+            nodes=(SimpleNamespace(acquisition_policy=lifecycle.ArtifactPolicy.LOCAL_ONLY),),
+        ),
+        input_snapshot=recorded,
+        candidates=(),
+    )
+    monkeypatch.setattr(
+        lifecycle, "plan", lambda *_args, **_kwargs: SimpleNamespace(input_snapshot=current)
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError) as raised:
+        lifecycle.validate(prepared, docker=FakeDocker({}))
+
+    assert "node[0].reference" in str(raised.value)
+    assert "node[1].reference" in str(raised.value)
+
+
 def test_incremental_adapter_build_inputs_cover_each_image_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

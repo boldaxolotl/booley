@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +44,57 @@ def test_coverage_progress_rejects_inconsistent_terminal_phase(tmp_path):
 
     with pytest.raises(ValueError, match="complete and phase disagree"):
         progress.checkpoint(phase="complete")
+
+
+@pytest.mark.parametrize(
+    ("campaign_selector", "invocation_id", "field", "old", "new"),
+    [
+        ("sim_other", 1, "target.selector", "sim_0", "sim_other"),
+        ("sim_0", 2, "invocation.id", "1", "2"),
+    ],
+)
+def test_exact_campaign_selection_names_identity_drift(
+    tmp_path, monkeypatch, campaign_selector, invocation_id, field, old, new
+):
+    from booley.flows.sim import campaign_retention
+
+    objects = iter(
+        [
+            {"flow": "sim", "targets": ["sim_0"]},
+            {"$schema": "not-a-reference"},
+        ]
+    )
+    monkeypatch.setattr(campaign_retention, "_read_object", lambda _path: next(objects))
+    loaded = SimpleNamespace(
+        campaign=SimpleNamespace(
+            target=SimpleNamespace(selector=campaign_selector, identity="target-id"),
+            invocation={"id": invocation_id},
+        )
+    )
+    monkeypatch.setattr(campaign_retention, "load_coverage_campaign", lambda _path: loaded)
+
+    with pytest.raises(campaign_retention.CampaignRetentionError) as raised:
+        campaign_retention._target(tmp_path / "1", "sim_0")
+
+    assert field in str(raised.value)
+    assert old in str(raised.value)
+    assert new in str(raised.value)
+
+
+def test_projection_identity_drift_names_changed_field(tmp_path):
+    from booley.flows.sim import campaign_retention
+
+    status = SimpleNamespace(target_selector="sim_0", target_identity="expected-id")
+    projection = SimpleNamespace(
+        document={"target": "sim_0", "target_identity": "other-id"},
+        trust=campaign_retention.ProjectionTrust.AUTHENTICATED,
+    )
+
+    with pytest.raises(campaign_retention.CampaignRetentionError) as raised:
+        campaign_retention._validate_projection_identity(tmp_path, status, projection)
+
+    assert "target_identity 'expected-id' -> 'other-id'" in str(raised.value)
+    assert "target 'sim_0'" not in str(raised.value)
 
 
 def test_coverage_infrastructure_failure_remains_pending_in_terminal_progress(tmp_path):

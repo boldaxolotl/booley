@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str
+from booley.core.differing_fields import format_differing_fields
 from booley.core.user_paths import config_dir
 from booley.runtime.build_metadata import current_build_metadata
 
@@ -175,8 +176,9 @@ def register_host_installation(
     if destination.exists() and not update:
         current = load_host_installation(destination)
         if current != candidate:
+            differences = format_differing_fields(asdict(current), asdict(candidate))
             raise HostInstallationError(
-                "a different canonical host installation is already recorded; run "
+                f"a different canonical host installation is already recorded ({differences}); run "
                 "`booley bootstrap --update` after an intentional upgrade"
             )
         return current
@@ -200,9 +202,10 @@ def host_install_error(
     except HostInstallationError as exc:
         return str(exc)
     if actual != expected:
+        differences = format_differing_fields(asdict(expected), asdict(actual))
         return (
             "this Booley process does not match the canonical host installation "
-            f"({actual.distribution_root} != {expected.distribution_root}); run the canonical "
+            f"({differences}); run the canonical "
             "host `booley bootstrap --update` if this upgrade is intentional"
         )
     return None

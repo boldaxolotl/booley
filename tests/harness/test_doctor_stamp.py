@@ -113,6 +113,23 @@ class TestCheckStamp:
 
         assert msg is not None
         assert "changed since the last clean" in msg
+        assert "booley_toml_sha256" in msg
+        assert "devcontainer_json_sha256" not in msg
+        assert "-- re-run `booley doctor`" in msg
+
+    def test_malformed_fingerprint_keeps_generic_advisory(self, tmp_path, monkeypatch):
+        project_dir = _write_project(tmp_path)
+        doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
+        stamp = doctor_stamp.load_stamp(project_dir)
+        assert stamp is not None
+        stamp["fingerprint"] = []
+        monkeypatch.setattr(doctor_stamp, "load_stamp", lambda _project_dir: stamp)
+
+        msg = doctor_stamp.check_stamp(project_dir, tmp_path)
+
+        assert msg is not None
+        assert "changed since the last clean" in msg
+        assert "sha256" not in msg
 
     def test_regenerated_devcontainer_invalidates_stamp(self, tmp_path):
         project_dir = _write_project(tmp_path)

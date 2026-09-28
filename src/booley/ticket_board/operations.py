@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.core.differing_fields import format_differing_fields
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import format_human_datetime
 from booley.ticket_board.ticket_repositories import TicketWorkspace, WorkspaceDisposition
@@ -1029,14 +1030,20 @@ def _validate_accepted_snapshot(
     from .ticket_baseline import (
         assert_live_inputs_unchanged,
         materialize_ticket_commits,
+        ticket_identity_diagnostic_fields,
     )
 
     if require_review_package_binding:
         validate_review_package_binding(log_dir, snapshot)
     basis = tio.load_basis(slug)
     if snapshot.ticket_identity != basis.ticket_identity():
+        differences = format_differing_fields(
+            ticket_identity_diagnostic_fields(basis.ticket_identity()),
+            ticket_identity_diagnostic_fields(snapshot.ticket_identity),
+        )
         raise AcceptanceLedgerError(
-            "Criteria Satisfaction Record names a different Board Ticket generation"
+            "Criteria Satisfaction Record names a different Board Ticket generation "
+            f"({differences})"
         )
     with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
         snapshot_sources = snapshot.participant_heads

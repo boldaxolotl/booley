@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.core.boundary import require_dict
+from booley.core.differing_fields import format_differing_fields
 from booley.criteria.state import DevelopmentState
 from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import is_pid_alive
@@ -202,6 +203,19 @@ def _claim(tio: TicketIO, slug: str, action: str, reason: str, repair: bool) -> 
         return operation
 
 
+def _review_repository_fields(
+    repository: prep.ProjectReviewRepository | None,
+) -> dict[str, object]:
+    if repository is None:
+        return {}
+    return {
+        "project.repository": str(repository.worktree),
+        "project.base_head": repository.base_sha,
+        "project.head": repository.head_sha,
+        "project.branch": repository.feature_branch,
+    }
+
+
 def _check_capture(tio: TicketIO, ctx: prep.ReviewPrepContext, expected: str) -> None:
     assert ctx.inspection is not None
     _quiescent(tio, ctx.slug)
@@ -220,7 +234,14 @@ def _check_capture(tio: TicketIO, ctx: prep.ReviewPrepContext, expected: str) ->
         locked_basis=basis,
     )
     if current.head_sha != ctx.head_sha or current.project_repository != ctx.project_repository:
-        raise ReviewEntryError("review heads changed during generation")
+        differences = format_differing_fields(
+            {"outer.head": ctx.head_sha, **_review_repository_fields(ctx.project_repository)},
+            {
+                "outer.head": current.head_sha,
+                **_review_repository_fields(current.project_repository),
+            },
+        )
+        raise ReviewEntryError(f"review heads changed during generation ({differences})")
     prep._require_unchanged(ctx, expected, "review inputs changed during generation")
 
 
@@ -231,7 +252,9 @@ def _publish_acceptance(ctx: prep.ReviewPrepContext, operation: dict[str, Any]) 
     if accepted.kind == "accepted":
         snapshot = accepted.snapshot
         if snapshot is None or snapshot.participant_heads != row["heads"]:
-            raise ReviewEntryError("interrupted acceptance names different heads")
+            recorded_heads = {} if snapshot is None else snapshot.participant_heads
+            differences = format_differing_fields(recorded_heads, row["heads"])
+            raise ReviewEntryError(f"interrupted acceptance names different heads ({differences})")
     else:
         snapshot = freeze_acceptance(
             ctx.log_dir,
@@ -397,8 +420,13 @@ def _validate_regeneration(
         if drift is not None:
             raise StaleAcceptanceError(drift)
         if prior is None or prior["state"] != ctx.inspection["state"]:
+            differences = format_differing_fields(
+                {} if prior is None else {"state": prior["state"]},
+                {"state": ctx.inspection["state"]},
+            )
             raise ReviewEntryError(
-                "accepted review inspection disagrees with the Criteria Satisfaction Record"
+                "accepted review inspection disagrees with the Criteria Satisfaction Record "
+                f"({differences})"
             )
         return
     if (
@@ -406,7 +434,19 @@ def _validate_regeneration(
         or prior["heads"] != ctx.inspection["heads"]
         or prior["state"] != ctx.inspection["state"]
     ):
-        raise ReviewEntryError("inspection changed; use board review to select new inputs")
+        recorded = (
+            {}
+            if prior is None
+            else {"state": prior["state"], **{f"head.{k}": v for k, v in prior["heads"].items()}}
+        )
+        current = {
+            "state": ctx.inspection["state"],
+            **{f"head.{k}": v for k, v in ctx.inspection["heads"].items()},
+        }
+        differences = format_differing_fields(recorded, current)
+        raise ReviewEntryError(
+            f"inspection changed; use board review to select new inputs ({differences})"
+        )
 
 
 async def _generate(tio: TicketIO, slug: str, operation: dict[str, Any]) -> prep.ReviewPrepOutcome:
@@ -513,9 +553,12 @@ def _selected_context(tio: TicketIO, slug: str) -> prep.ReviewPrepContext:
                 "Criteria Satisfaction Record is corrupt: accepted result has no snapshot"
             )
         if row["heads"] != accepted.snapshot.participant_heads:
+            differences = format_differing_fields(
+                accepted.snapshot.participant_heads, row["heads"]
+            )
             raise ReviewEntryError(
                 "selected review package is corrupt: heads disagree with the "
-                "Criteria Satisfaction Record"
+                f"Criteria Satisfaction Record ({differences})"
             )
     ctx = prep._resolve_context(
         tio._project_root,

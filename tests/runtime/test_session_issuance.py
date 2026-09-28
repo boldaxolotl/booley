@@ -220,8 +220,10 @@ def test_issue_prepared_rejects_authority_drift_before_persisting(
     )
     monkeypatch.setattr(runtime_spec, "_persist_prepared", persist)
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="authority changed"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="authority changed") as raised:
         runtime_spec.issue_prepared(project, prepared)
+    assert "license_profile None -> 'changed'" in str(raised.value)
+    assert "fixed_container_environment" not in str(raised.value)
 
     prepare_dependencies.assert_not_called()
     persist.assert_not_called()
@@ -943,8 +945,10 @@ def test_validate_rejects_runtime_image_digest_drift(issued, monkeypatch) -> Non
     project, spec, path, _stamp = issued
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:other")
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="tag/digest has drifted"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="tag/digest has drifted") as raised:
         runtime_spec.validate(project, spec, path)
+    assert "image_id" in str(raised.value)
+    assert "sha256:other" in str(raised.value)
 
 
 def test_validate_rejects_keeper_for_another_project(issued, monkeypatch) -> None:
