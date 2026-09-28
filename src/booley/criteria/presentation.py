@@ -22,11 +22,17 @@ _MAX_PRESENTATION_TEXT_BYTES = 2 * 1024
 
 
 @dataclass(frozen=True)
-class _CriterionPresentation:
+class CriterionPresentation:
     """Human-facing identity and supporting detail for one criterion."""
 
     label: str
+    context: str
+    requirement: str
+    observation: str
     detail: str
+
+
+_CriterionPresentation = CriterionPresentation
 
 
 _ScopeKind = Literal["plain", "target", "cycle", "sim", "review_tb"]
@@ -180,12 +186,19 @@ def _family_for(key: str) -> _CriterionFamily | None:
     return next((family for family in _FAMILIES if family.matches(key)), None)
 
 
-def _target_name(key: str, family: _CriterionFamily, params: dict) -> str:
+def _target_identity(key: str, family: _CriterionFamily, params: dict) -> str:
     target = as_str(params.get("target"))
     if target:
         return target
     prefix = f"{family.prefix}_"
     return key.removeprefix(prefix) if key.startswith(prefix) else ""
+
+
+def _target_presentation(key: str, family: _CriterionFamily, params: dict) -> tuple[str, str]:
+    identity = _target_identity(key, family, params)
+    if "#" not in identity:
+        return identity, ""
+    return identity.rsplit("#", 1)[-1], f"target {identity}"
 
 
 def _short_path(value: object) -> str:
@@ -210,15 +223,18 @@ def _criterion_identity(key: str, family: _CriterionFamily, params: dict) -> tup
     if family.scope == "review_tb":
         target = as_str(params.get("target"))
         return family.label, f"target {target}" if target else ""
-    target = _target_name(key, family, params)
+    target, target_context = _target_presentation(key, family, params)
     if family.scope == "cycle":
         test = as_str(params.get("test"))
         label = f"{family.label} · {test}" if test else family.label
-        return label, f"target {target}" if target else ""
+        return label, target_context or (f"target {target}" if target else "")
     if family.scope == "sim":
         label = f"{family.label} · {target}" if target else family.label
-        return label, _simulation_context(params)
-    return (f"{family.label} · {target}" if target else family.label, "")
+        context = " · ".join(
+            part for part in (target_context, _simulation_context(params)) if part
+        )
+        return label, context
+    return (f"{family.label} · {target}" if target else family.label, target_context)
 
 
 def _format_number(value: object) -> str:
@@ -458,15 +474,25 @@ def _format_coverage_observation(params: dict, detail: dict) -> str:
     configured = as_dict(params.get("metrics"), default={})
     if not configured:
         return str(detail.get("status") or "")
-    observed = {
-        as_str(metric.get("metric")): metric.get("actual_percent")
-        for metric in _coverage_metrics(detail)
-    }
+    observed = {as_str(metric.get("metric")): metric for metric in _coverage_metrics(detail)}
     parts = []
     for metric in configured:
-        value = observed.get(str(metric))
-        if as_float(value) is not None:
-            parts.append(f"{str(metric).replace('_', ' ')} {_format_percent(value)}")
+        evidence = observed.get(str(metric))
+        if evidence is None:
+            continue
+        label = str(metric).replace("_", " ")
+        covered = as_int(evidence.get("covered_points"))
+        eligible = as_int(evidence.get("eligible_points"))
+        actual = evidence.get("actual_percent")
+        if covered is not None and eligible is not None:
+            score = (
+                f"{covered}/{eligible} (not scorable)"
+                if eligible == 0 or as_float(actual) is None
+                else f"{covered}/{eligible} ({_format_percent(actual)})"
+            )
+            parts.append(f"{label} {score}")
+        elif as_float(actual) is not None:
+            parts.append(f"{label} {_format_percent(actual)}")
     return " · ".join(parts)
 
 
@@ -520,19 +546,22 @@ def _format_metric(key: str, entry: object) -> str:
     return _format_observation(family, detail, params, data.get("stale") is True)
 
 
-def _format_criterion_presentation(key: str, entry: object) -> _CriterionPresentation:
+def criterion_presentation(key: str, entry: object) -> CriterionPresentation:
     """Build the complete human-facing presentation for one criterion."""
     data = as_dict(entry, default={})
     projected = as_dict(data.get("presentation"), default={})
     projected_label = as_str(projected.get("label"))
     if projected_label:
-        return _CriterionPresentation(
+        return CriterionPresentation(
             label=projected_label,
+            context="",
+            requirement="",
+            observation="",
             detail=as_str(projected.get("detail")),
         )
     family = _family_for(key)
     if family is None:
-        return _CriterionPresentation(label=key, detail="")
+        return CriterionPresentation(key, "", "", "", "")
     params = as_dict(data.get("params"), default={})
     label, context = _criterion_identity(key, family, params)
     requirement = _format_requirement(key, family, params)
@@ -543,7 +572,30 @@ def _format_criterion_presentation(key: str, entry: object) -> _CriterionPresent
         detail_parts.append(f"{qualifier} {requirement}")
     if observation and observation != "?":
         detail_parts.append(f"observed {observation}")
-    return _CriterionPresentation(label=label, detail=" · ".join(detail_parts))
+    return CriterionPresentation(
+        label=label,
+        context=context,
+        requirement=requirement,
+        observation="" if observation == "?" else observation,
+        detail=" · ".join(detail_parts),
+    )
+
+
+def state_criterion_presentation(
+    key: str, entry: object, stale: bool = False
+) -> CriterionPresentation:
+    """Present one normalized durable Criterion entry without persisted overrides."""
+    from booley.criteria.state import CriterionEntry
+
+    normalized = CriterionEntry.from_dict(as_dict(entry, default={})).to_dict()
+    if stale:
+        normalized["stale"] = True
+    return criterion_presentation(key, normalized)
+
+
+def _format_criterion_presentation(key: str, entry: object) -> _CriterionPresentation:
+    """Backward-compatible private alias for Console consumers."""
+    return criterion_presentation(key, entry)
 
 
 def _bounded_text(value: str) -> str:
@@ -563,7 +615,7 @@ def criteria_display_snapshot(state: DevelopmentState) -> dict[str, dict[str, An
         if key.startswith("_"):
             continue
         durable = entry.to_dict()
-        presentation = _format_criterion_presentation(key, durable)
+        presentation = criterion_presentation(key, durable)
         projected: dict[str, Any] = {
             "met": entry.met,
             "mandatory": entry.mandatory,

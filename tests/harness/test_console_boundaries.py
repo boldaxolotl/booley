@@ -259,6 +259,57 @@ def test_malformed_metric_detail_degrades_without_raising(
             "required line ≥ 90% · observed line 92.5%",
         ),
         (
+            "coverage_encoded",
+            {
+                "mandatory": True,
+                "params": {
+                    "target": "vendor:library:core:1#sim_generated",
+                    "metrics": {"line": {"min_pct": 90}},
+                },
+                "detail": {
+                    "evaluation": {
+                        "metrics": [
+                            {
+                                "metric": "line",
+                                "covered_points": 3,
+                                "eligible_points": 3,
+                                "actual_percent": 100,
+                            }
+                        ]
+                    }
+                },
+            },
+            "Coverage · sim_generated",
+            (
+                "target vendor:library:core:1#sim_generated · required line ≥ 90% "
+                "· observed line 3/3 (100%)"
+            ),
+        ),
+        (
+            "coverage_zero",
+            {
+                "mandatory": True,
+                "params": {
+                    "target": "sim_empty",
+                    "metrics": {"line": {"min_pct": 90}},
+                },
+                "detail": {
+                    "evaluation": {
+                        "metrics": [
+                            {
+                                "metric": "line",
+                                "covered_points": 0,
+                                "eligible_points": 0,
+                                "actual_percent": None,
+                            }
+                        ]
+                    }
+                },
+            },
+            "Coverage · sim_empty",
+            "required line ≥ 90% · observed line 0/0 (not scorable)",
+        ),
+        (
             "review_rtl_bugs_done",
             {"mandatory": True},
             "RTL bugs review",

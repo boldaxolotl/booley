@@ -44,6 +44,7 @@ def test_render_escapes_agent_text_and_owns_active_content() -> None:
         "criteria": [
             {
                 "criterion": "review_security_done",
+                "label": "RTL security review",
                 "outcome": "met",
                 "freshness": "stale",
                 "changed_categories": ["tb", "rtl<script>"],
@@ -59,7 +60,8 @@ def test_render_escapes_agent_text_and_owns_active_content() -> None:
     assert 'data-feedback="Correct &amp; &quot;safe&quot;."' in rendered
     assert rendered.count("<script>") == 1
     assert "Content-Security-Policy" in rendered
-    assert "review_security_done" in rendered
+    assert "RTL security review" in rendered
+    assert "review_security_done" not in rendered
     assert "<td>met</td><td>STALE (tb, rtl&lt;script&gt;)</td>" in rendered
 
 

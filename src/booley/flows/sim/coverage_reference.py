@@ -121,6 +121,13 @@ def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
     """Load the reference and authenticate only its selected nested campaign."""
     absolute = path.absolute()
     raw = _read_regular(absolute, "Coverage Campaign reference", MAX_REFERENCE_BYTES)
+    return _resolve_coverage_campaign_reference_bytes(absolute, raw)
+
+
+def _resolve_coverage_campaign_reference_bytes(
+    absolute: Path, raw: bytes
+) -> ResolvedCoverageCampaign:
+    """Resolve one already-authenticated public reference byte sequence."""
     reference = decode_coverage_campaign_reference(raw)
     document = reference.document
     nested = cast(Mapping[str, object], document["coverage_campaign"])
@@ -161,6 +168,50 @@ def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
             "nested Coverage Campaign path disagrees with Simulation Attempt identity"
         )
     return ResolvedCoverageCampaign(reference, absolute, campaign_path, loaded)
+
+
+def resolve_persisted_coverage_campaign_reference(
+    reports_root: Path, value: object
+) -> ResolvedCoverageCampaign:
+    """Authenticate an acceptance-state pointer and its selected nested Campaign."""
+    persisted = _exact(
+        value,
+        {"path_base", "path", "bytes", "sha256", "nested_campaign_sha256"},
+        "persisted coverage_campaign_reference",
+    )
+    if persisted["path_base"] != "reports_root":
+        raise CoverageCampaignReferenceError(
+            "persisted coverage_campaign_reference path_base is invalid"
+        )
+    relative = _relative_path(persisted["path"])
+    try:
+        expected_bytes = require_int(persisted["bytes"], field="coverage_campaign_reference.bytes")
+    except BoundaryError as exc:
+        raise CoverageCampaignReferenceError(
+            "persisted coverage_campaign_reference bytes is invalid"
+        ) from exc
+    if expected_bytes < 1 or expected_bytes > MAX_REFERENCE_BYTES:
+        raise CoverageCampaignReferenceError(
+            "persisted coverage_campaign_reference bytes is invalid"
+        )
+    _digest(persisted["sha256"], "coverage_campaign_reference.sha256")
+    _digest(
+        persisted["nested_campaign_sha256"],
+        "coverage_campaign_reference.nested_campaign_sha256",
+    )
+    public_path = _contained_relative(reports_root.absolute(), relative)
+    raw = _read_regular(public_path, "Coverage Campaign reference", MAX_REFERENCE_BYTES)
+    if len(raw) != expected_bytes or _digest_bytes(raw) != persisted["sha256"]:
+        raise CoverageCampaignReferenceError(
+            "persisted Coverage Campaign reference bytes disagree with acceptance state"
+        )
+    resolved = _resolve_coverage_campaign_reference_bytes(public_path, raw)
+    nested = cast(Mapping[str, object], resolved.reference.document["coverage_campaign"])
+    if nested["sha256"] != persisted["nested_campaign_sha256"]:
+        raise CoverageCampaignReferenceError(
+            "persisted nested Coverage Campaign digest disagrees with public reference"
+        )
+    return resolved
 
 
 def build_coverage_campaign_reference(
@@ -425,4 +476,5 @@ __all__ = [
     "encode_coverage_campaign_reference",
     "publish_coverage_campaign_reference",
     "resolve_coverage_campaign_reference",
+    "resolve_persisted_coverage_campaign_reference",
 ]
