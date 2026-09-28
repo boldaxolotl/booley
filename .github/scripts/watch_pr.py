@@ -44,13 +44,16 @@ TRANSIENT_ERROR = re.compile(
 IMMEDIATE_ERROR = re.compile(
     r"(?:auth|permission|forbidden|unauthor|invalid|unknown field|schema)", re.I
 )
-REQUIRED_CHECK_PRODUCERS = {
-    "ci-required": ("Tests", "pull_request"),
-    "confidential-content": ("Confidential content", "pull_request_target"),
-}
-ACTIVE_PRODUCER_STATUSES = {"in_progress", "pending", "queued", "requested", "waiting"}
-PRODUCER_STATUSES = ACTIVE_PRODUCER_STATUSES | {
+NO_CHECKS_REPORTED = re.compile(r"^no checks reported on .+ branch$", re.I)
+NONTERMINAL_PRODUCER_STATUSES = {
     "action_required",
+    "in_progress",
+    "pending",
+    "queued",
+    "requested",
+    "waiting",
+}
+PRODUCER_STATUSES = NONTERMINAL_PRODUCER_STATUSES | {
     "cancelled",
     "completed",
     "failure",
@@ -107,6 +110,12 @@ class Comment:
 
 
 @dataclass(frozen=True)
+class ProducerIdentity:
+    workflow: str
+    event: str
+
+
+@dataclass(frozen=True)
 class ProducerRun:
     workflow: str
     event: str
@@ -117,6 +126,12 @@ class ProducerRun:
     created_at: str
     database_id: int
     url: str
+
+
+REQUIRED_CHECK_PRODUCERS = {
+    "ci-required": ProducerIdentity("Tests", "pull_request"),
+    "confidential-content": ProducerIdentity("Confidential content", "pull_request_target"),
+}
 
 
 @dataclass(frozen=True)
@@ -198,6 +213,23 @@ def _redact_error(text: str) -> str:
 
 def _is_transient(text: str) -> bool:
     return bool(TRANSIENT_ERROR.search(text)) and not IMMEDIATE_ERROR.search(text)
+
+
+def _empty_json_response(
+    returncode: int,
+    stderr: str,
+    *,
+    empty_exit_codes: frozenset[int],
+) -> list[Any]:
+    message = _redact_error(stderr)
+    expected_empty = not stderr.strip() or NO_CHECKS_REPORTED.fullmatch(message)
+    if returncode in empty_exit_codes and expected_empty:
+        return []
+    if _is_transient(message):
+        raise ConnectionError(message)
+    if stderr.strip():
+        raise WatchError("gh read failed")
+    raise WatchError("gh returned empty JSON")
 
 
 def _json_object(value: Any, field_name: str) -> dict[str, Any]:
@@ -419,7 +451,7 @@ class GhTransport:
         remaining: float,
         *,
         accepted: set[int],
-        allow_empty: bool = False,
+        empty_exit_codes: frozenset[int] = frozenset(),
     ) -> Any:
         if self.cancelled:
             raise CancelledWatchError("cancelled")
@@ -452,8 +484,12 @@ class GhTransport:
             if _is_transient(message):
                 raise ConnectionError(message)
             raise WatchError("gh read failed")
-        if allow_empty and not stdout.strip():
-            return []
+        if not stdout.strip():
+            return _empty_json_response(
+                process.returncode,
+                stderr,
+                empty_exit_codes=empty_exit_codes,
+            )
         try:
             return json.loads(stdout)
         except json.JSONDecodeError as error:
@@ -465,7 +501,7 @@ class GhTransport:
         deadline: float,
         *,
         accepted: set[int] | None = None,
-        allow_empty: bool = False,
+        empty_exit_codes: frozenset[int] = frozenset(),
     ) -> Any:
         if accepted is None:
             accepted = {0}
@@ -475,7 +511,12 @@ class GhTransport:
                 raise CancelledWatchError("cancelled")
             remaining = deadline - self._clock.monotonic()
             try:
-                return self._run(args, remaining, accepted=accepted, allow_empty=allow_empty)
+                return self._run(
+                    args,
+                    remaining,
+                    accepted=accepted,
+                    empty_exit_codes=empty_exit_codes,
+                )
             except ConnectionError as error:
                 last_error = error
                 if attempt == 2:
@@ -502,7 +543,7 @@ class GhTransport:
             ["pr", "checks", str(pr), "--repo", repo, "--required", "--json", fields],
             deadline,
             accepted={0, 1, 8},
-            allow_empty=True,
+            empty_exit_codes=frozenset({1, 8}),
         )
 
     def _producer_runs(self, repo: str, head: str, deadline: float) -> tuple[ProducerRun, ...]:
@@ -552,6 +593,7 @@ class GhTransport:
         producer_runs = ()
         if not required_check_names.issubset(observed_names):
             producer_runs = self._producer_runs(repo, first_head, deadline)
+            checks = self._checks(repo, pr, deadline)
         final = self._pull(repo, pr, deadline)
         final_obj = _json_object(final, "pull request")
         final_head = _text(final_obj.get("headRefOid"), "pull request.headRefOid", optional=True)
@@ -641,13 +683,15 @@ def classify_ci(snapshot: Snapshot, expected_head: str) -> Decision:
         return Decision(Outcome.HEAD_CHANGED, True)
     if snapshot.state == "closed":
         return Decision(Outcome.CLOSED, True)
+    if not snapshot.required_check_names:
+        raise WatchError("no required checks were returned by branch rules")
     current = _latest_checks(snapshot.checks, expected_head)
-    observed_names = {check.name for check in current}
-    if not current or not snapshot.required_check_names.issubset(observed_names):
-        return Decision(Outcome.PENDING, False)
     failures = tuple(check for check in current if check.bucket in {"fail", "cancel"})
     if failures:
         return Decision(Outcome.CHECK_FAILED, True, _failure_links(failures))
+    observed_names = {check.name for check in current}
+    if not current or not snapshot.required_check_names.issubset(observed_names):
+        return Decision(Outcome.PENDING, False)
     if all(check.bucket == "pass" for check in current):
         return Decision(
             Outcome.CI_PASSED, True, _bounded_links(check.link for check in current if check.link)
@@ -670,6 +714,10 @@ def _latest_producer_run(
     if not matching:
         return None
     return max(matching, key=lambda run: (run.created_at, run.attempt, run.database_id))
+
+
+def _producer_is_nonterminal(run: ProducerRun) -> bool:
+    return run.status in NONTERMINAL_PRODUCER_STATUSES or run.conclusion == "action_required"
 
 
 def classify_missing_producers(
@@ -698,12 +746,12 @@ def classify_missing_producers(
         run = _latest_producer_run(
             snapshot.producer_runs,
             expected_head=expected_head,
-            workflow=producer[0],
-            event=producer[1],
+            workflow=producer.workflow,
+            event=producer.event,
         )
         if run is not None:
             memory.unregistered_since.pop(name, None)
-            if run.status not in ACTIVE_PRODUCER_STATUSES:
+            if not _producer_is_nonterminal(run):
                 terminal.append(name)
                 links.append(run.url)
             continue
