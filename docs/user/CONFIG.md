@@ -526,7 +526,7 @@ targets:
         # abc_delay_ps: 3333
       advanced_settings_openroad:
         utilization_pct: 50
-        placement_density: 0.75
+        placement_density: 0.80
     filesets: [rtl, timing_constraints, synth_memory]
     parameters: [SYNTH_MEMORY_SURROGATE]
     toplevel: top
@@ -574,8 +574,8 @@ overrides and deliberately remain backend-specific.
 | Profile | Yosys mapping | OpenROAD utilization / density |
 | --- | --- | --- |
 | `compact` | one default liberty-aware ABC pass | 40% / 0.65 |
-| `balanced` | one balanced liberty-aware ABC pass | 50% / 0.75 |
-| `max_frequency` | one fast liberty-aware ABC pass | 50% / 0.75 |
+| `balanced` | one balanced liberty-aware ABC pass | 50% / 0.80 |
+| `max_frequency` | one fast liberty-aware ABC pass | 50% / 0.80 |
 
 All profiles run `synth -noabc`, followed by `dfflibmap` and exactly one
 liberty-aware ABC pass. `--ppa-profile` and `--flatten`/`--no-flatten` override

@@ -14,8 +14,8 @@ from booley.flows.synth.profiles import validate_ppa_profile
     ("profile", "abc", "util", "density"),
     [
         ("compact", "default", 40.0, 0.65),
-        ("balanced", "balanced", 50.0, 0.75),
-        ("max_frequency", "fast", 50.0, 0.75),
+        ("balanced", "balanced", 50.0, 0.80),
+        ("max_frequency", "fast", 50.0, 0.80),
     ],
 )
 def test_profile_backend_translations(profile, abc, util, density):
@@ -28,6 +28,12 @@ def test_profile_backend_translations(profile, abc, util, density):
 def test_invalid_profile_rejected():
     with pytest.raises(BoundaryError, match="must be one of"):
         validate_ppa_profile("small")
+
+
+def test_explicit_openroad_density_override_is_preserved():
+    base = openroad_ppa.openroad_profile("balanced")
+    resolved = openroad_ppa.with_openroad_overrides(base, placement_density=0.72)
+    assert resolved.placement_density == 0.72
 
 
 def test_raw_script_and_named_recipe_are_mutually_exclusive():

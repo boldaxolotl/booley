@@ -645,11 +645,22 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
     )
     assert "global_placement" in probe
     assert "detailed_placement" in probe
-    assert 'run_openroad "repair-off" 0' in probe
-    assert 'run_openroad "repair-on" 1' in probe
-    assert "repair_timing -setup" in probe
-    assert "report_design_area" in probe
+    assert 'run_openroad "repair-off"' in probe
+    assert 'run_openroad "repair-on"' in probe
+    assert '(("repair-off", False), ("repair-on", True))' in probe
+    assert "Design area" in probe
     assert "QT_QPA_PLATFORM=offscreen openroad -gui -exit -no_init -no_splash /dev/null" in probe
+    assert "_build_yosys_script" in probe
+    assert "write_openroad_script" in probe
+    assert "u_probe_buffer" in probe
+    assert "Removed [1-9][0-9]* buffers" in probe
+    assert r"Wire dut.\intentional_undriven is used but has no driver" in probe
+    assert "read_liberty -lib -nooverwrite -setattr booley_check_library" in probe
+    assert "log_abc_dut.txt" in probe
+    assert "if grep -E '^\\[WARNING '" in probe
+    assert '"$work"/check_dut_*.txt "$work"/yosys*.log' in probe
+    assert '"$work"/log_abc_*.txt' in probe
+    assert '"$work"/synth*.ys' in probe
 
 
 def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:

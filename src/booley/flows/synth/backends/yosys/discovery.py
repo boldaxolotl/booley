@@ -13,6 +13,20 @@ from pathlib import Path
 from booley.flows.synth.pdk import DEFAULT_LIB_DIR
 
 DEFAULT_LIBERTY = DEFAULT_LIB_DIR / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
+_NANGATE_LIBERTY_BASENAMES = frozenset(
+    {
+        "NangateOpenCellLibrary_typical_ccs.lib",
+        "NangateOpenCellLibrary_typical.lib",
+    }
+)
+_NANGATE_ABC_DONT_USE = ("FA_X1", "HA_X1")
+
+
+def abc_dont_use_cells(liberty: Path) -> tuple[str, ...]:
+    """Return setup-managed library cells that ABC cannot map safely."""
+    if liberty.name in _NANGATE_LIBERTY_BASENAMES:
+        return _NANGATE_ABC_DONT_USE
+    return ()
 
 
 def resolve_liberty(cli_liberty: str | None = None) -> Path:

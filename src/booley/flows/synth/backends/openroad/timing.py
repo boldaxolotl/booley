@@ -23,6 +23,7 @@ from .reporting import (
 
 # Nangate45 physical conventions from the OpenROAD reference flow @ a008522d8.
 _SITE = "FreePDK45_38x28_10R_NP_162NW_34O"
+_CORE_SPACE = "2.8 2.8 2.09 2.09"
 _SIGNAL_LAYER = "metal3"
 _CLOCK_LAYER = "metal6"
 _PIN_HOR_LAYER = "metal3"
@@ -30,8 +31,8 @@ _PIN_VER_LAYER = "metal2"
 _DONT_USE = "CLKBUF_* AOI211_X1 OAI211_X1"
 # Per-cell global-placement padding (sites each side).  Kept at 1 (not the
 # ORFS-typical 2): padding inflates the placed utilization above the floorplan
-# figure, and at 2 sites the inflation pushes a util=40 floorplan past the
-# density cap (util/100 + 0.25 = 0.65) → GPL-0302 "use a higher -density".
+# figure. Profile-resolved density accounts for that padding; the legacy
+# utilization-only fallback retains its historical formula.
 _GP_PAD_SITES = 1
 
 _AREA_RE = re.compile(
@@ -202,10 +203,11 @@ link_design {design_name}
 if {{[llength [all_clocks]] == 0}} {{ error "{error_message}" }}
 foreach _clk [all_clocks] {{ puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }}
 puts "BOOLEY_STAGE: floorplan"
-initialize_floorplan -utilization {util:.3f} -aspect_ratio 1.0 -core_space 2.0 \\
+initialize_floorplan -utilization {util:.3f} -aspect_ratio 1.0 \\
+  -core_space {{{_CORE_SPACE}}} \\
   -site {_SITE}
 make_tracks
-remove_buffers [get_cells *]
+remove_buffers
 source {{{pdk.layer_rc.as_posix()}}}
 set_wire_rc -signal -layer {_SIGNAL_LAYER}
 set_wire_rc -clock -layer {_CLOCK_LAYER}

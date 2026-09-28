@@ -55,6 +55,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Clean liberty-mapped synthesis no longer receives false no-driver, ABC
+  multi-output, `IFP-0028`, `GPL-0302`, or `STA-0349` advisories from Booley's
+  generated Yosys and OpenROAD scripts, and OpenROAD now removes eligible
+  synthesis buffers. Grid-aligned floorplan margins and the balanced and
+  max-frequency profiles' 0.80 placement density can change physical PPA; the
+  PicoRV32 reference area moved from 23,516 to 23,531 um². ([#816](https://github.com/boldaxolotl/Booley/issues/816))
 - Invalid Coverage Campaign rejections now name a bounded, control-safe prefix
   of finding codes and locations, including the specific rollup field when it
   can be determined, while still rejecting before a Coverage Analyst model
