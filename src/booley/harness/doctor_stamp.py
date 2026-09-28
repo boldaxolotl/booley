@@ -145,6 +145,20 @@ def _version_drift_message(stamp: dict) -> str | None:
     )
 
 
+def _fingerprint_differences(recorded: object, current: dict[str, str | None]) -> str:
+    """Render trusted fingerprint fields or one bounded malformed-record marker."""
+    if (
+        not isinstance(recorded, dict)
+        or set(recorded) != set(current)
+        or any(value is not None and not isinstance(value, str) for value in recorded.values())
+    ):
+        return format_differences(
+            {"recorded_fingerprint": "<malformed>"},
+            {"recorded_fingerprint": current},
+        )
+    return format_differences(recorded, current)
+
+
 def check_stamp_advisory(
     project_dir: Path,
     project_root: Path,
@@ -181,13 +195,7 @@ def check_stamp_advisory(
     recorded_fingerprint = stamp.get("fingerprint")
     current_fingerprint = compute_fingerprint(project_dir, project_root)
     if recorded_fingerprint != current_fingerprint:
-        if isinstance(recorded_fingerprint, dict):
-            differences = format_differences(recorded_fingerprint, current_fingerprint)
-        else:
-            differences = format_differences(
-                {"recorded_fingerprint": recorded_fingerprint},
-                {"recorded_fingerprint": current_fingerprint},
-            )
+        differences = _fingerprint_differences(recorded_fingerprint, current_fingerprint)
         return StampAdvisory(
             f"Doctor config or devcontainer.json changed since the last clean "
             f"`booley doctor` run ({passed_on}; {differences}) -- re-run `booley doctor`"

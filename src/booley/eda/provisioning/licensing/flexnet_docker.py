@@ -402,6 +402,68 @@ def connect_session(
     )
 
 
+def _validate_relay_labels_and_health(
+    run: Runner,
+    resources: RelayResources,
+    issuance_labels: tuple[str, ...],
+) -> None:
+    expected = {
+        ROLE_LABEL,
+        f"{SESSION_LABEL}={resources.session_id}",
+        *issuance_labels,
+    }
+    actual = _inspect_labels(run, "container", resources.relay_container)
+    if actual != expected:
+        raise RelayDockerError(
+            "license relay labels differ from host issuance: "
+            + _label_differences(expected, actual)
+        )
+    health = _inspect_value(
+        run, "container", resources.relay_container, "{{.State.Health.Status}}"
+    )
+    if health != "healthy":
+        raise RelayDockerError("license relay is not healthy")
+
+
+def _validate_relay_membership(
+    run: Runner,
+    resources: RelayResources,
+    session_container: str | None,
+) -> None:
+    expected_networks = {resources.private_network, resources.outbound_network}
+    relay_networks = _inspect_networks(run, resources.relay_container)
+    if relay_networks != expected_networks:
+        raise RelayDockerError(
+            "license relay network topology has drifted: "
+            + format_differences({"networks": expected_networks}, {"networks": relay_networks})
+        )
+    if session_container is None:
+        return
+    session_networks = _inspect_networks(run, session_container)
+    expected = {"private_network_present": True, "outbound_network_present": False}
+    actual = {
+        "private_network_present": resources.private_network in session_networks,
+        "outbound_network_present": resources.outbound_network in session_networks,
+    }
+    if expected != actual:
+        raise RelayDockerError(
+            "Sandbox license network membership has drifted: "
+            + format_differences(expected, actual)
+        )
+
+
+def _expected_relay_environment(profile: RelayProfile) -> set[str]:
+    return {
+        f"{ENV_UPSTREAM_IPV4}={profile.server_ipv4}",
+        f"{ENV_SERVER_HOSTID}={profile.server_hostid}",
+        f"{ENV_LMGRD_PORT}={profile.lmgrd_port}",
+        f"{ENV_VENDOR_PORT}={profile.vendor_port}",
+        f"{ENV_CONNECT_TIMEOUT}={DEFAULT_CONNECT_TIMEOUT:g}",
+        f"{ENV_IDLE_TIMEOUT}={DEFAULT_IDLE_TIMEOUT:g}",
+        f"{ENV_MAX_CONNECTIONS}={DEFAULT_MAX_CONNECTIONS}",
+    }
+
+
 def validate_relay(
     resources: RelayResources,
     session_container: str | None,
@@ -414,62 +476,14 @@ def validate_relay(
     """Fail closed unless the complete relay security contract matches issuance."""
     run = runner or _run_docker
     image_id = resolve_relay_image_id(image=image, runner=run)
-    expected = {
-        ROLE_LABEL,
-        f"{SESSION_LABEL}={resources.session_id}",
-        *issuance_labels,
-    }
-    actual = _inspect_labels(run, "container", resources.relay_container)
-    if actual != expected:
-        raise RelayDockerError(
-            "license relay labels differ from host issuance: "
-            + _label_differences(expected, actual)
-        )
-    if (
-        _inspect_value(run, "container", resources.relay_container, "{{.State.Health.Status}}")
-        != "healthy"
-    ):
-        raise RelayDockerError("license relay is not healthy")
-    expected_env = {
-        f"{ENV_UPSTREAM_IPV4}={profile.server_ipv4}",
-        f"{ENV_SERVER_HOSTID}={profile.server_hostid}",
-        f"{ENV_LMGRD_PORT}={profile.lmgrd_port}",
-        f"{ENV_VENDOR_PORT}={profile.vendor_port}",
-        f"{ENV_CONNECT_TIMEOUT}={DEFAULT_CONNECT_TIMEOUT:g}",
-        f"{ENV_IDLE_TIMEOUT}={DEFAULT_IDLE_TIMEOUT:g}",
-        f"{ENV_MAX_CONNECTIONS}={DEFAULT_MAX_CONNECTIONS}",
-    }
+    _validate_relay_labels_and_health(run, resources, issuance_labels)
     _validate_container_contract(
         run,
         resources.relay_container,
         image_id=image_id,
-        expected_env=expected_env,
+        expected_env=_expected_relay_environment(profile),
     )
-    relay_networks = _inspect_networks(run, resources.relay_container)
-    expected_networks = {resources.private_network, resources.outbound_network}
-    if relay_networks != expected_networks:
-        raise RelayDockerError(
-            "license relay network topology has drifted: "
-            + format_differences(
-                {"networks": expected_networks},
-                {"networks": relay_networks},
-            )
-        )
-    if session_container is not None:
-        session_networks = _inspect_networks(run, session_container)
-        expected_membership = {
-            "private_network_present": True,
-            "outbound_network_present": False,
-        }
-        actual_membership = {
-            "private_network_present": resources.private_network in session_networks,
-            "outbound_network_present": resources.outbound_network in session_networks,
-        }
-        if expected_membership != actual_membership:
-            raise RelayDockerError(
-                "Sandbox license network membership has drifted: "
-                + format_differences(expected_membership, actual_membership)
-            )
+    _validate_relay_membership(run, resources, session_container)
     _validate_network(
         run,
         resources.private_network,

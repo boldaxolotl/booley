@@ -440,15 +440,18 @@ def test_image_reconciliation_rejects_unverified_build(
 
 
 def test_image_ownership_rejects_wrong_kind(tmp_path: Path) -> None:
-    spec = sidecars._ImageSpec("image", "image", "kind", tmp_path, tmp_path, ())
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    spec = sidecars._ImageSpec("image", "image", "kind", dockerfile, tmp_path, ())
     labels = {
         sidecars.LABEL_SIDECAR_SCHEMA: sidecars.IMAGE_SCHEMA,
         sidecars.LABEL_SIDECAR_KIND: "other",
         sidecars.LABEL_SOURCE_FINGERPRINT: "source",
         sidecars.LABEL_BOOLEY_VERSION: "version",
     }
-    with pytest.raises(sidecars.SidecarError, match="kind does not match"):
+    with pytest.raises(sidecars.SidecarError, match="foreign image collision") as caught:
         sidecars._verify_image_ownership(spec, ("sha", labels))
+    assert "io.booley.sidecar.kind kind -> other" in str(caught.value)
 
 
 def test_build_image_reports_docker_failure(tmp_path: Path) -> None:

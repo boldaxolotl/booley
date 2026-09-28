@@ -167,6 +167,34 @@ def _retire_participant(root: Path, participant: BasisParticipant, source: str) 
     _git(repository, "update-ref", "-d", participant.ticket_ref, source)
 
 
+def _load_or_pin_cleanup_record(
+    root: Path,
+    slug: str,
+    basis: TicketBaseline,
+    expected_sources: Mapping[str, str],
+) -> dict[str, Any]:
+    record = _read_journal(root, slug, basis)
+    if record is not None:
+        cleanup_only_sources(root, slug, basis, expected_sources)
+        return record
+    sources = validate_current_basis_refs(root, basis)
+    if sources != dict(expected_sources):
+        raise CleanupOnlyError(
+            "Ticket heads changed after accepted review: "
+            + format_differences(expected_sources, sources)
+        )
+    _pin_sources(root, slug, basis, sources)
+    record = {
+        "schema": 1,
+        "slug": slug,
+        "basis_id": basis.basis_id,
+        "sources": sources,
+        "state": "pinned",
+    }
+    _write_journal(root, slug, basis, record)
+    return record
+
+
 def advance_cleanup_only(
     tio: Any,
     slug: str,
@@ -177,25 +205,7 @@ def advance_cleanup_only(
     from .operations import _approve_transition
 
     root = Path(tio._project_root).resolve()
-    record = _read_journal(root, slug, basis)
-    if record is None:
-        sources = validate_current_basis_refs(root, basis)
-        if sources != dict(expected_sources):
-            raise CleanupOnlyError(
-                "Ticket heads changed after accepted review: "
-                + format_differences(expected_sources, sources)
-            )
-        _pin_sources(root, slug, basis, sources)
-        record = {
-            "schema": 1,
-            "slug": slug,
-            "basis_id": basis.basis_id,
-            "sources": sources,
-            "state": "pinned",
-        }
-        _write_journal(root, slug, basis, record)
-    else:
-        cleanup_only_sources(root, slug, basis, expected_sources)
+    record = _load_or_pin_cleanup_record(root, slug, basis, expected_sources)
     if record["state"] == "pinned":
         entry = tio.find_ticket(slug)
         if entry is None or entry["status"] not in {"review", "done"}:

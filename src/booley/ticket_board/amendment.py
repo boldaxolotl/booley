@@ -191,6 +191,16 @@ def _convert_ticket(root: Path, slug: str, source: str) -> TicketDocument:
     return converted.document
 
 
+def _validate_preview_heads(
+    expected: dict[str, str], source_state: dict[str, dict[str, Any]]
+) -> None:
+    actual = {role: value["head"] for role, value in source_state.items()}
+    if actual != expected:
+        raise AmendmentError(
+            "Ticket refs changed during amendment preview: " + format_differences(expected, actual)
+        )
+
+
 def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], AmendmentProposal]:
     root = Path(tio._project_root).resolve()
     ticket, status = find_ticket_file(tio.tickets_dir, slug)
@@ -206,12 +216,7 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
     repositories = _repositories(root, basis)
     prior_scope = fields.get("scope", [])
     source_state = _status_snapshot(root, basis, prior_scope, repositories)
-    preview_heads = {role: value["head"] for role, value in source_state.items()}
-    if preview_heads != heads:
-        raise AmendmentError(
-            "Ticket refs changed during amendment preview: "
-            + format_differences(heads, preview_heads)
-        )
+    _validate_preview_heads(heads, source_state)
     state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
     _preflight_state(state_path, proposal)
     state_digest = (

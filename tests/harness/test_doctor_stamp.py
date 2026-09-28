@@ -153,6 +153,21 @@ class TestCheckStamp:
         assert "booley_toml_sha256" not in msg
         assert "devcontainer_json_sha256" not in msg
 
+    def test_malformed_fingerprint_does_not_echo_unknown_values(self, tmp_path):
+        project_dir = _write_project(tmp_path)
+        doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
+        path = doctor_stamp.stamp_path(project_dir)
+        stamp = json.loads(path.read_text(encoding="utf-8"))
+        stamp["fingerprint"] = {"OPENAI_API_KEY": "should-not-appear"}
+        path.write_text(json.dumps(stamp), encoding="utf-8")
+
+        msg = doctor_stamp.check_stamp(project_dir, tmp_path)
+
+        assert msg is not None
+        assert "recorded_fingerprint <malformed> ->" in msg
+        assert "OPENAI_API_KEY" not in msg
+        assert "should-not-appear" not in msg
+
     def test_mismatch_wins_over_staleness(self, tmp_path):
         """Config drift is the stronger signal; report it even when also stale."""
         project_dir = _write_project(tmp_path)

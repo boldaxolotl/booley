@@ -463,16 +463,9 @@ def _validate_checkpoint_dependencies(
         raise BoundaryError("acceptance journal cleaned roles require cleanup policy")
 
 
-def validate_journal(
-    value: Any,
-    slug: str,
-    participants: list[dict[str, str]],
-    *,
-    cleanup: bool | None,
-    removal_targets: tuple[str, ...] | None = None,
-) -> AcceptanceJournal:
-    """Validate external journal data against its immutable identity."""
-    journal = require_dict(value, field="acceptance journal")
+def _validate_journal_identity(
+    journal: dict[str, Any], slug: str, participants: list[dict[str, str]]
+) -> None:
     if require_str(journal, "ticket") != slug:
         raise BoundaryError(f"acceptance journal does not belong to Ticket {slug!r}")
     if journal.get("participants") != participants:
@@ -483,6 +476,19 @@ def validate_journal(
                 {"participants": journal.get("participants")},
             )
         )
+
+
+def validate_journal(
+    value: Any,
+    slug: str,
+    participants: list[dict[str, str]],
+    *,
+    cleanup: bool | None,
+    removal_targets: tuple[str, ...] | None = None,
+) -> AcceptanceJournal:
+    """Validate external journal data against its immutable identity."""
+    journal = require_dict(value, field="acceptance journal")
+    _validate_journal_identity(journal, slug, participants)
     if set(journal) != _JOURNAL_FIELDS:
         raise BoundaryError("acceptance journal has invalid fields")
     if journal.get("schema") != 5:

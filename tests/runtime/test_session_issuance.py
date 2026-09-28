@@ -1026,6 +1026,49 @@ def test_legacy_no_eda_spec_cannot_bypass_issuance(tmp_path: Path) -> None:
         runtime_spec.validate(project, spec, path)
 
 
+def test_valid_agent_app_is_omitted_from_name_only_drift(issued) -> None:
+    _project, spec, _path, _stamp = issued
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "codex"
+    spec["name"] = "wrong"
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Sandbox identity") as caught:
+        runtime_spec._validate_spec_identity(spec)
+
+    assert "name Booley Interactive (codex) -> wrong" in str(caught.value)
+    assert "app " not in str(caught.value)
+
+
+def test_invalid_agent_app_does_not_invent_expected_name(issued) -> None:
+    _project, spec, _path, _stamp = issued
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "other"
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Sandbox identity") as caught:
+        runtime_spec._validate_spec_identity(spec)
+
+    assert "app [claude, codex, none] -> other" in str(caught.value)
+    assert "name " not in str(caught.value)
+
+
+def test_missing_fixed_environment_uses_missing_marker(issued) -> None:
+    _project, spec, _path, _stamp = issued
+    del spec["remoteEnv"]["HTTP_PROXY"]
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="missing fixed") as caught:
+        runtime_spec._validate_environment(spec, None)
+
+    assert "HTTP_PROXY present -> <missing>" in str(caught.value)
+
+
+def test_fixed_environment_drift_names_field_and_values(issued) -> None:
+    _project, spec, _path, _stamp = issued
+    spec["remoteEnv"]["NO_PROXY"] = "example.test"
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="fixed Sandbox") as caught:
+        runtime_spec._validate_environment(spec, None)
+
+    assert "NO_PROXY localhost,127.0.0.1 -> example.test" in str(caught.value)
+
+
 @pytest.mark.parametrize(
     "mutate,match",
     [

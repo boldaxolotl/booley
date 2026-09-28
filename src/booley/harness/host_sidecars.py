@@ -302,18 +302,12 @@ def _verify_image_ownership(
     if current is None:
         return
     labels = current[1]
-    required = {
-        LABEL_SIDECAR_SCHEMA,
-        LABEL_SIDECAR_KIND,
-        LABEL_SOURCE_FINGERPRINT,
-        LABEL_BOOLEY_VERSION,
-    }
-    missing = sorted(required - labels.keys())
-    if missing or labels.get(LABEL_SIDECAR_KIND) != spec.kind:
-        detail = f"missing {', '.join(missing)}" if missing else "sidecar kind does not match"
+    expected = _image_labels(spec)
+    actual = {key: labels[key] for key in expected if key in labels}
+    if set(actual) != set(expected) or labels.get(LABEL_SIDECAR_KIND) != spec.kind:
         raise SidecarError(
             f"foreign image collision: {spec.reference} lacks expected Booley ownership "
-            f"provenance ({detail}); it was not modified"
+            f"provenance ({format_differences(expected, actual)}); it was not modified"
         )
 
 

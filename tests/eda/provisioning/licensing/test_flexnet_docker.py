@@ -201,6 +201,38 @@ def _validation_runner(resources, *, relay_state: str | None = None):
     return inspect
 
 
+def _issued_validation_runner(resources, issuance_labels: tuple[str, ...] = ()):
+    base = _validation_runner(resources)
+
+    def inspect(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        if "Labels" not in args[-1]:
+            return base(args, timeout)
+        name = args[2]
+        role = (
+            "booley.role=license-relay"
+            if name == resources.relay_container
+            else "booley.role=license-private-network"
+            if name == resources.private_network
+            else "booley.role=license-outbound-network"
+        )
+        labels = {item.split("=", 1)[0]: item.split("=", 1)[1] for item in issuance_labels}
+        key, value = role.split("=", 1)
+        labels.update({key: value, "booley.session-id": resources.session_id})
+        return _result(stdout=json.dumps(labels))
+
+    return inspect
+
+
+def _with_outbound_session(inspect, resources):
+    def inspect_with_outbound(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        if args[2] == "session-container" and ".NetworkSettings.Networks" in args[-1]:
+            networks = {resources.private_network: {}, resources.outbound_network: {}}
+            return _result(stdout=json.dumps(networks))
+        return inspect(args, timeout)
+
+    return inspect_with_outbound
+
+
 class TestProfileAndNames:
     @pytest.mark.parametrize(
         "args",
@@ -361,83 +393,7 @@ def test_provision_orders_topology_and_waits_for_health() -> None:
 def test_resume_validation_checks_labels_health_authority_and_network_separation() -> None:
     resources = resources_for_session("session-a")
     labels = ("booley.project-id=project", "booley.spec-digest=spec")
-    relay_labels = "\n".join(
-        ["booley.role=license-relay", f"booley.session-id={resources.session_id}", *labels]
-    )
-    private_labels = "\n".join(
-        [
-            "booley.role=license-private-network",
-            f"booley.session-id={resources.session_id}",
-            *labels,
-        ]
-    )
-    outbound_labels = "\n".join(
-        [
-            "booley.role=license-outbound-network",
-            f"booley.session-id={resources.session_id}",
-            *labels,
-        ]
-    )
-
-    def inspect(  # noqa: PLR0911 - compact Docker inspect protocol fixture
-        args: list[str], _timeout: int
-    ) -> subprocess.CompletedProcess[str]:
-        if args[:2] == ["image", "inspect"]:
-            return _result(stdout=IMAGE_ID)
-        name, template = args[2], args[-1]
-        if args == ["container", "inspect", resources.relay_container]:
-            return _result(stdout=_relay_state(resources))
-        if args == ["network", "inspect", resources.private_network]:
-            return _result(
-                stdout=json.dumps(
-                    [
-                        {
-                            "Containers": {
-                                "relay": {"Name": resources.relay_container},
-                                "session": {"Name": "session-container"},
-                            }
-                        }
-                    ]
-                )
-            )
-        if args == ["network", "inspect", resources.outbound_network]:
-            return _result(
-                stdout=json.dumps([{"Containers": {"relay": {"Name": resources.relay_container}}}])
-            )
-        if "Health.Status" in template:
-            return _result(stdout="healthy\n")
-        if ".Config.Env" in template:
-            return _result(
-                stdout=(
-                    '["BOOLEY_FLEXNET_UPSTREAM_IPV4=10.20.30.40",'
-                    '"BOOLEY_FLEXNET_SERVER_HOSTID=license-server-01",'
-                    '"BOOLEY_FLEXNET_LMGRD_PORT=2100",'
-                    '"BOOLEY_FLEXNET_VENDOR_PORT=2101"]\n'
-                )
-            )
-        if ".NetworkSettings.Networks" in template:
-            networks = (
-                {resources.private_network: {}, resources.outbound_network: {}}
-                if name == resources.relay_container
-                else {"booley-egress-v2": {}, resources.private_network: {}}
-            )
-            return _result(stdout=json.dumps(networks))
-        if ".Internal" in template:
-            return _result(stdout="true" if name == resources.private_network else "false")
-        if ".Options" in template:
-            options = (
-                {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
-                if name == resources.private_network
-                else {}
-            )
-            return _result(stdout=json.dumps(options))
-        if name == resources.relay_container:
-            selected = relay_labels
-        else:
-            selected = private_labels if name == resources.private_network else outbound_labels
-        return _result(
-            stdout=json.dumps(dict(item.split("=", 1) for item in selected.splitlines()))
-        )
+    inspect = _issued_validation_runner(resources, labels)
 
     validate_relay(
         resources,
@@ -446,6 +402,12 @@ def test_resume_validation_checks_labels_health_authority_and_network_separation
         issuance_labels=labels,
         runner=inspect,
     )
+
+
+def test_extra_relay_label_names_key_without_printing_value() -> None:
+    resources = resources_for_session("session-a")
+    labels = ("booley.project-id=project", "booley.spec-digest=spec")
+    inspect = _issued_validation_runner(resources, labels)
 
     def inspect_with_extra_label(
         args: list[str], timeout: int
@@ -495,45 +457,7 @@ def test_container_identity_drift_names_both_image_fields() -> None:
 
 def test_resume_validation_rejects_session_on_outbound_network() -> None:
     resources = resources_for_session("session-a")
-
-    def inspect(  # noqa: PLR0911 - compact Docker inspect protocol fixture
-        args: list[str], _timeout: int
-    ) -> subprocess.CompletedProcess[str]:
-        if args[:2] == ["image", "inspect"]:
-            return _result(stdout=IMAGE_ID)
-        name, template = args[2], args[-1]
-        if args == ["container", "inspect", resources.relay_container]:
-            return _result(stdout=_relay_state(resources))
-        if "Labels" in template:
-            role = (
-                "booley.role=license-relay"
-                if name == resources.relay_container
-                else "booley.role=license-private-network"
-                if name == resources.private_network
-                else "booley.role=license-outbound-network"
-            )
-            key, value = role.split("=", 1)
-            return _result(
-                stdout=json.dumps({key: value, "booley.session-id": resources.session_id})
-            )
-        if "Health.Status" in template:
-            return _result(stdout="healthy")
-        if ".Config.Env" in template:
-            return _result(
-                stdout=(
-                    '["BOOLEY_FLEXNET_UPSTREAM_IPV4=10.20.30.40",'
-                    '"BOOLEY_FLEXNET_SERVER_HOSTID=license-server-01",'
-                    '"BOOLEY_FLEXNET_LMGRD_PORT=2100",'
-                    '"BOOLEY_FLEXNET_VENDOR_PORT=2101"]'
-                )
-            )
-        if ".NetworkSettings.Networks" in template:
-            return _result(
-                stdout=(
-                    f'{{"{resources.private_network}":{{}},"{resources.outbound_network}":{{}}}}'
-                )
-            )
-        return _result(stdout="true" if name == resources.private_network else "false")
+    inspect = _with_outbound_session(_issued_validation_runner(resources), resources)
 
     with pytest.raises(RelayDockerError, match="network membership") as caught:
         validate_relay(

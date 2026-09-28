@@ -80,6 +80,46 @@ _FIXED_SEED_FRAGMENTS = frozenset(
         "chmod 600 /home/agent/.codex/auth.json) 2>/dev/null || true",
     }
 )
+_FIXED_RUN_ARGS = (
+    "--init",
+    "--network",
+    EGRESS_NETWORK,
+    "--label",
+    "booley.role=interactive",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "4096",
+)
+_AGENT_APPS = frozenset({"claude", "codex", "none"})
+_REQUIRED_REMOTE_ENV = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "NO_PROXY",
+        "BOOLEY_MCP_MODE",
+        "BOOLEY_PROJECT_DIR",
+        "BOOLEY_AGENT_APP",
+    }
+)
+_ALLOWED_REMOTE_ENV = _REQUIRED_REMOTE_ENV | {
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENAI_API_KEY",
+    LOCAL_TIMEZONE_ENV,
+}
+_FIXED_REMOTE_ENV = {
+    "HTTP_PROXY": "http://booley-proxy:8080",
+    "HTTPS_PROXY": "http://booley-proxy:8080",
+    "http_proxy": "http://booley-proxy:8080",
+    "https_proxy": "http://booley-proxy:8080",
+    "NO_PROXY": "localhost,127.0.0.1",
+    "BOOLEY_MCP_MODE": "interactive",
+    "BOOLEY_PROJECT_DIR": "/booley-project",
+}
 
 
 class RuntimeSpecError(RuntimeError):
@@ -134,6 +174,25 @@ def _issuance_mapping(issuance: Issuance | None) -> dict[str, object]:
     if issuance is None:
         return {field.name: None for field in fields(Issuance)}
     return asdict(issuance)
+
+
+def _authentication_differences(
+    issuance: Issuance,
+    project: Path,
+    spec: dict[str, Any],
+    spec_path: Path,
+) -> str | None:
+    recorded = {
+        "project_root": issuance.project_root,
+        "file_sha256": issuance.file_sha256,
+        "spec_sha256": issuance.spec_sha256,
+    }
+    actual = {
+        "project_root": str(project),
+        "file_sha256": _file_sha256(spec_path),
+        "spec_sha256": _spec_digest(spec),
+    }
+    return format_differences(recorded, actual) if recorded != actual else None
 
 
 def issuance_from_document(raw: object) -> Issuance:
@@ -258,20 +317,9 @@ def load_recovery_snapshot(project_root: Path, spec: dict[str, Any], spec_path: 
     """Authenticate the exact prior issuance without consulting current grants."""
     project = project_root.resolve(strict=True)
     issuance = _load_stamp(_stamp_read_path(project))
-    recorded = {
-        "project_root": issuance.project_root,
-        "file_sha256": issuance.file_sha256,
-        "spec_sha256": issuance.spec_sha256,
-    }
-    actual = {
-        "project_root": str(project),
-        "file_sha256": _file_sha256(spec_path),
-        "spec_sha256": _spec_digest(spec),
-    }
-    if recorded != actual:
+    if differences := _authentication_differences(issuance, project, spec, spec_path):
         raise RuntimeSpecError(
-            "prior Sandbox spec differs from its issuance stamp: "
-            + format_differences(recorded, actual)
+            "prior Sandbox spec differs from its issuance stamp: " + differences
         )
     expected_keeper = keeper_image(project)
     if issuance.keeper_image != expected_keeper:
@@ -780,6 +828,49 @@ def _issue_document_with_requirements(
     return issuance
 
 
+def _validate_image_identity(project: Path, spec: dict[str, Any], stamp: Issuance) -> None:
+    expected = {"image": stamp.image, "image_id": stamp.image_id}
+    actual = {"image": spec.get("image"), "image_id": _resolve_image_id(stamp.image)}
+    if expected != actual:
+        raise RuntimeSpecError(
+            "Sandbox Image tag/digest has drifted since issuance: "
+            + format_differences(expected, actual)
+        )
+    expected_keeper = keeper_image(project)
+    if stamp.keeper_image != expected_keeper:
+        raise RuntimeSpecError("Sandbox Image keeper differs from this Project")
+    try:
+        retained_id = _resolve_image_id(stamp.keeper_image)
+    except RuntimeSpecError as exc:
+        raise RuntimeSpecError("issued Sandbox Image keeper is missing") from exc
+    if retained_id != stamp.image_id:
+        raise RuntimeSpecError("issued Sandbox Image keeper points at different bytes")
+
+
+def _validate_grant_identity(stamp: Issuance, requirements: Any) -> None:
+    expected = {
+        "installation": requirements.installation.name if requirements.installation else None,
+        "license_profile": (
+            requirements.license_profile.name if requirements.license_profile else None
+        ),
+    }
+    recorded = {
+        "installation": stamp.installation,
+        "license_profile": stamp.license_profile,
+    }
+    if recorded != expected:
+        raise RuntimeSpecError(
+            "Project grant differs from the issued Sandbox spec: "
+            + format_differences(recorded, expected)
+        )
+    if stamp.policy_revision != requirements.policy_revision:
+        raise RuntimeSpecError("Sandbox EDA policy revision has drifted")
+    if stamp.relay_image_id != requirements.relay_image_id:
+        raise RuntimeSpecError("FlexNet relay image has drifted since spec issuance")
+    if stamp.wrapper_sha256 != requirements.wrapper_sha256:
+        raise RuntimeSpecError("Booley Vivado wrapper has changed since spec issuance")
+
+
 def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
     """Validate every authority-bearing field against the current host issuance."""
     project = project_root.resolve(strict=True)
@@ -790,54 +881,8 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
         ) as requirements:
             _validate_generated_spec(project, spec, requirements, stamp)
             _validate_bind_sources(spec["mounts"])
-            image_identity = {"image": stamp.image, "image_id": stamp.image_id}
-            actual_image_identity = {
-                "image": spec.get("image"),
-                "image_id": _resolve_image_id(stamp.image),
-            }
-            if image_identity != actual_image_identity:
-                raise RuntimeSpecError(
-                    "Sandbox Image tag/digest has drifted since issuance: "
-                    + format_differences(image_identity, actual_image_identity)
-                )
-            expected_keeper = keeper_image(project)
-            if stamp.keeper_image != expected_keeper:
-                raise RuntimeSpecError("Sandbox Image keeper differs from this Project")
-            try:
-                retained_id = _resolve_image_id(stamp.keeper_image)
-            except RuntimeSpecError as exc:
-                raise RuntimeSpecError("issued Sandbox Image keeper is missing") from exc
-            if retained_id != stamp.image_id:
-                raise RuntimeSpecError("issued Sandbox Image keeper points at different bytes")
-            expected_installation = (
-                requirements.installation.name if requirements.installation else None
-            )
-            expected_profile = (
-                requirements.license_profile.name if requirements.license_profile else None
-            )
-            if (
-                stamp.installation != expected_installation
-                or stamp.license_profile != expected_profile
-            ):
-                raise RuntimeSpecError(
-                    "Project grant differs from the issued Sandbox spec: "
-                    + format_differences(
-                        {
-                            "installation": stamp.installation,
-                            "license_profile": stamp.license_profile,
-                        },
-                        {
-                            "installation": expected_installation,
-                            "license_profile": expected_profile,
-                        },
-                    )
-                )
-            if stamp.policy_revision != requirements.policy_revision:
-                raise RuntimeSpecError("Sandbox EDA policy revision has drifted")
-            if stamp.relay_image_id != requirements.relay_image_id:
-                raise RuntimeSpecError("FlexNet relay image has drifted since spec issuance")
-            if stamp.wrapper_sha256 != requirements.wrapper_sha256:
-                raise RuntimeSpecError("Booley Vivado wrapper has changed since spec issuance")
+            _validate_image_identity(project, spec, stamp)
+            _validate_grant_identity(stamp, requirements)
             return stamp
     except (
         FlowConfigError,
@@ -851,20 +896,9 @@ def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> I
     """Authenticate immutable host issuance fields without trusting bind sources."""
     project = project_root.resolve(strict=True)
     stamp = _load_stamp(_stamp_read_path(project))
-    recorded = {
-        "project_root": stamp.project_root,
-        "file_sha256": stamp.file_sha256,
-        "spec_sha256": stamp.spec_sha256,
-    }
-    actual = {
-        "project_root": str(project),
-        "file_sha256": _file_sha256(spec_path),
-        "spec_sha256": _spec_digest(spec),
-    }
-    if recorded != actual:
+    if differences := _authentication_differences(stamp, project, spec, spec_path):
         raise RuntimeSpecError(
-            "devcontainer.json differs from its host-issued specification: "
-            + format_differences(recorded, actual)
+            "devcontainer.json differs from its host-issued specification: " + differences
         )
     _validate_initialize_command(project, spec.get("initializeCommand"))
     validator = _initialize_executable(spec)
@@ -966,6 +1000,33 @@ def expected_devcontainer_mount(project_root: Path) -> str:
     return f"source={source},target={DEVCONTAINER_TARGET},type=bind,readonly"
 
 
+def _validate_spec_identity(spec: dict[str, Any]) -> str:
+    expected_location = {"workspaceFolder": "/work", "remoteUser": "agent"}
+    actual_location = {
+        "workspaceFolder": spec.get("workspaceFolder"),
+        "remoteUser": spec.get("remoteUser"),
+    }
+    if actual_location != expected_location:
+        raise RuntimeSpecError(
+            "devcontainer.json workspace/user policy has drifted: "
+            + format_differences(expected_location, actual_location)
+        )
+    remote = spec.get("remoteEnv")
+    app = remote.get("BOOLEY_AGENT_APP") if isinstance(remote, dict) else None
+    if app not in _AGENT_APPS:
+        raise RuntimeSpecError(
+            "devcontainer.json Sandbox identity has drifted: "
+            + format_differences({"app": sorted(_AGENT_APPS)}, {"app": app})
+        )
+    expected_name = f"Booley Interactive ({app})"
+    if spec.get("name") != expected_name:
+        raise RuntimeSpecError(
+            "devcontainer.json Sandbox identity has drifted: "
+            + format_differences({"name": expected_name}, {"name": spec.get("name")})
+        )
+    return app
+
+
 def _validate_generated_spec(
     project: Path,
     spec: dict[str, Any],
@@ -975,32 +1036,7 @@ def _validate_generated_spec(
     unknown = set(spec) - _ALLOWED_TOP_LEVEL_KEYS
     if unknown or any(key in spec for key in _ESCAPE_KEYS - {"workspaceFolder"}):
         raise RuntimeSpecError("devcontainer.json contains an unsupported escape surface")
-    if spec.get("workspaceFolder") != "/work" or spec.get("remoteUser") != "agent":
-        raise RuntimeSpecError(
-            "devcontainer.json workspace/user policy has drifted: "
-            + format_differences(
-                {"workspaceFolder": "/work", "remoteUser": "agent"},
-                {
-                    "workspaceFolder": spec.get("workspaceFolder"),
-                    "remoteUser": spec.get("remoteUser"),
-                },
-            )
-        )
-    app = (
-        spec.get("remoteEnv", {}).get("BOOLEY_AGENT_APP")
-        if isinstance(spec.get("remoteEnv"), dict)
-        else None
-    )
-    if app not in {"claude", "codex", "none"} or spec.get("name") != (
-        f"Booley Interactive ({app})"
-    ):
-        raise RuntimeSpecError(
-            "devcontainer.json Sandbox identity has drifted: "
-            + format_differences(
-                {"app": "claude|codex|none", "name": f"Booley Interactive ({app})"},
-                {"app": app, "name": spec.get("name")},
-            )
-        )
+    app = _validate_spec_identity(spec)
     expected_workspace = "source=${localWorkspaceFolder},target=/work,type=bind"
     if spec.get("workspaceMount") != expected_workspace:
         raise RuntimeSpecError("devcontainer.json Project workspace mount has drifted")
@@ -1041,19 +1077,6 @@ def _validate_run_args(
 ) -> None:
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
         raise RuntimeSpecError("devcontainer.json runArgs must be a string list")
-    fixed = [
-        "--init",
-        "--network",
-        EGRESS_NETWORK,
-        "--label",
-        "booley.role=interactive",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--pids-limit",
-        "4096",
-    ]
     forbidden = {
         "--privileged",
         "--pid=host",
@@ -1063,11 +1086,14 @@ def _validate_run_args(
     }
     if any(item in forbidden for item in raw):
         raise RuntimeSpecError("devcontainer.json requests forbidden host authority")
-    cursor = len(fixed)
-    if raw[:cursor] != fixed:
+    cursor = len(_FIXED_RUN_ARGS)
+    if tuple(raw[:cursor]) != _FIXED_RUN_ARGS:
         raise RuntimeSpecError(
             "devcontainer.json run arguments differ from fixed runtime hardening: "
-            + format_differences({"fixed_hardening": fixed}, {"fixed_hardening": raw[:cursor]})
+            + format_differences(
+                {"fixed_hardening": _FIXED_RUN_ARGS},
+                {"fixed_hardening": tuple(raw[:cursor])},
+            )
         )
     if raw[cursor : cursor + 1] == ["--memory"]:
         if (
@@ -1082,26 +1108,69 @@ def _validate_run_args(
         cursor += 2
     expected_tail = [value for label in expected_labels for value in ("--label", label)]
     if raw[cursor:] != expected_tail:
-        expected = dict(label.split("=", 1) for label in expected_labels)
-        tail = raw[cursor:]
-        actual_labels = {
-            item.split("=", 1)[0]: item.split("=", 1)[1]
-            for flag, item in zip(tail[::2], tail[1::2], strict=False)
-            if flag == "--label" and "=" in item and item.split("=", 1)[0] in expected
-        }
         raise RuntimeSpecError(
             "devcontainer.json issuance labels differ from host authority: "
-            + format_differences(expected, actual_labels)
+            + _issuance_label_differences(expected_labels, raw[cursor:])
         )
 
 
-def _validate_environment(spec: dict[str, Any], license_environment: str | None) -> None:
+def _issuance_label_differences(expected_labels: tuple[str, ...], tail: list[str]) -> str:
+    expected = dict(label.split("=", 1) for label in expected_labels)
+    actual = {
+        item.split("=", 1)[0]: item.split("=", 1)[1]
+        for flag, item in zip(tail[::2], tail[1::2], strict=False)
+        if flag == "--label" and "=" in item and item.split("=", 1)[0] in expected
+    }
+    return format_differences(expected, actual)
+
+
+def _environment_sections(spec: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     container = spec.get("containerEnv", {})
     remote = spec.get("remoteEnv", {})
     if not isinstance(container, dict) or not isinstance(remote, dict):
         raise RuntimeSpecError("devcontainer.json environment sections must be objects")
     if "BOOLEY_HOST_MCP_URL" in remote or "BOOLEY_HOST_MCP_URL" in container:
         raise RuntimeSpecError("Host MCP environment is forbidden")
+    return container, remote
+
+
+def _validate_remote_environment(remote: dict[str, Any]) -> None:
+    if not _REQUIRED_REMOTE_ENV.issubset(remote):
+        expected_presence = dict.fromkeys(sorted(_REQUIRED_REMOTE_ENV), "present")
+        actual_presence = {key: "present" for key in sorted(_REQUIRED_REMOTE_ENV) if key in remote}
+        raise RuntimeSpecError(
+            "devcontainer.json is missing fixed Sandbox environment: "
+            + format_differences(expected_presence, actual_presence)
+        )
+    if any(
+        not isinstance(key, str) or not isinstance(value, str) for key, value in remote.items()
+    ):
+        raise RuntimeSpecError("devcontainer.json environment must contain strings only")
+    if set(remote) - _ALLOWED_REMOTE_ENV:
+        raise RuntimeSpecError(
+            "devcontainer.json contains unsupported Sandbox environment: "
+            + format_differences(
+                {"unsupported_environment_keys": []},
+                {"unsupported_environment_keys": sorted(set(remote) - _ALLOWED_REMOTE_ENV)},
+            )
+        )
+    if any(remote.get(key) != value for key, value in _FIXED_REMOTE_ENV.items()):
+        raise RuntimeSpecError(
+            "devcontainer.json fixed Sandbox environment has drifted: "
+            + format_differences(
+                _FIXED_REMOTE_ENV,
+                {key: remote.get(key) for key in _FIXED_REMOTE_ENV},
+            )
+        )
+    app = remote.get("BOOLEY_AGENT_APP")
+    credential_key = {"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "OPENAI_API_KEY"}.get(app)
+    for key in ("CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"):
+        if key in remote and (key != credential_key or remote[key] != f"${{localEnv:{key}}}"):
+            raise RuntimeSpecError("devcontainer.json credential environment has drifted")
+
+
+def _validate_environment(spec: dict[str, Any], license_environment: str | None) -> None:
+    container, remote = _environment_sections(spec)
     allowed_container = {"XILINXD_LICENSE_FILE"} if license_environment is not None else set()
     if set(container) != allowed_container:
         raise RuntimeSpecError(
@@ -1111,62 +1180,7 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
                 {"container_environment_keys": sorted(container)},
             )
         )
-    required_remote = {
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "NO_PROXY",
-        "BOOLEY_MCP_MODE",
-        "BOOLEY_PROJECT_DIR",
-        "BOOLEY_AGENT_APP",
-    }
-    if not required_remote.issubset(remote):
-        expected_presence = {key: remote.get(key, "present") for key in sorted(required_remote)}
-        actual_presence = {key: remote.get(key) for key in sorted(required_remote)}
-        raise RuntimeSpecError(
-            "devcontainer.json is missing fixed Sandbox environment: "
-            + format_differences(expected_presence, actual_presence)
-        )
-    if any(
-        not isinstance(key, str) or not isinstance(value, str) for key, value in remote.items()
-    ):
-        raise RuntimeSpecError("devcontainer.json environment must contain strings only")
-    allowed_remote = required_remote | {
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "OPENAI_API_KEY",
-        LOCAL_TIMEZONE_ENV,
-    }
-    if set(remote) - allowed_remote:
-        raise RuntimeSpecError(
-            "devcontainer.json contains unsupported Sandbox environment: "
-            + format_differences(
-                {"unsupported_environment_keys": []},
-                {"unsupported_environment_keys": sorted(set(remote) - allowed_remote)},
-            )
-        )
-    fixed_values = {
-        "HTTP_PROXY": "http://booley-proxy:8080",
-        "HTTPS_PROXY": "http://booley-proxy:8080",
-        "http_proxy": "http://booley-proxy:8080",
-        "https_proxy": "http://booley-proxy:8080",
-        "NO_PROXY": "localhost,127.0.0.1",
-        "BOOLEY_MCP_MODE": "interactive",
-        "BOOLEY_PROJECT_DIR": "/booley-project",
-    }
-    if any(remote.get(key) != value for key, value in fixed_values.items()):
-        raise RuntimeSpecError(
-            "devcontainer.json fixed Sandbox environment has drifted: "
-            + format_differences(
-                fixed_values,
-                {key: remote.get(key) for key in fixed_values},
-            )
-        )
-    app = remote.get("BOOLEY_AGENT_APP")
-    credential_key = {"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "OPENAI_API_KEY"}.get(app)
-    for key in ("CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"):
-        if key in remote and (key != credential_key or remote[key] != f"${{localEnv:{key}}}"):
-            raise RuntimeSpecError("devcontainer.json credential environment has drifted")
+    _validate_remote_environment(remote)
     expected = license_environment
     actual = container.get("XILINXD_LICENSE_FILE")
     if actual != expected:
