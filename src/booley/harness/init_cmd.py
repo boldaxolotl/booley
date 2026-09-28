@@ -65,7 +65,7 @@ from booley.fusesoc.core_projection import (
 # existing importers (booley.harness.doctor, tests) and this module's own steps
 # keep resolving them by their original ``init_cmd`` names. F401 is suppressed
 # for this file (see pyproject) because a facade re-exports names it may not use.
-from booley.harness import doctor_stamp, host_sidecars, image_lifecycle, nangate_pdk
+from booley.harness import doctor_stamp, image_lifecycle, nangate_pdk
 from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_bootstrap
 from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import (
@@ -129,7 +129,6 @@ from booley.runtime import auth_token, project_repositories
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
-from booley.runtime.docker_capacity import DockerBuildPlan
 from booley.runtime.git import add_git_excludes
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
@@ -1089,12 +1088,15 @@ def _step_image_lifecycle(
         if ctx.force
         else ImageLifecycleIntent.ENSURE
     )
+    scope = ProjectImageScope(ctx.project_root, base_result)
     try:
-        result = reconcile_images(
-            ProjectImageScope(ctx.project_root, base_result),
-            intent,
-            verbose=ctx.verbose,
-        )
+        if intent is ImageLifecycleIntent.CHECK:
+            result = reconcile_images(scope, intent, verbose=ctx.verbose)
+        else:
+            try:
+                result = image_lifecycle.reconcile_planned(scope, intent, verbose=ctx.verbose)
+            except image_lifecycle.IncrementalPlanUnavailableError:
+                result = reconcile_images(scope, intent, verbose=ctx.verbose)
     except ImageLifecycleError as exc:
         err(str(exc))
         ctx.record("docker_image", "err", str(exc))
@@ -2184,49 +2186,7 @@ def _reconcile_initialized_image(
     base = _usable_bootstrap_base(bootstrap_result) if bootstrap_result else None
     if base is not None:
         return _step_image_lifecycle(ctx, base_result=base)
-    if bootstrap_result is not None and bootstrap_result.policy is not None and not ctx.check_only:
-        return _reconcile_deferred_images(ctx, bootstrap_result)
     return _step_image_lifecycle(ctx)
-
-
-def _reconcile_deferred_images(
-    ctx: InitContext, bootstrap_result: BootstrapResult
-) -> LifecycleResult | None:
-    """Plan and mutate init's Project and host images at one boundary."""
-    intent = ImageLifecycleIntent.REFRESH if ctx.force else ImageLifecycleIntent.ENSURE
-    prepared = None
-    try:
-        lifecycle_plan = image_lifecycle.plan(ProjectImageScope(ctx.project_root))
-        sidecar_requests = host_sidecars.plan_image_builds(intent)
-        prepared = image_lifecycle.prepare(
-            lifecycle_plan,
-            verbose=ctx.verbose,
-            future_requests=sidecar_requests,
-        )
-        result = image_lifecycle.commit(prepared)
-        prepared = None
-        sidecar_plan = DockerBuildPlan(sidecar_requests) if sidecar_requests else None
-        sidecars = host_sidecars.reconcile_sidecars(
-            bootstrap_result.policy,
-            intent,
-            capacity_plan=sidecar_plan,
-        )
-        for finding in sidecars.findings:
-            status = "err" if finding.state is host_sidecars.SidecarState.ERROR else "ok"
-            ctx.record(f"bootstrap.{finding.resource}", status, finding.detail)
-        if not sidecars.ready:
-            return None
-        if result.changed_images:
-            ok("reconciled Sandbox Images: " + ", ".join(result.changed_images))
-            ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
-        return result
-    except (ImageLifecycleError, host_sidecars.SidecarError, OSError, ValueError) as exc:
-        err(str(exc))
-        ctx.record("docker_image", "err", str(exc))
-        return None
-    finally:
-        if prepared is not None:
-            image_lifecycle.abort(prepared)
 
 
 def _selected_runtime_image_id(result: LifecycleResult | None) -> str | None:
@@ -2270,8 +2230,6 @@ def _run_project_init_steps(
     )
     pdk_root = nangate_pdk.cache_root()
     image_result = _reconcile_initialized_image(ctx, bootstrap_result)
-    if image_result is None and any(item.status == "err" for item in ctx.results):
-        return _print_summary(ctx)
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_prune_guard(ctx)
@@ -2304,11 +2262,7 @@ def _reconcile_init_bootstrap(
         if ctx.force
         else ImageLifecycleIntent.ENSURE
     )
-    result = reconcile_bootstrap(
-        intent,
-        verbose=ctx.verbose,
-        include_images=ctx.check_only or seed,
-    )
+    result = reconcile_bootstrap(intent, verbose=ctx.verbose)
     _record_bootstrap(ctx, result)
     if seed and not result.ready:
         err("Host Bootstrap is not current; run `booley bootstrap` on the host, then retry seed.")

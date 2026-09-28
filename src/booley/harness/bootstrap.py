@@ -25,11 +25,7 @@ from booley.harness.image_lifecycle import (
     reconcile as reconcile_images,
 )
 from booley.harness.setup.skills import reconcile_host_skills
-from booley.runtime.docker_capacity import (
-    DockerBuildPlan,
-    DockerCapacityError,
-    ensure_docker_build_capacity,
-)
+from booley.runtime.docker_capacity import DockerBuildPlan, ensure_docker_build_capacity
 from booley.runtime.host_install import host_install_error
 from booley.runtime.paths import skills_dir
 from booley.runtime.skill_links import SkillLinkReport
@@ -134,6 +130,7 @@ def _reconcile_bootstrap_images(
     verbose: bool,
 ) -> BootstrapResult:
     """Reconcile image-bearing Host Bootstrap resources after prerequisites."""
+    plan = None
     if intent is not Intent.CHECK:
         try:
             requests = (*host_capacity_requests(intent), *host_sidecars.plan_image_builds(intent))
@@ -141,20 +138,29 @@ def _reconcile_bootstrap_images(
                 plan = DockerBuildPlan(requests)
                 ensure_docker_build_capacity(
                     ("docker", "build"),
-                    image=requests[0].output_tag,
-                    current_request=requests[0],
+                    image=plan.current.output_tag,
+                    current_request=plan.current,
                     remaining_plan=plan,
                 )
-        except (DockerCapacityError, ImageLifecycleError, host_sidecars.SidecarError) as exc:
+        except (
+            ImageLifecycleError,
+            host_sidecars.SidecarError,
+            OSError,
+            ValueError,
+        ) as exc:
             findings.append(BootstrapFinding("image-capacity", BootstrapState.ERROR, str(exc)))
             return BootstrapResult(intent, tuple(findings), policy)
 
-    base_result, base_finding = _reconcile_base_image(intent, verbose=verbose)
+    base_result, base_finding = _reconcile_base_image(
+        intent,
+        verbose=verbose,
+        capacity_plan=plan,
+    )
     findings.append(base_finding)
     if base_finding.state is BootstrapState.ERROR:
         return BootstrapResult(intent, tuple(findings), policy)
 
-    sidecars = host_sidecars.reconcile_sidecars(policy, intent)
+    sidecars = host_sidecars.reconcile_sidecars(policy, intent, capacity_plan=plan)
     findings.extend(_sidecar_finding(finding) for finding in sidecars.findings)
     return BootstrapResult(intent, tuple(findings), policy, base_result)
 
@@ -441,10 +447,18 @@ def _reconcile_nangate(intent: Intent) -> BootstrapFinding:
 
 
 def _reconcile_base_image(
-    intent: Intent, *, verbose: bool
+    intent: Intent,
+    *,
+    verbose: bool,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> tuple[LifecycleResult | None, BootstrapFinding]:
     try:
-        result = reconcile_images(HostImageScope(), intent, verbose=verbose)
+        result = reconcile_images(
+            HostImageScope(),
+            intent,
+            verbose=verbose,
+            capacity_plan=capacity_plan,
+        )
     except ImageLifecycleError as exc:
         return None, BootstrapFinding("base-image", BootstrapState.ERROR, str(exc))
     state = {

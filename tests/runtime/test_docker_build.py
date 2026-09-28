@@ -602,14 +602,6 @@ def test_capacity_probe_rejects_invalid_storage_root(monkeypatch) -> None:
         docker_capacity._docker_storage("docker")
 
 
-def test_capacity_probe_rejects_unexpected_image_inspection_failure(monkeypatch) -> None:
-    result = subprocess.CompletedProcess(["docker"], 1, stdout="", stderr="permission denied")
-    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: result)
-
-    with pytest.raises(docker_capacity.DockerCapacityError, match="could not inspect target"):
-        docker_capacity._target_is_cached("docker", "booley-sandbox")
-
-
 def test_capacity_probe_rejects_malformed_external_sizes() -> None:
     with pytest.raises(docker_capacity.DockerCapacityError, match="invalid size"):
         docker_capacity._size_bytes("unknown")

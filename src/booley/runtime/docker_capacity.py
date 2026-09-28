@@ -14,6 +14,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_list,
+    require_str_value,
+)
+
 GIB = 2**30
 COLD_BUILD_HEADROOM = 30 * GIB
 CACHED_BUILD_HEADROOM = 10 * GIB
@@ -21,6 +28,10 @@ THIN_BUILD_HEADROOM = 5 * GIB
 HEAVY_RETAINED_GROWTH = 5 * GIB
 THIN_RETAINED_GROWTH = 2 * GIB
 SAFETY_RESERVE = 5 * GIB
+# Calibrated conservatively against `docker system df -v` for the standard and
+# RISC-V chains: managed substrate layers were shared and wheel/sidecar unique
+# sizes stayed below 0.2 GiB. These allowances intentionally leave multi-GiB
+# margin for BuildKit's retained intermediates without adding every peak.
 SKIP_PREFLIGHT_ENV = "BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT"
 _SIZE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]?)(i?)B", re.IGNORECASE)
 
@@ -69,6 +80,18 @@ class DockerBuildPlan:
         if not self.requests:
             raise ValueError("a Docker build plan must contain at least one request")
 
+    @property
+    def current(self) -> DockerBuildRequest:
+        """Return the build that must run next."""
+        return self.requests[0]
+
+    def tail_from_output(self, output_tag: str) -> DockerBuildPlan:
+        """Return the remaining sequence beginning at one exact output tag."""
+        for index, request in enumerate(self.requests):
+            if request.output_tag == output_tag:
+                return DockerBuildPlan(self.requests[index:])
+        raise ValueError(f"Docker build plan has no request for output tag {output_tag!r}")
+
 
 @dataclass(frozen=True, slots=True)
 class _BuildCache:
@@ -113,18 +136,6 @@ def _docker_storage(docker: str) -> Path:
     if not value or not path.is_absolute():
         raise DockerCapacityError(f"Docker reported an invalid storage root: {value or '<empty>'}")
     return path
-
-
-def _target_is_cached(docker: str, image: str) -> bool:
-    result = _run_docker_probe([docker, "image", "inspect", image, "--format", "{{.Id}}"])
-    if result.returncode == 0 and result.stdout.strip():
-        return True
-    detail = _probe_detail(result).lower()
-    if "no such image" in detail or "not found" in detail:
-        return False
-    raise DockerCapacityError(
-        f"could not inspect target Docker image {image}: {_probe_detail(result)}"
-    )
 
 
 def _image_label(docker: str, image: str, label: str) -> str | None:
@@ -254,7 +265,7 @@ def ensure_docker_build_capacity(
         current_request = DockerBuildRequest(image, image)
     if remaining_plan is None:
         remaining_plan = DockerBuildPlan((current_request,))
-    if remaining_plan.requests[0] != current_request:
+    if remaining_plan.current != current_request:
         raise ValueError("the current Docker build must be first in the remaining plan")
     if image is not None and image != current_request.output_tag:
         raise ValueError("the Docker build image must match the current request output tag")
@@ -274,17 +285,10 @@ def ensure_docker_build_capacity(
 
 
 def _request_from_document(entry: object) -> DockerBuildRequest:
-    if not isinstance(entry, dict):
-        raise TypeError("each request must be an object")
-    managed_image = entry.get("managed_image")
-    output_tag = entry.get("output_tag")
-    estimate_class = entry.get("estimate_class")
-    if not isinstance(managed_image, str) or not managed_image.strip():
-        raise TypeError("managed_image must be a non-empty string")
-    if not isinstance(output_tag, str) or not output_tag.strip():
-        raise TypeError("output_tag must be a non-empty string")
-    if not isinstance(estimate_class, str):
-        raise TypeError("estimate_class must be a string")
+    document = require_dict(entry, field="request")
+    managed_image = require_str_value(document.get("managed_image"), field="managed_image")
+    output_tag = require_str_value(document.get("output_tag"), field="output_tag")
+    estimate_class = require_str_value(document.get("estimate_class"), field="estimate_class")
     return DockerBuildRequest(
         managed_image,
         output_tag,
@@ -294,15 +298,12 @@ def _request_from_document(entry: object) -> DockerBuildRequest:
 
 def _plan_from_file(path: Path, current_index: int) -> tuple[DockerBuildRequest, DockerBuildPlan]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or not isinstance(payload.get("requests"), list):
-            raise TypeError("root must contain a requests list")
+        payload = require_dict(json.loads(path.read_text(encoding="utf-8")), field="root")
+        entries = require_list(payload.get("requests"), field="requests")
         if current_index < 0:
             raise ValueError("current index must not be negative")
-        requests = tuple(
-            _request_from_document(entry) for entry in payload["requests"][current_index:]
-        )
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        requests = tuple(_request_from_document(entry) for entry in entries[current_index:])
+    except (BoundaryError, OSError, ValueError, json.JSONDecodeError) as exc:
         raise DockerCapacityError(f"invalid Docker build plan file {path}: {exc}") from exc
     if not requests:
         raise DockerCapacityError("Docker build plan has no request at the current index")

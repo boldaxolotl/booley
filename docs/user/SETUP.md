@@ -89,7 +89,7 @@ Booley checks the complete known build sequence against the filesystem containin
 Docker's reported storage root. It combines retained growth from earlier outputs
 with each build's temporary peak, takes the largest point in the sequence, and
 adds one 5 GiB safety reserve. The resulting bounds are 40 GiB for the standard
-cold three-build sequence, 45 GiB for the RISC-V sequence, and 10 GiB for an
+cold three-build sequence, 47 GiB for the RISC-V sequence, and 10 GiB for an
 overlay-only refresh. A heavyweight build keeps the conservative
 30 GiB cold peak (10 GiB only when the managed image's role, recipe, effective
 inputs or contracts, and non-empty build cache prove reusable inputs); the fixed

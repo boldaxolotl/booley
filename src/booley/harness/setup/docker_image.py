@@ -514,6 +514,7 @@ def _prepare_existing_base_image(
     fingerprint: str | None,
     expected_version: str,
     allow_pull: bool = True,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> bool:
     """Skip or refresh a present base image; False when normal provisioning remains."""
     if not exists or ctx.force:
@@ -530,7 +531,13 @@ def _prepare_existing_base_image(
     if ctx.check_only:
         ctx.record("docker_image", "warn", "would rebuild (stale)")
         return True
-    _docker_local_build(ctx, docker_dir, exists, fingerprint)
+    _docker_local_build(
+        ctx,
+        docker_dir,
+        exists,
+        fingerprint,
+        capacity_plan=capacity_plan,
+    )
     return True
 
 
@@ -540,6 +547,7 @@ def _step_docker_image(
     *,
     allow_pull: bool = True,
     rebuild_runtime_base: bool | None = None,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> None:
     """Build or refresh ``booley-sandbox``; *selected_image* is explanatory only."""
     ctx.step_banner("Docker image")
@@ -560,6 +568,7 @@ def _step_docker_image(
         fingerprint=fingerprint,
         expected_version=expected_version,
         allow_pull=allow_pull,
+        capacity_plan=capacity_plan,
     ):
         return
 
@@ -567,14 +576,8 @@ def _step_docker_image(
         _docker_check_only(ctx, exists)
         return
 
-    # Pull-first strategy (skip if --force requests fresh local build)
-    if allow_pull and not ctx.force:
-        version = expected_version
-        if _try_pull_image(version):
-            ok(f"{DOCKER_IMAGE} pulled from registry (v{version})")
-            ctx.record("docker_image", "ok", "pulled")
-            return
-        info("pre-built image unavailable, rebuilding the Sandbox Image locally")
+    if _pulled_base_image(ctx, allow_pull=allow_pull, expected_version=expected_version):
+        return
 
     _docker_local_build(
         ctx,
@@ -582,7 +585,20 @@ def _step_docker_image(
         exists,
         fingerprint,
         rebuild_runtime_base=(ctx.force if rebuild_runtime_base is None else rebuild_runtime_base),
+        capacity_plan=capacity_plan,
     )
+
+
+def _pulled_base_image(ctx: InitContext, *, allow_pull: bool, expected_version: str) -> bool:
+    """Try the non-forced registry path and report whether it completed the step."""
+    if not allow_pull or ctx.force:
+        return False
+    if _try_pull_image(expected_version):
+        ok(f"{DOCKER_IMAGE} pulled from registry (v{expected_version})")
+        ctx.record("docker_image", "ok", "pulled")
+        return True
+    info("pre-built image unavailable, rebuilding the Sandbox Image locally")
+    return False
 
 
 def _docker_cli_ready(ctx: InitContext) -> bool:
@@ -636,6 +652,7 @@ def _docker_local_build(
     *,
     preserve_build_stamp: bool = False,
     rebuild_runtime_base: bool = False,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> None:
     """Build the runtime base, wheel, and candidate image from local sources."""
     inputs = _local_build_inputs(ctx, docker_dir)
@@ -646,19 +663,18 @@ def _docker_local_build(
     if fingerprint is None:
         fingerprint = _image_build_fingerprint(booley_root)
     try:
-        capacity_requests = _local_build_capacity_requests(
+        capacity_plan = _resolved_local_capacity_plan(
             base_dockerfile,
             dockerfile,
             booley_root,
             fingerprint,
             rebuild_runtime_base=rebuild_runtime_base,
+            supplied=capacity_plan,
         )
     except (OSError, ValueError) as error:
         err(f"stable runtime-base contract failed: {error}")
         ctx.record("docker_image", "err", "runtime-base contract failed")
         return
-    capacity_plan = DockerBuildPlan(capacity_requests)
-
     runtime_base_id = _acquire_runtime_base(
         ctx,
         base_dockerfile,
@@ -668,10 +684,32 @@ def _docker_local_build(
     )
     if runtime_base_id is None:
         return
+    _complete_local_sandbox_build(
+        ctx,
+        dockerfile,
+        booley_root,
+        exists=exists,
+        fingerprint=fingerprint,
+        runtime_base_id=runtime_base_id,
+        capacity_plan=capacity_plan.tail_from_output(DOCKER_IMAGE),
+        preserve_build_stamp=preserve_build_stamp,
+    )
 
+
+def _complete_local_sandbox_build(
+    ctx: InitContext,
+    dockerfile: Path,
+    booley_root: Path,
+    *,
+    exists: bool,
+    fingerprint: str | None,
+    runtime_base_id: str,
+    capacity_plan: DockerBuildPlan,
+    preserve_build_stamp: bool,
+) -> None:
+    """Build the wheel and final Sandbox candidate after the base is ready."""
     if not _docker_build_wheel(ctx, booley_root, preserve_stamp=preserve_build_stamp):
         return
-
     returncode = _build_local_sandbox_candidate(
         ctx,
         dockerfile,
@@ -679,7 +717,7 @@ def _docker_local_build(
         exists=exists,
         fingerprint=fingerprint,
         runtime_base_id=runtime_base_id,
-        capacity_plan=DockerBuildPlan((capacity_requests[-1],)),
+        capacity_plan=capacity_plan,
     )
     if returncode is None:
         return  # error already recorded
@@ -692,6 +730,32 @@ def _docker_local_build(
     ok(f"{DOCKER_IMAGE} image built successfully")
     _report_build_cache()
     ctx.record("docker_image", "ok", "built")
+
+
+def _resolved_local_capacity_plan(
+    base_dockerfile: Path,
+    dockerfile: Path,
+    booley_root: Path,
+    fingerprint: str | None,
+    *,
+    rebuild_runtime_base: bool,
+    supplied: DockerBuildPlan | None,
+) -> DockerBuildPlan:
+    """Replan the local prefix while retaining any later command-level builds."""
+    local_requests = _local_build_capacity_requests(
+        base_dockerfile,
+        dockerfile,
+        booley_root,
+        fingerprint,
+        rebuild_runtime_base=rebuild_runtime_base,
+    )
+    if supplied is None:
+        return DockerBuildPlan(local_requests)
+    local_outputs = {LOCAL_RUNTIME_BASE_IMAGE, DOCKER_IMAGE}
+    future = tuple(
+        request for request in supplied.requests if request.output_tag not in local_outputs
+    )
+    return DockerBuildPlan((*local_requests, *future))
 
 
 def _build_local_sandbox_candidate(
@@ -716,7 +780,7 @@ def _build_local_sandbox_candidate(
         build_contexts=(("booley-runtime-base", f"docker-image://{LOCAL_RUNTIME_BASE_IMAGE}"),),
         build_args=("--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={runtime_base_id}"),
         parent_artifact=runtime_base_id,
-        capacity_request=capacity_plan.requests[0] if capacity_plan is not None else None,
+        capacity_request=capacity_plan.current if capacity_plan is not None else None,
         capacity_plan=capacity_plan,
     )
     returncode = _docker_build_image(ctx, build)
@@ -800,7 +864,7 @@ def _docker_build_runtime_base(
         image=LOCAL_RUNTIME_BASE_IMAGE,
         build_note="stable EDA/runtime layers are cached across source changes",
         build_args=tuple(build_args),
-        capacity_request=capacity_plan.requests[0] if capacity_plan is not None else None,
+        capacity_request=capacity_plan.current if capacity_plan is not None else None,
         capacity_plan=capacity_plan,
     )
     returncode = _docker_build_image(ctx, build)

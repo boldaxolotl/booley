@@ -39,6 +39,7 @@ DockerPort = runtime_lifecycle.DockerPort
 HostImageScope = runtime_lifecycle.HostImageScope
 ImageCleanup = runtime_lifecycle.ImageCleanup
 ImageLifecycleError = runtime_lifecycle.ImageLifecycleError
+IncrementalPlanUnavailableError = runtime_lifecycle.IncrementalPlanUnavailableError
 InstalledImageContractError = runtime_lifecycle.InstalledImageContractError
 ImageNode = runtime_lifecycle.ImageNode
 ImageScope = runtime_lifecycle.ImageScope
@@ -60,11 +61,13 @@ class _LegacyBuildAdapter:
         *,
         verbose: bool,
         refresh_runtime_base: bool = False,
+        capacity_plan: DockerBuildPlan | None = None,
     ) -> None:
         self.project_root = project_root
         self.docker = docker
         self.verbose = verbose
         self.refresh_runtime_base = refresh_runtime_base
+        self.capacity_plan = capacity_plan
 
     def build(
         self,
@@ -126,6 +129,7 @@ class _LegacyBuildAdapter:
                 node.reference,
                 allow_pull=False,
                 rebuild_runtime_base=self.refresh_runtime_base,
+                capacity_plan=self.capacity_plan,
             )
             return
         try:
@@ -142,6 +146,7 @@ class _LegacyBuildAdapter:
                     node.payload.fingerprint,
                     preserve_build_stamp=True,
                     rebuild_runtime_base=self.refresh_runtime_base,
+                    capacity_plan=self.capacity_plan,
                 )
         except (OSError, ValueError) as error:
             raise ImageLifecycleError(
@@ -464,12 +469,14 @@ def _build_adapter(
     *,
     verbose: bool,
     refresh_runtime_base: bool = False,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> BuildPort:
     return _LegacyBuildAdapter(
         project_root,
         docker,
         verbose=verbose,
         refresh_runtime_base=refresh_runtime_base,
+        capacity_plan=capacity_plan,
     )
 
 
@@ -516,6 +523,7 @@ def reconcile(
     intent: Intent,
     *,
     verbose: bool = False,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> LifecycleResult:
     """Reconcile an image graph with Project Initialization build adapters."""
     docker = _docker_adapter()
@@ -537,6 +545,7 @@ def reconcile(
             docker,
             verbose=verbose,
             refresh_runtime_base=(intent is Intent.REFRESH and isinstance(scope, HostImageScope)),
+            capacity_plan=capacity_plan,
         )
     )
     return runtime_lifecycle.reconcile(
@@ -549,13 +558,14 @@ def reconcile(
     )
 
 
-def plan(scope: ProjectImageScope) -> LifecyclePlan:
+def plan(scope: ProjectImageScope, *, intent: Intent = Intent.ENSURE) -> LifecyclePlan:
     """Plan source/release convergence using the installed artifact policy."""
     docker = _docker_adapter()
     return runtime_lifecycle.plan(
         scope,
         docker=docker,
         artifact_policy=_artifact_policy(scope.project_root),
+        intent=intent,
     )
 
 
@@ -609,8 +619,8 @@ def prepare(
     if build_plan is not None:
         ensure_docker_build_capacity(
             ("docker", "build"),
-            image=build_plan.requests[0].output_tag,
-            current_request=build_plan.requests[0],
+            image=build_plan.current.output_tag,
+            current_request=build_plan.current,
             remaining_plan=build_plan,
         )
     import booley
@@ -655,3 +665,18 @@ def validate(prepared: PreparedConvergence) -> None:
 def abort(prepared: PreparedConvergence) -> None:
     """Discard one previously prepared convergence."""
     runtime_lifecycle.abort(prepared, docker=_docker_adapter())
+
+
+def reconcile_planned(
+    scope: ProjectImageScope,
+    intent: Intent,
+    *,
+    verbose: bool = False,
+) -> LifecycleResult:
+    """Plan, preflight, prepare, and atomically adopt one Project image graph."""
+    prepared = prepare(plan(scope, intent=intent), verbose=verbose)
+    try:
+        return commit(prepared)
+    except BaseException:
+        abort(prepared)
+        raise

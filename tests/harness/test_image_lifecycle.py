@@ -12,7 +12,11 @@ import pytest
 
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import image_lifecycle as lifecycle
-from booley.runtime.docker_capacity import BuildEstimateClass, DockerBuildRequest
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildPlan,
+    DockerBuildRequest,
+)
 
 
 class FakeDocker:
@@ -128,6 +132,39 @@ def test_prepare_checks_project_and_sidecar_plan_before_runtime_mutation(
     harness_lifecycle.prepare(lifecycle_plan, future_requests=(sidecar,))
 
     assert [request.managed_image for request in observed] == ["base", "proxy"]
+
+
+def test_legacy_host_adapter_passes_complete_plan_to_local_base_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import booley
+    from booley.harness.setup import docker_image
+    from booley.runtime.version_attribution import VersionOrigin
+
+    base = DockerBuildRequest("base", lifecycle.BASE_IMAGE)
+    proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    plan = DockerBuildPlan((base, proxy))
+    observed = []
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        SimpleNamespace(origin=VersionOrigin.SOURCE),
+    )
+    monkeypatch.setattr(
+        docker_image,
+        "_step_docker_image",
+        lambda *_args, **kwargs: observed.append(kwargs["capacity_plan"]),
+    )
+    adapter = harness_lifecycle._LegacyBuildAdapter(
+        tmp_path,
+        FakeDocker({}),
+        verbose=False,
+        capacity_plan=plan,
+    )
+
+    adapter._build_base(SimpleNamespace(reference=lifecycle.BASE_IMAGE), SimpleNamespace())
+
+    assert observed == [plan]
 
 
 class FakeBuilder:
@@ -1941,6 +1978,7 @@ def _wire_source_builds(
         _fingerprint,
         *,
         rebuild_runtime_base=False,
+        **_kwargs,
     ) -> None:
         del rebuild_runtime_base
         payload = lifecycle.PayloadProvenance(
@@ -2036,6 +2074,7 @@ def _extracted_build_recorder(docker: FakeDocker, calls: list[tuple]):
         *,
         preserve_build_stamp=False,
         rebuild_runtime_base=False,
+        **_kwargs,
     ) -> None:
         calls.append((docker_dir, preserve_build_stamp, rebuild_runtime_base))
         payload = lifecycle.PayloadProvenance(

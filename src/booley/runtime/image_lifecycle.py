@@ -138,6 +138,10 @@ class ImageLifecycleError(RuntimeError):
     """A managed Sandbox Image could not be reconciled or verified."""
 
 
+class IncrementalPlanUnavailableError(ImageLifecycleError):
+    """The selected image must use the compatibility reconciliation path."""
+
+
 class InstalledImageContractError(ImageLifecycleError):
     """An installed Booley artifact lacks valid image compatibility metadata."""
 
@@ -793,7 +797,7 @@ def _source_graph_project(project_root: Path, selected: str, substrate: ImageNod
     requirements_body = _project_requirements_body(project_root)
     dockerfile = _direct_project_dir(project_root) / "docker" / "Dockerfile"
     if dockerfile.is_file() and not project_image.is_managed_generated_file(dockerfile):
-        raise ImageLifecycleError(
+        raise IncrementalPlanUnavailableError(
             "wheel-only convergence is unavailable for a user-owned Project Docker "
             "recipe; preserve its exact ancestry and rebuild it explicitly"
         )
@@ -1004,6 +1008,7 @@ def plan(
     *,
     docker: DockerPort | None = None,
     artifact_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY,
+    intent: Intent = Intent.ENSURE,
 ) -> LifecyclePlan:
     """Observe and purely plan the minimal invalid closure for one Project."""
     if not isinstance(scope, ProjectImageScope):
@@ -1017,7 +1022,7 @@ def plan(
         "booley-sandbox-riscv",
         project_image.project_image_name(root),
     }:
-        raise ImageLifecycleError(f"Sandbox Image {selected!r} is externally managed")
+        raise IncrementalPlanUnavailableError(f"Sandbox Image {selected!r} is externally managed")
     if artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
         nodes = (_complete_release_node(selected, contracts),)
     elif artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL:
@@ -1027,7 +1032,11 @@ def plan(
     invalid = False
     steps = []
     for node in nodes:
-        reason = _planned_reason(node, resolved_docker, parent_invalid=invalid)
+        reason = (
+            Diagnostic("refresh", "explicit refresh requested")
+            if intent is Intent.REFRESH
+            else _planned_reason(node, resolved_docker, parent_invalid=invalid)
+        )
         if reason is None:
             steps.append(
                 PlanStep(

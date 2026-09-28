@@ -176,16 +176,23 @@ def reconcile_sidecars(
         specs = _image_specs(booley_root)
     except SidecarError as exc:
         return SidecarResult((SidecarFinding("sidecar-images", SidecarState.ERROR, str(exc)),))
-    findings: list[SidecarFinding] = []
-    for spec in specs:
-        finding = _reconcile_image(spec, intent, docker, capacity_plan=capacity_plan)
-        findings.append(finding)
-        if finding.state is SidecarState.ERROR:
-            return SidecarResult(tuple(findings))
+    findings = list(_reconcile_images(specs, intent, docker, capacity_plan))
+    if findings and findings[-1].state is SidecarState.ERROR:
+        return SidecarResult(tuple(findings))
     network = _reconcile_network(intent, docker)
     findings.append(network)
     if network.state is SidecarState.ERROR:
         return SidecarResult(tuple(findings))
+    findings.extend(_reconcile_containers(policy, intent, docker))
+    return SidecarResult(tuple(findings))
+
+
+def _reconcile_containers(
+    policy: InteractiveHostPolicy,
+    intent: Intent,
+    docker: _DockerPort,
+) -> tuple[SidecarFinding, ...]:
+    """Reconcile the proxy/reaper container suffix after images and network."""
     fingerprint = policy_fingerprint(policy)
     proxy_spec = _ContainerSpec(
         "proxy",
@@ -201,24 +208,37 @@ def reconcile_sidecars(
         intent,
         docker,
     )
-    findings.append(proxy)
     if proxy.state is SidecarState.ERROR:
-        return SidecarResult(tuple(findings))
-    findings.append(
-        _reconcile_container(
-            _ContainerSpec(
-                "reaper",
-                legacy.REAPER_CONTAINER,
-                legacy.REAPER_IMAGE,
-                "reaper",
-                tuple(_reaper_run_args(policy, fingerprint)),
-            ),
-            fingerprint,
-            intent,
-            docker,
-        )
+        return (proxy,)
+    reaper = _reconcile_container(
+        _ContainerSpec(
+            "reaper",
+            legacy.REAPER_CONTAINER,
+            legacy.REAPER_IMAGE,
+            "reaper",
+            tuple(_reaper_run_args(policy, fingerprint)),
+        ),
+        fingerprint,
+        intent,
+        docker,
     )
-    return SidecarResult(tuple(findings))
+    return proxy, reaper
+
+
+def _reconcile_images(
+    specs: tuple[_ImageSpec, ...],
+    intent: Intent,
+    docker: _DockerPort,
+    capacity_plan: DockerBuildPlan | None,
+) -> tuple[SidecarFinding, ...]:
+    """Reconcile the ordered sidecar image prefix, stopping on its first error."""
+    findings = []
+    for spec in specs:
+        finding = _reconcile_image(spec, intent, docker, capacity_plan=capacity_plan)
+        findings.append(finding)
+        if finding.state is SidecarState.ERROR:
+            break
+    return tuple(findings)
 
 
 def plan_image_builds(
@@ -323,12 +343,7 @@ def _reconcile_image(
             return SidecarFinding(spec.resource, SidecarState.PENDING, detail)
         tail = capacity_plan
         if tail is not None:
-            index = next(
-                index
-                for index, request in enumerate(tail.requests)
-                if request.output_tag == spec.reference
-            )
-            tail = DockerBuildPlan(tail.requests[index:])
+            tail = tail.tail_from_output(spec.reference)
         _build_image(spec, expected, docker, capacity_plan=tail)
         verified = _inspect_image(spec.reference, docker)
         if verified is None:
@@ -340,7 +355,7 @@ def _reconcile_image(
                 + format_differences(expected, actual)
             )
         return SidecarFinding(spec.resource, SidecarState.CHANGED, f"reconciled {spec.reference}")
-    except SidecarError as exc:
+    except (OSError, SidecarError, ValueError) as exc:
         return SidecarFinding(spec.resource, SidecarState.ERROR, str(exc))
 
 
@@ -373,7 +388,7 @@ def _build_image(
         args += ["--label", f"{key}={value}"]
     args.append(str(spec.context))
     request = (
-        capacity_plan.requests[0]
+        capacity_plan.current
         if capacity_plan is not None
         else DockerBuildRequest(
             spec.reference,

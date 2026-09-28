@@ -31,7 +31,7 @@ from booley.config.sandbox import (
     project_image_name,
     project_sandbox_image,
 )
-from booley.runtime.docker_build import run_docker_build
+from booley.runtime.docker_build import DockerBuildResult, run_docker_build
 from booley.runtime.docker_capacity import DockerBuildPlan, DockerBuildRequest
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
@@ -482,17 +482,22 @@ def build_project_image(
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         logger.error("project image build failed: %s", exc)
         return False
+    return _project_build_succeeded(result)
+
+
+def _project_build_succeeded(result: DockerBuildResult) -> bool:
+    """Report the bounded Docker result at the Project image boundary."""
     if result.timed_out:
         logger.error("project image build timed out: %s", "\n".join(result.diagnostics))
         return False
-    if result.returncode != 0:
-        logger.error(
-            "project image build failed (rc=%s): %s",
-            result.returncode,
-            "\n".join(result.diagnostics),
-        )
-        return False
-    return True
+    if result.returncode == 0:
+        return True
+    logger.error(
+        "project image build failed (rc=%s): %s",
+        result.returncode,
+        "\n".join(result.diagnostics),
+    )
+    return False
 
 
 def docker_image_id(image: str) -> str | None:

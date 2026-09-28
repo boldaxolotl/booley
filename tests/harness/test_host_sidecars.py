@@ -7,6 +7,7 @@ import pytest
 
 from booley.config.host_config import InteractiveHostPolicy
 from booley.harness import host_sidecars as sidecars
+from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.image_lifecycle import Intent
 
 
@@ -439,6 +440,28 @@ def test_image_reconciliation_rejects_unverified_build(
     finding = sidecars._reconcile_image(spec, Intent.ENSURE, FakeDocker())
     assert finding.state is sidecars.SidecarState.ERROR
     assert "expected provenance" in finding.detail
+
+
+def test_image_reconciliation_reports_capacity_refusal_without_building(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    spec = sidecars._ImageSpec("image", "image", "kind", dockerfile, tmp_path, ())
+    monkeypatch.setattr(sidecars, "_inspect_image", lambda *_args: None)
+    monkeypatch.setattr(
+        sidecars,
+        "ensure_docker_build_capacity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(DockerCapacityError("capacity refused")),
+    )
+    docker = FakeDocker()
+
+    finding = sidecars._reconcile_image(spec, Intent.ENSURE, docker)
+
+    assert finding.state is sidecars.SidecarState.ERROR
+    assert finding.detail == "capacity refused"
+    assert docker.calls == []
 
 
 def test_image_ownership_rejects_wrong_kind(tmp_path: Path) -> None:

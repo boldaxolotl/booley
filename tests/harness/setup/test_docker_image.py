@@ -1119,6 +1119,95 @@ def test_manual_image_build_scripts_run_shared_capacity_preflight() -> None:
         assert "run_docker_build " in text
 
 
+def _seed_riscv_script_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "repo"
+    docker_dir = root / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    for name in (
+        "build.sh",
+        "build-riscv.sh",
+        "Dockerfile.base",
+        "Dockerfile.substrate",
+        "Dockerfile.wheel",
+        "Dockerfile.riscv",
+    ):
+        source = _BUILD_SH.with_name(name)
+        target = docker_dir / name
+        target.write_bytes(source.read_bytes())
+        target.chmod(0o755 if name.endswith(".sh") else 0o644)
+    (root / "VERSION").write_text("0.0.0\n", encoding="utf-8")
+    return docker_dir
+
+
+def _fake_riscv_build_tools(tmp_path: Path, *, build_marker: Path, plan_marker: Path) -> Path:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_python = fake_bin / "python"
+    fake_python.write_text(
+        """#!/bin/bash
+set -e
+case "$*" in
+  *"import build"*) exit 0 ;;
+  *"sys.executable"*) echo "$0" ;;
+  *"-m build"*)
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--outdir" ]; then shift; mkdir -p "$1"; touch "$1/booley_rtl-0.whl"; exit 0; fi
+      shift
+    done
+    exit 2 ;;
+  *"booley.runtime.docker_capacity"*)
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--plan-file" ]; then shift; plan="$1"; break; fi
+      shift
+    done
+    count=$(grep -o managed_image "$plan" | wc -l)
+    printf '%s' "$count" >"$PLAN_MARKER"
+    [ "$count" -eq 5 ] || exit 8
+    exit 9 ;;
+  *) echo fingerprint ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        f"#!/bin/bash\ntouch {build_marker}\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    return fake_bin
+
+
+def test_riscv_script_refuses_five_image_plan_before_first_docker_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker_dir = _seed_riscv_script_tree(tmp_path)
+    build_marker = tmp_path / "docker-build-ran"
+    plan_marker = tmp_path / "plan-count"
+    fake_bin = _fake_riscv_build_tools(
+        tmp_path,
+        build_marker=build_marker,
+        plan_marker=plan_marker,
+    )
+    fake_python = fake_bin / "python"
+    monkeypatch.setenv("PYTHON", str(fake_python))
+    monkeypatch.setenv("PLAN_MARKER", str(plan_marker))
+    monkeypatch.setenv("PATH", f"{fake_bin}:/usr/bin:/bin")
+
+    result = subprocess.run(
+        [str(docker_dir / "build-riscv.sh")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 9
+    assert plan_marker.read_text(encoding="utf-8") == "5"
+    assert not build_marker.exists()
+
+
 # ---------------------------------------------------------------------------
 # Wheel-build failure reporting (fpu F-1)
 # ---------------------------------------------------------------------------
