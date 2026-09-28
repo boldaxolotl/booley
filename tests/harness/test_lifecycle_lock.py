@@ -41,7 +41,10 @@ def test_host_lifecycle_lock_waits_for_current_owner(tmp_path, monkeypatch, capl
         holder.release()
         acquired.result(timeout=5)
 
-    assert "pid=41 operation=booley init" in caplog.text
+    expected_owner = (
+        "another Booley command" if os.name == "nt" else "pid=41 operation=booley init"
+    )
+    assert expected_owner in caplog.text
     assert f"waiting up to {lifecycle_lock.DEFAULT_WAIT_TIMEOUT_SECONDS:g}s" in caplog.text
     owner = lock_path.read_text(encoding="utf-8")
     assert owner == f"pid={os.getpid()} operation=session up\n"
