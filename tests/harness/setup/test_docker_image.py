@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import booley
 from booley.harness import init_cmd
 from booley.harness.setup import docker_image as init_docker_image
@@ -37,6 +39,15 @@ def _seed_source(root: Path) -> None:
     (bwave / "src").mkdir(parents=True)
     (bwave / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
     (bwave / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+
+
+def _seed_local_build_tree(root: Path) -> Path:
+    docker_dir = root / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "Dockerfile.base").write_text("FROM scratch\n", encoding="utf-8")
+    (docker_dir / "Dockerfile").write_text("FROM booley-runtime-base\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
+    return docker_dir
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +206,7 @@ def test_local_build_constructs_base_before_candidate_with_named_context(
     (docker_dir / "Dockerfile").write_text("FROM booley-runtime-base\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
     calls = []
+    runtime_base_id = "sha256:" + "a" * 64
 
     monkeypatch.setattr(
         init_docker_image,
@@ -202,9 +214,13 @@ def test_local_build_constructs_base_before_candidate_with_named_context(
         lambda *_args, **_kwargs: True,
     )
     monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda *_args: False)
-    monkeypatch.setattr(
-        init_docker_image, "_docker_image_id", lambda _image: "sha256:runtime-base"
+    inspections = iter(
+        (
+            init_docker_image._RuntimeBaseInspection(None, None, "missing"),
+            init_docker_image._RuntimeBaseInspection(runtime_base_id, "contract"),
+        )
     )
+    monkeypatch.setattr(init_docker_image, "_inspect_runtime_base", lambda: next(inspections))
     monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
     monkeypatch.setattr(
         init_docker_image,
@@ -232,13 +248,214 @@ def test_local_build_constructs_base_before_candidate_with_named_context(
     assert base.image == "booley-runtime-base:local"
     assert candidate.dockerfile.name == "Dockerfile"
     assert candidate.build_contexts == (
-        ("booley-runtime-base", "docker-image://booley-runtime-base:local"),
+        ("booley-runtime-base", f"docker-image://{runtime_base_id}"),
     )
-    assert candidate.parent_artifact == "sha256:runtime-base"
+    assert candidate.parent_artifact == runtime_base_id
     assert candidate.build_args == (
         "--build-arg",
-        "BOOLEY_RUNTIME_BASE_IMAGE=sha256:runtime-base",
+        f"BOOLEY_RUNTIME_BASE_IMAGE={runtime_base_id}",
     )
+
+
+def test_local_build_reuses_matching_runtime_base(tmp_path, monkeypatch, capsys) -> None:
+    docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "Dockerfile.base").write_text("FROM scratch\n", encoding="utf-8")
+    (docker_dir / "Dockerfile").write_text("FROM booley-runtime-base\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
+    contract = "c" * 64
+    runtime_base_id = "sha256:" + "a" * 64
+    builds = []
+
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_build_wheel",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_inspect_runtime_base",
+        lambda: init_docker_image._RuntimeBaseInspection(runtime_base_id, contract),
+    )
+    monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
+    monkeypatch.setattr(
+        init_docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base=contract),
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_runtime_base_build_metadata_args",
+        lambda _root, _contract: [],
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_build_image",
+        lambda _ctx, spec: builds.append(spec) or 0,
+    )
+
+    init_docker_image._docker_local_build(
+        InitContext(project_root=tmp_path),
+        docker_dir,
+        exists=True,
+        fingerprint="fp",
+    )
+
+    assert [spec.dockerfile.name for spec in builds] == ["Dockerfile"]
+    assert (
+        f"reusing booley-runtime-base:local (contract {contract[:12]})" in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize(
+    ("inspection", "reason"),
+    [
+        (init_docker_image._RuntimeBaseInspection(None, None, "missing"), "missing"),
+        (
+            init_docker_image._RuntimeBaseInspection("sha256:not-an-id", "c" * 64),
+            "invalid provenance",
+        ),
+        (
+            init_docker_image._RuntimeBaseInspection(None, None, "invalid provenance"),
+            "invalid provenance",
+        ),
+        (
+            init_docker_image._RuntimeBaseInspection("sha256:" + "a" * 64, None),
+            "invalid provenance",
+        ),
+        (
+            init_docker_image._RuntimeBaseInspection("sha256:" + "a" * 64, "different"),
+            "contract changed",
+        ),
+    ],
+)
+def test_local_build_rebuilds_unusable_runtime_base(
+    tmp_path, monkeypatch, capsys, inspection, reason
+) -> None:
+    docker_dir = _seed_local_build_tree(tmp_path)
+    contract = "c" * 64
+    rebuilt_id = "sha256:" + "b" * 64
+    inspections = iter(
+        (inspection, init_docker_image._RuntimeBaseInspection(rebuilt_id, contract))
+    )
+    builds = []
+
+    monkeypatch.setattr(init_docker_image, "_inspect_runtime_base", lambda: next(inspections))
+    monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda *_args: False)
+    monkeypatch.setattr(init_docker_image, "_docker_build_wheel", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
+    monkeypatch.setattr(
+        init_docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base=contract),
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_runtime_base_build_metadata_args",
+        lambda _root, _contract: [],
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_build_image",
+        lambda _ctx, spec: builds.append(spec) or 0,
+    )
+
+    init_docker_image._docker_local_build(
+        InitContext(project_root=tmp_path), docker_dir, exists=True, fingerprint="fp"
+    )
+
+    assert [spec.dockerfile.name for spec in builds] == ["Dockerfile.base", "Dockerfile"]
+    assert f"rebuilding booley-runtime-base:local: {reason}" in capsys.readouterr().out
+    base, candidate = builds
+    labels = dict(base.labels)
+    assert labels[init_docker_image.LABEL_SCHEMA] == init_docker_image.PROVENANCE_SCHEMA
+    assert labels[init_docker_image.LABEL_ARTIFACT_ROLE] == "runtime-base"
+    assert labels[init_docker_image.LABEL_EFFECTIVE_INPUTS] == contract
+    assert labels[init_docker_image.LABEL_RECIPE_FINGERPRINT] == (
+        init_docker_image.resolve_recipe_fingerprint((docker_dir / "Dockerfile.base",))
+    )
+    assert labels[init_docker_image.LABEL_BUILD_ORIGIN] == "local"
+    assert labels[init_docker_image.LABEL_RUNTIME_BASE_CONTRACT] == contract
+    assert candidate.build_contexts == (("booley-runtime-base", f"docker-image://{rebuilt_id}"),)
+    assert candidate.parent_artifact == rebuilt_id
+
+
+def test_local_build_explicitly_refreshes_matching_runtime_base(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    docker_dir = _seed_local_build_tree(tmp_path)
+    contract = "c" * 64
+    old_id = "sha256:" + "a" * 64
+    rebuilt_id = "sha256:" + "b" * 64
+    inspections = iter(
+        (
+            init_docker_image._RuntimeBaseInspection(old_id, contract),
+            init_docker_image._RuntimeBaseInspection(rebuilt_id, contract),
+        )
+    )
+    builds = []
+    monkeypatch.setattr(init_docker_image, "_inspect_runtime_base", lambda: next(inspections))
+    monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda *_args: True)
+    monkeypatch.setattr(init_docker_image, "_docker_build_wheel", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
+    monkeypatch.setattr(
+        init_docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base=contract),
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_build_image",
+        lambda _ctx, spec: builds.append(spec) or 0,
+    )
+
+    init_docker_image._docker_local_build(
+        InitContext(project_root=tmp_path),
+        docker_dir,
+        exists=True,
+        fingerprint="fp",
+        rebuild_runtime_base=True,
+    )
+
+    assert [spec.dockerfile.name for spec in builds] == ["Dockerfile.base", "Dockerfile"]
+    assert "rebuilding booley-runtime-base:local: explicit refresh" in capsys.readouterr().out
+
+
+def test_forced_image_step_can_reuse_matching_runtime_base(tmp_path, monkeypatch) -> None:
+    docker_dir = _seed_local_build_tree(tmp_path)
+    contract = "c" * 64
+    runtime_base_id = "sha256:" + "a" * 64
+    builds = []
+    monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(init_docker_image, "_docker_cli_ready", lambda _ctx: True)
+    monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda *_args: True)
+    monkeypatch.setattr(init_docker_image, "_image_build_fingerprint", lambda _root: "fp")
+    monkeypatch.setattr(init_docker_image, "_expected_version", lambda _root: "0.2.6")
+    monkeypatch.setattr(
+        init_docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base=contract),
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_inspect_runtime_base",
+        lambda: init_docker_image._RuntimeBaseInspection(runtime_base_id, contract),
+    )
+    monkeypatch.setattr(init_docker_image, "_docker_build_wheel", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_build_image",
+        lambda _ctx, spec: builds.append(spec) or 0,
+    )
+
+    init_docker_image._step_docker_image(
+        InitContext(project_root=tmp_path, force=True),
+        allow_pull=False,
+        rebuild_runtime_base=False,
+    )
+
+    assert [spec.dockerfile.name for spec in builds] == ["Dockerfile"]
 
 
 # ---------------------------------------------------------------------------

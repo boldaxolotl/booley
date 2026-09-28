@@ -13,6 +13,7 @@ it never imports back from ``init_cmd``.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -35,15 +36,19 @@ from booley.runtime.build_stamp import (
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
 from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.image_provenance import (
+    LABEL_ARTIFACT_ROLE,
     LABEL_BUILD_ORIGIN,
+    LABEL_EFFECTIVE_INPUTS,
     LABEL_PARENT_ARTIFACT,
     LABEL_PARENT_ARTIFACT_KIND,
     LABEL_PAYLOAD_FINGERPRINT,
     LABEL_RECIPE_FINGERPRINT,
+    LABEL_RUNTIME_BASE_CONTRACT,
     LABEL_SCHEMA,
     LABEL_WHEEL_SOURCE_FINGERPRINT,
     PARENT_ARTIFACT_LOCAL_IMAGE_ID,
     PROVENANCE_SCHEMA,
+    is_local_image_id,
     resolve_recipe_fingerprint,
 )
 from booley.runtime.paths import docker_data_dir
@@ -180,6 +185,24 @@ class _DockerBuildSpec:
     labels: tuple[tuple[str, str], ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _RuntimeBaseInspection:
+    image_id: str | None
+    contract: str | None
+    failure_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeBaseDisposition:
+    expected_contract: str
+    image_id: str | None
+    rebuild_reason: str | None
+
+    @property
+    def reusable(self) -> bool:
+        return self.rebuild_reason is None
+
+
 def _iter_fingerprint_files(booley_root: Path):
     """Compatibility view of files contributing to the sandbox image build."""
     yield from iter_payload_files(booley_root)
@@ -220,6 +243,97 @@ def _image_label(image: str, label: str) -> str | None:
     val = result.stdout.strip()
     # Go's template prints "<no value>" when the label key is missing.
     return val if val and val != "<no value>" else None
+
+
+def _inspect_runtime_base() -> _RuntimeBaseInspection:
+    """Read the runtime-base identity and contract in one Docker inspection."""
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "image",
+                "inspect",
+                LOCAL_RUNTIME_BASE_IMAGE,
+                "--format",
+                "{{json .}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return _RuntimeBaseInspection(None, None, "invalid provenance")
+    if result.returncode != 0:
+        reason = "missing" if "no such image" in result.stderr.lower() else "invalid provenance"
+        return _RuntimeBaseInspection(None, None, reason)
+    try:
+        inspected = json.loads(result.stdout)
+        image_id = inspected.get("Id")
+        config = inspected.get("Config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        contract = labels.get(LABEL_RUNTIME_BASE_CONTRACT) if isinstance(labels, dict) else None
+    except (AttributeError, json.JSONDecodeError):
+        return _RuntimeBaseInspection(None, None, "invalid provenance")
+    return _RuntimeBaseInspection(
+        image_id if isinstance(image_id, str) else None,
+        contract if isinstance(contract, str) else None,
+    )
+
+
+def _runtime_base_disposition(
+    booley_root: Path, *, rebuild_runtime_base: bool
+) -> _RuntimeBaseDisposition:
+    """Decide whether the named runtime base proves compatibility."""
+    contract = source_image_build_contracts(booley_root).runtime_base
+    inspection = _inspect_runtime_base()
+    if rebuild_runtime_base:
+        return _RuntimeBaseDisposition(contract, inspection.image_id, "explicit refresh")
+    if inspection.failure_reason is not None:
+        return _RuntimeBaseDisposition(contract, inspection.image_id, inspection.failure_reason)
+    if inspection.image_id is None or not is_local_image_id(inspection.image_id):
+        return _RuntimeBaseDisposition(contract, inspection.image_id, "invalid provenance")
+    if inspection.contract is None:
+        return _RuntimeBaseDisposition(contract, inspection.image_id, "invalid provenance")
+    if inspection.contract != contract:
+        return _RuntimeBaseDisposition(contract, inspection.image_id, "contract changed")
+    return _RuntimeBaseDisposition(contract, inspection.image_id, None)
+
+
+def _prepare_runtime_base(
+    ctx: InitContext,
+    dockerfile: Path,
+    booley_root: Path,
+    *,
+    rebuild_runtime_base: bool,
+) -> str | None:
+    """Reuse or rebuild the compatible runtime base and return its immutable ID."""
+    try:
+        disposition = _runtime_base_disposition(
+            booley_root, rebuild_runtime_base=rebuild_runtime_base
+        )
+    except (OSError, ValueError) as error:
+        err(f"stable runtime-base contract failed: {error}")
+        ctx.record("docker_image", "err", "runtime-base contract failed")
+        return None
+    if disposition.reusable:
+        info(f"reusing {LOCAL_RUNTIME_BASE_IMAGE} (contract {disposition.expected_contract[:12]})")
+        runtime_base_id = disposition.image_id
+    else:
+        info(f"rebuilding {LOCAL_RUNTIME_BASE_IMAGE}: {disposition.rebuild_reason}")
+        if not _docker_build_runtime_base(
+            ctx,
+            dockerfile,
+            booley_root,
+            disposition.expected_contract,
+        ):
+            return None
+        runtime_base_id = _inspect_runtime_base().image_id
+    if runtime_base_id is None or not is_local_image_id(runtime_base_id):
+        err("could not resolve a valid stable runtime-base artifact")
+        ctx.record("docker_image", "err", "runtime-base identity missing")
+        return None
+    return runtime_base_id
 
 
 def _installed_image_version(image: str = DOCKER_IMAGE) -> str | None:
@@ -505,6 +619,7 @@ def _prepare_existing_base_image(
     fingerprint: str | None,
     expected_version: str,
     allow_pull: bool = True,
+    rebuild_runtime_base: bool | None = None,
 ) -> bool:
     """Skip or refresh a present base image; False when normal provisioning remains."""
     if not exists or ctx.force:
@@ -521,7 +636,13 @@ def _prepare_existing_base_image(
     if ctx.check_only:
         ctx.record("docker_image", "warn", "would rebuild (stale)")
         return True
-    _docker_local_build(ctx, docker_dir, exists, fingerprint)
+    _docker_local_build(
+        ctx,
+        docker_dir,
+        exists,
+        fingerprint,
+        rebuild_runtime_base=rebuild_runtime_base,
+    )
     return True
 
 
@@ -530,6 +651,7 @@ def _step_docker_image(
     selected_image: str = "",
     *,
     allow_pull: bool = True,
+    rebuild_runtime_base: bool | None = None,
 ) -> None:
     """Build/refresh the project-agnostic ``booley-sandbox`` base image.
 
@@ -554,6 +676,7 @@ def _step_docker_image(
         fingerprint=fingerprint,
         expected_version=expected_version,
         allow_pull=allow_pull,
+        rebuild_runtime_base=rebuild_runtime_base,
     ):
         return
 
@@ -570,7 +693,13 @@ def _step_docker_image(
             return
         info("pre-built image unavailable, building locally (~20 min)")
 
-    _docker_local_build(ctx, docker_dir, exists, fingerprint)
+    _docker_local_build(
+        ctx,
+        docker_dir,
+        exists,
+        fingerprint,
+        rebuild_runtime_base=rebuild_runtime_base,
+    )
 
 
 def _docker_cli_ready(ctx: InitContext) -> bool:
@@ -623,6 +752,7 @@ def _docker_local_build(
     fingerprint: str | None = None,
     *,
     preserve_build_stamp: bool = False,
+    rebuild_runtime_base: bool | None = None,
 ) -> None:
     """Build the runtime base, wheel, and candidate image from local sources."""
     inputs = _local_build_inputs(ctx, docker_dir)
@@ -633,13 +763,15 @@ def _docker_local_build(
     if fingerprint is None:
         fingerprint = _image_build_fingerprint(booley_root)
 
-    if not _docker_build_runtime_base(ctx, base_dockerfile, booley_root):
-        return
-
-    runtime_base_id = _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    if rebuild_runtime_base is None:
+        rebuild_runtime_base = ctx.force
+    runtime_base_id = _prepare_runtime_base(
+        ctx,
+        base_dockerfile,
+        booley_root,
+        rebuild_runtime_base=rebuild_runtime_base,
+    )
     if runtime_base_id is None:
-        err("could not resolve the stable runtime-base artifact after its build")
-        ctx.record("docker_image", "err", "runtime-base identity missing")
         return
 
     if not _docker_build_wheel(ctx, booley_root, preserve_stamp=preserve_build_stamp):
@@ -650,7 +782,7 @@ def _docker_local_build(
         context=booley_root,
         exists=exists,
         fingerprint=fingerprint,
-        build_contexts=(("booley-runtime-base", f"docker-image://{LOCAL_RUNTIME_BASE_IMAGE}"),),
+        build_contexts=(("booley-runtime-base", f"docker-image://{runtime_base_id}"),),
         build_args=("--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={runtime_base_id}"),
         parent_artifact=runtime_base_id,
     )
@@ -668,10 +800,14 @@ def _docker_local_build(
     ctx.record("docker_image", "ok", "built")
 
 
-def _docker_build_runtime_base(ctx: InitContext, dockerfile: Path, booley_root: Path) -> bool:
+def _docker_build_runtime_base(
+    ctx: InitContext,
+    dockerfile: Path,
+    booley_root: Path,
+    contract: str,
+) -> bool:
     """Build the local named base consumed by the thin candidate Dockerfile."""
     try:
-        contract = source_image_build_contracts(booley_root).runtime_base
         build_args = _runtime_base_build_metadata_args(booley_root, contract)
     except (OSError, ValueError) as error:
         err(f"stable runtime-base contract failed: {error}")
@@ -682,8 +818,17 @@ def _docker_build_runtime_base(ctx: InitContext, dockerfile: Path, booley_root: 
         context=booley_root,
         exists=_docker_image_exists(LOCAL_RUNTIME_BASE_IMAGE),
         image=LOCAL_RUNTIME_BASE_IMAGE,
-        build_note="stable EDA/runtime layers are cached across source changes",
+        build_note="rebuilding stable EDA/runtime layers",
         build_args=tuple(build_args),
+        labels=(
+            (LABEL_SCHEMA, PROVENANCE_SCHEMA),
+            (LABEL_ARTIFACT_ROLE, "runtime-base"),
+            (LABEL_EFFECTIVE_INPUTS, contract),
+            (LABEL_RECIPE_FINGERPRINT, resolve_recipe_fingerprint((dockerfile,))),
+            (LABEL_BUILD_ORIGIN, "local"),
+            (LABEL_VERSION, _expected_version(booley_root)),
+            (LABEL_RUNTIME_BASE_CONTRACT, contract),
+        ),
     )
     returncode = _docker_build_image(ctx, build)
     if returncode == 0:

@@ -58,11 +58,12 @@ class _LegacyBuildAdapter:
         node: ImageNode,
         *,
         force: bool,
+        refresh: bool,
         source: ArtifactSource,
     ) -> str | None:
         if source is ArtifactSource.VERIFIED_RELEASE_PULL:
             return self._pull_release(node)
-        self._build_local(node, force=force)
+        self._build_local(node, force=force, refresh=refresh)
         return None
 
     def _pull_release(self, node: ImageNode) -> str:
@@ -79,7 +80,7 @@ class _LegacyBuildAdapter:
             )
         return remote_tag(node.reference, node.payload.version)
 
-    def _build_local(self, node: ImageNode, *, force: bool) -> None:
+    def _build_local(self, node: ImageNode, *, force: bool, refresh: bool) -> None:
         from booley.harness.setup.common import InitContext
         from booley.harness.setup.docker_image import ensure_flavor_image
 
@@ -90,7 +91,7 @@ class _LegacyBuildAdapter:
             show_step_banners=False,
         )
         if node.reference == BASE_IMAGE:
-            self._build_base(node, context)
+            self._build_base(node, context, rebuild_runtime_base=refresh)
         elif node.reference in FLAVOR_RECIPES:
             ensure_flavor_image(context, node.reference, allow_pull=False)
         else:
@@ -99,7 +100,13 @@ class _LegacyBuildAdapter:
         if failures:
             raise ImageLifecycleError("; ".join(failures))
 
-    def _build_base(self, node: ImageNode, context: InitContext) -> None:
+    def _build_base(
+        self,
+        node: ImageNode,
+        context: InitContext,
+        *,
+        rebuild_runtime_base: bool,
+    ) -> None:
         import booley
         from booley.harness.setup.docker_image import (
             _docker_image_exists,
@@ -108,7 +115,12 @@ class _LegacyBuildAdapter:
         )
 
         if booley.version_attribution.origin is VersionOrigin.SOURCE:
-            _step_docker_image(context, node.reference, allow_pull=False)
+            _step_docker_image(
+                context,
+                node.reference,
+                allow_pull=False,
+                rebuild_runtime_base=rebuild_runtime_base,
+            )
             return
         try:
             with extracted_development_context() as root:
@@ -123,6 +135,7 @@ class _LegacyBuildAdapter:
                     ),
                     node.payload.fingerprint,
                     preserve_build_stamp=True,
+                    rebuild_runtime_base=rebuild_runtime_base,
                 )
         except (OSError, ValueError) as error:
             raise ImageLifecycleError(

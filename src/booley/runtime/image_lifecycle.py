@@ -348,6 +348,7 @@ class BuildPort(Protocol):
         node: ImageNode,
         *,
         force: bool,
+        refresh: bool,
         source: ArtifactSource,
     ) -> str | None: ...
 
@@ -1475,7 +1476,7 @@ def _build_node(
     for index, source in enumerate(sources):
         force = refresh or existed or index > 0
         try:
-            candidate = builder.build(node, force=force, source=source)
+            candidate = builder.build(node, force=force, refresh=refresh, source=source)
         except ImageLifecycleError as exc:
             failures.append(f"{source.value} failed for {node.reference}: {exc}")
             continue
@@ -1489,7 +1490,9 @@ def _build_node(
             and not existed
             and intent is Intent.ENSURE
         ):
-            retry = builder.build(node, force=True, source=source) or node.reference
+            retry = (
+                builder.build(node, force=True, refresh=refresh, source=source) or node.reference
+            )
             if _adopt_current_candidate(node, retry, source, docker):
                 return
         failures.append(

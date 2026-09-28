@@ -61,8 +61,15 @@ class FakeBuilder:
         self.docker = docker
         self.built: list[str] = []
 
-    def build(self, node, *, force: bool, source: lifecycle.ArtifactSource) -> None:
-        del force, source
+    def build(
+        self,
+        node,
+        *,
+        force: bool,
+        refresh: bool,
+        source: lifecycle.ArtifactSource,
+    ) -> None:
+        del force, refresh, source
         self.built.append(node.reference)
         labels = dict(node.expected_labels)
         labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
@@ -80,14 +87,28 @@ class FakeBuilder:
 
 
 class FailingBuilder(FakeBuilder):
-    def build(self, node, *, force: bool, source: lifecycle.ArtifactSource) -> None:
-        super().build(node, force=force, source=source)
+    def build(
+        self,
+        node,
+        *,
+        force: bool,
+        refresh: bool,
+        source: lifecycle.ArtifactSource,
+    ) -> None:
+        super().build(node, force=force, refresh=refresh, source=source)
         raise lifecycle.ImageLifecycleError("build failed")
 
 
 class FailOnSecondBuilder(FakeBuilder):
-    def build(self, node, *, force: bool, source: lifecycle.ArtifactSource) -> None:
-        super().build(node, force=force, source=source)
+    def build(
+        self,
+        node,
+        *,
+        force: bool,
+        refresh: bool,
+        source: lifecycle.ArtifactSource,
+    ) -> None:
+        super().build(node, force=force, refresh=refresh, source=source)
         if len(self.built) == 2:
             raise lifecycle.ImageLifecycleError("derived build failed")
 
@@ -1012,9 +1033,10 @@ class RegistryChainBuilder:
         node: lifecycle.ImageNode,
         *,
         force: bool,
+        refresh: bool,
         source: lifecycle.ArtifactSource,
     ) -> str:
-        del force
+        del force, refresh
         assert source is lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL
         self.built.append(node.reference)
         release = lifecycle._published_release_repository(node.reference) + ":0.2.6"
@@ -1413,6 +1435,7 @@ def test_development_distribution_missing_base_builds_locally(
         FakeBuilder(docker).build(
             lifecycle._base_node(payload),
             force=False,
+            refresh=False,
             source=lifecycle.ArtifactSource.LOCAL_BUILD,
         )
 
@@ -1447,6 +1470,7 @@ def test_distribution_replaces_current_local_base_before_pulling_flavor(
     local_builder.build(
         lifecycle._base_node(payload),
         force=False,
+        refresh=False,
         source=lifecycle.ArtifactSource.LOCAL_BUILD,
     )
     registry_builder = RegistryChainBuilder(docker)
@@ -1551,11 +1575,12 @@ def test_wrong_verified_pull_falls_back_to_exact_local_build(
             node,
             *,
             force: bool,
+            refresh: bool,
             source: lifecycle.ArtifactSource,
         ) -> str | None:
             self.sources.append(source)
             if source is lifecycle.ArtifactSource.LOCAL_BUILD:
-                super().build(node, force=force, source=source)
+                super().build(node, force=force, refresh=refresh, source=source)
                 return None
             return _stage_registry_candidate(
                 self.docker,
@@ -1600,9 +1625,10 @@ def test_verified_pull_is_validated_before_canonical_adoption(
             node,
             *,
             force: bool,
+            refresh: bool,
             source: lifecycle.ArtifactSource,
         ) -> str:
-            del force
+            del force, refresh
             assert source is lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL
             _stage_registry_candidate(self.docker, node, release)
             assert self.docker.image_id(node.reference) is None
@@ -1637,9 +1663,10 @@ def test_pull_and_local_fallback_failure_restore_prior_tag(
             node,
             *,
             force: bool,
+            refresh: bool,
             source: lifecycle.ArtifactSource,
         ) -> str | None:
-            del force
+            del force, refresh
             if source is lifecycle.ArtifactSource.LOCAL_BUILD:
                 raise lifecycle.ImageLifecycleError("local compiler failed")
             return _stage_registry_candidate(
@@ -1754,7 +1781,15 @@ def _wire_source_builds(
             )
         docker.images[node.reference] = (image_id, labels)
 
-    def build_base(context, _docker_dir, _exists, _fingerprint) -> None:
+    def build_base(
+        context,
+        _docker_dir,
+        _exists,
+        _fingerprint,
+        *,
+        rebuild_runtime_base=None,
+    ) -> None:
+        del rebuild_runtime_base
         payload = lifecycle.PayloadProvenance(
             lifecycle.PROVENANCE_SCHEMA,
             "0.2.6",
@@ -1906,6 +1941,65 @@ def test_source_host_then_project_builds_one_exact_local_chain(
     assert builds == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
 
 
+@pytest.mark.parametrize(
+    ("scope_kind", "intent", "expected_runtime_refresh"),
+    [
+        ("host", lifecycle.Intent.ENSURE, False),
+        ("host", lifecycle.Intent.REFRESH, True),
+        ("project", lifecycle.Intent.REFRESH, False),
+    ],
+)
+def test_legacy_adapter_forwards_per_node_runtime_base_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scope_kind: str,
+    intent: lifecycle.Intent,
+    expected_runtime_refresh: bool,
+) -> None:
+    from booley.harness.setup import docker_image as init_docker_image
+
+    root = _project(tmp_path)
+    docker_dir = _set_source_installation(tmp_path, monkeypatch)
+    docker, _pulls = _wire_source_docker(docker_dir, monkeypatch)
+    docker.images[lifecycle.BASE_IMAGE] = (
+        "sha256:" + "d" * 64,
+        {lifecycle.LABEL_SCHEMA: "stale"},
+    )
+    calls: list[tuple[bool, bool | None]] = []
+
+    def build_base(
+        context,
+        _selected_image,
+        *,
+        allow_pull=True,
+        rebuild_runtime_base=None,
+    ) -> None:
+        del allow_pull
+        calls.append((context.force, rebuild_runtime_base))
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            "0.2.6",
+            "payload-new",
+        )
+        node = lifecycle._base_node(payload)
+        parent_id = docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or ""
+        docker.images[lifecycle.BASE_IMAGE] = (
+            "sha256:" + "b" * 64,
+            _local_build_labels(node, parent_id),
+        )
+        context.record("docker_image", "ok", "built")
+
+    monkeypatch.setattr(init_docker_image, "_step_docker_image", build_base)
+    scope = (
+        lifecycle.HostImageScope() if scope_kind == "host" else lifecycle.ProjectImageScope(root)
+    )
+
+    result = harness_lifecycle.reconcile(scope, intent)
+
+    assert result.status is lifecycle.Status.CHANGED
+    assert calls == [(True, expected_runtime_refresh)]
+
+
 def test_published_flavor_uses_registry_parent_when_local_ids_differ(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1959,8 +2053,15 @@ def test_missing_published_pair_is_acquired_and_keeps_flavor_short_tag(
             self.docker = docker
             self.built: list[str] = []
 
-        def build(self, node, *, force: bool, source: lifecycle.ArtifactSource) -> None:
-            del force, source
+        def build(
+            self,
+            node,
+            *,
+            force: bool,
+            refresh: bool,
+            source: lifecycle.ArtifactSource,
+        ) -> None:
+            del force, refresh, source
             self.built.append(node.reference)
             labels = dict(node.expected_labels)
             labels[lifecycle.LABEL_BUILD_ORIGIN] = "registry"
@@ -2356,6 +2457,7 @@ def test_legacy_adapter_builds_user_owned_project_recipe_without_rewriting(
     harness_lifecycle._LegacyBuildAdapter(root, verbose=True).build(
         node,
         force=True,
+        refresh=False,
         source=lifecycle.ArtifactSource.LOCAL_BUILD,
     )
 
@@ -2407,6 +2509,7 @@ def test_packaged_refresh_uses_pull_capable_builder(
     harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
         node,
         force=True,
+        refresh=True,
         source=lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL,
     )
 
@@ -2842,6 +2945,7 @@ def test_packaged_builder_reports_pull_failure(
         harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
             node,
             force=True,
+            refresh=True,
             source=lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL,
         )
 
@@ -2884,6 +2988,7 @@ def test_local_builder_dispatches_each_managed_recipe(
         harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
             node,
             force=False,
+            refresh=False,
             source=lifecycle.ArtifactSource.LOCAL_BUILD,
         )
 
@@ -2916,6 +3021,7 @@ def test_local_builder_reports_step_failure(
         harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
             base,
             force=True,
+            refresh=False,
             source=lifecycle.ArtifactSource.LOCAL_BUILD,
         )
 
@@ -2942,6 +3048,7 @@ def test_local_builder_reports_missing_user_recipe(tmp_path: Path) -> None:
         harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
             project_node,
             force=True,
+            refresh=False,
             source=lifecycle.ArtifactSource.LOCAL_BUILD,
         )
 
@@ -2958,6 +3065,7 @@ def test_local_builder_reports_user_recipe_build_failure(
         harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
             project_node,
             force=True,
+            refresh=False,
             source=lifecycle.ArtifactSource.LOCAL_BUILD,
         )
 
@@ -2997,8 +3105,15 @@ def test_mutation_retries_unstamped_build_then_fails(tmp_path: Path) -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        def build(self, _node, *, force: bool, source: lifecycle.ArtifactSource) -> None:
-            del force, source
+        def build(
+            self,
+            _node,
+            *,
+            force: bool,
+            refresh: bool,
+            source: lifecycle.ArtifactSource,
+        ) -> None:
+            del force, refresh, source
             self.calls += 1
 
     node = lifecycle._base_node(lifecycle.PayloadProvenance("1", "0.2.6", "payload"))
