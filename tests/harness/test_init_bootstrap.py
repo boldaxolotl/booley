@@ -12,7 +12,7 @@ import pytest
 from booley.config.host_config import host_config_path
 from booley.harness import bootstrap, bootstrap_cli, init_cmd
 from booley.runtime import session_refresh
-from booley.runtime.image_lifecycle import Intent
+from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
 
@@ -117,6 +117,78 @@ def test_bootstrap_failure_precedes_every_project_write(
     assert init_cmd.run_init(_args(), tmp_path) == 2
     assert not (tmp_path / ".booley_project").exists()
     assert not (tmp_path / ".devcontainer").exists()
+
+
+def test_init_force_refreshes_complete_host_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed = []
+
+    def reconcile(intent, **kwargs):
+        observed.append((intent, kwargs))
+        return init_cmd.BootstrapResult(intent, ())
+
+    monkeypatch.setattr(init_cmd, "reconcile_bootstrap", reconcile)
+    ctx = init_cmd.InitContext(project_root=tmp_path, force=True)
+
+    assert init_cmd._reconcile_init_bootstrap(ctx, _args(force=True)) is not None
+    assert observed == [(Intent.REFRESH, {"verbose": False})]
+
+
+def test_init_without_a_usable_bootstrap_base_keeps_legacy_project_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = SimpleNamespace()
+    observed = []
+    monkeypatch.setattr(
+        init_cmd,
+        "_step_image_lifecycle",
+        lambda ctx, **kwargs: observed.append((ctx, kwargs)) or expected,
+    )
+    ctx = init_cmd.InitContext(project_root=tmp_path)
+    bootstrap_result = init_cmd.BootstrapResult(Intent.ENSURE, ())
+
+    assert init_cmd._reconcile_initialized_image(ctx, bootstrap_result) is expected
+    assert observed == [(ctx, {})]
+
+
+def test_init_managed_project_uses_planned_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = LifecycleResult("booley-sandbox", "sha256:image", Status.CURRENT)
+    observed = []
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "reconcile_planned",
+        lambda _scope, intent, **_kwargs: observed.append(intent) or expected,
+    )
+    monkeypatch.setattr(
+        init_cmd,
+        "reconcile_images",
+        lambda *_args, **_kwargs: pytest.fail("managed init must use the aggregate plan"),
+    )
+    ctx = init_cmd.InitContext(project_root=tmp_path, force=True)
+
+    assert init_cmd._step_image_lifecycle(ctx) is expected
+    assert observed == [Intent.REFRESH]
+
+
+def test_init_external_image_falls_back_to_compatibility_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = LifecycleResult("external/image", "sha256:image", Status.EXTERNAL)
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "reconcile_planned",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            init_cmd.image_lifecycle.IncrementalPlanUnavailableError("externally managed")
+        ),
+    )
+    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: expected)
+    ctx = init_cmd.InitContext(project_root=tmp_path)
+
+    assert init_cmd._step_image_lifecycle(ctx) is expected
+    assert ctx.results[-1].detail == "user-managed image"
 
 
 def test_source_checkout_refusal_precedes_bootstrap_and_project_write(

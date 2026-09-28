@@ -127,12 +127,26 @@ BASE_METADATA_ARGS=(
   --build-arg "BOOLEY_BASE_BUILT_AT=$IMAGE_BUILT_AT"
 )
 
+CAPACITY_PLAN_INDEX="${BOOLEY_IMAGE_BUILD_PLAN_INDEX:-0}"
+if [ -z "${BOOLEY_IMAGE_BUILD_PLAN_FILE:-}" ]; then
+  BOOLEY_IMAGE_BUILD_PLAN_FILE="$(mktemp "${TMPDIR:-/tmp}/booley-image-plan.XXXXXX")"
+  chmod 600 "$BOOLEY_IMAGE_BUILD_PLAN_FILE"
+  trap 'rm -f "$BOOLEY_IMAGE_BUILD_PLAN_FILE"' EXIT
+  printf '%s\n' '{"requests":[' \
+    '{"managed_image":"runtime base","output_tag":"booley-runtime-base:local","estimate_class":"heavyweight"},' \
+    '{"managed_image":"standard substrate","output_tag":"booley-sandbox-standard-substrate:local","estimate_class":"heavyweight"},' \
+    '{"managed_image":"booley-sandbox wheel overlay","output_tag":"booley-sandbox","estimate_class":"thin-overlay"}' \
+    ']}' >"$BOOLEY_IMAGE_BUILD_PLAN_FILE"
+fi
+
 run_docker_build() {
   local image="$1"
   shift
   PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -m booley.runtime.docker_capacity \
-    --image "$image" -- "$@"
+    --image "$image" --plan-file "$BOOLEY_IMAGE_BUILD_PLAN_FILE" \
+    --current-index "$CAPACITY_PLAN_INDEX" -- "$@"
   "$@"
+  CAPACITY_PLAN_INDEX=$((CAPACITY_PLAN_INDEX + 1))
 }
 
 echo ">>> Building stable EDA/runtime base (cacheable across candidate changes)..."
