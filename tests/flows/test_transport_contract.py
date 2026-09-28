@@ -1,7 +1,9 @@
 """Compatibility evidence captured before separating Flow and MCP ownership."""
 
 import json
+import logging
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,6 +16,26 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
+
+
+def test_standalone_cli_wires_utc_formatter(monkeypatch):
+    from booley.flows import endpoint_cli
+
+    configured = {}
+    endpoint = MagicMock()
+    endpoint.main.return_value = 0
+    monkeypatch.setattr(
+        endpoint_cli.logging, "basicConfig", lambda **kwargs: configured.update(kwargs)
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        endpoint_cli.cli(endpoint)
+
+    assert exc.value.code == 0
+    handler = configured["handlers"][0]
+    record = logging.LogRecord("booley.flow", logging.INFO, "", 0, "event", (), None)
+    record.created = 1_790_341_637.0
+    assert handler.format(record) == "2026-09-25T13:07:17Z [booley.flow] INFO: event"
 
 
 class RecordingExecution(StandaloneFlowExecution):

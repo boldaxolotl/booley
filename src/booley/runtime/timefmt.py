@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
@@ -35,6 +36,16 @@ def utc_now_rfc3339() -> str:
 def rfc3339_from_epoch(epoch: float) -> str:
     """Return *epoch* as second-resolution UTC RFC 3339."""
     return datetime.fromtimestamp(epoch, tz=UTC).strftime(MACHINE_TIMESTAMP_FORMAT)
+
+
+class UtcLogFormatter(logging.Formatter):
+    """Logging formatter with canonical UTC RFC 3339 event timestamps."""
+
+    def formatTime(  # noqa: N802 — stdlib logging.Formatter defines this camelCase hook
+        self, record: logging.LogRecord, datefmt: str | None = None
+    ) -> str:
+        del datefmt
+        return rfc3339_from_epoch(record.created)
 
 
 def rfc3339_from_datetime(value: datetime, *, microseconds: bool = False) -> str:

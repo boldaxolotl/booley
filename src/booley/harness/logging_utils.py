@@ -4,23 +4,22 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime
 from pathlib import Path
 
-from booley.runtime.timefmt import format_human_datetime, utc_now_rfc3339
+from booley.runtime.timefmt import UtcLogFormatter, utc_now_rfc3339
 
 from .colors import bold_red, yellow
 
 logger = logging.getLogger(__name__)
 
 
-class TerseFormatter(logging.Formatter):
+class TerseFormatter(UtcLogFormatter):
     """Console formatter: step-prefixed, terse for INFO, flagged for WARNING+.
 
-    INFO/DEBUG  -> "HH:MM:SS [planning] message"
-    WARNING     -> "HH:MM:SS WARNING [planning] message"   (red)
-    ERROR/CRIT  -> "HH:MM:SS ERROR [planning] message"     (bold red)
-    No step    -> "HH:MM:SS message"  (before ticket intake completes)
+    INFO/DEBUG  -> "YYYY-MM-DDTHH:MM:SSZ [planning] message"
+    WARNING     -> "YYYY-MM-DDTHH:MM:SSZ WARNING [planning] message"   (red)
+    ERROR/CRIT  -> "YYYY-MM-DDTHH:MM:SSZ ERROR [planning] message"     (bold red)
+    No step    -> "YYYY-MM-DDTHH:MM:SSZ message"  (before ticket intake completes)
 
     When no step tag is needed (e.g. loop runner), the formatter omits it.
     """
@@ -34,16 +33,6 @@ class TerseFormatter(logging.Formatter):
         if record.levelno >= logging.WARNING:
             return yellow(f"{ts} {record.levelname} {tag}{record.getMessage()}")
         return f"{ts} {tag}{record.getMessage()}"
-
-
-class HumanDateFormatter(logging.Formatter):
-    """Logging formatter whose full timestamp follows Booley's human format."""
-
-    def formatTime(  # noqa: N802 — stdlib logging.Formatter defines this camelCase hook
-        self, record: logging.LogRecord, datefmt: str | None = None
-    ) -> str:
-        del datefmt
-        return format_human_datetime(datetime.fromtimestamp(record.created), seconds=True)
 
 
 # Module-level logging state, guarded by _lock so concurrent access
@@ -85,7 +74,7 @@ def setup_file_logging(log_path_or_dir: Path) -> None:
         _file_handler = logging.FileHandler(log_path, encoding="utf-8")
         _file_handler.setLevel(logging.DEBUG)  # capture everything to file
         _file_handler.setFormatter(
-            HumanDateFormatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+            UtcLogFormatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
         )
         logging.getLogger().addHandler(_file_handler)
     logger.debug("File logging started -> %s", log_path)
