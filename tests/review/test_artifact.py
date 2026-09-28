@@ -58,6 +58,9 @@ def _package() -> dict:
             {
                 "category": "Review",
                 "criterion": "review_security_done",
+                "label": "RTL security review",
+                "detail": "required review completed",
+                "report_path": "/tmp/reports/security.md",
                 "required": "optional",
                 "outcome": "met",
                 "freshness": "stale",
@@ -108,6 +111,9 @@ def test_outcome_and_freshness_remain_independent() -> None:
     assert package.criteria[0].outcome == "met"
     assert package.criteria[0].freshness == "stale"
     assert package.criteria[0].changed_categories == ("rtl", "tb")
+    assert package.criteria[0].label == "RTL security review"
+    assert package.criteria[0].detail == "required review completed"
+    assert package.criteria[0].report_path == "/tmp/reports/security.md"
     assert package.to_dict()["criteria"][0]["status"] == "STALE (rtl, tb)"
 
 
@@ -119,6 +125,27 @@ def test_legacy_criterion_without_changed_categories_still_parses() -> None:
 
     assert row.changed_categories == ()
     assert row.to_dict()["status"] == "STALE"
+
+
+def test_legacy_criterion_defaults_readable_fields() -> None:
+    value = _package()
+    for field in ("label", "detail", "report_path"):
+        del value["criteria"][0][field]
+
+    row = ReviewPackage.parse(value).criteria[0]
+
+    assert row.label == row.criterion
+    assert row.detail == ""
+    assert row.report_path is None
+
+
+@pytest.mark.parametrize("report_path", ["relative/report.md", "../report.md", ""])
+def test_criterion_report_path_must_be_absolute(report_path: str) -> None:
+    value = _package()
+    value["criteria"][0]["report_path"] = report_path
+
+    with pytest.raises(ReviewArtifactError, match="report_path"):
+        ReviewPackage.parse(value)
 
 
 @pytest.mark.parametrize("value", ["tb", ["tb", 1], [""]])
