@@ -16,6 +16,21 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
 
 
+def simulation_status_from_observations(
+    observations: tuple[Mapping[str, object], ...],
+) -> str:
+    """Reduce Campaign observations to the endpoint simulation vocabulary."""
+    executions = {item["execution"] for item in observations}
+    functional = {item["functional"] for item in observations}
+    for status in ("crash", "timeout"):
+        if status in executions:
+            return status
+    for status in ("fail", "inconclusive", "pass"):
+        if status in functional:
+            return status
+    return "not_run"
+
+
 def _freeze_json(value: object) -> FrozenJson:
     """Copy JSON-shaped input into recursively immutable storage."""
     if isinstance(value, Mapping):

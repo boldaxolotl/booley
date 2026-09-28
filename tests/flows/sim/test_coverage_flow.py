@@ -757,6 +757,7 @@ def test_gated_shared_execution_failure_preserves_blocked_evaluation(tmp_path, m
         target_root.glob("campaign/work-items/*/attempts/*/coverage-campaign/coverage.json")
     )
     nested = load_coverage_campaign(nested_path).campaign
+    assert detail["passed"] is None
     assert detail["simulation"] == "not_run"
     assert detail["collection"] == "infrastructure_error"
     assert detail["evaluation"] == nested.evaluation["status"] == "blocked"
@@ -1138,6 +1139,7 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
     assert len(built) == 1
     assert result.outcome.detail["pending_targets"] == ["sim_0", "sim_1"]
     target = result.outcome.detail["targets"]["sim_0"]
+    assert target["passed"] is None
     assert target["simulation"] == "not_run"
     assert "Verilator 5.050 is not the pinned coverage collector" in target["error"]
     report = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
@@ -1426,6 +1428,128 @@ def test_resumed_coverage_publication_failure_preserves_current_attempt_truth(
     assert detail["simulation"] == "pass"
     assert detail["collection"] == "complete"
     assert detail["evaluation"] == "not_requested"
+
+
+def test_resumed_nested_publication_failure_preserves_current_attempt_truth(tmp_path, monkeypatch):
+    reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
+        tmp_path, monkeypatch, "before:simulation_result"
+    )
+    armed = True
+
+    def checkpoint(boundary):
+        nonlocal armed
+        if armed and boundary == "before:coverage_campaign":
+            armed = False
+            raise OSError("injected resumed nested publication failure")
+
+    resumed = SimulateFlow(
+        coverage_execution=execution_factory,
+        campaign_publication_checkpoint=checkpoint,
+    ).execute(
+        SimRequest(
+            resume_from=public.parent / "campaign/manifest.json",
+            work_dir=tmp_path,
+            report_dir=reports,
+        )
+    )
+
+    assert resumed.exit_code == 2
+    detail = resumed.outcome.detail["targets"]["sim_0"]
+    assert detail["passed"] is True
+    assert detail["simulation"] == "pass"
+    assert detail["collection"] == "infrastructure_error"
+    assert detail["evaluation"] == "not_requested"
+    assert detail["error"] == "injected resumed nested publication failure"
+
+
+def test_reference_authentication_failure_drops_only_reference(tmp_path, monkeypatch):
+    def reject_owner(_resolved):
+        raise ValueError("injected owner authentication failure")
+
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.coverage_execution.authenticate_coverage_campaign_owner",
+        reject_owner,
+    )
+    _reports, _runs, _public, _factory, interrupted = _crash_coverage_publication(
+        tmp_path, monkeypatch, "after:coverage_reference"
+    )
+
+    detail = interrupted.outcome.detail["targets"]["sim_0"]
+    assert detail["passed"] is True
+    assert detail["simulation"] == "pass"
+    assert detail["collection"] == "complete"
+    assert detail["evaluation"] == "not_requested"
+    assert "coverage_campaign" not in detail
+
+
+def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeypatch):
+    reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
+        tmp_path, monkeypatch, "before:simulation_result"
+    )
+    armed = True
+
+    def checkpoint(boundary):
+        nonlocal armed
+        if armed and boundary == "after:coverage_reference":
+            armed = False
+            raise OSError("injected resumed reference failure")
+
+    def fail_reference(*_args, **_kwargs):
+        raise OSError("injected report reference failure")
+
+    monkeypatch.setattr("booley.flows.sim.flow._report_artifact_reference", fail_reference)
+    resumed = SimulateFlow(
+        coverage_execution=execution_factory,
+        campaign_publication_checkpoint=checkpoint,
+    ).execute(
+        SimRequest(
+            resume_from=public.parent / "campaign/manifest.json",
+            work_dir=tmp_path,
+            report_dir=reports,
+        )
+    )
+
+    assert resumed.exit_code == 2
+    detail = resumed.outcome.detail["targets"]["sim_0"]
+    assert detail["passed"] is True
+    assert detail["simulation"] == "pass"
+    assert detail["error"] == "injected resumed reference failure"
+    assert "coverage_campaign" not in detail
+
+
+def test_retention_failure_drops_reference_when_owner_authentication_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    def fail_retention(_progress, _outcome):
+        raise OSError("injected retention failure")
+
+    def reject_owner(_resolved):
+        raise ValueError("injected owner authentication failure")
+
+    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", fail_retention)
+    monkeypatch.setattr("booley.flows.sim.flow.authenticate_coverage_campaign_owner", reject_owner)
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
+    ).execute(
+        SimRequest(
+            target="sim_0",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 2
+    detail = result.outcome.detail["targets"]["sim_0"]
+    assert detail["passed"] is True
+    assert detail["simulation"] == "pass"
+    assert detail["collection"] == "infrastructure_error"
+    assert detail["evaluation"] == "not_requested"
+    assert "coverage_campaign" not in detail
 
 
 def test_retention_failure_preserves_in_memory_campaign_truth(tmp_path, monkeypatch):

@@ -141,6 +141,24 @@ def run_coverage_target(
     """Publish Campaign, Simulation, acceptance and state, then checkpoint progress."""
     assert plan.invocation_dir is not None and plan.collection_request is not None
     root = embedded_root or target_report_directory(plan.invocation_dir, plan.handle.selector)
+    outcome = _execute_coverage_transaction(
+        plan,
+        execution,
+        root,
+        embedded=embedded_root is not None,
+        publication_checkpoint=publication_checkpoint,
+    )
+    return _checkpoint_progress(progress, outcome)
+
+
+def _execute_coverage_transaction(
+    plan: CoverageTargetPlan,
+    execution: SimulationExecutionPort,
+    root: Path,
+    *,
+    embedded: bool,
+    publication_checkpoint: Callable[[str], None] | None,
+) -> CoverageTargetOutcome:
     result = None
     campaign = None
     campaign_published = False
@@ -160,14 +178,20 @@ def run_coverage_target(
             result,
             root,
             campaign,
-            embedded=embedded_root is not None,
+            embedded=embedded,
             publication_checkpoint=publication_checkpoint,
             campaign_published=record_campaign_publication,
         )
     except (OSError, ValueError, AcceptanceRecordingError) as exc:
-        outcome = _transaction_error(
+        return _transaction_error(
             plan, root, result, exc, campaign, campaign_published=campaign_published
         )
+    return outcome
+
+
+def _checkpoint_progress(
+    progress: CoverageProgressSink, outcome: CoverageTargetOutcome
+) -> CoverageTargetOutcome:
     try:
         progress.completed(outcome)
     except OSError as exc:
@@ -284,7 +308,8 @@ def _transaction_error(
             simulation=_simulation_status(result) if observed else "not_run",
         )
         if campaign_published and campaign is not None and not result.infrastructure_error:
-            detail["collection"] = campaign.collection["status"]
+            if campaign.collection["status"] != "collector_error":
+                detail["collection"] = campaign.collection["status"]
             detail["evaluation"] = campaign.evaluation["status"]
     return CoverageTargetOutcome(
         plan.handle.selector,

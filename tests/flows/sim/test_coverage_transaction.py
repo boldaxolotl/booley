@@ -418,6 +418,34 @@ def test_infrastructure_failure_preserves_completed_simulation_truth(tmp_path, f
     assert simulation["simulation"] == ("pass" if failure_at == "merge" else "inconclusive")
 
 
+def test_merge_failure_keeps_simulation_truth_when_later_publication_fails(tmp_path):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class MergeUnavailable(NativeExecution):
+        def command(self, request):
+            return SimulationCommandResult(1, stderr="merge executable unavailable")
+
+    def checkpoint(boundary):
+        if boundary == "after:coverage_campaign":
+            raise OSError("injected post-merge publication failure")
+
+    outcome = run_coverage_target(
+        plan,
+        MergeUnavailable(),
+        Progress(),
+        publication_checkpoint=checkpoint,
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.detail["passed"] is True
+    assert outcome.detail["simulation"] == "pass"
+    assert outcome.detail["collection"] == "infrastructure_error"
+    assert outcome.detail["evaluation"] == "not_requested"
+    assert outcome.detail["error"] == "injected post-merge publication failure"
+
+
 def test_build_infrastructure_failure_does_not_invent_a_simulation_verdict(tmp_path):
     context = project(tmp_path)
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)

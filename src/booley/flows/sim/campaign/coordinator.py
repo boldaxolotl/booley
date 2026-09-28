@@ -249,6 +249,13 @@ class SimulationCampaign:
     def run(self, request: CampaignRunRequest) -> CampaignOutcome:
         if self._executor is None:
             raise RuntimeError("SimulationCampaign requires a serial work executor")
+        store, manifest, authenticated_sha256 = self._open_campaign(request)
+        with store.mutation_lock():
+            return self._run_locked(store, manifest, authenticated_sha256, request)
+
+    def _open_campaign(
+        self, request: CampaignRunRequest
+    ) -> tuple[CampaignStore, SimulationCampaignManifest, str | None]:
         if isinstance(request, NewCampaignRunRequest):
             store = _new_store(request)
             if not store.manifest_path.exists():
@@ -269,46 +276,39 @@ class SimulationCampaign:
                 raise SimulationCampaignIntegrityError(f"campaign workload mismatch: {detail}")
             manifest = request.validated.manifest
             authenticated_manifest_sha256 = request.validated.sha256
-        with store.mutation_lock():
-            self._raise_if_cancelled(request)
-            self._run_prerequisites(store, manifest, request, set())
-            recovery = _scan_recovery(
-                store,
-                manifest,
-                authenticated_manifest_sha256,
+        return store, manifest, authenticated_manifest_sha256
+
+    def _run_locked(
+        self,
+        store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        authenticated_sha256: str | None,
+        request: CampaignRunRequest,
+    ) -> CampaignOutcome:
+        self._raise_if_cancelled(request)
+        self._run_prerequisites(store, manifest, request, set())
+        recovery = _scan_recovery(store, manifest, authenticated_sha256)
+        self._run_pending(store, manifest, recovery, request)
+        self._raise_if_cancelled(request)
+        current = _scan_recovery(store, manifest, authenticated_sha256)
+        failure_context = _campaign_failure_context(store, manifest, current)
+        published: list[CoverageCampaignReference] = []
+        try:
+            self._publication_checkpoint("before:summary_replace")
+            summary = _regenerate_summary(store, manifest, authenticated_sha256)
+            self._publication_checkpoint("after:summary_replace")
+            reference = self._publish_coverage_reference(
+                store, manifest, authenticated_sha256, published.append
             )
-            self._run_pending(store, manifest, recovery, request)
-            self._raise_if_cancelled(request)
-            current = _scan_recovery(store, manifest, authenticated_manifest_sha256)
-            failure_context = _campaign_failure_context(store, manifest, current)
-            published_reference: list[CoverageCampaignReference] = []
-            try:
-                self._publication_checkpoint("before:summary_replace")
-                summary = _regenerate_summary(
-                    store,
-                    manifest,
-                    authenticated_manifest_sha256,
-                )
-                self._publication_checkpoint("after:summary_replace")
-                coverage_reference = self._publish_coverage_reference(
-                    store,
-                    manifest,
-                    authenticated_manifest_sha256,
-                    published_reference.append,
-                )
-            except (OSError, ValueError, RuntimeError) as exc:
-                if failure_context is None:
-                    raise
-                reference = published_reference[0] if published_reference else None
-                raise CampaignPublicationError(
-                    str(exc), replace(failure_context, coverage_reference=reference)
-                ) from exc
-            final_recovery = _scan_recovery(
-                store,
-                manifest,
-                authenticated_manifest_sha256,
-            )
-            return _outcome(store, manifest, summary, final_recovery, coverage_reference)
+        except (OSError, ValueError, RuntimeError) as exc:
+            if failure_context is None:
+                raise
+            reference = published[0] if published else None
+            raise CampaignPublicationError(
+                str(exc), replace(failure_context, coverage_reference=reference)
+            ) from exc
+        final = _scan_recovery(store, manifest, authenticated_sha256)
+        return _outcome(store, manifest, summary, final, reference)
 
     @staticmethod
     def _raise_if_cancelled(request: CampaignRunRequest) -> None:
@@ -325,26 +325,10 @@ class SimulationCampaign:
         workload = cast(Mapping[str, object], manifest.document["workload"])
         if workload["coverage"] is not True:
             return None
-        recovery = _scan_recovery(store, manifest, authenticated_manifest_sha256)
-        completed = [item for item in recovery.items if item.result is not None]
-        if len(completed) != 1:
-            raise SimulationCampaignIntegrityError(
-                "coverage aggregate must have one committed Simulation result"
-            )
-        result = completed[0].result
-        assert result is not None
-        result_document = result.document
-        attempt = store.latest_attempt(completed[0].work_item_id)
-        if attempt is None or attempt.document["attempt_id"] != result_document["attempt_id"]:
-            raise SimulationCampaignIntegrityError(
-                "coverage aggregate result has no matching Simulation Attempt"
-            )
-        attempt_directory = (
-            store.work_item_directory(completed[0].work_item_id)
-            / "attempts"
-            / (f"{result_document['attempt_ordinal']:04d}-{result_document['attempt_id']}")
+        work_item_id, result, nested_path = _coverage_reference_source(
+            store, manifest, authenticated_manifest_sha256
         )
-        nested_path = attempt_directory / "coverage-campaign" / "coverage.json"
+        result_document = result.document
         target = cast(Mapping[str, str], manifest.document["target"])
         origin = cast(Mapping[str, object], manifest.document["origin"])
         reference = build_coverage_campaign_reference(
@@ -354,7 +338,7 @@ class SimulationCampaign:
             target_selector=target["selector"],
             origin_invocation_id=cast(int, origin["invocation_id"]),
             producer_invocation_id=cast(int, result_document["producer_invocation_id"]),
-            simulation_work_item_id=completed[0].work_item_id,
+            simulation_work_item_id=work_item_id,
             simulation_attempt_id=cast(str, result_document["attempt_id"]),
             origin_target_directory=store.root.parent,
             coverage_campaign_path=nested_path,
@@ -675,6 +659,34 @@ def _campaign_failure_context(
         cast(int, document["producer_invocation_id"]),
         result,
     )
+
+
+def _coverage_reference_source(
+    store: CampaignStore,
+    manifest: SimulationCampaignManifest,
+    authenticated_manifest_sha256: str | None,
+) -> tuple[str, SimulationResult, Path]:
+    recovery = _scan_recovery(store, manifest, authenticated_manifest_sha256)
+    completed = [item for item in recovery.items if item.result is not None]
+    if len(completed) != 1:
+        raise SimulationCampaignIntegrityError(
+            "coverage aggregate must have one committed Simulation result"
+        )
+    recovered = completed[0]
+    result = recovered.result
+    assert result is not None
+    document = result.document
+    attempt = store.latest_attempt(recovered.work_item_id)
+    if attempt is None or attempt.document["attempt_id"] != document["attempt_id"]:
+        raise SimulationCampaignIntegrityError(
+            "coverage aggregate result has no matching Simulation Attempt"
+        )
+    attempt_directory = (
+        store.work_item_directory(recovered.work_item_id)
+        / "attempts"
+        / f"{document['attempt_ordinal']:04d}-{document['attempt_id']}"
+    )
+    return recovered.work_item_id, result, attempt_directory / "coverage-campaign/coverage.json"
 
 
 def _scheduled_collision_key(

@@ -48,6 +48,7 @@ from .model import (
     ExecutableSnapshot,
     SimulationResult,
     SimulatorBundle,
+    simulation_status_from_observations,
 )
 from .run_directory import RunDirectory, claimed_run_directory
 from .serial_execution import (
@@ -94,6 +95,8 @@ def _validated_failure_detail(detail: Mapping[str, object]) -> Mapping[str, obje
             raise SimulationCampaignIntegrityError(
                 "native coverage collection returned an invalid simulation status"
             )
+    if collection == "collector_error":
+        collection = "infrastructure_error"
     if collection not in {"complete", "partial", "incompatible", "infrastructure_error"}:
         raise SimulationCampaignIntegrityError(
             "native coverage collection returned an invalid collection status"
@@ -541,72 +544,89 @@ def project_coverage_failure(
 ) -> tuple[dict[str, object], bool] | None:
     """Recover compact Target facts from one exact authenticated failed attempt."""
     try:
-        document = context.result.document
-        if (
-            document["campaign_id"] != context.campaign_id
-            or document["work_item_id"] != context.work_item_id
-            or document["attempt_id"] != context.attempt_id
-            or document["attempt_ordinal"] != context.attempt_ordinal
-            or document["producer_invocation_id"] != context.producer_invocation_id
-        ):
-            return None
-        _, work_ordinal, work_digest = context.work_item_id.split(":")
-        attempt = (
-            context.target_root
-            / "campaign"
-            / "work-items"
-            / f"{int(work_ordinal) + 1:04d}-{work_digest}"
-            / "attempts"
-            / f"{context.attempt_ordinal:04d}-{context.attempt_id}"
-        )
-        campaign_path = attempt / "coverage-campaign" / "coverage.json"
-        raw = campaign_path.read_bytes()
-        evidence = cast(tuple[Mapping[str, object], ...], document["evidence"])
-        nested = [item for item in evidence if item["kind"] == "coverage_campaign_manifest"]
-        if (
-            len(nested) != 1
-            or nested[0]["path"] != "coverage-campaign/coverage.json"
-            or nested[0]["bytes"] != len(raw)
-            or nested[0]["sha256"] != "sha256:" + hashlib.sha256(raw).hexdigest()
-            or nested[0]["owner"] != context.attempt_id
-        ):
-            return None
-        campaign = load_coverage_campaign(
-            campaign_path, DurableTargetIdentity(context.target_identity)
-        ).campaign
-        observations = cast(tuple[Mapping[str, object], ...], document["observations"])
-        simulation = _observation_status(observations)
-        detail: dict[str, object] = {
-            "target": context.target_selector,
-            "passed": simulation == "pass",
-            "simulation": simulation,
-            "collection": campaign.collection["status"],
-            "evaluation": campaign.evaluation["status"],
-            "tests": [
-                {
-                    "name": item["test"],
-                    "verdict": item["functional"],
-                    "passed": item["functional"] == "pass",
-                }
-                for item in observations
-            ],
-            "abort_remaining": True,
-        }
-        return detail, _reference_matches_context(context)
+        detail = _failure_projection(context)
     except (OSError, ValueError, KeyError, TypeError):
         return None
+    return detail, _safe_reference_matches_context(context)
 
 
-def _observation_status(observations: tuple[Mapping[str, object], ...]) -> str:
-    executions = {item["execution"] for item in observations}
-    functional = {item["functional"] for item in observations}
-    for status in ("crash", "timeout"):
-        if status in executions:
-            return status
-    for status in ("fail", "inconclusive", "pass"):
-        if status in functional:
-            return status
-    return "not_run"
+def _failure_projection(context: CampaignFailureContext) -> dict[str, object]:
+    document = context.result.document
+    if not _result_matches_context(document, context):
+        raise ValueError("Simulation result does not match failure context")
+    campaign_path = _failure_campaign_path(context)
+    raw = campaign_path.read_bytes()
+    if not _nested_evidence_matches(document, context, raw):
+        raise ValueError("nested Coverage Campaign evidence is invalid")
+    campaign = load_coverage_campaign(
+        campaign_path, DurableTargetIdentity(context.target_identity)
+    ).campaign
+    observations = cast(tuple[Mapping[str, object], ...], document["observations"])
+    simulation = simulation_status_from_observations(observations)
+    return {
+        "target": context.target_selector,
+        "passed": None if simulation == "not_run" else simulation == "pass",
+        "simulation": simulation,
+        "collection": campaign.collection["status"],
+        "evaluation": campaign.evaluation["status"],
+        "tests": [_failure_test(item) for item in observations],
+        "abort_remaining": True,
+    }
+
+
+def _result_matches_context(
+    document: Mapping[str, object], context: CampaignFailureContext
+) -> bool:
+    return (
+        document["campaign_id"] == context.campaign_id
+        and document["work_item_id"] == context.work_item_id
+        and document["attempt_id"] == context.attempt_id
+        and document["attempt_ordinal"] == context.attempt_ordinal
+        and document["producer_invocation_id"] == context.producer_invocation_id
+    )
+
+
+def _failure_campaign_path(context: CampaignFailureContext) -> Path:
+    _, work_ordinal, work_digest = context.work_item_id.split(":")
+    return (
+        context.target_root
+        / "campaign"
+        / "work-items"
+        / f"{int(work_ordinal) + 1:04d}-{work_digest}"
+        / "attempts"
+        / f"{context.attempt_ordinal:04d}-{context.attempt_id}"
+        / "coverage-campaign"
+        / "coverage.json"
+    )
+
+
+def _nested_evidence_matches(
+    document: Mapping[str, object], context: CampaignFailureContext, raw: bytes
+) -> bool:
+    evidence = cast(tuple[Mapping[str, object], ...], document["evidence"])
+    nested = [item for item in evidence if item["kind"] == "coverage_campaign_manifest"]
+    return (
+        len(nested) == 1
+        and nested[0]["path"] == "coverage-campaign/coverage.json"
+        and nested[0]["bytes"] == len(raw)
+        and nested[0]["sha256"] == "sha256:" + hashlib.sha256(raw).hexdigest()
+        and nested[0]["owner"] == context.attempt_id
+    )
+
+
+def _failure_test(item: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "name": item["test"],
+        "verdict": item["functional"],
+        "passed": item["functional"] == "pass",
+    }
+
+
+def _safe_reference_matches_context(context: CampaignFailureContext) -> bool:
+    try:
+        return _reference_matches_context(context)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def _reference_matches_context(context: CampaignFailureContext) -> bool:
