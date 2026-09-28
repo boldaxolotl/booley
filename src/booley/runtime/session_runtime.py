@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.core.differences import format_differences
 from booley.runtime import auth_token, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
@@ -666,7 +667,14 @@ def plan_session_refresh(workspace: Path, issuance: Issuance) -> ParkedSession |
     expected_labels = set(runtime_spec.labels(issuance))
     actual_labels = {f"{key}={value}" for key, value in labels.items()}
     if not expected_labels.issubset(actual_labels):
-        raise SessionError("Sandbox labels differ from the prior host issuance")
+        missing_labels = sorted(expected_labels - actual_labels)
+        raise SessionError(
+            "Sandbox labels differ from the prior host issuance: "
+            + format_differences(
+                {"missing_expected_labels": []},
+                {"missing_expected_labels": missing_labels},
+            )
+        )
     _ensure_unlicensed_refresh(workspace, issuance, labels)
     backup = f"{name}-pre-refresh"
     if _strict_refresh_container(backup) is not None:
@@ -2274,19 +2282,34 @@ def _verify_wheel_identity(
     try:
         identity = json.loads(result.stdout)
     except json.JSONDecodeError:
-        identity = {}
+        detail = result.stderr.strip() or result.stdout.strip() or "probe produced no output"
+        raise SessionError("refreshed Sandbox wheel identity probe failed: " + detail) from None
+    if result.returncode != 0 or not isinstance(identity, dict):
+        detail = result.stderr.strip() or result.stdout.strip() or "probe produced no output"
+        raise SessionError("refreshed Sandbox wheel identity probe failed: " + detail)
     source = identity.get("source") if isinstance(identity, dict) else None
     wheel_sha256 = identity.get("sha256") if isinstance(identity, dict) else None
     package_version = identity.get("package_version") if isinstance(identity, dict) else None
     module_version = identity.get("module_version") if isinstance(identity, dict) else None
+    expected = {
+        "source_fingerprint": expected_source,
+        "wheel_sha256": expected_sha256,
+        "package_version": module_version,
+    }
+    actual = {
+        "source_fingerprint": source,
+        "wheel_sha256": wheel_sha256,
+        "package_version": package_version,
+    }
     if (
-        result.returncode != 0
-        or (expected_source is not None and source != expected_source)
+        (expected_source is not None and source != expected_source)
         or (expected_sha256 is not None and wheel_sha256 != expected_sha256)
         or (not package_version or package_version != module_version)
     ):
-        detail = result.stderr.strip() or result.stdout.strip() or "probe produced no output"
-        raise SessionError("refreshed Sandbox wheel identity does not match: " + detail)
+        raise SessionError(
+            "refreshed Sandbox wheel identity does not match: "
+            + format_differences(expected, actual)
+        )
 
 
 @dataclass(frozen=True, slots=True)
