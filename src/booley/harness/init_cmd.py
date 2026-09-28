@@ -1542,17 +1542,18 @@ def _report_interactive_changes(
 def _interactive_precondition_failed(
     ctx: InitContext,
     nangate_pdk_root: Path | object | None,
+    *,
+    init_will_create_project_dir: bool = False,
 ) -> bool:
     if _devcontainer_is_tracked(ctx.project_root):
         err(".devcontainer/ is tracked by git — refusing to clobber it")
         info("  Interactive Mode is unavailable for this repo until it is removed")
         ctx.record("interactive", "err", "tracked .devcontainer")
         return True
-    project_data_missing = (
-        "BOOLEY_PROJECT_DIR" not in os.environ
-        and not (ctx.project_root / ".booley_project").is_dir()
-    )
-    if ctx.check_only and project_data_missing:
+    if _init_owned_project_dir_missing(
+        ctx,
+        init_will_create_project_dir=init_will_create_project_dir,
+    ):
         warn("would seed the Sandbox after creating the private project directory")
         ctx.record("interactive", "warn", "project directory would be created first")
         return True
@@ -1560,6 +1561,28 @@ def _interactive_precondition_failed(
         err("Sandbox not seeded because the Nangate45 setup download failed")
         ctx.record("interactive", "err", "Nangate45 cache unavailable")
         return True
+    return False
+
+
+def _init_owned_project_dir_missing(
+    ctx: InitContext,
+    *,
+    init_will_create_project_dir: bool,
+) -> bool:
+    """Return whether full init owns the one unavailable Project-data source."""
+    if not ctx.check_only or not init_will_create_project_dir:
+        return False
+    target = project_dir_for_init(ctx.project_root)
+    configured = os.environ.get("BOOLEY_PROJECT_DIR")
+    candidate = Path(configured).expanduser() if configured else target
+    if not candidate.is_absolute() or candidate != target:
+        return False
+    try:
+        target.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
     return False
 
 
@@ -1606,10 +1629,15 @@ def _step_interactive(
     nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
     agent_app: str | None = None,
     runtime_image_id: str | None = None,
+    init_will_create_project_dir: bool = False,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
     ctx.step_banner("Interactive Mode (Reopen in Container)")
-    if _interactive_precondition_failed(ctx, nangate_pdk_root):
+    if _interactive_precondition_failed(
+        ctx,
+        nangate_pdk_root,
+        init_will_create_project_dir=init_will_create_project_dir,
+    ):
         return
 
     sources = _interactive_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
@@ -2177,7 +2205,6 @@ def _run_project_init_steps(
     bootstrap_result: BootstrapResult | None = None,
 ) -> int:
     """Run seed-only or full project mutations after preflight succeeds."""
-
     if getattr(args, "seed", False):
         if not _step_agent_config(ctx, selection, agent_config_path):
             return _print_summary(ctx)
@@ -2213,6 +2240,7 @@ def _run_project_init_steps(
         nangate_pdk_root=pdk_root,
         agent_app=selection.provider,
         runtime_image_id=runtime_image_id,
+        init_will_create_project_dir=True,
     )
     _step_project_inventory(ctx)
     _step_advisories(ctx)
