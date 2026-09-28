@@ -3005,10 +3005,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self.context._reserved_invocation_dir,
             evaluation,
         )
-        targets[failed] = _coverage_failed_target(failed, error, evaluation, recovered, retained)
-        if recovered is not None and recovered[1]:
+        failed_target = _coverage_failed_target(failed, error, evaluation, recovered, retained)
+        targets[failed] = failed_target
+        if recovered is not None and recovered[1] and isinstance(error, CampaignPublicationError):
             _attach_failure_reference(
-                targets[failed],
+                failed_target,
                 error.context.target_root / "coverage.json",
                 self.context._reserved_invocation_dir,
                 error.context.campaign_id,
