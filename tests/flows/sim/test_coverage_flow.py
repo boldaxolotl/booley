@@ -58,6 +58,45 @@ class _PassingSplitMetricsExecution(_SplitMetricsExecution):
         return super().payload(hits).replace("\x01o\x02true' 0", "\x01o\x02true' 1")
 
 
+class _CustomMainHookExecution(NativeExecution):
+    def __init__(self, events: list[dict[str, object]], *, missing_raw: bool = False) -> None:
+        super().__init__(missing=missing_raw)
+        self.events = events
+
+    def run(self, request):
+        result = super().run(request)
+        assert request.hook_evidence_path is not None
+        request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        request.hook_evidence_path.write_text(
+            json.dumps(
+                {
+                    "$schema": "booley.coverage-hook/v1",
+                    "run_id": request.run_id,
+                    "events": self.events,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return result
+
+
+def _configure_custom_main_coverage(root: Path) -> None:
+    (root / "main.cpp").write_text("int main() { return 0; }\n")
+    core = root / "counter.core"
+    core.write_text(
+        core.read_text()
+        .replace(
+            "files: [rtl/counter.sv]",
+            "files: [rtl/counter.sv, {main.cpp: {file_type: cppSource}}]",
+        )
+        .replace(
+            "flow_options: {tool: verilator}",
+            "flow_options: {tool: verilator, booley: {coverage: "
+            "{custom_main_hooks: [start_hook, write_hook], reset_included: false}}}",
+        )
+    )
+
+
 def _target_headline(report_text: str, selector: str) -> str:
     return next(line for line in report_text.splitlines() if line.startswith(f"{selector}:"))
 
@@ -349,6 +388,61 @@ def test_valid_custom_main_coverage_recipe_passes_preflight(
     assert result.exit_code == 2
     assert "COV_WINDOW_HOOK_MISSING" in result.outcome.report_text
     assert (tmp_path / "reports/sim/1").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("events", "missing_raw", "expected_code"),
+    [
+        (
+            [
+                {"hook": "start", "sequence": 1, "success": True},
+                {"hook": "write", "sequence": 2, "success": False},
+            ],
+            True,
+            "COV_WRITE_HOOK_FAILED",
+        ),
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": True},
+                {"hook": "start", "sequence": 2, "success": True},
+                {"hook": "write", "sequence": 3, "success": True},
+            ],
+            False,
+            "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
+        ),
+    ],
+)
+def test_custom_main_hook_failures_are_public_collector_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[dict[str, object]],
+    missing_raw: bool,
+    expected_code: str,
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    _configure_custom_main_coverage(tmp_path)
+    project_data = tmp_path / ".booley_project"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: _CustomMainHookExecution(
+            events, missing_raw=missing_raw
+        )
+    ).execute(
+        SimRequest(
+            target="sim_0",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 2
+    target = result.outcome.detail["targets"]["sim_0"]
+    assert target["collection"] == "collector_error"
+    assert expected_code in result.outcome.report_text
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")

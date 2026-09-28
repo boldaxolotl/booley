@@ -12,6 +12,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Protocol
 
+from booley.core.boundary import as_positive_int
+
 from .coverage_campaign import (
     CoverageArtifact,
     CoverageCapability,
@@ -407,12 +409,74 @@ def _collect_one_run(
         return _pre_sim_failure(request, context, result)
     if result.infrastructure_error:
         return _collected_infrastructure_failure(request, context, result)
-    failure = _read_raw_artifact(request, context, result.verdict)
-    if isinstance(failure, _CollectedRun):
-        return failure
-    raw_artifact, records = failure
+    return _collect_run_evidence(request, context, result)
+
+
+def _collect_run_evidence(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    result: SimulationRunResult,
+) -> _CollectedRun:
+    hook_artifact, hook_error = _load_hook_evidence(request, context)
+    raw_result = _read_raw_artifact(request, context, result.verdict)
+    if isinstance(raw_result, _CollectedRun):
+        if hook_error is not None and hook_error.code == "COV_WRITE_HOOK_FAILED":
+            raw_artifact = raw_result.artifact
+            if raw_artifact is not None and raw_artifact.state in {
+                "incompatible",
+                "unqueryable",
+            }:
+                raw_artifact = replace(raw_artifact, state="write_failed")
+            return _hook_failure_run(
+                request,
+                context,
+                result.verdict,
+                raw_artifact,
+                raw_result.records,
+                hook_artifact,
+                hook_error,
+            )
+        return replace(raw_result, hook_artifact=hook_artifact)
+    raw_artifact, records = raw_result
+    if hook_error is not None:
+        return _hook_failure_run(
+            request,
+            context,
+            result.verdict,
+            raw_artifact,
+            records,
+            hook_artifact,
+            hook_error,
+        )
     return _finish_run(
-        request, context, result.verdict, raw_artifact, records, pre_sim=result.pre_sim
+        context,
+        result.verdict,
+        raw_artifact,
+        records,
+        hook_artifact,
+        pre_sim=result.pre_sim,
+    )
+
+
+def _hook_failure_run(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    verdict: SimulationVerdict,
+    raw_artifact: CoverageArtifact | None,
+    records: tuple[_NativeRecord, ...],
+    hook_artifact: CoverageArtifact | None,
+    error: _HookEvidenceError,
+) -> _CollectedRun:
+    return _run_failure(
+        request,
+        context,
+        verdict,
+        code=error.code,
+        message=str(error),
+        artifact=raw_artifact,
+        records=records,
+        hook_artifact=hook_artifact,
+        pointer="hook_evidence",
     )
 
 
@@ -582,37 +646,14 @@ def _raw_freshness_message(test: str, missing: bool) -> str:
 
 
 def _finish_run(
-    request: CoverageCollectionRequest,
     context: _RunContext,
     verdict: SimulationVerdict,
     raw_artifact: CoverageArtifact,
     records: tuple[_NativeRecord, ...],
+    hook_artifact: CoverageArtifact | None,
     *,
     pre_sim: PreSimEvidence | None = None,
 ) -> _CollectedRun:
-    hook_artifact = None
-    if context.hook_path is not None:
-        try:
-            hook_artifact = _validate_hook_evidence(
-                context.hook_path,
-                request.artifact_root,
-                run_id=context.run_id,
-                index=context.index,
-                before=context.hook_before,
-                require_start=not request.reset_included,
-                require_write=request.target.harness == "custom_main",
-            )
-        except _HookEvidenceError as exc:
-            return _run_failure(
-                request,
-                context,
-                verdict,
-                code=exc.code,
-                message=str(exc),
-                artifact=raw_artifact,
-                records=records,
-                pointer="hook_evidence",
-            )
     return _CollectedRun(
         run=CoverageRun(
             id=context.run_id,
@@ -640,6 +681,7 @@ def _run_failure(
     records: tuple[_NativeRecord, ...] = (),
     pointer: str = "raw_artifact",
     attributes: Mapping[str, FrozenJson] | None = None,
+    hook_artifact: CoverageArtifact | None = None,
 ) -> _CollectedRun:
     artifact_id = f"artifact:raw:{context.index:03d}" if state else None
     if state is not None:
@@ -660,35 +702,45 @@ def _run_failure(
         attributes or MappingProxyType({}),
     )
     finding = CoverageFinding("error", code, f"/tests/runs/{context.index - 1}/{pointer}", message)
-    return _CollectedRun(run, artifact, records, (finding,))
+    return _CollectedRun(run, artifact, records, (finding,), hook_artifact)
 
 
-def _validate_hook_evidence(
-    path: Path,
-    root: Path,
-    *,
-    run_id: str,
-    index: int,
-    before: ArtifactStamp | None,
-    require_start: bool,
-    require_write: bool,
-) -> CoverageArtifact:
+def _load_hook_evidence(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+) -> tuple[CoverageArtifact | None, _HookEvidenceError | None]:
+    if context.hook_path is None:
+        return None, None
     try:
-        validate_fresh_artifact(path, roots=(root,), before=before)
-    except ArtifactValidationError as exc:
-        raise _HookEvidenceError(
-            "COV_WINDOW_HOOK_MISSING",
-            "Coverage start hook produced no fresh evidence.",
-        ) from exc
-    document = _read_hook_document(path, run_id)
-    _validate_hook_events(document["events"], require_start, require_write)
-    return _artifact(
-        path,
-        root,
-        artifact_id=f"artifact:hook:{index:03d}",
+        validate_fresh_artifact(
+            context.hook_path,
+            roots=(request.artifact_root,),
+            before=context.hook_before,
+        )
+    except ArtifactValidationError:
+        return None, _HookEvidenceError(
+            "COV_WINDOW_HOOK_MISSING", "Coverage start hook produced no fresh evidence."
+        )
+    try:
+        document = _read_hook_document(context.hook_path, context.run_id)
+    except _HookEvidenceError as exc:
+        return None, exc
+    artifact = _artifact(
+        context.hook_path,
+        request.artifact_root,
+        artifact_id=f"artifact:hook:{context.index:03d}",
         kind="coverage_hook_evidence",
-        run_id=run_id,
+        run_id=context.run_id,
     )
+    try:
+        _validate_hook_events(
+            document["events"],
+            require_start=not request.reset_included,
+            require_write=request.target.harness == "custom_main",
+        )
+    except _HookEvidenceError as exc:
+        return artifact, exc
+    return artifact, None
 
 
 def _read_hook_document(path: Path, run_id: str) -> dict[str, object]:
@@ -717,8 +769,24 @@ def _validate_hook_events(events: object, require_start: bool, require_write: bo
     assert isinstance(events, list)
     starts = _hook_events(events, "start")
     writes = _hook_events(events, "write")
+    if (
+        require_start
+        and require_write
+        and starts
+        and writes
+        and starts[0].get("success") is True
+        and writes[0].get("success") is True
+    ):
+        _require_hook_order(
+            _valid_hook_sequence(starts[0]),
+            _valid_hook_sequence(writes[0]),
+        )
     start_sequence = _require_hook(starts, "WINDOW") if require_start else None
     write_sequence = _require_hook(writes, "WRITE") if require_write else None
+    _require_hook_order(start_sequence, write_sequence)
+
+
+def _require_hook_order(start_sequence: int | None, write_sequence: int | None) -> None:
     if (
         start_sequence is not None
         and write_sequence is not None
@@ -728,6 +796,10 @@ def _validate_hook_events(events: object, require_start: bool, require_write: bo
             "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
             "Custom-main start_hook must run before write_hook.",
         )
+
+
+def _valid_hook_sequence(event: Mapping[str, object]) -> int | None:
+    return as_positive_int(event.get("sequence"), 0) or None
 
 
 def _hook_events(events: list[object], name: str) -> list[dict[str, object]]:
@@ -750,8 +822,8 @@ def _require_hook(events: list[dict[str, object]], code_stem: str) -> int:
             f"COV_{code_stem}_HOOK_FAILED",
             f"Coverage {code_stem.lower()} hook did not complete successfully.",
         )
-    sequence = events[0].get("sequence")
-    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+    sequence = as_positive_int(events[0].get("sequence"), 0)
+    if not sequence:
         raise _HookEvidenceError(
             "COV_WINDOW_HOOK_INVALID",
             "Coverage hook evidence has an invalid event sequence.",
