@@ -160,10 +160,11 @@ def write_openroad_script(
 ) -> Path:
     """Write the Tcl script driving OpenROAD placement + repair + timing report.
 
-    Density is either the expert override or utilization plus buffering
-    headroom (``min(0.80, util/100 + 0.25)``). Setup and hold repair are
-    independently controlled by ``config.repair_timing`` and
-    ``config.repair_hold``. No trailing ``exit`` — the
+    Density is the resolved profile/expert value when present; the legacy
+    utilization-only path derives buffering headroom with
+    ``min(0.80, util/100 + 0.25)``. Setup and hold repair are independently
+    controlled by ``config.repair_timing`` and ``config.repair_hold``. No
+    trailing ``exit`` — the
     ``-exit`` flag preserves the nonzero-on-error semantics required by
     physical mode. Reports land at stable ``overall{,.csv}.rpt`` paths.
     """

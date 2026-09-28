@@ -591,9 +591,12 @@ produce migration errors rather than aliases. Replace them with `synth_mode`,
 **Upgrade note:** `balanced` is the new default and intentionally replaces the
 old implicit combination (generic ABC inside `synth`, default liberty ABC,
 40% utilization). Targets that care about stable PPA must select a profile
-explicitly. `compact` restores the old default liberty mapping and 40%/0.65
-physical settings; add `generic_abc_before_mapping = true` only when reproducing
-the old two-ABC-pass topology for a historical comparison.
+explicitly. `compact` retains the old default liberty mapping and 40%/0.65
+numeric controls, but it does not reproduce pre-#816 physical results:
+grid-aligned core margins and whole-design buffer removal now apply to every
+physical profile. Add `generic_abc_before_mapping = true` only when reproducing
+the old two-ABC-pass mapping topology; compare physical results against a fresh
+post-upgrade baseline.
 
 Target `flow_options.slang_options` is passed to `read_slang` verbatim.
 `--single-unit` is the

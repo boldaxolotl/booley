@@ -657,10 +657,18 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
     assert r"Wire dut.\intentional_undriven is used but has no driver" in probe
     assert "read_liberty -lib -nooverwrite -setattr booley_check_library" in probe
     assert "log_abc_dut.txt" in probe
+    assert "abc-control" in probe
+    assert 'ABC: Warning: Detected 2 multi-output cells (for example, "FA_X1").' in probe
+    assert "collision-preserve" in probe
+    assert "collision-attribute" in probe
+    assert 'grep -Fq "Assertion failed"' in probe
+    assert 'test ! -e "$work/collision-attribute/synth_collision_attribute.v"' in probe
+    assert 'grep -Fq "assign Z = A;"' in probe
     assert "if grep -E '^\\[WARNING '" in probe
     assert '"$work"/check_dut_*.txt "$work"/yosys*.log' in probe
     assert '"$work"/log_abc_*.txt' in probe
     assert '"$work"/synth*.ys' in probe
+    assert 'cp -R "$work/abc-control" "$work/collision-preserve"' in probe
 
 
 def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:
