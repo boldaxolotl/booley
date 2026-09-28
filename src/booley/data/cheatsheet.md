@@ -66,9 +66,11 @@ invalid—the explicit reset is a clean start, never a resume of reviewed work.
 Inspect with `booley board show`; handle blocked and review decisions with
 `/booley-ticket-triage`.
 
-When `booley run` moves a Ticket to review, it prints a `BOOLEY_RUN_RESULT `
-JSON record containing the machine-readable review-package path and optional
-HTML path. One record is emitted per review-bound Ticket.
+Every normal `booley run` ending prints one `BOOLEY_RUN_RESULT ` JSON record.
+Its disposition is `review` or `done` (exit 0), or `blocked` or `failed`
+(exit 1). Review-package and HTML paths are `null` outside review. A `failed`
+run leaves the Ticket blocked or queued after automatic retry. Infrastructure
+errors can also exit 1, so automation should classify runs from the record.
 
 ### Booley Flows
 

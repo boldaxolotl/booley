@@ -784,12 +784,14 @@ async def test_resumed_setup_path_accepts_marker_and_rejects_missing_marker(
     monkeypatch.setattr(developer, "block_ticket", block)
     monkeypatch.setattr(developer, "_prepare_blocked_triage", AsyncMock())
 
-    await developer._run_ticket_body(ctx, root, 0.0)
+    result = await developer._run_ticket_body(ctx, root, 0.0)
+    assert result.disposition == "blocked"
     block.assert_called_once_with(ctx, "stop after resume guard", "setup")
 
     block.reset_mock()
     (workspace / "picosoc/FUSESOC_IGNORE").unlink()
-    await developer._run_ticket_body(ctx, root, 0.0)
+    result = await developer._run_ticket_body(ctx, root, 0.0)
+    assert result.disposition == "blocked"
 
     reason = block.call_args.args[1]
     assert "picosoc/FUSESOC_IGNORE" in reason

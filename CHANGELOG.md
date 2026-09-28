@@ -64,6 +64,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   the configured approval directory without parsing them as approval documents.
   Unreferenced artifacts still invalidate the set, and lowercase `*.toml` remains
   reserved for approval documents.
+- `booley run` now emits one machine-readable result for every normal Ticket
+  ending. Direct-to-done Tickets correctly return success, while `blocked` and
+  `failed` results return a nonzero status and identify their disposition.
 - Direct built-in and Custom Flows now keep their default reports under resolved
   Project data. Plain Simulation, native coverage, and resume share one report
   root and invocation-number sequence, and no default `flow-reports/` directory

@@ -110,11 +110,16 @@ def _run_harness(args: argparse.Namespace, project_root: Path) -> int:
     except Exception as e:
         logging.getLogger(__name__).critical("Harness failed: %s", e, exc_info=True)
         return 1
-    if result is not None:
-        print(result.to_cli_line(), flush=True)
-        return 0
-    logging.getLogger(__name__).warning("Ticket run ended without a review result")
-    return 1
+    if result is None:
+        logging.getLogger(__name__).error(
+            "Internal invariant violated: Ticket run ended without a result"
+        )
+        return 1
+    exit_code = {"review": 0, "done": 0, "blocked": 1, "failed": 1}.get(result.disposition)
+    if exit_code is None:
+        raise ValueError(f"Unknown Ticket run disposition: {result.disposition!r}")
+    print(result.to_cli_line(), flush=True)
+    return exit_code
 
 
 def _find_project_root() -> Path | None:

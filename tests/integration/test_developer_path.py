@@ -57,6 +57,7 @@ def _create_criteria_ticket(
     criteria_yaml: dict | None = None,
     ticket_type: str = "bugfix",
     sim_targets: list[str] | None = None,
+    destination: str = "review",
 ) -> Path:
     """Create a criteria-based ticket .md file in queue/.
 
@@ -90,7 +91,7 @@ def _create_criteria_ticket(
         "branch": "main",
         "scope": scope,
         "criteria": criteria_yaml,
-        "on_success": {"destination": "review", "merge": False, "cleanup": False},
+        "on_success": {"destination": destination, "merge": False, "cleanup": False},
         "priority": "high",
     }
     body = f"## Description\nE2E developer test: {slug}\n"
@@ -309,7 +310,7 @@ async def _run_developer_pipeline(
     for p in patches:
         p.start()
     try:
-        await run_ticket(
+        return await run_ticket(
             f".booley/project/tickets/board/queue/{slug}.md",
             project_root,
             save_transcripts=False,
@@ -366,7 +367,7 @@ class TestDeveloperSimplePass:
             state_updater=_set_all_met,
         )
 
-        asyncio.run(
+        result = asyncio.run(
             _run_developer_pipeline(
                 project_root,
                 slug,
@@ -375,10 +376,42 @@ class TestDeveloperSimplePass:
             )
         )
 
+        assert result.disposition == "review"
         # Ticket should be in review/
         assert _ticket_in_dir(project_root, slug, "review"), (
             "Ticket should have moved to review/ after all criteria met"
         )
+
+    def test_developer_direct_to_done_returns_done(
+        self,
+        project_root,
+        worktree_factory,
+    ):
+        slug = "e2e-orch-direct-done"
+        _create_criteria_ticket(project_root, slug, destination="done")
+        _ensure_run_log(project_root, slug)
+
+        def _set_all_met(state_path):
+            state = DevelopmentState.load(state_path)
+            for key in list(state.criteria.keys()):
+                state.set_criterion(key, True)
+            state.save()
+
+        result = asyncio.run(
+            _run_developer_pipeline(
+                project_root,
+                slug,
+                developer_mock=_make_developer_mock(
+                    project_root, slug, state_updater=_set_all_met
+                ),
+                setup_bypass=make_setup_bypass(worktree_factory),
+            )
+        )
+
+        assert result.disposition == "done"
+        assert result.review_package_path is None
+        assert result.html_path is None
+        assert _ticket_in_dir(project_root, slug, "done")
 
 
 @pytest.mark.e2e
