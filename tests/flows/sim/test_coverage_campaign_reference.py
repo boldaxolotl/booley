@@ -12,6 +12,7 @@ from booley.flows.sim import coverage_reference
 from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
 from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.coverage_campaign import (
+    CoverageCampaignValidationError,
     DurableTargetIdentity,
     decode_coverage_campaign,
 )
@@ -25,6 +26,9 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_campaign_reference,
     publish_coverage_campaign_reference,
     resolve_coverage_campaign_reference,
+)
+from tests.flows.sim.coverage_campaign_test_support import (
+    corrupt_v3_campaign_with_duplicate_negative_point,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
@@ -251,6 +255,33 @@ def test_resolver_authenticates_real_nested_campaign_at_exact_attempt_path(
     assert resolved.campaign_path == nested
     assert resolved.loaded.campaign.campaign_id == _valid_document()["campaign_id"]
     assert resolved.loaded.campaign.target.identity == _TARGET_IDENTITY
+
+
+def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path) -> None:
+    target = tmp_path / "targets" / _TARGET_SELECTOR
+    nested = _nested_campaign(target)
+    reference = _reference(target, nested)
+    corrupt_v3_campaign_with_duplicate_negative_point(nested)
+    nested_bytes = nested.read_bytes()
+    reference = decode_coverage_campaign_reference(
+        _rewrite_reference(reference, ("coverage_campaign", "bytes"), len(nested_bytes))
+    )
+    reference = decode_coverage_campaign_reference(
+        _rewrite_reference(
+            reference,
+            ("coverage_campaign", "sha256"),
+            "sha256:" + hashlib.sha256(nested_bytes).hexdigest(),
+        )
+    )
+    path = target / "coverage.json"
+    publish_coverage_campaign_reference(path, reference)
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        resolve_coverage_campaign_reference(path)
+
+    message = str(caught.value)
+    assert "COV_POINT_ID_DUPLICATE at /points/1/id" in message
+    assert "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset" in message
 
 
 def test_resolver_decodes_authenticated_reference_bytes_during_path_swap(

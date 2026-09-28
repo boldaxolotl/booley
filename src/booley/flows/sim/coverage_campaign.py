@@ -41,6 +41,15 @@ FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "Fr
 _SCHEMA = "booley.coverage-campaign/v1"
 _SCORED_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
 SOURCE_ROLLUP_METRICS = ("line", "branch", "expression", "toggle")
+_ROLLUP_FIELDS = (
+    "metric",
+    "semantics",
+    "total_points",
+    "eligible_points",
+    "covered_points",
+    "waived_points",
+    "percent",
+)
 _METRIC_SEMANTICS = {
     "line": "One Verilator basic-block point; covered when its count is greater than zero.",
     "branch": "One branch outcome; each outcome is a separate point covered when count is greater than zero.",
@@ -158,12 +167,58 @@ class CoverageFinding:
     message: str
 
 
+_VALIDATION_DISPLAY_FINDINGS = 3
+_VALIDATION_DISPLAY_ITEM_CHARS = 256
+_VALIDATION_MESSAGE_MAX_CHARS = 1024
+_TRUNCATION_MARKER = "..."
+
+
+def _escape_display_text(value: str) -> str:
+    return json.dumps(value, ensure_ascii=True)[1:-1]
+
+
+def _truncate_escaped_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    budget = limit - len(_TRUNCATION_MARKER)
+    end = 0
+    while end < len(value):
+        token_length = 1
+        if value[end] == "\\":
+            token_length = 6 if value.startswith("\\u", end) else 2
+        if end + token_length > budget:
+            break
+        end += token_length
+    return value[:end] + _TRUNCATION_MARKER
+
+
+def _format_validation_finding(finding: CoverageFinding) -> str:
+    code = _escape_display_text(finding.code)
+    pointer = _escape_display_text(finding.pointer) if finding.pointer else "<document-root>"
+    message = _escape_display_text(finding.message)
+    item = f"{code} at {pointer} — {message}"
+    return _truncate_escaped_text(item, _VALIDATION_DISPLAY_ITEM_CHARS)
+
+
+def _format_validation_error(findings: tuple[CoverageFinding, ...]) -> str:
+    summary = f"coverage campaign is invalid ({len(findings)} findings)"
+    displayed = findings[:_VALIDATION_DISPLAY_FINDINGS]
+    if not displayed:
+        return summary
+    details = "; ".join(_format_validation_finding(finding) for finding in displayed)
+    omitted = len(findings) - len(displayed)
+    suffix = f"; +{omitted} more" if omitted else ""
+    rendered = f"{summary}: {details}{suffix}"
+    assert len(rendered) <= _VALIDATION_MESSAGE_MAX_CHARS
+    return rendered
+
+
 class CoverageCampaignValidationError(ValueError):
     """All stable findings produced while decoding one invalid Campaign."""
 
     def __init__(self, findings: tuple[CoverageFinding, ...]) -> None:
         self.findings = findings
-        super().__init__(f"coverage campaign is invalid ({len(findings)} findings)")
+        super().__init__(_format_validation_error(findings))
 
 
 @dataclass(frozen=True)
@@ -1253,6 +1308,32 @@ def _calculate_rollups(document: Mapping[str, object]) -> list[dict[str, object]
     return rollups
 
 
+def _rollup_mismatch_finding(
+    actual: list[object], expected: list[dict[str, object]]
+) -> CoverageFinding:
+    aggregate = _error(
+        "COV_ROLLUP_MISMATCH",
+        "/rollups",
+        "Rollups do not match the deterministic derivation from points.",
+    )
+    if len(actual) != len(expected):
+        return aggregate
+    for index, (actual_row, expected_row) in enumerate(zip(actual, expected, strict=True)):
+        assert isinstance(actual_row, Mapping)
+        if actual_row["metric"] != expected_row["metric"]:
+            return aggregate
+        for field in _ROLLUP_FIELDS:
+            if actual_row[field] != expected_row[field]:
+                metric = expected_row["metric"]
+                return _error(
+                    "COV_ROLLUP_MISMATCH",
+                    f"/rollups/{index}/{field}",
+                    f"Stored rollup field {field} for metric {metric} does not match "
+                    "the deterministic derivation from points.",
+                )
+    return aggregate
+
+
 def _validate_unknown_records(document: Mapping[str, object]) -> list[CoverageFinding]:
     normalization = document["normalization"]
     artifacts = document["artifacts"]
@@ -1444,16 +1525,12 @@ def _outcome_semantic_findings(
     document: Mapping[str, object], structural_findings: tuple[CoverageFinding, ...]
 ) -> list[CoverageFinding]:
     findings: list[CoverageFinding] = []
-    if _sections_are_structurally_valid(structural_findings, "/points", "/rollups") and document[
-        "rollups"
-    ] != _calculate_rollups(document):
-        findings.append(
-            _error(
-                "COV_ROLLUP_MISMATCH",
-                "/rollups",
-                "Rollups do not match the deterministic derivation from points.",
-            )
-        )
+    if _sections_are_structurally_valid(structural_findings, "/points", "/rollups"):
+        expected_rollups = _calculate_rollups(document)
+        actual_rollups = document["rollups"]
+        assert isinstance(actual_rollups, list)
+        if actual_rollups != expected_rollups:
+            findings.append(_rollup_mismatch_finding(actual_rollups, expected_rollups))
     collection_dependencies = ("/tests", "/artifacts", "/collection", "/normalization")
     if _sections_are_structurally_valid(structural_findings, *collection_dependencies):
         findings.extend(_validate_collection(document))
