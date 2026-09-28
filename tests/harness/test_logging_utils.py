@@ -61,8 +61,13 @@ def test_log_formatters_use_record_instant_as_utc_rfc3339():
     record = logging.LogRecord("test", logging.INFO, "", 0, "event", (), None)
     record.created = created
 
-    full = UtcLogFormatter("%(asctime)s %(levelname)s %(message)s").format(record)
-    terse = TerseFormatter().format(record)
+    previous_step = get_current_step()
+    try:
+        set_current_step("")
+        full = UtcLogFormatter("%(asctime)s %(levelname)s %(message)s").format(record)
+        terse = TerseFormatter().format(record)
+    finally:
+        set_current_step(previous_step)
 
     assert full.startswith("2026-09-25T13:07:17Z INFO event")
     assert terse.startswith("2026-09-25T13:07:17Z event")
