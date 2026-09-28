@@ -7,7 +7,6 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from booley.flows.sim.coverage_campaign import (
-    _VALIDATION_MESSAGE_MAX_CHARS,
     CoverageCampaignValidationError,
     CoverageFinding,
     DurableTargetIdentity,
@@ -381,9 +380,10 @@ def test_invalid_campaign_message_is_bounded_and_control_safe() -> None:
         message="Unknown run id.\r" + "y" * 2_000,
     )
 
-    error = CoverageCampaignValidationError((finding,))
+    findings = (finding, finding, finding, finding)
+    error = CoverageCampaignValidationError(findings)
 
-    assert len(str(error)) <= _VALIDATION_MESSAGE_MAX_CHARS
+    assert len(str(error)) <= 1_024
     assert "\\n" in str(error)
     assert "\\t" in str(error)
     assert "\\u001b" in str(error)
@@ -392,6 +392,7 @@ def test_invalid_campaign_message_is_bounded_and_control_safe() -> None:
     assert "\r" not in str(error)
     assert "\t" not in str(error)
     assert "\x1b" not in str(error)
+    assert str(error).endswith("+1 more")
     assert error.findings[0].pointer == pointer
 
 
@@ -465,6 +466,21 @@ def test_rollup_mismatch_names_first_differing_field_and_metric() -> None:
 def test_rollup_inventory_mismatch_keeps_aggregate_pointer() -> None:
     document = _valid_document()
     document["rollups"].append(copy.deepcopy(document["rollups"][0]))
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_ROLLUP_MISMATCH", "/rollups")
+    ]
+
+
+def test_rollup_extension_key_mismatch_keeps_aggregate_pointer() -> None:
+    document = _valid_document()
+    document["rollups"][0]["extension"] = True
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
         decode_coverage_campaign(

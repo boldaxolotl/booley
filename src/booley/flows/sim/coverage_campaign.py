@@ -1331,7 +1331,7 @@ def _rollup_mismatch_finding(
                     f"Stored rollup field {field} for metric {metric} does not match "
                     "the deterministic derivation from points.",
                 )
-    raise AssertionError("rollup mismatch finder called for equal rollups")
+    return aggregate
 
 
 def _validate_unknown_records(document: Mapping[str, object]) -> list[CoverageFinding]:
