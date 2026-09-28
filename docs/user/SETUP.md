@@ -84,29 +84,23 @@ complete RISC-V demo stack, plus Project artifacts and temporary upgrade/build
 data. On the measured containerd store, the current Linux/AMD64 images occupy
 1.58/2.02 GB and expose 2.82/4.48 GB filesystems; shared layers are not additive.
 
-Local image builds also need temporary Docker headroom. Before the first build,
-Booley checks the complete known build sequence against the filesystem containing
-Docker's reported storage root. It combines retained growth from earlier outputs
-with each build's temporary peak, takes the largest point in the sequence, and
-adds one 5 GiB safety reserve. The resulting bounds are 40 GiB for the standard
-cold three-build sequence, 47 GiB for the RISC-V sequence, and 10 GiB for an
-overlay-only refresh. A heavyweight build keeps the conservative
-30 GiB cold peak (10 GiB only when the managed image's role, recipe, effective
-inputs or contracts, and non-empty build cache prove reusable inputs); the fixed
-wheel overlay and small Booley-owned sidecars use a 5 GiB peak. Project recipes
-remain heavyweight because they may install arbitrary requirements.
+Local image builds need temporary Docker headroom. Before the first build,
+Booley checks the complete known sequence on Docker's reported storage
+filesystem. Required space is the largest retained-output-plus-current-peak
+point, plus one 5 GiB reserve: 40 GiB for the cold standard three-build
+sequence, 47 GiB for RISC-V, and 10 GiB for an overlay-only refresh.
+Heavyweight builds use a 30 GiB cold peak, reduced to 10 GiB only when a managed
+image's expected role, recipe, input or contract labels and non-empty build cache
+prove reuse. Fixed wheel overlays and Booley sidecars use 5 GiB; arbitrary
+Project recipes remain heavyweight.
 
-Immediately before every build, Booley re-observes free space and checks that
-build plus the remaining tail. Completed headroom is no longer charged. Registry
-pull download space is outside this build estimate, so a sequence that pulls
-before local work is checked again after the pull. The error names the images in
-order and reports each estimate, the single reserve, and Docker's total and
-reclaimable build-cache usage. Booley never automatically prunes cache or removes
-images, volumes, Project artifacts, or user data. Pruning may evict layers that
-the same sequence would otherwise reuse, so read the complete estimate before
-choosing cleanup. For Docker storage reported on the wrong filesystem, set
-`BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1` for that one command; every other value keeps
-the check enabled.
+Before each build, Booley rechecks that build and the remaining tail without
+charging completed work. Pull downloads are outside the estimate, so local work
+is rechecked after a pull. Errors list each image estimate, one reserve, and
+total and reclaimable build cache. Booley never deletes cache, images, volumes,
+Project artifacts, or user data; pruning may evict reusable layers. If Docker
+reports the wrong storage filesystem, set `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1`
+for that command; every other value keeps the check enabled.
 
 ## Initialize the Project · host
 
