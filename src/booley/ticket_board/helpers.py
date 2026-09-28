@@ -123,7 +123,7 @@ def detect_tickets_dir() -> Path:
 def tickets_dir_from_project_root(project_root: str | Path) -> Path:
     """Resolve the Ticket Board selected by one Project root.
 
-    ``TICKETS_DIR`` is the explicit Board override. When the passed root
+    ``TICKETS_DIR`` is the explicit Ticket Board override. When the passed root
     canonically matches ``BOOLEY_CONTROL_PROJECT_ROOT``, that root carries
     control-plane authority and its Project directory wins over the generation
     checkout in ``BOOLEY_PROJECT_DIR``. All other calls retain the ambient
@@ -135,9 +135,9 @@ def tickets_dir_from_project_root(project_root: str | Path) -> Path:
     root = Path(project_root).resolve()
     control_root = os.environ.get("BOOLEY_CONTROL_PROJECT_ROOT")
     if control_root and Path(control_root).resolve() == root:
-        from booley.runtime.project_dir import resolve_project_dir_from_root
+        from booley.runtime.project_dir import resolve_authoritative_project_dir
 
-        return resolve_project_dir_from_root(root) / "tickets"
+        return resolve_authoritative_project_dir(root) / "tickets"
     project_dir = os.environ.get("BOOLEY_PROJECT_DIR")
     if project_dir:
         return Path(project_dir) / "tickets"

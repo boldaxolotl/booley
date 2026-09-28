@@ -10,7 +10,7 @@ from booley.ticket_board.helpers import tickets_dir_from_project_root
 
 
 @pytest.fixture(autouse=True)
-def _clear_board_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clear_ticket_board_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("TICKETS_DIR", "BOOLEY_CONTROL_PROJECT_ROOT", "BOOLEY_PROJECT_DIR"):
         monkeypatch.delenv(name, raising=False)
 
@@ -18,7 +18,7 @@ def _clear_board_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_explicit_tickets_dir_overrides_every_project_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    override = tmp_path / "isolated-board"
+    override = tmp_path / "isolated-tickets"
     control = tmp_path / "control"
     generation = tmp_path / "generation-project"
     monkeypatch.setenv("TICKETS_DIR", str(override))
@@ -67,16 +67,16 @@ def test_project_dir_env_remains_the_ordinary_bind_mount_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     work_root = tmp_path / "work"
-    work_board = work_root / ".booley_project" / "tickets"
+    work_tickets = work_root / ".booley_project" / "tickets"
     mounted_project = tmp_path / "booley-project"
-    mounted_board = mounted_project / "tickets"
-    work_board.mkdir(parents=True)
-    mounted_board.mkdir(parents=True)
-    (work_board / "same-ticket.md").write_text("same", encoding="utf-8")
-    (mounted_board / "same-ticket.md").write_text("same", encoding="utf-8")
+    mounted_tickets = mounted_project / "tickets"
+    work_tickets.mkdir(parents=True)
+    mounted_tickets.mkdir(parents=True)
+    (work_tickets / "same-ticket.md").write_text("same", encoding="utf-8")
+    (mounted_tickets / "same-ticket.md").write_text("same", encoding="utf-8")
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(mounted_project))
 
-    assert tickets_dir_from_project_root(work_root) == mounted_board
+    assert tickets_dir_from_project_root(work_root) == mounted_tickets
 
 
 @pytest.mark.parametrize("layout", ["colocated", "legacy"])
