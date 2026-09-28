@@ -12,6 +12,7 @@ from booley.harness.blocking import BlockingError
 from booley.harness.developer import (
     _commit_ticket_paths,
     _run_post_guardrails,
+    _transition_post_developer_finding,
 )
 from booley.harness.developer_guardrails import (
     DirtyFile,
@@ -116,12 +117,20 @@ def test_uncommitted_edits_block_handoff_without_an_automatic_commit(tmp_path: P
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw"),
     ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
+        finding = _run_post_guardrails(ctx, state_path, run_index=0)
+        assert finding is not None
+        _transition_post_developer_finding(ctx, state_path, finding, 0)
 
-    assert blocked is True
     commit.assert_not_called()
-    block.assert_called_once()
-    assert "Commit or restore every file" in block.call_args.args[1]
+    block.assert_called_once_with(
+        ctx,
+        "Developer Agent stopped with uncommitted changes. Commit or restore "
+        "every file before handoff: M rtl/dut.sv",
+        "developer",
+        run_index=0,
+    )
+    assert "secondary_context" not in block.call_args.kwargs
+    assert finding.secondary_context == "1 uncommitted file(s) preserved: M rtl/dut.sv"
 
 
 def test_repository_failure_does_not_skip_other_repository(tmp_path: Path):
@@ -189,11 +198,12 @@ def test_duplicated_source_root_dirty_files_are_rejected_before_tree_validation(
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw"),
     ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=1)
+        finding = _run_post_guardrails(ctx, state_path, run_index=1)
 
-    assert blocked is True
+    assert finding is not None
     commit.assert_not_called()
-    reason = block.call_args.args[1]
+    block.assert_not_called()
+    reason = finding.reason
     assert reason.startswith("Developer Agent stopped with uncommitted changes")
     assert "rtl/rtl/other.sv" in reason
     report = ctx.logs_dir / ".runtime" / "malformed_rtl_output.json"
@@ -219,10 +229,11 @@ def test_nested_rtl_is_caught_even_when_scope_names_no_rtl(tmp_path: Path):
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw"),
     ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
+        finding = _run_post_guardrails(ctx, state_path, run_index=0)
 
-    assert blocked is True
-    assert block.call_args.args[1].startswith("MALFORMED_SCORER_OUTPUT")
+    assert finding is not None
+    block.assert_not_called()
+    assert finding.reason.startswith("MALFORMED_SCORER_OUTPUT")
 
 
 def test_scorer_file_deleted_under_a_new_glob_blocks(tmp_path: Path):
@@ -240,11 +251,12 @@ def test_scorer_file_deleted_under_a_new_glob_blocks(tmp_path: Path):
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw"),
     ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
+        finding = _run_post_guardrails(ctx, state_path, run_index=0)
 
-    assert blocked is True
+    assert finding is not None
     commit.assert_not_called()
-    assert "rtl/legacy_fifo.sv" in block.call_args.args[1]
+    block.assert_not_called()
+    assert "rtl/legacy_fifo.sv" in finding.reason
 
 
 def test_done_ticket_with_uncommitted_scorer_file_blocks_handoff(tmp_path: Path):
@@ -261,11 +273,11 @@ def test_done_ticket_with_uncommitted_scorer_file_blocks_handoff(tmp_path: Path)
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw") as terminal,
     ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=2)
+        finding = _run_post_guardrails(ctx, state_path, run_index=2)
 
-    assert blocked is True
+    assert finding is not None
     commit.assert_not_called()
-    block.assert_called_once()
+    block.assert_not_called()
     assert any("uncommitted changes" in call.args[0] for call in terminal.call_args_list)
 
 
@@ -291,11 +303,11 @@ def test_deleted_files_under_new_scope_glob_block_dirty_handoff(tmp_path: Path):
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw"),
     ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
+        finding = _run_post_guardrails(ctx, state_path, run_index=0)
 
-    assert blocked is True
+    assert finding is not None
     commit.assert_not_called()
-    block.assert_called_once()
+    block.assert_not_called()
 
 
 def test_git_status_error_blocks_handoff(tmp_path: Path):
@@ -311,11 +323,11 @@ def test_git_status_error_blocks_handoff(tmp_path: Path):
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw"),
     ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
+        finding = _run_post_guardrails(ctx, state_path, run_index=0)
 
-    assert blocked is True
+    assert finding is not None
     commit.assert_not_called()
-    block.assert_called_once()
+    block.assert_not_called()
 
 
 def test_missing_live_rtl_blocks_handoff(tmp_path: Path):
@@ -332,10 +344,10 @@ def test_missing_live_rtl_blocks_handoff(tmp_path: Path):
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw"),
     ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
+        finding = _run_post_guardrails(ctx, state_path, run_index=0)
 
-    assert blocked is True
-    block.assert_called_once()
+    assert finding is not None
+    block.assert_not_called()
 
 
 def test_committed_nested_rtl_output_blocks_handoff(tmp_path: Path):
@@ -354,10 +366,11 @@ def test_committed_nested_rtl_output_blocks_handoff(tmp_path: Path):
         patch("booley.harness.developer.block_ticket") as block,
         patch("booley.harness.developer.terminal.raw"),
     ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=3)
+        finding = _run_post_guardrails(ctx, state_path, run_index=3)
 
-    assert blocked is True
-    reason = block.call_args.args[1]
+    assert finding is not None
+    block.assert_not_called()
+    reason = finding.reason
     assert reason.startswith("MALFORMED_SCORER_OUTPUT")
     assert "rtl/rtl/bad.sv" in reason
     report = ctx.logs_dir / ".runtime" / "malformed_rtl_output.json"

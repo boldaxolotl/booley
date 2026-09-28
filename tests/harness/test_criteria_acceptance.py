@@ -27,6 +27,7 @@ from booley.ticket_board.criteria_acceptance import (
     check_criteria_acceptance,
     evaluate_verification_freshness,
     format_criteria_verdict,
+    project_active_declared_block_reason,
     refresh_verification_freshness,
 )
 from tests.criterion_endpoint_support import builtin_endpoint_catalog
@@ -207,6 +208,44 @@ class TestCheckCriteriaAcceptance:
         )
         verdict = self._write_state_and_check(tmp_path, state)
         assert verdict.disposition == "review"
+
+    @pytest.mark.parametrize(
+        ("blocked_met", "mandatory_met", "expected"),
+        [
+            (True, False, "Need a pin assignment."),
+            (False, False, None),
+            (True, True, None),
+        ],
+    )
+    def test_declared_block_projection_uses_active_policy(
+        self,
+        tmp_path: Path,
+        blocked_met: bool,
+        mandatory_met: bool,
+        expected: str | None,
+    ):
+        state_path = tmp_path / "booley_state.json"
+        state = DevelopmentState.load(state_path)
+        state.init_criteria({"implementation_complete": True, "_blocked_reason": False})
+        state.set_criterion("implementation_complete", mandatory_met)
+        state.set_criterion(
+            "_blocked_reason",
+            blocked_met,
+            detail={"reason": "Need a pin assignment."},
+        )
+        state.save()
+
+        assert project_active_declared_block_reason(state_path, work_dir=tmp_path) == expected
+
+    @pytest.mark.parametrize("contents", [None, "{broken json"])
+    def test_declared_block_projection_ignores_missing_or_corrupt_state(
+        self, tmp_path: Path, contents: str | None
+    ):
+        state_path = tmp_path / "booley_state.json"
+        if contents is not None:
+            state_path.write_text(contents, encoding="utf-8")
+
+        assert project_active_declared_block_reason(state_path, work_dir=tmp_path) is None
 
     def test_strict_model_contract_accepts_model_evidence(self, tmp_path: Path):
         state_path = tmp_path / "booley_state.json"
@@ -614,6 +653,28 @@ class TestCheckCriteriaAcceptance:
         assert state.criteria["sim_pass_default"].detail["stale_source_categories"] == ["rtl"]
         assert state.criteria["_report_submitted"].met is False
         assert state.criteria["_report_submitted"].stale is True
+
+    def test_declared_block_projection_applies_freshness_without_persisting(self, tmp_path: Path):
+        state_path, work_dir = self._fresh_state(tmp_path)
+        state = DevelopmentState.load(state_path)
+        state.set_criterion(
+            "_blocked_reason",
+            True,
+            detail={"reason": "Need a protocol decision."},
+        )
+        state.save()
+        before = state_path.read_bytes()
+        (work_dir / "rtl" / "dut.sv").write_text(
+            "module dut; wire changed; endmodule\n", encoding="utf-8"
+        )
+
+        reason = project_active_declared_block_reason(state_path, work_dir=work_dir)
+
+        assert reason == "Need a protocol decision."
+        assert state_path.read_bytes() == before
+        persisted = DevelopmentState.load(state_path)
+        assert persisted.criteria["sim_pass_default"].met is True
+        assert persisted.criteria["sim_pass_default"].stale is False
 
     def test_direct_testbench_edit_makes_sim_stale_unmet(self, tmp_path: Path):
         state_path, work_dir = self._fresh_state(tmp_path)
