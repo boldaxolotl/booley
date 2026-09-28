@@ -24,6 +24,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.core.differences import format_differences
 from booley.core.models import TargetPlan, TargetPlanError, TargetPlanRole
 from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
@@ -322,7 +323,13 @@ def validate_ticket_commit_trailers(
         "Booley-Machine-SHA256": ticket_machine_digest(machine),
     }
     if any(trailers.get(key) != value for key, value in expected.items()):
-        raise TicketBaselineError(f"{BLOCK_REASON}: Ticket commit identity changed")
+        raise TicketBaselineError(
+            f"{BLOCK_REASON}: Ticket commit identity changed: "
+            + format_differences(
+                expected,
+                {key: trailers.get(key) for key in expected},
+            )
+        )
 
 
 def requires_return_to_draft(fields: Mapping[str, Any]) -> bool:

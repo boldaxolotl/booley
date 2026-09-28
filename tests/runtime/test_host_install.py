@@ -188,7 +188,7 @@ def test_mismatched_recorded_identity_is_rejected(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr(
         host_install,
         "current_host_installation",
-        lambda _source: replace(_identity(), distribution_root="/other/site-packages"),
+        lambda _source: replace(_identity(), revision="def456"),
     )
     error = host_install.host_install_error(
         Path("/other/site-packages/booley/data/skills"),
@@ -198,6 +198,8 @@ def test_mismatched_recorded_identity_is_rejected(tmp_path: Path, monkeypatch) -
     )
     assert error is not None
     assert "does not match" in error
+    assert "revision abc123 -> def456" in error
+    assert _identity().distribution_root not in error
 
 
 def test_registration_is_atomic_and_refuses_implicit_update(tmp_path: Path, monkeypatch) -> None:
@@ -210,10 +212,12 @@ def test_registration_is_atomic_and_refuses_implicit_update(tmp_path: Path, monk
     assert host_install.load_host_installation(state) == candidate
     assert not list(tmp_path.glob("*.tmp"))
 
-    replacement = replace(candidate, version="2.0.0")
+    replacement = replace(candidate, revision="def456", payload_fingerprint="e" * 64)
     monkeypatch.setattr(host_install, "current_host_installation", lambda _source: replacement)
-    with pytest.raises(HostInstallationError, match="different canonical"):
+    with pytest.raises(HostInstallationError, match="different canonical") as caught:
         host_install.register_host_installation(Path("/skills"), path=state)
+    assert "revision abc123 -> def456" in str(caught.value)
+    assert f"payload_fingerprint {'f' * 64} -> {'e' * 64}" in str(caught.value)
     assert host_install.load_host_installation(state) == candidate
 
     assert (

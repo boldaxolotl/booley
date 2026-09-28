@@ -158,8 +158,9 @@ def test_cleanup_only_rejects_corrupt_or_mismatched_recovery_journal(
     with pytest.raises(cleanup_only.CleanupOnlyError, match="unreadable"):
         cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, sources)
     journal.write_text(original, encoding="utf-8")
-    with pytest.raises(cleanup_only.CleanupOnlyError, match="sources differ"):
+    with pytest.raises(cleanup_only.CleanupOnlyError, match="sources differ") as caught:
         cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, {"outer": "0" * 40})
+    assert f"outer {'0' * 40} -> {sources['outer']}" in str(caught.value)
     record = json.loads(original)
     record["slug"] = "other"
     journal.write_text(json.dumps(record), encoding="utf-8")

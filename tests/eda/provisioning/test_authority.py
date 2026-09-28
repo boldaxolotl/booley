@@ -36,6 +36,28 @@ def _registered(tmp_path: Path) -> tuple[Path, Path]:
     return project, source
 
 
+def test_installation_revalidation_names_version_and_policy_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, private_state: Path
+) -> None:
+    del private_state
+    project, source = _registered(tmp_path)
+    record = authority.load_state().installations["vivado_2025_2"]
+    monkeypatch.setattr(
+        authority,
+        "inspect_installation",
+        lambda *_args, **_kwargs: Inspection(source, "2026.1", record.architecture),
+    )
+    monkeypatch.setattr(authority, "VIVADO_POLICY_REVISION", record.policy_revision + 1)
+
+    with pytest.raises(authority.InstallationValidationError) as caught:
+        authority._revalidate_installation(record, project)
+
+    message = str(caught.value)
+    assert f"version {record.version} -> 2026.1" in message
+    assert f"policy_revision {record.policy_revision} -> {record.policy_revision + 1}" in message
+    assert "architecture" not in message
+
+
 def test_authority_lock_contention_has_controlled_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
