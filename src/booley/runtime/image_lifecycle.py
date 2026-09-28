@@ -1422,7 +1422,7 @@ def _base_parent_current(origin: str, recorded_parent: str, docker: DockerPort) 
     if not is_local_image_id(recorded_parent):
         return False
     expected_contract = _expected_image_build_contracts().runtime_base
-    stable_contract = docker.label(STABLE_RUNTIME_BASE_IMAGE, "io.booley.runtime-base.contract")
+    stable_contract = docker.label(STABLE_RUNTIME_BASE_IMAGE, LABEL_RUNTIME_BASE_CONTRACT)
     return (
         stable_contract == expected_contract
         and docker.image_id(STABLE_RUNTIME_BASE_IMAGE) == recorded_parent
