@@ -83,15 +83,8 @@ class _NativeFormatError(ValueError):
 class _HookEvidenceError(ValueError):
     """A Coverage Window hook contract failed for one simulator process."""
 
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        artifact: CoverageArtifact | None = None,
-    ) -> None:
+    def __init__(self, code: str, message: str) -> None:
         self.code = code
-        self.artifact = artifact
         super().__init__(message)
 
 

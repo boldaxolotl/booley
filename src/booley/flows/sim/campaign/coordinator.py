@@ -695,19 +695,7 @@ def _coverage_reference_source(
             "coverage aggregate must have one committed Simulation result"
         )
     recovered = completed[0]
-    result = recovered.result
-    assert result is not None
-    document = result.document
-    attempt = store.latest_attempt(recovered.work_item_id)
-    if attempt is None or attempt.document["attempt_id"] != document["attempt_id"]:
-        raise SimulationCampaignIntegrityError(
-            "coverage aggregate result has no matching Simulation Attempt"
-        )
-    attempt_directory = (
-        store.work_item_directory(recovered.work_item_id)
-        / "attempts"
-        / f"{document['attempt_ordinal']:04d}-{document['attempt_id']}"
-    )
+    result, attempt_directory = _coverage_attempt_directory(store, recovered)
     return recovered.work_item_id, result, attempt_directory / "coverage-campaign/coverage.json"
 
 
