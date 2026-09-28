@@ -47,11 +47,17 @@ PlanAction = runtime_lifecycle.PlanAction
 
 class _LegacyBuildAdapter:
     def __init__(
-        self, project_root: Path, docker: DockerPort | None = None, *, verbose: bool
+        self,
+        project_root: Path,
+        docker: DockerPort | None = None,
+        *,
+        verbose: bool,
+        refresh_runtime_base: bool = False,
     ) -> None:
         self.project_root = project_root
         self.docker = docker
         self.verbose = verbose
+        self.refresh_runtime_base = refresh_runtime_base
 
     def build(
         self,
@@ -108,7 +114,12 @@ class _LegacyBuildAdapter:
         )
 
         if booley.version_attribution.origin is VersionOrigin.SOURCE:
-            _step_docker_image(context, node.reference, allow_pull=False)
+            _step_docker_image(
+                context,
+                node.reference,
+                allow_pull=False,
+                rebuild_runtime_base=self.refresh_runtime_base,
+            )
             return
         try:
             with extracted_development_context() as root:
@@ -123,6 +134,7 @@ class _LegacyBuildAdapter:
                     ),
                     node.payload.fingerprint,
                     preserve_build_stamp=True,
+                    rebuild_runtime_base=self.refresh_runtime_base,
                 )
         except (OSError, ValueError) as error:
             raise ImageLifecycleError(
@@ -364,8 +376,19 @@ def _docker_adapter() -> DockerPort:
     return runtime_lifecycle._docker_adapter()
 
 
-def _build_adapter(project_root: Path, docker: DockerPort, *, verbose: bool) -> BuildPort:
-    return _LegacyBuildAdapter(project_root, docker, verbose=verbose)
+def _build_adapter(
+    project_root: Path,
+    docker: DockerPort,
+    *,
+    verbose: bool,
+    refresh_runtime_base: bool = False,
+) -> BuildPort:
+    return _LegacyBuildAdapter(
+        project_root,
+        docker,
+        verbose=verbose,
+        refresh_runtime_base=refresh_runtime_base,
+    )
 
 
 def _transaction_build_adapter(
@@ -423,7 +446,16 @@ def reconcile(
         root = scope.project_root.resolve()
     else:
         raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    builder = None if intent is Intent.CHECK else _build_adapter(root, docker, verbose=verbose)
+    builder = (
+        None
+        if intent is Intent.CHECK
+        else _build_adapter(
+            root,
+            docker,
+            verbose=verbose,
+            refresh_runtime_base=(intent is Intent.REFRESH and isinstance(scope, HostImageScope)),
+        )
+    )
     return runtime_lifecycle.reconcile(
         scope,
         intent,

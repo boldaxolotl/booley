@@ -1401,14 +1401,30 @@ def test_development_distribution_missing_base_builds_locally(
     context_root = tmp_path / "verified-context"
     context_docker = context_root / "src" / "booley" / "data" / "docker"
     context_docker.mkdir(parents=True)
-    calls: list[tuple[Path, bool, str | None, bool]] = []
+    calls: list[tuple[Path, bool, str | None, bool, bool]] = []
 
     @contextmanager
     def _context():
         yield context_root
 
-    def _local_build(ctx, docker_dir, exists, fingerprint, *, preserve_build_stamp=False):
-        calls.append((docker_dir, exists, fingerprint, preserve_build_stamp))
+    def _local_build(
+        ctx,
+        docker_dir,
+        exists,
+        fingerprint,
+        *,
+        preserve_build_stamp=False,
+        rebuild_runtime_base=False,
+    ):
+        calls.append(
+            (
+                docker_dir,
+                exists,
+                fingerprint,
+                preserve_build_stamp,
+                rebuild_runtime_base,
+            )
+        )
         payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", fingerprint)
         FakeBuilder(docker).build(
             lifecycle._base_node(payload),
@@ -1754,7 +1770,15 @@ def _wire_source_builds(
             )
         docker.images[node.reference] = (image_id, labels)
 
-    def build_base(context, _docker_dir, _exists, _fingerprint) -> None:
+    def build_base(
+        context,
+        _docker_dir,
+        _exists,
+        _fingerprint,
+        *,
+        rebuild_runtime_base=False,
+    ) -> None:
+        del rebuild_runtime_base
         payload = lifecycle.PayloadProvenance(
             lifecycle.PROVENANCE_SCHEMA,
             "0.2.6",
@@ -1775,6 +1799,134 @@ def _wire_source_builds(
     monkeypatch.setattr(init_docker_image, "_docker_local_build", build_base)
     monkeypatch.setattr(init_docker_image, "_flavor_build", build_flavor)
     return builds
+
+
+def _install_stale_outer_base(docker: FakeDocker) -> None:
+    payload = lifecycle.PayloadProvenance(
+        lifecycle.PROVENANCE_SCHEMA,
+        "0.2.6",
+        "payload-new",
+    )
+    node = lifecycle._base_node(payload)
+    labels = _local_build_labels(
+        node,
+        docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or "",
+    )
+    labels[lifecycle.LABEL_PAYLOAD_FINGERPRINT] = "payload-old"
+    docker.images[lifecycle.BASE_IMAGE] = ("sha256:" + "b" * 64, labels)
+
+
+@pytest.mark.parametrize(
+    ("scope_kind", "intent", "expected"),
+    [
+        ("host", lifecycle.Intent.ENSURE, False),
+        ("host", lifecycle.Intent.REFRESH, True),
+        ("project", lifecycle.Intent.REFRESH, False),
+    ],
+)
+def test_source_reconcile_separates_outer_replacement_from_runtime_base_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scope_kind: str,
+    intent: lifecycle.Intent,
+    expected: bool,
+) -> None:
+    from booley.harness.setup import docker_image as init_docker_image
+
+    root = _project(tmp_path)
+    docker_dir = _set_source_installation(tmp_path, monkeypatch)
+    docker, _pulls = _wire_source_docker(docker_dir, monkeypatch)
+    _install_stale_outer_base(docker)
+    calls: list[tuple[bool, bool]] = []
+
+    def build_base(context, _selected, *, rebuild_runtime_base, **_kwargs) -> None:
+        calls.append((context.force, rebuild_runtime_base))
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            "0.2.6",
+            "payload-new",
+        )
+        FakeBuilder(docker).build(
+            lifecycle._base_node(payload),
+            force=True,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
+        context.record("docker_image", "ok", "built")
+
+    monkeypatch.setattr(init_docker_image, "_step_docker_image", build_base)
+    scope = (
+        lifecycle.HostImageScope() if scope_kind == "host" else lifecycle.ProjectImageScope(root)
+    )
+
+    harness_lifecycle.reconcile(scope, intent)
+
+    assert calls == [(True, expected)]
+
+
+def test_extracted_development_reconcile_passes_runtime_base_refresh_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import booley
+    from booley.harness.setup import docker_image as init_docker_image
+    from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+    root = _project(tmp_path)
+    extracted_root, extracted_docker = _source_recipe_tree(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    _install_stale_outer_base(docker)
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        VersionAttribution(
+            version="0.2.6",
+            origin=VersionOrigin.DISTRIBUTION,
+            distribution_name="booley-rtl",
+        ),
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "_expected_image_build_contracts",
+        lambda: lifecycle.ImageBuildContracts("stable-contract", "standard-contract"),
+    )
+    monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: False)
+
+    @contextmanager
+    def extracted_context():
+        yield extracted_root
+
+    calls: list[tuple[Path, bool, bool]] = []
+
+    def build_base(
+        context,
+        docker_dir,
+        _exists,
+        _fingerprint,
+        *,
+        preserve_build_stamp=False,
+        rebuild_runtime_base=False,
+    ) -> None:
+        calls.append((docker_dir, preserve_build_stamp, rebuild_runtime_base))
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            "0.2.6",
+            "payload-new",
+        )
+        FakeBuilder(docker).build(
+            lifecycle._base_node(payload),
+            force=True,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
+        context.record("docker_image", "ok", "built")
+
+    monkeypatch.setattr(harness_lifecycle, "extracted_development_context", extracted_context)
+    monkeypatch.setattr(init_docker_image, "_docker_local_build", build_base)
+
+    harness_lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH)
+
+    assert calls == [(extracted_docker, True, False)]
 
 
 def _install_current_legacy_base(docker: FakeDocker) -> str:
