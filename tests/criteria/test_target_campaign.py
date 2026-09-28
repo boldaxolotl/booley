@@ -123,7 +123,8 @@ def test_legacy_coverage_criteria_are_hard_rejected(legacy_name: str) -> None:
     assert find_retired_criteria([legacy_name]) == [
         (
             legacy_name,
-            "replace it with 'coverage: [{targets: [...], metrics: {...}, tests: all}]'",
+            "replace it with 'COVERAGE: {<target>: {tests: all, metrics: "
+            "{<metric>: {min_pct: <number>}}}}'",
         )
     ]
 
