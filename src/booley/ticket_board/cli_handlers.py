@@ -6,6 +6,7 @@ Each handler has signature: _cmd_<name>(tio: TicketIO, args) -> int
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import sys
 from pathlib import Path
@@ -383,7 +384,7 @@ def _apply_board_update(tio, slug, args, updates, old_status, old_step):
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return 2
 
-    progress = tio._load_or_bootstrap_progress(slug, file_path)
+    progress = copy.deepcopy(tio._load_or_bootstrap_progress(slug, file_path))
     if args.reset_steps:
         progress["steps_completed"] = []
     if args.reset_steps_from:
@@ -393,8 +394,13 @@ def _apply_board_update(tio, slug, args, updates, old_status, old_step):
             progress["steps_completed"] = stages[: idx + 1]
 
     spec_updates = tio._apply_updates(progress, updates, args.append_step)
+    try:
+        prepared_ticket = tio._prepare_spec_fields(file_path, spec_updates)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     save_progress(tio.logs_dir, slug, progress)
-    tio._write_spec_fields(file_path, spec_updates)
+    tio._publish_spec_fields(file_path, prepared_ticket)
 
     if args.log:
         new_status = updates.get("status", old_status)

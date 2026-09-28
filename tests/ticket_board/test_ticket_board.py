@@ -8,6 +8,7 @@ Adapted for the filesystem-based ticket system (no board.json).
 """
 
 import json
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -147,6 +148,9 @@ def _synthetic_non_git_ticket_view(monkeypatch):
             return
         candidates = list(Path(root).glob(f"tickets/board/*/{slug}.md"))
         candidates.extend(Path(root).glob(f"board/*/{slug}.md"))
+        configured_root = Path(os.environ.get("BOOLEY_PROJECT_DIR", root))
+        candidates.extend(configured_root.glob(f"tickets/board/*/{slug}.md"))
+        candidates.extend(configured_root.glob(f"board/*/{slug}.md"))
         stage = (
             "executable"
             if any("machine:" in path.read_text(encoding="utf-8") for path in candidates)
@@ -207,6 +211,8 @@ def make_tio(tmp_path):
 
 def make_ticket_file(tio, subdir, slug, content=None):
     """Create a ticket .md file under tickets_dir/subdir/slug.md."""
+    if not subdir.startswith("board/"):
+        subdir = f"board/{subdir}"
     if content is None:
         content = (
             "---\n"
@@ -220,8 +226,6 @@ def make_ticket_file(tio, subdir, slug, content=None):
             "## Description\nSome work.\n"
         )
     # Normalize bare dir names to board/ prefix
-    if not subdir.startswith("board/"):
-        subdir = f"board/{subdir}"
     d = tio.tickets_dir / subdir
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{slug}.md"
@@ -298,16 +302,21 @@ def make_progress(tio, slug, progress_fields=None):
     return progress
 
 
-def make_ticket_in_dir(tio, subdir, slug, extra_fields=None, body="## Description\nSome work.\n"):
+def make_ticket_in_dir(
+    tio, subdir, slug, extra_fields=None, body="## Description\nSome work.\n", *, v2=False
+):
     """Create a ticket .md file with frontmatter in the specified directory."""
+    if not subdir.startswith("board/"):
+        subdir = f"board/{subdir}"
     fields = {
         "summary": slug.replace("-", " "),
         "type": "feature",
         "branch": "master",
         "scope": ["rtl/foo.sv"],
         "on_success": ["review"],
-        "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "done"}}},
     }
+    fields["CRITERIA_MANDATORY"] = {"REVIEW": {"rtl": {"bugs": "done"}}}
+    v2 = v2 or bool(extra_fields and "machine" in extra_fields)
     if extra_fields:
         authored = dict(extra_fields)
         runtime = {key: authored.pop(key) for key in tuple(authored) if key in RUNTIME_FIELDS}
@@ -325,12 +334,12 @@ def make_ticket_in_dir(tio, subdir, slug, extra_fields=None, body="## Descriptio
         fields.update(authored)
     else:
         runtime = {}
+    if v2 and subdir != "board/drafts" and "machine" not in fields:
+        fields["machine"] = {"generation": "0" * 32}
 
     content = "---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n\n" + body
 
     # Normalize bare dir names to board/ prefix
-    if not subdir.startswith("board/"):
-        subdir = f"board/{subdir}"
     d = tio.tickets_dir / subdir
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{slug}.md"
@@ -1300,6 +1309,41 @@ class TestUpdateFrontmatter:
 
         assert p.read_text(encoding="utf-8") == original
 
+    @pytest.mark.parametrize("prefix", ["", "\ufeff"])
+    def test_refuses_v2_ticket_without_changing_bytes(self, tmp_path, prefix):
+        p = tmp_path / "ticket.md"
+        original = (
+            prefix + "---\nsummary: Test\nCRITERIA_MANDATORY: {}\n---\n\n"
+            "## Description\nKeep this.  \n\n"
+        )
+        p.write_text(original, encoding="utf-8")
+
+        with pytest.raises(ValueError, match="v2 Ticket updates must use"):
+            update_frontmatter(p, {"machine": {"generation": "a" * 32}})
+
+        assert p.read_text(encoding="utf-8") == original
+
+    def test_v2_words_in_markdown_body_do_not_disable_legacy_update(self, tmp_path):
+        p = tmp_path / "ticket.md"
+        p.write_text(
+            "---\nsummary: Legacy\n---\n## Description\nMention CRITERIA_MANDATORY: in prose.\n",
+            encoding="utf-8",
+        )
+
+        fields = update_frontmatter(p, {"priority": "high"})
+
+        assert fields["priority"] == "high"
+
+    def test_refuses_malformed_document_with_v2_frontmatter_marker(self, tmp_path):
+        p = tmp_path / "ticket.md"
+        original = "---\nsummary: Broken\nCRITERIA_OPTIONAL: {}\n"
+        p.write_text(original, encoding="utf-8")
+
+        with pytest.raises(ValueError, match="v2 Ticket updates must use"):
+            update_frontmatter(p, {"priority": "high"})
+
+        assert p.read_text(encoding="utf-8") == original
+
 
 # ===========================================================================
 # 3. Filesystem discovery tests
@@ -1868,12 +1912,32 @@ class TestOpHandoff:
 class TestInitTicket:
     def test_init_fresh(self, tmp_path):
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "queue", "fix-fsm-bug", extra_fields={"summary": "Fix FSM bug"})
+        queued = make_ticket_in_dir(
+            tio,
+            "queue",
+            "fix-fsm-bug",
+            extra_fields={"summary": "Fix FSM bug"},
+            body="## Description\nSome work.  \n\n",
+            v2=True,
+        )
+        before = queued.read_text(encoding="utf-8")
         result = tio.init_ticket(str(tio.tickets_dir / "board" / "queue" / "fix-fsm-bug.md"))
         assert result is not None
         assert result["slug"] == "fix-fsm-bug"
         # File moved to active/
         assert (tio.tickets_dir / "board" / "active" / "fix-fsm-bug.md").exists()
+        active = tio.tickets_dir / "board" / "active" / "fix-fsm-bug.md"
+        with ticket_document_module.ticket_conversion_context(
+            tmp_path, "fix-fsm-bug", "executable"
+        ) as ctx:
+            old = ticket_document_module.convert_ticket_document(before, ctx)
+        with ticket_document_module.ticket_conversion_context(
+            tmp_path, "fix-fsm-bug", "executable"
+        ) as ctx:
+            new = ticket_document_module.convert_ticket_document(active.read_text(), ctx)
+        assert old.document is not None and new.document is not None
+        assert new.document.spec.body == old.document.spec.body
+        assert "created" in new.document.generated
         # Logs created
         assert (tio.logs_dir / "fix-fsm-bug" / "ticket.md").exists()
 
@@ -1893,6 +1957,7 @@ class TestInitTicket:
             extra_fields={
                 "summary": "Fix CM3 word count false positive for short unaligned inputs"
             },
+            v2=True,
         )
         result = tio.init_ticket(
             str(tio.tickets_dir / "board" / "queue" / "fix-cm3-word-count-false-positive.md")
@@ -3586,6 +3651,63 @@ class TestCLIUpdateBoardWithLog:
         assert "planning" in content
         assert "implementation" in content
 
+    def test_update_board_accepts_generated_v2_scalar(self, tmp_path):
+        tio = make_tio(tmp_path)
+        ticket = make_ticket_in_dir(tio, "active", "t1", v2=True)
+        before = ticket.read_text(encoding="utf-8")
+        with ticket_document_module.ticket_conversion_context(tmp_path, "t1", "executable") as ctx:
+            old = ticket_document_module.convert_ticket_document(before, ctx)
+        assert old.document is not None
+
+        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tio.tickets_dir):
+            rc = main(["update-board", "t1", "--set", "feature_branch=t1"])
+
+        assert rc == 0
+        with ticket_document_module.ticket_conversion_context(tmp_path, "t1", "executable") as ctx:
+            new = ticket_document_module.convert_ticket_document(ticket.read_text(), ctx)
+        assert new.document is not None
+        assert new.document.generated["feature_branch"] == "t1"
+        assert new.document.spec.body == old.document.spec.body
+        assert new.document.spec.semantic_digest() == old.document.spec.semantic_digest()
+
+    def test_update_board_rejects_v2_authored_field_without_side_effects(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        ticket = make_ticket_in_dir(tio, "active", "t1", v2=True)
+        make_progress(tio, "t1", {"step": "planning"})
+        progress_path = runtime_file(tio.logs_dir, "t1", "progress.json")
+        before_ticket = ticket.read_bytes()
+        before_progress = progress_path.read_bytes()
+
+        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tio.tickets_dir):
+            rc = main(
+                [
+                    "update-board",
+                    "t1",
+                    "--set",
+                    "summary=Changed",
+                    "step=implementation",
+                    "--log",
+                ]
+            )
+
+        assert rc == 1
+        assert "v2 Ticket authored fields cannot be updated: summary" in capsys.readouterr().err
+        assert ticket.read_bytes() == before_ticket
+        assert progress_path.read_bytes() == before_progress
+        assert not human_log_file(tio.logs_dir, "t1", "transitions.log").exists()
+
+    def test_update_board_runtime_field_is_valid_for_v2_draft(self, tmp_path):
+        tio = make_tio(tmp_path)
+        ticket = make_ticket_in_dir(tio, "drafts", "draft", v2=True)
+        before = ticket.read_bytes()
+
+        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tio.tickets_dir):
+            rc = main(["update-board", "draft", "--set", "step=planning"])
+
+        assert rc == 0
+        assert ticket.read_bytes() == before
+        assert load_progress(tio.logs_dir, "draft")["step"] == "planning"
+
 
 class TestCLIMoveTicket:
     """Test move-ticket CLI."""
@@ -3838,7 +3960,13 @@ class TestInitAlreadyActive:
 
     def test_init_already_active(self, tmp_path):
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "active", "fix-fsm-bug", extra_fields={"summary": "Fix FSM bug"})
+        make_ticket_in_dir(
+            tio,
+            "active",
+            "fix-fsm-bug",
+            extra_fields={"summary": "Fix FSM bug"},
+            v2=True,
+        )
         result = tio.init_ticket(str(tio.tickets_dir / "board" / "active" / "fix-fsm-bug.md"))
         # Should succeed (idempotent), not crash
         assert result is not None
@@ -6009,7 +6137,7 @@ class TestActivateTransitionDetail:
 
     def test_never_run_ticket_is_not_called_a_resume(self, tmp_path):
         tio = make_tio(tmp_path)
-        make_ticket_file(tio, "queue", "t1")
+        make_ticket_in_dir(tio, "queue", "t1", v2=True)
 
         assert TestActivateTransitionDetail._op_activate(tio, "t1")
 
@@ -6037,7 +6165,7 @@ class TestActivateTransitionDetail:
     def test_the_harness_pickup_entry_is_unchanged(self, tmp_path):
         """init_ticket still logs the authoritative "picked up" run-start."""
         tio = make_tio(tmp_path)
-        make_ticket_file(tio, "queue", "t1")
+        make_ticket_in_dir(tio, "queue", "t1", v2=True)
         TestActivateTransitionDetail._op_activate(tio, "t1")
 
         tio.init_ticket(tio.tickets_dir / "board" / "active" / "t1.md")

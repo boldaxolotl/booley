@@ -73,11 +73,12 @@ def _add_query_subcommands(sub: argparse._SubParsersAction) -> None:
 def _add_ticket_edit_subcommands(sub: argparse._SubParsersAction) -> None:
     """Register subcommands that mutate a single ticket's frontmatter/logs."""
     # update-board
-    p = sub.add_parser("update-board", help="Update a ticket's frontmatter fields")
-    p.add_argument("slug", help="Ticket slug")
-    p.add_argument(
-        "--set", nargs="+", metavar="K=V", help="Field updates (e.g. status=running step=planning)"
+    p = sub.add_parser(
+        "update-board",
+        help="Update mutable runtime/generated Board fields; v2 authored fields are rejected",
     )
+    p.add_argument("slug", help="Ticket slug")
+    p.add_argument("--set", nargs="+", metavar="K=V", help="Field updates (e.g. step=planning)")
     p.add_argument("--append-step", metavar="STEP", help="Append a step to steps_completed")
     reset_group = p.add_mutually_exclusive_group()
     reset_group.add_argument(

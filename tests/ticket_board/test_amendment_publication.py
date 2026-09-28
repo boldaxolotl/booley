@@ -49,7 +49,7 @@ def _optional_request() -> dict:
 
 def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -> None:
     root, blocked, tio = _blocked_ticket(tmp_path)
-    _old_fields, _body = _v2_fields(blocked.read_text(encoding="utf-8"))
+    _old_fields, old_body = _v2_fields(blocked.read_text(encoding="utf-8"))
     old_basis = tio.load_basis("blocked-again")
     old_head = _git(root, "rev-parse", old_basis.participant("outer").ticket_ref)
     worktree = worktree_for_ref(root, old_basis.participant("outer").ticket_ref)
@@ -68,7 +68,8 @@ def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -
 
     assert result["status"] == "queued"
     queued = blocked.parent.parent / "queue" / blocked.name
-    _fields, _body = _v2_fields(queued.read_text(encoding="utf-8"))
+    _fields, body = _v2_fields(queued.read_text(encoding="utf-8"))
+    assert body == old_body
     basis = tio.load_basis("blocked-again")
     assert tio.load_basis("blocked-again").basis_id == basis.basis_id
     new_head = _git(root, "rev-parse", basis.participant("outer").ticket_ref)
@@ -98,6 +99,26 @@ def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -
     assert (
         "## Amendment" in human_log_file(tio.logs_dir, "blocked-again", "blocked.md").read_text()
     )
+
+
+def test_amendment_created_stamp_survives_execution_init(tmp_path: Path) -> None:
+    _root, blocked, tio = _blocked_ticket(tmp_path)
+    created = "2026-09-29T00:00:00Z"
+    tio._write_spec_fields(blocked, {"created": created, "feature_branch": "blocked-again"})
+    state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
+    state.slug = "blocked-again"
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.save()
+    request = _optional_request()
+    preview = preview_amendment(tio, "blocked-again", request)
+    apply_amendment(tio, "blocked-again", request, preview["digest"])
+    queued = blocked.parent.parent / "queue" / blocked.name
+
+    assert tio.init_ticket(queued) is not None
+    active = tio.tickets_dir / "board/active/blocked-again.md"
+    active_fields, _active_body = _v2_fields(active.read_text(encoding="utf-8"))
+    assert active_fields["created"] == created
+    assert active_fields["feature_branch"] == "blocked-again"
 
 
 def _numeric_amendment_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
