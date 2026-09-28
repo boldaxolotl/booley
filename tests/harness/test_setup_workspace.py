@@ -81,7 +81,7 @@ def _assert_moved_worktree_portable(
     listing = _git(moved_root, "worktree", "list", "--porcelain")
     assert status.returncode == 0, status.stderr
     assert listing.returncode == 0, listing.stderr
-    assert str(moved_worktree) in listing.stdout
+    assert moved_worktree.as_posix() in listing.stdout
     assert "prunable" not in listing.stdout
 
     pointer = (

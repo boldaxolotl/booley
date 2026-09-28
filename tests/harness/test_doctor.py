@@ -4258,6 +4258,87 @@ class TestWorktreePortability:
         assert not [item for item in report.findings if item.severity is Severity.WARN]
         assert any("worktree.useRelativePaths=true" in item.message for item in report.findings)
 
+    def test_runtime_probe_reports_sandbox_and_unknown_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        project = self._project(tmp_path)
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: (2, 53, 0))
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", True)
+        )
+
+        messages = [item.message for item in report.findings]
+        assert any("Sandbox Git 2.53.0 supports" in message for message in messages)
+        assert any("host Git capability is unknown" in message for message in messages)
+
+    def test_probe_and_worktree_config_os_errors_are_bounded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        administration = tmp_path / "admin"
+        administration.mkdir()
+        (administration / "config.worktree").touch()
+        monkeypatch.setattr(
+            readiness.subprocess,
+            "run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+        )
+
+        assert readiness._git_version_at("git", "--version") is None
+        assert readiness._read_worktree_config(administration, "core.worktree") is None
+
+    def test_invalid_relative_extension_format_fails(self, tmp_path: Path):
+        findings = readiness.Findings()
+
+        readiness._report_repository_format(tmp_path, "invalid", True, findings)
+
+        report = findings.report()
+        assert [item for item in report.findings if item.severity is Severity.FAIL]
+
+    def test_unreadable_and_unresolvable_live_worktrees(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        project_dir = tmp_path / ".booley_project"
+        outer = project_dir / "worktrees" / "ticket"
+        ignored = project_dir / "worktrees" / "not-a-worktree"
+        outer.mkdir(parents=True)
+        ignored.mkdir()
+        (outer / ".git").touch()
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        monkeypatch.setattr(
+            readiness,
+            "resolve_checkout_project_dir",
+            lambda _root: (_ for _ in ()).throw(FileNotFoundError),
+        )
+
+        assert readiness._worktree_metadata_problems(outer) == (
+            "unreadable worktree registration",
+        )
+        assert readiness._live_worktree_paths(project) == (outer,)
+
+    def test_relative_live_worktree_reports_pass(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        worktree = project_dir / "worktrees" / "ticket"
+        administration = tmp_path / "admin"
+        worktree.mkdir(parents=True)
+        administration.mkdir()
+        (worktree / ".git").write_text(
+            f"gitdir: {os.path.relpath(administration, worktree)}\n", encoding="utf-8"
+        )
+        (administration / "gitdir").write_text(
+            f"{os.path.relpath(worktree / '.git', administration)}\n", encoding="utf-8"
+        )
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        findings = readiness.Findings()
+
+        readiness._inspect_live_worktrees(project, findings)
+
+        assert any(
+            item.severity is Severity.PASS and "metadata is relative" in item.message
+            for item in findings.report().findings
+        )
+
     def test_old_sandbox_before_opt_in_warns_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

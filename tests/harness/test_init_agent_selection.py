@@ -39,6 +39,16 @@ def test_seed_agent_config_uses_resolved_project_directory(tmp_path, monkeypatch
     assert init_cmd._agent_config_path(tmp_path, seed=True) == project_dir / "booley.toml"
 
 
+def test_sandbox_git_version_treats_runtime_error_as_unknown(monkeypatch):
+    monkeypatch.setattr(
+        init_cmd.idk,
+        "_run_docker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("docker unavailable")),
+    )
+
+    assert init_cmd._sandbox_git_version("image-id") is None
+
+
 def test_seed_retains_ancestor_project_resolution(tmp_path, monkeypatch):
     parent_config = tmp_path / ".booley_project" / "booley.toml"
     parent_config.parent.mkdir()

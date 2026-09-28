@@ -741,6 +741,24 @@ def test_rollback_open_retains_outer_when_paired_cleanup_is_ambiguous(
     ]
 
 
+def test_refresh_moved_worktree_translates_relocation_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        workspace_ops,
+        "refresh_relative_worktree_config",
+        lambda _path: (_ for _ in ()).throw(
+            workspace_ops.WorktreeRelocationError("injected failure")
+        ),
+    )
+
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError,
+        match="could not refresh moved Ticket Workspace metadata",
+    ):
+        workspace_ops._refresh_moved_worktree(tmp_path)
+
+
 def test_draft_generation_rejects_invalid_and_conflicting_descriptors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

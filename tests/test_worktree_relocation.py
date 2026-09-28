@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from booley.runtime import worktree_relocation
 from booley.runtime.worktree_relocation import (
     WorktreeMove,
     WorktreeRelocationError,
     preflight_worktree_moves,
+    refresh_relative_worktree_config,
     relocate_worktree,
 )
 
@@ -103,10 +105,10 @@ def test_relocation_preserves_relative_registration(tmp_path: Path) -> None:
     assert _git(destination, "status", "--short") == ""
     assert _git(destination, "config", "--worktree", "--get", "core.worktree") == os.path.relpath(
         destination, administration
-    )
+    ).replace(os.sep, "/")
     assert _git(destination, "config", "--worktree", "--get", "core.hooksPath") == os.path.relpath(
         administration / "hooks", destination
-    )
+    ).replace(os.sep, "/")
 
 
 def test_relocation_rejects_missing_state(tmp_path: Path) -> None:
@@ -133,3 +135,34 @@ def test_relocation_rejects_unregistered_ref(tmp_path: Path) -> None:
 def test_relocation_rejects_nonrepository(tmp_path: Path) -> None:
     with pytest.raises(WorktreeRelocationError, match="git worktree list --porcelain failed"):
         relocate_worktree(tmp_path, "refs/heads/ticket", tmp_path / "w", tmp_path / "d")
+
+
+def test_refresh_relative_config_handles_missing_registration_and_config(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    with pytest.raises(WorktreeRelocationError, match="could not read worktree registration"):
+        refresh_relative_worktree_config(worktree)
+
+    administration = tmp_path / "admin"
+    administration.mkdir()
+    (worktree / ".git").write_text(
+        f"gitdir: {os.path.relpath(administration, worktree)}\n", encoding="utf-8"
+    )
+    refresh_relative_worktree_config(worktree)
+
+
+def test_refresh_relative_config_reports_git_config_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        worktree_relocation.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git"], 1, stdout="", stderr="injected failure"
+        ),
+    )
+
+    with pytest.raises(WorktreeRelocationError, match=r"could not refresh core\.worktree"):
+        worktree_relocation._set_worktree_config(
+            tmp_path / "config.worktree", "core.worktree", "../worktree"
+        )
