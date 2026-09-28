@@ -55,6 +55,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Custom-main coverage now retains failed native-write hook evidence and reports
+  the write failure instead of a missing or incompatible database. A write
+  before the start hook is reported as an ordering violation rather than as a
+  later duplicate. ([#795](https://github.com/boldaxolotl/Booley/issues/795))
 - Host Bootstrap, Project Initialization, Sandbox lifecycle, and Sandbox
   Issuance mutations now wait for the shared host Docker lifecycle lock for a
   bounded interval, reporting busy owners while they wait. They continue when

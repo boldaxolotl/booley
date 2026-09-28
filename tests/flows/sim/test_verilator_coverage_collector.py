@@ -200,6 +200,20 @@ class _HookFailureExecution(_GeneratedMainExecution):
         return SimulationRunResult(verdict="pass")
 
 
+class _HookAndRawFailureExecution(_HookFailureExecution):
+    def __init__(self, events: list[dict[str, object]], raw_payload: str | None) -> None:
+        super().__init__(events)
+        self.raw_payload = raw_payload
+
+    def run(self, request) -> SimulationRunResult:
+        result = super().run(request)
+        if self.raw_payload is None:
+            request.raw_path.unlink()
+        else:
+            request.raw_path.write_text(self.raw_payload, encoding="utf-8")
+        return result
+
+
 class _NoExecution:
     def build(self, request) -> SimulationBuildResult:
         raise AssertionError("invalid custom-main declaration must fail before build")
@@ -834,6 +848,147 @@ def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) 
     assert result.runs[0].collection == "included"
     assert result.coverage_window.mode == "whole_run"
     assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
+
+
+@pytest.mark.parametrize("raw_payload", [None, "# SystemC::Coverage-4\n"])
+def test_failed_custom_main_write_hook_precedes_raw_database_failure(
+    tmp_path: Path, raw_payload: str | None
+) -> None:
+    request = _request(
+        tmp_path,
+        "failed_write",
+        harness="custom_main",
+        hooks=("start_hook", "write_hook"),
+        reset_included=False,
+    )
+    events = [
+        {"hook": "start", "sequence": 1, "success": True},
+        {"hook": "write", "sequence": 2, "success": False},
+    ]
+
+    result = collect(request, _HookAndRawFailureExecution(events, raw_payload))
+
+    assert result.status == "collector_error"
+    assert result.runs[0].collection == "collector_error"
+    assert [finding.code for finding in result.findings] == ["COV_WRITE_HOOK_FAILED"]
+    assert result.native_format.compatibility == "unknown"
+    assert result.merge.status == "not_run"
+    assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
+    raw_artifacts = [artifact for artifact in result.artifacts if artifact.kind == "raw_native"]
+    assert [artifact.state for artifact in raw_artifacts] == (
+        [] if raw_payload is None else ["write_failed"]
+    )
+    hook = next(
+        artifact for artifact in result.artifacts if artifact.kind == "coverage_hook_evidence"
+    )
+    document = json.loads((request.artifact_root / hook.path).read_text(encoding="utf-8"))
+    assert document["events"][-1] == {
+        "hook": "write",
+        "sequence": 2,
+        "success": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("events", "expected_code"),
+    [
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": True},
+                {"hook": "start", "sequence": 2, "success": True},
+                {"hook": "write", "sequence": 3, "success": True},
+            ],
+            "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
+        ),
+        (
+            [
+                {"hook": "start", "sequence": 1, "success": True},
+                {"hook": "write", "sequence": 2, "success": True},
+                {"hook": "write", "sequence": 3, "success": True},
+            ],
+            "COV_WRITE_HOOK_DUPLICATE",
+        ),
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": False},
+                {"hook": "start", "sequence": 2, "success": True},
+            ],
+            "COV_WRITE_HOOK_FAILED",
+        ),
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": True},
+                {"hook": "start", "sequence": 2, "success": False},
+            ],
+            "COV_WINDOW_HOOK_FAILED",
+        ),
+        (
+            [
+                {"hook": "write", "sequence": 2, "success": True},
+                {"hook": "start", "sequence": 2, "success": True},
+            ],
+            "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
+        ),
+        (
+            [
+                {"hook": "start", "sequence": "first", "success": True},
+                {"hook": "write", "sequence": 2, "success": True},
+            ],
+            "COV_WINDOW_HOOK_INVALID",
+        ),
+        (
+            [
+                {"hook": "start", "sequence": 1, "success": True},
+                {"hook": "write", "sequence": "first", "success": True},
+            ],
+            "COV_WINDOW_HOOK_INVALID",
+        ),
+        (
+            [
+                {"hook": "start", "sequence": 1, "success": True},
+                {"hook": "write", "sequence": 2, "success": True},
+                {"hook": "write", "sequence": "later", "success": True},
+            ],
+            "COV_WRITE_HOOK_DUPLICATE",
+        ),
+    ],
+)
+def test_post_reset_custom_main_hook_event_precedence(
+    tmp_path: Path,
+    events: list[dict[str, object]],
+    expected_code: str,
+) -> None:
+    request = _request(
+        tmp_path,
+        "ordered_hooks",
+        harness="custom_main",
+        hooks=("start_hook", "write_hook"),
+        reset_included=False,
+    )
+
+    result = collect(request, _HookFailureExecution(events))
+
+    assert result.status == "collector_error"
+    assert [finding.code for finding in result.findings] == [expected_code]
+
+
+def test_reset_included_custom_main_keeps_duplicate_write_precedence(tmp_path: Path) -> None:
+    request = _request(
+        tmp_path,
+        "whole_run_hooks",
+        harness="custom_main",
+        hooks=("write_hook",),
+    )
+    events = [
+        {"hook": "write", "sequence": 1, "success": True},
+        {"hook": "start", "sequence": 2, "success": True},
+        {"hook": "write", "sequence": 3, "success": True},
+    ]
+
+    result = collect(request, _HookFailureExecution(events))
+
+    assert result.status == "collector_error"
+    assert [finding.code for finding in result.findings] == ["COV_WRITE_HOOK_DUPLICATE"]
 
 
 def test_cocotb_trace_coverage_runs_one_process_per_test_and_keeps_failed_run_data(

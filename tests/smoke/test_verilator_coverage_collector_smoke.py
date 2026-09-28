@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -313,6 +314,28 @@ def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path)
     assert result.coverage_window.mode == "post_reset"
     assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
     assert result.merge.status == "equivalent"
+
+
+def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> None:
+    _write_custom_target(tmp_path)
+    raw_destination = tmp_path / "campaign/native/raw/001-custom.dat"
+    raw_destination.mkdir(parents=True)
+
+    result = _collect_target(tmp_path, "custom")
+
+    assert result.status == "collector_error"
+    assert result.runs[0].simulation_verdict == "fail"
+    assert result.infrastructure_error is False
+    assert [finding.code for finding in result.findings] == ["COV_WRITE_HOOK_FAILED"]
+    assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
+    hook = next(
+        artifact for artifact in result.artifacts if artifact.kind == "coverage_hook_evidence"
+    )
+    document = json.loads((tmp_path / "campaign" / hook.path).read_text(encoding="utf-8"))
+    assert document["events"] == [
+        {"hook": "start", "sequence": 1, "success": True},
+        {"hook": "write", "sequence": 2, "success": False},
+    ]
 
 
 def _coverage_campaign_path(reports: Path, detail: Mapping[str, Any]) -> Path:
