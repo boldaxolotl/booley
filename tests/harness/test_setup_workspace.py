@@ -72,6 +72,63 @@ def _run_worktree_create(
     )
 
 
+def _assert_moved_worktree_portable(
+    tmp_path: Path,
+    moved_root: Path,
+    moved_worktree: Path,
+) -> None:
+    status = _git(moved_worktree, "status", "--short")
+    listing = _git(moved_root, "worktree", "list", "--porcelain")
+    assert status.returncode == 0, status.stderr
+    assert listing.returncode == 0, listing.stderr
+    assert str(moved_worktree) in listing.stdout
+    assert "prunable" not in listing.stdout
+
+    pointer = (
+        (moved_worktree / ".git").read_text(encoding="utf-8").removeprefix("gitdir: ").strip()
+    )
+    assert not Path(pointer).is_absolute()
+    administration = (moved_worktree / pointer).resolve()
+    reverse = (administration / "gitdir").read_text(encoding="utf-8").strip()
+    assert not Path(reverse).is_absolute()
+    core_worktree = _git(moved_worktree, "config", "--worktree", "--get", "core.worktree")
+    hooks_path = _git(moved_worktree, "config", "--worktree", "--get", "core.hooksPath")
+    assert core_worktree.returncode == 0 and not Path(core_worktree.stdout.strip()).is_absolute()
+    assert hooks_path.returncode == 0 and not Path(hooks_path.stdout.strip()).is_absolute()
+    assert (administration / "hooks" / "pre-commit").is_file()
+
+    with (moved_worktree / ".gitmodules").open("a", encoding="utf-8") as stream:
+        stream.write("# host-visible\n")
+    assert _git(moved_worktree, "add", ".gitmodules").returncode == 0
+    python_bin = tmp_path / "bin"
+    python_bin.mkdir()
+    python_wrapper = python_bin / "python"
+    python_wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    python_wrapper.chmod(0o755)
+    commit = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "verify portable hooks",
+        ],
+        cwd=moved_worktree,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{python_bin}{os.pathsep}{os.environ['PATH']}",
+            "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+        },
+    )
+    assert commit.returncode == 0, commit.stderr
+
+
 # ===========================================================================
 # Branch creation logic
 # ===========================================================================
@@ -694,6 +751,49 @@ class TestWorktreeCreateScript:
         # stale copy shadow the repo-root source (silently building wrong RTL).
         assert (project_data / "FUSESOC_IGNORE").is_file()
         assert (worktree / "FUSESOC_IGNORE").read_text(encoding="utf-8") == "quarantine\n"
+
+    @pytest.mark.skipif(
+        tuple(
+            int(part)
+            for part in subprocess.run(
+                ["git", "version"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            .stdout.split()[2]
+            .split(".")[:3]
+        )
+        < (2, 48, 0),
+        reason="relative worktree links require Git 2.48 or newer",
+    )
+    def test_initialized_worktree_survives_host_prefix_change(self, tmp_path: Path):
+        """Project Initialization makes a Ticket Workspace host-addressable."""
+        from booley.harness.setup import git_hooks
+        from booley.harness.setup.common import InitContext
+        from booley.harness.setup.workspace import _install_scope_hook
+
+        mounted = tmp_path / "sandbox-mount"
+        mounted.mkdir()
+        project_root, project_data = _submodule_project(mounted)
+        ctx = InitContext(project_root=project_root, interactive=False)
+        reconcile = getattr(git_hooks, "_step_worktree_link_policy", None)
+        if reconcile is None:
+            # Preserve the pre-fix Project Initialization path for the red run.
+            git_hooks._step_worktree_prune_guard(ctx)
+        else:
+            reconcile(ctx, sandbox_git_version=(2, 53, 0))
+
+        result = _run_worktree_create(project_root, "portable-ticket")
+
+        assert result.returncode == 0, result.stderr
+        worktree = project_data / "worktrees" / "portable-ticket"
+        _install_scope_hook(worktree, [".gitmodules"], project_root=project_root)
+        host_mount = tmp_path / "host-checkout"
+        mounted.rename(host_mount)
+        moved_root = host_mount / "repo"
+        moved_worktree = moved_root / ".booley_project" / "worktrees" / "portable-ticket"
+        _assert_moved_worktree_portable(tmp_path, moved_root, moved_worktree)
 
 
 # ===========================================================================

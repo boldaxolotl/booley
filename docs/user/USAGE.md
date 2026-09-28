@@ -856,13 +856,38 @@ after automatic retry. Because unexpected
 infrastructure errors also exit 1, automation should use the record's presence
 and disposition—not the exit status alone—to classify a normal Ticket ending.
 
-**Ticket worktrees live under `.booley_project/worktrees/<slug>`, but they are registered by their in-container path.** Booley is container-only, so the project is `/work` from git's point of view and the registrations record `/work/.booley_project/worktrees/...`. On the host those paths don't exist, so `git worktree list` shows every live ticket worktree as `prunable`:
+**New Ticket Workspaces are host-addressable when both the host and Sandbox use
+Git 2.48 or newer.** Run `booley init` after upgrading either side so Booley can
+reconcile the repository policy. New worktrees then use relative registration
+and worktree-local configuration, so `git status` inside
+`.booley_project/worktrees/<slug>` and `git worktree list` work through either
+the host checkout path or the Sandbox mount path. Initialization and Doctor do
+not rewrite existing worktrees; an explicit worktree move or Project relocation
+repair may normalize their registrations as part of its atomic operation.
+
+Before a repository has enabled relative worktrees, an older or unverified Git
+on either side selects the previous container-only fallback. In that form the
+Project is `/work` from Git's point of view and host `git worktree list` may show
+a live Ticket Workspace as `prunable`:
 
 ```
 /work/.booley_project/worktrees/axi-fix  0000000 [detached HEAD] prunable
 ```
 
-That is cosmetic and expected — **do not "clean it up"**. A host-side `git worktree prune` deregisters a worktree an active ticket is still working in, and the run dies in confusing ways. Booley sets `gc.worktreePruneExpire=never` on the repo so background `git gc` can't do it by accident (`booley doctor` checks the setting), but an explicit `git worktree prune` you type yourself still wins. Let the ticket finish and let cleanup remove it, or run the prune from inside the Sandbox where the paths resolve.
+In fallback mode this is expected — **do not "clean it up"**. Run Git operations
+through the Sandbox. A host-side `git worktree prune` deregisters a worktree an
+active Ticket is still using. Booley sets `gc.worktreePruneExpire=never` on each
+relevant repository so background `git gc` cannot do that by accident, but an
+explicit prune still wins. Let the Ticket finish and let cleanup remove it, or
+run the prune from inside the Sandbox where the paths resolve.
+
+Creating the first relative worktree upgrades the repository format with Git's
+`extensions.relativeWorktrees` marker. From then on, every Git client accessing
+that repository must remain at Git 2.48 or newer. An older host or Sandbox is an
+incompatible downgrade, not a return to fallback; restore a supported Git before
+using or migrating the Project. `booley doctor` reports both sides' capability,
+the repository policy and format, and any live worktree that still contains
+absolute or mixed metadata.
 
 **`.booley_project/` is usually its own git repo, and the outer repo ignores it.** That is the intended layout — your RTL history stays clean of Booley bookkeeping — but it means outer-repo git commands cannot see anything inside it. Restoring an edited `booley.toml` from the project root fails with a pathspec error that never mentions why:
 

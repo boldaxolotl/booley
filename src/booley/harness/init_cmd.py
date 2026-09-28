@@ -66,7 +66,12 @@ from booley.fusesoc.core_projection import (
 # keep resolving them by their original ``init_cmd`` names. F401 is suppressed
 # for this file (see pyproject) because a facade re-exports names it may not use.
 from booley.harness import doctor_stamp, image_lifecycle, nangate_pdk
-from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_bootstrap
+from booley.harness.bootstrap import (
+    BootstrapResult,
+    BootstrapState,
+    parse_git_version,
+    reconcile_bootstrap,
+)
 from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import (
     ImageLifecycleError,
@@ -118,6 +123,7 @@ from booley.harness.setup.git_hooks import (
     _step_git_hooks,
     _step_line_endings,
     _step_project_git_hooks,
+    _step_worktree_link_policy,
     _step_worktree_prune_guard,
 )
 from booley.harness.setup.guidance_links import ensure_guidance_links, plan_guidance_links
@@ -2196,6 +2202,26 @@ def _selected_runtime_image_id(result: LifecycleResult | None) -> str | None:
     return result.selected_id
 
 
+def _sandbox_git_version(image_id: str | None) -> tuple[int, int, int] | None:
+    """Probe the selected Sandbox Image without treating failure as capability."""
+    if image_id is None:
+        return None
+    try:
+        result = idk._run_docker(["run", "--rm", image_id, "git", "--version"], timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_git_version(result.stdout) if result.returncode == 0 else None
+
+
+def _step_worktree_policies(ctx: InitContext, runtime_image_id: str | None) -> None:
+    """Reconcile pruning safety and the two-sided worktree-link policy."""
+    _step_worktree_prune_guard(ctx)
+    _step_worktree_link_policy(
+        ctx,
+        sandbox_git_version=_sandbox_git_version(runtime_image_id),
+    )
+
+
 def _run_project_init_steps(
     ctx: InitContext,
     args: argparse.Namespace,
@@ -2229,12 +2255,12 @@ def _run_project_init_steps(
     )
     pdk_root = nangate_pdk.cache_root()
     image_result = _reconcile_initialized_image(ctx, bootstrap_result)
+    runtime_image_id = _selected_runtime_image_id(image_result)
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
-    _step_worktree_prune_guard(ctx)
+    _step_worktree_policies(ctx, runtime_image_id)
     _step_line_endings(ctx, _line_ending_project_dir(ctx.project_root))
     _step_guidance_links(ctx, guidance_plan)
-    runtime_image_id = _selected_runtime_image_id(image_result)
     _step_interactive(
         ctx,
         nangate_pdk_root=pdk_root,

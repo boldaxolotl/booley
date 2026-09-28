@@ -24,7 +24,7 @@ def _git(repository: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _linked_worktree(tmp_path: Path) -> tuple[Path, Path, str]:
+def _linked_worktree(tmp_path: Path, *, relative: bool = False) -> tuple[Path, Path, str]:
     repository = tmp_path / "r"
     repository.mkdir()
     _git(repository, "init", "-b", "main")
@@ -33,6 +33,8 @@ def _linked_worktree(tmp_path: Path) -> tuple[Path, Path, str]:
     (repository / "tracked").write_text("value\n", encoding="utf-8")
     _git(repository, "add", "tracked")
     _git(repository, "commit", "-m", "initial")
+    if relative:
+        _git(repository, "config", "worktree.useRelativePaths", "true")
     source = tmp_path / "w"
     _git(repository, "worktree", "add", "-b", "ticket", str(source))
     return repository, source, "refs/heads/ticket"
@@ -58,6 +60,30 @@ def test_relocation_replay_is_idempotent(tmp_path: Path) -> None:
     relocate_worktree(repository, ref, source, destination)
 
     assert _git(destination, "branch", "--show-current") == "ticket"
+
+
+@pytest.mark.skipif(
+    tuple(
+        int(part)
+        for part in subprocess.run(["git", "version"], capture_output=True, text=True, check=True)
+        .stdout.split()[2]
+        .split(".")[:3]
+    )
+    < (2, 48, 0),
+    reason="relative worktree links require Git 2.48 or newer",
+)
+def test_relocation_preserves_relative_registration(tmp_path: Path) -> None:
+    repository, source, ref = _linked_worktree(tmp_path, relative=True)
+    destination = tmp_path / "nested/d"
+
+    relocate_worktree(repository, ref, source, destination)
+
+    pointer = (destination / ".git").read_text(encoding="utf-8").removeprefix("gitdir: ").strip()
+    administration = (destination / pointer).resolve()
+    reverse = (administration / "gitdir").read_text(encoding="utf-8").strip()
+    assert not Path(pointer).is_absolute()
+    assert not Path(reverse).is_absolute()
+    assert _git(destination, "status", "--short") == ""
 
 
 def test_relocation_rejects_missing_state(tmp_path: Path) -> None:

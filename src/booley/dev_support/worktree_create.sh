@@ -351,7 +351,8 @@ _parent_lock_acquire
 # Disable automatic submodule recursion. Python materializes exact gitlinks
 # after final branch selection without remotes or shared .git pointers.
 git -C "$CWD" config extensions.worktreeConfig true
-git_wt config --worktree core.worktree "$WORKTREE_DIR"
+RELATIVE_WORKTREE_DIR=$("${PY[@]}" -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]).replace(os.sep, "/"))' "$WORKTREE_DIR" "$WORKTREE_GIT_DIR")
+git_wt config --worktree core.worktree "$RELATIVE_WORKTREE_DIR"
 git_wt config --worktree submodule.recurse false
 git_wt config --worktree diff.ignoreSubmodules all
 git_wt config --worktree status.submoduleSummary false
@@ -364,6 +365,18 @@ echo "Submodule recursion disabled in worktree git config" >&2
 git_wt config --worktree core.autocrlf false
 git_wt checkout -f >&2
 echo "Line endings normalised to LF (core.autocrlf=false)" >&2
+
+if [ "$(git -C "$CWD" config --bool --get worktree.useRelativePaths 2>/dev/null || true)" = "true" ]; then
+    WORKTREE_POINTER=$(sed 's/^gitdir: //' "$WORKTREE_DIR/.git")
+    REVERSE_POINTER=$(cat "$WORKTREE_GIT_DIR/gitdir")
+    CONFIGURED_WORKTREE=$(git_wt config --worktree --get core.worktree)
+    if [[ "$WORKTREE_POINTER" = /* || "$WORKTREE_POINTER" =~ ^[A-Za-z]: ]] ||
+       [[ "$REVERSE_POINTER" = /* || "$REVERSE_POINTER" =~ ^[A-Za-z]: ]] ||
+       [[ "$CONFIGURED_WORKTREE" = /* || "$CONFIGURED_WORKTREE" =~ ^[A-Za-z]: ]]; then
+        echo "ERROR: relative worktree policy produced non-portable metadata" >&2
+        exit 1
+    fi
+fi
 
 # Apply the same validated [agent.git] policy used by Interactive Mode. Older
 # layouts may keep booley.toml under .booley/, but pipeline.toml is never read.

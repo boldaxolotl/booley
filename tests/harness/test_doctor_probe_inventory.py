@@ -127,6 +127,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
         {
             "_check_memory_invariant",
             "_check_runtime_location",
+            "_check_worktree_portability",
             "_run_container_checks",
             "_run_mcp_checks",
             "_run_ticket_preflight_parity_checks",

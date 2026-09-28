@@ -12,6 +12,7 @@ import sys
 import tomllib
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -216,7 +217,7 @@ def _patch_host_environment(monkeypatch, root: Path) -> None:
     _patch_bootstrap_current(monkeypatch)
 
 
-def _patch_environment(
+def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixture
     monkeypatch,
     root: Path,
     project_dir: Path,
@@ -274,6 +275,8 @@ def _patch_environment(
             return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
         if cmd[:3] == ["git", "rev-parse", "--git-common-dir"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
+        if cmd[:2] == ["git", "--version"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
         if cmd[:3] == [sys.executable, "-c", "import booley.ticket_board"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[1:3] == ["ps", "-aq"]:
@@ -283,8 +286,14 @@ def _patch_environment(
         if cmd[0] == "git" and "config" in cmd and "gc.worktreePruneExpire" in cmd:
             # Healthy default: the ADR 0028 worktree prune guard is set.
             return subprocess.CompletedProcess(cmd, 0, stdout="never\n", stderr="")
+        if cmd[0] == "git" and "config" in cmd and "worktree.useRelativePaths" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+        if cmd[0] == "git" and "config" in cmd and "extensions.relativeWorktrees" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
         if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["id", "-u"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{os.getuid()}\n", stderr="")
+        if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["git", "--version"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
         if cmd[1:3] == ["image", "inspect"] and "{{json .Config.Env}}" in cmd:
             # Healthy default: the sandbox image bakes the ADR 0028 runtime marker.
             return subprocess.CompletedProcess(
@@ -4221,6 +4230,91 @@ class TestWorktreePruneGuard:
         rec = _Rec()
         doctor._check_worktree_prune_guard(tmp_path, rec.p, rec.s, rec.f)
         assert rec.kinds() == {"pass"}
+
+
+class TestWorktreePortability:
+    def _project(self, root: Path):
+        project_dir = root / ".booley_project"
+        project_dir.mkdir()
+        return SimpleNamespace(project_root=root, project_dir=project_dir)
+
+    def test_two_capable_sides_and_enabled_policy_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "worktree.useRelativePaths", "true"],
+            check=True,
+        )
+        project = self._project(tmp_path)
+        monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
+        monkeypatch.setattr(doctor, "_git_version_at", lambda *_command: (2, 53, 0))
+        rec = _Rec()
+
+        doctor._check_worktree_portability(project, "docker", "image", rec.p, rec.w, rec.f)
+
+        assert not rec.fails()
+        assert not [message for kind, message in rec.events if kind == "warn"]
+        assert any("worktree.useRelativePaths=true" in message for _, message in rec.events)
+
+    def test_old_sandbox_before_opt_in_warns_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "worktree.useRelativePaths", "false"],
+            check=True,
+        )
+        project = self._project(tmp_path)
+        monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
+        versions = iter(((2, 53, 0), (2, 47, 9)))
+        monkeypatch.setattr(doctor, "_git_version_at", lambda *_command: next(versions))
+        rec = _Rec()
+
+        doctor._check_worktree_portability(project, "docker", "image", rec.p, rec.w, rec.f)
+
+        warnings = [message for kind, message in rec.events if kind == "warn"]
+        assert any("container-only" in message for message in warnings)
+        assert any("do not run host `git worktree prune`" in message for message in warnings)
+        assert not rec.fails()
+
+    def test_old_side_after_repository_opt_in_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
+            check=True,
+        )
+        project = self._project(tmp_path)
+        monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
+        versions = iter(((2, 53, 0), (2, 47, 9)))
+        monkeypatch.setattr(doctor, "_git_version_at", lambda *_command: next(versions))
+        rec = _Rec()
+
+        doctor._check_worktree_portability(project, "docker", "image", rec.p, rec.w, rec.f)
+
+        assert len(rec.fails()) == 1
+        assert "repository format" in rec.fails()[0]
+
+    def test_live_metadata_reports_absolute_paths(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        worktree = project_dir / "worktrees" / "ticket"
+        administration = tmp_path / "admin"
+        worktree.mkdir(parents=True)
+        administration.mkdir()
+        (worktree / ".git").write_text(f"gitdir: {administration}\n", encoding="utf-8")
+        (administration / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+
+        metadata = doctor._live_worktree_metadata(project_dir)
+
+        assert metadata[0][0] == worktree
+        assert "absolute .git pointer" in metadata[0][1]
+        assert "absolute reverse gitdir" in metadata[0][1]
 
 
 class TestWorktreeCoreShadowGuard:
