@@ -1067,14 +1067,6 @@ is unchanged, and an already `superseded` origin keeps its first `superseded_by`
 Missing, malformed, or concurrently changed origin progress prevents only that
 observational supersession; it never prevents manifest-authoritative recovery.
 
-Before Simulation Campaign mutation, the resume registers its reserved invocation in an
-origin-owned `dependency-receipts/` record. Registration is atomic and occurs
-under the same origin lock. A receipt is sufficient to block default pruning,
-including when resume publication later fails, but it authorizes dependent
-deletion only when the dependent report's Simulation Campaign owner and normalized
-artifact path bind back to the exact origin. Manifest digest drift does not
-erase that structural dependency.
-
 #### Exact report retention
 
 The maintenance seams in `booley.flows.sim.campaign_retention` accept the report
@@ -1102,23 +1094,7 @@ root explicitly; callers obtain project-data roots through
   removable when its invocation directory is still empty and its external lock
   file is intact. A pruning journal permits retry after partial cleanup.
   The empty `.pruned-N` tombstone reserves the number permanently; it contains no
-  Simulation Campaign or native evidence. By default, other invocations remain
-  untouched and a surviving resume dependency is refused. With
-  `include_dependents=True`, retention locks the origin, discovers receipts and
-  same-root migration reports, locks authenticated dependents in canonical-path
-  order, repeats discovery, and preflights the complete deletion set before
-  mutation. Distinct producer invocation identities that cannot be reconciled
-  remain a conservative refusal. Historical cross-root resumes that reused the
-  origin's numeric invocation id contain no root identity and cannot be located;
-  prune that known dependent first before pruning the origin.
-
-Dependent-inclusive pruning writes an exact batch journal in the live origin,
-then removes dependents in canonical-path order and the origin last. Retry uses
-that membership to recognize already-empty tombstones and quarantined members.
-The per-invocation journal is also recognized in a still-live root, closing the
-failure window between journal publication and quarantine rename; only the exact
-expected journal may resume. Native-only pruning never consults or mutates this
-dependency state because its referenced normalized evidence survives.
+  Simulation Campaign or native evidence. Other invocations remain untouched.
 
 Native pruning first deep-validates the Campaign pair, then writes Target-local
 `availability.json` with schema `booley.coverage-availability/v1`, the Campaign
@@ -1136,7 +1112,6 @@ Explicit maintenance entry points:
 ```bash
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_example
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
-python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full --include-dependents
 ```
 
 Full pruning releases matching retired child-execution index entries before it
