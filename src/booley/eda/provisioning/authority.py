@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 
@@ -427,7 +428,19 @@ def _revalidate_installation(record: Installation, project_root: Path) -> None:
     recorded = (record.version, record.architecture, record.policy_revision)
     if identity != recorded:
         raise InstallationValidationError(
-            "registered Vivado installation identity or policy has drifted"
+            "registered Vivado installation identity or policy has drifted: "
+            + format_differences(
+                {
+                    "version": record.version,
+                    "architecture": record.architecture,
+                    "policy_revision": record.policy_revision,
+                },
+                {
+                    "version": observed.version,
+                    "architecture": observed.architecture,
+                    "policy_revision": VIVADO_POLICY_REVISION,
+                },
+            )
         )
 
 

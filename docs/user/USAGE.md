@@ -558,12 +558,15 @@ draft ──► queued ──► running ──► review ──► done
 - `running → review` happens when `on_success` includes `review`. Omitting it
   takes the `running → done` shortcut.
 
-`review` is a human decision point, not a partial-rework loop. The reviewer has
-three substantive choices:
+`review` is a human decision point, not a partial-rework loop. Once a Ticket is
+accepted, any new commit in its worktree makes that acceptance stale; Booley
+will not approve it until the Ticket heads match the accepted ones again. The
+reviewer has three substantive choices:
 
-1. Approve the Ticket as `done`. Small corrections may be made directly in the
-   existing Ticket worktree, with the relevant Flows and Specialists invoked
-   there, before approval; the Ticket remains in `review` throughout.
+1. Approve the Ticket as `done` when its live participant heads still match the
+   accepted heads. If acceptance is stale, first preserve post-acceptance commits
+   on a separate safety branch and restore every named Ticket ref and worktree to
+   its exact frozen commit before approval.
 2. Reset it completely. This retires the Ticket worktree and branch, archives
    the current runtime artifacts as prior-run history, clears the active state,
    and returns the Ticket to `queued` as a clean run. It does not resume or
@@ -828,16 +831,30 @@ editor (or run **Live Preview: Show Preview** from the Command Palette). The
 workflow does not emit a `command:` link because VS Code intentionally
 disables command URIs in untrusted chat-authored Markdown.
 
-After a ticket enters review, `booley run` emits one stable JSON record
+After every normal Ticket ending, `booley run` emits one stable JSON record
 after the full-screen Console closes:
 
 ```text
 BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":1}
 ```
 
+The `disposition` is `review`, `done`, `blocked`, or `failed`. `review` and
+`done` exit with status 0; `blocked` and `failed` exit with status 1. A direct
+completion has no review artifacts:
+
+```text
+BOOLEY_RUN_RESULT {"disposition":"done","html_path":null,"review_package_path":null,"slug":"demo","version":1}
+```
+
 Normal progress output may surround this line. Command-line clients should scan
-for the `BOOLEY_RUN_RESULT ` prefix; one record is emitted per review-bound
-ticket. `html_path` is `null` when no HTML explanation was produced.
+for the `BOOLEY_RUN_RESULT ` prefix; exactly one record is emitted per normal
+Ticket ending. `review_package_path` and `html_path` are review-only and are
+`null` for every other disposition; `html_path` may also be `null` for review.
+A `failed` result classifies this Harness invocation even though the Ticket
+Board state may be `blocked`, `review` after a partial handoff, or `queued`
+after automatic retry. Because unexpected
+infrastructure errors also exit 1, automation should use the record's presence
+and disposition—not the exit status alone—to classify a normal Ticket ending.
 
 **Ticket worktrees live under `.booley_project/worktrees/<slug>`, but they are registered by their in-container path.** Booley is container-only, so the project is `/work` from git's point of view and the registrations record `/work/.booley_project/worktrees/...`. On the host those paths don't exist, so `git worktree list` shows every live ticket worktree as `prunable`:
 

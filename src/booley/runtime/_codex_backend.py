@@ -38,6 +38,7 @@ from ._retry import (
     transcript_path_for_label,
 )
 from .agent_errors import (
+    AgentProviderError,
     AgentTimeoutError,
     ContextExhaustedError,
     TransientAPIError,
@@ -311,7 +312,7 @@ class CodexBackend:
                     if budget is not None:
                         budget.resume("codex-retry-backoff")
 
-        raise last_exc or RuntimeError("Codex agent exhausted retries")
+        raise last_exc or AgentProviderError("Codex agent exhausted retries", provider="codex")
 
     async def _call_once(
         self,
@@ -429,7 +430,7 @@ def _codex_build_cmd(
     sandbox = _codex_sandbox_mode(allowed_agent_capabilities)
     codex_bin = shutil.which("codex")
     if codex_bin is None:
-        raise RuntimeError("Codex CLI not found on PATH")
+        raise AgentProviderError("Codex CLI not found on PATH", provider="codex")
 
     if session_id:
         cmd = [codex_bin, "exec", "resume", "--json", "-m", model]
@@ -880,7 +881,7 @@ def _raise_for_codex_detail(detail: str, *, prefix: str) -> None:
         raise ContextExhaustedError(detail, provider="codex")
     if _is_transient_error(RuntimeError(detail)):
         raise TransientAPIError(f"{prefix}: {detail}", retry_after=10)
-    raise RuntimeError(f"{prefix}: {detail}")
+    raise AgentProviderError(f"{prefix}: {detail}", provider="codex")
 
 
 def _codex_resolve_structured(

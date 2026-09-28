@@ -147,6 +147,41 @@ def test_candidate_failure_leaves_running_session_and_spec_untouched(
     images.abort.assert_called_once_with()
 
 
+def test_commit_mismatch_names_every_refresh_image_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = _result()
+    committed = replace(
+        prepared,
+        selected_id="sha256:unexpected",
+        payload_fingerprint="payload-unexpected",
+    )
+    journal = session_refresh._RefreshJournal(
+        project_root=tmp_path.resolve(),
+        transaction_id="transaction",
+        phase=session_refresh._RefreshPhase.PREPARED,
+        direction=session_refresh._RecoveryDirection.RESTORE_ELIGIBLE,
+        snapshot=_snapshot(tmp_path),
+        prior_issuance=_issuance(tmp_path),
+        prior_runtime=None,
+        target_image_id=None,
+        target_payload_fingerprint=None,
+        target_wheel_sha256=None,
+        prepared_images=(),
+        replacement_issuance=None,
+    )
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.commit.return_value = committed
+    monkeypatch.setattr(session_refresh, "_write_journal", lambda _journal: None)
+
+    with pytest.raises(sr.SessionError, match="verified candidate") as caught:
+        session_refresh._reconcile_refresh_image(journal, prepared, images)
+
+    message = str(caught.value)
+    assert "selected_id sha256:fresh -> sha256:unexpected" in message
+    assert "payload_fingerprint payload-123 -> payload-unexpected" in message
+
+
 def test_incomplete_rollback_reports_recovery_container(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     parked = _parked(tmp_path)
@@ -219,6 +254,26 @@ def test_current_graph_issuance_and_running_sandbox_are_a_true_noop(
     images.commit.assert_called_once_with()
     park.assert_not_called()
     up.assert_not_called()
+
+
+def test_noop_commit_mismatch_names_refresh_image_field(tmp_path: Path, monkeypatch) -> None:
+    prepared = replace(_result(), image_graph_changed=False)
+    committed = replace(prepared, wheel_sha256="unexpected-wheel")
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.commit.return_value = committed
+    monkeypatch.setattr(session_refresh, "_is_current_running_session", lambda *_args: True)
+    monkeypatch.setattr(sr, "verify_refreshed_session", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(sr.SessionError, match="verified candidate") as caught:
+        session_refresh._try_complete_noop(
+            tmp_path,
+            prepared,
+            _issuance(tmp_path, "sha256:fresh"),
+            None,
+            images,
+        )
+
+    assert "wheel_sha256 <none> -> unexpected-wheel" in str(caught.value)
 
 
 def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path, monkeypatch) -> None:

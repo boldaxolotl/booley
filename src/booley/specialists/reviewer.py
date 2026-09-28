@@ -40,6 +40,7 @@ from booley.mcp.base import (
     McpToolResult,
     read_source_dirs_from_toml,
 )
+from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.paths import refs_dir
 from booley.targets.flow_names import config_section
 from booley.ticket_board.criteria_acceptance import refresh_verification_freshness
@@ -578,6 +579,20 @@ class _DoneReviewOutcome:
     @property
     def mode_ok(self) -> bool:
         return not self.corrective_records
+
+
+@dataclass
+class _CleanVerifyContext:
+    remaining: list[ReviewIssue]
+    output_lines: list[str]
+    existing_detail: dict[str, Any]
+    pending: list[dict[str, Any]]
+    resolved: list[dict[str, Any]]
+    original_issues: int
+    source_digest: str
+    observations: list[dict[str, Any]]
+    elapsed: float
+    crit_key: str
 
 
 def _finding_record(issue: ReviewIssue) -> dict[str, Any]:
@@ -1782,7 +1797,9 @@ object, even after calling the capability.
         if issues is None:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text="Review agent invocation failed",
+                report_text=self._provider_failure_report(
+                    output_lines, "Review agent invocation failed"
+                ),
             )
 
         elapsed = time.monotonic() - overall_start
@@ -1790,25 +1807,65 @@ object, even after calling the capability.
 
     # --- _clean mode ---
 
-    def _run_clean_mode(self, crit_key: str) -> McpToolResult:  # noqa: PLR0911
-        """Drive the _clean criterion through initial review → verify loop."""
-        # Already met — nothing to do
-        if self.state and self.state.is_met(crit_key):
-            msg = (
-                f"{crit_key} already met for the current source fingerprint. "
-                "Do not call this reviewer again; proceed with remaining work."
-            )
-            return McpToolResult(
-                exit_code=EXIT_SUCCESS,
-                report_text=msg,
-                display_lines=[f"SKIPPED: {crit_key} already met (done — do not retry)"],
-            )
+    def _already_clean_result(self, crit_key: str) -> McpToolResult:
+        msg = (
+            f"{crit_key} already met for the current source fingerprint. "
+            "Do not call this reviewer again; proceed with remaining work."
+        )
+        return McpToolResult(
+            exit_code=EXIT_SUCCESS,
+            report_text=msg,
+            display_lines=[f"SKIPPED: {crit_key} already met (done — do not retry)"],
+        )
 
+    def _clean_verify_limit(self, crit_key: str, prior_detail: dict[str, Any]):
+        if prior_detail.get("verify_attempts", 0) >= 2:
+            msg = (
+                f"{crit_key}: 2 verify attempts exhausted — unresolved findings remain. "
+                "Fix them or propose explicit, justified review waivers; findings are never "
+                "waived automatically."
+            )
+            return McpToolResult(exit_code=EXIT_FAILURE, report_text=msg)
+        if prior_detail.get("total_verify_cycles", 0) >= 3:
+            msg = (
+                f"{crit_key}: 3 review/resolve cycles exhausted — unresolved findings "
+                "remain. Blocking without creating an automatic waiver."
+            )
+            return McpToolResult(exit_code=EXIT_FAILURE, report_text=msg)
+        return None
+
+    def _run_clean_verify(self, crit_key: str, prior_detail: dict[str, Any]) -> McpToolResult:
+        limit = self._clean_verify_limit(crit_key, prior_detail)
+        if limit is not None:
+            return limit
+        self.emit_progress("verify mode: checking if prior findings are resolved")
+        overall_start = time.monotonic()
+        remaining, output_lines, remaining_indices, dispositions = self._run_verify_review(
+            prior_detail
+        )
+        if remaining is None:
+            report = self._provider_failure_report(
+                output_lines, "Verify review agent invocation failed"
+            )
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=report)
+        return self._build_result_clean_verify(
+            remaining,
+            output_lines,
+            prior_detail,
+            remaining_indices=remaining_indices,
+            dispositions=dispositions,
+            elapsed=time.monotonic() - overall_start,
+            crit_key=crit_key,
+        )
+
+    def _run_clean_mode(self, crit_key: str) -> McpToolResult:
+        """Drive the _clean criterion through initial review → verify loop."""
+        if self.state and self.state.is_met(crit_key):
+            return self._already_clean_result(crit_key)
         prior_detail = self._get_prior_detail(crit_key)
         if prior_detail is not None:
             prior_detail, resolved_count = self._resolve_out_of_policy_pending(
-                crit_key,
-                prior_detail,
+                crit_key, prior_detail
             )
             if resolved_count and not prior_detail.get("pending"):
                 msg = (
@@ -1824,54 +1881,12 @@ object, even after calling the capability.
                     elapsed=0.0,
                     crit_key=crit_key,
                 )
-
         has_prior_findings = prior_detail is not None and (
             "pending" in prior_detail or "issue_list" in prior_detail
         )
         if not has_prior_findings:
-            # Initial review (no prior detail or no findings list yet)
             return self._run_clean_initial(crit_key)
-
-        # Verify mode
-        verify_attempts = prior_detail.get("verify_attempts", 0)
-        total_cycles = prior_detail.get("total_verify_cycles", 0)
-
-        # Hard cap: consecutive attempts without a coder fix
-        if verify_attempts >= 2:
-            msg = (
-                f"{crit_key}: 2 verify attempts exhausted — unresolved findings remain. "
-                "Fix them or propose explicit, justified review waivers; findings are never "
-                "waived automatically."
-            )
-            return McpToolResult(exit_code=EXIT_FAILURE, report_text=msg)
-
-        if total_cycles >= 3:
-            msg = (
-                f"{crit_key}: 3 review/resolve cycles exhausted — unresolved findings "
-                "remain. Blocking without creating an automatic waiver."
-            )
-            return McpToolResult(exit_code=EXIT_FAILURE, report_text=msg)
-
-        self.emit_progress("verify mode: checking if prior findings are resolved")
-        overall_start = time.monotonic()
-        remaining, output_lines, remaining_indices, dispositions = self._run_verify_review(
-            prior_detail
-        )
-        if remaining is None:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text="Verify review agent invocation failed",
-            )
-        elapsed = time.monotonic() - overall_start
-        return self._build_result_clean_verify(
-            remaining,
-            output_lines,
-            prior_detail,
-            remaining_indices=remaining_indices,
-            dispositions=dispositions,
-            elapsed=elapsed,
-            crit_key=crit_key,
-        )
+        return self._run_clean_verify(crit_key, prior_detail)
 
     def _resolve_out_of_policy_pending(
         self,
@@ -1922,7 +1937,9 @@ object, even after calling the capability.
         if issues is None:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text="Review agent invocation failed",
+                report_text=self._provider_failure_report(
+                    output_lines, "Review agent invocation failed"
+                ),
             )
         elapsed = time.monotonic() - overall_start
         return self._build_result_clean_initial(
@@ -2024,6 +2041,46 @@ object, even after calling the capability.
 
     # --- Verify review ---
 
+    def _review_state_filter(self):
+        return filter_state_file_for_category(
+            getattr(self.args, "state_file", None),
+            self.args.category,
+        )
+
+    @staticmethod
+    def _provider_failure_report(output_lines: list[str], fallback: str) -> str:
+        return next(
+            (line for line in reversed(output_lines) if line.startswith("reviewer failed:")),
+            fallback,
+        )
+
+    def _record_review_provider_failure(
+        self, exc: Exception, transcript: Path | None, summary: str
+    ) -> str:
+        log_exception(logger, exc, summary=summary)
+        diagnostic_path = self._write_provider_diagnostic(exc, transcript)
+        return exception_report_text(self.name, exc, diagnostic_path)
+
+    def _verify_agent_params(
+        self, focus: str, prior_detail: dict[str, Any], prior_sid: str | None
+    ) -> AgentCallParams:
+        params = AgentCallParams(
+            prompt=self._build_verify_prompt(focus, prior_detail, resumed=prior_sid is not None),
+            model=self._resolve_model(),
+            cwd=self.args.work_dir,
+            allowed_agent_capabilities=self.agent_capabilities,
+            disallowed_agent_capabilities=[*self.READ_ONLY_DENY, REPORT_FINDINGS_CAPABILITY],
+            system_prompt=self._build_verify_system_prompt(focus),
+            output_format=self._output_format(),
+            max_turns=self.args.max_turns,
+            timeout_seconds=self.args.timeout,
+            transcript_path=self._transcript_path(),
+            label=f"review-verify-{self.args.category}-{focus}",
+            needs_skills=self._needs_skills(),
+            reasoning_effort=self._resolve_effort(),
+        )
+        return self._build_resume_params(params, prior_sid) if prior_sid is not None else params
+
     def _run_verify_review(
         self,
         prior_detail: dict[str, Any],
@@ -2045,54 +2102,25 @@ object, even after calling the capability.
         # The "no --report-dir, nothing persisted" notice lives in McpTool._post_run:
         # the gap is every endpoint's, not the reviewer's (SETUP-F-39).
         output_lines = [f"[review-verify] {self.args.category}/{focus}"]
-
-        # Strip opposite-category detail from booley_state.json for the
-        # duration of the agent run (see workspace_isolation comments).
-        state_filter = filter_state_file_for_category(
-            getattr(self.args, "state_file", None),
-            self.args.category,
-        )
-
         session_key = f"reviewer-{self.args.category}-{focus}"
         prior_sid = self._load_session_id(session_key)
-
         start = time.monotonic()
-        prompt = self._build_verify_prompt(focus, prior_detail, resumed=prior_sid is not None)
-        system_prompt = self._build_verify_system_prompt(focus)
-        model = self._resolve_model()
-        effort = self._resolve_effort()
-        transcript = self._transcript_path()
-        params = AgentCallParams(
-            prompt=prompt,
-            model=model,
-            cwd=self.args.work_dir,
-            allowed_agent_capabilities=self.agent_capabilities,
-            # The verify contract is the ``{"findings": [...]}`` text schema
-            # (index/status/evidence). ReportFindings cannot express a
-            # per-index FIXED/STILL_PRESENT status, so deny it here and force
-            # the agent onto the text schema (unlike the initial review, which
-            # captures ReportFindings instead).
-            disallowed_agent_capabilities=[*self.READ_ONLY_DENY, REPORT_FINDINGS_CAPABILITY],
-            system_prompt=system_prompt,
-            output_format=self._output_format(),
-            max_turns=self.args.max_turns,
-            timeout_seconds=self.args.timeout,
-            transcript_path=transcript,
-            label=f"review-verify-{self.args.category}-{focus}",
-            needs_skills=self._needs_skills(),
-            reasoning_effort=effort,
-        )
-        if prior_sid is not None:
-            params = self._build_resume_params(params, prior_sid)
+        params = self._verify_agent_params(focus, prior_detail, prior_sid)
         self.emit_progress("invoking verify agent")
         try:
-            with state_filter:
+            with self._review_state_filter():
                 result = self._invoke_agent_with_resume(params)
                 remaining, remaining_indices, dispositions = self._parse_verify_output(
                     result.output, prior_detail
                 )
-        except Exception:
-            logger.exception("Verify review agent failed for focus=%s", focus)
+        except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
+            output_lines.append(
+                self._record_review_provider_failure(
+                    exc,
+                    params.transcript_path,
+                    f"Verify review agent failed for focus={focus}",
+                )
+            )
             return None, output_lines, set(), {}
 
         self._persist_session_id(session_key)
@@ -2554,6 +2582,27 @@ Schema enforcement (applied upstream by the harness):
             return None
         return parsed.issues
 
+    def _single_review_params(self, focus: str) -> AgentCallParams:
+        return AgentCallParams(
+            prompt=self._build_prompt(focus_override=focus),
+            model=self._resolve_model(),
+            cwd=self.args.work_dir,
+            allowed_agent_capabilities=[
+                *self.agent_capabilities,
+                REPORT_FINDINGS_CAPABILITY,
+            ],
+            disallowed_agent_capabilities=list(self.READ_ONLY_DENY),
+            system_prompt=self._build_system_prompt(focus),
+            output_format=self._output_format(),
+            capture_agent_capability_calls=[REPORT_FINDINGS_CAPABILITY],
+            max_turns=self.args.max_turns,
+            timeout_seconds=self.args.timeout,
+            transcript_path=self._transcript_path(),
+            label=f"review-{self.args.category}-{focus}",
+            needs_skills=self._needs_skills(),
+            reasoning_effort=self._resolve_effort(),
+        )
+
     def _run_single_review(self) -> tuple[list[ReviewIssue] | None, list[str]]:
         """Run exactly one focus review. Returns (issues, output_lines) or (None, lines) on error.
 
@@ -2565,50 +2614,12 @@ Schema enforcement (applied upstream by the harness):
         output_lines = [f"[review] {self.args.category}/{focus}"]
         self._non_corrective_issues = []
 
-        # Strip opposite-category detail from booley_state.json for the
-        # duration of the agent run (see workspace_isolation comments).
-        state_filter = filter_state_file_for_category(
-            getattr(self.args, "state_file", None),
-            self.args.category,
-        )
-
         start = time.monotonic()
-        prompt = self._build_prompt(focus_override=focus)
-        system_prompt = self._build_system_prompt(focus)
-        model = self._resolve_model()
-        effort = self._resolve_effort()
-        transcript = self._transcript_path()
+        params = self._single_review_params(focus)
         self.emit_progress(f"invoking review agent ({self.args.category}/{focus})")
         try:
-            with state_filter:
-                result = self._invoke_agent(
-                    AgentCallParams(
-                        prompt=prompt,
-                        model=model,
-                        cwd=self.args.work_dir,
-                        # Explicitly admit ReportFindings for the initial review so
-                        # the agent's native review contract is available (and then
-                        # captured below), rather than relying on the SDK leaking it
-                        # past the allowlist.
-                        allowed_agent_capabilities=[
-                            *self.agent_capabilities,
-                            REPORT_FINDINGS_CAPABILITY,
-                        ],
-                        # Hard deny (survives bypassPermissions) — see
-                        # READ_ONLY_DENY. Category deny patterns stay in
-                        # workspace_isolation; this is the read-only half.
-                        disallowed_agent_capabilities=list(self.READ_ONLY_DENY),
-                        system_prompt=system_prompt,
-                        output_format=self._output_format(),
-                        capture_agent_capability_calls=[REPORT_FINDINGS_CAPABILITY],
-                        max_turns=self.args.max_turns,
-                        timeout_seconds=self.args.timeout,
-                        transcript_path=transcript,
-                        label=f"review-{self.args.category}-{focus}",
-                        needs_skills=self._needs_skills(),
-                        reasoning_effort=effort,
-                    )
-                )
+            with self._review_state_filter():
+                result = self._invoke_agent(params)
                 issues = self._extract_review_issues(
                     result,
                     focus,
@@ -2618,8 +2629,14 @@ Schema enforcement (applied upstream by the harness):
                     return None, output_lines
                 issues = self._filter_review_issues(issues, output_lines)
                 self.emit_progress(f"review complete: {len(issues)} finding(s)")
-        except Exception:
-            logger.exception("Review agent failed for focus=%s", focus)
+        except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
+            output_lines.append(
+                self._record_review_provider_failure(
+                    exc,
+                    params.transcript_path,
+                    f"Review agent failed for focus={focus}",
+                )
+            )
             return None, output_lines
 
         self._persist_session_id(f"reviewer-{self.args.category}-{focus}")
@@ -2883,45 +2900,87 @@ Schema enforcement (applied upstream by the harness):
         elapsed: float,
         crit_key: str,
     ) -> McpToolResult:
-        """Build result for verify pass.
-
-        Splits findings into ``pending`` (still_present after this round)
-        and ``resolved`` (fixed this round, plus any already-resolved
-        carried in from prior cycles). Drops the legacy ``issue_list`` so
-        the developer-side ``met=True with pending non-empty`` assertion
-        bites.
-        """
+        """Build result for a verify pass and optional final rediscovery."""
         pending, resolved, original_issues = self._split_verify_findings(
-            existing_detail,
-            remaining_indices,
-            dispositions,
+            existing_detail, remaining_indices, dispositions
         )
+        rediscovery = self._apply_clean_rediscovery(
+            remaining, output_lines, existing_detail, pending, original_issues
+        )
+        if isinstance(rediscovery, McpToolResult):
+            return rediscovery
+        remaining, pending, original_issues, source_digest, rediscovered = rediscovery
+        observations = _review_observations(
+            existing_detail, self._non_corrective_issues, rediscovered=rediscovered
+        )
+        return self._finish_clean_verify(
+            _CleanVerifyContext(
+                remaining=remaining,
+                output_lines=output_lines,
+                existing_detail=existing_detail,
+                pending=pending,
+                resolved=resolved,
+                original_issues=original_issues,
+                source_digest=source_digest,
+                observations=observations,
+                elapsed=elapsed,
+                crit_key=crit_key,
+            )
+        )
+
+    def _apply_clean_rediscovery(
+        self,
+        remaining: list[ReviewIssue],
+        output_lines: list[str],
+        existing_detail: dict[str, Any],
+        pending: list[dict[str, Any]],
+        original_issues: int,
+    ) -> tuple[list[ReviewIssue], list[dict[str, Any]], int, str, bool] | McpToolResult:
         source_digest = str(existing_detail.get("review_source_digest", ""))
         rediscovery = self._rediscover_after_source_change(existing_detail, pending)
-        rediscovered = rediscovery is not None
-        if rediscovery is not None:
-            discovered, discovery_lines, source_digest = rediscovery
-            if discovered is None:
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text="Final clean-review discovery agent invocation failed",
-                )
-            output_lines.extend(["", "[review] final discovery after source changes"])
-            output_lines.extend(discovery_lines)
-            remaining = discovered
-            pending = [_finding_record(issue) for issue in discovered]
-            original_issues += len(discovered)
-        observations = _review_observations(
-            existing_detail,
-            self._non_corrective_issues,
-            rediscovered=rediscovered,
+        if rediscovery is None:
+            return remaining, pending, original_issues, source_digest, False
+        discovered, discovery_lines, source_digest = rediscovery
+        if discovered is None:
+            report = self._provider_failure_report(
+                discovery_lines, "Final clean-review discovery agent invocation failed"
+            )
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=report)
+        output_lines.extend(["", "[review] final discovery after source changes"])
+        output_lines.extend(discovery_lines)
+        pending = [_finding_record(issue) for issue in discovered]
+        return discovered, pending, original_issues + len(discovered), source_digest, True
+
+    def _finish_clean_verify(self, context: _CleanVerifyContext) -> McpToolResult:
+        counts = count_by_severity(context.remaining)
+        met = not context.pending
+        status, count_str = _format_status_and_counts(counts, met)
+        context.output_lines.append(f"\nVERIFY RESULT: {status} ({count_str})")
+        waiver_lines = self._clean_verify_waiver_lines(context.resolved)
+        if waiver_lines:
+            context.output_lines.extend(["", "ACCEPTED WAIVERS (user-visible):", *waiver_lines])
+        report_text = "\n".join(context.output_lines)
+        print(report_text)
+        detail, verify_attempts = self._clean_verify_detail(context, counts)
+        self.set_criterion(context.crit_key, met, detail=detail)
+        if met:
+            focus = next(iter(self._parse_focus()))
+            self._clear_session_id(f"reviewer-{self.args.category}-{focus}")
+        lines = [f"{count_str}, verify {status} (attempt {verify_attempts}/2)"]
+        lines.extend(f"  {line}" for line in waiver_lines)
+        lines.extend(f"  {_format_issue_line(issue)}" for issue in context.remaining)
+        return McpToolResult(
+            exit_code=EXIT_SUCCESS if met else 1,
+            criterion_key=context.crit_key,
+            criterion_met=met,
+            display_lines=lines,
+            detail=detail,
+            report_text=report_text,
         )
 
-        counts = count_by_severity(remaining)
-        gate_passed = not pending
-        status, count_str = _format_status_and_counts(counts, gate_passed)
-        output_lines.append(f"\nVERIFY RESULT: {status} ({count_str})")
-        waiver_lines = [
+    @staticmethod
+    def _clean_verify_waiver_lines(resolved: list[dict[str, Any]]) -> list[str]:
+        return [
             f"[WAIVED {item.get('severity', '?')}] "
             f"{item.get('file', '?')}:{item.get('line', '?')} — "
             f"{item.get('summary', '?')} — Justification: "
@@ -2929,49 +2988,26 @@ Schema enforcement (applied upstream by the harness):
             for item in resolved
             if item.get("status") == "waived"
         ]
-        if waiver_lines:
-            output_lines.extend(["", "ACCEPTED WAIVERS (user-visible):", *waiver_lines])
 
-        report_text = "\n".join(output_lines)
-        print(report_text)
-
-        verify_attempts = existing_detail.get("verify_attempts", 0) + 1
-        total_cycles = existing_detail.get("total_verify_cycles", 0) + 1
+    def _clean_verify_detail(
+        self, context: _CleanVerifyContext, counts: dict[str, int]
+    ) -> tuple[dict[str, Any], int]:
+        verify_attempts = context.existing_detail.get("verify_attempts", 0) + 1
         detail: dict[str, Any] = {
             "review_detail_version": REVIEW_DETAIL_VERSION,
-            "issues": len(remaining),
-            "pending": pending,
-            "resolved": resolved,
-            "observations": observations,
+            "issues": len(context.remaining),
+            "pending": context.pending,
+            "resolved": context.resolved,
+            "observations": context.observations,
             **counts,
             "verify_attempts": verify_attempts,
-            "total_verify_cycles": total_cycles,
-            "original_issues": original_issues,
-            "elapsed_s": round(elapsed, 1),
-            "review_source_digest": source_digest,
+            "total_verify_cycles": context.existing_detail.get("total_verify_cycles", 0) + 1,
+            "original_issues": context.original_issues,
+            "elapsed_s": round(context.elapsed, 1),
+            "review_source_digest": context.source_digest,
             "contract": self._review_contract_detail(),
         }
-
-        met = gate_passed
-        self.set_criterion(crit_key, met, detail=detail)
-
-        if met:
-            focus = next(iter(self._parse_focus()))
-            self._clear_session_id(f"reviewer-{self.args.category}-{focus}")
-
-        lines = [f"{count_str}, verify {status} (attempt {verify_attempts}/2)"]
-        lines.extend(f"  {line}" for line in waiver_lines)
-        for issue in remaining:
-            lines.append(f"  {_format_issue_line(issue)}")
-
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS if met else 1,
-            criterion_key=crit_key,
-            criterion_met=met,
-            display_lines=lines,
-            detail=detail,
-            report_text=report_text,
-        )
+        return detail, verify_attempts
 
     def _split_verify_findings(
         self,

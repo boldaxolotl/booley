@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str
+from booley.core.differences import format_differences
 from booley.core.user_paths import config_dir
 from booley.runtime.build_metadata import current_build_metadata
 
@@ -37,6 +38,14 @@ class HostInstallationIdentity:
     version: str
     revision: str
     payload_fingerprint: str
+
+
+def host_identity_differences(
+    recorded: HostInstallationIdentity,
+    actual: HostInstallationIdentity,
+) -> str:
+    """Render every safe canonical-installation identity difference."""
+    return format_differences(asdict(recorded), asdict(actual))
 
 
 def host_installation_path() -> Path:
@@ -176,7 +185,8 @@ def register_host_installation(
         current = load_host_installation(destination)
         if current != candidate:
             raise HostInstallationError(
-                "a different canonical host installation is already recorded; run "
+                "a different canonical host installation is already recorded "
+                f"({host_identity_differences(current, candidate)}); run "
                 "`booley bootstrap --update` after an intentional upgrade"
             )
         return current
@@ -202,7 +212,7 @@ def host_install_error(
     if actual != expected:
         return (
             "this Booley process does not match the canonical host installation "
-            f"({actual.distribution_root} != {expected.distribution_root}); run the canonical "
+            f"({host_identity_differences(expected, actual)}); run the canonical "
             "host `booley bootstrap --update` if this upgrade is intentional"
         )
     return None

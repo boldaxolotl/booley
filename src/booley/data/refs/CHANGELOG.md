@@ -55,6 +55,20 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Host Bootstrap, Project Initialization, Sandbox lifecycle, and Sandbox
+  Issuance mutations now wait for the shared host Docker lifecycle lock for a
+  bounded interval, reporting busy owners while they wait. They continue when
+  the holder releases the lock and otherwise exit with one clean `ERROR:`
+  message and status 2 instead of failing immediately or printing a traceback.
+  ([#785](https://github.com/boldaxolotl/Booley/issues/785))
+- Mismatch and drift diagnostics now name every safe field that differs and
+  show its recorded-to-current value transition, including canonical host
+  wheel, Doctor, Host Bootstrap, Sandbox, Ticket Board, and EDA records.
+  ([#779](https://github.com/boldaxolotl/Booley/issues/779))
+- A commit after review acceptance is now reported as stale acceptance, with
+  the frozen and live heads and the real exits (restore the accepted heads or
+  reset), instead of as a corrupt review binding. `board show` renders the
+  frozen briefing with a stale marker instead of failing. ([#775](https://github.com/boldaxolotl/Booley/issues/775))
 - Native-coverage Simulation now runs Pre-Sim Commands before every selected
   test process, including one-test Cocotb batches. It rejects stale staged
   inputs and hook mutations of authenticated compile, simulator, and coverage
@@ -64,6 +78,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   the configured approval directory without parsing them as approval documents.
   Unreferenced artifacts still invalidate the set, and lowercase `*.toml` remains
   reserved for approval documents.
+- `booley run` now emits one machine-readable result for every normal Ticket
+  ending. Direct-to-done Tickets correctly return success, while `blocked` and
+  `failed` results return a nonzero status and identify their disposition.
 - Direct built-in and Custom Flows now keep their default reports under resolved
   Project data. Plain Simulation, native coverage, and resume share one report
   root and invocation-number sequence, and no default `flow-reports/` directory

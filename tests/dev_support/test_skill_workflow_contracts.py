@@ -190,16 +190,22 @@ def test_triage_review_distinguishes_direct_fix_from_clean_reset():
     contract = " ".join(review.split())
 
     for required in (
-        "For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**",
+        "For current accepted review, ask: **approve** / **reset** / **archive** / **skip**",
+        "For stale accepted review, ask: **restore exact accepted heads** / **reset** / **archive** / **skip**",
+        "STALE ACCEPTANCE — Ticket heads changed after acceptance.",
         "For a briefing marked **unaccepted**",
         "Criteria Satisfaction Records are immutable",
+        "save every post-acceptance commit on a separate safety branch",
+        "A new `git revert` commit does not restore an accepted head",
         "publishes first acceptance, and completes the Ticket",
         "This is a clean start",
         "Do not selectively retain reviewed work",
         "never resumes through an ordinary move to `queued`",
+        "booley board reset $SLUG",
         '--reason "<correction reason>"',
     ):
         assert required in contract
+    assert "acceptance recovery" not in contract
 
 
 def test_ticket_create_defaults_every_review_to_corrective_mode():

@@ -38,6 +38,11 @@ from booley.dev_support.commit_git_io import (
 from booley.dev_support.commit_message_format import _auto_format_commit_message
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
+from booley.runtime.exception_diagnostics import (
+    exception_report_text,
+    log_exception,
+    write_exception_diagnostic,
+)
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
 from booley.runtime.process_tree import descendant_pids as _descendant_pids
 from booley.ticket_board.agent_execution import configure_agent_call
@@ -234,6 +239,18 @@ class Specialist(McpTool):
         transcript_dir.mkdir(parents=True, exist_ok=True)
         return transcript_dir / f"{self.name}.jsonl"
 
+    def _write_provider_diagnostic(
+        self, exc: Exception, transcript_path: Path | None = None
+    ) -> Path | None:
+        """Persist a provider traceback without changing the primary outcome."""
+        return write_exception_diagnostic(
+            exc,
+            endpoint_name=self.name,
+            invocation_id=self._invocation_id,
+            report_dir=self.args.report_dir,
+            transcript_path=transcript_path,
+        )
+
     # --- Overridable agent parameters ---
 
     def _system_prompt(self) -> str | None:
@@ -425,6 +442,32 @@ class Specialist(McpTool):
         """
         return None
 
+    def _agent_call_params(self) -> AgentCallParams:
+        return AgentCallParams(
+            prompt=self._build_prompt(),
+            model=self._resolve_model(),
+            cwd=self.args.work_dir,
+            allowed_agent_capabilities=self.agent_capabilities,
+            disallowed_agent_capabilities=self._disallowed_agent_capabilities(),
+            system_prompt=self._system_prompt(),
+            output_format=self._output_format(),
+            max_turns=self.args.max_turns,
+            timeout_seconds=self.args.timeout,
+            transcript_path=self._transcript_path(),
+            label=self.name,
+            needs_skills=self._needs_skills(),
+            reasoning_effort=self._resolve_effort(),
+        )
+
+    def _agent_failure_result(self, exc: Exception, transcript: Path | None) -> McpToolResult:
+        log_exception(logger, exc, summary=f"Agent invocation failed for {self.name}")
+        diagnostic_path = self._write_provider_diagnostic(exc, transcript)
+        self.emit_progress("agent invocation failed")
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            report_text=exception_report_text(self.name, exc, diagnostic_path),
+        )
+
     def _run(self) -> McpToolResult:
         """Invoke the agent and interpret results."""
         validation_err = self._validate_interactive_args()
@@ -440,45 +483,23 @@ class Specialist(McpTool):
             )
             self.args.timeout = self.min_timeout
 
-        prompt = self._build_prompt()
-        model = self._resolve_model()
-        effort = self._resolve_effort()
-        transcript = self._transcript_path()
-
+        params = self._agent_call_params()
         tier = self._resolve_tier(self.args.model)
         logger.info(
             "Invoking agent %s (model=%s, tier=%s, effort=%s, max_turns=%s, timeout=%ds)",
             self.name,
-            model,
+            params.model,
             tier,
-            effort or "default",
+            params.reasoning_effort or "default",
             self.args.max_turns,
             self.args.timeout,
         )
         self.emit_progress(f"invoking agent ({tier}, timeout={self.args.timeout}s)")
 
         try:
-            result = self._invoke_agent(
-                AgentCallParams(
-                    prompt=prompt,
-                    model=model,
-                    cwd=self.args.work_dir,
-                    allowed_agent_capabilities=self.agent_capabilities,
-                    disallowed_agent_capabilities=self._disallowed_agent_capabilities(),
-                    system_prompt=self._system_prompt(),
-                    output_format=self._output_format(),
-                    max_turns=self.args.max_turns,
-                    timeout_seconds=self.args.timeout,
-                    transcript_path=transcript,
-                    label=self.name,
-                    needs_skills=self._needs_skills(),
-                    reasoning_effort=effort,
-                )
-            )
-        except Exception:
-            logger.exception("Agent invocation failed for %s", self.name)
-            self.emit_progress("agent invocation failed")
-            return McpToolResult(exit_code=EXIT_ERROR, report_text="Agent invocation failed")
+            result = self._invoke_agent(params)
+        except Exception as exc:  # noqa: BLE001 — normalize the agent-provider boundary
+            return self._agent_failure_result(exc, params.transcript_path)
         finally:
             remove_shadow_package(self.args.work_dir)
 

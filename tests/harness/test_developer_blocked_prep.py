@@ -33,8 +33,9 @@ async def test_setup_block_prepares_blocked_triage_dossier(tmp_path: Path, monke
     prepare = AsyncMock()
     monkeypatch.setattr(developer, "_prepare_blocked_triage", prepare)
 
-    await developer._run_ticket_body(ctx, tmp_path, 0.0)
+    result = await developer._run_ticket_body(ctx, tmp_path, 0.0)
 
+    assert result.disposition == "blocked"
     prepare.assert_awaited_once_with(ctx, tmp_path)
 
 
@@ -61,8 +62,9 @@ async def test_invalid_resumed_basis_prepares_blocked_triage(
     prepare = AsyncMock()
     monkeypatch.setattr(developer, "_prepare_blocked_triage", prepare)
 
-    await developer._run_ticket_body(ctx, tmp_path, 0.0)
+    result = await developer._run_ticket_body(ctx, tmp_path, 0.0)
 
+    assert result.disposition == "blocked"
     block.assert_called_once_with(
         ctx,
         "acceptance-input-change-required: basis changed",

@@ -7,6 +7,7 @@ two-phase apply/revert tests were deleted along with their helpers.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -163,6 +164,43 @@ def _sample_specs(n: int = 3, category: str = "operator_change") -> list[Mutatio
         )
         for i in range(1, n + 1)
     ]
+
+
+def test_creator_provider_failure_has_durable_debug_traceback(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    transcript_dir = tmp_path / "transcripts"
+    endpoint = _make_endpoint(
+        tmp_path,
+        monkeypatch,
+        extra_args=["--transcript-dir", str(transcript_dir)],
+    )
+    plan = SimpleNamespace(work_dir=tmp_path, scope_files=[])
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.hide_opposite_sources",
+        lambda *_args, **_kwargs: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(
+        endpoint,
+        "_invoke_creator",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("creator boom")),
+    )
+    caplog.set_level("DEBUG")
+
+    specs, elapsed, error = endpoint._proposal_round(plan, "prompt", 1, None)
+
+    assert specs == []
+    assert elapsed == 0.0
+    assert error is not None and error.exit_code == EXIT_ERROR
+    assert error.report_text.startswith("mutation creator failed: RuntimeError: creator boom")
+    assert "Diagnostic:" in error.report_text
+    ordinary = [record for record in caplog.records if record.levelno >= 20]
+    assert all(record.exc_info is None for record in ordinary)
+    assert any(record.exc_info for record in caplog.records if record.levelno == 10)
+    diagnostics = list(transcript_dir.glob("mutation_tester.*.error.log"))
+    assert len(diagnostics) == 1
+    assert "RuntimeError: creator boom" in diagnostics[0].read_text(encoding="utf-8")
+    assert str(diagnostics[0]) in error.report_text
 
 
 def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch) -> None:

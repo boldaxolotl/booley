@@ -2192,8 +2192,12 @@ class TestFullTbReview:
 
 class TestAgentFailure:
     @patch("booley.specialists.specialist._call_agent_sync", side_effect=RuntimeError("boom"))
-    def test_agent_error_returns_exit_2(self, mock_agent, state_file: Path):
+    def test_agent_error_returns_exit_2(
+        self, mock_agent, state_file: Path, tmp_path: Path, caplog
+    ):
         endpoint = ReviewerSpecialist()
+        transcript_dir = tmp_path / "transcripts"
+        caplog.set_level("DEBUG")
         endpoint.parse_args(
             [
                 "--scope",
@@ -2202,11 +2206,67 @@ class TestAgentFailure:
                 "rtl",
                 "--focus",
                 "bugs",
+                "--transcript-dir",
+                str(transcript_dir),
             ]
         )
         endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 2
+
+
+@pytest.mark.parametrize("seam", ["initial", "verify"])
+def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
+    seam, tmp_path: Path, state_file: Path, capsys, caplog
+) -> None:
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        [
+            "--scope",
+            "rtl/mod_a.sv",
+            "--category",
+            "rtl",
+            "--focus",
+            "bugs",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--transcript-dir",
+            str(tmp_path / "transcripts"),
+        ]
+    )
+    endpoint.read_state()
+    caplog.set_level("DEBUG")
+
+    if seam == "initial":
+        with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("boom")):
+            issues, output_lines = endpoint._run_single_review()
+    else:
+        with patch.object(
+            endpoint,
+            "_invoke_agent_with_resume",
+            side_effect=RuntimeError("boom"),
+        ):
+            issues, output_lines, remaining, dispositions = endpoint._run_verify_review(
+                {"pending": []}
+            )
+        assert remaining == set()
+        assert dispositions == {}
+
+    assert issues is None
+    assert output_lines[0].startswith("[review")
+    report_text = endpoint._provider_failure_report(output_lines, "fallback")
+    assert report_text.startswith("reviewer failed: RuntimeError: boom")
+    assert "Diagnostic:" in report_text
+    assert "Traceback" not in capsys.readouterr().err
+    diagnostics = list((tmp_path / "transcripts").glob("reviewer.*.error.log"))
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert "RuntimeError: boom" in diagnostic.read_text(encoding="utf-8")
+    assert str(diagnostic) in report_text
+    assert any(record.exc_info for record in caplog.records if record.levelname == "DEBUG")
+    assert not any(record.exc_info for record in caplog.records if record.levelno >= 20)
 
 
 # ---------------------------------------------------------------------------

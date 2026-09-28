@@ -372,8 +372,13 @@ def test_review_repositories_reject_heads_outside_accepted_snapshot(tmp_path: Pa
     )
     monkeypatch.setattr(rp, "_resolve_project_review_repository", lambda *_args: None)
 
-    with pytest.raises(rp.ReviewPrepError, match="Criteria Satisfaction Record"):
-        rp._resolve_review_repositories(tmp_path, basis, {"outer": "e" * 40})
+    with pytest.raises(rp.StaleAcceptanceError, match="Ticket heads changed after acceptance"):
+        rp._resolve_review_repositories(
+            tmp_path,
+            basis,
+            {"outer": "e" * 40},
+            accepted_heads=True,
+        )
 
 
 def test_write_output_normalizes_empty_fields_and_missing_scope_rows(tmp_path: Path):
@@ -872,7 +877,10 @@ def test_review_briefing_command_requires_prepared_report_disabled_package(
     outcome = rp.review_briefing_command(tmp_path, "demo", open_diffs=False)
 
     assert outcome.status == "stale"
-    assert "prepared review package is missing or stale" in outcome.message
+    assert (
+        "prepared review package is missing, stale, or failed integrity checks" in outcome.message
+    )
+    assert "booley board review demo" in outcome.message
 
 
 @pytest.mark.asyncio

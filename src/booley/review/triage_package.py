@@ -1432,7 +1432,12 @@ def _render_economics(lines: list[str], package: Mapping[str, Any]) -> None:
     )
 
 
-def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str]) -> str:
+def render_review_briefing(
+    package: Mapping[str, Any],
+    diff_failures: list[str],
+    *,
+    accepted_actions: str | None = None,
+) -> str:
     """Render the fixed interactive review template from a validated package."""
     lines = [f"### {_markdown_text(package['slug'])}"]
     inspection = package.get("inspection")
@@ -1457,7 +1462,7 @@ def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str])
     _render_recipe_comparisons(lines, package)
     _render_commits(lines, package)
     _render_economics(lines, package)
-    actions = "**approve** / **fix here** / **reset** / **archive** / **skip**"
+    actions = accepted_actions or "**approve** / **reset** / **archive** / **skip**"
     if inspection and inspection["disposition"] == "unaccepted":
         actions = "**fix here** / **review** / **hold** / **reset** / **archive**"
         if _mandatory_criteria_met(package):

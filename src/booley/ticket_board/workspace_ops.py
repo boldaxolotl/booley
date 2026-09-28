@@ -12,6 +12,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from booley.core.differences import format_differences
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
@@ -790,8 +791,15 @@ def _workspace_from_basis_checkout(
             else outer / checkout_project_dir_relative_to(root)
         )
     repositories = {"outer": outer, **({"project": project} if project else {})}
-    if set(repositories) != {row.role for row in basis.participants}:
-        raise TicketBaselineOperationError("waiting Ticket workspace participants changed")
+    expected_roles = {row.role for row in basis.participants}
+    if set(repositories) != expected_roles:
+        raise TicketBaselineOperationError(
+            "waiting Ticket workspace participants changed: "
+            + format_differences(
+                {"participant_roles": expected_roles},
+                {"participant_roles": set(repositories)},
+            )
+        )
     for participant in basis.participants:
         repository = repositories[participant.role]
         if _require_git(repository, "rev-parse", "HEAD") != participant.authoring_sha:

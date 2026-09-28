@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.core.differences import format_differences
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import format_human_datetime
 from booley.ticket_board.ticket_repositories import TicketWorkspace, WorkspaceDisposition
@@ -427,7 +428,7 @@ def _prepare_handoff_snapshot(
     participant_heads = _handoff_basis_heads(tio, slug)
     if participant_heads is None:
         return False
-    existing = _bind_existing_handoff_snapshot(log_dir, slug, participant_heads)
+    existing = _bind_existing_handoff_snapshot(tio, log_dir, slug, participant_heads)
     if existing is not None:
         return existing
     return _freeze_handoff_snapshot(
@@ -507,23 +508,33 @@ def _handoff_jobs_clear(log_dir: Path, slug: str) -> bool:
 
 
 def _bind_existing_handoff_snapshot(
+    tio: Any,
     log_dir: Path,
     slug: str,
     participant_heads: dict[str, str],
 ) -> bool | None:
+    from .acceptance_diagnostics import compare_accepted_heads, format_stale_acceptance
     from .acceptance_ledger import AcceptanceLedgerError, bind_review_package, read_acceptance
 
     accepted = read_acceptance(log_dir)
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
             print(
-                f"Error: cannot hand off '{slug}': Criteria Satisfaction Record is unreadable",
+                f"Error: cannot hand off '{slug}': Criteria Satisfaction Record is corrupt: "
+                "accepted result has no snapshot",
                 file=sys.stderr,
             )
             return False
-        if accepted.snapshot.participant_heads != participant_heads:
+        basis = tio._load_basis_unlocked(slug)
+        drift = compare_accepted_heads(
+            accepted.snapshot.participant_heads,
+            participant_heads,
+            _acceptance_participant_locations(tio, basis),
+        )
+        if drift is not None:
             print(
-                f"Error: cannot hand off '{slug}': Ticket heads changed after acceptance freeze",
+                f"Error: cannot hand off '{slug}': "
+                f"{format_stale_acceptance(slug, drift, status='handoff')}",
                 file=sys.stderr,
             )
             return False
@@ -964,6 +975,49 @@ def _acceptance_failure_detail(tio: Any, slug: str) -> str:
     return "inspect the Ticket and Acceptance Journal before retrying"
 
 
+def _acceptance_participant_locations(tio: Any, basis: Any) -> list[Any]:
+    """Resolve display metadata after callers have validated the live refs."""
+    from .acceptance_diagnostics import participant_head_locations
+    from .ticket_baseline import _project_repository, worktree_for_ref
+
+    root = Path(tio._project_root)
+    worktrees = {}
+    for participant in basis.participants:
+        owner = root if participant.role == "outer" else _project_repository(root)
+        worktrees[participant.role] = worktree_for_ref(owner, participant.ticket_ref) or owner
+    return list(
+        participant_head_locations(
+            ((row.role, row.ticket_ref) for row in basis.participants),
+            worktrees,
+        )
+    )
+
+
+def _accepted_sources(tio: Any, slug: str, basis: Any, snapshot_sources: dict) -> dict:
+    """Resolve completion sources or report accepted participant-head drift."""
+    from .acceptance_diagnostics import StaleAcceptanceError, compare_accepted_heads
+    from .acceptance_journal import completion_basis_sources
+    from .ticket_baseline import validate_current_basis_refs
+
+    sources = completion_basis_sources(
+        Path(tio._project_root),
+        slug,
+        basis,
+        expected_sources=snapshot_sources,
+    )
+    if sources is not None:
+        return sources
+    current_sources = validate_current_basis_refs(tio._project_root, basis)
+    drift = compare_accepted_heads(
+        snapshot_sources,
+        current_sources,
+        _acceptance_participant_locations(tio, basis),
+    )
+    if drift is not None:
+        raise StaleAcceptanceError(drift)
+    return snapshot_sources
+
+
 def _validate_accepted_snapshot(
     tio: Any,
     slug: str,
@@ -972,12 +1026,10 @@ def _validate_accepted_snapshot(
     *,
     require_review_package_binding: bool = True,
 ) -> None:
-    from .acceptance_journal import completion_basis_sources
     from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
     from .ticket_baseline import (
         assert_live_inputs_unchanged,
         materialize_ticket_commits,
-        validate_current_basis_refs,
     )
 
     if require_review_package_binding:
@@ -985,23 +1037,12 @@ def _validate_accepted_snapshot(
     basis = tio.load_basis(slug)
     if snapshot.ticket_identity != basis.ticket_identity():
         raise AcceptanceLedgerError(
-            "Criteria Satisfaction Record names a different Board Ticket generation"
+            "Criteria Satisfaction Record names a different Board Ticket generation: "
+            + format_differences(snapshot.ticket_identity, basis.ticket_identity())
         )
     with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
         snapshot_sources = snapshot.participant_heads
-        sources = completion_basis_sources(
-            Path(tio._project_root),
-            slug,
-            basis,
-            expected_sources=snapshot_sources,
-        )
-        if sources is None:
-            current_sources = validate_current_basis_refs(tio._project_root, basis)
-            if current_sources != snapshot_sources:
-                raise AcceptanceLedgerError(
-                    "Ticket heads changed after the Criteria Satisfaction Record was frozen"
-                )
-            sources = snapshot_sources
+        sources = _accepted_sources(tio, slug, basis, snapshot_sources)
         authoring = materialize_ticket_commits(
             tio._project_root,
             basis,
@@ -1016,10 +1057,32 @@ def _validate_accepted_snapshot(
         )
 
 
+def _validate_current_acceptance(
+    tio: Any,
+    slug: str,
+    log_dir: Path,
+    snapshot: Any,
+    *,
+    require_review_package_binding: bool,
+) -> None:
+    """Preserve the default validation call while supporting binding-free retries."""
+    if require_review_package_binding:
+        _validate_accepted_snapshot(tio, slug, log_dir, snapshot)
+        return
+    _validate_accepted_snapshot(
+        tio,
+        slug,
+        log_dir,
+        snapshot,
+        require_review_package_binding=False,
+    )
+
+
 def _completion_acceptance_valid(
     tio: Any, slug: str, *, require_review_package_binding: bool = True
 ) -> AcceptanceSnapshot | None:
     """Refuse destructive terminal actions when durable acceptance is broken."""
+    from .acceptance_diagnostics import StaleAcceptanceError, format_stale_acceptance
     from .acceptance_ledger import AcceptanceLedgerError, read_acceptance
 
     log_dir = ticket_log_dir(tio.logs_dir, slug)
@@ -1034,27 +1097,29 @@ def _completion_acceptance_valid(
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
             print(
-                f"Error: Criteria Satisfaction Record for '{slug}' is unreadable", file=sys.stderr
-            )
-            return None
-        try:
-            if require_review_package_binding:
-                _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)
-            else:
-                _validate_accepted_snapshot(
-                    tio,
-                    slug,
-                    log_dir,
-                    accepted.snapshot,
-                    require_review_package_binding=False,
-                )
-        except (AcceptanceLedgerError, ValueError, OSError) as exc:
-            print(
-                f"Error: review package binding for '{slug}' is corrupt: {exc}",
+                f"Error: Criteria Satisfaction Record for '{slug}' is corrupt: "
+                "accepted result has no snapshot",
                 file=sys.stderr,
             )
             return None
-        return accepted.snapshot
+        try:
+            _validate_current_acceptance(
+                tio,
+                slug,
+                log_dir,
+                accepted.snapshot,
+                require_review_package_binding=require_review_package_binding,
+            )
+        except StaleAcceptanceError as exc:
+            board = tio.find_ticket(slug)
+            status = str(board.get("status")) if board is not None else "missing"
+            error = format_stale_acceptance(slug, exc.drift, status=status)
+        except (AcceptanceLedgerError, ValueError, OSError) as exc:
+            error = f"review package binding for '{slug}' is corrupt: {exc}"
+        else:
+            return accepted.snapshot
+        print(f"Error: {error}", file=sys.stderr)
+        return None
     if accepted.kind == "corrupt":
         print(
             f"Error: Criteria Satisfaction Record for '{slug}' is corrupt: {accepted.reason}",

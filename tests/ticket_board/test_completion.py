@@ -686,6 +686,7 @@ def test_completion_snapshot_rejects_advanced_ticket_ref_before_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from booley.ticket_board import acceptance_ledger, operations
+    from booley.ticket_board.acceptance_diagnostics import StaleAcceptanceError
 
     root = tmp_path / "rtl"
     base = _repository(root)
@@ -712,7 +713,7 @@ def test_completion_snapshot_rejects_advanced_ticket_ref_before_publication(
     identity = basis.ticket_identity()
     monkeypatch.setattr(acceptance_ledger, "validate_review_package_binding", lambda *_: None)
 
-    with pytest.raises(acceptance_ledger.AcceptanceLedgerError, match="Ticket heads changed"):
+    with pytest.raises(StaleAcceptanceError, match="Ticket heads changed"):
         operations._validate_accepted_snapshot(
             tio,
             "change-target",

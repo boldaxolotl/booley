@@ -107,34 +107,66 @@ class TestCheckStamp:
     def test_edited_booley_toml_invalidates_stamp(self, tmp_path):
         project_dir = _write_project(tmp_path)
         doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
+        before = doctor_stamp.compute_fingerprint(project_dir, tmp_path)
         (project_dir / "booley.toml").write_text('[project]\nname = "edited"\n', encoding="utf-8")
+        after = doctor_stamp.compute_fingerprint(project_dir, tmp_path)
 
         msg = doctor_stamp.check_stamp(project_dir, tmp_path)
 
         assert msg is not None
         assert "changed since the last clean" in msg
+        assert f"booley_toml_sha256 {before['booley_toml_sha256']} -> " in msg
+        assert str(after["booley_toml_sha256"]) in msg
+        assert "doctor_waivers_sha256" not in msg
+        assert "devcontainer_json_sha256" not in msg
 
     def test_regenerated_devcontainer_invalidates_stamp(self, tmp_path):
         project_dir = _write_project(tmp_path)
         doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
+        before = doctor_stamp.compute_fingerprint(project_dir, tmp_path)
         (tmp_path / ".devcontainer" / "devcontainer.json").write_text(
             '{"image": "rebuilt"}\n', encoding="utf-8"
         )
+        after = doctor_stamp.compute_fingerprint(project_dir, tmp_path)
 
         msg = doctor_stamp.check_stamp(project_dir, tmp_path)
 
         assert msg is not None
         assert "changed since the last clean" in msg
+        assert f"devcontainer_json_sha256 {before['devcontainer_json_sha256']} -> " in msg
+        assert str(after["devcontainer_json_sha256"]) in msg
+        assert "booley_toml_sha256" not in msg
+        assert "doctor_waivers_sha256" not in msg
 
     def test_edited_doctor_waivers_invalidates_stamp(self, tmp_path):
         project_dir = _write_project(tmp_path)
         doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
         (project_dir / "doctor-waivers.toml").write_text("version = 1\n", encoding="utf-8")
+        after = doctor_stamp.compute_fingerprint(project_dir, tmp_path)
 
         msg = doctor_stamp.check_stamp(project_dir, tmp_path)
 
         assert msg is not None
         assert "changed since the last clean" in msg
+        assert "doctor_waivers_sha256 <none> -> " in msg
+        assert str(after["doctor_waivers_sha256"]) in msg
+        assert "booley_toml_sha256" not in msg
+        assert "devcontainer_json_sha256" not in msg
+
+    def test_malformed_fingerprint_does_not_echo_unknown_values(self, tmp_path):
+        project_dir = _write_project(tmp_path)
+        doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
+        path = doctor_stamp.stamp_path(project_dir)
+        stamp = json.loads(path.read_text(encoding="utf-8"))
+        stamp["fingerprint"] = {"OPENAI_API_KEY": "should-not-appear"}
+        path.write_text(json.dumps(stamp), encoding="utf-8")
+
+        msg = doctor_stamp.check_stamp(project_dir, tmp_path)
+
+        assert msg is not None
+        assert "recorded_fingerprint <malformed> ->" in msg
+        assert "OPENAI_API_KEY" not in msg
+        assert "should-not-appear" not in msg
 
     def test_mismatch_wins_over_staleness(self, tmp_path):
         """Config drift is the stronger signal; report it even when also stale."""
