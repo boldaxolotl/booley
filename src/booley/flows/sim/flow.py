@@ -1325,6 +1325,13 @@ def _completed_display_label(
     return format_flow_display_label(targets, tests=tests if tests else None)
 
 
+def _prepared_coverage_display_label(plans: Sequence[CoverageTargetPlan]) -> str | None:
+    """Describe the exact Target/test scope selected during coverage preflight."""
+    targets = [plan.handle.selector for plan in plans]
+    tests = [test for plan in plans for test in plan.selected_tests]
+    return format_flow_display_label(targets, tests=tests if tests else None)
+
+
 def _target_display_lines(result: TargetResult) -> list[str]:
     """Build the final display block for one completed Target."""
     icon = "?" if result.inconclusive else ("✓" if result.passed else "✗")
@@ -1876,6 +1883,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets = self._requested_targets()
         if self._mode.elaborates_only:
             return format_flow_display_label(targets, mode="elaboration")
+        if getattr(self.args, "coverage", False) and (
+            prepared := getattr(self, "_coverage_prepared", None)
+        ):
+            return _prepared_coverage_display_label(prepared.targets)
         try:
             test_names = _get_test_names(self.args.work_dir)
             selected = (
@@ -3725,7 +3736,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             criterion_met=exit_code == EXIT_SUCCESS,
             detail=detail,
             report_text="\n".join(lines),
+            display_label=self._campaign_completed_display_label(outcomes),
         )
+
+    def _campaign_completed_display_label(self, outcomes: Sequence[CampaignOutcome]) -> str | None:
+        """Describe the requested Targets and trustworthy observed test scope."""
+        observations = [item for outcome in outcomes for item in outcome.observations]
+        tests = [item.get("test") for item in observations]
+        if not tests or any(not isinstance(test, str) or not test.strip() for test in tests):
+            return format_flow_display_label(self._requested_targets(), tests=None)
+        return format_flow_display_label(self._requested_targets(), tests=cast(list[str], tests))
 
     def _validate_mode_args(self) -> EndpointOutcome | None:
         """Reject run-stage arguments that have no meaning in elab-only mode."""

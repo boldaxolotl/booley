@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,6 +96,124 @@ def _configure_custom_main_coverage(root: Path) -> None:
             "{custom_main_hooks: [start_hook, write_hook], reset_included: false}}}",
         )
     )
+
+
+def _prepare_console_scope_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from booley.criteria.state import CriterionEntry
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path, ("verilator", "verilator"))
+    project_data = tmp_path / ".booley_project"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text(
+        '[sim_0]\ntests = ["half", "reset", "wrap", "carry", "zero"]\n'
+        '[sim_1]\ntests = ["gap", "overflow", "underflow", "saturate"]\n'
+    )
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.criteria = {
+        "coverage_sim_0": CriterionEntry(
+            params={
+                "target": "sim_0",
+                "tests": ["half"],
+                "metrics": {"line": {"min_pct": 1}},
+            }
+        ),
+        "coverage_sim_1": CriterionEntry(
+            params={
+                "target": "sim_1",
+                "tests": ["gap"],
+                "metrics": {"line": {"min_pct": 1}},
+            }
+        ),
+    }
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    return state_path
+
+
+def test_console_lifecycle_uses_criterion_selected_coverage_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_console_scope_project(tmp_path, monkeypatch)
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
+    ).execute(
+        SimRequest(
+            target="sim_0,sim_1",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    lifecycle = [event for event in events if event["type"] in {"endpoint_start", "endpoint_end"}]
+    assert result.exit_code == 0, result.outcome
+    assert [event["display_label"] for event in lifecycle] == [
+        "2 targets · 2 tests",
+        "2 targets · 2 tests",
+    ]
+    assert {
+        observation["test"]
+        for campaign in result.outcome.detail["campaigns"].values()
+        for observation in campaign["observations"]
+    } == {"half", "gap"}
+
+
+def test_pre_outcome_coverage_failure_keeps_prepared_console_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_console_scope_project(tmp_path, monkeypatch)
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+
+    def fail_before_outcome(_campaign, _request):
+        raise RuntimeError("failed before nested outcome")
+
+    monkeypatch.setattr(SimulationCampaign, "run", fail_before_outcome)
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim_0,sim_1",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    lifecycle = [event for event in events if event["type"] in {"endpoint_start", "endpoint_end"}]
+    assert result.exit_code == 2
+    assert [event["display_label"] for event in lifecycle] == [
+        "2 targets · 2 tests",
+        "2 targets · 2 tests",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("observations", "expected"),
+    [
+        (({"test": "half"}, {"test": ""}), "2 targets · tests"),
+        (({"test": "half"},), "2 targets · test half"),
+    ],
+)
+def test_campaign_completion_label_requires_complete_test_identity(
+    tmp_path: Path,
+    observations: tuple[dict[str, object], ...],
+    expected: str,
+) -> None:
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_0,sim_1", "--coverage"])
+
+    label = flow._campaign_completed_display_label(
+        [SimpleNamespace(observations=observations)]  # type: ignore[list-item]
+    )
+
+    assert label == expected
 
 
 def _target_headline(report_text: str, selector: str) -> str:
