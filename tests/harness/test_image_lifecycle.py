@@ -10,8 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 
+import booley
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import image_lifecycle as lifecycle
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildPlan,
+    DockerBuildRequest,
+)
 
 
 class FakeDocker:
@@ -54,6 +60,244 @@ class FakeDocker:
     def remove_tag(self, image: str) -> None:
         self.mutations.append(("remove_tag", image))
         self.images.pop(image, None)
+
+
+def test_capacity_plan_projects_only_build_steps_by_role(tmp_path: Path) -> None:
+    def node(reference, role):
+        return SimpleNamespace(
+            reference=reference,
+            role=role,
+            build=SimpleNamespace(recipe_fingerprint=f"recipe-{reference}"),
+            effective_inputs=f"inputs-{reference}",
+            runtime_base_contract=None,
+            standard_substrate_contract=None,
+        )
+
+    nodes = (
+        node("reuse", lifecycle.ImageRole.RUNTIME_BASE),
+        node("heavy", lifecycle.ImageRole.PROJECT_OVERLAY),
+        node("pull", lifecycle.ImageRole.WHEEL_OVERLAY),
+        node("thin", lifecycle.ImageRole.WHEEL_OVERLAY),
+    )
+    steps = tuple(
+        SimpleNamespace(action=action)
+        for action in (
+            lifecycle.PlanAction.REUSE,
+            lifecycle.PlanAction.BUILD,
+            lifecycle.PlanAction.PULL,
+            lifecycle.PlanAction.BUILD,
+        )
+    )
+    plan = SimpleNamespace(nodes=nodes, steps=steps, project_root=tmp_path)
+
+    projected = harness_lifecycle.capacity_plan(plan)
+
+    assert projected is not None
+    assert [request.managed_image for request in projected.requests] == ["heavy", "thin"]
+    assert projected.requests[0].estimate_class is BuildEstimateClass.HEAVYWEIGHT
+    assert projected.requests[1].estimate_class is BuildEstimateClass.THIN_OVERLAY
+    assert projected.requests[1].cache_evidence.reference == "thin"
+
+
+def test_capacity_request_includes_optional_parent_contracts() -> None:
+    node = SimpleNamespace(
+        reference="sandbox",
+        role=lifecycle.ImageRole.PROJECT_OVERLAY,
+        build=SimpleNamespace(recipe_fingerprint="recipe"),
+        effective_inputs="inputs",
+        runtime_base_contract="runtime-contract",
+        standard_substrate_contract="substrate-contract",
+    )
+
+    request = harness_lifecycle._capacity_request(node)
+
+    labels = dict(request.cache_evidence.expected_labels)
+    assert labels[lifecycle.LABEL_RUNTIME_BASE_CONTRACT] == "runtime-contract"
+    assert labels[lifecycle.LABEL_STANDARD_SUBSTRATE_CONTRACT] == "substrate-contract"
+
+
+def test_host_capacity_requests_skip_verified_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE) == ()
+
+
+def test_host_capacity_requests_skip_current_local_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = object()
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "reconcile",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lifecycle.Status.CURRENT),
+    )
+
+    assert harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE) == ()
+
+
+def test_host_capacity_requests_fall_back_without_source_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", object)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "reconcile",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lifecycle.Status.STALE),
+    )
+    monkeypatch.setattr(booley, "version_attribution", SimpleNamespace(source_root=None))
+
+    requests = harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE)
+
+    assert [request.managed_image for request in requests] == ["runtime base", "Sandbox Image"]
+
+
+def test_host_capacity_requests_use_local_build_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image
+
+    expected = (DockerBuildRequest("base", "base"),)
+    observed = []
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", object)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "reconcile",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lifecycle.Status.STALE),
+    )
+    monkeypatch.setattr(booley, "version_attribution", SimpleNamespace(source_root=tmp_path))
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: tmp_path / "docker")
+    monkeypatch.setattr(docker_image, "_image_build_fingerprint", lambda _root: "fingerprint")
+    monkeypatch.setattr(
+        docker_image,
+        "_local_build_capacity_requests",
+        lambda *args, **kwargs: observed.append((args, kwargs)) or expected,
+    )
+
+    assert harness_lifecycle.host_capacity_requests(lifecycle.Intent.REFRESH) == expected
+    assert observed[0][1]["rebuild_runtime_base"] is True
+
+
+def test_reconcile_planned_commits_prepared_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    scope = SimpleNamespace()
+    planned = SimpleNamespace()
+    prepared = SimpleNamespace()
+    expected = SimpleNamespace()
+    monkeypatch.setattr(harness_lifecycle, "plan", lambda *_args, **_kwargs: planned)
+    monkeypatch.setattr(harness_lifecycle, "prepare", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(
+        harness_lifecycle, "commit", lambda value: expected if value is prepared else None
+    )
+
+    assert harness_lifecycle.reconcile_planned(scope, lifecycle.Intent.ENSURE) is expected
+
+
+def test_reconcile_planned_aborts_failed_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared = SimpleNamespace()
+    aborted = []
+    monkeypatch.setattr(harness_lifecycle, "plan", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(harness_lifecycle, "prepare", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "commit",
+        lambda _prepared: (_ for _ in ()).throw(RuntimeError("adoption failed")),
+    )
+    monkeypatch.setattr(harness_lifecycle, "abort", aborted.append)
+
+    with pytest.raises(RuntimeError, match="adoption failed"):
+        harness_lifecycle.reconcile_planned(SimpleNamespace(), lifecycle.Intent.ENSURE)
+
+    assert aborted == [prepared]
+
+
+def test_prepare_checks_project_and_sidecar_plan_before_runtime_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node = SimpleNamespace(
+        reference="base",
+        role=lifecycle.ImageRole.RUNTIME_BASE,
+        build=SimpleNamespace(recipe_fingerprint="recipe"),
+        effective_inputs="inputs",
+        runtime_base_contract=None,
+        standard_substrate_contract=None,
+        acquisition_policy=lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    lifecycle_plan = SimpleNamespace(
+        nodes=(node,),
+        steps=(SimpleNamespace(action=lifecycle.PlanAction.BUILD),),
+        project_root=tmp_path,
+    )
+    sidecar = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    observed = []
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "ensure_docker_build_capacity",
+        lambda *_args, **kwargs: observed.extend(kwargs["remaining_plan"].requests),
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "prepare",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    harness_lifecycle.prepare(lifecycle_plan, future_requests=(sidecar,))
+
+    assert [request.managed_image for request in observed] == ["base", "proxy"]
+
+
+def test_legacy_host_adapter_passes_complete_plan_to_local_base_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import booley
+    from booley.harness.setup import docker_image
+    from booley.runtime.version_attribution import VersionOrigin
+
+    base = DockerBuildRequest("base", lifecycle.BASE_IMAGE)
+    proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    plan = DockerBuildPlan((base, proxy))
+    observed = []
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        SimpleNamespace(origin=VersionOrigin.SOURCE),
+    )
+    monkeypatch.setattr(
+        docker_image,
+        "_step_docker_image",
+        lambda *_args, **kwargs: observed.append(kwargs["capacity_plan"]),
+    )
+    adapter = harness_lifecycle._LegacyBuildAdapter(
+        tmp_path,
+        FakeDocker({}),
+        verbose=False,
+        capacity_plan=plan,
+    )
+
+    adapter._build_base(SimpleNamespace(reference=lifecycle.BASE_IMAGE), SimpleNamespace())
+
+    assert observed == [plan]
 
 
 class FakeBuilder:
@@ -1867,6 +2111,7 @@ def _wire_source_builds(
         _fingerprint,
         *,
         rebuild_runtime_base=False,
+        **_kwargs,
     ) -> None:
         del rebuild_runtime_base
         payload = lifecycle.PayloadProvenance(
@@ -1962,6 +2207,7 @@ def _extracted_build_recorder(docker: FakeDocker, calls: list[tuple]):
         *,
         preserve_build_stamp=False,
         rebuild_runtime_base=False,
+        **_kwargs,
     ) -> None:
         calls.append((docker_dir, preserve_build_stamp, rebuild_runtime_base))
         payload = lifecycle.PayloadProvenance(

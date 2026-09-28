@@ -9,9 +9,9 @@ scaffolded file in between, and asserts the ownership contract file by file:
   devcontainer.json) come back byte-identical to the first run — hand edits
   are deliberately regenerated away.
 
-Docker/vscode/systemctl are absent (shutil.which -> None). The fatal Docker
-preflight is stubbed as healthy so this clobber-contract test can exercise the
-remaining steps; image/network steps still skip or error without subprocesses.
+Docker/vscode/systemctl are absent (shutil.which -> None). Image reconciliation
+is stubbed as current so this clobber-contract test can exercise the remaining
+steps without subprocesses.
 The docker-file preservation path (SETUP-6, 8c6a01c) is exercised separately
 with a stubbed image build.
 """
@@ -94,6 +94,16 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
         init_cmd,
         "reconcile_bootstrap",
         lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
+    )
+    current_image = LifecycleResult(
+        selected_reference="booley-sandbox",
+        selected_id="sha256:test-image",
+        status=ImageLifecycleStatus.CURRENT,
+    )
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "reconcile_planned",
+        lambda *_args, **_kwargs: current_image,
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(

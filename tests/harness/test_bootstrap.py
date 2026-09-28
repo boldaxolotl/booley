@@ -10,6 +10,11 @@ import pytest
 
 from booley.config.host_config import HostConfigError, InteractiveHostPolicy
 from booley.harness import bootstrap, bootstrap_cli
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildRequest,
+    DockerCapacityError,
+)
 from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult, Status
 
 
@@ -17,10 +22,24 @@ def _current(resource: str) -> bootstrap.BootstrapFinding:
     return bootstrap.BootstrapFinding(resource, bootstrap.BootstrapState.CURRENT, "current")
 
 
+def _current_sidecars() -> bootstrap.host_sidecars.SidecarResult:
+    findings = tuple(
+        bootstrap.host_sidecars.SidecarFinding(
+            resource,
+            bootstrap.host_sidecars.SidecarState.CURRENT,
+            "current",
+        )
+        for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper")
+    )
+    return bootstrap.host_sidecars.SidecarResult(findings)
+
+
 def _wire_current(
     monkeypatch: pytest.MonkeyPatch, *, stub_vscode_extension: bool = True
 ) -> list[str]:
     calls: list[str] = []
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: ())
+    monkeypatch.setattr(bootstrap.host_sidecars, "plan_image_builds", lambda _intent: ())
     monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
     monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     monkeypatch.setattr(
@@ -55,20 +74,10 @@ def _wire_current(
             _current("base-image"),
         ),
     )
-    sidecar_findings = tuple(
-        bootstrap.host_sidecars.SidecarFinding(
-            resource,
-            bootstrap.host_sidecars.SidecarState.CURRENT,
-            "current",
-        )
-        for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper")
-    )
     monkeypatch.setattr(
         bootstrap.host_sidecars,
         "reconcile_sidecars",
-        lambda _policy, _intent: (
-            calls.append("sidecars") or bootstrap.host_sidecars.SidecarResult(sidecar_findings)
-        ),
+        lambda _policy, _intent, **_kwargs: calls.append("sidecars") or _current_sidecars(),
     )
     return calls
 
@@ -100,6 +109,72 @@ def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.Monke
     ]
     assert result.ready
     assert result.exit_status == 0
+
+
+def test_bootstrap_refuses_aggregate_image_plan_before_first_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _wire_current(monkeypatch)
+    base = DockerBuildRequest("runtime base", "base")
+    sandbox = DockerBuildRequest("Sandbox Image", "sandbox")
+    proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    reaper = DockerBuildRequest("reaper", "reaper", BuildEstimateClass.THIN_OVERLAY)
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: (base, sandbox))
+    monkeypatch.setattr(
+        bootstrap.host_sidecars,
+        "plan_image_builds",
+        lambda _intent: (proxy, reaper),
+    )
+    observed = []
+
+    def refuse(*_args, **kwargs):
+        observed.extend(kwargs["remaining_plan"].requests)
+        raise DockerCapacityError("capacity refused")
+
+    monkeypatch.setattr(bootstrap, "ensure_docker_build_capacity", refuse)
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert [request.managed_image for request in observed] == [
+        "runtime base",
+        "Sandbox Image",
+        "proxy",
+        "reaper",
+    ]
+    assert "base-image" not in calls
+    assert "sidecars" not in calls
+    assert result.findings[-1].resource == "image-capacity"
+
+
+def test_bootstrap_threads_aggregate_plan_through_every_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _wire_current(monkeypatch)
+    base = DockerBuildRequest("runtime base", "base")
+    proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: (base,))
+    monkeypatch.setattr(
+        bootstrap.host_sidecars,
+        "plan_image_builds",
+        lambda _intent: (proxy,),
+    )
+    monkeypatch.setattr(bootstrap, "ensure_docker_build_capacity", lambda *_a, **_kw: None)
+    observed = []
+
+    def reconcile_base(_intent, **kwargs):
+        observed.append(kwargs["capacity_plan"])
+        result = LifecycleResult("booley-sandbox", "sha256:base", Status.CURRENT)
+        return result, _current("base-image")
+
+    def reconcile_sidecars(_policy, _intent, **kwargs):
+        observed.append(kwargs["capacity_plan"])
+        return _current_sidecars()
+
+    monkeypatch.setattr(bootstrap, "_reconcile_base_image", reconcile_base)
+    monkeypatch.setattr(bootstrap.host_sidecars, "reconcile_sidecars", reconcile_sidecars)
+
+    assert bootstrap.reconcile_bootstrap(Intent.ENSURE).ready
+    assert [plan.requests for plan in observed] == [(base, proxy), (base, proxy)]
 
 
 def test_noncanonical_install_stops_before_host_mutation(
