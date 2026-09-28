@@ -282,6 +282,13 @@ class _IncrementalBuildAdapter:
                     node.standard_substrate_contract,
                 )
             )
+        if node.logical_selection_fingerprint is not None:
+            labels.append(
+                (
+                    runtime_lifecycle.LABEL_LOGICAL_SELECTION_FINGERPRINT,
+                    node.logical_selection_fingerprint,
+                )
+            )
         return labels
 
     def _role_build_inputs(

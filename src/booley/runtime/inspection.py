@@ -2,7 +2,6 @@
 
 Inspection validates current issuance; it never issues or repairs a Runtime.
 Host validation may create/lock the private authority store when EDA is active.
-The version probe uses a temporary, network-disabled container (30s CLI timeout).
 In-runtime validation probes mounted Vivado (90s), without host authority access.
 A CLI timeout does not itself prove remote container cleanup. Live execution
 must independently validate authority; a diagnostic report grants no authority.
@@ -18,7 +17,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-import booley
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
@@ -33,7 +31,13 @@ from booley.eda.provisioning.policies.vivado import (
     SUPPORTED_VERSION,
     wrapper_sha256,
 )
-from booley.runtime import auth_token, runtime_context, session_runtime
+from booley.runtime import (
+    auth_token,
+    image_identity,
+    project_image,
+    runtime_context,
+    session_runtime,
+)
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
@@ -180,21 +184,34 @@ def _provider_persistence_current(
 
 def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findings) -> bool:
     spec_image = spec.get("image")
-    resolved_image = idk.image_id(request.image)
     immutable_spec = isinstance(spec_image, str) and re.fullmatch(
         r"sha256:[0-9a-f]{64}", spec_image
     )
-    if immutable_spec and resolved_image is None:
+    if not isinstance(spec_image, str) or spec_image == request.image:
+        return True
+    if immutable_spec and project_image.is_managed_sandbox_image(
+        request.project_root, request.image
+    ):
+        comparison = idk.compare_issued_selection(
+            spec_image, request.image, executable=request.docker_exe or "docker"
+        )
+    elif immutable_spec:
+        comparison = idk.compare_issued_reference(
+            spec_image, request.image, executable=request.docker_exe or "docker"
+        )
+    else:
+        comparison = image_identity.Comparison(image_identity.Status.MISMATCH)
+    if comparison.status is image_identity.Status.UNKNOWN:
         report.note(
             "devcontainer.json has an immutable image pin, but [sandbox].image "
-            f"'{request.image}' cannot be resolved here; image drift is unverified "
+            f"'{request.image}' cannot be compared conclusively here; image drift is unverified "
             "and host `booley doctor` is authoritative"
         )
-    elif isinstance(spec_image, str) and spec_image != (resolved_image or request.image):
+    elif comparison.status is image_identity.Status.MISMATCH:
         _spec_warning(
             request,
             report,
-            f"devcontainer.json image '{spec_image}' != immutable ID for [sandbox].image "
+            f"devcontainer.json image '{spec_image}' != logical [sandbox].image "
             f"'{request.image}': the Sandbox runs a stale image "
             "(missing toolchains it should have) - re-run `booley init --seed`, "
             "then rebuild the container in VS Code",
@@ -416,62 +433,18 @@ def _list_issued_containers(
     )
 
 
-def _probe_runtime_booley_version(
-    docker_exe: str,
-    image: str,
-) -> subprocess.CompletedProcess[str]:
-    """Read Booley's version from the issued image without network access."""
-    probe = "import booley; print(booley.__version__)"
-    return subprocess.run(
-        [
-            docker_exe,
-            "run",
-            "--rm",
-            "--pull=never",
-            "--network",
-            "none",
-            "--entrypoint",
-            "python3",
-            image,
-            "-c",
-            probe,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-
-
 def _check_runtime_booley_version(docker_exe: str, image: str, report: Findings) -> None:
-    """Require the host package and issued Sandbox Image to agree."""
-    try:
-        result = _probe_runtime_booley_version(docker_exe, image)
-    except (OSError, subprocess.SubprocessError) as exc:
+    """Require comparable host and issued-image Booley identities to agree."""
+    result = idk.compare_issued_build(image, executable=docker_exe)
+    if result.status is image_identity.Status.MISMATCH:
         report.fail(
-            f"could not read the issued Sandbox Booley version: {exc}",
-            "rebuild the sandbox image with `booley init --force`, then recreate the Sandbox",
-        )
-        return
-
-    runtime_version = result.stdout.strip()
-    if result.returncode != 0 or not runtime_version:
-        detail = (result.stderr or result.stdout).strip()
-        report.fail(
-            "issued Sandbox Image cannot report its Booley version",
-            f"rebuild it with `booley init --force` ({detail or f'exit {result.returncode}'})",
-        )
-        return
-
-    host_version = booley.__version__
-    if runtime_version != host_version:
-        report.fail(
-            f"host Booley {host_version} != Sandbox Booley {runtime_version}",
+            f"host and issued Sandbox Image contain different Booley code ({result.detail})",
             "run `booley init --force`, then `booley session down` and "
             "`booley session up` to recreate the Sandbox",
         )
         return
-    report.pass_(f"host and Sandbox use Booley {host_version}")
+    if result.status is image_identity.Status.MATCH:
+        report.pass_("host and issued Sandbox Image use the same Booley code")
 
 
 def _check_runtime_isolation(report: Findings) -> bool:

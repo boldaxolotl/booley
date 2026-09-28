@@ -17,9 +17,13 @@ import logging
 import re
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from booley.config.settings import InteractiveConfig
 from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT
+
+if TYPE_CHECKING:
+    from booley.runtime.image_identity import Comparison, ImageMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +172,78 @@ def image_id_strict(name: str) -> str | None:
         "cannot inspect issued Sandbox Image keeper: "
         + (detail or "docker image inspect returned no image ID")
     )
+
+
+def inspect_image_metadata(
+    reference: str,
+    *,
+    executable: str = "docker",
+) -> ImageMetadata | None:
+    """Return bounded labels/environment for exactly *reference*, or ``None``."""
+    from booley.runtime.image_identity import decode_image_metadata
+
+    try:
+        result = _run_docker(["image", "inspect", reference], timeout=15, executable=executable)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    if len(result.stdout) > 1_048_576:
+        return None
+    try:
+        document = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return decode_image_metadata(reference, document)
+
+
+def compare_issued_build(image: str, *, executable: str = "docker") -> Comparison:
+    """Compare one exact issued image with the canonical host installation."""
+    from booley.runtime.image_identity import (
+        Comparison,
+        Status,
+        build_identity,
+        compare_build_identity,
+        current_host_build_identity,
+    )
+
+    expected = current_host_build_identity()
+    observed = inspect_image_metadata(image, executable=executable)
+    if expected is None or observed is None:
+        return Comparison(Status.UNKNOWN)
+    return compare_build_identity(expected, build_identity(observed))
+
+
+def compare_issued_selection(
+    issued_reference: str,
+    configured_reference: str,
+    *,
+    executable: str = "docker",
+) -> Comparison:
+    """Inspect and compare issued/configured selection without mutation."""
+    from booley.runtime.image_identity import compare_logical_selection
+
+    def inspect(reference: str) -> ImageMetadata | None:
+        return inspect_image_metadata(reference, executable=executable)
+
+    return compare_logical_selection(issued_reference, configured_reference, inspect)
+
+
+def compare_issued_reference(
+    issued_reference: str,
+    configured_reference: str,
+    *,
+    executable: str = "docker",
+) -> Comparison:
+    """Compare exact IDs when no trusted logical provenance contract exists."""
+    from booley.runtime.image_identity import Comparison, Status
+
+    issued = inspect_image_metadata(issued_reference, executable=executable)
+    configured = inspect_image_metadata(configured_reference, executable=executable)
+    if issued is None or configured is None:
+        return Comparison(Status.UNKNOWN)
+    status = Status.MATCH if issued.image_id == configured.image_id else Status.MISMATCH
+    return Comparison(status)
 
 
 def _container_image_matches(container: str, image: str) -> bool | None:

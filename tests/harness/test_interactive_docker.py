@@ -12,6 +12,7 @@ import subprocess
 import pytest
 
 from booley.config.settings import InteractiveConfig
+from booley.runtime import image_identity
 from booley.runtime import interactive_docker as idk
 
 
@@ -123,6 +124,27 @@ class TestIssuedImageKeepers:
             ]
         )
         assert idk.issued_image_tags() == [keeper]
+
+
+def test_external_selection_compares_exact_image_ids(monkeypatch) -> None:
+    metadata = {
+        "issued": image_identity.ImageMetadata("issued", "sha256:old", {}, {}),
+        "same": image_identity.ImageMetadata("same", "sha256:old", {}, {}),
+        "rebuilt": image_identity.ImageMetadata("rebuilt", "sha256:new", {}, {}),
+    }
+    monkeypatch.setattr(
+        idk,
+        "inspect_image_metadata",
+        lambda reference, **_kwargs: metadata.get(reference),
+    )
+
+    assert idk.compare_issued_reference("issued", "same").status is image_identity.Status.MATCH
+    assert (
+        idk.compare_issued_reference("issued", "rebuilt").status is image_identity.Status.MISMATCH
+    )
+    assert (
+        idk.compare_issued_reference("issued", "missing").status is image_identity.Status.UNKNOWN
+    )
 
 
 # ===========================================================================

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
 
 import pytest
 
@@ -117,3 +118,10 @@ def test_lock_owner_falls_back_when_contended_file_cannot_be_read() -> None:
             raise OSError("locked byte cannot be read")
 
     assert lifecycle_lock._lock_owner(UnreadableOwner()) == "another Booley command"
+
+
+def test_lock_owner_falls_back_when_windows_returns_partial_locked_content() -> None:
+    assert (
+        lifecycle_lock._lock_owner(StringIO("\0pid=41 operation=booley init\n"))
+        == "another Booley command"
+    )
