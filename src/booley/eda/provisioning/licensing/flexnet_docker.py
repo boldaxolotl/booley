@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.differences import format_differences
 from booley.core.resources import package_data_dir
 
 from .flexnet_relay import (
@@ -55,6 +56,20 @@ _RELAY_ENV_NAMES = frozenset(
         ENV_MAX_CONNECTIONS,
     }
 )
+
+
+def _label_differences(expected: set[str], actual: set[str]) -> str:
+    expected_values = dict(item.split("=", 1) for item in expected)
+    actual_values = dict(item.split("=", 1) for item in actual if "=" in item)
+    expected_safe: dict[str, object] = {
+        **expected_values,
+        "unexpected_label_keys": [],
+    }
+    actual_safe: dict[str, object] = {
+        **{key: actual_values[key] for key in expected_values if key in actual_values},
+        "unexpected_label_keys": sorted(set(actual_values) - set(expected_values)),
+    }
+    return format_differences(expected_safe, actual_safe)
 
 
 class RelayDockerError(RuntimeError):
@@ -387,6 +402,68 @@ def connect_session(
     )
 
 
+def _validate_relay_labels_and_health(
+    run: Runner,
+    resources: RelayResources,
+    issuance_labels: tuple[str, ...],
+) -> None:
+    expected = {
+        ROLE_LABEL,
+        f"{SESSION_LABEL}={resources.session_id}",
+        *issuance_labels,
+    }
+    actual = _inspect_labels(run, "container", resources.relay_container)
+    if actual != expected:
+        raise RelayDockerError(
+            "license relay labels differ from host issuance: "
+            + _label_differences(expected, actual)
+        )
+    health = _inspect_value(
+        run, "container", resources.relay_container, "{{.State.Health.Status}}"
+    )
+    if health != "healthy":
+        raise RelayDockerError("license relay is not healthy")
+
+
+def _validate_relay_membership(
+    run: Runner,
+    resources: RelayResources,
+    session_container: str | None,
+) -> None:
+    expected_networks = {resources.private_network, resources.outbound_network}
+    relay_networks = _inspect_networks(run, resources.relay_container)
+    if relay_networks != expected_networks:
+        raise RelayDockerError(
+            "license relay network topology has drifted: "
+            + format_differences({"networks": expected_networks}, {"networks": relay_networks})
+        )
+    if session_container is None:
+        return
+    session_networks = _inspect_networks(run, session_container)
+    expected = {"private_network_present": True, "outbound_network_present": False}
+    actual = {
+        "private_network_present": resources.private_network in session_networks,
+        "outbound_network_present": resources.outbound_network in session_networks,
+    }
+    if expected != actual:
+        raise RelayDockerError(
+            "Sandbox license network membership has drifted: "
+            + format_differences(expected, actual)
+        )
+
+
+def _expected_relay_environment(profile: RelayProfile) -> set[str]:
+    return {
+        f"{ENV_UPSTREAM_IPV4}={profile.server_ipv4}",
+        f"{ENV_SERVER_HOSTID}={profile.server_hostid}",
+        f"{ENV_LMGRD_PORT}={profile.lmgrd_port}",
+        f"{ENV_VENDOR_PORT}={profile.vendor_port}",
+        f"{ENV_CONNECT_TIMEOUT}={DEFAULT_CONNECT_TIMEOUT:g}",
+        f"{ENV_IDLE_TIMEOUT}={DEFAULT_IDLE_TIMEOUT:g}",
+        f"{ENV_MAX_CONNECTIONS}={DEFAULT_MAX_CONNECTIONS}",
+    }
+
+
 def validate_relay(
     resources: RelayResources,
     session_container: str | None,
@@ -399,43 +476,14 @@ def validate_relay(
     """Fail closed unless the complete relay security contract matches issuance."""
     run = runner or _run_docker
     image_id = resolve_relay_image_id(image=image, runner=run)
-    expected = {
-        ROLE_LABEL,
-        f"{SESSION_LABEL}={resources.session_id}",
-        *issuance_labels,
-    }
-    actual = _inspect_labels(run, "container", resources.relay_container)
-    if actual != expected:
-        raise RelayDockerError("license relay labels differ from host issuance")
-    if (
-        _inspect_value(run, "container", resources.relay_container, "{{.State.Health.Status}}")
-        != "healthy"
-    ):
-        raise RelayDockerError("license relay is not healthy")
-    expected_env = {
-        f"{ENV_UPSTREAM_IPV4}={profile.server_ipv4}",
-        f"{ENV_SERVER_HOSTID}={profile.server_hostid}",
-        f"{ENV_LMGRD_PORT}={profile.lmgrd_port}",
-        f"{ENV_VENDOR_PORT}={profile.vendor_port}",
-        f"{ENV_CONNECT_TIMEOUT}={DEFAULT_CONNECT_TIMEOUT:g}",
-        f"{ENV_IDLE_TIMEOUT}={DEFAULT_IDLE_TIMEOUT:g}",
-        f"{ENV_MAX_CONNECTIONS}={DEFAULT_MAX_CONNECTIONS}",
-    }
+    _validate_relay_labels_and_health(run, resources, issuance_labels)
     _validate_container_contract(
         run,
         resources.relay_container,
         image_id=image_id,
-        expected_env=expected_env,
+        expected_env=_expected_relay_environment(profile),
     )
-    relay_networks = _inspect_networks(run, resources.relay_container)
-    if relay_networks != {resources.private_network, resources.outbound_network}:
-        raise RelayDockerError("license relay network topology has drifted")
-    if session_container is not None:
-        session_networks = _inspect_networks(run, session_container)
-        if resources.private_network not in session_networks:
-            raise RelayDockerError("Sandbox is not attached to its private license network")
-        if resources.outbound_network in session_networks:
-            raise RelayDockerError("Sandbox is attached to the relay outbound network")
+    _validate_relay_membership(run, resources, session_container)
     _validate_network(
         run,
         resources.private_network,
@@ -553,16 +601,35 @@ def _validate_container_contract(
     if not _security_options_match(host.get("SecurityOpt")):
         raise RelayDockerError("license relay security options have drifted")
     if host.get("Tmpfs") != {"/tmp": "rw,noexec,nosuid,nodev,size=1m"}:
-        raise RelayDockerError("license relay tmpfs policy has drifted")
+        raise RelayDockerError(
+            "license relay tmpfs policy has drifted: "
+            + format_differences(
+                {"tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=1m"}},
+                {"tmpfs": host.get("Tmpfs")},
+            )
+        )
     if not _limits_match(host):
         raise RelayDockerError("license relay resource limits have drifted")
     if host.get("RestartPolicy") != {"Name": "no", "MaximumRetryCount": 0}:
-        raise RelayDockerError("license relay restart policy has drifted")
-    if host.get("LogConfig") != {
+        raise RelayDockerError(
+            "license relay restart policy has drifted: "
+            + format_differences(
+                {"restart_policy": {"Name": "no", "MaximumRetryCount": 0}},
+                {"restart_policy": host.get("RestartPolicy")},
+            )
+        )
+    expected_logging = {
         "Type": "json-file",
         "Config": {"max-file": "2", "max-size": "1m"},
-    }:
-        raise RelayDockerError("license relay logging policy has drifted")
+    }
+    if host.get("LogConfig") != expected_logging:
+        raise RelayDockerError(
+            "license relay logging policy has drifted: "
+            + format_differences(
+                {"logging_policy": expected_logging},
+                {"logging_policy": host.get("LogConfig")},
+            )
+        )
     _validate_relay_env(config.get("Env"), expected_env)
 
 
@@ -573,7 +640,13 @@ def _validate_container_identity(
     if not isinstance(runtime_state, dict) or runtime_state.get("Running") is not True:
         raise RelayDockerError("license relay is not running")
     if state.get("Image") != image_id or config.get("Image") != image_id:
-        raise RelayDockerError("license relay image identity has drifted")
+        raise RelayDockerError(
+            "license relay image identity has drifted: "
+            + format_differences(
+                {"state_image": image_id, "config_image": image_id},
+                {"state_image": state.get("Image"), "config_image": config.get("Image")},
+            )
+        )
     if config.get("User") != "65532:65532":
         raise RelayDockerError("license relay user has drifted")
     if mounts != [] or host.get("Binds") not in (None, []):
@@ -583,7 +656,13 @@ def _validate_container_identity(
     if host.get("ReadonlyRootfs") is not True:
         raise RelayDockerError("license relay root filesystem is writable")
     if host.get("CapAdd") not in (None, []) or host.get("CapDrop") != ["ALL"]:
-        raise RelayDockerError("license relay capability policy has drifted")
+        raise RelayDockerError(
+            "license relay capability policy has drifted: "
+            + format_differences(
+                {"cap_add": [], "cap_drop": ["ALL"]},
+                {"cap_add": host.get("CapAdd") or [], "cap_drop": host.get("CapDrop")},
+            )
+        )
     if not _host_authority_isolated(host):
         raise RelayDockerError("license relay host authority has drifted")
 
@@ -629,7 +708,10 @@ def _validate_relay_env(raw: object, expected: set[str]) -> None:
         raise RelayDockerError("Docker returned invalid relay environment state")
     actual = {item for item in raw if item.partition("=")[0] in _RELAY_ENV_NAMES}
     if actual != expected:
-        raise RelayDockerError("license relay environment differs from host authority")
+        raise RelayDockerError(
+            "license relay environment differs from host authority: "
+            + format_differences({"environment": expected}, {"environment": actual})
+        )
 
 
 def _inspect_object(run: Runner, kind: str, name: str) -> dict:
@@ -657,7 +739,10 @@ def _validate_network(
     labels = _inspect_labels(run, "network", name)
     expected = {role_label, f"{SESSION_LABEL}={session_id}", *issuance_labels}
     if labels != expected:
-        raise RelayDockerError(f"license network {name} labels differ from host issuance")
+        raise RelayDockerError(
+            f"license network {name} labels differ from host issuance: "
+            + _label_differences(expected, labels)
+        )
     observed = _inspect_value(run, "network", name, "{{.Internal}}").lower()
     if observed != str(internal).lower():
         raise RelayDockerError(f"license network {name} routing policy has drifted")
@@ -668,7 +753,13 @@ def _validate_network(
         raise RelayDockerError(f"Docker returned invalid options for network {name}") from exc
     expected_options = {GATEWAY_MODE_OPTION: GATEWAY_MODE_ISOLATED} if internal else {}
     if options != expected_options:
-        raise RelayDockerError(f"license network {name} gateway policy has drifted")
+        raise RelayDockerError(
+            f"license network {name} gateway policy has drifted: "
+            + format_differences(
+                {"network_options": expected_options},
+                {"network_options": options},
+            )
+        )
 
 
 def _validate_network_endpoints(

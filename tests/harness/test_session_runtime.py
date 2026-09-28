@@ -3912,7 +3912,7 @@ class TestSessionRefresh:
                 "_run",
                 return_value=subprocess.CompletedProcess([], 0, identity, ""),
             ),
-            pytest.raises(sr.SessionError, match="wheel identity"),
+            pytest.raises(sr.SessionError, match="wheel identity") as caught,
         ):
             sr.verify_refreshed_session(
                 tmp_path,
@@ -3921,6 +3921,9 @@ class TestSessionRefresh:
                 expected_wheel_source_fingerprint="wheel-source",
                 expected_wheel_sha256="b" * 64,
             )
+
+        assert "source_fingerprint wheel-source -> other-source" in str(caught.value)
+        assert "wheel_sha256" not in str(caught.value)
 
     def test_down_up_never_announces_persisted_stale_doctor_findings(
         self,

@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from booley.core.differences import format_differences
 from booley.runtime.project_dir import runtime_dir
 from booley.ticket_board.criteria_projection import project_ticket_criteria
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
@@ -190,6 +191,16 @@ def _convert_ticket(root: Path, slug: str, source: str) -> TicketDocument:
     return converted.document
 
 
+def _validate_preview_heads(
+    expected: dict[str, str], source_state: dict[str, dict[str, Any]]
+) -> None:
+    actual = {role: value["head"] for role, value in source_state.items()}
+    if actual != expected:
+        raise AmendmentError(
+            "Ticket refs changed during amendment preview: " + format_differences(expected, actual)
+        )
+
+
 def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], AmendmentProposal]:
     root = Path(tio._project_root).resolve()
     ticket, status = find_ticket_file(tio.tickets_dir, slug)
@@ -205,8 +216,7 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
     repositories = _repositories(root, basis)
     prior_scope = fields.get("scope", [])
     source_state = _status_snapshot(root, basis, prior_scope, repositories)
-    if {role: value["head"] for role, value in source_state.items()} != heads:
-        raise AmendmentError("Ticket refs changed during amendment preview")
+    _validate_preview_heads(heads, source_state)
     state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
     _preflight_state(state_path, proposal)
     state_digest = (
@@ -367,13 +377,19 @@ def _finish_amendment(tio: Any, journal: dict[str, Any]) -> dict[str, Any]:
     root = Path(tio._project_root).resolve()
     old = ticket_baseline_from_machine(journal["old_machine"])
     if old.as_dict() != journal["basis"]:
-        raise AmendmentError("amendment journal baseline identity changed")
+        raise AmendmentError(
+            "amendment journal baseline identity changed: "
+            + format_differences(journal["basis"], old.as_dict())
+        )
     repositories = _repositories(root, old)
     _prepare_amendment_participants(root, journal, old, repositories)
     _publish_refs(root, journal, old, repositories)
     new_basis = ticket_baseline_from_machine(journal["machine"])
     if new_basis.as_dict() != journal["new_basis"]:
-        raise AmendmentError("prepared amendment baseline identity changed")
+        raise AmendmentError(
+            "prepared amendment baseline identity changed: "
+            + format_differences(journal["new_basis"], new_basis.as_dict())
+        )
     _publish_board_and_state(tio, journal, new_basis, repositories)
     _publish_handoff_and_queue(tio, journal, new_basis)
     return {

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.core.differences import format_differences
 from booley.ticket_board.ticket_repositories import TicketWorkspace, TicketWorkspaceError
 
 if TYPE_CHECKING:
@@ -868,7 +869,15 @@ class TicketIO:
             path = Path(journal.destination)
         document = self._convert_ticket(path, journal.slug, "executable")
         if document.generated.get("machine") != journal.machine:
-            raise RuntimeError("enqueue journal Ticket machine metadata changed")
+            raise RuntimeError(
+                "enqueue journal Ticket machine metadata changed: "
+                + format_differences(
+                    journal.machine,
+                    document.generated.get("machine")
+                    if isinstance(document.generated.get("machine"), dict)
+                    else {"machine": document.generated.get("machine")},
+                )
+            )
         basis = load_ticket_baseline_from_document(self._project_root, journal.slug, document)
         outer = basis.participant("outer")
         errors = validate_basis_refs(

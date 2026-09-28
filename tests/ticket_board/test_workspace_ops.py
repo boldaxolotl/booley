@@ -1144,8 +1144,11 @@ def test_workspace_from_basis_checkout_validates_participants_and_pristine_heads
         workspace_ops, "checkout_project_dir_relative_to", lambda _root: Path("project")
     )
     changed = TicketBaseline((_participant(), _participant("zeta")))
-    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="participants changed"):
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="participants changed"
+    ) as caught:
         workspace_ops._workspace_from_basis_checkout(tmp_path, outer, changed)
+    assert "participant_roles {outer, zeta} -> {outer}" in str(caught.value)
 
     native = TicketBaseline((_participant(),))
     monkeypatch.setattr(

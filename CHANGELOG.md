@@ -57,6 +57,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   the holder releases the lock and otherwise exit with one clean `ERROR:`
   message and status 2 instead of failing immediately or printing a traceback.
   ([#785](https://github.com/boldaxolotl/Booley/issues/785))
+- Mismatch and drift diagnostics now name every safe field that differs and
+  show its recorded-to-current value transition, including canonical host
+  wheel, Doctor, Host Bootstrap, Sandbox, Ticket Board, and EDA records.
+  ([#779](https://github.com/boldaxolotl/Booley/issues/779))
 - A commit after review acceptance is now reported as stale acceptance, with
   the frozen and live heads and the real exits (restore the accepted heads or
   reset), instead of as a corrupt review binding. `board show` renders the

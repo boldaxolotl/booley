@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict
+from booley.core.differences import format_differences
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.review.generation import (
@@ -378,7 +379,10 @@ def _resolve_review_repositories(
     if repository is not None:
         actual_heads["project"] = repository.head_sha
     if actual_heads != current_heads:
-        raise ReviewPrepError("live review checkouts disagree with Ticket baseline refs")
+        raise ReviewPrepError(
+            "live review checkouts disagree with Ticket baseline refs: "
+            + format_differences(current_heads, actual_heads)
+        )
     worktrees = {"outer": worktree}
     if repository is not None:
         worktrees["project"] = repository.worktree

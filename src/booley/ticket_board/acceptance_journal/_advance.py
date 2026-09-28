@@ -18,6 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
+from booley.core.differences import format_differences
 from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 
 from ..git_ops import worktree_is_clean
@@ -1217,7 +1218,8 @@ def _ensure_sources(
         actual = sources if has_journaled_sources else current
         if set(expected) != set(transaction.participants) or actual != expected:
             raise AcceptanceOperationError(
-                "Ticket heads changed after the Criteria Satisfaction Record was frozen"
+                "Ticket heads changed after the Criteria Satisfaction Record was frozen: "
+                + format_differences(expected, actual)
             )
     plans: list[_RefReconciliation] = []
     for participant in transaction.basis.participants:
