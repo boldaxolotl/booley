@@ -28,6 +28,7 @@ from booley.criteria.freshness import (
     evaluate_verification_freshness,
     verification_freshness_eligible,
 )
+from booley.criteria.presentation import state_criterion_presentation
 from booley.criteria.state import DevelopmentState
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.review.generation import (
@@ -51,6 +52,7 @@ from booley.runtime.agent import call_agent
 from booley.runtime.agent_config import get_backend_config, load_backend_config
 from booley.runtime.paths import skills_dir
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
+from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.acceptance_diagnostics import (
     AcceptanceHeadDrift,
@@ -158,6 +160,8 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
             evaluate_verification_freshness,
             fingerprint_provider=compute_source_fingerprint,
         ),
+        criterion_presenter=state_criterion_presentation,
+        regular_file_opener=open_regular_nofollow,
     )
 
 

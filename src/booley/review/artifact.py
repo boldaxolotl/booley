@@ -217,6 +217,9 @@ class CriterionRow:
     outcome: str
     freshness: str
     metric: str
+    label: str
+    detail: str
+    report_path: str | None
     changed_categories: tuple[str, ...] = ()
     availability: str = "available"
 
@@ -229,13 +232,21 @@ class CriterionRow:
         changed_categories = _strings(row.get("changed_categories", []), "changed_categories")
         if any(not item for item in changed_categories):
             raise ReviewArtifactError("changed_categories must contain nonblank strings")
+        criterion = require_str(row, "criterion")
+        label = row.get("label", criterion)
+        detail = row.get("detail", "")
+        if not isinstance(label, str) or not isinstance(detail, str):
+            raise ReviewArtifactError("criterion label and detail must be strings")
         return cls(
             category=require_str(row, "category"),
-            criterion=require_str(row, "criterion"),
+            criterion=criterion,
             required=required_value == "mandatory",
             outcome=_enum(row, "outcome", CRITERION_OUTCOMES),
             freshness=_enum(row, "freshness", CRITERION_FRESHNESS),
             metric=require_str(row, "metric"),
+            label=label,
+            detail=detail,
+            report_path=_optional_path(row, "report_path"),
             changed_categories=tuple(sorted(set(changed_categories))),
             availability=_enum(
                 {"availability": row.get("availability", "available")},
@@ -254,6 +265,9 @@ class CriterionRow:
         return {
             "category": self.category,
             "criterion": self.criterion,
+            "label": self.label,
+            "detail": self.detail,
+            "report_path": self.report_path,
             "required": "mandatory" if self.required else "optional",
             "outcome": self.outcome,
             "freshness": self.freshness,
