@@ -23,6 +23,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime import session_spec
+from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +43,36 @@ def workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "i2c"
     ws.mkdir()
     return ws
+
+
+def test_session_up_waits_for_lifecycle_lock(
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    lock_path = tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
+    waiting = observe_lifecycle_contention(monkeypatch)
+    invoked: list[str] = []
+    monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_args: None)
+    monkeypatch.setattr(
+        sr,
+        "_up_unlocked",
+        lambda *_args, **_kwargs: invoked.append("up") or "sandbox",
+    )
+
+    with (
+        held_lifecycle_lock(lock_path) as holder,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        result = executor.submit(sr.up, workspace)
+        assert waiting.wait(2)
+        assert not result.done()
+        holder.release()
+        assert result.result(timeout=5) == "sandbox"
+
+    assert invoked == ["up"]
+    assert "host Docker lifecycle is busy" in caplog.text
 
 
 def _spec(**kwargs) -> dict:

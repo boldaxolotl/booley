@@ -51,6 +51,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Host Bootstrap, Project Initialization, Sandbox lifecycle, and Sandbox
+  Issuance mutations now wait for the shared host Docker lifecycle lock for a
+  bounded interval, reporting busy owners while they wait. They continue when
+  the holder releases the lock and otherwise exit with one clean `ERROR:`
+  message and status 2 instead of failing immediately or printing a traceback.
+  ([#785](https://github.com/boldaxolotl/Booley/issues/785))
 - Mismatch and drift diagnostics now name every safe field that differs and
   show its recorded-to-current value transition, including canonical host
   wheel, Doctor, Host Bootstrap, Sandbox, Ticket Board, and EDA records.

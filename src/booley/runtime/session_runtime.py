@@ -54,8 +54,6 @@ _HOOK_SHELL = ("bash", "-lc")
 
 _LOCAL_ENV_RE = re.compile(r"\$\{localEnv:([^}:]+)\}")
 
-_SESSION_COMMAND_LOCK_TIMEOUT_SECONDS = 120.0
-
 
 class SessionError(RuntimeError):
     """A precondition for running the Sandbox is missing."""
@@ -2186,10 +2184,7 @@ def run_project_command(workspace: Path, command: list[str], *, tty: bool = True
     """Run one command in this Project's validated Sandbox."""
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
-    with host_lifecycle_lock(
-        "session command",
-        wait_timeout_s=_SESSION_COMMAND_LOCK_TIMEOUT_SECONDS,
-    ):
+    with host_lifecycle_lock("session command"):
         _recover_before_lifecycle(workspace, None)
         name, command_env = _select_or_start_project_runtime(workspace)
     _warn_on_mangled_args(command)
