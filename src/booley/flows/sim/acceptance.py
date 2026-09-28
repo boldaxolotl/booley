@@ -32,7 +32,7 @@ from booley.flows.sim.campaign import (
     build_artifact_reference,
     encode_artifact_reference,
 )
-from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES
+from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
 from booley.flows.sim.campaign_reports import (
     write_compatibility_projection,
 )
@@ -355,16 +355,25 @@ def _campaign_test_projections(outcome: CampaignOutcome) -> list[dict[str, objec
     return [
         {
             "name": observation["test"] or "default",
-            "passed": observation["execution"] == "completed"
-            and observation["functional"] == "pass"
-            and observation["assertions"] != "dirty",
+            "passed": _observation_passed(observation),
             "cycles": observation["cycle_count"],
             "sva_errors": observation["assertion_count"],
             "timed_out": observation["execution"] == "timeout",
-            "error_tail": str(observation["detail"]),
+            "error_tail": _observation_error_tail(observation),
         }
         for observation in outcome.observations
     ]
+
+
+def _observation_error_tail(observation: Mapping[str, object]) -> str:
+    detail = observation["detail"]
+    if not isinstance(detail, Mapping) or not isinstance(detail.get("reason"), str):
+        raise SimulationCampaignIntegrityError(
+            "Simulation Campaign observation detail must contain a string reason"
+        )
+    if _observation_passed(observation):
+        return ""
+    return detail["reason"]
 
 
 def _coverage_projection_fields(
