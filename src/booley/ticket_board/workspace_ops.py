@@ -50,7 +50,7 @@ from .basis_publication import (
     publish_ticket_commits,
 )
 from .frontmatter import parse_frontmatter
-from .git_status import parse_porcelain_v1_z
+from .git_status import GitStatusEntry, parse_porcelain_v1_z
 from .helpers import TicketSlugError, validate_ticket_slug
 from .persistence import WriteOnceConflictError, atomic_write_once
 from .planned_dependencies import (
@@ -805,17 +805,47 @@ def basis_changed_paths(
     return tuple(line for line in output.splitlines() if line)
 
 
+def _basis_checkout_status(repository: Path) -> tuple[GitStatusEntry, ...]:
+    result = _git(
+        repository,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise TicketBaselineOperationError(
+            f"git status failed in {repository} (rc={result.returncode}): {detail}"
+        )
+    try:
+        return parse_porcelain_v1_z(result.stdout)
+    except ValueError as exc:
+        raise TicketBaselineOperationError(
+            f"could not parse Git status in {repository}: {exc}"
+        ) from exc
+
+
+def _status_path_is_within(path: str, directory: str) -> bool:
+    normalized = path.replace("\\", "/").removeprefix("./").rstrip("/")
+    boundary = directory.replace("\\", "/").removeprefix("./").rstrip("/")
+    return normalized == boundary or normalized.startswith(f"{boundary}/")
+
+
+def _is_project_participant_entry(entry: GitStatusEntry, project_path: str) -> bool:
+    paths = (entry.path,) + ((entry.source_path,) if entry.source_path is not None else ())
+    return all(_status_path_is_within(path, project_path) for path in paths)
+
+
 def _workspace_from_basis_checkout(
     root: Path, outer: Path, basis: TicketBaseline
 ) -> AuthoringWorkspace:
     project = None
+    project_relative = None
     if any(row.role == "project" for row in basis.participants):
+        project_relative = checkout_project_dir_relative_to(root)
         paired = paired_project_repository(outer)
-        project = (
-            paired.worktree
-            if paired is not None
-            else outer / checkout_project_dir_relative_to(root)
-        )
+        project = paired.worktree if paired is not None else outer / project_relative
     repositories = {"outer": outer, **({"project": project} if project else {})}
     expected_roles = {row.role for row in basis.participants}
     if set(repositories) != expected_roles:
@@ -832,7 +862,13 @@ def _workspace_from_basis_checkout(
             raise TicketBaselineOperationError(
                 "waiting Ticket workspace was already executed or changed"
             )
-        if _require_git(repository, "status", "--porcelain", "--untracked-files=all"):
+        status = _basis_checkout_status(repository)
+        if participant.role == "outer" and project_relative is not None:
+            project_path = project_relative.as_posix()
+            status = tuple(
+                entry for entry in status if not _is_project_participant_entry(entry, project_path)
+            )
+        if status:
             raise TicketBaselineOperationError("waiting Ticket workspace is not pristine")
     project_base = basis.participant("project").destination_sha if project else ""
     return AuthoringWorkspace(
