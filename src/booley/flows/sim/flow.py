@@ -1904,7 +1904,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         from booley.flows.endpoint_admission import authorize_simulation_targets
 
         try:
-            self._effective_build_timeout_ms()
             prepared = self._prepare_campaign_targets()
             if isinstance(prepared, EndpointOutcome):
                 return prepared
@@ -1915,10 +1914,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
                 if selection_error is not None:
                     return selection_error
-                if getattr(self.args, "coverage", False):
-                    coverage_error = self._prepare_coverage()
-                    if coverage_error is not None:
-                        return coverage_error
+            self._effective_build_timeout_ms()
+            if resume is None and getattr(self.args, "coverage", False):
+                coverage_error = self._prepare_coverage()
+                if coverage_error is not None:
+                    return coverage_error
             rejection = authorize_simulation_targets(self.context, targets)
         except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
