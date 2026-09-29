@@ -1,271 +1,605 @@
 # Usage
 
-How to drive Booley day to day. No previous experience with LLM agents is
-assumed.
+This guide shows how to use Booley day to day. You don't need any experience
+with AI coding agents to follow it.
 
 **Contents**
 
-- [Read this first](#read-this-first)
-- [First, verify your setup](#first-verify-your-setup)
-- [Choose a mode](#choose-a-mode)
-- [Interactive Mode](#interactive-mode): [first session](#open-your-first-agent-session), [prompts](#write-a-useful-prompt), [permissions](#what-the-agent-is-allowed-to-do)
-- [Booley Flows & Specialists](#booley-flows--specialists): [running a Flow directly](#running-a-booley-flow-directly), [waveforms](#viewing-waveforms)
-- [Ticket-Driven Workflow](#ticket-driven-workflow): [creating Tickets](#creating-tickets), [Board lifecycle](#ticket-board-lifecycle), [Acceptance Criteria](#acceptance-criteria), [`on_success`](#where-the-work-lands-on_success)
-- [Running Unattended](#running-unattended)
-- [Scope](#scope)
-- [Push Notifications](#push-notifications)
-- [Feedback and bug reports](#when-booley-itself-misbehaves)
-- [CLI reference](#cli-reference): [concurrent tickets](#concurrent-tickets)
-- [Auth & billing](#auth--billing)
+1. [Read this first](#read-this-first)
+2. [Check your setup](#first-verify-your-setup)
+3. [Two ways to work](#choose-a-mode)
+4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
+5. [Ticket Mode](#ticket-driven-workflow): [creating Tickets](#creating-tickets), [acceptance criteria](#acceptance-criteria), [Scope](#scope), [when a Ticket finishes](#where-the-work-lands-on_success), [reviewing results](#ticket-board-lifecycle)
+6. [Running unattended](#running-unattended): [several Tickets at once](#concurrent-tickets), [push notifications](#push-notifications), [without VS Code](#entering-the-sandbox-without-vs-code)
+7. [Auth & billing](#auth--billing)
+8. [Reporting problems and feedback](#when-booley-itself-misbehaves)
+9. Reference: [Flows & Specialists](#booley-flows--specialists), [Criteria catalog](#criteria-catalog), [CLI](#cli-reference)
 
 ## Read this first
 
-This guide starts after installation and project setup. It assumes `booley
-init` and the `booley-setup` skill have finished successfully; if they have not,
-install Booley from the [README](../../README.md#installation), then follow
+This guide picks up after installation and project setup. It assumes that
+`booley init` and the `booley-setup` skill have both finished. If they haven't,
+install Booley using the [README](../../README.md#installation), then follow
 [SETUP.md](SETUP.md).
 
-Booley gives an LLM coding agent access to your project's configured EDA flows.
-Unlike a plain chatbot, a coding agent can inspect files, edit them, run shell
-commands, and call Booley Flows and Specialists while it works. In practice, you open an agent
-such as Claude Code or Codex, describe the result you want in ordinary language,
-and let the agent choose and run the appropriate Booley capability. You remain
-responsible for reviewing its reasoning, code, and hardware results.
+**What Booley does.** Booley lets an AI coding agent, such as Claude Code or
+Codex, run your project's EDA tools. A coding agent is more than a chatbot: it
+can read and edit files, run commands, and call Booley while it works. You
+describe what you want in plain language, and the agent picks the right Booley
+tool and runs it. You are still responsible for reviewing its reasoning, its
+code, and the hardware results.
 
-There are three places where you may type during this guide:
+Booley's tools come in two kinds:
+
+- **Flows** (`sim`, `lint`, `synth`, `fpga`) run EDA tools in a fixed,
+  predictable way. No AI is involved.
+- **Specialists** (`reviewer`, `mutation_tester`, `coverage_analyst`) are small
+  AI agents that each do one focused job.
+
+Both run inside the **Sandbox**, a Docker container that holds the EDA tools
+and keeps the agent away from the rest of your computer.
+
+**Where you type.** This guide uses three places:
 
 | Place | What goes there | Example |
 | --- | --- | --- |
-| **Host terminal** | Commands on your normal computer, outside Docker | `booley doctor`, `code .` |
-| **Container terminal** | Shell commands after VS Code has reopened the project in its devcontainer | `booley run`, `git diff` |
-| **Agent chat** | Natural-language requests and slash-prefixed skills | `Run lint and explain every finding` |
+| **Host terminal** | Commands on your own computer, outside Docker | `booley doctor`, `code .` |
+| **Container terminal** | Commands inside the Sandbox, after VS Code has reopened the project in its container | `booley run`, `git diff` |
+| **Agent chat** | Plain-language requests and skills that start with `/` | *"Run lint and explain every finding"* |
 
-If a block begins with a command such as `booley` or `git`, type it in the
-terminal named by the surrounding text. Italicized sentences such as *"Run lint
-and explain every finding"* are prompts to type in the agent chat. A skill
-invocation such as `/booley-ticket-create` is also typed in the **agent chat**,
-not in a shell.
+Command blocks go in the terminal named in the text around them. Sentences in
+*italics* are prompts for the agent chat. Skills such as
+`/booley-ticket-create` also go in the agent chat, not in a terminal.
 
-Booley's domain terms have precise definitions in the canonical controlled
-vocabularies indexed by the [context map](../../CONTEXT-MAP.md). Refer to the
-owning glossary whenever a term is unfamiliar; this guide does not repeat those
-definitions.
+Booley uses some terms with exact meanings. When one is unfamiliar, look it up
+in the glossary linked from the [context map](../../CONTEXT-MAP.md).
 
 ## First, verify your setup
 
-Before either mode, a newcomer's literal first commands. These run on the
-**host** (no container needed) and confirm Booley is wired up and shows you what
-it can see:
+Run these in a **host terminal**. They check that Booley works and show what it
+can see:
 
 ```bash
-booley doctor          # static health check: config, image, toolchain
-booley targets         # every .core Target Booley can see, grouped by core
-booley cheat --list    # the cheatsheet's sections, each printable on its own
+booley doctor          # health check: configuration, container image, tools
+booley targets         # every Target Booley can see, grouped by core
+booley cheat           # a one-page summary of Booley's commands and files
 ```
 
-If Booley reports that its version changed, invoke `/booley-heal` in your agent
-chat.
+Don't continue until `booley doctor` shows no failures or warnings.
 
-For the fastest orientation, start with `booley cheat`. It gives a compact
-overview of every public CLI command, the editable `.booley_project` files,
-Flows, Specialists, Criteria, Targets, skills, artifacts, and Sandbox commands.
-Print the whole sheet or use `booley cheat --list` and combine section flags,
-such as `booley cheat --board` or `booley cheat --commands --project`.
-
-`booley doctor --deep` goes further and runs real smoke sims/lints/synthesis
-inside the Sandbox; other Doctor flags are in the [CLI reference](#cli-reference).
-
-If `booley` is not found, return to the [installation instructions](../../README.md#installation).
-Do not continue into the
-container until plain `booley doctor` has no unresolved failures or warnings.
+- If `booley` is not found, go back to the
+  [installation instructions](../../README.md#installation).
+- If Booley says its version changed, type `/booley-heal` in the agent chat.
+- For a quick overview of Booley, start with `booley cheat`. It's long, so
+  `booley cheat --list` shows its sections and you can print just the ones you
+  need, for example `booley cheat --board` or `booley cheat --commands --project`.
+- `booley doctor --deep` goes further and runs short real simulations, lints,
+  and syntheses.
 
 ## Choose a mode
 
-Booley has two ways to work. Both use the same project configuration, Booley Flows, Specialists, and
-Sandbox. For newcomers, they are a progression rather than an either-or
-choice:
+Booley has two ways to work. Both use the same configuration, Flows,
+Specialists, and Sandbox.
 
-1. **Start with Interactive Mode.** Work through the first session below even
-   if you already use coding agents. The live conversation lets you see how a
-   Booley session selects Targets, invokes Booley Flows and Specialists, reports
-   evidence, and responds to your direction. Continue interactively until those
-   mechanics and their artifacts are familiar.
-2. **Then move to Ticket Mode.** Once you understand what Booley does during a
-   session, use a written Ticket to give the same machinery clear Scope and
-   Criteria and let `booley run` drive the work autonomously. This becomes the
-   recommended path for well-defined development work.
+1. **Interactive Mode: start here.** You chat with the agent and watch it work.
+   Do the first session below even if you have used coding agents before. It
+   shows how Booley picks Targets, runs Flows, and reports results.
+2. **Ticket Mode: move on once that feels familiar.** You write down a task as
+   a Ticket, and `booley run` does the work on its own, with no chat window
+   needed. This is the best way to do well-defined development work.
 
-Interactive Mode remains useful for investigations, ad-hoc changes, and
-individual Booley Flow or Specialist runs. Ticket Mode does not require you to keep
-Claude Code or Codex open: `booley run` launches the configured agents itself.
+Interactive Mode stays useful after that for investigations, quick changes,
+and one-off Flow runs.
 
 ## Interactive Mode
 
-Interactive Mode is the onboarding workflow and the place to explore Booley
-directly. Once setup has finished, Booley's Flows (`sim`, `lint`, and so on)
-and Specialists (`reviewer`, `mutation_tester`) are available to Claude Code or
-Codex.
-
 ### Open your first agent session
 
-These steps begin on your normal computer:
-
-1. Open a terminal, change to the RTL repository, and launch VS Code:
+1. In a **host terminal**, go to your RTL project and open VS Code:
 
    ```bash
    cd path/to/your-rtl-project
    code .
    ```
 
-   If your shell says `code` is not found, open VS Code normally and select
-   **File → Open Folder** instead.
+   If `code` is not found, open VS Code yourself and use **File → Open Folder**.
 
-2. Accept VS Code's **Reopen in Container** notification. If it does not
-   appear, open the Command Palette (`Ctrl+Shift+P`) and select **Dev
-   Containers: Reopen in Container**. Wait for the window to reload. The first
-   start may take several minutes. The remote indicator in the lower-left
-   corner should then identify a Dev Container.
+2. When VS Code offers **Reopen in Container**, accept it. If the offer doesn't
+   appear, open the Command Palette (`Ctrl+Shift+P`) and run **Dev Containers:
+   Reopen in Container**. The first start can take several minutes. When it's
+   done, the lower-left corner of the window says you are in a Dev Container.
 
-3. In the reloaded VS Code window, select **Terminal → New Terminal**. This is
-   now a **container terminal**. Booley's sandbox image already contains both
-   agent CLIs. Start the provider selected in
-   `.booley_project/booley.toml`:
+3. Open **Terminal → New Terminal**. This is a **container terminal**. Start
+   the agent:
 
    ```bash
    booley
    ```
 
-   **We recommend the CLI for Interactive Mode.** Bare `booley` is the short
-   form of `booley chat`: both are convenience launchers for the Project's
-   `[agent].provider` setting in `.booley_project/booley.toml`:
+   `booley` (or `booley chat`) just starts the agent chosen in
+   `[agent].provider` in `.booley_project/booley.toml`:
 
-   | Provider | Equivalent command in the container terminal |
+   | Provider | Same as running |
    | --- | --- |
    | `claude` | `claude` ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
    | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
 
-   Think of `booley` / `booley chat` as an alias for the selected command.
-   Booley replaces itself with that CLI; you use the agent's native chat,
-   commands, and controls. To pass agent-specific options, invoke `claude` or
-   `codex` directly. `booley --help` shows Booley's own command reference.
-   For concurrent Interactive sessions, open a separate container terminal
-   and launch the CLI in each one.
+   From then on you are using that agent's own chat. To pass it extra options,
+   run `claude` or `codex` directly. To run several sessions, open more
+   container terminals.
 
-   If you prefer a chat panel, you can use the Claude Code or Codex VS Code
-   extension instead. Booley's devcontainer configuration installs the
-   extension for the selected provider inside the container. Open its chat
-   panel in this reloaded VS Code window; there is no CLI command to run.
+   Prefer a chat panel? The Claude Code or Codex VS Code extension is already
+   installed in the container. Open its panel instead of using the terminal.
 
-   If the CLI shows a login screen instead of a chat, open a separate **host
-   terminal** and run `booley auth --status`. Follow its guidance (usually
-   `booley auth`), then use **Dev Containers: Rebuild Container** from the VS
-   Code Command Palette before trying again. See
+   If you see a login screen instead of a chat, run `booley auth --status` in a
+   **host terminal** and follow its advice (usually `booley auth`). Then run
+   **Dev Containers: Rebuild Container** and try again. See
    [Auth & billing](#auth--billing).
 
-4. The agent opens an interactive chat in the terminal or side panel. Type this
-   safe first request into that chat:
+4. Type this safe first request into the chat:
 
    > Check whether Booley Interactive Mode is ready. List the available
    > simulation targets and explain what each one is for. Do not change files.
 
-   The agent should call Booley's `booley_status` and target-listing MCP tools and
-   summarize the result. You do not type those MCP tool calls yourself.
+   The agent calls Booley's tools and summarizes what it found. You never type
+   those tool calls yourself.
 
-5. If the previous response listed a simulation Target, try one real EDA run:
+5. If the agent listed a simulation Target, try a real run:
 
    > Run the tests on the most appropriate simulation target. Do not edit any
    > files. Tell me what ran, whether it passed, and where the detailed report
    > was written.
 
-   A useful agent response states which Target and Booley Flow it chose, reports a
-   pass, design failure, or infrastructure failure, and explains the next
-   action. If the project has no simulation Target, ask it to run lint instead.
-   Ask follow-up questions exactly as you would ask another engineer.
+   A good answer names the Target and Flow it used, says whether the result was
+   a pass, a design failure, or a tool problem, and suggests what to do next.
+   If there is no simulation Target, ask for lint instead.
 
-You have now completed an Interactive Mode session. The rest of this document
-explains the available capabilities and the autonomous ticket workflow; you do
-not need to learn all of it before continuing to use natural-language prompts.
-
-For example:
+That's a complete session. You don't need to read the rest of this guide
+before you keep going. Just ask for what you want:
 
 - *"Debug the backpressure test failure on the sim_heavy target."*
 - *"Compare synth area between the following commits ..."*
 - *"Run a security review on the control unit module."*
 
-You do not need to know the exact Booley Flow command, flags, report locations, or
-MCP tool names before asking. Give the agent the engineering goal and any important
-constraints; it can inspect the configured Targets and choose the mechanics.
+You don't need to know Flow names, flags, or where reports go. Give the agent
+the goal and any limits, and it works out the details.
 
 ### Write a useful prompt
 
-Talk to the agent as you would brief an engineer joining the task. Include what
-you want to learn or change, the relevant Target or module if you know it, any
-constraints, and what evidence you expect. If you only want investigation, say
-**do not edit files** explicitly.
+Brief the agent the way you would brief an engineer joining the task:
 
-For example:
+- what you want to learn or change,
+- the Target or module, if you know it,
+- any limits,
+- what evidence you want to see.
+
+If you only want an investigation, say **do not edit files**. For example:
 
 > The `ready` signal sometimes remains low after reset on the `sim_full`
 > Target. Reproduce the failure, inspect the waveform, and explain the likely
 > cause. Do not edit files yet. Show me the evidence and propose a fix.
 
-You can refine the request after the agent responds. You do not need to restart
-the session when it chooses the wrong direction; tell it what assumption was
-wrong or what evidence you want next.
+If the agent heads the wrong way, don't start over. Tell it which assumption
+was wrong or what evidence you want next.
 
 ### What the agent is allowed to do
 
-Claude Code and Codex sessions inside the container start with **no approval
-prompts** and no inner CLI sandbox. That's the point of the container — it is
-cap-dropped, mounts only your project, and reaches nothing but the LLM API
-through the Booley proxy, so the prompts would be guarding a box that is already
-the guard. The in-container registrar pins this on every container start
-(`bypassPermissions` for Claude; `approval_policy = "never"` plus
-`sandbox_mode = "danger-full-access"` for Codex). Claude users can press
-`shift+tab` to step a session back down to auto/plan/default. Nothing is written
-to your **host** Claude Code or Codex settings.
+Inside the container, the agent **never asks for permission** before acting.
+That is deliberate: the container itself is the safety boundary. It can only
+see your project, and its only network access is to the AI provider. (Claude
+users can press `shift+tab` to switch back to a more cautious mode.) Booley
+does not change your agent settings outside the container.
 
-Transcripts land in `.booley_project/.interactive_logs/<session-id>/`
-(gitignored). How registration works and the session
-lifecycle mechanics are in
-[ARCHITECTURE.md](../internals/ARCHITECTURE.md#interactive-mode). If `booley` doesn't show
-up in `/mcp`, see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex). `/mcp` is
-the client screen that lists MCP (Model Context Protocol) connections—the
-connections through which an agent sees external MCP tools such as Booley.
+**Always review changes yourself.** Use `git diff` in a container terminal and
+run the relevant checks. Asking the agent to explain its diff helps, but it
+doesn't replace your own review.
 
-Before accepting code changes, inspect them in the container terminal with
-`git diff` and run the relevant checks. You can also ask the agent to explain
-the diff, but that is not a substitute for engineering review.
+> **Tip: let the agent commit; you push.** Let the agent commit its own work;
+> it writes good commit messages. It **can't** push to GitHub or any other
+> server, because the container blocks that network access. So: let it commit,
+> review the commits, then push them yourself from a terminal outside the
+> container. (Ticket Mode always works this way.)
 
-> **Tip: let the agent commit, you push.** In Interactive Mode, let the agent
-> commit its own work. It saves you the time of writing proper commit messages,
-> and there's little to gain from doing it by hand. What the agent **can't** do
-> is push to a Git server outside the Sandbox: default-deny egress blocks
-> that network access. Container-local repositories and local-path remotes,
-> including one named `origin`, remain writable sandbox state. So the loop is:
-> let the agent commit, review the commits, then push them yourself from a
-> terminal outside the Booley sandbox. (In Ticket Mode this isn't a choice: the
-> agent always commits, since that's how a ticket's work is recorded and moved
-> to review; the same external-server boundary applies.)
+Chat transcripts are saved in `.booley_project/.interactive_logs/`. If the
+agent can't see Booley's tools (`booley` is missing from its `/mcp` list), see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
+How the connection works is in
+[ARCHITECTURE.md](../internals/ARCHITECTURE.md#interactive-mode).
+
+### Viewing waveforms
+
+When a simulation with tracing fails, the agent reads the waveform on its own
+with `bwave`. When *you* want to see it, ask: *"show me the FIFO handshake
+around the failure"*. The agent opens it in a VaporView tab in VS Code, showing
+just the signals and time range that matter. The extension is installed in
+the container already.
+
+You can also open a view yourself:
+
+```bash
+bwave gui                                                      # the latest trace
+bwave gui @dut --signals 'tb.clk%b@red' \
+  --group 'FIFO handshake=tb.dut.fifo.*%h@green' \
+  --group 'Control=tb.dut.ctrl.state%h@blue' --time 1200c:1400c
+```
+
+The clock always goes on the first row. Each `--group 'NAME=PATTERN'` becomes
+a named, collapsible section. `--time START:END` puts markers at both ends so
+the status bar shows the span. Add `%b`/`%h`/`%d` to a signal for binary, hex,
+or decimal, and `@red`/`@blue`/`@green` for a color. `bwave gui --help` has
+the rest. If a view fails to open, see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#bwave-gui-fails-on-a-scoped-view).
+
+## Ticket-Driven Workflow
+
+In Ticket Mode you work with Booley like a project lead with an engineer: you
+hand over written tasks and review the results. A **Ticket** is a Markdown file
+on your machine. It records the task, the files likely to change, and the
+checks that must pass. It is not a Jira or GitHub issue, and nothing is sent
+anywhere.
+
+The whole loop:
+
+1. **Create.** In the agent chat, type `/booley-ticket-create` and describe the
+   change in your own words. The skill asks questions, then shows you the
+   finished Ticket. When you approve it, the Ticket gets a short name, its
+   **slug** (for example `fix-fifo-backpressure`), and joins the queue.
+2. **Run.** In a container terminal:
+
+   ```bash
+   booley board show          # confirm the Ticket is queued
+   booley run --ticket <slug>
+   ```
+
+   Leave it running. The screen shows progress while the agent edits code,
+   runs Flows, and checks the Ticket's criteria. It stops when the work is
+   ready for review, done, or stuck and waiting for you.
+3. **Review.** In the agent chat, type `/booley-ticket-triage` to look at a
+   finished or stuck Ticket and decide what happens next.
+
+`booley run` without `--ticket` works through the whole queue, one Ticket after
+another.
+
+### Creating Tickets
+
+You don't need a perfect description. Tell `/booley-ticket-create` everything
+you know, however messy, and it turns that into a precise Ticket.
+
+- **Pick *Detailed plan*** when it asks, unless the change is truly trivial and
+  you already know every file it touches. *Lightweight* skips the questions
+  and fills in the Ticket on its own.
+- **Answer its questions.** They come in rounds, each with a suggested answer.
+  It looks up facts in the code itself instead of asking you.
+- **Check the criteria most carefully** when it shows the draft. The criteria
+  are the whole contract: Booley only checks those, and the prose in the Ticket
+  checks nothing. The `scope` field keeps the agent out of unrelated files. Ask
+  for any changes before you approve.
+- **Approving finishes the job.** The skill adds any new Targets the Ticket
+  needs and queues it. There are no further approval steps.
+
+**Project-wide rules.** If every Ticket in your project should get the same
+checks, write them in `.booley_project/ticket_creation.md` in plain Markdown:
+
+```markdown
+- Include a corrective security review in every feature Ticket.
+- Every Ticket uses the `sim_smoke` and `sim_regression` Targets.
+- Feature and refactor Tickets must prove that area does not regress on `synth_area`.
+```
+
+No special format is needed. The skill reads this file each time it creates a
+Ticket and turns the rules into real criteria. Instructions you give for one
+Ticket win over these rules, and the skill tells you when a rule is unclear or
+can't be met. Editing the file doesn't change existing Tickets. (Older projects
+may call this file `ticket_defaults.md`; it still works.)
+
+**Writing a Ticket by hand** is possible but advanced: a hand-written Ticket
+must pass the same checks the skill does for you. Follow
+`booley-ticket-create/SKILL.md` and its `TICKET_TEMPLATE.md`, then check the
+result with `booley run --ticket <slug> --dry-run`.
+
+### Acceptance Criteria
+
+A Ticket doesn't list steps. It lists **acceptance criteria**: checks that must
+pass before the work counts as finished. Booley decides when they pass, not the
+agent:
+
+- Each criterion is owned by one Flow or Specialist. For example,
+  `sim_pass_<target>` needs `sim` to report a pass, and `review_rtl_bugs` needs a
+  `reviewer` run. The agent saying "it works" never counts.
+- When the code changes, criteria that depend on it must pass again.
+- **Mandatory** criteria must all pass before the Ticket can reach review.
+  **Optional** ones don't block, but the agent must explain each one it
+  couldn't meet.
+
+A review criterion such as `review_rtl_bugs` normally means *clean*: every
+finding must be fixed, or waived with a written reason. Add `_done`
+(`review_rtl_bugs_done`) when you only want the findings reported, not fixed.
+
+The full list of criteria is in the [Criteria catalog](#criteria-catalog), and
+`booley cheat --criteria` prints it too, including any your project added.
+How criteria are checked is in
+[ARCHITECTURE.md](../internals/ARCHITECTURE.md#ticket-mode).
+
+#### Threshold parameters
+
+Synthesis, FPGA, and cycle-count criteria can set limits. A limit is either a
+fixed number (`_max`, `_min`) or a change compared with the code before the
+Ticket started (`_increase_at_most`, `_reduce_at_least`; percentages need a
+`%`). Timing limits can apply to a single clock, such as `clk_i.`:
+
+```yaml
+SYNTH: {synth_core: {cell_count_reduce_at_least: 8%, clk_i.fmax_mhz_min: 400}}
+CYCLE_COUNT: {sim_coremark: {coremark: {cycle_count_max: 100000}}}
+```
+
+`booley cheat --criteria` lists every metric and which limits it accepts.
+
+### Scope
+
+A Ticket names the files it expects to change. That's a plan, not a fence. If
+the job really needs another file, such as a shared package or a neighboring
+module, the agent edits it, and Booley lists it in
+`.runtime/scope_deviations.json` so you see it during review.
+
+Two things are off limits: Booley's own bookkeeping files, and the Targets and
+settings prepared when the Ticket was created. If a Target turns out to be
+wrong, the Ticket stops and waits for you rather than letting the agent change
+it.
+
+If the same file keeps showing up outside the scope, your Tickets' scopes are
+probably too narrow.
+
+### Where the work lands (`on_success`)
+
+Each Ticket lists what should happen when its criteria pass. Anything left out
+of the list doesn't happen:
+
+```yaml
+on_success: [triage_report, review, merge, cleanup]
+```
+
+| Action | What it does |
+| --- | --- |
+| `review` | Parks the Ticket for your decision and keeps its branch and working copy until then. Without it, the Ticket goes straight to done. |
+| `merge` | Merges the work into the destination branch. Leave it out to keep that branch untouched. |
+| `cleanup` | Deletes the Ticket's branch and working copy (after review, if there is one). The accepted commits stay reachable. Leave it out to keep them. |
+| `triage_report` | Makes one extra AI call to write an HTML explanation of the work for review. |
+
+**Adding Targets in a Ticket.** Most Tickets use the Targets you already have.
+To add one, mark it where the Ticket mentions it, and include `merge`:
+
+```yaml
+CRITERIA_MANDATORY:
+  LINT: {lint_style (new): clean}
+  SIM:
+    sim_core_v2 (replaces sim_core): {all: pass}
+    ticket_probe (temp): {smoke: pass}
+```
+
+`(new)` Targets stay after the merge. `(replaces sim_core)` swaps out the old
+Target. `(temp)` Targets exist only to prove this Ticket and are removed
+afterwards. A Ticket can't edit or delete existing Targets. The full rules are
+in [ADR 0060](../adr/0060-model-target-changes-with-ticket-target-plans.md).
+
+### Ticket Board lifecycle
+
+`booley board show` lists every Ticket and its status. A Ticket usually moves
+like this:
+
+```text
+draft ──► queued ──► running ──► review ──► done
+  │          ▲          │           └──────► archived
+  └─► waiting┘          └─► blocked ──► queued
+```
+
+- **waiting**: it depends on another Ticket and is queued once that one is
+  done.
+- **blocked**: the agent is stuck and needs you. Answer it with
+  `/booley-ticket-triage`; the Ticket goes back to the queue and picks up where
+  it left off.
+- **review**: the criteria passed and the Ticket waits for your decision.
+
+The files live in `.booley_project/board/` folders with the same names, except
+`drafts/` (`draft`), `queue/` (`queued`), and `active/` (`running`).
+
+**Reviewing a finished Ticket.** `/booley-ticket-triage` walks you through it.
+It shows the diff, the criteria results, any files outside the scope, and, with
+`triage_report`, a link to the HTML explanation (open it and choose **Show
+Preview**). You then choose one of three things:
+
+1. **Approve** it. It moves to done.
+2. **Reset** it. This throws the work away and runs the Ticket again from
+   scratch.
+3. **Archive** it. If the remaining work needs different criteria, write a new
+   Ticket instead.
+
+There is no "send it back for a bit more work". Booley approves exactly the
+commits whose criteria passed. If you commit anything during review, triage
+helps you move those commits to a separate branch before approving.
+
+**Fixing a blocked Ticket.** Triage can also propose loosening a criterion or
+widening the scope when that's what the Ticket needs. You see the exact change
+before approving it, and the Ticket then continues with its work kept.
+
+`booley board review <slug> --force` rebuilds the review summary, which is
+also handy for looking at a blocked Ticket's partial work. `booley board show
+<slug>` displays it.
+
+Two Git surprises are covered in Troubleshooting:
+[Ticket worktrees show as `prunable`](TROUBLESHOOTING.md#ticket-worktrees-show-as-prunable-on-the-host)
+and [`git` cannot see files under `.booley_project/`](TROUBLESHOOTING.md#git-cannot-see-files-under-booley_project).
+
+## Running Unattended
+
+Ticket Mode is built to run for hours without you. At a minimum, you create a
+Ticket and later review the result. In between, Booley:
+
+- keeps simulating and fixing until the criteria pass,
+- picks up where it left off after a reboot, crash, or usage limit,
+- stops and asks you (**blocked**) instead of guessing when it's stuck.
+
+When you answer a blocked Ticket, you can add feedback to steer the next
+attempt without starting over.
+
+`booley run` stops by itself once the queue has been empty for 5 minutes
+(`--idle-timeout`, in seconds). Use `--idle-timeout 0` to keep it waiting for
+new Tickets forever. It only runs inside the container. On a host terminal it
+tells you to reopen in the container, or to use
+`booley session enter -- booley run`.
+
+For long runs, set up a login that won't expire mid-run; see
+[Auth & billing](#auth--billing).
+
+### Concurrent tickets
+
+To run several Tickets at once, start one `booley run` in each container
+terminal. By default two can run together (`[jobs] max_tickets`, see
+[CONFIG.md](CONFIG.md#jobs--concurrency-jobs)). Extra runs wait their turn, and
+the screen shows their place in line.
+
+The same goes for the individual **Jobs** a Ticket starts, such as one
+simulation, one synthesis, or one Specialist run. Each kind has its own limit.
+Your interactive requests go ahead of Ticket work, but a running Job is never
+interrupted. The agent can cancel a Job if you ask it to.
+
+> **Tip: work in parallel once Booley feels familiar.** Run several Tickets and
+> several agent chats at the same time. Each Ticket gets its own working copy
+> of the code automatically, but chat sessions share one. To keep two chat
+> agents from overwriting each other, see
+> [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-interactive-agents-keep-clobbering-each-others-edits).
+
+### Push Notifications
+
+Booley can send a notification to your phone when a Ticket needs you. Pick a
+private topic name on [ntfy.sh](https://ntfy.sh), subscribe to it in the ntfy
+app, and add it to your project's `booley.toml`:
+
+```toml
+[notifications]
+ntfy_topic = "your-private-topic"
+# Optional: leave out events to get all of them, or use [] for none.
+events = ["blocked", "review", "done", "doctor", "rate_limit"]
+```
+
+| Event | Sent when |
+| --- | --- |
+| `blocked` | a Ticket needs your input |
+| `review` | a Ticket is ready for review |
+| `done` | a Ticket is done |
+| `doctor` | the automatic health check found something new |
+| `rate_limit` | Claude hit a usage limit and Booley is waiting |
+
+The container blocks ntfy.sh by default. To allow it, add it to your
+[host configuration](CONFIG.md#host-configuration-configtoml), keeping any
+entries already there:
+
+```toml
+[interactive]
+egress_allowlist = ["ntfy.sh"]
+```
+
+Then stop the containers of all your projects, run `booley bootstrap` on the
+host, and start them again. This applies to every project on the machine.
+Notifications are best-effort: a lost one is not retried and never affects a
+Ticket. Set `NTFY_DISABLE=1` to turn them off in tests.
+
+### Entering the Sandbox without VS Code
+
+**Reopen in Container** needs VS Code. Without it (in CI, or when a script or
+agent drives Booley), `booley session` starts the same container. Run these on
+the **host**, after `booley init`:
+
+```bash
+booley session up                       # create or start the container
+booley session enter                    # open a shell inside it
+booley session enter -- booley doctor   # or run one command and exit
+booley session status                   # running | stopped | absent
+booley session refresh                  # rebuild the image and recreate the container
+booley session down                     # stop and remove it
+```
+
+`booley session enter` works like a container terminal, so every
+container-only command works through it. `Ctrl-C` on a command run with `--`
+stops everything it started inside the container.
+
+`session refresh` is safe to interrupt; the old container stays usable until
+the new one is ready. It won't replace a container that VS Code opened; use
+**Dev Containers: Rebuild Container** for that. If your EDA tools need a
+license server, run `booley session down` before refreshing.
+
+## Auth & billing
+
+Booley's AI agents use the provider set in `[agent] provider` in `booley.toml`:
+`claude` (the default) or `codex`. Each one signs in the same way its own app
+does, with either a **subscription** or an **API key**:
+
+| Provider | Subscription | API key |
+|---|---|---|
+| `claude` | Claude Pro/Max/Team/Enterprise (your login in `~/.claude/.credentials.json`) | `ANTHROPIC_API_KEY` |
+| `codex` | your Codex login (`codex login`, saved in `~/.codex/auth.json`) | `OPENAI_API_KEY` |
+
+Both work everywhere, in Ticket Mode and in Interactive Mode.
+
+- **Subscription:** usage counts against your plan. If you hit its limit,
+  Booley waits and retries the Ticket instead of failing it.
+- **API key:** you pay per token.
+
+**Which login wins.** If several are available, the agent picks in this order:
+
+- **Claude:** `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN` (the one
+  `booley auth` saves, below), then your subscription login.
+- **Codex:** `OPENAI_API_KEY`, then your `auth.json` login.
+
+So an exported API key always wins. `booley auth --status` and `booley doctor`
+show which one is in use. To pin the choice, set `[agent] auth =
+"subscription"` (Booley hides the API key from agents) or `"api_key"` (Booley
+fails if the key is missing); see
+[CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth).
+
+**For long runs, run `booley auth`.** The normal login renews itself
+periodically, and a renewal can sign out every running agent in the middle of
+a run ([details](TROUBLESHOOTING.md#agents-turn-into-not-logged-in-partway-through-an-unattended-run)).
+`booley auth` saves a login that doesn't need renewing:
+
+| App | Login that doesn't expire | How |
+|---|---|---|
+| Claude | a one-year token | `booley auth` (it runs `claude setup-token` for you) |
+| Codex | an API key | `booley auth --app codex`, then paste the key |
+
+Codex has no long-lived subscription token, so for Codex this means paying per
+token instead of using your subscription.
+
+The saved login lives in `~/.config/booley/`, outside every project, so it can't
+be committed by accident. Booley passes it to every container on its own,
+including VS Code's; rebuild an existing container once to pick it up. A
+`CLAUDE_CODE_OAUTH_TOKEN` or `OPENAI_API_KEY` you export yourself still takes
+priority.
+
+`booley init --skip-credentials` skips the login check, for CI machines that
+have no login on purpose. Don't use it for normal setup.
+
+## When Booley itself misbehaves
+
+Maybe a Flow failed with no useful message, a doc describes a setting that
+doesn't exist, or a message looks like a crash when nothing crashed. Type
+**`/booley-feedback`** in the agent chat while the problem is still on screen.
+It records how to reproduce it, checks Booley's own code before blaming it,
+removes your project's names, and saves a report file for you to read and share
+yourself. Booley never sends it anywhere.
+
+It doesn't have to be a bug. Confusing behavior, praise, complaints, wishes, or
+"this wasn't worth the setup cost" are all worth one sentence to
+`/booley-feedback`. See [CONFIG.md](CONFIG.md#feedback-feedback).
 
 ## Booley Flows & Specialists
 
-These are the built-in capabilities both modes share. **Booley Flows** are
-predictable wrappers around EDA tools; **Specialists** are focused LLM agents.
-
-You normally do not call either one manually. Say *"run the reset test on the
-`sim_lite` Target"* or *"how much area did that cost?"*, and the agent picks the
-capability, Target, and flags. The table is worth a skim because it shows the
-complete set of built-in capabilities. Every Booley Flow and Specialist runs
-inside the Sandbox. **Sets** names the acceptance criteria that the
-Booley Flow or Specialist can satisfy in a ticket.
-
-Which EDA program runs underneath is determined by the Target. The currently
-supported programs are tracked in [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
-
-The catalogs are generated from the MCP tool registry. `booley cheat --flows` and
-`booley cheat --specialists` print them live as separate sections.
+This section is reference. You rarely call Flows or Specialists yourself: ask
+the agent (*"run the reset test on `sim_lite`"*, *"how much area did that
+cost?"*) and it picks the tool, Target, and options. The **Sets** column shows
+which [acceptance criteria](#acceptance-criteria) each one can satisfy. Which
+EDA program runs underneath depends on the Target; see
+[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md). `booley cheat --flows` and
+`booley cheat --specialists` print the same lists.
 
 <!-- BEGIN GENERATED: flows -->
 **Booley Flows**
@@ -336,233 +670,42 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses exactly one complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
-Booley validates each proposal as one exact replacement, compiles it in
-isolation, and restores the pristine source. A completed run publishes one
-atomic campaign manifest with a durable baseline log, every mutant log, each
-source variant, and the first public test that killed each detected mutant.
+`tb_coder` also exists but is hidden until it is ready (see
+[ROADMAP.md](../internals/ROADMAP.md)); for now, the agent writes testbenches
+itself.
 
-The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `tb_coder` also exists but is hidden until it matures (see [ROADMAP.md](../internals/ROADMAP.md)); the Developer Agent authors testbenches itself.
+### Running a Booley Flow directly
 
-#### Coverage collection workflows
+Running a Flow yourself is useful when checking your setup or reproducing a
+problem. In a container terminal:
 
-In Interactive Mode, explicitly request collection, then pass its exact Campaign
-path to the Analyst:
+```bash
+booley flow                                  # list the Flows
+booley targets --for-flow sim                # Targets a Flow can use
+booley flow sim --target sim_soc --test reset
+booley flow sim --help                       # every option
+```
+
+[FLOW_REFERENCE.md](FLOW_REFERENCE.md) has the full details: options, exit
+codes, results, reports, and output files.
+
+**Coverage.** Coverage is collected only when you ask for it. Then pass the
+result to the Coverage Analyst for an explanation:
 
 ```bash
 booley flow sim --target sim_counter --coverage
 booley flow coverage_analyst --campaign <reports>/sim/12/targets/sim_counter/coverage.json
 ```
 
-MCP uses `sim` with `target: "sim_counter", coverage: true`, followed by
-`coverage_analyst` with the returned exact `campaign` path. Ungated collection
-runs the full runnable suite, stores `not_requested`, and does not load waivers.
+In a Ticket, add a [coverage criterion](CONFIG.md#native-coverage-configuration)
+for each Target that needs one. Only a passing coverage run satisfies it. The
+Analyst only gives advice; it never changes criteria or approves waivers.
 
-In Ticket Mode, author the [Coverage Criterion](CONFIG.md#native-coverage-configuration)
-for each required Target and explicitly invoke `sim --coverage`. Only a durable
-Campaign `pass` satisfies the Criterion. `fail` and `blocked` do not satisfy it;
-Simulation Criteria retain their independent measured truth. The Analyst only
-advises and never changes Criteria or approves Waiver Candidates.
+## Criteria catalog
 
-### Running a Booley Flow directly
-
-Direct invocation is the diagnostic escape hatch for setup and reproduction.
-Inside the Sandbox:
-
-```bash
-booley flow sim --target sim_soc --test reset
-```
-
-Use `booley flow` to list discovered Flows, `booley targets --for-flow <flow>` to
-list compatible Targets, and `booley flow <name> --help` for the live argument
-schema. [FLOW_REFERENCE.md](FLOW_REFERENCE.md) is the canonical reference for
-Target selectors, controls, exit codes, verdicts, Criteria, reports, and
-artifacts.
-
-### Viewing waveforms
-
-When a traced simulation fails, the agent reads the trace with `bwave` queries,
-and that part you never touch. What you do get is the picture: `bwave gui` puts a
-trace on your screen as a VaporView tab
-([`lramseyer.vaporview`](https://marketplace.visualstudio.com/items?itemName=lramseyer.vaporview),
-auto-installed by the generated devcontainer spec) in the attached VS Code
-window. Normally you just ask (*"show me the FIFO handshake around the
-failure"*) and the agent scopes the view for you:
-
-```bash
-bwave gui                                                      # latest session trace
-bwave gui @dut --signals 'tb.clk%b@red' \
-  --group 'FIFO handshake=tb.dut.fifo.*%h@green' \
-  --group 'Control=tb.dut.ctrl.state%h@blue' --time 1200c:1400c
-```
-
-A scoped view arrives readable rather than as a wall of signals: the trace's
-clock lands on row 1 (a waveform without its clock can't tell a cycle from a
-glitch), each `--group 'NAME=GLOB'` becomes a native named/collapsible section,
-and `--time START:END` drops the viewer's two markers on the ends of the range,
-so the status bar reports the span as a delta instead of making you subtract
-ruler numbers. Repeating a group name adds another pattern to that group;
-`--append` extends a same-name group or adds a new one. Signal selectors also
-accept `%b`/`%h`/`%d` radix and `@red`/`@blue`/`@green` color suffixes; these
-presentation properties are read back from the viewer before success is
-reported. The rest of the grammar
-(trace resolution, globs, time tokens, `--signals`, `--cursor`) matches `bwave`
-queries and is in `bwave gui --help`. If a scoped view errors out instead of
-opening, see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#bwave-gui-fails-on-a-scoped-view).
-
-## Ticket-Driven Workflow
-
-In this mode you interact with Booley the way a project manager interacts with
-an engineer: through tickets. A ticket is a local Markdown file that records the
-task, the files likely to change, and the checks that define success. It is not
-a Jira ticket or GitHub issue, and creating one does not send anything outside
-your machine.
-
-The beginner path is:
-
-1. In **agent chat**, type `/booley-ticket-create`, then describe the change in
-   your own words. The skill asks questions and shows you the complete draft
-   before writing it.
-2. Approve the draft. The skill creates a short identifier called a **slug**
-   (for example, `fix-fifo-backpressure`) and places the ticket in the queue, or
-   in waiting if another ticket must finish first. Its **acceptance criteria**
-   are the Booley Flow- and Specialist-backed checks that must pass before the work can finish.
-3. In a **container terminal**, confirm that it is queued and start it:
-
-   ```bash
-   booley board show
-   booley run --ticket <slug>
-   ```
-
-4. Leave that terminal running. Booley prints progress as the agent edits,
-   calls Booley Flows and Specialists, and checks the acceptance criteria. The run stops at review,
-   completion, or a blocked state that needs a human decision.
-5. Back in **agent chat**, type `/booley-ticket-triage` to review a completed or
-   blocked ticket and decide what happens next.
-
-The sections below explain each part of that loop in detail.
-
-### Creating Tickets
-
-Do not try to write a perfect ticket before invoking
-**`/booley-ticket-create`**: brain-dump everything you know, however
-unstructured, and let the skill turn it into a precise contract.
-
-- **Choose *Detailed plan*** when it asks how much detail to carry, unless the
-  change is genuinely trivial and you already know every file it touches.
-  *Lightweight* infers the fields without questions.
-- **Answer the grilling.** Questions arrive in rounds, each with a suggested
-  answer; the skill looks up codebase facts itself instead of asking you.
-- **Read the criteria hardest** when it shows the complete draft. They are the
-  entire contract: the harness gates on them, and prose in the ticket body gates
-  nothing. `scope` is what keeps the agent out of unrelated files. Ask for edits
-  in place.
-- **Approval finishes the job.** The skill authors any new Targets the ticket
-  needs and enqueues it; there are no further approval gates.
-
-#### Project Ticket Creation Guidance
-
-`booley init` creates `.booley_project/ticket_creation.md`. Write ordinary Markdown there
-when a Project repeatedly wants the same Criteria or successful-run disposition. For
-example:
-
-```markdown
-- Include a corrective security review in every feature Ticket.
-- Every Ticket uses the `sim_smoke` and `sim_regression` Targets.
-- Feature and refactor Tickets must prove that area does not regress on `synth_area`.
-```
-
-There are no required headings, YAML blocks, or complete per-type mappings. Lightweight,
-Detailed-plan, and agent-driven creation start with Booley's shipped inference and apply
-every relevant statement. The skill consults the live Criterion catalog, Targets, and
-registered tests to turn the prose into concrete Ticket frontmatter. Explicit instructions
-for one Ticket win over Project guidance; ambiguous or unavailable requirements are
-surfaced rather than ignored or invented.
-
-Only `/booley-ticket-create` reads this file, and only while creating a Ticket. Its
-authority is limited to the `CRITERIA_MANDATORY` and `CRITERIA_OPTIONAL` blocks,
-Target annotations, and `on_success`; the resulting Ticket remains the
-structured artifact validated by Booley. Editing the guidance never changes an
-existing Ticket. Projects initialized with the former `ticket_defaults.md` filename keep
-working: the skill reads it as free-form guidance when `ticket_creation.md` is absent and
-disregards the former scaffold's strict-format instructions.
-
-Queuing a ticket doesn't start it. Tickets sit in `board/queue/` until you start Ticket Mode with `booley run` in a container terminal; that loop then pulls tickets off the queue one after another without further input. Use `/booley-ticket-triage` to work through blocked, failed, and finished ones.
-
-**Amending a blocked Ticket.** During triage, the agent may propose relaxing an
-existing acceptance Criterion or expanding file Scope when the recorded blocker
-supports that change. It shows the exact before-and-after proposal for Human
-approval. An approved amendment keeps the Ticket's implementation, publishes a
-new Ticket baseline, and queues the Ticket to resume. Retry with feedback,
-requested review, reset, and fresh authoring remain separate choices; the
-triage agent handles the amendment commands.
-
-**Writing a ticket by hand** is an advanced path because executable tickets
-require the same preparation and validation that the skill automates. Follow
-the complete CLI workflow in the packaged
-`booley-ticket-create/SKILL.md` and its `TICKET_TEMPLATE.md`; moving a raw draft
-straight to the queue cannot bypass those checks. `booley run --ticket <slug>
---dry-run` checks the resulting setup without executing it.
-
-`booley board show` prints each ticket's *status*, which matches its `board/`
-directory name except for three: `drafts/` is `draft`, `queue/` is `queued`, and
-`active/` is `running`.
-
-### Ticket Board lifecycle
-
-A Ticket is one body of work with one branch, worktree, and evidence history. Its
-normal path is:
-
-```text
-draft ──► queued ──► running ──► review ──► done
-  │          ▲          │           └──────► archived
-  └─► waiting┘          └─► blocked ──► queued
-```
-
-- `waiting → queued` happens when dependency Tickets finish.
-- `running → blocked` records a question or failure that needs human input.
-  Resolving it returns the same Ticket to `queued`; an active `booley run`
-  invocation later resumes its existing workspace and evidence.
-- `running → queued` is an exceptional interruption-recovery move, not another
-  development attempt. Do not requeue while the Ticket still has an active job.
-- `running → review` happens when `on_success` includes `review`. Omitting it
-  takes the `running → done` shortcut.
-
-`review` is a human decision point, not a partial-rework loop. Once a Ticket is
-accepted, any new commit in its worktree makes that acceptance stale; Booley
-will not approve it until the Ticket heads match the accepted ones again. The
-reviewer has three substantive choices:
-
-1. Approve the Ticket as `done` when its live participant heads still match the
-   accepted heads. If acceptance is stale, first preserve post-acceptance commits
-   on a separate safety branch and restore every named Ticket ref and worktree to
-   its exact frozen commit before approval.
-2. Reset it completely. This retires the Ticket worktree and branch, archives
-   the current runtime artifacts as prior-run history, clears the active state,
-   and returns the Ticket to `queued` as a clean run. It does not resume or
-   selectively retain the reviewed work.
-3. Archive it. If the remaining work needs a different contract, create a new
-   Ticket rather than sending this one back for rework.
-
-The ordinary `review → queued` move is therefore invalid. Only the explicit,
-destructive reset operation may put a reviewed Ticket back in the queue. Use
-`/booley-ticket-triage` for blocked and review decisions, `booley board show` to
-inspect state, and `booley cheat --board` for the compact transition reference.
-
-### Acceptance Criteria
-
-A ticket doesn't describe *steps*: it declares **acceptance criteria** (split into `mandatory` and `optional`), and the harness, not the agent, decides when they're met. A criterion is satisfied only by a valid verdict from the Booley Flow or Specialist that owns it (e.g. a simulation criterion needs `sim` to return `pass`; a `review_*` criterion needs a `reviewer` run), never by the Developer Agent asserting success, and it is re-checked whenever the underlying code changes. **A ticket cannot reach review with an unmet mandatory criterion.** Optional criteria do not block review, but the Developer Agent must justify every optional criterion it could not complete; `submit_run_report` rejects the report until that explanation is supplied, and final acceptance rejects a stale report that does not cover the currently unmet set. This applies even when routine run reports are disabled. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#ticket-mode) for the criteria mechanics.
-
-Three related inputs have different jobs. `criteria.toml` defines the live
-Criterion families available to Project-authored Flows and Specialists;
-`ticket_creation.md` guides creation-time selection from that catalog; and each Ticket
-stores the concrete immutable Criteria selected for that one run.
-
-The supported criteria families are defined once in `criteria.toml` and listed below; `{target}` denotes a per-target expansion (one criterion per project Target). `booley cheat` renders this same table live, including any project-defined criteria. A bare `review_*` ticket key expands to `_clean`: every finding must be verified fixed or explicitly waived with user-visible justification. Use an explicit `_done` suffix for a terminal advisory review whose findings are reported but not fixed in that ticket run. Both modes become stale after relevant source changes.
-
-A TB-quality review is source-scoped and does not require a simulation Target.
-Ticket intake records the TB files from the Ticket scope directly on the
-review criterion so its suggested invocation is immediately callable.
+Every built-in criterion. `{target}` means one criterion per Target (for
+example `sim_pass_sim_core`). Criteria are defined in `criteria.toml`, which
+is also where a project can add its own.
 
 <!-- BEGIN GENERATED: criteria -->
 #### Build & Elaborate
@@ -617,312 +760,41 @@ review criterion so its suggested invocation is immediately callable.
 | `synthesis_ok_{target}` | ASIC synthesis completes within area/timing budgets | `synth` | post-sim |
 <!-- END GENERATED: criteria -->
 
-#### Threshold parameters
-
-`SYNTH`, `FPGA`, and `CYCLE_COUNT` Criteria accept metric thresholds, either
-absolute (`_max`, `_min`) or relative to the Ticket baseline
-(`_increase_at_most`, `_reduce_at_least`; percentages need the `%` suffix).
-Timing thresholds can be scoped to one clock with a `clk_i.` prefix:
-
-```yaml
-SYNTH: {synth_core: {cell_count_reduce_at_least: 8%, clk_i.fmax_mhz_min: 400}}
-CYCLE_COUNT: {sim_coremark: {coremark: {cycle_count_max: 100000}}}
-```
-
-`booley cheat --criteria` prints the full per-metric table, mutual exclusions,
-and every `cycle_count` variant.
-
-### Where the work lands (`on_success`)
-
-Every Ticket carries a list of completion actions. Omitted actions are false:
-
-```yaml
-on_success: [triage_report, review, merge, cleanup]
-```
-
-`review` parks the finished Ticket in `board/review/` for a human decision and
-keeps its worktree and branch until that decision. The reviewer may make a small
-in-place correction and run the relevant Flows again. `cleanup` waits until
-review ends. Omitting `review` finishes directly in `board/done/`.
-
-`cleanup` works without `merge` for disposable test Tickets. Booley first pins
-the accepted commits under internal refs so evidence remains reachable, then
-removes the Ticket branches and worktrees. To keep those workspaces, omit
-`cleanup`. To leave the destination branch untouched, omit `merge`.
-
-Most Tickets use existing Targets. To author one, annotate every structured
-mention with `(new)`, `(temp)`, or `(replaces old_target)` and include `merge`:
-
-```yaml
-CRITERIA_MANDATORY:
-  LINT: {lint_style (new): clean}
-  SIM:
-    sim_core_v2 (replaces sim_core): {all: pass}
-    ticket_probe (temp): {smoke: pass}
-```
-
-`new` Targets stay after the Ticket merges, `replaces` swaps out the named
-predecessor, and `temp` Targets exist only as Ticket evidence and are removed on
-acceptance. A Ticket may not edit or delete existing Targets. The details are in
-[ADR 0060](../adr/0060-model-target-changes-with-ticket-target-plans.md).
-
-Every review-bound run writes a review package under
-`logs/<slug>/.runtime/triage-prep/`. With `triage_report` in `on_success`,
-Booley also makes one extra model call to write a self-contained HTML
-explanation, which the triage briefing links to; open it and select **Show
-Preview**. `booley board review <slug> --force` regenerates the package, also
-for a `blocked` Ticket when you want to inspect partial work before deciding
-whether to reset or archive it. `booley board show <slug>` renders it.
-
-`booley run` ends each Ticket with one machine-readable `BOOLEY_RUN_RESULT`
-JSON line for scripts; `booley cheat --board` documents its fields.
-
-Two Git gotchas live in Troubleshooting:
-[Ticket worktrees show as `prunable`](TROUBLESHOOTING.md#ticket-worktrees-show-as-prunable-on-the-host)
-and [`git` cannot see files under `.booley_project/`](TROUBLESHOOTING.md#git-cannot-see-files-under-booley_project).
-
-## Running Unattended
-
-Ticket Mode is built for unsupervised, multi-hour runs. The minimum interaction is: create a ticket, then review the results. Everything in between runs on its own. It debugs failures across repeated simulate-fix cycles, resumes where it left off after an interruption (reboot, crash, subscription limit), and blocks a ticket for human triage when it gets stuck rather than guessing. When you triage a blocked ticket, you can retry it with **tagged feedback** to steer the next attempt without starting over.
-
-### Entering the Sandbox without VS Code
-
-"Reopen in Container" needs the VS Code UI. When there isn't one (a CI job, an
-agent driving the CLI, or a host with no `devcontainer` CLI), `booley session`
-opens the same container from the same generated `.devcontainer/devcontainer.json`:
-
-```bash
-booley session up                       # create or start it; runs the same lifecycle hooks
-booley session enter                    # interactive shell inside it
-booley session enter -- booley doctor   # or run one command and exit
-booley session status                   # running | stopped | absent
-booley session refresh                  # rebuild configured image, recreate session
-booley session down                     # stop and remove
-```
-
-`session refresh` is safe to interrupt: the old Sandbox stays recoverable until
-the replacement is verified, and the next lifecycle command finishes or rolls
-back an interrupted refresh. It refuses to replace a Sandbox owned by VS Code;
-use **Dev Containers: Rebuild Container** there. For a licensed headless
-Sandbox, run `booley session down` first.
-
-These are **host** commands (they need Docker), and `booley init` must have run
-first: it builds the image and creates the network, proxy, and reaper. The
-container carries the same `booley.role=interactive` label as the VS Code one,
-so the idle reaper owns its lifecycle either way. `booley session enter` is the
-headless equivalent of a container terminal, so every container-only command
-works through it.
-
-A command after `--` is supervised: `Ctrl-C` cleans up its whole process tree
-inside the Sandbox, keeps the Sandbox from being reaped as idle while it runs,
-and returns the command's exit code (or the usual `128 + signal`).
-
-## Scope
-
-Each ticket declares the files it's expected to touch. That's a plan, not a
-fence: if finishing the job genuinely needs a file the ticket didn't name — a
-shared package or neighbouring module — the agent edits it and the change lands
-on the branch like any other. Booley records every such file in
-`.runtime/scope_deviations.json` for ticket triage.
-
-The hard lines are Booley bookkeeping and the Target/control inputs prepared by
-the ticket-creation agent. Developer commits touching either are rejected; if a
-Target recipe is wrong, the ticket blocks so creation or triage can revise it.
-
-If the same file keeps showing up as a deviation across tickets, that's a hint
-your ticket scopes are drawn too narrowly, not that the agent is misbehaving.
-
-## Push Notifications
-
-Configure an [ntfy.sh](https://ntfy.sh) topic in your Project's `booley.toml`,
-then subscribe to that topic in the ntfy app:
-
-```toml
-[notifications]
-ntfy_topic = "your-private-topic"
-# Optional: omit events to enable all, or use [] to disable all.
-events = ["blocked", "review", "done", "doctor", "rate_limit"]
-```
-
-`blocked` asks for input, `review` announces work ready for review, and `done`
-announces the accepted transition to `done`, even if cleanup still needs recovery.
-`doctor` announces changed automatic
-Doctor issues; `rate_limit` announces Claude rate-limit waits.
-
-The Sandbox's default network policy blocks ntfy.sh. To permit delivery,
-add `"ntfy.sh"` to `egress_allowlist` in the existing `[interactive]` table of
-[your host configuration](CONFIG.md#host-configuration-configtoml), preserving
-any other entries:
-
-```toml
-[interactive]
-egress_allowlist = ["ntfy.sh"]
-```
-
-After changing the policy, shut down active Sandboxes for every Project,
-run `booley bootstrap` on the host to update the shared proxy, then restart the
-Sessions. Recreating a Session alone does not update the proxy. This permission
-applies to all Projects on the host. Delivery uses HTTPS and is best-effort:
-notifications do not change Ticket outcomes, wait for delivery, or retry failed
-requests. Each delivery attempt has a 5-second connection timeout and a
-15-second total timeout. Set `NTFY_DISABLE=1` to suppress delivery in tests.
-
-## When Booley itself misbehaves
-
-A Booley Flow exits 2 with nothing useful on stderr, a doc describes a knob that isn't
-there, a message reads like a crash when nothing crashed. Run the
-**`/booley-feedback`** skill in the agent chat while the failure is still on
-screen — it captures the reproduction, checks the claim against Booley's own
-source before blaming it, scrubs your project's identifiers, and writes a
-redacted Markdown file for you to inspect and share manually. Booley does not
-transmit it.
-
-Nothing has to be broken. Confusing behavior, praise, gripes, wishes, and a
-blunt "this wasn't worth the setup cost" are all worth one sentence to
-`/booley-feedback`; it will not ask for a reproduction. Export is explicit and
-local; see [CONFIG.md](CONFIG.md#feedback-feedback).
-
 ## CLI reference
 
-`booley --help` labels every top-level command as `[host]`,
-`[Sandbox]`, `[either]`, or `[mixed]`. Sandbox commands run after
-VS Code accepts **Reopen in Container**, or through `booley session enter` in a
-headless environment. Mixed commands enforce location at their nested
-operation.
-
-`booley projects` lists the Projects this host knows about;
-`booley projects discover <dir>` imports existing ones.
-
-`--dry-run` / `--check-ready` validate without opening the full-screen Console.
+`booley --help` marks every command as `[host]`, `[Sandbox]`, `[either]`, or
+`[mixed]`. Sandbox commands run in a container terminal or through
+`booley session enter`.
 
 ```bash
-# Execute a single ticket end-to-end in the full-screen Console
-booley run --ticket <slug>
+# Tickets (container)
+booley run --ticket <slug>        # run one Ticket
+booley run                        # work through the whole queue
+booley run --dry-run              # check the setup without running anything
+booley run --idle-timeout 0       # keep waiting for new Tickets forever
+booley board                      # show the Ticket board
 
-# Validate the setup without executing anything (one-shot, no TUI)
-booley run --dry-run
+# Quick reference
+booley cheat                      # the whole cheatsheet
+booley cheat --list               # its section names
+booley cheat --criteria           # one section (combine as many as you like)
 
-# Keep the loop alive as a daemon instead of exiting on an idle queue
-booley run --idle-timeout 0
+# Health checks
+booley doctor                     # check setup
+booley doctor --concise           # show only problems
+booley doctor --deep              # also run short real sims, lints, and syntheses
+booley doctor --deep --skip-agent-checks   # CI: skip the login checks
 
-# Print the current ticket board
-booley board
-
-# Show cheatsheet (whole sheet)
-booley cheat
-
-# Show one section of it (`--list` names them all)
-booley cheat --criteria
-booley cheat --flows --sandbox
-booley cheat --board
-booley cheat --commands --project
-
-# Run diagnostics; --concise hides successful rows
-booley doctor
-booley doctor --concise
-
-# Run real smoke checks against marked sim/lint/synthesis Targets
-# (marked FPGA Targets get explicit manual implementation commands)
-booley doctor --deep
-
-# Credential-free release smoke: skips the agent credential and Developer probes
-booley doctor --deep --skip-agent-checks
+# Projects on this machine (host)
+booley projects                   # list known projects
+booley projects discover <dir>    # find existing projects under <dir>
 ```
 
-Booley also runs a non-deep Doctor audit automatically when the Sandbox starts
-and before `booley run`, at most weekly (daily while findings are unresolved)
-or when configuration changed. It never blocks work; changed findings surface in
-`booley session up`, `booley run`, and the next Flow result. The latest result
-lives in `.booley_project/runtime/doctor/last.log`.
+Booley also runs a quick health check on its own when the container starts and
+before `booley run`: about once a week, daily while problems remain, and
+whenever the configuration changes. It never blocks work. New problems show up
+in `booley session up`, `booley run`, and the next Flow result. The last result
+is in `.booley_project/runtime/doctor/last.log`.
 
-`booley run` ends by itself once the queue has stayed fully drained — nothing
-executable, active, or waiting — for `--idle-timeout` seconds (default 300).
-Pass `--idle-timeout 0` to keep polling forever, which is what you want when
-the loop runs as a daemon and tickets are queued from another terminal.
-
-The CLI is headless: no interactive agent runtime (the Claude Code or Codex app) is required to drive it. It drives the agent through the SDK (Claude Agent SDK / Codex SDK) instead. It picks up tickets from the queue, runs them, and moves completed tickets to review.
-
-> **`booley run` is container-only.** Launched on a host terminal it fails fast
-> and points you to **Reopen in Container** (or
-> `booley session enter -- booley run`). `booley init` is the host-side
-> counterpart and refuses inside the container, where Docker is deliberately
-> unavailable.
-
-### Concurrent tickets
-
-Two terms this section leans on (both in the [glossary](../CONTEXT.md#execution)): a
-**Job** is a single background run a ticket dispatches — one sim, one synth, one
-Specialist; each kind is a **Job Class** with its own concurrency cap.
-
-Concurrency is one `booley run` per container terminal: open another terminal
-in the same devcontainer, start another run, and watch each ticket's Console in
-its own terminal. Each run claims a Developer Agent slot, capped by
-`[jobs] max_tickets` (default 2, see [CONFIG.md](CONFIG.md#jobs--concurrency-jobs));
-runs beyond the cap wait in FIFO order and the Console narrates the wait
-("waiting for slot (position N)"). The same admission applies to the Jobs the
-tickets dispatch (sim/synth runs, Specialists; each Job Class has its own
-cap): interactive work has priority over ticket work, but the scheduler never
-preempts a running Job. A submit is refused (`BLOCKED`) only when a class queue
-itself is full (`queue_max`, default 8).
-
-The agent can cancel a queued or running Job with the `booley_cancel` MCP
-tool; ask it to.
-
-> **Tip: scale out once Booley feels familiar.** The whole system is built to
-> be driven many-at-once: run several Claude Code tabs or parallel Codex CLI
-> agents alongside multiple terminals, and keep multiple tickets in flight.
-> Tickets get their own git worktree automatically, but interactive sessions
-> don't, so parallel interactive agents can collide in the shared tree. The fix
-> is in
-> [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-interactive-agents-keep-clobbering-each-others-edits).
-
-## Auth & billing
-
-This section is about what pays for the tokens, and about one failure mode that bites unattended runs specifically.
-
-Booley's LLM agents (the Ticket Mode Developer Agent and the Specialists `reviewer` and `mutation_tester`) run through the **agent provider** recorded by `booley init` as `[agent] provider` in `booley.toml`: `claude` (the default, using the Claude Agent SDK) or `codex` (the Codex CLI). Init does not infer this choice from installed CLIs; flags, existing configuration, or a terminal answer can override the default. Each provider authenticates exactly as its own app does, with the same two options either way: a **subscription** or an **API key**:
-
-| provider | subscription | API key |
-|---|---|---|
-| `claude` | Claude Pro/Max/Team/Enterprise, via the OAuth login `booley init` detects at `~/.claude/.credentials.json` | `ANTHROPIC_API_KEY` |
-| `codex` | the Codex login (`codex login`, stored at `~/.codex/auth.json`) | `OPENAI_API_KEY` |
-
-Under either provider, both options work for Ticket Mode *and* for Specialists in Interactive Mode: there is no API-key-only restriction.
-
-`booley init --skip-credentials` is available for CI and other setup-only
-environments that intentionally have no provider secret. It skips credential
-inspection only: init still resolves, validates, and records the provider/auth
-policy. Normal user setup should omit the flag so init can report whether the
-selected credential is ready.
-
-On a subscription, usage counts against the plan's limits; Booley waits out a
-usage cap and requeues the ticket rather than failing. An API key bills per
-token. With several credentials present, the agent CLI picks one in its own
-order:
-
-- **Claude:** exported `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN` (what
-  `booley auth` stores, below), then the subscription login.
-- **Codex:** exported `OPENAI_API_KEY`, then the `auth.json` login.
-
-An exported API key therefore beats everything, including a stored
-`booley auth` token. `booley init`, `booley doctor`, and `booley auth --status`
-report which credential wins. To pin the choice, set `[agent] auth =
-"subscription"` (Booley scrubs the API key from agent environments) or
-`"api_key"` (fails loudly when the key is missing); see
-[CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth).
-
-For long unattended runs, run **`booley auth`**. It stores the app's *rotation-free* credential at `~/.config/booley/` (mode 0600, deliberately outside every repo and bind mount so it cannot be committed) and re-seeds the devcontainer spec. Booley then injects it into containers itself, with no `export` needed. `booley auth --status` reports which credential each agent would use, and `booley doctor` warns when a run is about to rely on a refreshing one.
-
-Why this matters for long runs (the default credential rotates and can log
-every in-flight agent out mid-run) is in
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#agents-turn-into-not-logged-in-partway-through-an-unattended-run).
-The rotation-free alternative differs per app:
-
-| app | rotation-free credential | how |
-|---|---|---|
-| Claude | one-year OAuth token (never refreshes) | `booley auth`, which runs `claude setup-token` for you |
-| Codex | API key (`OPENAI_API_KEY`) | `booley auth --app codex`, then paste the key |
-
-Codex has no `setup-token` equivalent: `codex login` writes the *refreshing* credential we are trying not to depend on, so its API key is the only rotation-free option, and it bills per token rather than against your subscription. That's a real trade-off, not a free win.
-
-The stored credential reaches VS Code's "Reopen in Container" too: the re-seeded spec mounts it read-only and the in-container registrar applies it on every container start (Claude: `settings.json` `env`; Codex: `auth.json`). Rebuild an existing container once so the mount exists. Exporting `CLAUDE_CODE_OAUTH_TOKEN` / `OPENAI_API_KEY` yourself still works and a non-empty export takes precedence over the stored value. The credential is never baked into the spec.
+Each Ticket run ends with one `BOOLEY_RUN_RESULT` line of JSON for scripts;
+`booley cheat --board` describes it.
