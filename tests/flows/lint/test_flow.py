@@ -639,9 +639,30 @@ class TestDeduplication:
         w1 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "lite")
         w2 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "full")
         w3 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "combo")
-        result = deduplicate_warnings([w1, w2, w3])
+        result = deduplicate_warnings(
+            [w1, w2, w3],
+            {"lite": "verilator", "full": "verilator", "combo": "verible"},
+        )
         assert len(result) == 1
         assert result[0].target == "lite"  # first occurrence kept
+        assert result[0].targets == ("combo", "full", "lite")
+        assert result[0].eda_tools == (
+            ("combo", "verible"),
+            ("full", "verilator"),
+            ("lite", "verilator"),
+        )
+
+    def test_dedup_repeated_warning_from_one_target_lists_target_once(self):
+        first = LintWarning("WIDTH", "mod_a.sv", 42, 5, "first", "lite")
+        repeated = LintWarning("WIDTH", "mod_a.sv", 42, 9, "repeated", "lite")
+
+        result = deduplicate_warnings([first, repeated], {"lite": "verilator"})
+
+        assert len(result) == 1
+        assert result[0].targets == ("lite",)
+        assert result[0].eda_tools == (("lite", "verilator"),)
+        assert result[0].col == 5
+        assert result[0].message == "first"
 
     def test_dedup_different_warnings(self):
         w1 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg1", "lite")
@@ -1367,7 +1388,14 @@ class TestFullRun:
         "_prepare_lint_command",
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
-    def test_multi_config_dedup(self, mock_cmd, mock_exec, state_file: Path, capsys):
+    def test_multi_config_dedup(
+        self,
+        mock_cmd,
+        mock_exec,
+        state_file: Path,
+        tmp_path: Path,
+        capsys,
+    ):
         """Same warning from two configs counts once."""
         mock_exec.return_value = MagicMock(
             returncode=0,
@@ -1381,6 +1409,8 @@ class TestFullRun:
             [
                 "--target",
                 "lite,full",
+                "--report-dir",
+                str(tmp_path / "reports"),
             ]
         )
         flow.read_state()
@@ -1388,6 +1418,12 @@ class TestFullRun:
         captured = capsys.readouterr()
         assert "1 unique in-scope warning" in captured.out
         assert result.detail.get("total_warnings") == 1
+        report = json.loads(
+            (tmp_path / "reports" / "lint_report.json").read_text(encoding="utf-8")
+        )
+        assert report["total_warnings"] == 1
+        assert len(report["warnings"]) == 1
+        assert report["warnings"][0]["targets"] == ["full", "lite"]
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -1493,12 +1529,70 @@ class TestStructuredReport:
         assert data["passed"] is False
         assert len(data["warnings"]) == 1
         assert data["warnings"][0]["rule"] == "UNUSEDSIGNAL"
-        # The parsed warnings carry rule/file:line/message; the linter's raw
-        # output (banner, include resolution, the lines around a diagnostic)
-        # only exists in run.log, so the report has to name it.
+        assert data["warnings"][0]["targets"] == ["lite"]
+        # The parsed warnings carry normalized diagnostic and Target provenance;
+        # the raw output (banner, include resolution, surrounding lines) only
+        # exists in run.log, so the report has to name it.
         assert data["target_results"][0]["log"].endswith("run.log")
         assert data["artifacts"]["report"].endswith("lint_report.json")
         assert data["artifacts"]["log_lite"].endswith("run.log")
+
+    def test_mixed_tool_warning_row_maps_targets_to_tools(self, tmp_path: Path):
+        warnings = [
+            LintWarning("SHARED", "rtl/top.sv", 4, 2, "message", "lint_structural"),
+            LintWarning("SHARED", "rtl/top.sv", 4, 9, "other", "lint_style"),
+        ]
+        eda_tools = {"lint_structural": "verilator", "lint_style": "verible"}
+        grouped = deduplicate_warnings(warnings, eda_tools)
+        flow = LintFlow()
+        report_dir = tmp_path / "reports"
+        flow.parse_args(
+            ["--target", "lint_structural,lint_style", "--report-dir", str(report_dir)]
+        )
+
+        flow._write_lint_report(
+            ["lint_structural", "lint_style"],
+            grouped,
+            0.1,
+            target_results=[
+                LintConfigResult(target="lint_structural", eda_tool="verilator"),
+                LintConfigResult(target="lint_style", eda_tool="verible"),
+            ],
+        )
+
+        report = json.loads((report_dir / "lint_report.json").read_text(encoding="utf-8"))
+        assert report["warnings"] == [
+            {
+                "rule": "SHARED",
+                "file": "rtl/top.sv",
+                "line": 4,
+                "message": "message",
+                "targets": ["lint_structural", "lint_style"],
+                "eda_tools": {
+                    "lint_structural": "verilator",
+                    "lint_style": "verible",
+                },
+            }
+        ]
+
+    def test_same_tool_warning_row_omits_target_tool_map(self, tmp_path: Path):
+        warnings = [
+            LintWarning("SHARED", "rtl/top.sv", 4, 2, "message", "lint_a"),
+            LintWarning("SHARED", "rtl/top.sv", 4, 9, "other", "lint_b"),
+        ]
+        grouped = deduplicate_warnings(
+            warnings,
+            {"lint_a": "verilator", "lint_b": "verilator"},
+        )
+        flow = LintFlow()
+        report_dir = tmp_path / "reports"
+        flow.parse_args(["--target", "lint_a,lint_b", "--report-dir", str(report_dir)])
+
+        flow._write_lint_report(["lint_a", "lint_b"], grouped, 0.1)
+
+        report = json.loads((report_dir / "lint_report.json").read_text(encoding="utf-8"))
+        assert report["warnings"][0]["targets"] == ["lint_a", "lint_b"]
+        assert "eda_tools" not in report["warnings"][0]
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
