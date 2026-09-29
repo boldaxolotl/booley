@@ -801,10 +801,47 @@ class TestParseEdam:
         assert r.vlnv == "::demo_core:0"
         assert r.toplevel == "tb_counter"
         assert r.eda_tool == "verilator"
+        assert r.configured_eda_tool == "verilator"
         assert r.flow_options == {"tool": "verilator", "flatten": False}
         assert r.build_root == tmp_path
         assert "TESTID" in r.parameters
         assert r.parameters["TESTID"]["paramtype"] == "plusarg"
+
+    @pytest.mark.parametrize(
+        ("edam_fields", "declared", "configured"),
+        (
+            (
+                "flow_options: {tool: icarus}\ntool_options: {verilator: {mode: lint}}\n",
+                "icarus",
+                "icarus",
+            ),
+            ("flow_options: {}\ntool_options: {icarus: {}}\n", None, "icarus"),
+            (
+                "flow_options: {}\ntool_options: {icarus: {}, verilator: {}}\n",
+                None,
+                None,
+            ),
+            ("flow_options: {tool: ''}\ntool_options: {icarus: {}}\n", "", ""),
+            ("flow_options: {}\ntool_options: {}\n", None, None),
+        ),
+    )
+    def test_configured_eda_tool_uses_capi2_api_precedence(
+        self,
+        tmp_path: Path,
+        edam_fields: str,
+        declared: str | None,
+        configured: str | None,
+    ) -> None:
+        edam = tmp_path / "tool-shape.eda.yml"
+        edam.write_text(
+            f"name: demo\ntoplevel: tb\nfiles: []\nparameters: {{}}\n{edam_fields}",
+            encoding="utf-8",
+        )
+
+        resolved = parse_edam(edam, target="sim", vlnv="::demo:0")
+
+        assert resolved.eda_tool == declared
+        assert resolved.configured_eda_tool == configured
 
     def test_rtl_tb_partition_by_tag(self, tmp_path: Path):
         r = self._resolved(tmp_path)
@@ -968,6 +1005,7 @@ class TestResolveTargetMocked:
         )
         assert result.toplevel == "tb_counter"
         assert result.eda_tool == "verilator"
+        assert result.configured_eda_tool == "verilator"
         # CLI shape: cores-root at project, build-root isolated, --setup, target, vlnv.
         cmd = captured["cmd"]
         assert cmd[: len(DEFAULT_FUSESOC_CMD)] == list(DEFAULT_FUSESOC_CMD)

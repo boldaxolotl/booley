@@ -91,7 +91,7 @@ def build_workload_snapshot(
         "test": test,
         "vlnv": resolved.vlnv,
         "toplevel": resolved.toplevel,
-        "eda_tool": resolved.eda_tool,
+        "eda_tool": resolved.configured_eda_tool,
         "parameters": jsonable(resolved.parameters),
         "flow_options": jsonable(resolved.flow_options),
         "controls": jsonable(controls or {}),

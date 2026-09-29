@@ -17,6 +17,7 @@ import pytest
 
 from booley.core.file_lock import LockContentionError, acquire_file_lock
 from booley.flows.sim import build_session
+from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
     SimulationBuildSlotError,
@@ -27,6 +28,7 @@ from booley.flows.sim.build_session import (
 )
 from booley.fusesoc import selftest_overlay
 from booley.fusesoc.core_projection import isolated_core_path
+from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim.test_coverage_invocation import project
@@ -612,6 +614,44 @@ def test_reuse_rejects_symlinked_manifest_and_changed_provenance(tmp_path: Path)
         manifest.write_text(json.dumps({"schema": 2}), encoding="utf-8")
         assert session.try_reuse(candidate, "key") is None
         assert session.cache_decision == "schema mismatch"
+
+
+def test_cache_restore_rejects_retained_edam_tool_mismatch(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    candidate_root = tmp_path / "candidate"
+    candidate_build = candidate_root / "build"
+    candidate_build.mkdir(parents=True)
+    candidate_edam = candidate_build / "demo.eda.yml"
+    candidate = PreparedSimulationBuild(
+        target="sim",
+        target_identity="acme:lib:demo:1#sim",
+        resolved=ResolvedTarget(
+            name="sim",
+            vlnv="acme:lib:demo:1",
+            toplevel="tb",
+            eda_tool=None,
+            configured_eda_tool="icarus",
+            files=(),
+            parameters={},
+            build_root=candidate_build,
+            edam_path=candidate_edam,
+        ),
+        work_root=candidate_root,
+        build_root=candidate_build,
+        eda_tool="icarus",
+        toplevel="tb",
+        make_argv=("make",),
+    )
+    retained_root = tmp_path / "retained"
+    retained_build = retained_root / "build"
+    retained_build.mkdir(parents=True)
+    (retained_build / "demo.eda.yml").write_text(
+        "toplevel: tb\nflow_options: {tool: verilator}\nfiles: []\nparameters: {}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SimulationBuildSlotError, match=r"configured 'verilator'.*'icarus'"):
+        SimulationBuildSession(handle)._restore_prepared_build(retained_root, candidate)
 
 
 def test_runtime_image_selection_rejects_missing_or_ambiguous_images(tmp_path: Path) -> None:

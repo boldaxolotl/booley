@@ -39,6 +39,7 @@ from booley.specialists.mutation_tester import (
     parse_creator_output,
 )
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import IncompatibleTargetError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -597,7 +598,7 @@ def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
     )
 
 
-def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
+def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
     """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
     Returns a fake ResolvedTarget whose ``build_root`` is the requested build
@@ -621,6 +622,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
             build_root=Path(build_root),
             toplevel="tb",
             eda_tool=eda_tool,
+            configured_eda_tool=eda_tool,
         )
 
     monkeypatch.setattr(
@@ -1396,7 +1398,7 @@ class TestValidateScopeAgainstTarget:
 # ---------------------------------------------------------------------------
 
 
-def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "verilator"):
+def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str | None = "verilator"):
     """Make the .core reads report a Cocotb (or classic) Target."""
 
     def build(_cls, work_dir):
@@ -1424,6 +1426,70 @@ def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "ve
 
 
 class TestCocotbSimDispatch:
+    @pytest.mark.parametrize("eda_tool", (None, "mystery-sim"))
+    def test_missing_or_unknown_simulator_never_defaults_to_verilator(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        eda_tool: str | None,
+    ) -> None:
+        _patch_cocotb_target(monkeypatch, module=None, eda_tool=eda_tool)
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+        with pytest.raises(UnsupportedSimTargetError, match="unsupported simulator metadata"):
+            endpoint.target_eda_tool("default", tmp_path)
+
+    def test_elab_rejects_declared_and_configured_simulator_disagreement(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _patch_resolve_target(monkeypatch, eda_tool="icarus")
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.fusesoc_registry.resolve_target_handle",
+            lambda handle, *, build_root: SimpleNamespace(
+                build_root=Path(build_root),
+                configured_eda_tool="verilator",
+            ),
+        )
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+
+        with pytest.raises(UnsupportedSimTargetError, match=r"declared 'icarus'.*verilator"):
+            endpoint._run_elab("default", tmp_path, build_dir)
+
+    def test_invalid_cocotb_target_selection_is_not_reclassified(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class InvalidCatalog:
+            def select(self, target: str, *, for_flow: str):
+                raise IncompatibleTargetError(f"{target} is not {for_flow}-compatible")
+
+        monkeypatch.setattr(
+            TargetCatalog, "build", classmethod(lambda cls, root: InvalidCatalog())
+        )
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+        with pytest.raises(UnsupportedSimTargetError, match="cannot select Simulation Target"):
+            endpoint.cocotb_target("default", tmp_path)
+
+    def test_cached_simulator_marker_must_match_target_declaration(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _patch_cocotb_target(monkeypatch, module=None, eda_tool="icarus")
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        (build_dir / ".booley_edalize_eda_tool").write_text("verilator", encoding="utf-8")
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+        with pytest.raises(UnsupportedSimTargetError, match="cached build metadata"):
+            endpoint.target_eda_tool("default", tmp_path, build_dir)
+
     def test_cocotb_target_runs_cocotb_run_half(self, tmp_path: Path, monkeypatch):
         """A Cocotb Target must run with Cocotb's module/filter environment."""
         captured: list[list[str]] = []

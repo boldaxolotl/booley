@@ -135,6 +135,28 @@ def test_catalog_rejects_duplicate_canonical_target_identities(project: Path) ->
         catalog.select_many("lint_a,alpha#lint_a", for_flow="lint")
 
 
+def test_sim_selection_error_names_supported_tool_declarations(tmp_path: Path) -> None:
+    _write_core(
+        tmp_path,
+        "missing-tool.core",
+        "acme:ip:missing:1.0",
+        """
+        sim_missing:
+          flow: sim
+          filesets: []
+          toplevel: top
+        """,
+    )
+
+    with pytest.raises(IncompatibleTargetError) as exc:
+        TargetCatalog.build(tmp_path).select("sim_missing", for_flow="sim")
+
+    message = str(exc.value)
+    assert "flow_options.tool" in message
+    assert "default_tool" in message
+    assert "Verilator or Icarus" in message
+
+
 def test_catalog_select_many_preserves_authored_order(project: Path) -> None:
     selected = TargetCatalog.build(project).select_many("lint_b,lint_a", for_flow="lint")
 

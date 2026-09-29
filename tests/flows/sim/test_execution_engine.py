@@ -29,7 +29,11 @@ from booley.flows.sim.adapter_transport import (
     partial_result_identity,
     write_adapter_result,
 )
-from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.sim.build import (
+    PreparedSimulationBuild,
+    SimulationBuildPreparationError,
+    prepare_simulation_build,
+)
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
     SimulationBuildSlotError,
@@ -56,7 +60,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
 
-def _handle(root: Path, *, selector: str = "sim") -> TargetHandle:
+def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus") -> TargetHandle:
     return cast(
         TargetHandle,
         SimpleNamespace(
@@ -64,6 +68,7 @@ def _handle(root: Path, *, selector: str = "sim") -> TargetHandle:
             selector=selector,
             identity=f"acme:lib:demo:1#{selector}",
             vlnv="acme:lib:demo:1",
+            eda_tool=eda_tool,
         ),
     )
 
@@ -233,7 +238,11 @@ def _runtime_input_vvp(root: Path, build_root: Path) -> Path:
     return fake_bin
 
 
-def _write_runtime_input_project(root: Path) -> Path:
+def _write_runtime_input_project(
+    root: Path,
+    *,
+    tool_declaration: str = "    flow: sim\n    flow_options: {tool: icarus}\n",
+) -> Path:
     state = root / ".booley_project"
     state.mkdir(parents=True)
     (state / "booley.toml").write_text("", encoding="utf-8")
@@ -251,8 +260,7 @@ def _write_runtime_input_project(root: Path) -> Path:
         "      - data/firmware.hex: {file_type: user, copyto: firmware.hex}\n"
         "targets:\n"
         "  sim:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: icarus}\n"
+        f"{tool_declaration}"
         "    filesets: [tb]\n"
         "    toplevel: tb\n",
         encoding="utf-8",
@@ -1395,6 +1403,116 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
     ] == [("firmware.hex", "user")]
     assert outcome.passed is True
     assert not (project / "firmware.hex").is_symlink()
+
+
+@pytest.mark.parametrize(
+    "tool_declaration",
+    (
+        "    flow: sim\n    flow_options: {tool: icarus}\n",
+        "    default_tool: icarus\n    tools:\n      icarus: {}\n",
+    ),
+    ids=("modern-flow-api", "legacy-tool-api"),
+)
+def test_real_icarus_declarations_build_authorize_and_launch_as_icarus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_declaration: str,
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project, tool_declaration=tool_declaration)
+    (state / "tests.toml").write_text('[sim]\ntests = ["dhry"]\n', encoding="utf-8")
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    outcome = _run_real_icarus(project, handle)
+
+    build_root = next((state / ".runtime").rglob("*.eda.yml")).parent
+    makefile = (build_root / "Makefile").read_text(encoding="utf-8")
+    scripts = tuple(build_root.glob("*.scr"))
+    assert "iverilog" in makefile
+    assert "vvp" in makefile
+    assert len(scripts) == 1
+    assert scripts[0].with_suffix("").is_file()
+    assert not (build_root / "Vtb").exists()
+    assert outcome.eda_tool == "icarus"
+    assert outcome.passed is True
+
+
+def test_preparation_rejects_declared_and_configured_simulator_disagreement(
+    tmp_path: Path,
+) -> None:
+    handle = _handle(tmp_path, selector="sim_disagree", eda_tool="icarus")
+    resolved = replace(
+        _prepared(handle, cocotb=False).resolved,
+        configured_eda_tool="verilator",
+    )
+
+    with (
+        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        pytest.raises(SimulationBuildPreparationError) as exc,
+    ):
+        prepare_simulation_build(handle)
+
+    message = str(exc.value)
+    assert "sim_disagree" in message
+    assert "icarus" in message
+    assert "verilator" in message
+    assert "flow_options.tool" in message
+    assert "default_tool" in message
+
+
+def test_real_legacy_verilator_target_prepares_as_verilator(tmp_path: Path) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    _write_runtime_input_project(
+        project,
+        tool_declaration=("    default_tool: verilator\n    tools:\n      verilator: {}\n"),
+    )
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    real_resolve = fusesoc_registry.resolve_target_handle
+    fusesoc_cmd = (
+        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+        if shutil.which("fusesoc")
+        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+    )
+    with patch.object(
+        fusesoc_registry,
+        "resolve_target_handle",
+        side_effect=lambda *args, **kwargs: real_resolve(
+            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
+        ),
+    ):
+        prepared = prepare_simulation_build(handle)
+
+    assert prepared.resolved.eda_tool is None
+    assert prepared.resolved.configured_eda_tool == "verilator"
+    assert prepared.eda_tool == "verilator"
+    assert "verilator" in (prepared.build_root / "Makefile").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("configured_tool", (None, "mystery-sim"))
+def test_preparation_rejects_missing_or_unknown_configured_simulator(
+    tmp_path: Path,
+    configured_tool: str | None,
+) -> None:
+    handle = _handle(tmp_path, selector="sim_unresolved", eda_tool="icarus")
+    resolved = replace(
+        _prepared(handle, cocotb=False).resolved,
+        configured_eda_tool=configured_tool,
+    )
+
+    with (
+        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        pytest.raises(SimulationBuildPreparationError, match="sim_unresolved") as exc,
+    ):
+        prepare_simulation_build(handle)
+
+    assert "flow_options.tool" in str(exc.value)
+    assert "default_tool" in str(exc.value)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Doctor runtime shadow requires symlinks")
