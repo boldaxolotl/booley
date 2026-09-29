@@ -37,6 +37,7 @@ from booley.evidence.timing import (
     per_clock_to_json,
     worst_clock,
 )
+from booley.flows.eda_failures import classify_eda_failure
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -1396,12 +1397,26 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.returncode = 2
             metrics.infra_error = input_error.group(1).strip()
             metrics.termination = "infrastructure_error"
+        failure = classify_eda_failure(
+            result,
+            expected_token=getattr(outcome, "attempt_token", None),
+        )
+        if failure is not None and failure.kind == "infrastructure":
+            metrics.returncode = 2
+            metrics.infra_error = failure.reason
+            metrics.termination = "infrastructure_error"
         if result.peak_rss_mb is not None:
             metrics.peak_rss_mb = max(metrics.peak_rss_mb or 0.0, result.peak_rss_mb)
         if outcome.forced_failure and metrics.returncode == 0:
             metrics.returncode = 1
             metrics.termination = "eda_tool_failure"
-        metrics.yosys_complete = metrics.termination == "completed" or outcome.yosys_complete
+        legacy_inline = (
+            not outcome.yosys_complete
+            and metrics.has_metrics
+            and bool(result.stdout.strip())
+            and "BOOLEY_STAGE:" not in result.stdout
+        )
+        metrics.yosys_complete = outcome.yosys_complete or legacy_inline
         metrics.timing_complete = (
             metrics.termination == "completed"
             and metrics.synth_mode is not None

@@ -23,6 +23,11 @@ from typing import Any, ClassVar
 
 from booley.core.build_paths import work_root_for
 from booley.flows import eda_parsers
+from booley.flows.eda_failures import (
+    classify_eda_failure,
+    new_attempt_token,
+    render_failure_marker,
+)
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
 from booley.flows.plan import (
@@ -80,26 +85,6 @@ def _lint_eda_tool_family(eda_tool: str | None) -> str:
     if eda_tool and "verible" in eda_tool.lower():
         return "verible"
     return "verilator"
-
-
-# Stale-image detection (ADR 0033 decision 8): the make step failing because
-# the binary is absent must name the cause and the fix, not surface a generic
-# spawn failure. make/sh phrase it as ``verible-verilog-lint: not found`` (sh)
-# or ``No such file or directory`` (make's exec).
-_VERIBLE_MISSING_RE = re.compile(
-    r"verible-verilog-lint[^\n]*(?:not found|No such file)",
-    re.IGNORECASE,
-)
-_VERIBLE_STALE_IMAGE_MSG = (
-    "verible-verilog-lint is not installed in the Sandbox — the "
-    "sandbox image predates Verible support (ADR 0033). Rebuild the image "
-    "(booley init) and retry."
-)
-
-
-def _verible_missing_msg() -> str:
-    """Return the Sandbox rebuild hint for missing Verible."""
-    return _VERIBLE_STALE_IMAGE_MSG
 
 
 @dataclass
@@ -161,6 +146,7 @@ class _PreparedLintTarget:
     command: list[str]
     resolved: fusesoc_registry.ResolvedTarget
     result: LintConfigResult
+    attempt_token: str = ""
 
 
 def parse_warnings(output: str, target: str) -> list[LintWarning]:
@@ -225,6 +211,7 @@ def _classify_lint_failure(
     result: LintConfigResult,
     family: str,
     combined: str,
+    attempt_token: str | None = None,
 ) -> None:
     """Record *why* a non-zero lint run failed, and whose fault it was.
 
@@ -240,11 +227,19 @@ def _classify_lint_failure(
     missing binary or spawn/timeout failure means no verdict was reached at
     all, which stays an ERROR and names the image-rebuild fix.
     """
+    executable = "verible-verilog-lint" if family == "verible" else "verilator"
+    failure = classify_eda_failure(
+        SubprocessResult(returncode=result.returncode, stdout=combined),
+        expected_token=attempt_token,
+        expected_stage="lint",
+        expected_executable=executable,
+        boundary_executable="sh",
+    )
+    if failure is not None and failure.kind == "infrastructure":
+        result.error = failure.reason
+        result.error_is_eda_tool_failure = True
+        return
     if family == "verible":
-        if _VERIBLE_MISSING_RE.search(combined):
-            result.error = _verible_missing_msg()
-            result.error_is_eda_tool_failure = True
-            return
         result.error = (
             _verible_first_error_line(combined) or f"lint eda_tool exited {result.returncode}"
         )
@@ -473,7 +468,16 @@ class LintFlow(BuiltinFlow[LintRequest]):
             build_root=build_root,
         )
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
-        return edam_layer.make_command(rel), resolved
+        command = edam_layer.make_command(rel)
+        family = _lint_eda_tool_family(resolved.eda_tool)
+        executable = "verible-verilog-lint" if family == "verible" else "verilator"
+        token = new_attempt_token()
+        marker = render_failure_marker(token, "missing_tool", "lint", executable)
+        script = (
+            f"command -v {shlex.quote(executable)} >/dev/null 2>&1 || "
+            f"{{ echo {shlex.quote(marker)}; exit 127; }}; exec {shlex.join(command)}"
+        )
+        return ["sh", "-c", script], resolved
 
     def _dry_run_command(self, target: TargetHandle) -> list[str]:
         """Build a side-effect-free ``--dry-run`` preview for one Target.
@@ -498,7 +502,19 @@ class LintFlow(BuiltinFlow[LintRequest]):
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: lint dry-run: {exc}"]
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
-        script = f"{shlex.join(setup_cmd)} && {shlex.join(edam_layer.make_command(rel))}"
+        family = _lint_eda_tool_family(target.eda_tool)
+        executable = "verible-verilog-lint" if family == "verible" else "verilator"
+        marker = render_failure_marker("0" * 32, "missing_tool", "lint", executable).replace(
+            "0" * 32, "<attempt-token>"
+        )
+        preflight = (
+            f"command -v {shlex.quote(executable)} >/dev/null 2>&1 || "
+            f"{{ echo {shlex.quote(marker)}; exit 127; }}"
+        )
+        script = (
+            f"{shlex.join(setup_cmd)} && {preflight} && "
+            f"exec {shlex.join(edam_layer.make_command(rel))}"
+        )
         return ["sh", "-c", script]
 
     def _dry_run(self, targets: tuple[TargetHandle, ...]) -> EndpointOutcome:
@@ -634,7 +650,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         else:
             result.warnings = parse_warnings(combined, selector)
         if proc.returncode != 0 and not result.error:
-            _classify_lint_failure(result, family, combined)
+            _classify_lint_failure(result, family, combined, prepared.attempt_token or None)
             if result.error and log_path is not None:
                 # The classified error cites only the FIRST error line; the
                 # rest of the linter's output was already persisted above, so
@@ -668,7 +684,11 @@ class LintFlow(BuiltinFlow[LintRequest]):
             if not self._record_coverage_facts(result, resolved, family):
                 errors.append(result)
                 continue
-            prepared[target.identity] = _PreparedLintTarget(command, resolved, result)
+            token_match = re.search(r"token=([0-9a-f]{32})", " ".join(command))
+            attempt_token = token_match.group(1) if token_match else ""
+            prepared[target.identity] = _PreparedLintTarget(
+                command, resolved, result, attempt_token
+            )
         return prepared, errors
 
     def _record_coverage_facts(

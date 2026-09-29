@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -229,12 +230,12 @@ class TestLintResolution:
         assert captured["build_root"] == (
             tmp_path / ".booley_project" / ".runtime" / "edalize" / "lint" / "lite"
         )
-        # Drives make over the resolved build dir via a relocatable relpath.
-        assert cmd == [
-            "make",
-            "-C",
-            ".booley_project/.runtime/edalize/lint/lite/lint_demo_0/lite",
-        ]
+        # Authenticated preflight names the selected linter before make can
+        # translate a child 127 into its own exit 2.
+        assert cmd[:2] == ["sh", "-c"]
+        assert "command -v verilator" in cmd[2]
+        assert re.search(r"BOOLEY_EDA_FAILURE token=[0-9a-f]{32}", cmd[2])
+        assert "make -C .booley_project/.runtime/edalize/lint/lite/lint_demo_0/lite" in cmd[2]
 
     def test_setup_failure_propagates(self, tmp_path: Path, state_file: Path):
         """A FuseSoC resolution failure surfaces (caller records a Flow error)."""
@@ -299,8 +300,9 @@ class TestLintResolution:
                 _target_handle("lite", project_root=work_dir, vlnv="::lint_demo:0")
             )
 
-        assert cmd[0] == "make" and cmd[1] == "-C"
-        make_dir = (work_dir / cmd[2]).resolve()
+        assert cmd[:2] == ["sh", "-c"]
+        assert "command -v verilator" in cmd[2]
+        make_dir = Path(_resolved.build_root)
         assert (make_dir / "Makefile").exists()
         vc = next(make_dir.glob("*.vc")).read_text(encoding="utf-8")
         assert "--lint-only" in vc
@@ -1462,6 +1464,24 @@ SAMPLE_VERIBLE_PARSE_ERROR = """\
 rtl/top.sv:3:1: syntax error at token "endmodule"
 """
 
+
+class TestLintFailureClassification:
+    def test_verilator_missing_is_infrastructure_error(self) -> None:
+        from booley.flows.lint.flow import LintConfigResult, _classify_lint_failure
+
+        result = LintConfigResult(target="lint_default", returncode=2)
+        _classify_lint_failure(
+            result,
+            "verilator",
+            "/bin/sh: 1: verilator: not found\nmake: *** [lint] Error 127",
+        )
+
+        assert result.error_is_eda_tool_failure is True
+        assert "missing tool: verilator" in result.error
+        assert "Sandbox Image" in result.error
+        assert "booley doctor" in result.error
+
+
 # Two Verible lint Targets so cross-target dedup is exercised on the Verible
 # parser path; the cheap .core read is what routes parsing to it.
 _VERIBLE_CORE_TEXT = """\
@@ -1650,8 +1670,8 @@ class TestVeribleTargets:
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
         out = capsys.readouterr().out
-        assert "rebuild the image" in out.lower()
-        assert "predates Verible support" in out
+        assert "rebuild the sandbox image" in out.lower()
+        assert "booley doctor" in out
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -1757,9 +1777,11 @@ class TestFlowEnablement:
         assert flow._resolve_job_class() is None
 
     def test_verible_missing_message_names_runtime(self):
-        from booley.flows.lint.flow import _verible_missing_msg
+        from booley.flows.eda_failures import format_missing_tool
 
-        assert "Sandbox" in _verible_missing_msg()
+        message = format_missing_tool("verible-verilog-lint")
+        assert "Sandbox Image" in message
+        assert "booley doctor" in message
 
 
 # ---------------------------------------------------------------------------

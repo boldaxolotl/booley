@@ -19,6 +19,7 @@ from booley.config.project_config import load_test_configuration_field, lookup_t
 from booley.core.build_paths import work_root_for
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
+from booley.flows.eda_failures import find_missing_executable
 from booley.flows.run_log import begin_run_log, write_run_log
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim import trace_overlay
@@ -91,7 +92,6 @@ from .contract import (
     SimulationTestOutcome,
     pre_sim_failure_message,
 )
-from .failures import find_missing_executable
 from .freshness import (
     ArtifactValidationError,
     validate_fresh_artifact,

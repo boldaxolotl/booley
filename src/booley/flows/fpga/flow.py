@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,7 @@ from booley.evidence.fields import (
     RECIPE_SNAPSHOT_DETAIL,
 )
 from booley.evidence.timing import per_clock_from_json, worst_clock
+from booley.flows.eda_failures import EdaFailure, classify_eda_failure
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
 from booley.flows.plan import (
@@ -781,7 +783,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         # empty/detached workspace bind-mount) lets the previous run's stale
         # *_routed.rpt files parse into a bogus "cached" pass with old metrics,
         # masking the real infra failure.
-        report_text = self._collect_route_reports(work_root, min_mtime=result.dispatched_unix)
+        report_text = self._collect_vivado_evidence(work_root, min_mtime=result.dispatched_unix)
         metric_dict = fpga_edam.parse_fpga_reports(
             log_text + "\n" + report_text if report_text else log_text
         )
@@ -806,14 +808,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             metrics.infra_error = completion_error
         if result.timed_out:
             metrics.timed_out = True
-        if metrics.returncode != 0 and not metrics.infra_error:
-            # infra_error stays the concise reason; the bulky log/stderr tail
-            # goes into failure_output (mirrors asic), so the report can surface
-            # it separately from the one-line criterion reason.
-            metrics.infra_error = (
-                f"Vivado (edalize) did not reach route_design (exit {metrics.returncode})."
-            )
-            metrics.failure_output = self._failure_tail(log_text, stderr_text).strip()
+        self._apply_vivado_failure(metrics, result, report_text, log_text, stderr_text)
         # Where this run's artifacts live, for the reader to list.
         metrics.dirs = self._artifact_dirs(work_root)
         # Persist the combined run log (route reports + make log/stderr) on pass
@@ -850,6 +845,31 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         else:
             metrics.run_evidence = current_evidence
         return metrics
+
+    def _apply_vivado_failure(
+        self,
+        metrics: FpgaMetrics,
+        result: SubprocessResult,
+        evidence: str,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        """Apply design-vs-infrastructure ownership to a failed Vivado run."""
+        failure = self._classify_vivado_failure(result, evidence)
+        if failure is not None and failure.kind == "infrastructure":
+            metrics.returncode = 2
+            metrics.infra_error = failure.reason
+            metrics.failure_output = failure.diagnostic
+            return
+        if failure is not None:
+            metrics.failure_output = failure.diagnostic
+            return
+        if metrics.returncode == 0 or metrics.infra_error:
+            return
+        metrics.infra_error = (
+            f"Vivado (edalize) did not reach route_design (exit {metrics.returncode})."
+        )
+        metrics.failure_output = self._failure_tail(stdout, stderr).strip()
 
     def _load_cached_metrics(
         self,
@@ -928,8 +948,8 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             sections.append(f" stderr tail:\n{stderr_tail}")
         return "".join(sections)
 
-    def _collect_route_reports(self, work_root: Path, *, min_mtime: float | None = None) -> str:
-        """Concatenate the Vivado-generated route reports for the post-processor.
+    def _collect_vivado_evidence(self, work_root: Path, *, min_mtime: float | None = None) -> str:
+        """Concatenate fresh Vivado synthesis and implementation evidence.
 
         The edalize vivado flow runs project-mode (``launch_runs impl_1``), which
         emits its reports as files under ``<project>.runs/impl_1/`` rather than to
@@ -970,7 +990,42 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
                     parts.append(runlog.read_text(errors="replace"))
                 except OSError:
                     logger.debug("fpga_impl: could not read %s", runlog, exc_info=True)
+        for synth_dir in sorted(work_root.glob("*.runs/synth_1")):
+            runlog = synth_dir / "runme.log"
+            if runlog.is_file() and not self._is_stale_artifact(runlog, min_mtime):
+                try:
+                    parts.append(runlog.read_text(errors="replace"))
+                except OSError:
+                    logger.debug("fpga_impl: could not read %s", runlog, exc_info=True)
         return "\n".join(parts)
+
+    def _collect_route_reports(self, work_root: Path, *, min_mtime: float | None = None) -> str:
+        """Compatibility alias for callers collecting all Vivado evidence."""
+        return self._collect_vivado_evidence(work_root, min_mtime=min_mtime)
+
+    @staticmethod
+    def _classify_vivado_failure(result: SubprocessResult, evidence: str) -> EdaFailure | None:
+        """Separate narrowly evidenced HDL rejection from execution failure."""
+        combined = SubprocessResult(
+            returncode=result.returncode,
+            stdout="\n".join(part for part in (result.stdout, evidence) if part),
+            stderr=result.stderr,
+            timed_out=result.timed_out,
+            oom_kill_delta=result.oom_kill_delta,
+        )
+        infrastructure = classify_eda_failure(combined, expected_stage="vivado")
+        if infrastructure is not None:
+            return infrastructure
+        match = re.search(
+            r"^ERROR:\s*\[Synth\s+8-\d+\]"
+            r"(?=[^\r\n]*(?:syntax|elaborat|module|port))[^\r\n]*$",
+            combined.stdout,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if match is not None:
+            diagnostic = match.group(0).strip()
+            return EdaFailure("design", "design", "vivado", "", diagnostic, diagnostic)
+        return None
 
     def _artifact_dirs(self, work_root: Path) -> dict[str, str]:
         """The directories holding this run's Vivado artifacts, by role.
