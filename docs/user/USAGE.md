@@ -299,23 +299,42 @@ result with `booley run --ticket <slug> --dry-run`.
 ### Acceptance Criteria
 
 A Ticket doesn't list steps. It lists **acceptance criteria**: checks that must
-pass before the work counts as finished. Booley decides when they pass, not the
-agent:
+pass before the work counts as finished. They are grouped by the Flow or
+Specialist that checks them:
 
-- Each criterion is owned by one Flow or Specialist. For example,
-  `sim_pass_<target>` needs `sim` to report a pass, and `review_rtl_bugs` needs a
+```yaml
+CRITERIA_MANDATORY:
+  LINT:
+    lint_core: clean
+  SIM:
+    sim_core: {all: pass}
+  REVIEW:
+    rtl: {bugs: clean}
+    tb: {quality: clean}
+CRITERIA_OPTIONAL:
+  SYNTH:
+    synth_core: {area_um2_max: 10000, fmax_mhz_min: 400}
+```
+
+Booley decides when they pass, not the agent:
+
+- A criterion passes only when its Flow or Specialist says so. For example, a
+  `SIM` criterion needs `sim` to report a pass, and a `REVIEW` criterion needs a
   `reviewer` run. The agent saying "it works" never counts.
 - When the code changes, criteria that depend on it must pass again.
 - **Mandatory** criteria must all pass before the Ticket can reach review.
   **Optional** ones don't block, but the agent must explain each one it
   couldn't meet.
 
-A review criterion such as `review_rtl_bugs` normally means *clean*: every
-finding must be fixed, or waived with a written reason. Add `_done`
-(`review_rtl_bugs_done`) when you only want the findings reported, not fixed.
+Each `REVIEW` entry needs an outcome. `clean` means every finding must be
+fixed, or waived with a written reason. `done` means the review only has to
+run: its findings are reported, not fixed.
 
-The full list of criteria is in the [Criteria catalog](#criteria-catalog), and
-`booley cheat --criteria` prints it too, including any your project added.
+You rarely write this by hand; `/booley-ticket-create` does it for you. The
+[Criteria catalog](#criteria-catalog) lists every criterion under the name
+Booley reports it by (for example, `REVIEW: rtl: {bugs: clean}` shows up as
+`review_rtl_bugs`). `booley cheat --criteria` prints the same list, including
+any your project added.
 How criteria are checked is in
 [ARCHITECTURE.md](../internals/ARCHITECTURE.md#ticket-mode).
 
@@ -702,8 +721,10 @@ Analyst only gives advice; it never changes criteria or approves waivers.
 
 ## Criteria catalog
 
-Every built-in criterion. `{target}` means one criterion per Target (for
-example `sim_pass_sim_core`). Criteria are defined in `criteria.toml`, which
+Every built-in criterion, under the name Booley uses in reports and
+`booley board show`. In a Ticket you write them grouped by Flow or Specialist
+instead; see [Acceptance Criteria](#acceptance-criteria). `{target}` means one
+criterion per Target (for example `sim_pass_sim_core`). Criteria are defined in `criteria.toml`, which
 is also where a project can add its own.
 
 <!-- BEGIN GENERATED: criteria -->
