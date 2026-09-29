@@ -1468,14 +1468,14 @@ class TestCmdFlow:
         _FakeFlow.rc = rc
         assert tlr._cmd_flow(self._args(["flow", "fakeflow"]), Path("/work")) == rc
 
-    def test_unknown_endpoint_name_lists_available_endpoints(self, capsys):
+    def test_unknown_flow_name_lists_available_flows(self, capsys):
         rc = tlr._cmd_flow(self._args(["flow", "nosuchtool"]), Path("/work"))
         assert rc == 2
         streams = capsys.readouterr()
         assert streams.out == ""
-        assert "not a flow" in streams.err
-        assert "Available Flows:" in streams.err
-        assert "fakeflow" in streams.err
+        assert streams.err == (
+            "ERROR: 'nosuchtool' is not a flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
+        )
         assert not _FakeFlow.calls
 
     def test_missing_flow_name_lists_available_flows(self, capsys):
@@ -1504,9 +1504,9 @@ class TestCmdFlow:
         assert rc == 2
         streams = capsys.readouterr()
         assert streams.out == ""
-        assert "not a flow" in streams.err
-        assert "Available Flows:" in streams.err
-        assert "fakeflow" in streams.err
+        assert streams.err == (
+            "ERROR: '' is not a flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
+        )
 
     def test_listing_trims_the_llm_facing_description(self, capsys):
         tlr._cmd_flow(self._args(["flow"]), Path("/work"))
