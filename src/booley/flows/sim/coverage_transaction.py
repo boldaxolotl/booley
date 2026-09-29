@@ -392,8 +392,13 @@ def _simulation_projection(
         "evaluation": campaign.evaluation["status"],
         "coverage_campaign": "coverage.json",
     }
+    infrastructure_error = next(
+        (finding.message for finding in result.findings if finding.severity == "error"), ""
+    )
     errors = [str(item["error_tail"]) for item in tests if item.get("error_tail")]
-    if errors:
+    if result.infrastructure_error and infrastructure_error:
+        document["error"] = infrastructure_error
+    elif errors:
         document["error"] = errors[0]
     return document
 
