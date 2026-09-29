@@ -1113,25 +1113,11 @@ def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, cap
     monkeypatch.setattr(
         review_lifecycle,
         "review_briefing_command",
-        lambda *_a, **_k: Namespace(status="ready", briefing="briefing"),
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("review briefing called")),
     )
     assert tlr._cmd_board_show(missing_args, tmp_path) == 0
     output = capsys.readouterr().out
     assert "dossier" in output
-    assert "briefing" in output
-
-    monkeypatch.setattr(
-        review_lifecycle,
-        "review_briefing_command",
-        lambda *_a, **_k: Namespace(
-            status="failed",
-            message="briefing unavailable; run booley board review demo",
-        ),
-    )
-    assert tlr._cmd_board_show(missing_args, tmp_path) == 2
-    assert capsys.readouterr().err.strip() == (
-        "ERROR: briefing unavailable; run booley board review demo"
-    )
 
 
 def test_board_show_does_not_append_review_guidance_to_accepted_failure(
@@ -1163,6 +1149,111 @@ def test_board_show_does_not_append_review_guidance_to_accepted_failure(
     error = capsys.readouterr().err
     assert "Criteria Satisfaction Record is corrupt" in error
     assert "board review" not in error
+
+
+def _blocked_diagnosis() -> dict:
+    return {
+        "classification": "ticket-code",
+        "board_reason": "simulation failed",
+        "blocked_stage": "developer",
+        "blockers": [{"name": "sim", "reason": "failed", "evidence": "run log"}],
+        "passing_non_blocking": [],
+        "developer_questions": [],
+        "recommended_action": "retry with feedback",
+        "findings": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_board_show_blocked_uses_dossier_without_review_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.core.models import AgentResult
+    from booley.harness import blocked_prep
+    from booley.ticket_board import io, review_lifecycle
+
+    log_dir = tmp_path / "logs" / "demo"
+    ticket = tmp_path / "blocked" / "demo.md"
+    ticket.parent.mkdir()
+    ticket.write_text("ticket\n", encoding="utf-8")
+    context = blocked_prep.BlockedContext(
+        tmp_path,
+        "demo",
+        ticket,
+        log_dir,
+        log_dir / ".runtime" / "triage-prep",
+        None,
+    )
+
+    async def invoke(_ctx, _evidence):
+        return AgentResult(structured=_blocked_diagnosis())
+
+    class FakeTio:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def inspect_ticket(self, _slug):
+            return {"file": "board/blocked/demo.md", "status": "blocked"}
+
+    monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: context)
+    monkeypatch.setattr(blocked_prep, "_invoke", invoke)
+    monkeypatch.setattr(io, "TicketIO", FakeTio)
+    monkeypatch.setattr(
+        review_lifecycle,
+        "review_briefing_command",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected review")),
+    )
+    assert (await blocked_prep.prepare_blocked_dossier(tmp_path, "demo")).ready
+    args = tlr._build_parser().parse_args(["board", "show", "demo", "--no-open-diffs"])
+
+    assert tlr._cmd_board_show(args, tmp_path) == 0
+    assert "**Blocked by:**" in capsys.readouterr().out
+    briefing_args = tlr._build_parser().parse_args(["board", "blocked-briefing", "demo"])
+    assert tlr._cmd_board_blocked_briefing(briefing_args, tmp_path) == 0
+    assert "**Blocked by:**" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_board_show_blocked_names_changed_dossier_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.core.models import AgentResult
+    from booley.harness import blocked_prep
+    from booley.ticket_board import io
+
+    ticket = tmp_path / "blocked" / "demo.md"
+    ticket.parent.mkdir()
+    ticket.write_text("ticket\n", encoding="utf-8")
+    context = blocked_prep.BlockedContext(
+        tmp_path,
+        "demo",
+        ticket,
+        tmp_path / "logs" / "demo",
+        tmp_path / "logs" / "demo" / ".runtime" / "triage-prep",
+        None,
+    )
+
+    async def invoke(_ctx, _evidence):
+        return AgentResult(structured=_blocked_diagnosis())
+
+    class FakeTio:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def inspect_ticket(self, _slug):
+            return {"file": "board/blocked/demo.md", "status": "blocked"}
+
+    monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: context)
+    monkeypatch.setattr(blocked_prep, "_invoke", invoke)
+    monkeypatch.setattr(io, "TicketIO", FakeTio)
+    assert (await blocked_prep.prepare_blocked_dossier(tmp_path, "demo")).ready
+    ticket.write_text("changed\n", encoding="utf-8")
+    args = tlr._build_parser().parse_args(["board", "show", "demo", "--no-open-diffs"])
+
+    assert tlr._cmd_board_show(args, tmp_path) == 2
+    error = capsys.readouterr().err
+    assert "ticket changed" in error
+    assert "run booley board review demo" in error
 
 
 def test_board_review_handler_rejects_inconsistent_options(capsys, tmp_path):

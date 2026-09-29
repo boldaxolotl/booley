@@ -24,7 +24,7 @@ from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
 
 logger = logging.getLogger(__name__)
 
-BLOCKED_PACKAGE_VERSION = 1
+BLOCKED_PACKAGE_VERSION = 2
 _CLASSIFICATIONS = frozenset({"harness", "infrastructure", "ticket-code", "mixed", "unknown"})
 
 
@@ -51,6 +51,56 @@ class BlockedContext:
     worktree: Path | None
     authored_drift: bool = False
     authored_drift_reason: str = ""
+
+
+@dataclass(frozen=True)
+class SourceInputRecord:
+    """One stable, independently comparable dossier input."""
+
+    sha256: str
+    comparison: str = "exact"
+    snapshot_path: str | None = None
+    snapshot_sha256: str | None = None
+
+    def to_dict(self) -> dict[str, str]:
+        row = {"sha256": self.sha256, "comparison": self.comparison}
+        if self.snapshot_path is not None:
+            row["snapshot_path"] = self.snapshot_path
+        if self.snapshot_sha256 is not None:
+            row["snapshot_sha256"] = self.snapshot_sha256
+        return row
+
+
+@dataclass(frozen=True)
+class SourceInputs:
+    """Versioned collection of named dossier inputs."""
+
+    records: dict[str, SourceInputRecord]
+
+    def to_dict(self) -> dict[str, Any]:
+        rows = {label: self.records[label].to_dict() for label in sorted(self.records)}
+        encoded = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
+        return {
+            "version": BLOCKED_PACKAGE_VERSION,
+            "aggregate_sha256": hashlib.sha256(encoded).hexdigest(),
+            "records": rows,
+        }
+
+
+@dataclass(frozen=True)
+class FreshResult:
+    """Verified package path or ordered reasons it cannot be used."""
+
+    package_path: Path | None = None
+    mismatches: tuple[str, ...] = ()
+
+    @property
+    def ready(self) -> bool:
+        return self.package_path is not None and not self.mismatches
+
+
+class _FreshnessError(RuntimeError):
+    """Stable freshness mismatch raised while loading a stored dossier."""
 
 
 def _find_checkout(project_root: Path, branch: str) -> Path | None:
@@ -127,49 +177,135 @@ def _evidence_paths(ctx: BlockedContext) -> list[tuple[str, Path]]:
     return rows
 
 
-def _source_sha(ctx: BlockedContext) -> str:
-    digest = hashlib.sha256()
-    for label, path in _evidence_paths(ctx):
-        digest.update(label.encode())
-        digest.update(b"\0")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    if ctx.worktree:
-        for args in (
-            ("rev-parse", "HEAD"),
-            ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
-            ("diff", "--binary", "HEAD", "--"),
-        ):
-            result = subprocess.run(
-                ["git", "-C", str(ctx.worktree), *args],
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
-            digest.update(result.stdout)
-        untracked = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(ctx.worktree),
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-                "-z",
-            ],
+def _sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _state_projection(raw: bytes) -> bytes:
+    try:
+        state = require_dict(json.loads(raw.decode("utf-8-sig")), field="booley state")
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"state input is malformed: {exc}") from exc
+    projected = dict(state)
+    projected.pop("last_updated", None)
+    timeline = projected.get("timeline", [])
+    if not isinstance(timeline, list):
+        raise RuntimeError("state input is malformed: timeline must be a list")
+    projected["timeline"] = [
+        row
+        for row in timeline
+        if not (
+            isinstance(row, dict)
+            and row.get("endpoint_kind") == "mcp_tool"
+            and row.get("mcp_tool") == "triage_report"
+        )
+    ]
+    return json.dumps(projected, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _evidence_record(label: str, raw: bytes) -> SourceInputRecord:
+    if label == "state":
+        return SourceInputRecord(_sha256(_state_projection(raw)), "semantic")
+    if label == "run_log":
+        return SourceInputRecord(_sha256(raw), "snapshot")
+    return SourceInputRecord(_sha256(raw))
+
+
+def _run_git(worktree: Path, label: str, *args: str) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(worktree), *args],
             capture_output=True,
             timeout=30,
             check=False,
         )
-        for raw_path in (value for value in untracked.stdout.split(b"\0") if value):
-            relative = raw_path.decode(errors="surrogateescape")
-            path = ctx.worktree / relative
-            digest.update(raw_path)
-            digest.update(b"\0")
-            if path.is_symlink():
-                digest.update(str(path.readlink()).encode(errors="surrogateescape"))
-            elif path.is_file():
-                digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{label} collection timed out") from exc
+    if result.returncode:
+        detail = result.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"{label} collection failed: {detail or 'git exited nonzero'}")
+    return result.stdout
+
+
+def _worktree_records(ctx: BlockedContext) -> dict[str, SourceInputRecord]:
+    identity = str(ctx.worktree) if ctx.worktree is not None else "unavailable"
+    records = {"worktree/context": SourceInputRecord(_sha256(identity.encode()))}
+    if ctx.worktree is None:
+        return records
+    operations = {
+        "worktree/head": ("rev-parse", "HEAD"),
+        "worktree/status": ("status", "--porcelain=v1", "-z", "--untracked-files=no"),
+        "worktree/diff": ("diff", "--binary", "HEAD", "--"),
+    }
+    for label, args in operations.items():
+        records[label] = SourceInputRecord(_sha256(_run_git(ctx.worktree, label, *args)))
+    raw_paths = _run_git(
+        ctx.worktree, "worktree/untracked", "ls-files", "--others", "--exclude-standard", "-z"
+    )
+    for raw_path in sorted(value for value in raw_paths.split(b"\0") if value):
+        relative = raw_path.decode(errors="surrogateescape")
+        path = ctx.worktree / relative
+        content = (
+            str(path.readlink()).encode(errors="surrogateescape")
+            if path.is_symlink()
+            else path.read_bytes()
+        )
+        records[f"worktree/untracked/{relative}"] = SourceInputRecord(_sha256(content))
+    return records
+
+
+def _collect_live_inputs(ctx: BlockedContext) -> SourceInputs:
+    records: dict[str, SourceInputRecord] = {}
+    for label, path in _evidence_paths(ctx):
+        records[label] = _evidence_record(label, path.read_bytes())
+    records.update(_worktree_records(ctx))
+    return SourceInputs(records)
+
+
+def _snapshot_inputs(ctx: BlockedContext) -> tuple[SourceInputs, list[tuple[str, Path]]]:
+    snapshot_root = ctx.runtime_dir / "evidence" / str(time.monotonic_ns())
+    records: dict[str, SourceInputRecord] = {}
+    prompt_paths: list[tuple[str, Path]] = []
+    for label, path in _evidence_paths(ctx):
+        raw = path.read_bytes()
+        snapshot = snapshot_root / label
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_bytes(raw)
+        base = _evidence_record(label, raw)
+        records[label] = SourceInputRecord(
+            base.sha256,
+            base.comparison,
+            str(snapshot),
+            _sha256(raw),
+        )
+        prompt_paths.append((label, snapshot))
+    records.update(_worktree_records(ctx))
+    inputs = SourceInputs(records)
+    mismatches = _compare_inputs(inputs, _collect_live_inputs(ctx), include_snapshot=True)
+    if mismatches:
+        raise RuntimeError(
+            f"blocked-ticket evidence changed while snapshotting: {', '.join(mismatches)}"
+        )
+    return inputs, prompt_paths
+
+
+def _compare_inputs(
+    expected: SourceInputs, current: SourceInputs, *, include_snapshot: bool = False
+) -> tuple[str, ...]:
+    labels = sorted(set(expected.records) | set(current.records))
+    mismatches: list[str] = []
+    for label in labels:
+        old = expected.records.get(label)
+        new = current.records.get(label)
+        if old is not None and old.comparison == "snapshot" and not include_snapshot:
+            continue
+        if old is None:
+            mismatches.append(f"{label} added")
+        elif new is None:
+            mismatches.append(f"{label} missing")
+        elif old.sha256 != new.sha256:
+            mismatches.append(f"{label} changed")
+    return tuple(mismatches)
 
 
 def _schema() -> dict[str, Any]:
@@ -233,8 +369,8 @@ def _validate(value: Any) -> dict[str, Any]:
     return diagnosis
 
 
-def _prompt(ctx: BlockedContext) -> str:
-    paths = "\n".join(f"- {label}: `{path}`" for label, path in _evidence_paths(ctx))
+def _prompt(ctx: BlockedContext, evidence: list[tuple[str, Path]]) -> str:
+    paths = "\n".join(f"- {label}: `{path}`" for label, path in evidence)
     worktree = str(ctx.worktree) if ctx.worktree else "not available"
     return f"""Diagnose blocked Booley ticket `{ctx.slug}` after its developer run.
 
@@ -253,12 +389,12 @@ Evidence:
 """
 
 
-async def _invoke(ctx: BlockedContext) -> AgentResult:
+async def _invoke(ctx: BlockedContext, evidence: list[tuple[str, Path]]) -> AgentResult:
     cfg = get_backend_config()
     return await call_agent(
         configure_agent_call(
             AgentCallParams(
-                prompt=_prompt(ctx),
+                prompt=_prompt(ctx, evidence),
                 system_prompt=(
                     "You are a read-only senior incident reviewer preparing a concise "
                     "blocked-ticket triage dossier grounded only in supplied evidence."
@@ -307,21 +443,92 @@ def _record_call(ctx: BlockedContext, result: AgentResult, duration: float) -> N
     state.save()
 
 
-def _fresh(ctx: BlockedContext, source_sha: str) -> Path | None:
+def _manifest_inputs(value: Any) -> SourceInputs:
+    source = require_dict(value, field="blocked dossier source_inputs")
+    if source.get("version") != BLOCKED_PACKAGE_VERSION:
+        raise RuntimeError("manifest version changed")
+    rows = require_dict(source.get("records"), field="blocked dossier source records")
+    records: dict[str, SourceInputRecord] = {}
+    for label, raw_record in rows.items():
+        if not isinstance(label, str):
+            raise RuntimeError("blocked dossier source labels must be strings")
+        row = require_dict(raw_record, field=f"blocked dossier source {label}")
+        comparison = require_str(row, "comparison")
+        expected_comparison = (
+            "semantic" if label == "state" else "snapshot" if label == "run_log" else "exact"
+        )
+        if comparison != expected_comparison:
+            raise RuntimeError(f"blocked dossier source {label} has invalid comparison")
+        records[label] = SourceInputRecord(
+            require_str(row, "sha256"),
+            comparison,
+            row.get("snapshot_path") if isinstance(row.get("snapshot_path"), str) else None,
+            row.get("snapshot_sha256") if isinstance(row.get("snapshot_sha256"), str) else None,
+        )
+    inputs = SourceInputs(records)
+    if inputs.to_dict()["aggregate_sha256"] != source.get("aggregate_sha256"):
+        raise RuntimeError("blocked dossier source aggregate changed")
+    return inputs
+
+
+def _snapshot_mismatches(inputs: SourceInputs) -> tuple[str, ...]:
+    mismatches = []
+    for label, record in sorted(inputs.records.items()):
+        if record.snapshot_path is None:
+            continue
+        try:
+            digest = _sha256(Path(record.snapshot_path).read_bytes())
+        except OSError:
+            mismatches.append(f"{label} evidence missing")
+            continue
+        if digest != record.snapshot_sha256:
+            mismatches.append(f"{label} evidence integrity changed")
+    return tuple(mismatches)
+
+
+def _load_manifest(ctx: BlockedContext) -> dict[str, Any]:
     try:
-        manifest = json.loads(_manifest_path(ctx).read_text(encoding="utf-8"))
-        package_path = Path(manifest["package_path"])
-        package_hash = hashlib.sha256(package_path.read_bytes()).hexdigest()
-    except (OSError, KeyError, TypeError, json.JSONDecodeError):
-        return None
-    if (
-        manifest.get("version") == BLOCKED_PACKAGE_VERSION
-        and manifest.get("status") == "ready"
-        and manifest.get("source_sha256") == source_sha
-        and manifest.get("package_sha256") == package_hash
-    ):
-        return package_path
-    return None
+        manifest = require_dict(
+            json.loads(_manifest_path(ctx).read_text(encoding="utf-8")),
+            field="blocked dossier manifest",
+        )
+    except FileNotFoundError as exc:
+        raise _FreshnessError("manifest missing") from exc
+    except (OSError, ValueError) as exc:
+        raise _FreshnessError("manifest malformed") from exc
+    if manifest.get("version") != BLOCKED_PACKAGE_VERSION:
+        raise _FreshnessError("manifest version changed")
+    if manifest.get("status") != "ready":
+        error = manifest.get("error")
+        detail = f"manifest failed: {error}" if isinstance(error, str) else "manifest not ready"
+        raise _FreshnessError(detail)
+    return manifest
+
+
+def _manifest_package(manifest: dict[str, Any]) -> tuple[SourceInputs, Path]:
+    try:
+        inputs = _manifest_inputs(manifest.get("source_inputs"))
+        package_path = Path(require_str(manifest, "package_path"))
+        package_hash = _sha256(package_path.read_bytes())
+    except FileNotFoundError as exc:
+        raise _FreshnessError("package missing") from exc
+    except (OSError, ValueError) as exc:
+        raise _FreshnessError("manifest malformed") from exc
+    if package_hash != manifest.get("package_sha256"):
+        raise _FreshnessError("package integrity changed")
+    return inputs, package_path
+
+
+def _fresh(ctx: BlockedContext) -> FreshResult:
+    try:
+        manifest = _load_manifest(ctx)
+        inputs, package_path = _manifest_package(manifest)
+    except _FreshnessError as exc:
+        return FreshResult(mismatches=(str(exc),))
+    mismatches = _snapshot_mismatches(inputs)
+    if not mismatches:
+        mismatches = _compare_inputs(inputs, _collect_live_inputs(ctx))
+    return FreshResult(package_path if not mismatches else None, mismatches)
 
 
 def _publish_blocked_dossier(
@@ -330,7 +537,7 @@ def _publish_blocked_dossier(
     diagnosis: dict,
     result: Any,
     duration: float,
-    source_sha: str,
+    source_inputs: SourceInputs,
 ) -> Path:
     package = {
         "version": BLOCKED_PACKAGE_VERSION,
@@ -349,7 +556,7 @@ def _publish_blocked_dossier(
         {
             "version": BLOCKED_PACKAGE_VERSION,
             "status": "ready",
-            "source_sha256": source_sha,
+            "source_inputs": source_inputs.to_dict(),
             "package_path": str(path),
             "package_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "duration_s": round(duration, 2),
@@ -367,17 +574,25 @@ async def prepare_blocked_dossier(
     started = time.monotonic()
     try:
         ctx = _resolve_context(project_root.resolve(), slug)
-        source_sha = _source_sha(ctx)
-        if not force and (path := _fresh(ctx, source_sha)):
-            return BlockedPrepOutcome("fresh", "blocked dossier is current", path)
-        result = await _invoke(ctx)
+        fresh = _fresh(ctx)
+        if not force and fresh.ready:
+            return BlockedPrepOutcome("fresh", "blocked dossier is current", fresh.package_path)
+        source_inputs, evidence = _snapshot_inputs(ctx)
+        result = await _invoke(ctx, evidence)
         diagnosis = _validate(result.structured)
-        if _source_sha(ctx) != source_sha:
-            raise RuntimeError("blocked-ticket evidence changed during diagnosis")
+        mismatches = _compare_inputs(source_inputs, _collect_live_inputs(ctx))
+        if mismatches:
+            raise RuntimeError(
+                f"blocked-ticket evidence changed during diagnosis: {', '.join(mismatches)}"
+            )
         duration = time.monotonic() - started
         _record_call(ctx, result, duration)
-        source_sha = _source_sha(ctx)
-        path = _publish_blocked_dossier(ctx, slug, diagnosis, result, duration, source_sha)
+        mismatches = _compare_inputs(source_inputs, _collect_live_inputs(ctx))
+        if mismatches:
+            raise RuntimeError(
+                f"blocked-ticket evidence changed during accounting: {', '.join(mismatches)}"
+            )
+        path = _publish_blocked_dossier(ctx, slug, diagnosis, result, duration, source_inputs)
         return BlockedPrepOutcome("ready", "blocked dossier prepared", path)
     except Exception as exc:
         logger.warning("Blocked dossier preparation failed for %s: %s", slug, exc, exc_info=True)
@@ -401,15 +616,12 @@ def render_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepOutcome:
     """Load a current blocked dossier without invoking an agent."""
     try:
         ctx = _resolve_context(project_root.resolve(), slug)
-        path = _fresh(ctx, _source_sha(ctx))
-        if path is None:
-            try:
-                manifest = json.loads(_manifest_path(ctx).read_text(encoding="utf-8"))
-                error = manifest.get("error")
-            except (OSError, json.JSONDecodeError):
-                error = None
-            detail = f": {error}" if isinstance(error, str) else ""
-            return BlockedPrepOutcome("stale", f"blocked dossier is missing or stale{detail}")
+        fresh = _fresh(ctx)
+        if not fresh.ready:
+            detail = ", ".join(fresh.mismatches)
+            return BlockedPrepOutcome("stale", f"blocked dossier is stale: {detail}")
+        path = fresh.package_path
+        assert path is not None
         package = json.loads(path.read_text(encoding="utf-8"))
         diagnosis = _validate(package.get("diagnosis"))
         lines = [f"### {slug}", "", "**Blocked by:**", ""]
