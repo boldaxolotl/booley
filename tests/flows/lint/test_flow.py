@@ -664,6 +664,18 @@ class TestDeduplication:
         assert result[0].col == 5
         assert result[0].message == "first"
 
+    def test_dedup_rejects_incomplete_eda_tool_provenance(self):
+        warnings = [
+            LintWarning("WIDTH", "mod_a.sv", 42, 5, "first", "lint_a"),
+            LintWarning("WIDTH", "mod_a.sv", 42, 9, "second", "lint_b"),
+        ]
+
+        with pytest.raises(
+            AssertionError,
+            match=r"missing EDA-tool provenance for contributing Target.*lint_b",
+        ):
+            deduplicate_warnings(warnings, {"lint_a": "verilator"})
+
     def test_dedup_different_warnings(self):
         w1 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg1", "lite")
         w2 = LintWarning("WIDTH", "mod_c.sv", 55, 10, "msg2", "lite")
@@ -1426,6 +1438,60 @@ class TestFullRun:
         assert report["warnings"][0]["targets"] == ["full", "lite"]
 
     @patch.object(LintFlow, "_execute")
+    def test_mixed_eda_tool_provenance_survives_full_run(
+        self,
+        mock_exec,
+        state_file: Path,
+        tmp_path: Path,
+    ):
+        mock_exec.side_effect = [
+            MagicMock(
+                returncode=0,
+                stdout="%Warning-SHARED: rtl/top.sv:4:2: message\n",
+                stderr="",
+                timed_out=False,
+                duration_s=0.5,
+            ),
+            MagicMock(
+                returncode=0,
+                stdout="rtl/top.sv:4:9: other [SHARED]\n",
+                stderr="",
+                timed_out=False,
+                duration_s=0.5,
+            ),
+        ]
+        flow = LintFlow()
+        flow.parse_args(
+            [
+                "--target",
+                "lint_structural,lint_style",
+                "--report-dir",
+                str(tmp_path / "reports"),
+            ]
+        )
+        flow.read_state()
+
+        with patch.object(
+            LintFlow,
+            "_prepare_lint_command",
+            side_effect=[
+                (["verilator", "--lint-only"], _stub_resolved("Verilator")),
+                (["verible-verilog-lint"], _stub_resolved("verible")),
+            ],
+        ):
+            result = flow._run()
+
+        report = json.loads(
+            (tmp_path / "reports" / "lint_report.json").read_text(encoding="utf-8")
+        )
+        assert result.detail["total_warnings"] == 1
+        assert report["warnings"][0]["targets"] == ["lint_structural", "lint_style"]
+        assert report["warnings"][0]["eda_tools"] == {
+            "lint_structural": "verilator",
+            "lint_style": "verible",
+        }
+
+    @patch.object(LintFlow, "_execute")
     @patch.object(
         LintFlow,
         "_prepare_lint_command",
@@ -1537,7 +1603,7 @@ class TestStructuredReport:
         assert data["artifacts"]["report"].endswith("lint_report.json")
         assert data["artifacts"]["log_lite"].endswith("run.log")
 
-    def test_mixed_tool_warning_row_maps_targets_to_tools(self, tmp_path: Path):
+    def test_mixed_eda_tool_warning_row_maps_targets_to_eda_tools(self, tmp_path: Path):
         warnings = [
             LintWarning("SHARED", "rtl/top.sv", 4, 2, "message", "lint_structural"),
             LintWarning("SHARED", "rtl/top.sv", 4, 9, "other", "lint_style"),
@@ -1575,7 +1641,7 @@ class TestStructuredReport:
             }
         ]
 
-    def test_same_tool_warning_row_omits_target_tool_map(self, tmp_path: Path):
+    def test_same_eda_tool_warning_row_omits_target_eda_tool_map(self, tmp_path: Path):
         warnings = [
             LintWarning("SHARED", "rtl/top.sv", 4, 2, "message", "lint_a"),
             LintWarning("SHARED", "rtl/top.sv", 4, 9, "other", "lint_b"),
