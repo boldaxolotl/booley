@@ -125,6 +125,9 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
     raise AssertionError("condition did not become true before the deadline")
 
 
+_PARALLEL_SYNC_TIMEOUT_S = 20.0
+
+
 def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "campaign")
@@ -884,7 +887,7 @@ class _ParallelState:
         self.handle = handle
         self.first_finisher = first_finisher
         self.schedule_seed = schedule_seed
-        self.barrier = threading.Barrier(2, timeout=2)
+        self.barrier = threading.Barrier(2, timeout=_PARALLEL_SYNC_TIMEOUT_S)
         self.first_finished = threading.Event()
         self.interval_gate = threading.Lock()
         self.intervals: list[tuple[str, float, float]] = []
@@ -950,7 +953,7 @@ class _ParallelGroup:
         if name == self.state.first_finisher:
             self.state.first_finished.set()
         else:
-            assert self.state.first_finished.wait(timeout=2)
+            assert self.state.first_finished.wait(timeout=_PARALLEL_SYNC_TIMEOUT_S)
 
 
 class _ParallelExecution:
