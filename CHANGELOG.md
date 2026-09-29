@@ -11,6 +11,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### New features
 
+- Simulation now has a positive-integer `[flows.sim].build_timeout_ms` setting,
+  defaulting to one hour, used consistently by ordinary, Coverage, and
+  Elaboration Check simulator-image builds. Simulator execution and Pre-Sim
+  Commands retain their separate budgets.
+
 - Maintainers can persistently opt the three repository-owned QA skills into
   Host Bootstrap with `booley bootstrap --with-qa-skills` and safely remove
   only managed QA links with `--without-qa-skills`. Optional-source failures
@@ -33,6 +38,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   summary, simulation, coverage, and independent observation pointers.
 
 ### Upgrade notes
+
+- `--timeout-ms` and `[flows.sim].timeout_ms` no longer lengthen an Elaboration
+  Check Target build. Projects whose simulator-image builds need more than one
+  hour must set `[flows.sim].build_timeout_ms` explicitly.
 
 - REVIEW category/focus declarations now require exactly one scalar `done` or
   `clean` outcome. Lists and mandatory/optional pairs are invalid, including in

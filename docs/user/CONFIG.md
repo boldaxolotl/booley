@@ -169,6 +169,25 @@ warnings_as_errors = false
 Set `false` to keep warnings in the console/report but exit 0 on a
 warnings-only run, so a CI gate only fails on hard errors.
 
+### Simulation build, Pre-Sim, and run timeouts
+
+`[flows.sim].build_timeout_ms` is a positive-integer budget for each
+simulator-image build. It defaults to `3600000` (one hour) and applies to
+ordinary Simulation, native Coverage, and Elaboration Check builds.
+`[flows.sim].timeout_ms` and the per-call `--timeout-ms` override instead bound
+simulator execution, or the standalone module sweep in
+`elab-only-standalone`. Pre-Sim Commands have an independent fixed 600-second
+budget.
+
+```toml
+[flows.sim]
+build_timeout_ms = 3600000
+timeout_ms = 600000
+```
+
+Elaboration Check previously used the run timeout for its Target build. It now
+uses `build_timeout_ms`, consistently with every other simulator-image build.
+
 ### Simulation & pass/fail sentinels (`[flows.sim]`)
 
 Booley decides sim pass/fail by scanning the testbench's stdout for a **sentinel
@@ -320,10 +339,10 @@ writing to the same place under two different names. Prefer the variable.
 
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-sim commands failed (rc=N): …`) and the loop continues
-with the next test, never a Flow crash. The commands share the per-test
-timeout budget (`timeout_ms` / `--timeout-ms`), `--dry-run` previews them in
-their real position, and `booley doctor` validates the shape and notes when
-they're configured.
+with the next test, never a Flow crash. The commands have an independent
+600-second budget; they do not consume `timeout_ms`, `--timeout-ms`, or
+`build_timeout_ms`. `--dry-run` previews them in their real position, and
+`booley doctor` validates the shape and notes when they're configured.
 
 Every firing is recorded in the run report — one line per invocation naming the
 Target/test, the number of command lines, the exit status and the duration
@@ -614,6 +633,8 @@ design as success.
 `booley flow sim --target <sim-target> --mode elab-only` compiles, elaborates, and
 links the same ordinary untraced simulator image as a full Simulation run,
 without running Pre-Sim Commands, simulator tests, Cocotb Python, or tracing.
+Its Target build uses the shared
+[`build_timeout_ms`](#simulation-build-pre-sim-and-run-timeouts) budget.
 Use `--mode elab-only-standalone` to perform that ordinary Target elaboration
 and then sweep every RTL module from its declaring file. `--elab-only` and
 `--build-only`, optionally paired with `--standalone`, are deprecated CLI-only

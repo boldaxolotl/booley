@@ -124,6 +124,7 @@ def test_validate_one_flow_table_accepts_lint_timeout_ms():
     ("knob", "reader", "non_reader", "value"),
     [
         ("sim_time_grace_s", "sim", "lint", 180),
+        ("build_timeout_ms", "sim", "lint", 3_600_000),
         ("fail_on_timing_violation", "synth", "lint", True),
         ("warnings_as_errors", "lint", "sim", False),
         # trace_files declares the TB's own dump path; only simulate reads it.

@@ -75,6 +75,16 @@ def test_semantic_inputs_change_fingerprint(field: str, left: object, right: obj
     assert first.semantic_plan_fingerprint != second.semantic_plan_fingerprint
 
 
+def test_simulation_build_timeout_recipe_changes_semantic_fingerprint() -> None:
+    first = _unit(recipe={"mode": "simulate", "build_timeout_ms": 7000})
+    second = _unit(recipe={"mode": "simulate", "build_timeout_ms": 8000})
+
+    assert (
+        FlowPlan("sim", "simulate", (first,)).semantic_plan_fingerprint
+        != FlowPlan("sim", "simulate", (second,)).semantic_plan_fingerprint
+    )
+
+
 def test_invocation_local_fields_do_not_change_fingerprint() -> None:
     first = _unit(
         unit_id="invocation-a",

@@ -89,6 +89,12 @@ def test_selection_rejection_precedes_target_authorization(
     )
     rejected = EndpointOutcome(exit_code=2, report_text="unknown exact test")
     monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: rejected)
+    build_timeout_resolutions: list[object] = []
+    monkeypatch.setattr(
+        flow,
+        "_effective_build_timeout_ms",
+        lambda: build_timeout_resolutions.append(object()),
+    )
     authorized: list[tuple[TargetHandle, ...]] = []
     monkeypatch.setattr(
         "booley.flows.endpoint_admission.authorize_simulation_targets",
@@ -97,6 +103,7 @@ def test_selection_rejection_precedes_target_authorization(
 
     assert flow.prepare_simulation_endpoint() is rejected
     assert authorized == []
+    assert build_timeout_resolutions == []
 
 
 def test_state_backed_simulation_preflight_rejection_reaches_stderr(

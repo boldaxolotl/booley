@@ -171,10 +171,13 @@ waiting, you are polling.
   after `booley cleanup prepare`; register the capture before moving on. A
   foreground call that outlives your own MCP tool timeout loses the output and
   reads as a hang.
-- **Know the bound before you start.** A Booley Flow cannot outlive its
-  `[flows.<flow>].timeout_ms` (`sim` applies it per test; `synth`
-  defaults to 30 min). Budget that plus a minute of teardown — past it the run
-  is wedged, and the answer is to investigate, not to wait longer.
+- **Know the bound before you start.** Most Flow work uses
+  `[flows.<flow>].timeout_ms`, but Simulation can additionally consume one
+  `[flows.sim].build_timeout_ms` budget and an independent 600-second Pre-Sim
+  Commands budget per work unit, plus finalization. Credible compiler progress
+  calls for raising `build_timeout_ms`; credible simulator or standalone-sweep
+  progress calls for raising `timeout_ms`. Past the accounted outer bound, the
+  run is wedged and the answer is to investigate, not merely wait longer.
 - **Poll on a fixed cadence**: every ~30 s for the first few minutes, then every
   1–2 min. Each poll checks three things — the process is alive (`pgrep -f
   verilator_run`, `pgrep -f yosys`, …), the redirected stdout grew, and for sims

@@ -188,6 +188,11 @@ class TestStandaloneSweep:
 
         flow = _make_flow(tmp_path)
         monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 2_500)
+        monkeypatch.setattr(
+            flow,
+            "_effective_build_timeout_ms",
+            MagicMock(side_effect=AssertionError("standalone sweep must use run timeout")),
+        )
         monotonic_values = iter((0.0, 0.0, 1.2))
         monkeypatch.setattr(standalone_module.time, "monotonic", lambda: next(monotonic_values))
         observed_timeouts: list[int] = []
