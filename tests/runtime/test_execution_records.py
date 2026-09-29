@@ -13,6 +13,7 @@ from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
     atomic_write_json,
+    campaign_child_entry_manifests,
     execution_paths,
     gc_terminal_executions,
     read_attachment_heartbeat,
@@ -28,6 +29,41 @@ from booley.runtime.pid import (
     ProcessIdentity,
     ProcessObservation,
 )
+
+
+def test_campaign_child_entry_manifest_rejects_display_form_parent_identity(
+    tmp_path: Path,
+) -> None:
+    child_id = "e" * 32
+    entries = tmp_path / "entries"
+    entries.mkdir()
+    entry = {
+        "$schema": "booley.simulation-campaign-child-entry/v1",
+        "child_execution_id": child_id,
+        "parent_execution_id": "sim-20260925T153819Z-1",
+        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "manifest_path": str((tmp_path / "manifest.json").resolve()),
+        "manifest_sha256": "sha256:" + "1" * 64,
+        "work_item_id": "item:0000:0123456789abcdef",
+        "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
+        "attempt_ordinal": 1,
+        "attempt_relative_path": "items/item/attempts/0001-attempt",
+        "runtime_context_sha256": "sha256:" + "2" * 64,
+    }
+    (entries / f"{child_id}.json").write_text(
+        json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid schema"):
+        campaign_child_entry_manifests(tmp_path)
+
+    entry["parent_execution_id"] = "a" * 32
+    (entries / f"{child_id}.json").write_text(
+        json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    assert campaign_child_entry_manifests(tmp_path) == (Path(entry["manifest_path"]),)
 
 
 def test_atomic_write_json_fsyncs_file_then_rename_then_parent(

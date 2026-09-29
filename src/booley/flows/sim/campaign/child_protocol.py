@@ -76,7 +76,7 @@ class PreparedChild:
 @dataclass(frozen=True, slots=True)
 class _ChildIdentity:
     execution_id: ExecutionId
-    parent_execution_id: str
+    parent_execution_id: ExecutionId
     work_item_id: str
     attempt_id: str
     attempt_ordinal: int
@@ -137,7 +137,7 @@ class ChildExecutionRegistry:
         attempt_id: str,
         attempt_ordinal: int,
         attempt_directory: Path,
-        parent_execution_id: str,
+        parent_execution_id: ExecutionId,
     ) -> PreparedChild:
         identity = _ChildIdentity(
             execution_id,
@@ -395,7 +395,7 @@ class ChildExecutionRegistry:
     def _recover_execution(self, prepared: PreparedChild, entry: dict) -> None:
         identity = _ChildIdentity(
             prepared.execution_id,
-            entry["parent_execution_id"],
+            ExecutionId(entry["parent_execution_id"]),
             entry["work_item_id"],
             entry["attempt_id"],
             entry["attempt_ordinal"],
@@ -457,7 +457,7 @@ class ChildExecutionRegistry:
         return {
             "$schema": _CONTEXT_SCHEMA,
             "child_execution_id": str(identity.execution_id),
-            "parent_execution_id": identity.parent_execution_id,
+            "parent_execution_id": str(identity.parent_execution_id),
             "campaign_id": self._manifest.document["campaign_id"],
             "manifest_sha256": manifest_digest(self._manifest),
             "work_item_id": identity.work_item_id,
@@ -470,7 +470,7 @@ class ChildExecutionRegistry:
         return {
             "$schema": _ENTRY_SCHEMA,
             "child_execution_id": str(identity.execution_id),
-            "parent_execution_id": identity.parent_execution_id,
+            "parent_execution_id": str(identity.parent_execution_id),
             "campaign_id": self._manifest.document["campaign_id"],
             "manifest_path": str(self._store.manifest_path.resolve(strict=True)),
             "manifest_sha256": manifest_digest(self._manifest),
