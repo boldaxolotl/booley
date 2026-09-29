@@ -1808,22 +1808,19 @@ def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     from booley.targets.flow_names import canonical
 
     raw_name = getattr(args, "endpoint_name", None)
-    name = canonical(raw_name) if raw_name else None
-    if not name:
-        print(
-            f"ERROR: `booley {args.command}` needs a name.\n\nAvailable Flows:\n"
-            + _flow_listing([item for item in mcp_tools if item.kind == "flow"]),
-            file=sys.stderr,
-        )
-        return 2
+    flows = [item for item in mcp_tools if item.kind == "flow"]
+    if raw_name is None:
+        print(f"Available Flows:\n{_flow_listing(flows)}")
+        return 0
 
+    name = canonical(raw_name)
     info = next(
-        (t for t in mcp_tools if t.name == name and t.kind == "flow"),
+        (flow for flow in flows if flow.name == name),
         None,
     )
     if info is None:
         print(
-            f"ERROR: {name!r} is not a flow.\n",
+            f"ERROR: {name!r} is not a flow.\n\nAvailable Flows:\n{_flow_listing(flows)}",
             file=sys.stderr,
         )
         return 2
