@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import PurePosixPath
 
 CONTROL_SUFFIXES = frozenset({".core", ".sdc", ".xdc"})
@@ -32,3 +33,24 @@ def is_static_acceptance_path(path: str) -> bool:
     if normalized in PROJECT_CONTROL_FILES:
         return True
     return normalized.startswith(PROJECT_CONTROL_PREFIXES)
+
+
+def is_protected_acceptance_path(
+    path: str,
+    protected: Collection[str],
+    *,
+    include_protected_parent: bool = False,
+) -> bool:
+    """Return whether *path* is an immutable acceptance-control location."""
+    normalized = normalize_acceptance_path(path)
+    if (
+        is_static_acceptance_path(normalized)
+        or normalized == "FUSESOC_IGNORE"
+        or normalized.endswith("/FUSESOC_IGNORE")
+        or normalized in protected
+        or any(normalized.startswith(item.rstrip("/") + "/") for item in protected)
+    ):
+        return True
+    return include_protected_parent and any(
+        item.startswith(normalized.rstrip("/") + "/") for item in protected
+    )

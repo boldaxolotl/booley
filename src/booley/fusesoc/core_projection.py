@@ -123,23 +123,68 @@ def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
     return isolated_registry_root(root) / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
 
 
+def is_generated_projected_core(project_root: Path, path: Path) -> bool:
+    """Identify a directly contained root projection, not a shaped user file."""
+    if not projection_enabled(project_root):
+        return False
+    if path.parent != project_root or path.is_symlink() or not path.is_file():
+        return False
+    if not path.name.startswith(PROJECTED_CORE_PREFIX) or path.suffix != ".core":
+        return False
+    source = _projection_source(project_root, path)
+    if source is None:
+        return False
+    try:
+        return projected_core_path(project_root, source) == path
+    except CoreProjectionError:
+        return False
+
+
 def is_generated_isolated_core(project_root: Path, path: Path) -> bool:
     """Identify a directly contained Booley projection, not an authored core."""
-    if path.parent != isolated_registry_root(project_root) or path.is_symlink():
+    if not native_cores_ignored(project_root):
+        return False
+    if (
+        path.parent != isolated_registry_root(project_root)
+        or path.is_symlink()
+        or not path.is_file()
+    ):
         return False
     if not path.name.startswith(_ISOLATED_CORE_PREFIX) or path.suffix != ".core":
         return False
+    source = _projection_source(project_root, path)
+    if source is None:
+        return False
+    try:
+        return isolated_core_path(project_root, source) == path
+    except CoreProjectionError:
+        return False
+
+
+def is_generated_projection(repository: Path, path: Path) -> bool:
+    """Identify a projection owned by the repository's active stealth mode."""
+    project_root = repository.parent if repository.name == ".booley_project" else repository
+    return is_generated_projected_core(project_root, path) or is_generated_isolated_core(
+        project_root, path
+    )
+
+
+def _projection_source(project_root: Path, path: Path) -> Path | None:
     try:
         with path.open("r", encoding="utf-8") as stream:
             if stream.readline().strip() != "CAPI=2:":
-                return False
+                return None
             marker = stream.readline().strip()
         if not marker.startswith(_MARKER_PREFIX):
-            return False
-        source = project_root / marker[len(_MARKER_PREFIX) :]
-        return isolated_core_path(project_root, source) == path
-    except (OSError, UnicodeError, CoreProjectionError):
-        return False
+            return None
+        raw_source = Path(marker[len(_MARKER_PREFIX) :])
+        if raw_source.is_absolute():
+            return None
+        source = (project_root / raw_source).resolve(strict=False)
+        source.relative_to((project_root / ".booley_project" / "cores").resolve())
+        return source
+    except (OSError, UnicodeError, ValueError):
+        return None
 
 
 def isolated_core_contents_equivalent(

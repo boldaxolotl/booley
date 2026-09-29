@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,6 +25,7 @@ from booley.ticket_board.paths import human_log_file, runtime_file
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     TicketBaseline,
+    TicketBaselineError,
     ticket_baseline_from_machine,
     worktree_for_ref,
 )
@@ -223,6 +225,124 @@ def test_stale_preview_rejected_without_publication(tmp_path: Path) -> None:
     assert not (tio.logs_dir / "blocked-again/amendments").exists()
 
 
+def test_apply_preserves_canonical_inspection_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, _blocked, tio = _blocked_ticket(tmp_path)
+    state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.save()
+    request = _optional_request()
+    preview = preview_amendment(tio, "blocked-again", request)
+
+    def fail_inspection(*_args: object, **_kwargs: object) -> None:
+        raise AmendmentError("acceptance-input-change-required: post-setup hook timed out")
+
+    monkeypatch.setattr(amendment, "_inspection", fail_inspection)
+
+    with pytest.raises(AmendmentError, match=r"acceptance-input-change-required.*timed out"):
+        apply_amendment(tio, "blocked-again", request, preview["digest"])
+
+
+def test_reference_matched_marker_change_makes_apply_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _blocked, tio = _blocked_ticket(tmp_path)
+    state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.save()
+    basis = tio.load_basis("blocked-again")
+    checkout = worktree_for_ref(root, basis.participant("outer").ticket_ref)
+    assert checkout is not None
+    marker = checkout / "picosoc/FUSESOC_IGNORE"
+    marker.parent.mkdir()
+    marker.write_text("stable", encoding="utf-8")
+    original = amendment.prepare_acceptance_checkout
+
+    def prepare_reference(*args: object, **kwargs: object) -> object:
+        result = original(*args, **kwargs)
+        reference_marker = Path(args[1]) / "picosoc/FUSESOC_IGNORE"
+        reference_marker.parent.mkdir()
+        reference_marker.write_text("stable", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(amendment, "prepare_acceptance_checkout", prepare_reference)
+    preview = preview_amendment(tio, "blocked-again", _optional_request())
+    assert preview["source_state"]["outer"]["ignored_generated"] == {
+        "picosoc/FUSESOC_IGNORE": {
+            "kind": "reference",
+            "sha256": hashlib.sha256(b"stable").hexdigest(),
+            "executable": False,
+        }
+    }
+    marker.write_text("changed", encoding="utf-8")
+
+    with pytest.raises(AmendmentError, match=r"acceptance-input-change-required.*FUSESOC_IGNORE"):
+        apply_amendment(tio, "blocked-again", _optional_request(), preview["digest"])
+
+
+def test_new_protected_marker_after_preview_makes_apply_stale(tmp_path: Path) -> None:
+    root, _blocked, tio = _blocked_ticket(tmp_path)
+    state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.save()
+    basis = tio.load_basis("blocked-again")
+    checkout = worktree_for_ref(root, basis.participant("outer").ticket_ref)
+    assert checkout is not None
+    preview = preview_amendment(tio, "blocked-again", _optional_request())
+    marker = checkout / "new/FUSESOC_IGNORE"
+    marker.parent.mkdir()
+    marker.write_text("new", encoding="utf-8")
+
+    with pytest.raises(AmendmentError, match=r"acceptance-input-change-required.*FUSESOC_IGNORE"):
+        apply_amendment(tio, "blocked-again", _optional_request(), preview["digest"])
+
+
+def test_recovery_rechecks_ignored_generated_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _blocked, tio = _blocked_ticket(tmp_path)
+    state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.save()
+    basis = tio.load_basis("blocked-again")
+    checkout = worktree_for_ref(root, basis.participant("outer").ticket_ref)
+    assert checkout is not None
+    marker = checkout / "picosoc/FUSESOC_IGNORE"
+    marker.parent.mkdir()
+    marker.write_text("stable", encoding="utf-8")
+    original_prepare = amendment.prepare_acceptance_checkout
+
+    def prepare_reference(*args: object, **kwargs: object) -> object:
+        result = original_prepare(*args, **kwargs)
+        reference_marker = Path(args[1]) / "picosoc/FUSESOC_IGNORE"
+        reference_marker.parent.mkdir()
+        reference_marker.write_text("stable", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(amendment, "prepare_acceptance_checkout", prepare_reference)
+    preview = preview_amendment(tio, "blocked-again", _optional_request())
+    prepare_participants = amendment._prepare_amendment_participants
+
+    def interrupt(*_args: object, **_kwargs: object) -> None:
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(
+        amendment,
+        "_prepare_amendment_participants",
+        interrupt,
+    )
+    with pytest.raises(OSError, match="interrupted"):
+        apply_amendment(tio, "blocked-again", _optional_request(), preview["digest"])
+    monkeypatch.setattr(amendment, "_prepare_amendment_participants", prepare_participants)
+    marker.write_text("changed", encoding="utf-8")
+
+    with pytest.raises(AmendmentError, match="generated source"):
+        apply_amendment(tio, "blocked-again", _optional_request(), preview["digest"])
+
+
 def test_apply_requires_exact_current_preview_digest(tmp_path: Path) -> None:
     root, blocked, tio = _blocked_ticket(tmp_path)
     state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
@@ -244,6 +364,26 @@ def test_preview_rejects_unblocked_ticket(tmp_path: Path) -> None:
     queued = blocked.parent.parent / "queue" / blocked.name
     blocked.replace(queued)
     with pytest.raises(AmendmentError, match="must be blocked"):
+        preview_amendment(tio, "blocked-again", _optional_request())
+
+
+def test_preview_reports_preparation_failure_as_amendment_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, _blocked, tio = _blocked_ticket(tmp_path)
+
+    def fail_preparation(*_args: object, **_kwargs: object) -> None:
+        raise TicketBaselineError(
+            "acceptance-input-change-required: post-setup hook timed out (900s)"
+        )
+
+    monkeypatch.setattr(amendment, "prepare_acceptance_checkout", fail_preparation)
+
+    with pytest.raises(
+        AmendmentError,
+        match=r"acceptance-input-change-required: post-setup hook timed out \(900s\)",
+    ):
         preview_amendment(tio, "blocked-again", _optional_request())
 
 
@@ -404,6 +544,35 @@ def test_publication_interruption_rolls_forward_once(
     assert history.exists()
     assert amendment.pending_amendment(root, "blocked-again") is None
     assert len(list(history.parent.glob("*.json"))) == 2
+
+
+def test_pre_generated_identity_journal_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _blocked, tio = _blocked_ticket(tmp_path)
+    state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.save()
+    request = _optional_request()
+    preview = preview_amendment(tio, "blocked-again", request)
+    original = amendment._prepare_amendment_participants
+
+    def interrupt(*_args: object, **_kwargs: object) -> None:
+        raise OSError("injected pre-prepare interruption")
+
+    monkeypatch.setattr(amendment, "_prepare_amendment_participants", interrupt)
+    with pytest.raises(OSError, match="pre-prepare"):
+        apply_amendment(tio, "blocked-again", request, preview["digest"])
+    journal = amendment.pending_amendment(root, "blocked-again")
+    assert journal is not None
+    for snapshot in journal["source_state"].values():
+        snapshot.pop("ignored_generated")
+    amendment._write_journal(root, journal)
+    monkeypatch.setattr(amendment, "_prepare_amendment_participants", original)
+
+    result = apply_amendment(tio, "blocked-again", request, preview["digest"])
+
+    assert result["status"] == "queued"
 
 
 def test_return_to_draft_clears_amendment_marker(tmp_path: Path) -> None:
