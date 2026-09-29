@@ -8,7 +8,9 @@ import pytest
 
 from booley.flows.sim.campaign import child_protocol
 from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError, canonical_json_bytes
+from booley.flows.sim.campaign.store import CampaignStore
 from booley.runtime.execution_records import ExecutionId
+from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
 
 
 def _entry(execution_id: str = "e" * 32) -> dict[str, object]:
@@ -57,18 +59,35 @@ def test_child_entry_rejects_schema_and_filename_mismatches(tmp_path: Path) -> N
 
 
 def test_child_recovery_rejects_display_form_parent_identity(tmp_path: Path) -> None:
-    registry = object.__new__(child_protocol.ChildExecutionRegistry)
-    registry._manifest = SimpleNamespace(
-        document={"campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}
+    manifest = _two_item_manifest()
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    registry = child_protocol.ChildExecutionRegistry(store, manifest, project)
+    item = manifest.document["work_items"][0]
+    attempt_id = "550e8400-e29b-41d4-a716-446655440001"
+    ordinal, attempt = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
+    prepared = registry.prepare(
+        ExecutionId("e" * 32),
+        work_item_id=str(item["work_item_id"]),
+        attempt_id=attempt_id,
+        attempt_ordinal=ordinal,
+        attempt_directory=attempt,
+        parent_execution_id=ExecutionId("a" * 32),
     )
-    entry = _entry()
-    entry["parent_execution_id"] = "sim-20260925T153819Z-1"
+    for path in (prepared.project_entry, prepared.campaign_entry):
+        entry = json.loads(path.read_text())
+        entry["parent_execution_id"] = "sim-20260925T153819Z-1"
+        path.chmod(0o600)
+        path.write_bytes(canonical_json_bytes(entry))
 
     with pytest.raises(
         SimulationCampaignIntegrityError,
         match="child entry parent execution identity is invalid",
     ):
-        registry._validate_entry_identity(entry, "sha256:" + "0" * 64)
+        registry.recover_unretired(None)
 
 
 @pytest.mark.parametrize("value", [r"items\attempt", "/absolute", "../escape", "a/../b"])

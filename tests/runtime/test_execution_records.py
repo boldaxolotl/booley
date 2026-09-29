@@ -47,6 +47,13 @@ def test_campaign_child_entry_manifest_rejects_display_form_parent_identity(
     with pytest.raises(ValueError, match="invalid schema"):
         campaign_child_entry_manifests(tmp_path)
 
+    entry["parent_execution_id"] = "a" * 32
+    (entries / f"{child_id}.json").write_text(
+        json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    assert campaign_child_entry_manifests(tmp_path) == (Path(entry["manifest_path"]),)
+
 
 def test_atomic_write_json_fsyncs_file_then_rename_then_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
