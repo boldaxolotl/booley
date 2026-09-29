@@ -105,3 +105,25 @@ def test_skips_dangling_and_non_skill_dirs(tmp_path, monkeypatch):
 
     pairs = init_cmd._resolve_host_skills_sources(project_root)
     assert [n for n, _ in pairs] == ["real"]
+
+
+def test_excludes_linked_booley_qa_skill_but_keeps_same_name_foreign_copy(tmp_path, monkeypatch):
+    require_symlinks(tmp_path)
+    project_root, home, _ = _setup(tmp_path, monkeypatch)
+    checkout = tmp_path / "Booley"
+    (checkout / "src" / "booley").mkdir(parents=True)
+    (checkout / "src" / "booley" / "__init__.py").write_text("", encoding="utf-8")
+    (checkout / "pyproject.toml").write_text(
+        "[tool.booley]\nsource_checkout = true\n", encoding="utf-8"
+    )
+    qa_skill = _make_skill(checkout / "qa", "booley-qa-run")
+    foreign = _make_skill(tmp_path / "foreign", "booley-qa-triage")
+    claude = home / ".claude" / "skills"
+    claude.mkdir(parents=True)
+    (claude / "booley-qa-run").symlink_to(qa_skill)
+    (claude / "booley-qa-triage").symlink_to(foreign)
+
+    pairs = dict(init_cmd._resolve_host_skills_sources(project_root))
+
+    assert "booley-qa-run" not in pairs
+    assert pairs["booley-qa-triage"] == docker_mount_path(foreign.resolve())

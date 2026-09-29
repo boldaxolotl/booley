@@ -7,7 +7,12 @@ from pathlib import Path
 
 from booley.harness.setup.common import InitContext, warn
 from booley.runtime.host_install import host_install_error
-from booley.runtime.skill_links import SkillLinkReport, reconcile_skill_links
+from booley.runtime.skill_links import (
+    MANIFEST_FILENAME,
+    QA_MANIFEST_FILENAME,
+    SkillLinkReport,
+    reconcile_skill_links,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +43,9 @@ def reconcile_host_skills(
     *,
     dry_run: bool,
     allow_retarget: bool,
+    manifest_name: str = MANIFEST_FILENAME,
+    desired_names: frozenset[str] | None = None,
+    allow_exact_adoption: bool = True,
 ) -> tuple[HostSkillReconciliation, ...]:
     """Reconcile packaged skills across every detected host agent directory."""
     return tuple(
@@ -48,9 +56,31 @@ def reconcile_host_skills(
                 source,
                 dry_run=dry_run,
                 allow_retarget=allow_retarget,
+                manifest_name=manifest_name,
+                desired_names=desired_names,
+                allow_exact_adoption=allow_exact_adoption,
             ),
         )
         for target in _find_skill_targets()
+    )
+
+
+def reconcile_host_qa_skills(
+    source: Path,
+    *,
+    names: frozenset[str],
+    dry_run: bool,
+    allow_retarget: bool,
+    allow_exact_adoption: bool,
+) -> tuple[HostSkillReconciliation, ...]:
+    """Reconcile the independent repository-owned QA skill namespace."""
+    return reconcile_host_skills(
+        source,
+        dry_run=dry_run,
+        allow_retarget=allow_retarget,
+        manifest_name=QA_MANIFEST_FILENAME,
+        desired_names=names,
+        allow_exact_adoption=allow_exact_adoption,
     )
 
 

@@ -1,9 +1,19 @@
 ---
 name: booley-qa-triage
-description: Triage finished Booley QA runs with the maintainer one finding at a time — verify each against current main, decide together, and file or fix as each decision lands.
+description: Only when the user explicitly asks, triage finished Booley QA runs with the maintainer one finding at a time — verify each against current main, decide together, and file or fix as each decision lands.
 ---
 
 # Triage Booley QA findings
+
+Use this skill only when the user explicitly invokes it. This is behavioral
+guidance for clients without enforceable invocation metadata. Resolve the real
+path of this loaded `SKILL.md`; derive `qa/` and the source root from its parent
+directories. Before acting, require that source to be a clean primary checkout
+on `main`, with `.git` as a directory and HEAD matching the canonical host
+`booley --version` revision. Stop with restore/re-enable guidance if validation
+fails. Resolve repository inputs such as
+`docs/internals/agents/triage-labels.md`, `qa/missions/`, and `qa/shared/` from
+that derived root, never from the process working directory.
 
 Input: one or more QA run directories (each has `findings.md` and `log.md`).
 The maintainer decides; you verify each finding and prepare the decision.

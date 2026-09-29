@@ -821,6 +821,17 @@ def _add_bootstrap_subparser(sub) -> None:
         action="store_true",
         help="Update Host Bootstrap after upgrading Booley",
     )
+    qa_skills = parser.add_mutually_exclusive_group()
+    qa_skills.add_argument(
+        "--with-qa-skills",
+        action="store_true",
+        help="Persist and reconcile maintainer QA skills from this primary main checkout",
+    )
+    qa_skills.add_argument(
+        "--without-qa-skills",
+        action="store_true",
+        help="Disable QA skills and remove only Booley-managed QA links",
+    )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show detailed reconciliation output"
     )

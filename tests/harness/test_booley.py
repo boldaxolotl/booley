@@ -475,6 +475,20 @@ def test_bootstrap_parser_rejects_check_only_with_force(capsys):
     assert "not allowed with argument" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("flag", "attribute"),
+    [
+        ("--with-qa-skills", "with_qa_skills"),
+        ("--without-qa-skills", "without_qa_skills"),
+    ],
+)
+def test_bootstrap_parser_exposes_qa_selection_flags(flag, attribute):
+    args = tlr._build_parser().parse_args(["bootstrap", flag, "--force"])
+
+    assert getattr(args, attribute) is True
+    assert args.force is True
+
+
 def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
     args = tlr._build_parser().parse_args(["bootstrap"])
     monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
