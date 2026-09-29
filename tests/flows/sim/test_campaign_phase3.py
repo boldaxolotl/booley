@@ -130,6 +130,30 @@ def _unfiltered_cocotb_manifest() -> object:
     return finalize_manifest(document)
 
 
+def _single_item_selection_manifest(kind: str, names: tuple[str, ...]) -> object:
+    document = _manifest()
+    document.pop("fingerprints")
+    item = document["work_items"][0]  # type: ignore[index]
+    identity = {
+        key: value
+        for key, value in item.items()
+        if key not in {"work_item_id", "fingerprint_sha256"}
+    }
+    identity["selection"] = {"kind": kind, "names": list(names)}
+    identity["arguments"] = list(names)
+    if len(names) > 1:
+        identity["kind"] = "cocotb_batch"
+    fingerprint = _sha(identity)
+    document["work_items"] = [
+        {
+            "work_item_id": "item:0000:" + fingerprint.removeprefix("sha256:")[:16],
+            **identity,
+            "fingerprint_sha256": fingerprint,
+        }
+    ]
+    return finalize_manifest(document)
+
+
 def _work_item(ordinal: int, name: str, target: object, variant_id: object) -> dict:
     identity = {
         "ordinal": ordinal,
@@ -240,22 +264,10 @@ def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_sel
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     store = CampaignStore(invocation / "targets/sim/campaign")
-    store.publish_manifest(manifest)  # type: ignore[arg-type]
-    items = manifest.document["work_items"]  # type: ignore[attr-defined]
-    seed_counters = {"compile": 0, "launch": 0}
-    seed_executor = _failed_shared_executor(tmp_path / "seed-build", seed_counters)
-    first_request = _work_request(store, manifest, items[0], project, handle)
-    first = seed_executor.execute(first_request)
-    store.verify_result_evidence(first_request.attempt_directory, first)
-    store.publish_result(items[0]["work_item_id"], first)
-    resumed_counters = {"compile": 0, "launch": 0}
-    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
-    validated = ValidatedResumeManifest(
-        node,
-        (),
-        (handle,),
-        (ValidatedTargetBinding(node, project.resolve(), handle),),
+    _, seed_counters, validated = _seed_failed_campaign(
+        store, manifest, project, handle, tmp_path / "seed-build"
     )
+    resumed_counters = {"compile": 0, "launch": 0}
 
     outcome = SimulationCampaign(
         _failed_shared_executor(tmp_path / "resumed-build", resumed_counters)
@@ -288,6 +300,43 @@ def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_sel
     ]
     assert len(tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))) == 1
     assert len({result["build_result"]["sha256"] for result in results}) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "names", "expected"),
+    [
+        ("default", (), ["sim"]),
+        ("named", ("tail", "quick"), ["tail", "quick"]),
+    ],
+)
+def test_shared_build_failure_preserves_each_selection_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    names: tuple[str, ...],
+    expected: list[str],
+) -> None:
+    manifest = _single_item_selection_manifest(kind, names)
+    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    project = tmp_path / "project"
+    project.mkdir()
+    handle = _handle(project)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
+    )
+    counters = {"compile": 0, "launch": 0}
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+
+    SimulationCampaign(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
+        NewCampaignRunRequest(
+            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+        )
+    )
+
+    result = _completed_result_documents(CampaignStore(invocation / "targets/sim/campaign"))[0]
+    assert [item["test"] for item in result["observations"]] == expected
 
 
 def test_unfiltered_cocotb_shared_build_failure_has_one_unnamed_observation(
@@ -340,6 +389,24 @@ def _handle(project: Path) -> SimpleNamespace:
     )
 
 
+def _seed_failed_campaign(store, manifest, project, handle, build_root):
+    store.publish_manifest(manifest)
+    items = manifest.document["work_items"]
+    counters = {"compile": 0, "launch": 0}
+    request = _work_request(store, manifest, items[0], project, handle)
+    result = _failed_shared_executor(build_root, counters).execute(request)
+    store.verify_result_evidence(request.attempt_directory, result)
+    store.publish_result(items[0]["work_item_id"], result)
+    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
+    validated = ValidatedResumeManifest(
+        node,
+        (),
+        (handle,),
+        (ValidatedTargetBinding(node, project.resolve(), handle),),
+    )
+    return items, counters, validated
+
+
 def _failed_shared_executor(
     build_root: Path, counters: dict[str, int]
 ) -> OrdinaryHdlSerialExecutor:
@@ -359,24 +426,7 @@ def _failed_shared_executor(
             return SimpleNamespace(passed=False)
 
         def finish_build_failure(self):
-            test = SimulationTestOutcome(
-                name="tail",
-                verdict="elab_error",
-                passed=False,
-                reason="compiler reason",
-                error_tail="compiler tail",
-                elab_failed=True,
-            )
-            return SimulationTargetOutcome(
-                target="sim",
-                target_identity="acme:lib:dut:1#sim",
-                toplevel="tb",
-                eda_tool="icarus",
-                passed=False,
-                verdict="fail",
-                elapsed_s=0.1,
-                tests=(test,),
-            )
+            return _failed_shared_outcome()
 
         def launch_snapshot(self, *_args, **_kwargs):
             counters["launch"] += 1
@@ -390,6 +440,27 @@ def _failed_shared_executor(
     return OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: FailedExecution(),  # type: ignore[arg-type,return-value]
+    )
+
+
+def _failed_shared_outcome() -> SimulationTargetOutcome:
+    test = SimulationTestOutcome(
+        name="tail",
+        verdict="elab_error",
+        passed=False,
+        reason="compiler reason",
+        error_tail="compiler tail",
+        elab_failed=True,
+    )
+    return SimulationTargetOutcome(
+        target="sim",
+        target_identity="acme:lib:dut:1#sim",
+        toplevel="tb",
+        eda_tool="icarus",
+        passed=False,
+        verdict="fail",
+        elapsed_s=0.1,
+        tests=(test,),
     )
 
 
@@ -438,9 +509,6 @@ def _shared_executor(build_root, run_log, handle, launches, compile_count, bindi
         def compile(self):
             compile_count[0] += 1
             return SimpleNamespace(passed=True)
-
-        def reuse_compilation_from(self, source) -> None:
-            raise AssertionError(f"shared cache retained work-item group {source.names}")
 
         def build_recovery_document(self):
             return _build_execution()
