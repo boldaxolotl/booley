@@ -827,14 +827,18 @@ def _basis_checkout_status(repository: Path) -> tuple[GitStatusEntry, ...]:
 
 
 def _status_path_is_within(path: str, directory: str) -> bool:
-    normalized = path.replace("\\", "/").removeprefix("./").rstrip("/")
-    boundary = directory.replace("\\", "/").removeprefix("./").rstrip("/")
+    normalized = path.removeprefix("./").rstrip("/")
+    boundary = directory.removeprefix("./").rstrip("/")
     return normalized == boundary or normalized.startswith(f"{boundary}/")
 
 
 def _is_project_participant_entry(entry: GitStatusEntry, project_path: str) -> bool:
+    if entry.status != "??" or entry.source_path is not None:
+        return False
     paths = (entry.path,) + ((entry.source_path,) if entry.source_path is not None else ())
-    return all(_status_path_is_within(path, project_path) for path in paths)
+    return all(_status_path_is_within(path, project_path) for path in paths) and (
+        entry.path.removeprefix("./").rstrip("/") == project_path.rstrip("/")
+    )
 
 
 def _workspace_from_basis_checkout(
@@ -843,9 +847,13 @@ def _workspace_from_basis_checkout(
     project = None
     project_relative = None
     if any(row.role == "project" for row in basis.participants):
-        project_relative = checkout_project_dir_relative_to(root)
         paired = paired_project_repository(outer)
-        project = paired.worktree if paired is not None else outer / project_relative
+        if paired is not None:
+            project = paired.worktree
+            project_relative = Path(paired.path_prefix)
+        else:
+            project_relative = checkout_project_dir_relative_to(root)
+            project = outer / project_relative
     repositories = {"outer": outer, **({"project": project} if project else {})}
     expected_roles = {row.role for row in basis.participants}
     if set(repositories) != expected_roles:

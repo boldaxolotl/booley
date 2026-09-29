@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from collections.abc import Callable, Collection
 from pathlib import Path
@@ -12,6 +13,40 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from booley.ticket_board.io import TicketIO
+
+
+def make_paired_repository(root: Path) -> Path:
+    """Create committed outer and nested Project repositories for tests."""
+
+    def git(repository: Path, *args: str) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        return result.stdout.strip()
+
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.name", "Test")
+    git(root, "config", "user.email", "test@example.invalid")
+    (root / "README.md").write_text("outer\n", encoding="utf-8")
+    git(root, "add", "README.md")
+    git(root, "commit", "-qm", "initial outer")
+    (root / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
+
+    project = root / ".booley_project"
+    project.mkdir()
+    git(project, "init", "-q", "-b", "main")
+    git(project, "config", "user.name", "Test")
+    git(project, "config", "user.email", "test@example.invalid")
+    (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    git(project, "add", ".")
+    git(project, "commit", "-qm", "initial project")
+    return project
 
 
 def _make_tio(tmp_path: Path) -> TicketIO:

@@ -39,6 +39,8 @@ from booley.ticket_board.ticket_document import (
 )
 from booley.ticket_board.workspace_ops import AuthoringWorkspace
 
+from .conftest import make_paired_repository
+
 
 def _fake_document():
     return SimpleNamespace(
@@ -146,33 +148,19 @@ def _write_published_ticket(
     return replace(basis, machine=machine)
 
 
-def test_promotion_reconstructs_paired_basis_before_provider_validation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def _paired_refresh_repositories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     root = tmp_path / "project"
-    root.mkdir()
-    _git(root, "init", "-q", "-b", "main")
-    _git(root, "config", "user.name", "Test")
-    _git(root, "config", "user.email", "test@example.invalid")
-    (root / "README.md").write_text("demo\n", encoding="utf-8")
-    _git(root, "add", "README.md")
-    _git(root, "commit", "-qm", "initial outer")
-    (root / ".git" / "info" / "exclude").write_text("/.booley_project\n", encoding="utf-8")
-
-    project = root / ".booley_project"
-    (project / "tickets").mkdir(parents=True)
-    (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
-    _git(project, "init", "-q", "-b", "main")
-    _git(project, "config", "user.name", "Test")
-    _git(project, "config", "user.email", "test@example.invalid")
-    _git(project, "add", ".")
-    _git(project, "commit", "-qm", "initial project")
+    project = make_paired_repository(root)
+    (project / "tickets").mkdir()
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
     reset_cache()
+    return root, project
 
+
+def _publish_missing_target_refresh(root: Path, project: Path) -> TicketBaseline:
     common = {
         "type": "bugfix",
         "branch": "main",
@@ -192,13 +180,9 @@ def test_promotion_reconstructs_paired_basis_before_provider_validation(
         provider_generation,
     )
     binding = ProviderTargetBinding(
-        "provider",
-        provider_generation,
-        "acme:lib:toy:1.0#removed",
-        "persistent",
-        "2" * 64,
+        "provider", provider_generation, "acme:lib:toy:1.0#removed", "persistent", "2" * 64
     )
-    _write_published_ticket(
+    return _write_published_ticket(
         root,
         project,
         "consumer",
@@ -208,6 +192,46 @@ def test_promotion_reconstructs_paired_basis_before_provider_validation(
         "3" * 32,
         providers=(binding,),
     )
+
+
+def _remove_canonical_generation_worktree(
+    root: Path, project: Path, basis: TicketBaseline
+) -> None:
+    canonical = project / "worktrees/consumer"
+    canonical.parent.mkdir(parents=True)
+    _git(
+        root,
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        str(canonical),
+        basis.participant("outer").authoring_sha,
+    )
+    nested = canonical / ".booley_project"
+    _git(
+        project,
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        str(nested),
+        basis.participant("project").authoring_sha,
+    )
+    assert nested.is_dir()
+    _git(project, "worktree", "remove", "--force", str(nested))
+    _git(root, "worktree", "remove", "--force", str(canonical))
+    assert not canonical.exists()
+
+
+def test_promotion_reconstructs_paired_basis_before_provider_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    _remove_canonical_generation_worktree(root, project, basis)
     board = TicketIO(project / "tickets", project_root=root)
 
     assert _git(root, "status", "--porcelain", "--untracked-files=all") == ""
