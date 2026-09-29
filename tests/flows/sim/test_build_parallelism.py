@@ -39,7 +39,7 @@ def _inspection(
 
 
 def _reader(values: dict[str, str]):
-    return lambda path: values.get(str(path))
+    return lambda path: values.get(path.as_posix())
 
 
 def test_cgroup_reader_ignores_absent_files_but_surfaces_access_failures(
@@ -71,7 +71,12 @@ def test_affinity_and_v2_quota_bound_each_heavy_lane() -> None:
 def test_affinity_below_host_cpu_count_is_authoritative(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(build_parallelism.os, "sched_getaffinity", lambda _pid: {0, 1, 2})
+    monkeypatch.setattr(
+        build_parallelism.os,
+        "sched_getaffinity",
+        lambda _pid: {0, 1, 2},
+        raising=False,
+    )
     monkeypatch.setattr(build_parallelism.os, "cpu_count", lambda: 32)
 
     assert build_parallelism._affinity_cpu_count() == 3
@@ -193,7 +198,7 @@ def test_jobs_option_lookalikes_do_not_disable_parallel_policy(
 ) -> None:
     monkeypatch.setattr(
         "booley.flows.sim.build_parallelism.load_verilator_build_budget",
-        lambda _lane="heavy": SimpleNamespace(make_jobs=3),
+        lambda _lane="heavy", **_kwargs: SimpleNamespace(make_jobs=3),
     )
 
     assert verilator_backend_arguments(_inspection(modern=(option,))) == (
@@ -211,7 +216,7 @@ def test_identical_inputs_produce_identical_ordered_arguments(
 ) -> None:
     monkeypatch.setattr(
         "booley.flows.sim.build_parallelism.load_verilator_build_budget",
-        lambda _lane="heavy": SimpleNamespace(make_jobs=5),
+        lambda _lane="heavy", **_kwargs: SimpleNamespace(make_jobs=5),
     )
     inspection = _inspection(modern=("OPT_FAST=-O3",))
 

@@ -201,7 +201,11 @@ def _simulation_recipe_inputs(
     """Return validated Project, Target facts, and backend setup arguments."""
     root = fusesoc_registry.require_current_target_handle(handle)
     selected = inspection or TargetCatalog.build(root).inspect(handle)
-    backend_arguments = verilator_backend_arguments(selected, lane_kind=lane_kind)
+    backend_arguments = verilator_backend_arguments(
+        selected,
+        lane_kind=lane_kind,
+        project_root=root,
+    )
     return root, selected, backend_arguments
 
 

@@ -113,6 +113,7 @@ def _cgroup_memory_limit(read_text: Callable[[Path], str | None]) -> int | None:
 def load_verilator_build_budget(
     lane_kind: LaneKind = "heavy",
     *,
+    project_root: Path | None = None,
     affinity_cpu_count: Callable[[], int] | None = None,
     read_text: Callable[[Path], str | None] | None = None,
     config_loader: Callable[[], dict] | None = None,
@@ -127,8 +128,7 @@ def load_verilator_build_budget(
         )
     affinity_cpu_count = affinity_cpu_count or _affinity_cpu_count
     read_text = read_text or _read_text
-    config_loader = config_loader or load_job_budget_config
-    config = config_loader()
+    config = config_loader() if config_loader is not None else load_job_budget_config(project_root)
     caps = parse_caps(config)
     affinity = max(1, affinity_cpu_count())
     quota = _cgroup_cpu_count(read_text)
@@ -180,9 +180,10 @@ def verilator_backend_arguments(
     inspection: TargetInspection,
     *,
     lane_kind: LaneKind = "heavy",
+    project_root: Path | None = None,
 ) -> tuple[str, ...]:
     """Return only Booley-owned backend options for one Verilator setup."""
     if inspection.eda_tool != "verilator" or _has_jobs_option(_make_options(inspection)):
         return ()
-    budget = load_verilator_build_budget(lane_kind)
+    budget = load_verilator_build_budget(lane_kind, project_root=project_root)
     return (f"-j{budget.make_jobs}", "VM_PARALLEL_BUILDS=1")

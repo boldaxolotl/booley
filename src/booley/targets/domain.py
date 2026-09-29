@@ -138,7 +138,7 @@ class TargetInspection:
     flow_options: Mapping[str, object]
     parameters: Mapping[str, object]
     inputs: tuple[TargetInput, ...]
-    tool_options: Mapping[str, object] = field(default_factory=dict)
+    tool_options: Mapping[str, object] = field(default_factory=dict[str, object])
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "flow_options", immutable_mapping(self.flow_options))
