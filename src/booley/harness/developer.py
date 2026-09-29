@@ -1895,6 +1895,7 @@ async def _prepare_blocked_triage(ctx: TicketContext, project_root: Path) -> Non
     from .blocked_prep import prepare_blocked_dossier
 
     _write_status(ctx.logs_dir, ctx.slug, "post-processing")
+    terminal.flush_log()
     outcome = await prepare_blocked_dossier(project_root, ctx.slug)
     if outcome.ready:
         logger.info("Blocked triage dossier ready for %s", ctx.slug)

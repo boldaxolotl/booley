@@ -67,7 +67,7 @@ def durable_directory(directory: Path) -> None:
         missing.append(current)
         current = current.parent
     for path in reversed(missing):
-        path.mkdir()
+        path.mkdir(exist_ok=True)
         fsync_directory(path.parent)
 
 

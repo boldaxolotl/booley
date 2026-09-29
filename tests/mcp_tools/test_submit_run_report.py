@@ -135,6 +135,56 @@ def test_rejects_report_when_ticket_worktree_is_dirty(
     assert "Commit or restore them" in diagnostic
 
 
+def test_unset_ticket_type_fails_before_ticket_finalization_gates(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
+    monkeypatch.setenv("BOOLEY_SLUG", "report-test")
+    monkeypatch.delenv("BOOLEY_TICKET_TYPE", raising=False)
+
+    state = DevelopmentState.load(state_file)
+    state.set_criterion("implementation_done", False)
+    state.save()
+    original_criteria = {key: entry.to_dict() for key, entry in state.criteria.items()}
+
+    work_dir = tmp_path / "worktree"
+    _init_repo(work_dir)
+    (work_dir / "uncommitted.sv").write_text(
+        "module uncommitted; endmodule\n",
+        encoding="utf-8",
+    )
+
+    endpoint = SubmitRunReportMcpTool()
+    exit_code = endpoint.main(
+        [
+            "--work-dir",
+            str(work_dir),
+            "--summary",
+            "Not a Ticket run.",
+            "--root-cause",
+            "The endpoint is unavailable in Interactive Mode.",
+            "--uncertainties",
+            "None.",
+            "--file-justifications",
+            "{}",
+        ]
+    )
+
+    assert exit_code == EXIT_ERROR
+    diagnostic = _report_text(tmp_path)
+    assert "submit_run_report is Ticket Mode only" in diagnostic
+    assert "this session is not a Ticket run" in diagnostic
+    assert "harness bug" not in diagnostic.lower()
+    reloaded = DevelopmentState.load(state_file)
+    assert {key: entry.to_dict() for key, entry in reloaded.criteria.items()} == original_criteria
+    assert not (tmp_path / "REPORT.md").exists()
+
+
 def test_rejects_report_when_paired_project_repository_is_dirty(
     tmp_path: Path,
     state_file: Path,
@@ -572,6 +622,7 @@ class TestTypeMismatchRejected:
         state_file: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
         exit_code, st = _run_endpoint(
             state_file,
             tmp_path,
@@ -588,6 +639,9 @@ class TestTypeMismatchRejected:
         )
         assert exit_code == EXIT_ERROR
         assert not st.is_met("_report_submitted")
+        diagnostic = _report_text(tmp_path)
+        assert "Expected one of:" in diagnostic
+        assert "harness bug" in diagnostic
 
     def test_empty_type_specific_value_rejected(
         self,
