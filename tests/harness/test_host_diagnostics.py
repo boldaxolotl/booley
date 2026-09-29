@@ -26,7 +26,12 @@ def _identity() -> HostInstallationIdentity:
 
 @pytest.mark.parametrize(
     "state, severity",
-    [("CURRENT", Severity.PASS), ("PENDING", Severity.WARN), ("ERROR", Severity.FAIL)],
+    [
+        ("CURRENT", Severity.PASS),
+        ("PENDING", Severity.WARN),
+        ("WARNING", Severity.WARN),
+        ("ERROR", Severity.FAIL),
+    ],
 )
 def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, severity):
     bootstrap = host_diagnostics.bootstrap
@@ -57,6 +62,8 @@ def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, s
     assert result.docker_exe == ("/usr/bin/docker" if state == "CURRENT" else None)
     if state == "PENDING":
         assert (finding.check_id, finding.subject) == ("host.bootstrap-pending", "docker")
+    elif state == "WARNING":
+        assert (finding.check_id, finding.subject) == ("host.bootstrap-warning", "docker")
 
 
 def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch):

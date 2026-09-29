@@ -99,6 +99,29 @@ def test_host_reconciliation_returns_typed_target_reports(tmp_path: Path, monkey
     assert results == (init_skills.HostSkillReconciliation(target, report),)
 
 
+def test_qa_reconciliation_uses_independent_manifest(tmp_path: Path, monkeypatch) -> None:
+    observed = {}
+
+    def reconcile(source, **kwargs):
+        observed.update(source=source, **kwargs)
+        return ()
+
+    monkeypatch.setattr(init_skills, "reconcile_host_skills", reconcile)
+
+    assert (
+        init_skills.reconcile_host_qa_skills(
+            tmp_path,
+            names=frozenset({"booley-qa-run"}),
+            dry_run=True,
+            allow_retarget=False,
+            allow_exact_adoption=False,
+        )
+        == ()
+    )
+    assert observed["manifest_name"] == init_skills.QA_MANIFEST_FILENAME
+    assert observed["desired_names"] == frozenset({"booley-qa-run"})
+
+
 def test_init_cmd_reexports_skill_deployment_compatibility_adapter() -> None:
     assert init_cmd._deploy_skills is init_skills._deploy_skills
 

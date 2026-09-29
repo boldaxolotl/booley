@@ -221,6 +221,310 @@ def test_check_only_pending_is_exit_one_but_mutating_pending_is_failure() -> Non
     assert bootstrap.BootstrapResult(Intent.ENSURE, (pending,)).exit_status == 2
 
 
+def test_warning_is_ready_and_non_blocking() -> None:
+    warning = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.WARNING, "restore source"
+    )
+    result = bootstrap.BootstrapResult(Intent.CHECK, (warning,))
+
+    assert result.ready is True
+    assert result.exit_status == 0
+
+
+@pytest.mark.parametrize("flag", ["with_qa_skills", "without_qa_skills"])
+def test_check_only_rejects_qa_selection_flags(flag: str, capsys) -> None:
+    args = SimpleNamespace(check_only=True, update=False, **{flag: True})
+
+    assert bootstrap_cli.run_bootstrap(args) == 2
+    assert "cannot be combined" in capsys.readouterr().out
+
+
+def test_opt_out_prunes_qa_before_failing_prerequisites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
+    monkeypatch.setattr(
+        bootstrap,
+        "_reconcile_qa_skills",
+        lambda *_args, **_kwargs: calls.append("qa-prune") or _current("qa-skills"),
+    )
+    prerequisite = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+    monkeypatch.setattr(
+        bootstrap,
+        "_prerequisite_findings",
+        lambda: (calls.append("prerequisites") or prerequisite,),
+    )
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE, qa_opt_out=True)
+
+    assert calls == ["qa-prune", "prerequisites"]
+    assert [finding.resource for finding in result.findings] == [
+        "host-config",
+        "qa-skills",
+        "docker",
+    ]
+
+
+def test_explicit_qa_enable_persists_before_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    identity = SimpleNamespace(version="1.2.3", payload_fingerprint="f" * 64, revision="a" * 12)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "register_host_installation",
+        lambda *_args, **_kwargs: events.append("register") or identity,
+    )
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path / "Booley")
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "enable_qa_skills",
+        lambda _root, _revision: events.append("enable"),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
+        ),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=True,
+            without_qa_skills=False,
+        )
+    )
+
+    assert status == 0
+    assert events == ["register", "enable", "reconcile"]
+
+
+def test_explicit_qa_warning_overrides_nonblocking_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    warning = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.WARNING, "link conflict"
+    )
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap_cli, "enable_qa_skills", lambda *_args: None)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, (warning,)),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=True,
+            without_qa_skills=False,
+        )
+    )
+
+    assert status == 2
+
+
+def test_qa_adoption_always_requires_force(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[bool] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "_qa_source",
+        lambda _opt_out: (Path("/qa"), bootstrap.QA_SKILL_NAMES),
+    )
+
+    def reconcile(*_args, **kwargs):
+        observed.append(kwargs["allow_exact_adoption"])
+        return ()
+
+    monkeypatch.setattr(bootstrap, "reconcile_host_qa_skills", reconcile)
+
+    refused = bootstrap._reconcile_qa_skills(Intent.ENSURE, opt_out=False, allow_adoption=False)
+    approved = bootstrap._reconcile_qa_skills(Intent.REFRESH, opt_out=False, allow_adoption=True)
+
+    assert refused is not None and refused.state is bootstrap.BootstrapState.CURRENT
+    assert approved is not None and approved.state is bootstrap.BootstrapState.CURRENT
+    assert observed == [False, True]
+
+
+def test_qa_source_inspection_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "current_host_installation",
+        lambda _source: SimpleNamespace(revision="abc1234"),
+    )
+    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: Path("/qa"))
+    monkeypatch.setattr(
+        bootstrap,
+        "_skill_names",
+        lambda _source: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+
+    finding = bootstrap._reconcile_qa_skills(Intent.ENSURE, opt_out=False, allow_adoption=False)
+
+    assert finding is not None
+    assert finding.state is bootstrap.BootstrapState.WARNING
+    assert "permission denied" in finding.detail
+
+
+def test_qa_source_filters_valid_skill_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packaged = tmp_path / "packaged"
+    valid = packaged / "valid"
+    valid.mkdir(parents=True)
+    (valid / "SKILL.md").write_text("# valid\n", encoding="utf-8")
+    (packaged / "incomplete").mkdir()
+
+    assert bootstrap._skill_names(packaged) == frozenset({"valid"})
+
+    monkeypatch.setattr(bootstrap, "skills_dir", lambda: packaged)
+    assert bootstrap._qa_source(True) == (packaged, frozenset())
+
+
+def test_qa_source_reports_packaged_name_collision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "current_host_installation",
+        lambda _source: SimpleNamespace(revision="abc1234"),
+    )
+    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: Path("/qa"))
+    monkeypatch.setattr(bootstrap, "_skill_names", lambda _source: bootstrap.QA_SKILL_NAMES)
+
+    with pytest.raises(bootstrap.QaSkillSelectionError, match="collide"):
+        bootstrap._qa_source(False)
+
+
+def test_explicit_qa_enable_reports_missing_checkout(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: None)
+
+    assert bootstrap_cli._apply_qa_enable(True, "abc1234") is False
+    assert "complete primary" in capsys.readouterr().out
+
+
+def test_explicit_qa_enable_reports_validation_failure(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: Path("/Booley"))
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "enable_qa_skills",
+        lambda *_args: (_ for _ in ()).throw(bootstrap_cli.QaSkillSelectionError("invalid")),
+    )
+
+    assert bootstrap_cli._apply_qa_enable(True, "abc1234") is False
+    assert "Cannot enable QA skills: invalid" in capsys.readouterr().out
+
+
+def test_opt_out_keeps_selection_when_prune_did_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    events: list[str] = []
+    error = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, (error,))
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "disable_qa_skills",
+        lambda: events.append("disable"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=False,
+            without_qa_skills=True,
+        )
+    )
+
+    assert status == 2
+    assert events == ["reconcile"]
+
+
+def test_opt_out_removes_selection_after_prune_even_if_later_resource_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    events: list[str] = []
+    pruned = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.CHANGED, "removed links"
+    )
+    error = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, (pruned, error))
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "disable_qa_skills",
+        lambda: events.append("disable"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=False,
+            without_qa_skills=True,
+        )
+    )
+
+    assert status == 2
+    assert events == ["reconcile", "disable"]
+
+
+def test_opt_out_reports_selection_removal_failure(monkeypatch, capsys) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    pruned = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.CHANGED, "removed links"
+    )
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, (pruned,)),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "disable_qa_skills",
+        lambda: (_ for _ in ()).throw(OSError("read-only")),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=False,
+            without_qa_skills=True,
+        )
+    )
+
+    assert status == 2
+    assert "Cannot disable QA skills: read-only" in capsys.readouterr().out
+
+
 def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Intent] = []
     monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: None)
@@ -1093,7 +1397,12 @@ def test_base_image_reports_removed_and_container_retained_release_tags(
 
 @pytest.mark.parametrize(
     ("sidecar_state", "bootstrap_state"),
-    tuple(zip(bootstrap.host_sidecars.SidecarState, bootstrap.BootstrapState, strict=True)),
+    [
+        (bootstrap.host_sidecars.SidecarState.CURRENT, bootstrap.BootstrapState.CURRENT),
+        (bootstrap.host_sidecars.SidecarState.PENDING, bootstrap.BootstrapState.PENDING),
+        (bootstrap.host_sidecars.SidecarState.CHANGED, bootstrap.BootstrapState.CHANGED),
+        (bootstrap.host_sidecars.SidecarState.ERROR, bootstrap.BootstrapState.ERROR),
+    ],
 )
 def test_sidecar_state_mapping(sidecar_state, bootstrap_state) -> None:
     finding = bootstrap._sidecar_finding(
@@ -1107,6 +1416,7 @@ def test_sidecar_state_mapping(sidecar_state, bootstrap_state) -> None:
     [
         (bootstrap.BootstrapState.CURRENT, "is current"),
         (bootstrap.BootstrapState.PENDING, "pending work"),
+        (bootstrap.BootstrapState.WARNING, "is current"),
         (bootstrap.BootstrapState.ERROR, "is incomplete"),
     ],
 )

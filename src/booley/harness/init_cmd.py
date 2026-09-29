@@ -135,6 +135,7 @@ from booley.runtime import auth_token, project_repositories
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
+from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.git import add_git_excludes
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
@@ -1423,6 +1424,8 @@ def _resolve_host_skills_sources(project_root: Path) -> list[tuple[str, str]]:
             # into the image — never re-mount it from the host.
             if builtin_dir and (real == builtin_dir or builtin_dir in real.parents):
                 continue
+            if is_booley_qa_skill_path(real):
+                continue
             if real in seen_paths:
                 continue
             seen_names.add(entry.name)
@@ -2151,7 +2154,7 @@ def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
         if finding.state is BootstrapState.ERROR:
             err(f"{finding.resource}: {finding.detail}")
             ctx.record(name, "err", finding.detail)
-        elif finding.state is BootstrapState.PENDING:
+        elif finding.state in {BootstrapState.PENDING, BootstrapState.WARNING}:
             warn(f"{finding.resource}: {finding.detail}")
             ctx.record(name, "warn", finding.detail)
         elif finding.state is BootstrapState.CHANGED:
