@@ -2,10 +2,12 @@
 
 **The open-source agentic RTL IDE**
 
-[![Tests](https://github.com/boldaxolotl/booley/actions/workflows/test.yml/badge.svg)](https://github.com/boldaxolotl/booley/actions/workflows/test.yml)
+[![Tests](https://github.com/boldaxolotl/Booley/actions/workflows/test.yml/badge.svg)](https://github.com/boldaxolotl/Booley/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/booley-rtl)](https://pypi.org/project/booley-rtl/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+
+Booley turns Claude Code or Codex into a capable RTL assistant. It runs the agent in a sandbox, hands it real EDA tools, and checks its work against your acceptance criteria: passing tests, area and timing budgets, cycle counts, coverage, and more. You design; it does the grunt work.
 
 ![Booley in VS Code with RTL, an interactive agent session, ticket progress, and waveform inspection](docs/user/assets/booley-screenshot.png)
 
@@ -15,7 +17,7 @@ RTL development is fragmented across editors, tool-specific commands, build envi
 
 - **One Window:** RTL, the agent, terminals, EDA runs, results, and waveform viewing live in a single VS Code window. You can move from editing to simulation to waveform debugging to synthesis without switching between separate applications.
 - **Reproducible team environment:** configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to every team member. Nobody has to rebuild the toolchain independently or debug "works on my machine" differences ([why Docker](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker)).
-- **A typed interface for each Booley Flow:** Booley provides dedicated Flows for simulation, linting, synthesis, and FPGA implementation, each with typed inputs and structured, Flow-specific results. Each Flow's Booley interface remains stable regardless of which underlying EDA tool its Target selects—for example, `sim` stays `sim` with Verilator today or Xcelium<sup>*</sup> tomorrow. These Flows are built on [FuseSoC](https://github.com/olofk/fusesoc), so you don't have to maintain tool-specific EDA glue scripts anymore.
+- **A typed interface for each Booley Flow:** a Flow is one command (`sim`, `lint`, `synth`, or `fpga`) that runs an EDA job end to end and returns a structured result: pass/fail plus metrics such as area, timing, or cycle counts, instead of a raw log to grep. Each Flow's interface stays the same across EDA tools and across projects: `sim` stays `sim` whether it runs Verilator today or Xcelium<sup>*</sup> tomorrow, and on every project you work on. Flows are built on [FuseSoC](https://github.com/olofk/fusesoc), so there's no per-repo EDA glue to learn or maintain.
 
 <sub>* Xcelium support is a work in progress.</sub>
 
@@ -24,54 +26,39 @@ RTL development is fragmented across editors, tool-specific commands, build envi
 The mental model behind Booley is simple: treat an LLM agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access—it could, for example, force-push to your Git repository and rewrite its history. Booley gives it a constrained workspace, explicit specifications, automated checks, and human review.
 
 - **Sandboxed for autonomous execution:** the agent and every command it launches run inside a Docker container with restricted mounts and network access. You can delegate long-running tasks to agents without approving every bash tool call and without worrying about your files and git history ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md#docker-sandboxing), [security model](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model)).
-- **Strict guardrails and acceptance criteria:** in Ticket Mode, the Harness checks explicit acceptance criteria you define during ticket creation. Area and cycle-count criteria help the agent stay within the project's PPA budget, while coverage and mutation-testing criteria help it write stronger testbenches. At review time, one briefing shows scope deviations and the results of configured checks, so you can see at a glance what passed and what needs attention ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#acceptance-criteria)).
-- **Waveform-aware debugging:** `bwave` lets the agent query real traces instead of guessing from RTL. Ask “How many `i_ready`/`o_valid` handshakes occurred between 1,000 and 2,000 ns?” or “When did `data_o` equal `0xDEADBEEF`?” The agent answers from actual simulation data instead of spending minutes reasoning from code (and getting it wrong) ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md#waveform-based-debug)).
+- **Strict guardrails and acceptance criteria:** in Ticket Mode, Booley checks explicit acceptance criteria you define during ticket creation. Area and cycle-count criteria help the agent stay within the project's PPA budget, while coverage and mutation-testing criteria help it write stronger testbenches. At review time, one briefing shows scope deviations and the results of configured checks, so you can see at a glance what passed and what needs attention ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#acceptance-criteria)).
+- **Waveform-aware debugging:** `bwave` lets the agent query real traces instead of guessing from RTL. Ask "How many `i_ready`/`o_valid` handshakes occurred between 1,000 and 2,000 ns?" or "When did `data_o` equal `0xDEADBEEF`?" The agent answers from actual simulation data instead of spending minutes reasoning from code (and getting it wrong) ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md#waveform-based-debug)).
 
 There are two ways you can cooperate with LLM agents in Booley:
-- **Interactive Mode** - unlike a plain Claude Code or Codex chat, the agent starts with immediate access to the project's available Booley Flows and Specialists and already knows its Targets and tests. From your first prompt, it is ready to inspect or edit RTL, run a simulation, lint, or synthesis Flow, and call a Specialist. You remain in the loop, guiding the work and making decisions as they come up.
-- **Ticket Mode** - the autonomous path. You write a ticket, specifying what needs doing, which files are in scope, which tests must pass, and any other completion criteria. Booley creates an isolated worktree, where the Developer Agent runs any Booley Flows and Specialist reviews required by the ticket's acceptance criteria; the Harness tracks completion and hands you a review-ready result.
+- **Interactive Mode:** unlike a plain Claude Code or Codex chat, the agent starts with immediate access to the project's available Booley Flows and Specialists (focused sub-agents for code review, mutation testing, and coverage analysis, each started with fresh context) and already knows what the project can build, run, and test. From your first prompt, it is ready to inspect or edit RTL, run a simulation, lint, or synthesis Flow, and call a Specialist. You remain in the loop, guiding the work and making decisions as they come up.
+- **Ticket Mode:** the autonomous path. You write a ticket, specifying what needs doing, which files are in scope, which tests must pass, and any other completion criteria. Booley creates an isolated worktree, where the agent runs any Booley Flows and Specialist reviews required by the ticket's acceptance criteria; Booley tracks completion and hands you a review-ready result.
+
+A ticket is a Markdown file with YAML frontmatter. Booley won't hand the work back for review until every mandatory criterion is green:
+
+```yaml
+---
+summary: Add a registered bypass path to the FIFO read port
+type: feature
+branch: main
+scope:
+  - rtl/fifo.sv
+  - tb/test_fifo.py
+on_success: [triage_report, review]
+CRITERIA_MANDATORY:
+  LINT:     {lint_fifo: clean}
+  SIM:      {sim_fifo: {all: pass}}
+  COVERAGE: {sim_fifo: {tests: all, metrics: {line: {min_pct: 90}}}}
+  REVIEW:   {rtl: {bugs: clean}}
+CRITERIA_OPTIONAL:
+  SYNTH:    {synth_fifo: {area_increase_at_most: 10%}}
+---
+
+## Description
+
+Current state, required changes, affected interfaces…
+```
 
 See [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md) for the full list of capabilities.
-
-## Installation
-
-Booley supports Windows and Linux (Ubuntu 26.04 tested); macOS is not
-supported. You need:
-
-- Python 3.11+
-- [Git 2.37.2+](https://git-scm.com/downloads)
-- [Docker](https://www.docker.com/)
-- [VS Code](https://code.visualstudio.com/)
-- Credentials for Claude (the default) or Codex
-- Reserve about **4 GB of Docker storage** for the standard image or **6 GB**
-  for image with RISC-V tools included, plus project artifacts and temporary
-  upgrade/build data.
-
-Install the CLI on the host:
-
-```bash
-python3 -m pip install --user booley-rtl
-```
-
-If Booley is already installed, upgrade it instead:
-
-```bash
-python3 -m pip install --user --upgrade booley-rtl
-```
-
-Then prepare the host:
-
-```bash
-booley bootstrap
-```
-
-After upgrading Booley, run `booley bootstrap --update` instead.
-
-Use a dedicated base Python installation when the operating system marks its
-Python as externally managed; virtual-environment launchers are not valid Host
-Bootstrap owners. See [Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md)
-for installation, PATH, and Python-environment problems, then continue to
-[Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md).
 
 ## Quick Start
 
@@ -90,15 +77,46 @@ Four videos show an engineer driving Booley on a demo project end to end, so vie
 3. **[Feature Ticket Creation](https://youtu.be/sy1KMCHYnEw)** (10:36)
 4. **[Ticket Results Review](https://youtu.be/nHOgd5Jz6Eo)** (11:21)
 
-The project's author recorded all four videos, then replaced the original narration with text-to-speech to preserve anonymity for now.
+I recorded all four videos, then replaced my narration with text-to-speech to stay anonymous for now.
 
 ### Level 2: Try the demo yourself
 
-**[Follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme)** to install and try the demo.
+**[Follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme)** to try the demo, after you [install Booley](#installation).
 
 ### Level 3: Use it on your own project
 
-Follow [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md) to integrate Booley with your own RTL project.
+Follow [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md) to integrate Booley with your own RTL project, after you [install Booley](#installation).
+
+## Installation
+
+Booley supports Windows and Linux (Ubuntu 26.04 tested); macOS is not
+supported. You need:
+
+- Python 3.11+
+- [Git 2.37.2+](https://git-scm.com/downloads)
+- [Docker](https://www.docker.com/), with about **4 GB** free for the image
+  (**6 GB** with the RISC-V toolchain) plus room for build artifacts
+- [VS Code](https://code.visualstudio.com/)
+- Credentials for Claude (the default) or Codex
+
+Install the CLI and prepare the host:
+
+```bash
+python3 -m pip install --user booley-rtl
+booley bootstrap
+```
+
+To upgrade an existing install:
+
+```bash
+python3 -m pip install --user --upgrade booley-rtl
+booley bootstrap --update
+```
+
+Seeing `externally-managed-environment`, PATH, or other install errors? See
+[Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment).
+
+**Next:** [try the demo](#level-2-try-the-demo-yourself) or [set up your own project](#level-3-use-it-on-your-own-project).
 
 ## Supported EDA Tools
 
@@ -124,10 +142,13 @@ Support for additional commercial EDA tools is coming soon; see the
 - **Source languages are SystemVerilog and Verilog only.** VHDL is not supported.
 - **UVM is not supported.**
 - **Setup can take effort.** I've tried to make the setup process as streamlined as possible, but every build system is different; complex flows or heavy licensed EDA tools may still need project-specific work. It's a price you pay once, though. After that, every ticket and every session builds on it, and development speeds up significantly.
-- **Designed by a human, written by agents.** Booley was designed and is maintained by a hardware engineer, not a career software engineer. Its first-party implementation code was written by Claude and Codex, but it was not vibe-coding: I define the architecture and specifications, evaluate design tradeoffs, review implementation plans and code, direct revisions, and make the final engineering decisions. Changes also undergo separate agent and human reviews, including QA passes specifically intended to find bugs.
-
-  Development follows Booley's [coding principles](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/CODING_PRINCIPLES.md), with isolated branches, pull-request review, type checking, linting, automated tests, coverage requirements, and CI. The project is still young and has not yet received extensive review or long-term maintenance from experienced software engineers; those contributions are especially welcome.
 - **Work in progress.** Expect occasional bugs and rough edges in the UI. I'm actively on it, and things keep getting better.
+
+## How Booley is built
+
+Booley was designed and is maintained by a hardware engineer, not a career software engineer. Its first-party code was written by Claude and Codex, but this is not vibe-coding: I define the architecture and specifications, weigh design tradeoffs, review implementation plans and code, direct revisions, and make the final engineering decisions. Every change also goes through separate agent and human reviews, including QA passes aimed specifically at finding bugs.
+
+Development follows Booley's [coding principles](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/CODING_PRINCIPLES.md), with isolated branches, pull-request review, type checking, linting, automated tests, coverage requirements, and CI. The project is still young and hasn't yet had extensive review or long-term maintenance from experienced software engineers; those contributions are especially welcome.
 
 ## Documentation
 
