@@ -184,8 +184,11 @@ booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
   |---|---|---|
   | HDL | one test | Only tests without a recorded result run again. |
   | cocotb | the whole batch | An interrupted batch re-runs all of its tests. |
-  | `--coverage` | the whole collection | Re-runs every test into a distinct nested Coverage Campaign. |
+  | `--coverage` | the whole collection | Rebuilds and re-runs every test into a distinct nested Coverage Campaign. |
 
+- Resuming a coverage run saves time only when the collection already finished
+  and the interruption hit while results were being published. Otherwise it
+  costs the same as a new run.
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
 - Resume refuses when the Target's sources or suite changed since the original
@@ -197,7 +200,8 @@ booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
 
 `sim` can collect Verilator coverage (line, branch, expression, toggle,
 and cover properties) into a **Coverage Campaign**, check it against Coverage
-Criteria, and hand it to the Coverage Analyst for explanation.
+Criteria, and hand it to the Coverage Analyst for waiver candidates and
+testbench improvements.
 
 #### Quick start
 
@@ -205,7 +209,8 @@ Criteria, and hand it to the Coverage Analyst for explanation.
 # 1. Collect coverage for the full suite
 booley flow sim --target sim_soc --coverage
 
-# 2. Ask the Coverage Analyst what the numbers mean (advisory only)
+# 2. Ask the Coverage Analyst for waiver candidates and for how to improve the
+#    testbench to raise coverage (advisory only)
 booley flow coverage_analyst \
   --campaign <reports>/sim/12/targets/sim_soc/coverage.json
 ```
@@ -225,9 +230,6 @@ The verdict card prints the exact `coverage.json` path to use in step 2.
   [Coverage configuration](CONFIG.md#native-coverage-configuration).
 
 #### Collecting vs. gating
-
-Collection only happens when you pass `--coverage`. Having a Coverage Criterion
-never turns it on.
 
 - **Ungated** (no Coverage Criterion): Booley collects and stores the Campaign
   with evaluation `not_requested`. Use it to explore.
