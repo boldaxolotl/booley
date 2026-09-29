@@ -274,9 +274,13 @@ def test_execute_with_heartbeat_cleans_fifo_conversion(tmp_path: Path, monkeypat
     )
     paths = vr._RunPaths(tmp_path, tmp_path, tmp_path)
     process = object()
-    monkeypatch.setattr(vr, "_stream_output", lambda *_args, **_kwargs: (deque(), process))
+    monkeypatch.setattr(
+        vr,
+        "_stream_output",
+        lambda *_args, **_kwargs: (deque(), process, vr.RunTermination()),
+    )
 
-    _lines, returned = vr._execute_with_heartbeat([], paths, {}, 1, trace, 0)
+    _lines, returned, _termination = vr._execute_with_heartbeat([], paths, {}, 1, trace, 0, ())
 
     assert returned is process
     assert session.cleaned is conversion
@@ -302,7 +306,7 @@ def _stub_verilated_execution(
     def execute(*_args, **_kwargs):
         if trace_path is not None:
             trace_path.write_bytes(MINIMAL_FST_BYTES)
-        return deque(["[SIM_RESULT] PASSED\n"]), _FinishedProcess()
+        return deque(["[SIM_RESULT] PASSED\n"]), _FinishedProcess(), vr.RunTermination()
 
     monkeypatch.setattr(vr, "_execute_with_heartbeat", execute)
 
@@ -429,7 +433,7 @@ def test_stream_output_kills_on_missing_readmemh(tmp_path: Path):
         "sys.stdout.flush(); time.sleep(60)"
     )
     start = time.monotonic()
-    lines, proc = vr._stream_output(
+    lines, proc, _termination = vr._stream_output(
         [sys.executable, "-c", script],
         run,
         os.environ.copy(),
@@ -508,7 +512,7 @@ def test_stream_output_kills_on_disk_runaway(tmp_path: Path, monkeypatch):
         f'open({str(run / "big.bin")!r}, "wb").write(b"0" * 200_000); import time; time.sleep(60)'
     )
     start = time.monotonic()
-    lines, proc = vr._stream_output(
+    lines, proc, _termination = vr._stream_output(
         [sys.executable, "-c", script],
         run,
         os.environ.copy(),
@@ -540,7 +544,7 @@ def test_stream_output_kills_a_silent_sim_at_the_deadline(tmp_path: Path):
     run = tmp_path / "run"
     run.mkdir()
     start = time.monotonic()
-    lines, proc = vr._stream_output(
+    lines, proc, _termination = vr._stream_output(
         [sys.executable, "-c", "import time; time.sleep(60)"],
         run,
         os.environ.copy(),

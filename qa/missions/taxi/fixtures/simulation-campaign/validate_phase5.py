@@ -168,7 +168,8 @@ def _validate_mcp_observation(value: object) -> None:
         value["test"] is None or isinstance(value["test"], str), "MCP observation test is invalid"
     )
     _need(
-        value["execution"] in {"completed", "timeout", "crash", "setup_error", "blocked_by_build"},
+        value["execution"]
+        in {"completed", "timeout", "crash", "setup_error", "blocked_by_build", "aborted"},
         "MCP execution observation is invalid",
     )
     _need(

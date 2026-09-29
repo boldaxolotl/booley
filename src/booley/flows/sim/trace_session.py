@@ -573,6 +573,8 @@ class TraceSession:
         from booley.runtime.platform_paths import kill_process_tree
 
         log = logging.getLogger(__name__)
+        if sim_proc.poll() is not None:
+            return
         self._stall_killed = True
         self._stall_message = (
             f"bwave trace pipeline stalled (no growth for {stalled_for:.0f}s at {sz} bytes)"

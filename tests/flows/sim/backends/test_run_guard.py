@@ -58,6 +58,36 @@ def test_readmemh_fatal_line_ignores_benign_lines(line: str):
     assert rg.readmemh_fatal_line(line) is None
 
 
+@pytest.mark.parametrize(
+    ("line", "filename", "call"),
+    [
+        (
+            '%Warning: tb.sv:12: $readmemh: cannot open file "./firmware.hex"',
+            "./firmware.hex",
+            "$readmemh",
+        ),
+        ("Cannot open boot.mem for reading.", "boot.mem", "$readmemh"),
+    ],
+)
+def test_parse_readmemh_fatal_retains_filename_and_call(
+    line: str, filename: str, call: str
+) -> None:
+    parsed = rg.parse_readmemh_fatal(line)
+    assert parsed is not None
+    assert (parsed.filename, parsed.call, parsed.diagnostic) == (filename, call, line)
+
+
+def test_readmemh_classification_distinguishes_staging_gap_from_design(tmp_path: Path) -> None:
+    parsed = rg.parse_readmemh_fatal("Cannot open ./firmware.hex for reading.")
+    assert parsed is not None
+    declared = rg.classify_readmemh_termination(parsed, tmp_path, ("firmware.hex",))
+    undeclared = rg.classify_readmemh_termination(parsed, tmp_path, ())
+    assert (declared.kind, declared.failure_kind) == ("fatal_init", "infrastructure")
+    assert "not staged" in declared.detail
+    assert (undeclared.kind, undeclared.failure_kind) == ("fatal_init", "missing_input")
+    assert "Target fileset" in undeclared.detail
+
+
 # ---------------------------------------------------------------------------
 # dir_size_bytes (SETUP-25)
 # ---------------------------------------------------------------------------

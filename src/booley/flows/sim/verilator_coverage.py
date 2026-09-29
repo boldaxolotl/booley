@@ -202,6 +202,8 @@ class SimulationRunResult:
     output: str = ""
     pre_sim: PreSimEvidence | None = None
     infrastructure_error: bool = False
+    termination: str = "completed"
+    failure_kind: str = ""
 
 
 @dataclass(frozen=True)
@@ -409,6 +411,8 @@ def _collect_one_run(
         return _pre_sim_failure(request, context, result)
     if result.infrastructure_error:
         return _collected_infrastructure_failure(request, context, result)
+    if result.termination != "completed":
+        return _collected_simulation_abort(request, context, result)
     return _collect_run_evidence(request, context, result)
 
 
@@ -492,12 +496,43 @@ def _collected_infrastructure_failure(
         code="COV_INFRASTRUCTURE_ERROR",
         message=result.output or "coverage Simulation infrastructure failed",
         pointer="execution",
-        attributes=_pre_sim_attributes(result.pre_sim),
+        attributes=MappingProxyType(
+            {
+                **_pre_sim_attributes(result.pre_sim),
+                "termination": result.termination,
+                "failure_kind": result.failure_kind or "infrastructure",
+                "error_tail": result.output,
+            }
+        ),
     )
     return replace(
         failed,
         infrastructure_error=True,
         infrastructure_detail=result.output,
+    )
+
+
+def _collected_simulation_abort(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    result: SimulationRunResult,
+) -> _CollectedRun:
+    """Retain a design-caused abort without treating it as collector evidence."""
+    return _run_failure(
+        request,
+        context,
+        result.verdict,
+        code="COV_SIMULATION_ABORTED",
+        message=result.output or "coverage Simulation aborted",
+        pointer="execution",
+        attributes=MappingProxyType(
+            {
+                **_pre_sim_attributes(result.pre_sim),
+                "termination": result.termination,
+                "failure_kind": result.failure_kind,
+                "error_tail": result.output,
+            }
+        ),
     )
 
 
@@ -1367,6 +1402,13 @@ def _infrastructure_failure(
     request, build, completed, message, *, code="COV_INFRASTRUCTURE_ERROR"
 ) -> CoverageCollectionResult:
     collected = list(completed)
+    abort_attributes = {
+        key: value
+        for key in ("termination", "failure_kind", "error_tail")
+        if completed
+        and isinstance((value := completed[-1].run.attributes.get(key)), str)
+        and value
+    }
     for index, selected in enumerate(request.selected_tests[len(completed) :], len(completed) + 1):
         collected.append(
             _CollectedRun(
@@ -1376,7 +1418,9 @@ def _infrastructure_failure(
                     simulation_verdict="inconclusive",
                     collection="collector_error",
                     raw_artifact=None,
-                    attributes=MappingProxyType({"execution": "not_completed"}),
+                    attributes=MappingProxyType(
+                        {"execution": "not_completed", **abort_attributes}
+                    ),
                 ),
                 None,
                 (),

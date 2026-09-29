@@ -271,7 +271,7 @@ def test_cocotb_transport_preserves_partial_timeout_progress(tmp_path) -> None:
     assert [(item.name, item.verdict) for item in result.test_results] == [
         ("done", "pass"),
         ("active", "timeout"),
-        ("later", "inconclusive"),
+        ("later", "timeout"),
     ]
 
 
@@ -296,5 +296,5 @@ def test_default_cocotb_partial_transport_discovers_current_attempt_names(tmp_pa
     assert [test.verdict for test in result.test_results] == [
         "pass",
         "timeout",
-        "inconclusive",
+        "timeout",
     ]

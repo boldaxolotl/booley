@@ -18,11 +18,14 @@ from booley.core.boundary import (
     require_list,
 )
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
+from booley.flows.sim.backends.shared import RunTermination, RunTerminationKind
 from booley.flows.sim.result import count_sva_errors, parse_sim_verdict
 
-ADAPTER_RESULT_SCHEMA = 1
+ADAPTER_RESULT_SCHEMA = 2
 AdapterVerdict = Literal["pass", "fail", "timeout", "inconclusive"]
-AdapterFailureKind = Literal["", "design", "infrastructure", "timeout", "inconclusive", "artifact"]
+AdapterFailureKind = Literal[
+    "", "design", "infrastructure", "timeout", "inconclusive", "artifact", "missing_input"
+]
 AdapterTraceStatus = Literal["ok", "incident"]
 
 
@@ -49,6 +52,8 @@ class AdapterTestResult:
     verdict: AdapterVerdict
     elapsed_s: float = 0.0
     detail: str = ""
+    termination: RunTerminationKind = "completed"
+    failure_kind: AdapterFailureKind = ""
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,8 @@ class AdapterResult:
     inconclusive: bool
     sva_errors: int
     tests: tuple[str, ...]
+    termination: RunTerminationKind = "completed"
+    missing_input_path: str = ""
     failure_kind: AdapterFailureKind = ""
     detail: str = ""
     test_results: tuple[AdapterTestResult, ...] = ()
@@ -95,6 +102,8 @@ def _payload(identity: AdapterTransportIdentity, result: AdapterResult) -> dict[
         "inconclusive": result.inconclusive,
         "sva_errors": result.sva_errors,
         "tests": list(result.tests),
+        "termination": result.termination,
+        "missing_input_path": result.missing_input_path,
         "failure_kind": result.failure_kind,
         "detail": result.detail,
         "test_results": [
@@ -103,6 +112,8 @@ def _payload(identity: AdapterTransportIdentity, result: AdapterResult) -> dict[
                 "verdict": test.verdict,
                 "elapsed_s": test.elapsed_s,
                 "detail": test.detail,
+                "termination": test.termination,
+                "failure_kind": test.failure_kind,
             }
             for test in result.test_results
         ],
@@ -189,7 +200,7 @@ def _validated_result_fields(
     payload: dict[str, Any],
     identity: AdapterTransportIdentity,
     passed: bool,
-) -> tuple[tuple[str, ...], str, str]:
+) -> tuple[tuple[str, ...], RunTerminationKind, str, str, str]:
     """Decode fields whose constraints depend on the invocation or verdict."""
     tests = _string_tuple(payload, "tests")
     if identity.selected_tests and tests != identity.selected_tests:
@@ -198,6 +209,17 @@ def _validated_result_fields(
         raise AdapterTransportError("adapter result test names must be unique")
     failure_kind = payload.get("failure_kind", "")
     detail = payload.get("detail", "")
+    termination = payload.get("termination")
+    missing_input_path = payload.get("missing_input_path", "")
+    if termination not in {
+        "completed",
+        "timeout",
+        "disk_budget",
+        "fatal_init",
+        "sim_time_stall",
+        "trace_stall",
+    }:
+        raise AdapterTransportError("adapter result termination is invalid")
     if not isinstance(failure_kind, str) or failure_kind not in {
         "",
         "design",
@@ -205,13 +227,26 @@ def _validated_result_fields(
         "timeout",
         "inconclusive",
         "artifact",
+        "missing_input",
     }:
         raise AdapterTransportError("adapter result failure_kind is invalid")
-    if not isinstance(detail, str):
+    if not isinstance(detail, str) or not isinstance(missing_input_path, str):
         raise AdapterTransportError("adapter result detail must be a string")
     if passed and failure_kind:
         raise AdapterTransportError("adapter result pass contradicts its failure kind")
-    return tests, failure_kind, detail
+    if termination != "completed":
+        expected = {
+            "timeout": {"timeout"},
+            "disk_budget": {"infrastructure"},
+            "fatal_init": {"infrastructure", "missing_input"},
+            "sim_time_stall": {"infrastructure"},
+            "trace_stall": {"infrastructure"},
+        }[termination]
+        if passed or failure_kind not in expected or not detail:
+            raise AdapterTransportError("adapter result contradicts its termination")
+        if termination != "fatal_init" and missing_input_path:
+            raise AdapterTransportError("only fatal_init may name a missing input")
+    return tests, termination, missing_input_path, failure_kind, detail
 
 
 def _validated_test_results(payload: dict[str, Any]) -> tuple[AdapterTestResult, ...]:
@@ -239,13 +274,43 @@ def _validated_test_result(value: Any, index: int) -> AdapterTestResult:
     name = entry.get("name")
     verdict = entry.get("verdict")
     detail = entry.get("detail", "")
+    termination = entry.get("termination", "completed")
+    failure_kind = entry.get("failure_kind", "")
     if not isinstance(name, str) or not name:
         raise AdapterTransportError("adapter test result name must be nonempty")
     if verdict not in {"pass", "fail", "timeout", "inconclusive"}:
         raise AdapterTransportError("adapter test result verdict is invalid")
     if not isinstance(detail, str) or elapsed_s < 0:
         raise AdapterTransportError("adapter test result detail or elapsed time is invalid")
-    return AdapterTestResult(name, verdict, elapsed_s, detail)
+    if termination not in {
+        "completed",
+        "timeout",
+        "disk_budget",
+        "fatal_init",
+        "sim_time_stall",
+        "trace_stall",
+    } or failure_kind not in {
+        "",
+        "design",
+        "infrastructure",
+        "timeout",
+        "inconclusive",
+        "artifact",
+        "missing_input",
+    }:
+        raise AdapterTransportError("adapter test result termination is invalid")
+    if termination != "completed":
+        expected_kind = {
+            "timeout": {"timeout"},
+            "disk_budget": {"infrastructure"},
+            "fatal_init": {"infrastructure", "missing_input"},
+            "sim_time_stall": {"infrastructure"},
+            "trace_stall": {"infrastructure"},
+        }[termination]
+        expected_verdict = "timeout" if termination == "timeout" else "fail"
+        if failure_kind not in expected_kind or verdict != expected_verdict or not detail:
+            raise AdapterTransportError("adapter test result contradicts its termination")
+    return AdapterTestResult(name, verdict, elapsed_s, detail, termination, failure_kind)
 
 
 def read_adapter_result(identity: AdapterTransportIdentity) -> AdapterResult:
@@ -253,7 +318,9 @@ def read_adapter_result(identity: AdapterTransportIdentity) -> AdapterResult:
     payload = _read_payload(identity.result_path)
     passed, inconclusive, sva_errors = _validated_scalars(payload)
     _validate_identity(payload, identity)
-    tests, failure_kind, detail = _validated_result_fields(payload, identity, passed)
+    tests, termination, missing_input_path, failure_kind, detail = _validated_result_fields(
+        payload, identity, passed
+    )
     test_results = _validated_test_results(payload)
     diagnostics = _optional_string_tuple(payload, "diagnostics")
     trace = _validated_trace(payload)
@@ -265,11 +332,17 @@ def read_adapter_result(identity: AdapterTransportIdentity) -> AdapterResult:
         raise AdapterTransportError("adapter pass contradicts a per-test verdict")
     if not inconclusive and any(test.verdict == "inconclusive" for test in test_results):
         raise AdapterTransportError("adapter result contradicts per-test inconclusive evidence")
+    if termination == "completed" and any(
+        test.termination != "completed" for test in test_results
+    ):
+        raise AdapterTransportError("completed adapter result contains an aborted test")
     return AdapterResult(
         passed=passed,
         inconclusive=inconclusive,
         sva_errors=sva_errors,
         tests=tests,
+        termination=termination,
+        missing_input_path=missing_input_path,
         failure_kind=failure_kind,
         detail=detail,
         test_results=test_results,
@@ -353,6 +426,7 @@ def publish_native_adapter_result(
     trace_required: bool = False,
     trace: AdapterTraceResult | None = None,
     detail: str = "",
+    termination: RunTermination | None = None,
 ) -> None:
     """Normalize and publish terminal evidence for a native adapter."""
     if identity is None:
@@ -363,12 +437,20 @@ def publish_native_adapter_result(
         fail_sentinels=fail_sentinels,
     )
     sva_errors = count_sva_errors(output)
-    timed_out = "simulation timed out" in output.lower()
+    termination = termination or RunTermination()
+    timed_out = termination.kind == "timeout"
     trace_missing = trace_required and (trace is None or trace.status != "ok")
     if trace_missing and not detail and trace is not None:
         detail = trace.detail
-    inconclusive = (verdict is None and returncode == 0 and sva_errors == 0) or trace_missing
-    kind = failure_kind or _native_failure_kind(timed_out, trace_missing, inconclusive)
+    inconclusive = termination.kind == "completed" and (
+        (verdict is None and returncode == 0 and sva_errors == 0) or trace_missing
+    )
+    kind = (
+        termination.failure_kind
+        or failure_kind
+        or _native_failure_kind(timed_out, trace_missing, inconclusive)
+    )
+    effective_detail = termination.detail or detail
     test_results = _native_test_results(
         identity.selected_tests,
         verdict=verdict,
@@ -376,17 +458,26 @@ def publish_native_adapter_result(
         sva_errors=sva_errors,
         timed_out=timed_out,
         inconclusive=inconclusive,
-        detail=detail,
+        detail=effective_detail,
+        termination=termination,
     )
     write_adapter_result(
         identity,
         AdapterResult(
-            passed=verdict is True and returncode == 0 and sva_errors == 0 and not trace_missing,
+            passed=(
+                termination.kind == "completed"
+                and verdict is True
+                and returncode == 0
+                and sva_errors == 0
+                and not trace_missing
+            ),
             inconclusive=inconclusive,
             sva_errors=sva_errors,
             tests=identity.selected_tests,
+            termination=termination.kind,
+            missing_input_path=termination.missing_input_path,
             failure_kind=kind,
-            detail=detail,
+            detail=effective_detail,
             test_results=test_results,
             trace=trace,
         ),
@@ -402,17 +493,29 @@ def _native_test_results(
     timed_out: bool,
     inconclusive: bool,
     detail: str,
+    termination: RunTermination,
 ) -> tuple[AdapterTestResult, ...]:
     normalized = (
         "timeout"
-        if timed_out
+        if termination.kind == "timeout"
+        else "fail"
+        if termination.aborted
         else "pass"
         if verdict is True and returncode == 0 and sva_errors == 0
         else "inconclusive"
         if inconclusive
         else "fail"
     )
-    return tuple(AdapterTestResult(name, normalized, detail=detail) for name in names)
+    return tuple(
+        AdapterTestResult(
+            name,
+            normalized,
+            detail=detail,
+            termination=termination.kind,
+            failure_kind=termination.failure_kind,
+        )
+        for name in names
+    )
 
 
 def _native_failure_kind(timed_out: bool, trace_missing: bool, inconclusive: bool) -> str:

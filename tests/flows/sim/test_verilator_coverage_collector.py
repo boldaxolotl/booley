@@ -355,6 +355,28 @@ def test_pre_sim_spawn_error_aborts_later_tests(tmp_path: Path) -> None:
     assert "missing-generator" in result.findings[-1].message
 
 
+def test_design_abort_retains_termination_without_reading_coverage(tmp_path: Path) -> None:
+    class MissingInputExecution(_GeneratedMainExecution):
+        def run(self, request) -> SimulationRunResult:
+            return SimulationRunResult(
+                "fail",
+                "$readmemh could not open vectors.hex",
+                termination="fatal_init",
+                failure_kind="missing_input",
+            )
+
+        def command(self, request) -> SimulationCommandResult:
+            raise AssertionError("merge must not run after a Simulation abort")
+
+    result = collect(_request(tmp_path, "missing_vectors"), MissingInputExecution())
+
+    assert result.infrastructure_error is False
+    assert result.status == "collector_error"
+    assert result.runs[0].attributes["termination"] == "fatal_init"
+    assert result.runs[0].attributes["failure_kind"] == "missing_input"
+    assert result.findings[0].code == "COV_SIMULATION_ABORTED"
+
+
 def test_protected_surface_failure_takes_priority_over_failed_hook(tmp_path: Path) -> None:
     class ChangedImage(_GeneratedMainExecution):
         def run(self, request) -> SimulationRunResult:

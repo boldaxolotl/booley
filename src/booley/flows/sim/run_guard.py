@@ -39,8 +39,11 @@ import re
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from booley.flows.sim.backends.shared import RunTermination
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,28 @@ _READMEMH_FATAL_RE = re.compile(
     r"|(?:cannot|can't|unable to|could not|failed to)\s+open\s+(?:memory|hex|mem)\s+file",
     re.IGNORECASE,
 )
+_READMEMH_FILENAME_RES = (
+    re.compile(r"cannot\s+open\s+file\s+[\"'](?P<path>[^\"']+)[\"']", re.IGNORECASE),
+    re.compile(
+        r"(?:cannot|can't|unable to|could not|failed to)\s+open\s+"
+        r"(?P<path>.+?)\s+for reading\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:cannot|can't|unable to|could not|failed to)\s+open\s+"
+        r"(?:memory|hex|mem)\s+file\s+[\"']?(?P<path>[^\"'\s]+)",
+        re.IGNORECASE,
+    ),
+)
+
+
+@dataclass(frozen=True)
+class MissingMemoryInput:
+    """Parsed fatal memory initialization diagnostic."""
+
+    diagnostic: str
+    call: str
+    filename: str
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +243,67 @@ def readmemh_fatal_line(line: str) -> str | None:
     this and kills the run on a match rather than letting it hang.
     """
     return line.strip() if _READMEMH_FATAL_RE.search(line) else None
+
+
+def parse_readmemh_fatal(line: str) -> MissingMemoryInput | None:
+    """Parse the supported Icarus/Verilator missing-memory diagnostics."""
+    diagnostic = readmemh_fatal_line(line)
+    if diagnostic is None:
+        return None
+    filename = ""
+    for pattern in _READMEMH_FILENAME_RES:
+        match = pattern.search(diagnostic)
+        if match:
+            filename = match.group("path").strip().rstrip(".")
+            break
+    if not filename:
+        return None
+    call_match = re.search(r"\$(readmem[hb])\b", diagnostic, re.IGNORECASE)
+    call = f"${call_match.group(1).lower()}" if call_match else "$readmemh"
+    return MissingMemoryInput(diagnostic=diagnostic, call=call, filename=filename)
+
+
+def _normalized_input_path(path: str, run_dir: Path) -> str | None:
+    candidate = Path(path)
+    if not candidate.is_absolute() and ".." in candidate.parts:
+        return None
+    resolved = candidate.resolve() if candidate.is_absolute() else (run_dir / candidate).resolve()
+    try:
+        return resolved.relative_to(run_dir.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def classify_readmemh_termination(
+    missing: MissingMemoryInput,
+    run_dir: Path,
+    runtime_inputs: tuple[str, ...] | list[str],
+) -> RunTermination:
+    """Classify a fatal initializer against Target-declared destinations."""
+    normalized = _normalized_input_path(missing.filename, run_dir)
+    declarations = {
+        value
+        for item in runtime_inputs
+        if (value := _normalized_input_path(item, run_dir)) is not None
+    }
+    if normalized is not None and normalized in declarations:
+        detail = (
+            f"declared runtime input {missing.filename!r} was not staged before "
+            f"{missing.call}: {missing.diagnostic}"
+        )
+        failure_kind = "infrastructure"
+    else:
+        detail = (
+            f"missing {missing.call} input {missing.filename!r}: {missing.diagnostic}; "
+            "declare the file in the Target fileset (file_type: user/copyto)"
+        )
+        failure_kind = "missing_input"
+    return RunTermination(
+        "fatal_init",
+        detail,
+        failure_kind,
+        missing_input_path=missing.filename,
+    )
 
 
 def dir_size_bytes(path: Path) -> int:
@@ -425,6 +511,11 @@ class DiskBudgetGuard:
             # defeat — same bytes, same disk — so only real shrinkage moves it.)
             self.baseline = min(self.baseline, used)
             if used - self.baseline > self.budget:
+                # The tree walk above can be expensive. Re-check immediately
+                # before claiming ownership of a kill so a naturally finished
+                # child keeps its real verdict.
+                if self.proc.poll() is not None:
+                    return
                 self.used = used
                 self.grown = used - self.baseline
                 self.tripped = True
@@ -580,6 +671,8 @@ class SimTimeStallGuard:
             if self.proc.poll() is not None:
                 return  # run already exited — nothing to guard
             if self.stalled():
+                if self.proc.poll() is not None:
+                    return
                 self.tripped = True
                 kill_process_tree(self.proc)
                 return

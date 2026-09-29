@@ -640,7 +640,14 @@ def _simulation_run_result(attempt: AdapterAttemptOutcome, test_name: str) -> Si
     if attempt.error is not None or attempt.result is None:
         verdict: SimulationVerdict = "timeout" if process.timed_out else "inconclusive"
         return SimulationRunResult(verdict, f"{output}\n{attempt.error or ''}".strip())
-    return SimulationRunResult(_adapter_verdict(attempt.result, test_name), output)
+    test = next(item for item in attempt.result.test_results if item.name == test_name)
+    return SimulationRunResult(
+        _adapter_verdict(attempt.result, test_name),
+        attempt.result.detail or output,
+        infrastructure_error=test.failure_kind == "infrastructure",
+        termination=test.termination,
+        failure_kind=test.failure_kind,
+    )
 
 
 def _adapter_verdict(

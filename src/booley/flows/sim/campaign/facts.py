@@ -229,6 +229,7 @@ def _validate_observation(value: object, index: int) -> None:
         "completed",
         "timeout",
         "crash",
+        "aborted",
         "setup_error",
         "blocked_by_build",
     }:

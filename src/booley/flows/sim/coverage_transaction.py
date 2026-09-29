@@ -396,6 +396,10 @@ def _coverage_test_projection(run) -> dict[str, object]:
         "passed": run.simulation_verdict == "pass",
         "collection": run.collection,
     }
+    for field in ("termination", "failure_kind", "error_tail"):
+        value = run.attributes.get(field)
+        if isinstance(value, str) and value:
+            entry[field] = value
     pre_sim = run.attributes.get("pre_sim")
     if isinstance(pre_sim, Mapping):
         projected = dict(pre_sim)
@@ -409,6 +413,12 @@ def _coverage_test_projection(run) -> dict[str, object]:
 
 
 def _simulation_status(result: CoverageCollectionResult) -> str:
+    if any(
+        isinstance(run.attributes.get("termination"), str)
+        and run.attributes.get("termination") != "completed"
+        for run in result.runs
+    ):
+        return "aborted"
     verdicts = {run.simulation_verdict for run in result.runs}
     for verdict in ("elab_error", "fail", "timeout", "inconclusive", "pass"):
         if verdict in verdicts:

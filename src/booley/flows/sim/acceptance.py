@@ -359,6 +359,8 @@ def _campaign_test_projections(outcome: CampaignOutcome) -> list[dict[str, objec
             "cycles": observation["cycle_count"],
             "sva_errors": observation["assertion_count"],
             "timed_out": observation["execution"] == "timeout",
+            "execution": observation["execution"],
+            "failure_kind": observation["failure_class"] or "",
             "error_tail": _observation_error_tail(observation),
         }
         for observation in outcome.observations

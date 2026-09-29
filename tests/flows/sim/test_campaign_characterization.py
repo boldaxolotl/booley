@@ -200,6 +200,7 @@ def _assert_projection_shapes(report, outcome) -> None:
         "cycles",
         "elapsed_s",
         "error_tail",
+        "failure_kind",
         "name",
         "passed",
         "phase_timings_s",
@@ -207,6 +208,7 @@ def _assert_projection_shapes(report, outcome) -> None:
         "sva_errors",
         "test_validated",
         "timed_out",
+        "termination",
         "verdict",
         "workload_fingerprint",
     }

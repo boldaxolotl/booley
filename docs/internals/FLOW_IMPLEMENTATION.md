@@ -339,9 +339,18 @@ unpredictable attempt token, adapter, durable Target identity, and complete
 ordered selected-test set; the decoder rejects contradictions and rejects a
 result artifact that predates the invocation or escapes its build root. Leaf
 adapters may use `[SIM_SUMMARY]` and `[SIM_RESULT]` as inputs to normalization.
+Adapter result schema v2 also carries the live run's closed termination value:
+`completed`, `timeout`, `disk_budget`, `fatal_init`, `sim_time_stall`, or
+`trace_stall`. Only `completed` permits sentinel and return-code inference; an
+explicit termination outranks a pass sentinel and any zero exit status. The
+owner records fatal initialization before disk, simulator-clock/trace stall,
+then wall-clock timeout, and only when it observes the child alive immediately
+before requesting the kill.
 For Cocotb, per-test verdicts originate in the current run's JUnit
 `results.xml`; unexpected entries remain diagnostics and cannot affect the
-selected tests' verdicts. A nonzero process/build outcome still outranks an
+selected tests' verdicts. If a Cocotb batch aborts, tests durably completed
+before the abort retain their verdicts; the active and not-yet-run tests carry
+the batch termination. A nonzero process/build outcome still outranks an
 adapter pass. A requested trace must independently validate as a fresh regular
 file in an allowed location or an otherwise passing run becomes
 `inconclusive`.

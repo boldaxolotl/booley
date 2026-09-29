@@ -22,7 +22,7 @@ def simulation_status_from_observations(
     """Reduce Campaign observations to the endpoint simulation vocabulary."""
     executions = {item["execution"] for item in observations}
     functional = {item["functional"] for item in observations}
-    for status in ("crash", "timeout"):
+    for status in ("crash", "timeout", "aborted"):
         if status in executions:
             return status
     for status in ("fail", "inconclusive", "pass"):
@@ -48,6 +48,7 @@ class ExecutionObservation(StrEnum):
     COMPLETED = "completed"
     TIMEOUT = "timeout"
     CRASH = "crash"
+    ABORTED = "aborted"
     SETUP_ERROR = "setup_error"
     BLOCKED_BY_BUILD = "blocked_by_build"
     NOT_RUN = "not_run"
@@ -91,6 +92,7 @@ def grade_observations(
     elif execution in {
         ExecutionObservation.TIMEOUT,
         ExecutionObservation.CRASH,
+        ExecutionObservation.ABORTED,
         ExecutionObservation.SETUP_ERROR,
         ExecutionObservation.BLOCKED_BY_BUILD,
     }:

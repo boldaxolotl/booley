@@ -44,6 +44,7 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.backends.shared import (
     RunLogProgress,
+    RunTermination,
     TraceFileSnapshot,
     adopt_declared_trace_files,
     append_child_cpu_marker,
@@ -93,6 +94,7 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
     if work.trace:
         cmd += [f"--trace-arg={value}" for value in work.trace_args]
         cmd += [f"--trace-file={value}" for value in work.trace_files]
+    cmd += [f"--runtime-input={value}" for value in work.runtime_inputs]
     cmd += work_transport_arguments(work)
     return cmd
 
@@ -280,7 +282,8 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     bwave_proc: StreamingConversion | None,
     max_rundir_bytes: int = 0,
     work_dir: Path | None = None,
-) -> tuple[deque[str], subprocess.Popen]:
+    runtime_inputs: tuple[str, ...] = (),
+) -> tuple[deque[str], subprocess.Popen, RunTermination]:
     """Run the binary, stream stdout live, enforce *timeout* (seconds).
 
     Two safety guards ride alongside the timeout (see :mod:`booley.flows.sim.run_guard`):
@@ -296,7 +299,8 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     from booley.flows.sim.run_guard import (
         DiskBudgetGuard,
         child_death_kwargs,
-        readmemh_fatal_line,
+        classify_readmemh_termination,
+        parse_readmemh_fatal,
         snapshot_dir_baseline,
     )
     from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
@@ -358,34 +362,37 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
             progress.observe(lines)
             # SETUP-23: a missing $readmemh init file warns once then spins
             # forever on uninitialised RAM — treat that warning as fatal.
-            fatal = readmemh_fatal_line(line)
-            if fatal:
+            missing = parse_readmemh_fatal(line)
+            if missing and proc.poll() is None:
+                termination = classify_readmemh_termination(missing, run_cwd, runtime_inputs)
                 _kill_with_reason(
                     proc,
                     trace,
                     bwave_proc,
                     lines,
-                    f"missing $readmemh memory-init file — {fatal}",
+                    termination.detail,
                 )
-                return lines, proc
+                return lines, proc, termination
             # SETUP-25: the disk-budget watchdog kills the proc on a runaway;
             # report it here (the for-loop sees EOF once the proc is gone).
             if guard.tripped:
                 print(guard.message)
                 lines.append(guard.message + "\n")
-                return lines, proc
-            if timed_out["hit"] or time.monotonic() > deadline:
-                _kill_with_reason(proc, trace, bwave_proc, lines, _timeout_reason())
-                return lines, proc
+                return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
+            if timed_out["hit"] or (time.monotonic() > deadline and proc.poll() is None):
+                reason = _timeout_reason()
+                _kill_with_reason(proc, trace, bwave_proc, lines, reason)
+                return lines, proc, RunTermination("timeout", reason, "timeout")
         # stdout closed. A silent disk runaway or a watchdog kill (no line ticked
         # the in-loop checks) still surfaces here once the proc is gone.
         if guard.tripped:
             print(guard.message)
             lines.append(guard.message + "\n")
-            return lines, proc
+            return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
         if timed_out["hit"]:
-            _kill_with_reason(proc, trace, bwave_proc, lines, _timeout_reason())
-            return lines, proc
+            reason = _timeout_reason()
+            _kill_with_reason(proc, trace, bwave_proc, lines, reason)
+            return lines, proc, RunTermination("timeout", reason, "timeout")
         try:
             proc.wait(timeout=max(1, deadline - time.monotonic()))
         except subprocess.TimeoutExpired as exc:
@@ -397,7 +404,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
             proc.wait()
             exc.output = "".join(lines)
             raise
-        return lines, proc
+        return lines, proc, RunTermination()
     finally:
         if stdout is not None:
             stdout.close()
@@ -407,13 +414,14 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
         append_child_cpu_marker(lines, cpu_started)
 
 
-def _evaluate_verdict(
+def _evaluate_verdict(  # noqa: PLR0912 — ordered human diagnostics mirror verdict precedence
     output: str,
     returncode: int,
     work_dir: Path,
     *,
     pass_sentinels: list[str] | None = None,
     fail_sentinels: list[str] | None = None,
+    termination: RunTermination | None = None,
 ) -> None:
     """Print the ``[SIM_SUMMARY]`` verdict + write result JSON (legacy parity)."""
     verdict = parse_sim_verdict(
@@ -424,8 +432,11 @@ def _evaluate_verdict(
     sva_errors = count_sva_errors(output)
     vrfc = extract_vrfc_warnings(output)
 
+    termination = termination or RunTermination()
     inconclusive = False
-    if verdict is True:
+    if termination.aborted:
+        passed = False
+    elif verdict is True:
         passed = sva_errors == 0
     elif verdict is False or returncode != 0 or sva_errors > 0:
         passed = False
@@ -433,7 +444,9 @@ def _evaluate_verdict(
         passed, inconclusive = False, True
 
     print(format_summary(passed, sva_errors, vrfc, inconclusive=inconclusive))
-    if inconclusive:
+    if termination.aborted:
+        print(f"\nVerilator sim ABORTED ({termination.detail}; rc={returncode})")
+    elif inconclusive:
         print("\nVerilator sim INCONCLUSIVE (rc=0, no sentinel)")
     elif passed:
         print(f"\nVerilator sim PASSED (rc={returncode})")
@@ -448,7 +461,7 @@ def _evaluate_verdict(
     else:
         print(f"\nVerilator sim FAILED (rc={returncode})")
 
-    first_err = ""
+    first_err = termination.detail
     if not passed:
         for ln in output.splitlines():
             if any(s in ln for s in ("FAILED", "Fatal:", "Error!", "ERROR!", "Mismatch")):
@@ -664,7 +677,8 @@ def _execute_with_heartbeat(
     timeout: int,
     trace: _TraceRuntime,
     max_rundir_bytes: int,
-) -> tuple[deque[str], subprocess.Popen]:
+    runtime_inputs: tuple[str, ...],
+) -> tuple[deque[str], subprocess.Popen, RunTermination]:
     """Execute one simulator process with heartbeat and trace cleanup."""
     from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
@@ -681,6 +695,7 @@ def _execute_with_heartbeat(
             trace.conversion,
             max_rundir_bytes=max_rundir_bytes,
             work_dir=paths.work_dir,
+            runtime_inputs=runtime_inputs,
         )
     finally:
         heartbeat.stop()
@@ -708,20 +723,27 @@ def _finalize_verilated_run(
     trace_files: list[str] | None,
     pass_sentinels: list[str] | None,
     fail_sentinels: list[str] | None,
-) -> tuple[str, AdapterTraceResult | None]:
+    termination: RunTermination,
+) -> tuple[str, AdapterTraceResult | None, RunTermination]:
     """Persist the verdict and validate any trace produced by the current run."""
     output = "".join(lines)
-    if trace.session is not None and trace.session.stall_killed:
+    if (
+        trace.session is not None
+        and trace.session.stall_killed
+        and termination.kind in {"completed", "timeout"}
+    ):
         output += f"\nERROR: {trace.session.stall_message}"
+        termination = RunTermination("trace_stall", trace.session.stall_message, "infrastructure")
     _evaluate_verdict(
         output,
         proc.returncode,
         paths.work_dir,
         pass_sentinels=pass_sentinels,
         fail_sentinels=fail_sentinels,
+        termination=termination,
     )
     if trace.session is None:
-        return output, None
+        return output, None, termination
     if trace.mode is TraceMode.VCD_FIFO and trace.conversion is None:
         trace.session.postprocess(paths.work_dir / "trace.vcd")
     trace_output, trace_result = _finalize_trace(
@@ -732,7 +754,7 @@ def _finalize_verilated_run(
         search_dirs=trace.search_dirs,
         trace_files_before=trace.files_before,
     )
-    return output + trace_output, trace_result
+    return output + trace_output, trace_result, termination
 
 
 def _missing_binary_result(
@@ -762,8 +784,9 @@ def _timeout_transport_result(
         transport,
         output,
         1,
-        failure_kind="timeout",
-        detail=f"Verilator simulation timed out after {timeout}s",
+        termination=RunTermination(
+            "timeout", f"Verilator simulation timed out after {timeout}s", "timeout"
+        ),
     )
     return output
 
@@ -784,6 +807,7 @@ def run_verilated_binary(
     pass_sentinels: list[str] | None = None,
     fail_sentinels: list[str] | None = None,
     max_rundir_bytes: int = 0,
+    runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
 ) -> str:
     """Run one edalize-built ``V<top>`` under the resolved trace recipe."""
@@ -801,11 +825,20 @@ def run_verilated_binary(
     print(f"CWD: {paths.run_cwd}")
     print(f"CMD: {' '.join(cmd)}\n")
     try:
-        lines, proc = _execute_with_heartbeat(cmd, paths, env, timeout, trace, max_rundir_bytes)
+        lines, proc, termination = _execute_with_heartbeat(
+            cmd, paths, env, timeout, trace, max_rundir_bytes, runtime_inputs
+        )
     except subprocess.TimeoutExpired as exc:
         return _timeout_transport_result(exc, timeout, paths.work_dir, transport)
-    output, trace_result = _finalize_verilated_run(
-        lines, proc, paths, trace, trace_files, pass_sentinels, fail_sentinels
+    output, trace_result, termination = _finalize_verilated_run(
+        lines,
+        proc,
+        paths,
+        trace,
+        trace_files,
+        pass_sentinels,
+        fail_sentinels,
+        termination,
     )
     _publish_adapter_result(
         transport,
@@ -815,6 +848,7 @@ def run_verilated_binary(
         fail_sentinels=fail_sentinels,
         trace_required=vcd,
         trace=trace_result,
+        termination=termination,
     )
     return output
 
@@ -841,6 +875,7 @@ def _add_trace_arguments(parser: argparse.ArgumentParser) -> None:
         default=TraceMode.VCD_FIFO,
         help="resolved trace recipe supplied by the parent Simulation Flow",
     )
+    parser.add_argument("--runtime-input", action="append", default=[])
     parser.add_argument("--trace-scope", default=None, help="scope the trace to a hierarchy")
     parser.add_argument(
         "--trace-arg",
@@ -932,6 +967,7 @@ def main(argv: list[str] | None = None) -> int:
         pass_sentinels=args.pass_sentinels or None,
         fail_sentinels=args.fail_sentinels or None,
         max_rundir_bytes=args.max_rundir_bytes,
+        runtime_inputs=tuple(args.runtime_input),
         transport=transport,
     )
     # Non-zero exit on a parsed FAIL so a shipped `&&` chain reflects the verdict.

@@ -88,7 +88,15 @@ def _validated_failure_detail(detail: Mapping[str, object]) -> Mapping[str, obje
     simulation = detail.get("simulation")
     collection = detail.get("collection")
     evaluation = detail.get("evaluation")
-    if simulation not in {"pass", "fail", "timeout", "crash", "inconclusive", "not_run"}:
+    if simulation not in {
+        "pass",
+        "fail",
+        "timeout",
+        "crash",
+        "aborted",
+        "inconclusive",
+        "not_run",
+    }:
         if simulation == "elab_error":
             simulation = "fail"
         else:
@@ -473,6 +481,8 @@ def _coverage_result_state(observations: list[dict[str, object]]) -> str:
         return "crash"
     if "timeout" in executions:
         return "timeout"
+    if "aborted" in executions:
+        return "aborted"
     return "completed"
 
 
@@ -510,6 +520,8 @@ def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
         elab_failed=verdict == "elab_error",
         inconclusive=verdict == "inconclusive",
         error_tail=error_tail,
+        termination=cast(str, item.get("termination", "completed")),  # type: ignore[arg-type]
+        failure_kind=cast(str, item.get("failure_kind", "")),
     )
     return test
 
@@ -619,6 +631,8 @@ def _failure_test(item: Mapping[str, object]) -> dict[str, object]:
         "name": item["test"],
         "verdict": item["functional"],
         "passed": item["functional"] == "pass",
+        "failure_kind": item["failure_class"] or "",
+        "error_tail": cast(Mapping[str, object], item["detail"]).get("reason", ""),
     }
 
 

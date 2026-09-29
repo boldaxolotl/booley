@@ -331,6 +331,8 @@ class TestResult:
     # whose result.json said passed:true, because a *missing waveform* had
     # downgraded the verdict (fpu F-22). Empty when not inconclusive.
     inconclusive_reason: str = ""
+    termination: str = "completed"
+    failure_kind: str = ""
     elab_failed: bool = False
     test_validated: bool = True
     # Waveform this run produced (--trace only): project-relative path and
@@ -372,6 +374,7 @@ class TargetResult:
     target_identity: str = ""
     diagnostics: tuple[str, ...] = ()
     artifacts: tuple[SimulationArtifactEvidence, ...] = ()
+    infrastructure_error: bool = False
 
 
 @dataclass
@@ -1517,6 +1520,8 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
         "passed": test.passed,
         "verdict": _test_verdict(test),
         "timed_out": test.timed_out,
+        "termination": test.termination,
+        "failure_kind": test.failure_kind,
         # F-39: 3 decimals — a 12ms cocotb test rounded to 0.0 at 1 decimal,
         # which erased every sub-second duration from the structured report.
         "elapsed_s": round(test.elapsed_s, 3),
@@ -1550,6 +1555,8 @@ def _test_verdict(test: TestResult) -> str:
         return "pass"
     if test.timed_out:
         return "timeout"
+    if test.termination != "completed":
+        return "fail"
     if test.inconclusive:
         return "inconclusive"
     if test.elab_failed:
@@ -3309,7 +3316,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         detail = self._legacy_result_detail(results, elapsed, resolution_s)
         self._attach_legacy_artifacts(detail, results)
         return EndpointOutcome(
-            exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
+            exit_code=(
+                EXIT_ERROR
+                if any(result.infrastructure_error for result in results)
+                else EXIT_SUCCESS
+                if passed
+                else EXIT_FAILURE
+            ),
             criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
             criterion_met=passed,
             display_lines=_build_display_lines(results, elapsed),
@@ -5254,7 +5267,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _project_execution_outcome(self, outcome: SimulationTargetOutcome) -> TargetResult:
         """Project immutable execution evidence into the compatibility report model."""
-        if outcome.infrastructure_failure is not None:
+        if outcome.infrastructure_failure is not None and not outcome.tests:
             detail = (
                 outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
             )
@@ -5282,6 +5295,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             diagnostics=tuple(f"  (note: {note})" for note in outcome.diagnostics),
             phase_timings_s=dict(outcome.phase_timings_s),
             artifacts=outcome.artifacts,
+            infrastructure_error=outcome.infrastructure_failure is not None,
         )
 
     def _project_execution_test(self, outcome: Any) -> TestResult:
@@ -5299,6 +5313,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             timed_out=outcome.timed_out,
             inconclusive=outcome.inconclusive,
             inconclusive_reason=outcome.reason,
+            termination=outcome.termination,
+            failure_kind=outcome.failure_kind,
             elab_failed=outcome.elab_failed,
             test_validated=outcome.test_validated,
             trace_path=(

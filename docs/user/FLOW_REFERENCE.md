@@ -276,8 +276,9 @@ preview entry retains `test`, `execution`, `functional`, `assertions`,
 `observations_truncated` disclose whether the preview is complete.
 The independent observation axes mean:
 
-- `execution`: whether the simulator process completed, timed out, or failed
-  before producing trustworthy test evidence;
+- `execution`: whether the simulator process completed, timed out, was
+  intentionally `aborted` by a run guard, or failed before producing
+  trustworthy test evidence;
 - `functional`: the pass/fail/inconclusive test verdict;
 - `assertions`: assertion evidence independently observed for that test.
 
@@ -307,6 +308,11 @@ cocotb Targets use cocotb's result file, with assertion output still able to
 fail the run. Fail sentinels take priority. A clean process that produces no
 valid verdict is `inconclusive`, never a pass. A traced run is likewise
 inconclusive when it cannot confirm a fresh trace artifact.
+Guard-owned termination is never clean completion, even when the simulator
+exits with status 0: infrastructure aborts grade ERROR and return exit code 2.
+An undeclared missing `$readmemh` input is an `aborted` design FAIL with
+`failure_kind="missing_input"` and exit code 1. Both forms retain the exact
+abort reason and report assertion evidence as `not_observed`.
 
 The Flow records per-test verdicts and can satisfy `sim_pass_<target>` and
 configured per-test Cycle Count Criteria. It also records
