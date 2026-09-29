@@ -53,7 +53,12 @@ def test_committed_block_matches_source(doc: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("doc", _EMBEDDED_DOCS, ids=lambda p: p.name)
+# USAGE.md links to `booley cheat --criteria` for the full threshold tables
+# instead of embedding them, so only the cheatsheet carries this block.
+_PARAMS_EMBEDDED_DOCS = [cheatsheet_path()]
+
+
+@pytest.mark.parametrize("doc", _PARAMS_EMBEDDED_DOCS, ids=lambda p: p.name)
 def test_committed_params_block_matches_source(doc: Path) -> None:
     """Each committed criteria-params (flavours) block matches the current render."""
     assert doc.exists(), f"missing doc: {doc}"
