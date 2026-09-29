@@ -732,3 +732,32 @@ class TestProjectGitignoreBackfill:
         )
         assert nested_result.returncode == 1
         assert nested_result.stdout == ""
+
+    def test_live_ticket_state_is_ignored_and_ticket_history_is_tracked(self, tmp_path: Path):
+        # ADR 0065: the board and state records are working state; history is committed.
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+
+        def ignored(path: str) -> bool:
+            result = subprocess.run(
+                ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "-q", path],
+                cwd=tmp_path,
+                check=False,
+                timeout=30,
+            )
+            return result.returncode == 0
+
+        assert ignored("tickets/board/alpha.md")
+        assert ignored("tickets/state/alpha.json")
+        assert not ignored("tickets/history/alpha.md")
+
+    def test_anchored_spelling_is_not_duplicated(self, tmp_path: Path):
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("/tickets/board/\n/tickets/state/\n", encoding="utf-8")
+
+        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
+        assert "tickets/board/" not in lines
+        assert "tickets/state/" not in lines
+        assert "tickets/logs/" in lines

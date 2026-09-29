@@ -99,6 +99,7 @@ from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     resolve_checkout_project_dir,
 )
+from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
@@ -2021,7 +2022,6 @@ def _run_mcp_checks(
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
-    _check_interactive_logs_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
     _check_interactive_logs_tracked(project.project_dir, reporter.pass_, reporter.fail_)
     _run_agent_credential_checks(project, reporter)
     _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
@@ -2056,27 +2056,6 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         _note=reporter.note_,
     )
     _check_subscription_creds_health(provider, reporter.pass_, reporter.warn_, policy=auth_policy)
-
-
-def _check_interactive_logs_gitignore(
-    project_dir: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    _warn = _warning_sink(_warn, "interactive.logs-gitignore")
-    gitignore = project_dir / ".gitignore"
-    if not gitignore.is_file():
-        _warn(".booley_project/.gitignore missing; interactive logs may be tracked")
-        return
-    try:
-        content = gitignore.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        _warn(f"could not read {gitignore}: {exc}")
-        return
-    if ".interactive_logs/" in content:
-        _pass("interactive MCP logs are gitignored")
-    else:
-        _warn(".booley_project/.gitignore should include .interactive_logs/")
 
 
 def _check_interactive_logs_tracked(
@@ -2793,13 +2772,14 @@ def _run_ticket_preflight_parity_checks(
     project: ProjectAudit | None,
     reporter: _Reporter,
 ) -> None:
-    """Mirror cheap Ticket Preflight checks in doctor output."""
+    """Mirror cheap Ticket Preflight checks, plus the Project ignore policy they rely on."""
     banner("Run checks")
     if project is None:
         reporter.skip_("run checks skipped - project config invalid")
         return
 
     _check_tickets_tree(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_project_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
     _check_ticket_history_committed(project.project_dir, reporter.pass_, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
@@ -2826,6 +2806,35 @@ def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
         )
         return
     _pass("tickets tree present")
+
+
+def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> None:
+    """Warn when ``.booley_project/.gitignore`` lacks a transient-state pattern ``init`` adds.
+
+    A missing ``tickets/board/`` pattern leaves closed Tickets' deletions in
+    the checkout, which blocks the next Ticket's completion.
+    """
+    _warn = _warning_sink(_warn, "project.gitignore")
+    gitignore = project_dir / ".gitignore"
+    if not gitignore.is_file():
+        _warn(
+            ".booley_project/.gitignore missing; transient Booley state may be tracked",
+            "booley init",
+        )
+        return
+    try:
+        content = gitignore.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _warn(f"could not read {gitignore}: {exc}")
+        return
+    missing = missing_gitignore_patterns(content)
+    if missing:
+        _warn(
+            f".booley_project/.gitignore is missing {len(missing)} pattern(s): {', '.join(missing)}",
+            "booley init",
+        )
+        return
+    _pass("transient Booley state is gitignored")
 
 
 def _check_ticket_history_committed(project_dir: Path, _pass: Check, _warn: Check) -> None:

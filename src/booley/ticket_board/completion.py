@@ -97,9 +97,6 @@ def _request(
         basis=basis,
         cleanup=cleanup,
         ticket_status=entry["status"],
-        # State changes no longer rename the document (ADR 0065), so there is
-        # no board rename to exempt; phase 4 removes the parameter.
-        allowed_board_rename=None,
         expected_sources=expected_sources,
     )
 

@@ -44,7 +44,6 @@ from booley.runtime.project_repositories import (
 )
 
 PROJECT_BRANCH_PREFIX = "booley-ticket/"
-PROJECT_BOARD_PREFIX = "tickets/board/"
 
 
 class ProjectRepositoryStatusError(RuntimeError):
@@ -377,11 +376,8 @@ def blocking_project_repository_changes(
 ) -> tuple[ProjectRepositoryChange, ...]:
     """Return dirt that must block project worktree creation or merging.
 
-    Ticket Board transitions deliberately mutate ``tickets/board/`` in the
-    main project checkout. Booley leaves those moves unstaged, so they can
-    coexist with a Git worktree or a merge whose branch cannot modify ticket
-    state. Staged board changes remain blocking because Git may refuse to
-    merge with a non-clean index.
+    Ticket Board state is ignored working state (ADR 0065), so every change
+    Git reports blocks.
     """
     result = _git(
         repository,
@@ -396,11 +392,7 @@ def blocking_project_repository_changes(
         raise ProjectRepositoryStatusError(
             f"git status failed in {repository} (rc={result.returncode}): {detail}"
         )
-    return tuple(
-        change
-        for change in _parse_porcelain_z(result.stdout)
-        if not _is_unstaged_board_change(change)
-    )
+    return tuple(_parse_porcelain_z(result.stdout))
 
 
 def remove_project_worktree(project_root: Path, ticket_worktree: Path) -> None:
@@ -620,13 +612,6 @@ def _verify_existing_worktree(
         raise TicketWorkspaceError(
             f"paired project worktree HEAD does not match recorded project_sha {expected_sha}"
         )
-
-
-def _is_unstaged_board_change(change: ProjectRepositoryChange) -> bool:
-    """Whether *change* is ordinary filesystem-backed board churn."""
-    normalized = change.path.replace("\\", "/").removeprefix("./")
-    unstaged = change.status == "??" or change.status.startswith(" ")
-    return unstaged and normalized.startswith(PROJECT_BOARD_PREFIX)
 
 
 def _merge_in_checkout(checkout: Path, branch: str, message: str) -> tuple[bool, str]:

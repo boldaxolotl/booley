@@ -32,6 +32,7 @@ from booley.harness.setup import readiness
 from booley.runtime import (
     auth_token,
     issuance_invalidation,
+    project_gitignore,
     runtime_context,
     session_issuance,
     session_runtime,
@@ -134,7 +135,7 @@ tests = ["full"]
 """.lstrip(),
         encoding="utf-8",
     )
-    (project_dir / ".gitignore").write_text(".interactive_logs/\n", encoding="utf-8")
+    (project_dir / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
     # ADR 0039: a resolvable .core Target is mandatory — without one the core
     # audit hard-FAILs and every doctor E2E fixture here would go red.
     (root / "unit.core").write_text(
@@ -683,6 +684,69 @@ def test_tickets_tree_requires_state_record_directory(tmp_path):
     rec = _Rec()
     doctor._check_tickets_tree(tmp_path, rec.p, rec.f)
     assert rec.events == [("pass", "tickets tree present")]
+
+
+def _gitignore_probe(project_dir: Path) -> list[doctor.DoctorFinding]:
+    """Run the Project ``.gitignore`` probe against *project_dir* and return its findings."""
+    reporter = doctor._Reporter.create()
+    doctor._check_project_gitignore(project_dir, reporter.pass_, reporter.warn_)
+    assert reporter.findings is not None
+    return reporter.findings
+
+
+def test_project_gitignore_passes_with_every_init_pattern(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
+
+    assert [(f.severity, f.message) for f in _gitignore_probe(tmp_path)] == [
+        ("pass", "transient Booley state is gitignored")
+    ]
+
+
+def test_project_gitignore_names_each_missing_pattern(tmp_path: Path) -> None:
+    kept = [
+        p for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS if not p.startswith("tickets/")
+    ]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in kept), encoding="utf-8")
+
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert findings[0].check_id == "project.gitignore"
+    for pattern in ("tickets/board/", "tickets/state/", "tickets/logs/", "tickets/locks/"):
+        assert pattern in findings[0].message
+    assert findings[0].fix == "booley init"
+
+
+def test_project_gitignore_accepts_anchored_spelling_of_nested_pattern(tmp_path: Path) -> None:
+    anchored = {"tickets/board/": "/tickets/board/", "tickets/state/": "/tickets/state/"}
+    lines = [anchored.get(p, p) for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in lines), encoding="utf-8")
+
+    assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
+
+
+def test_project_gitignore_anchored_spelling_of_top_level_pattern_differs(
+    tmp_path: Path,
+) -> None:
+    # ``worktrees/`` matches at any depth; ``/worktrees/`` only at the top.
+    lines = [
+        "/worktrees/" if p == "worktrees/" else p
+        for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS
+    ]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in lines), encoding="utf-8")
+
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert "worktrees/" in findings[0].message
+
+
+def test_project_gitignore_missing_file_warns(tmp_path: Path) -> None:
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert "missing" in findings[0].message
+    assert findings[0].fix == "booley init"
 
 
 def _history_probe(project_dir: Path) -> doctor._Reporter:

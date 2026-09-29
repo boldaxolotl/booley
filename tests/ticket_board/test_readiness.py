@@ -221,7 +221,7 @@ def test_operational_legacy_review_pair_reports_hard_cutoff_without_mutation(
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "user.email", "test@example.invalid")
     project = root / ".booley_project"
-    (project / "tickets/board/drafts").mkdir(parents=True)
+    (project / "tickets/board").mkdir(parents=True)
     (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
     (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
     (root / "README.md").write_text("demo\n", encoding="utf-8")
@@ -238,7 +238,7 @@ def test_operational_legacy_review_pair_reports_hard_cutoff_without_mutation(
     )
     assert draft is not None
     assert tio.enqueue_ticket("legacy-pair")
-    ticket = project / "tickets/board/queue/legacy-pair.md"
+    ticket = project / "tickets/board/legacy-pair.md"
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"]["bugs"] = ["done", "clean"]
     ticket.write_text(format_frontmatter(fields, body), encoding="utf-8")

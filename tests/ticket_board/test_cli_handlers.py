@@ -508,7 +508,7 @@ class TestCmdValidateLogs:
         )
         assert ticket is not None
         assert tio.enqueue_ticket(slug)
-        queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+        queued = project_dir / "tickets/board" / f"{slug}.md"
         assert tio.init_ticket(queued, execution_id="test-execution") is not None
         runtime_ticket = tio.logs_dir / slug / "ticket.md"
         assert runtime_ticket.is_file()

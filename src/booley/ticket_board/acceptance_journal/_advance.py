@@ -91,7 +91,6 @@ class AcceptanceRequest:
     basis: TicketBaseline
     cleanup: bool
     ticket_status: Literal["review", "done"]
-    allowed_board_rename: tuple[Path, Path] | None
     expected_sources: Mapping[str, str] | None = None
 
 
@@ -474,7 +473,6 @@ def _validate_publish_checkout(
     participant: BasisParticipant,
     checkout: Path,
     candidate: Candidate,
-    allowed_board_rename: tuple[Path, Path] | None,
 ) -> None:
     expected = candidate.expected_destination_sha
     desired = _required_finalized_sha(candidate)
@@ -497,7 +495,6 @@ def _validate_publish_checkout(
     candidate_paths = tuple(path for path in changed_paths_result.stdout.split("\0") if path)
     blockers = worktree_blocking_changes(
         str(checkout),
-        allowed_unstaged_rename=allowed_board_rename,
         candidate_paths=candidate_paths,
     )
     if blockers is None:
@@ -517,7 +514,6 @@ def _publish_candidate(
     repository: Path,
     participant: BasisParticipant,
     candidate: Candidate,
-    allowed_board_rename: tuple[Path, Path] | None,
 ) -> None:
     desired = _required_finalized_sha(candidate)
     staging_ref = candidate.staging_ref
@@ -538,13 +534,7 @@ def _publish_candidate(
         )
     checkout = _checked_out_at(repository, participant.destination_ref)
     if checkout is not None:
-        _validate_publish_checkout(
-            repository,
-            participant,
-            checkout,
-            candidate,
-            allowed_board_rename,
-        )
+        _validate_publish_checkout(repository, participant, checkout, candidate)
         _require_git(checkout, "merge", "--ff-only", desired)
         return
     _require_git(
@@ -1137,10 +1127,7 @@ def _finalize_all(
             )
 
 
-def _publish_all(
-    transaction: _AcceptanceTransaction,
-    allowed_board_rename: tuple[Path, Path] | None,
-) -> None:
+def _publish_all(transaction: _AcceptanceTransaction) -> None:
     by_role = transaction.participants
     # Publish the hidden control repository first.  The user-visible outer ref
     # moves last, after every candidate is known to be conflict-free.
@@ -1157,7 +1144,6 @@ def _publish_all(
                 repository,
                 participant,
                 transaction.journal.candidates[role],
-                allowed_board_rename,
             ),
         )
         checkpoint = (
@@ -1484,10 +1470,7 @@ def _prepare_pending_publication(
         )
 
 
-def _publish_pending_candidates(
-    transaction: _AcceptanceTransaction,
-    allowed_board_rename: tuple[Path, Path] | None,
-) -> None:
+def _publish_pending_candidates(transaction: _AcceptanceTransaction) -> None:
     _validate_recorded_destinations(
         transaction.root,
         transaction.project_repository,
@@ -1495,7 +1478,7 @@ def _publish_pending_candidates(
         transaction.journal,
         after_approval=False,
     )
-    _publish_all(transaction, allowed_board_rename)
+    _publish_all(transaction)
     _update_finalized_refs(transaction)
     _validate_published_destinations(
         transaction.root,
@@ -1580,7 +1563,7 @@ def _advance_publication(
             cleanup=request.cleanup,
             expected_sources=request.expected_sources,
         )
-        _publish_pending_candidates(transaction, request.allowed_board_rename)
+        _publish_pending_candidates(transaction)
     if request.ticket_status == "review":
         return AcceptanceProgress(AcceptanceOutcome.APPROVAL_REQUIRED)
     return None
