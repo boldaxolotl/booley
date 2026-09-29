@@ -344,7 +344,7 @@ Structured output (`sim/<N>/targets/<encoded-target>/simulation.json`):
 | `phase_timings_s` | Target aggregation of `setup` (including Target metadata resolution), `pre_sim`, `build`, `run`, and `result_processing`, plus `unattributed` overhead and `execution_total`. Persisted results also include `publication` and the resulting end-to-end `total`. Run-level structured detail separately exposes `resolution_s` for campaign selection and test-map resolution. |
 | `tests[]` | Per-test `name`, `passed`, `verdict`, `termination`, `failure_kind`, `timed_out`, `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`, `error_tail`, `test_validated`, `phase_timings_s`, and `resources`. `resources` contains `command_peak_rss_mb` and `command_oom_kill_delta`; supported platforms also add `simulation_user_cpu_s` and `simulation_system_cpu_s`. Trace runs add `trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and `trace_total_ticks`. Optional fields include `artifacts.run_log`, `workload_fingerprint`, and `validation_note`. |
 | `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
-| `artifacts` | The report plus invocation-local run logs, result files, and trace artifacts. Ordinary HDL tests have per-test logs; tests from one Cocotb batch share one immutable batch log. |
+| `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |
 
 Elaboration Check structured output uses the same canonical `simulation.json` name and
 sets `mode` to `elab_only` (or `elab_only_standalone` for the cumulative mode):
@@ -516,11 +516,8 @@ the report and `lint_clean_<target>` evidence retain the actual finding counts.
 
 The normalized report records a flat list of findings by file, line, rule, and
 message, deduplicates repeated diagnostics, and points to the complete run log.
-The numbered report and logs are authoritative evidence. The flat
-`lint_report.json` is only the latest-run compatibility alias and is never cited
-as evidence.
 
-Structured output (`lint/<N>/lint_report.json`):
+Structured output (`lint_report.json`):
 
 | Field | Contents |
 |---|---|
@@ -599,7 +596,7 @@ hash-suffixed filename):
 | `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the baseline and candidate Targets. |
 | `run_evidence`, `baseline_run_evidence` | Current and optional baseline source/recipe provenance. |
 | `failure_output`, `io_bound_critical` | Optional failure excerpt and I/O-bound timing indicator. |
-| `artifacts` | The numbered report and complete invocation-local run log; physical mode also retains bounded timing reports. `live_dirs` names mutable build/timing debug locations and is not evidence. |
+| `artifacts` | The durable report, complete run log, build directory, and physical-mode timing directory. |
 
 Final combinational loops and multiple drivers are separate fatal structural
 conditions. Other actionable warnings produce `grade: "warn"` while keeping
@@ -651,14 +648,14 @@ Structured output (`fpga_<target>.json`):
 | `target`, `eda_tool` | Resolved implementation identity; the EDA tool is Vivado. |
 | `passed`, `returncode`, `timed_out`, `infra_error` | Verdict and terminal classification. |
 | `cached`, `cache_fingerprint` | Whether implementation evidence was reused and the cache identity. |
-| `metrics` | Current-run `lut_count`, `ff_count`, `bram_count`, `dsp_count`, `wns_ns`, `whs_ns`, `per_clock`, `latches`, `comb_loops`, `multi_driven`, `elapsed_s`, `cached`, `cache_fingerprint`, `failure_output`, optional `log_path`, and nested `artifacts`. A cache hit omits the Flow log unless the cache authenticates it. Each clock contains `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. |
+| `metrics` | Current-run `lut_count`, `ff_count`, `bram_count`, `dsp_count`, `wns_ns`, `whs_ns`, `per_clock`, `latches`, `comb_loops`, `multi_driven`, `elapsed_s`, `cached`, `cache_fingerprint`, `failure_output`, `log_path`, and nested `artifacts`. Each clock contains `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. |
 | `baseline_ref`, `baseline_metrics` | Optional baseline revision and the same metrics from `--baseline`, without baseline artifact pointers. |
 | `recipe_fingerprint`, `recipe_snapshot`, `run_evidence` | Normalized recipe and provenance for the current run. |
 | `baseline_recipe_fingerprint`, `baseline_recipe_snapshot`, `baseline_run_evidence` | Optional baseline recipe and provenance. |
 | `cache_consumer_run_id` | Present when this run consumes cached evidence produced by another run. |
 | `baseline_target`, `candidate_target` | Callable selector compatibility fields for the baseline and candidate Targets. |
 | `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the baseline and candidate Targets. |
-| `artifacts` | The numbered report and, for a fresh run, its complete invocation-local log. `live_dirs` names mutable build, synthesis, and implementation debug locations and is not evidence. |
+| `artifacts` | The durable report, complete run log, and build, synthesis, and implementation directories. |
 
 The profile name describes optimization intent, not a promised QoR result.
 FPGA area is represented by LUT/FF/BRAM/DSP utilization. Power is not currently
