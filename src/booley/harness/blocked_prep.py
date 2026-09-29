@@ -11,7 +11,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import require_dict, require_str
+from booley.core.boundary import (
+    as_dict,
+    require_dict,
+    require_list,
+    require_opt_str,
+    require_str,
+    require_str_value,
+)
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.runtime.agent import call_agent
@@ -188,16 +195,14 @@ def _state_projection(raw: bytes) -> bytes:
         raise RuntimeError(f"state input is malformed: {exc}") from exc
     projected = dict(state)
     projected.pop("last_updated", None)
-    timeline = projected.get("timeline", [])
-    if not isinstance(timeline, list):
-        raise RuntimeError("state input is malformed: timeline must be a list")
+    timeline = require_list(projected.get("timeline", []), field="state timeline")
     projected["timeline"] = [
         row
         for row in timeline
         if not (
-            isinstance(row, dict)
-            and row.get("endpoint_kind") == "mcp_tool"
-            and row.get("mcp_tool") == "triage_report"
+            (record := as_dict(row)) is not None
+            and record.get("endpoint_kind") == "mcp_tool"
+            and record.get("mcp_tool") == "triage_report"
         )
     ]
     return json.dumps(projected, sort_keys=True, separators=(",", ":")).encode()
@@ -245,11 +250,17 @@ def _worktree_records(ctx: BlockedContext) -> dict[str, SourceInputRecord]:
     for raw_path in sorted(value for value in raw_paths.split(b"\0") if value):
         relative = raw_path.decode(errors="surrogateescape")
         path = ctx.worktree / relative
-        content = (
-            str(path.readlink()).encode(errors="surrogateescape")
-            if path.is_symlink()
-            else path.read_bytes()
-        )
+        try:
+            if path.is_symlink():
+                content = str(path.readlink()).encode(errors="surrogateescape")
+            elif path.is_file():
+                content = path.read_bytes()
+            elif path.is_dir():
+                content = b"nested-repository"
+            else:
+                raise OSError("input vanished during collection")
+        except OSError as exc:
+            raise RuntimeError(f"worktree/untracked/{relative} collection failed: {exc}") from exc
         records[f"worktree/untracked/{relative}"] = SourceInputRecord(_sha256(content))
     return records
 
@@ -257,7 +268,10 @@ def _worktree_records(ctx: BlockedContext) -> dict[str, SourceInputRecord]:
 def _collect_live_inputs(ctx: BlockedContext) -> SourceInputs:
     records: dict[str, SourceInputRecord] = {}
     for label, path in _evidence_paths(ctx):
-        records[label] = _evidence_record(label, path.read_bytes())
+        try:
+            records[label] = _evidence_record(label, path.read_bytes())
+        except OSError as exc:
+            raise RuntimeError(f"{label} collection failed: {exc}") from exc
     records.update(_worktree_records(ctx))
     return SourceInputs(records)
 
@@ -446,28 +460,27 @@ def _record_call(ctx: BlockedContext, result: AgentResult, duration: float) -> N
 def _manifest_inputs(value: Any) -> SourceInputs:
     source = require_dict(value, field="blocked dossier source_inputs")
     if source.get("version") != BLOCKED_PACKAGE_VERSION:
-        raise RuntimeError("manifest version changed")
+        raise _FreshnessError("manifest version changed")
     rows = require_dict(source.get("records"), field="blocked dossier source records")
     records: dict[str, SourceInputRecord] = {}
-    for label, raw_record in rows.items():
-        if not isinstance(label, str):
-            raise RuntimeError("blocked dossier source labels must be strings")
+    for raw_label, raw_record in rows.items():
+        label = require_str_value(raw_label, field="blocked dossier source label")
         row = require_dict(raw_record, field=f"blocked dossier source {label}")
         comparison = require_str(row, "comparison")
         expected_comparison = (
             "semantic" if label == "state" else "snapshot" if label == "run_log" else "exact"
         )
         if comparison != expected_comparison:
-            raise RuntimeError(f"blocked dossier source {label} has invalid comparison")
+            raise _FreshnessError(f"manifest source {label} has invalid comparison")
         records[label] = SourceInputRecord(
             require_str(row, "sha256"),
             comparison,
-            row.get("snapshot_path") if isinstance(row.get("snapshot_path"), str) else None,
-            row.get("snapshot_sha256") if isinstance(row.get("snapshot_sha256"), str) else None,
+            require_opt_str(row, "snapshot_path"),
+            require_opt_str(row, "snapshot_sha256"),
         )
     inputs = SourceInputs(records)
     if inputs.to_dict()["aggregate_sha256"] != source.get("aggregate_sha256"):
-        raise RuntimeError("blocked dossier source aggregate changed")
+        raise _FreshnessError("manifest source aggregate changed")
     return inputs
 
 
@@ -525,10 +538,12 @@ def _fresh(ctx: BlockedContext) -> FreshResult:
         inputs, package_path = _manifest_package(manifest)
     except _FreshnessError as exc:
         return FreshResult(mismatches=(str(exc),))
-    mismatches = _snapshot_mismatches(inputs)
-    if not mismatches:
-        mismatches = _compare_inputs(inputs, _collect_live_inputs(ctx))
-    return FreshResult(package_path if not mismatches else None, mismatches)
+    mismatches = list(_snapshot_mismatches(inputs))
+    try:
+        mismatches.extend(_compare_inputs(inputs, _collect_live_inputs(ctx)))
+    except (OSError, RuntimeError, ValueError) as exc:
+        mismatches.append(str(exc))
+    return FreshResult(package_path if not mismatches else None, tuple(mismatches))
 
 
 def _publish_blocked_dossier(
@@ -574,9 +589,12 @@ async def prepare_blocked_dossier(
     started = time.monotonic()
     try:
         ctx = _resolve_context(project_root.resolve(), slug)
-        fresh = _fresh(ctx)
-        if not force and fresh.ready:
-            return BlockedPrepOutcome("fresh", "blocked dossier is current", fresh.package_path)
+        if not force:
+            fresh = _fresh(ctx)
+            if fresh.ready:
+                return BlockedPrepOutcome(
+                    "fresh", "blocked dossier is current", fresh.package_path
+                )
         source_inputs, evidence = _snapshot_inputs(ctx)
         result = await _invoke(ctx, evidence)
         diagnosis = _validate(result.structured)

@@ -383,6 +383,59 @@ async def test_malformed_source_manifest_and_missing_package_are_named(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda source: source.update(version=1), "manifest version changed"),
+        (
+            lambda source: source["records"]["ticket"].update(comparison="snapshot"),
+            "manifest source ticket has invalid comparison",
+        ),
+        (
+            lambda source: source.update(aggregate_sha256="0" * 64),
+            "manifest source aggregate changed",
+        ),
+        (
+            lambda source: source["records"]["ticket"].update(snapshot_path=7),
+            "manifest malformed",
+        ),
+    ],
+)
+async def test_manifest_validation_errors_are_named_and_force_regenerates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate,
+    expected: str,
+) -> None:
+    ctx = _context(tmp_path)
+
+    async def invoke(_ctx, _evidence):
+        return AgentResult(structured=_diagnosis())
+
+    monkeypatch.setattr(bp, "_resolve_context", lambda *_args: ctx)
+    monkeypatch.setattr(bp, "_invoke", invoke)
+    assert (await bp.prepare_blocked_dossier(tmp_path, "demo")).ready
+    manifest_path = ctx.runtime_dir / "blocked-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    mutate(manifest["source_inputs"])
+    bp._write_json(manifest_path, manifest)
+
+    assert expected in bp.render_blocked_dossier(tmp_path, "demo").message
+    assert (await bp.prepare_blocked_dossier(tmp_path, "demo", force=True)).ready
+
+
+def test_nested_untracked_repository_is_a_stable_named_input(tmp_path: Path) -> None:
+    ctx, _source = _context_with_worktree(tmp_path)
+    nested = ctx.worktree / "nested"
+    nested.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=nested, check=True)
+
+    inputs = bp._collect_live_inputs(ctx)
+
+    assert "worktree/untracked/nested/" in inputs.records
+
+
 async def _prepared_inputs(ctx: bp.BlockedContext, tmp_path: Path) -> bp.SourceInputs:
     outcome = await bp.prepare_blocked_dossier(tmp_path, "demo", force=True)
     assert outcome.ready

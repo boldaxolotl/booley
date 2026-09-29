@@ -1168,42 +1168,65 @@ def _blocked_diagnosis() -> dict:
 async def test_board_show_blocked_uses_dossier_without_review_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from contextlib import contextmanager
+
     from booley.core.models import AgentResult
     from booley.harness import blocked_prep
-    from booley.ticket_board import io, review_lifecycle
+    from booley.ticket_board import review_lifecycle, ticket_document
+    from booley.ticket_board.frontmatter import format_frontmatter
+    from booley.ticket_board.ticket_document import TicketConversionContext, ticket_authoring_view
 
-    log_dir = tmp_path / "logs" / "demo"
-    ticket = tmp_path / "blocked" / "demo.md"
-    ticket.parent.mkdir()
-    ticket.write_text("ticket\n", encoding="utf-8")
-    context = blocked_prep.BlockedContext(
-        tmp_path,
-        "demo",
-        ticket,
-        log_dir,
-        log_dir / ".runtime" / "triage-prep",
-        None,
+    monkeypatch.delenv("TICKETS_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
+    ticket = tmp_path / ".booley_project" / "tickets" / "board" / "blocked" / "demo.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text(
+        format_frontmatter(
+            {
+                "summary": "demo",
+                "type": "feature",
+                "branch": "main",
+                "scope": ["source.txt"],
+                "on_success": ["review"],
+                "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "done"}}},
+                "machine": {},
+            },
+            "## Description\nDemo work.\n",
+        ),
+        encoding="utf-8",
     )
+    worktree = tmp_path / ".booley_project" / "worktrees" / "demo"
+    worktree.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=worktree, check=True)
+    (worktree / "source.txt").write_text("source\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.txt"], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=worktree, check=True)
+
+    @contextmanager
+    def conversion_context(_root, _slug, _stage):
+        yield TicketConversionContext(
+            "executable",
+            lambda _generated: ticket_authoring_view(worktree),
+            lambda: worktree,
+        )
 
     async def invoke(_ctx, _evidence):
         return AgentResult(structured=_blocked_diagnosis())
 
-    class FakeTio:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def inspect_ticket(self, _slug):
-            return {"file": "board/blocked/demo.md", "status": "blocked"}
-
-    monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: context)
     monkeypatch.setattr(blocked_prep, "_invoke", invoke)
-    monkeypatch.setattr(io, "TicketIO", FakeTio)
+    monkeypatch.setattr(ticket_document, "ticket_conversion_context", conversion_context)
     monkeypatch.setattr(
         review_lifecycle,
         "review_briefing_command",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected review")),
     )
     assert (await blocked_prep.prepare_blocked_dossier(tmp_path, "demo")).ready
+    resolved = blocked_prep._resolve_context(tmp_path, "demo")
+    assert resolved.ticket_path == ticket
+    assert resolved.worktree == worktree.resolve()
     args = tlr._build_parser().parse_args(["board", "show", "demo", "--no-open-diffs"])
 
     assert tlr._cmd_board_show(args, tmp_path) == 0
