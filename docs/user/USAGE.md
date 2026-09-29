@@ -376,8 +376,8 @@ booley flow sim --target sim_soc --test reset
 Use `booley flow` to list discovered Flows, `booley targets --for-flow <flow>` to
 list compatible Targets, and `booley flow <name> --help` for the live argument
 schema. [FLOW_REFERENCE.md](FLOW_REFERENCE.md) is the canonical reference for
-Target selectors, controls, exit codes, verdicts, Criteria, reports, and
-artifacts.
+Target selectors, controls, exit codes, verdicts, and Criteria;
+[FLOW_REPORTS.md](../internals/FLOW_REPORTS.md) defines report schemas.
 
 ### Viewing waveforms
 

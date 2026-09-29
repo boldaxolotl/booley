@@ -13,8 +13,9 @@ The documentation is split by responsibility, not by reader type:
 | Document | Owns |
 |---|---|
 | **This document** | The MCP tool framework: discovery, lifecycle, base classes, `McpToolResult`, Criteria routing, and Custom Flows and MCP tools |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | The public invocation, target-selection, result, and artifact contract for RTL developers running built-in Booley Flows |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How RTL developers run built-in Booley Flows and interpret their results |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `lint`, `synth`, and `fpga` Booley Flows |
+| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of the built-in Flows |
 | [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
@@ -790,6 +791,61 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect Ticket Preflight logs for per-file warnings |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |
 | Wrap a legacy script as a Flow | Subclass `BooleyFlow`, call the script via `_build_command` |
+
+## Built-in Flow calls
+
+The built-in `sim`, `lint`, `synth`, and `fpga` endpoints expose the same
+controls as their CLI ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)), with
+these MCP-specific shapes.
+
+**Target selection.** MCP keeps one comma-separated `target` string rather than
+an array; caller order is preserved, as on the CLI.
+
+**Verdict.** The call carries the Flow exit grade (`0`/`1`/`2`) in `EXIT_CODE:`
+and in structured output. MCP `isError` is not the design verdict.
+
+**Report.** The per-invocation report (fields in
+[FLOW_REPORTS.md](FLOW_REPORTS.md#invocation-report)) is attached as
+`structuredContent.reports[0]`, and `structuredContent.passed` repeats the
+overall boolean verdict. If the report is too large for the MCP result,
+`reports` is empty, `truncated` is `true`, and the result retains the Flow,
+Target, exit code, and artifact pointers needed to open the durable report.
+
+**Progress fallback.** For `progress.json` fallback evidence, `partial` is true
+whenever the phase is not `complete` or pending Targets remain. Thus `aborted`
+and `superseded` are terminal but partial, and neither appears as a running
+checkpoint. After timeout or cancellation, the MCP supervisor attempts an
+idempotent `aborted` repair only after it has reaped the child process; a
+missing or unwritable checkpoint does not override the Job's exit or
+cancellation result.
+
+### Simulation input
+
+The `sim` input takes test names as an array, not the former scalar shape:
+
+```json
+{"target":"sim_soc","test":["reset","interrupts"]}
+```
+
+MCP has no `tests_file` or `skip` property. It accepts the same exact ordered
+test names directly in `test`; `resume_from` names one manifest and conflicts
+with `target`, `test`, explicit `mode`, `coverage`, and `trace`.
+
+Structured campaign output reports `grade`, `complete`, aggregate
+`observation_counts`, and a maximum-32 `observations` preview. Every preview
+entry retains `test`, `execution`, `functional`, `assertions`,
+`assertion_count`, and bounded `detail`; `observation_total` and
+`observations_truncated` disclose whether the preview is complete. The
+independent observation axes mean:
+
+- `execution`: whether the simulator process completed, timed out, or failed
+  before producing trustworthy test evidence;
+- `functional`: the pass/fail/inconclusive test verdict;
+- `assertions`: assertion evidence independently observed for that test.
+
+Resolve the `manifest` artifact reference, then inspect its authenticated
+terminal results for the complete durable record; the MCP preview is
+intentionally not a replacement for those files.
 
 ### Simulation coverage input
 

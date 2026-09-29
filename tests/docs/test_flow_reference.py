@@ -1,4 +1,4 @@
-"""Keep the public Flow reference aligned with executable interfaces."""
+"""Keep the public Flow reference and report schemas aligned with executable interfaces."""
 
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = REPO_ROOT / "docs" / "user" / "FLOW_REFERENCE.md"
+REPORTS = REPO_ROOT / "docs" / "internals" / "FLOW_REPORTS.md"
+MCP_TOOLS = REPO_ROOT / "docs" / "internals" / "MCP-TOOLS.md"
 FLOW_TYPES = (
     SimulateFlow,
     LintFlow,
@@ -38,25 +40,28 @@ FLOW_TYPES = (
 FlowT = TypeVar("FlowT", bound=BooleyFlow)
 
 
-def _reference_text() -> str:
-    return REFERENCE.read_text(encoding="utf-8")
+def _reference_text(doc: Path = REFERENCE) -> str:
+    return doc.read_text(encoding="utf-8")
 
 
-def _flow_section(flow_name: str) -> str:
-    text = _reference_text()
+def _flow_section(flow_name: str, doc: Path = REFERENCE) -> str:
+    """Return the top-level ``## `<flow>` `` chapter of *doc*."""
+    text = _reference_text(doc)
     start = text.index(f"## `{flow_name}`")
     end = text.find("\n## ", start + 1)
     return text[start:] if end < 0 else text[start:end]
 
 
-def _shared_section() -> str:
-    return _reference_text().split("\n## `sim`", maxsplit=1)[0]
+def _shared_section(doc: Path = REFERENCE) -> str:
+    """Return everything in *doc* before its first per-Flow chapter."""
+    return _reference_text(doc).split("\n## `sim`", maxsplit=1)[0]
 
 
 def _documented_fields(flow_name: str) -> set[str]:
+    """Identifiers named in code spans of the report-schema chapter for a Flow."""
     code_spans = re.findall(
         r"(?<!`)`([^`\n]+)`(?!`)",
-        _shared_section() + _flow_section(flow_name),
+        _shared_section(REPORTS) + _flow_section(flow_name, REPORTS),
     )
     return {
         identifier
@@ -132,9 +137,10 @@ def test_sim_campaign_resume_granularity_stays_documented() -> None:
     assert "Cocotb interruption retries its whole batch" in section
     assert "coverage interruption" in section
     assert "distinct nested Coverage Campaign" in section
-    assert "maximum-32 `observations` preview" in section
-    assert "`observation_total`" in section
-    assert "`observations_truncated`" in section
+    mcp = _reference_text(MCP_TOOLS)
+    assert "maximum-32 `observations` preview" in mcp
+    assert "`observation_total`" in mcp
+    assert "`observations_truncated`" in mcp
 
 
 def test_sim_configured_skip_control_stays_documented() -> None:

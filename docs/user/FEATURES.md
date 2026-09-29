@@ -219,4 +219,4 @@ Campaign analyzable. Explicit `sim --coverage` (alias `--cov`) collects native
 Verilator evidence with or without a Coverage Criterion. Gated collection applies
 exact-suite metric thresholds and the project-wide Approved Waiver Set; simulation
 and coverage verdicts stay independent. See the [collection and retention
-reference](FLOW_REFERENCE.md#native-coverage-campaigns).
+reference](FLOW_REFERENCE.md#coverage).
