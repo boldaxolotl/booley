@@ -133,6 +133,20 @@ def spawn(world: FakeWorld, pid: int, argv: list[str] | None = None):
     world.alive[pid] = argv
 
 
+def active_execution_record(supervisor: ProcessIdentity) -> dict:
+    return {
+        "schema_version": PROTOCOL_VERSION,
+        "state": "running",
+        "runtime_identity": supervisor.identity_scope,
+        "supervisor": supervisor.to_payload(),
+        "leader": None,
+        "exit_code": None,
+        "tree_terminal": False,
+        "terminal_cause": None,
+        "updated_at": "1970-01-01T00:00:00Z",
+    }
+
+
 class TestSingleProcess:
     def test_first_claim_holds_immediately(self, root, world):
         spawn(world, 100)
@@ -467,42 +481,49 @@ class TestGhostReaping:
         assert supervisor is not None
         atomic_write_json(
             execution_paths(execution_id, project_dir=project).record,
-            {
-                "schema_version": PROTOCOL_VERSION,
-                "state": "running",
-                "runtime_identity": supervisor.identity_scope,
-                "supervisor": supervisor.to_payload(),
-                "leader": None,
-                "exit_code": None,
-                "tree_terminal": False,
-                "terminal_cause": None,
-                "updated_at": "1970-01-01T00:00:00Z",
-            },
+            active_execution_record(supervisor),
         )
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
         monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", execution_id)
-        store = make_execution_store(
-            root,
-            world,
-            execution_terminal=lambda _execution_id: False,
-            cancellations=[],
-            inherited_execution_verifier=lambda raw, _root, pid: (
-                execution_records.verify_inherited_execution_id(
-                    raw,
-                    project_dir=project,
-                    owner_pid=pid,
-                    observe_identity=world.observe_identity,
-                    ancestor_check=lambda owner, ancestor: (owner, ancestor) == (100, 50),
-                )
+        monkeypatch.setattr(
+            job_slots,
+            "verify_inherited_execution_id",
+            lambda raw, *, project_dir, owner_pid: execution_records.verify_inherited_execution_id(
+                raw,
+                project_dir=project_dir,
+                owner_pid=owner_pid,
+                observe_identity=world.observe_identity,
+                ancestor_check=lambda owner, ancestor: (owner, ancestor) == (100, 50),
             ),
         )
-        token = store.submit(CLASS_HEAVY, pid=100)
-        assert store.refresh(token).state == HOLDING
+        runtime_project_dir.reset_cache()
+        terminal = False
+        cancellations: list[str] = []
+        try:
+            store = make_execution_store(
+                root,
+                world,
+                execution_terminal=lambda _execution_id: terminal,
+                cancellations=cancellations,
+            )
+            token = store.submit(CLASS_HEAVY, pid=100)
+            assert store.refresh(token).state == HOLDING
 
-        holder = store.snapshot(CLASS_HEAVY)[0][0]
-        assert holder.execution_id == execution_id
-        assert holder.owner_kind == "execution"
-        assert holder.lease_id
-        assert holder.lease_expires_at is not None
+            holder = store.snapshot(CLASS_HEAVY)[0][0]
+            assert holder.execution_id == execution_id
+            assert holder.owner_kind == "execution"
+            assert holder.lease_id
+            assert holder.lease_expires_at is not None
+
+            del world.alive[100]
+            assert store.reap(CLASS_HEAVY) == []
+            assert cancellations == [execution_id]
+            assert store.snapshot(CLASS_HEAVY)[0][0].lease_state == job_slots.LEASE_CANCELLING
+
+            terminal = True
+            assert store.reap(CLASS_HEAVY) == [token.path.name]
+        finally:
+            runtime_project_dir.reset_cache()
 
     def assert_unverified_inherited_execution_owner_dies_and_waiter_proceeds(
         self, tmp_path, world, monkeypatch, unverified_reason
@@ -523,17 +544,7 @@ class TestGhostReaping:
         assert supervisor is not None
         atomic_write_json(
             execution_paths(execution_id, project_dir=record_project).record,
-            {
-                "schema_version": PROTOCOL_VERSION,
-                "state": "running",
-                "runtime_identity": supervisor.identity_scope,
-                "supervisor": supervisor.to_payload(),
-                "leader": None,
-                "exit_code": None,
-                "tree_terminal": False,
-                "terminal_cause": None,
-                "updated_at": "1970-01-01T00:00:00Z",
-            },
+            active_execution_record(supervisor),
         )
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
         monkeypatch.setenv(RUNTIME_EXECUTION_ENV, execution_id)
@@ -545,7 +556,9 @@ class TestGhostReaping:
                 project_dir=project_dir,
                 owner_pid=owner_pid,
                 observe_identity=world.observe_identity,
-                ancestor_check=lambda _owner, _ancestor: False,
+                ancestor_check=lambda owner, ancestor: (
+                    unverified_reason == "foreign_project" and (owner, ancestor) == (100, 50)
+                ),
             ),
         )
         runtime_project_dir.reset_cache()
@@ -589,17 +602,7 @@ class TestGhostReaping:
         assert supervisor is not None
         atomic_write_json(
             execution_paths(execution_id, project_dir=project).record,
-            {
-                "schema_version": PROTOCOL_VERSION,
-                "state": "running",
-                "runtime_identity": supervisor.identity_scope,
-                "supervisor": supervisor.to_payload(),
-                "leader": None,
-                "exit_code": None,
-                "tree_terminal": False,
-                "terminal_cause": None,
-                "updated_at": "1970-01-01T00:00:00Z",
-            },
+            active_execution_record(supervisor),
         )
         store = make_execution_store(
             root,
@@ -645,7 +648,25 @@ class TestGhostReaping:
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
         monkeypatch.setenv(RUNTIME_EXECUTION_ENV, execution_id)
         runtime_project_dir.reset_cache()
+        spawn(world, 50)
         spawn(world, 100)
+        supervisor = world.capture_identity(50)
+        assert supervisor is not None
+        atomic_write_json(
+            execution_paths(execution_id, project_dir=project).record,
+            active_execution_record(supervisor),
+        )
+        monkeypatch.setattr(
+            job_slots,
+            "verify_inherited_execution_id",
+            lambda raw, *, project_dir, owner_pid: execution_records.verify_inherited_execution_id(
+                raw,
+                project_dir=project_dir,
+                owner_pid=owner_pid,
+                observe_identity=world.observe_identity,
+                ancestor_check=lambda owner, ancestor: (owner, ancestor) == (100, 50),
+            ),
+        )
         try:
             store = SlotStore(
                 tmp_path / "override-slots",

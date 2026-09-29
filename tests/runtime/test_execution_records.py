@@ -112,7 +112,16 @@ def test_verified_inherited_execution_rejects_record_from_another_project(
         _active_execution_record(supervisor),
     )
 
-    assert verify_inherited_execution_id(execution_id, project_dir=current, owner_pid=20) is None
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=current,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(RUNNING),
+            ancestor_check=lambda pid, ancestor: (pid, ancestor) == (20, 10),
+        )
+        is None
+    )
 
 
 def test_verified_inherited_execution_rejects_non_ancestor(tmp_path: Path) -> None:
