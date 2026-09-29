@@ -2,6 +2,12 @@
 
 from pathlib import Path
 
+from booley.ticket_board.ticket_document import (
+    TicketAuthoringView,
+    TicketConversionContext,
+    convert_ticket_document,
+)
+
 README = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
 
 
@@ -29,5 +35,24 @@ def test_try_the_demo_leads_with_the_demo_readme_link():
     assert section.strip() == (
         "**[Follow the demo repository's README]"
         "(https://github.com/boldaxolotl/booley-prj-picorv32#readme)** "
-        "to install and try the demo."
+        "to try the demo, after you [install Booley](#installation)."
     )
+
+
+def test_ticket_example_converts_through_the_real_ticket_boundary():
+    """The README's example ticket must stay valid as the ticket syntax evolves."""
+    # The only ```yaml block in the README that starts with frontmatter is the ticket.
+    example = README.split("```yaml\n---\n", 1)[1].split("```", 1)[0]
+    # Accept every Target selector as-is; the example isn't tied to a real Project.
+    view = TicketAuthoringView(
+        resolve_target=lambda selector, _flow: selector,
+        tests_for_target=lambda _target: ("smoke",),
+    )
+    context = TicketConversionContext("draft", lambda _generated: view)
+
+    conversion = convert_ticket_document("---\n" + example, context)
+
+    assert conversion.diagnostics == ()
+    assert conversion.document is not None
+    capabilities = {row.capability for row in conversion.document.spec.criteria}
+    assert capabilities == {"LINT", "SIM", "COVERAGE", "REVIEW", "SYNTH"}
