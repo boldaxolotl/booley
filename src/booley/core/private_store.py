@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import stat
 import tempfile
 import time
@@ -141,8 +142,10 @@ class PrivateStore:
             self._raise_unsafe_mode("directory", path, mode)
 
     def _raise_unsafe_mode(self, kind: str, path: Path, mode: int) -> None:
+        command_path = shlex.quote(str(path))
         self._raise(
-            f"unsafe {self.subject} {kind}: {path} has mode {mode:04o}; run `chmod 700 {path}`"
+            f"unsafe {self.subject} {kind}: {path} has mode {mode:04o}; "
+            f"run `chmod 700 {command_path}`"
         )
 
     def _validate_private_file(self, path: Path, info: os.stat_result) -> None:

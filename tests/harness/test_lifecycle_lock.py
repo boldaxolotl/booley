@@ -30,6 +30,7 @@ def test_host_lifecycle_lock_creates_private_booley_directories_below_shared_xdg
 ) -> None:
     xdg_root = tmp_path / "config"
     xdg_root.mkdir(mode=0o755)
+    xdg_root.chmod(0o755)
     booley_config = xdg_root / "booley"
     monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: booley_config)
 
@@ -37,6 +38,26 @@ def test_host_lifecycle_lock_creates_private_booley_directories_below_shared_xdg
         pass
 
     assert stat.S_IMODE(xdg_root.stat().st_mode) == 0o755
+    assert stat.S_IMODE(booley_config.stat().st_mode) == 0o700
+    assert stat.S_IMODE((booley_config / "locks").stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
+def test_host_lifecycle_lock_creates_missing_xdg_root_privately_under_open_umask(
+    tmp_path, monkeypatch
+) -> None:
+    xdg_root = tmp_path / "config"
+    booley_config = xdg_root / "booley"
+    monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: booley_config)
+
+    original_umask = os.umask(0o002)
+    try:
+        with lifecycle_lock.host_lifecycle_lock("session up"):
+            pass
+    finally:
+        os.umask(original_umask)
+
+    assert stat.S_IMODE(xdg_root.stat().st_mode) == 0o700
     assert stat.S_IMODE(booley_config.stat().st_mode) == 0o700
     assert stat.S_IMODE((booley_config / "locks").stat().st_mode) == 0o700
 
