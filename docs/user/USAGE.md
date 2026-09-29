@@ -520,7 +520,7 @@ events = ["blocked", "review", "done", "doctor", "rate_limit"]
 | `review` | a Ticket is ready for review |
 | `done` | a Ticket is done |
 | `doctor` | the automatic health check found something new |
-| `rate_limit` | Claude hit a usage limit and Booley is waiting |
+| `rate_limit` | an agent Booley started (the Developer Agent or a Specialist, not your chat) hit a Claude usage limit, and Booley is waiting for it to reset. Not sent for Codex. |
 
 The container blocks ntfy.sh by default. To allow it, add it to your
 [host configuration](CONFIG.md#host-configuration-configtoml), keeping any
