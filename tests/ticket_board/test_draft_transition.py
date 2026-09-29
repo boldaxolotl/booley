@@ -104,7 +104,7 @@ def test_draft_journal_validation_rejects_noncanonical_state(
         lambda _root: tmp_path / "operations",
     )
     for changed in (
-        replace(journal, schema=2),
+        replace(journal, schema=3),
         replace(journal, operation_id="bad"),
         replace(journal, machine={}),
         replace(journal, machine={**journal.machine, "generation": "wrong"}),
@@ -156,6 +156,95 @@ def test_draft_cutover_file_helpers_reject_conflicts_and_preserve_idempotence(
     draft_transition._move_archive_entry(source, destination)
 
 
+def test_draft_journal_reads_schema_one_and_validates_schema_two_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schema_one = asdict(_draft_journal(tmp_path))
+    schema_one.pop("authored_drift")
+    parsed = draft_transition._parse_journal(schema_one)
+    assert parsed.schema == 1
+    assert parsed.authored_drift == {}
+
+    schema_two = {**schema_one, "schema": 2, "authored_drift": {"reason": "wrong"}}
+    parsed_two = draft_transition._parse_journal(schema_two)
+    monkeypatch.setattr(draft_transition, "resolve_checkout_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        draft_transition,
+        "_operation_dir",
+        lambda *_args: tmp_path / "operations" / parsed_two.operation_id,
+    )
+    monkeypatch.setattr(
+        draft_transition, "_transition_root", lambda _root: tmp_path / "operations"
+    )
+    with pytest.raises(draft_transition.DraftTransitionError, match="authored drift is invalid"):
+        draft_transition._validate_journal(tmp_path, tmp_path / "logs", "ticket", parsed_two)
+
+
+def test_draft_cutover_uses_recovery_identity_for_persisted_authored_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = replace(
+        _draft_journal(tmp_path),
+        schema=2,
+        authored_drift={
+            "expected_authored_sha256": "4" * 64,
+            "observed_authored_sha256": "5" * 64,
+            "reason": draft_transition.AUTHORED_DRIFT_REASON,
+        },
+    )
+    operation = tmp_path / "operation"
+    monkeypatch.setattr(draft_transition, "_operation_dir", lambda *_args: operation)
+    blocked = Path(journal.blocked_ticket)
+    blocked.parent.mkdir(parents=True)
+    blocked.write_bytes(b"blocked")
+    operation.mkdir(parents=True)
+    (operation / "draft.md").write_bytes(b"draft")
+    journal = replace(
+        journal,
+        blocked_sha256=hashlib.sha256(b"blocked").hexdigest(),
+        draft_sha256=hashlib.sha256(b"draft").hexdigest(),
+    )
+    document = object()
+    basis = TicketBaseline((_participant(),))
+    monkeypatch.setattr(draft_transition, "_converted_document", lambda *_args: document)
+    recovered: list[object] = []
+    monkeypatch.setattr(
+        draft_transition,
+        "load_ticket_recovery_baseline_from_document",
+        lambda *_args: recovered.append(document) or basis,
+    )
+    monkeypatch.setattr(
+        draft_transition,
+        "load_ticket_baseline_from_document",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("strict loader used")),
+    )
+    destinations: list[str] = []
+    monkeypatch.setattr(
+        draft_transition,
+        "validate_basis_refs",
+        lambda *_args, **kwargs: destinations.append(kwargs["destination_branch"]) or [],
+    )
+
+    assert draft_transition._validate_cutover(tmp_path, journal) == basis
+    assert recovered == [document]
+    assert destinations == ["main"]
+
+
+def test_authored_drift_archive_record_is_idempotent(tmp_path: Path) -> None:
+    archive = tmp_path / "runs/001"
+    drift = {
+        "expected_authored_sha256": "4" * 64,
+        "observed_authored_sha256": "5" * 64,
+        "reason": draft_transition.AUTHORED_DRIFT_REASON,
+    }
+
+    draft_transition._write_authored_drift_record(archive, drift)
+    first = (archive / "authored-drift.json").read_bytes()
+    draft_transition._write_authored_drift_record(archive, drift)
+
+    assert (archive / "authored-drift.json").read_bytes() == first
+
+
 def test_draft_transition_requires_blocked_basis_and_exact_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -171,6 +260,7 @@ def test_draft_transition_requires_blocked_basis_and_exact_files(
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr(draft_transition, "_draft_content", lambda *_args: (object(), b"draft"))
+    monkeypatch.setattr(draft_transition, "authored_drift_reason", lambda *_args: None)
     monkeypatch.setattr(
         draft_transition,
         "load_ticket_baseline_from_document",

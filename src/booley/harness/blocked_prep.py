@@ -49,6 +49,8 @@ class BlockedContext:
     log_dir: Path
     runtime_dir: Path
     worktree: Path | None
+    authored_drift: bool = False
+    authored_drift_reason: str = ""
 
 
 def _find_checkout(project_root: Path, branch: str) -> Path | None:
@@ -74,7 +76,7 @@ def _find_checkout(project_root: Path, branch: str) -> Path | None:
 def _resolve_context(project_root: Path, slug: str) -> BlockedContext:
     tickets_dir = tickets_dir_from_project_root(project_root)
     tio = TicketIO(tickets_dir, project_root=project_root)
-    entry = tio.find_ticket(slug)
+    entry = tio.inspect_ticket(slug)
     if not entry:
         raise RuntimeError(f"ticket '{slug}' was not found")
     if entry.get("status") != "blocked":
@@ -95,6 +97,8 @@ def _resolve_context(project_root: Path, slug: str) -> BlockedContext:
         log_dir=log_dir,
         runtime_dir=ticket_runtime_dir(log_dir) / "triage-prep",
         worktree=worktree,
+        authored_drift=bool(entry.get("authored_drift")),
+        authored_drift_reason=str(entry.get("authored_drift_reason", "")),
     )
 
 
@@ -343,6 +347,8 @@ async def prepare_blocked_dossier(
             "slug": slug,
             "ticket_path": str(ctx.ticket_path),
             "blocked_log_path": str(ctx.log_dir / "blocked.md"),
+            "authored_drift": ctx.authored_drift,
+            "authored_drift_reason": ctx.authored_drift_reason,
             "diagnosis": diagnosis,
         }
         path = _package_path(ctx)
@@ -393,6 +399,14 @@ def render_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepOutcome:
         package = json.loads(path.read_text(encoding="utf-8"))
         diagnosis = _validate(package.get("diagnosis"))
         lines = [f"### {slug}", "", "**Blocked by:**", ""]
+        if package.get("authored_drift"):
+            lines.extend(
+                [
+                    f"**Authored drift:** {package.get('authored_drift_reason', '')}; "
+                    "use return-to-draft",
+                    "",
+                ]
+            )
         for index, blocker in enumerate(diagnosis["blockers"], 1):
             lines.append(
                 f"{index}. **{blocker['name']} — {blocker['reason']}.** {blocker['evidence']}"

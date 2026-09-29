@@ -518,7 +518,7 @@ class TestCmdShow:
         make_ticket_file(tio, "done", "completed")
         monkeypatch.setattr(
             tio,
-            "find_ticket",
+            "inspect_ticket",
             lambda _slug: {
                 "file": "board/done/completed.md",
                 "status": "done",

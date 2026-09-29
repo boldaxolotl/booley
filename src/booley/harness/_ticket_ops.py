@@ -262,7 +262,7 @@ class DirectTicketOps:
 
     def resume(self, project_root: Path, slug: str) -> dict[str, Any]:
         tio = self._tio(project_root)
-        entry = tio.find_ticket(slug)
+        entry = tio.inspect_ticket(slug)
         if not entry:
             raise TicketCLIError("resume", 1, f"Ticket '{slug}' not found")
         return resume_detect(entry)
@@ -274,7 +274,7 @@ class DirectTicketOps:
         ticket_type = type_or_slug
         planned = None
         if ticket_type not in VALID_TYPES:
-            entry = tio.find_ticket(ticket_type)
+            entry = tio.inspect_ticket(ticket_type)
             if entry:
                 planned = entry.get("planned_steps", [])
                 ticket_type = entry.get("type", "feature")
@@ -303,7 +303,7 @@ class DirectTicketOps:
 
     def ticket_status(self, project_root: Path, slug: str) -> str:
         """Current board status, or "" when the ticket is not on the board."""
-        entry = self._tio(project_root).find_ticket(slug)
+        entry = self._tio(project_root).inspect_ticket(slug)
         return entry.get("status", "") if entry else ""
 
     # -- State-changing ----------------------------------------------------
@@ -456,7 +456,7 @@ class DirectTicketOps:
 
     def validate_logs(self, project_root: Path, slug: str) -> tuple[bool, str]:
         tio = self._tio(project_root)
-        entry = tio.find_ticket(slug)
+        entry = tio.inspect_ticket(slug)
         if not entry:
             raise TicketCLIError("validate-logs", 1, f"Ticket '{slug}' not found")
         ticket_type = entry.get("type", "feature")
@@ -464,7 +464,8 @@ class DirectTicketOps:
         ticket_fields = {}
         ticket_path = tio.logs_dir / slug / "ticket.md"
         if ticket_path.exists():
-            tio.load_basis(slug, runtime_ticket_path=ticket_path)
+            if not entry.get("authored_drift"):
+                tio.load_basis(slug, runtime_ticket_path=ticket_path)
             with ticket_path.open(encoding="utf-8") as f:
                 with ticket_conversion_context(project_root, slug, "executable") as context:
                     converted = convert_ticket_document(f.read(), context)
@@ -473,6 +474,9 @@ class DirectTicketOps:
                 ticket_fields = {**converted.document.spec.fields, **converted.document.generated}
         result = tb_validate_logs(tio.logs_dir, slug, ticket_type, steps_completed, ticket_fields)
         report, error_count = format_validate_logs_report(result, slug)
+        if entry.get("authored_drift"):
+            report += f"\n\n{entry['authored_drift_reason']}; use return-to-draft"
+            error_count += 1
         return error_count == 0, report
 
     def timing(self, project_root: Path, slug: str, *, save: bool = False) -> str:
@@ -525,7 +529,7 @@ class DirectTicketOps:
 def _resolve_end_time(tio, slug: str):
     """Resolve end_time for timing from ticket status."""
 
-    entry = tio.find_ticket(slug)
+    entry = tio.inspect_ticket(slug)
     if entry and entry.get("status") in SETTLED_STATUSES:
         last_update = entry.get("last_update", "")
         if last_update:

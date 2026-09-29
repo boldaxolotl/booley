@@ -112,7 +112,7 @@ def _cmd_show(tio, args):
         return _cmd_board(tio, args)
 
     try:
-        entry = tio.find_ticket(slug)
+        entry = tio.inspect_ticket(slug)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
@@ -149,6 +149,8 @@ def _cmd_show(tio, args):
     print(f"worktree:  {worktree}{wt_note}")
     print(f"branch:    {entry.get('branch', '') or '(none)'}")
     print(f"feature:   {entry.get('feature_branch', slug)}")
+    if entry.get("authored_drift"):
+        print(f"drift:     {entry['authored_drift_reason']}; use return-to-draft")
     if accepted_error:
         print(
             f"criteria:  mandatory ?/{len(mandatory)}, optional ?/{len(optional)} "
@@ -240,8 +242,13 @@ def _cmd_next_step_or_steps(tio, args, command):
     # Resolve type_or_slug: accept either a ticket type or a slug
     ticket_type = args.type_or_slug
     if ticket_type not in VALID_TYPES:
-        entry = tio.find_ticket(ticket_type)
+        entry = tio.inspect_ticket(ticket_type)
         if entry:
+            if entry.get("authored_drift"):
+                print(
+                    f"{entry['authored_drift_reason']}; use return-to-draft",
+                    file=sys.stderr,
+                )
             ticket_type = entry.get("type", "feature")
             if ticket_type not in VALID_TYPES:
                 ticket_type = "feature"
@@ -314,7 +321,7 @@ def _cmd_mutation_config(tio, args):
 
 
 def _cmd_resume(tio, args):
-    entry = tio.find_ticket(args.slug)
+    entry = tio.inspect_ticket(args.slug)
     if not entry:
         print(json.dumps({"error": f"Ticket '{args.slug}' not found"}))
         return 1
@@ -353,7 +360,7 @@ def _cmd_update_board(tio, args):
         return 2
     canonical_slug = resolved_path.stem
 
-    old_entry = tio.find_ticket(canonical_slug) if args.log else None
+    old_entry = tio.find_ticket(canonical_slug)
     old_status = old_entry.get("status", "running") if old_entry else "running"
     old_step = old_entry.get("step", "") if old_entry else ""
 
@@ -592,7 +599,7 @@ def _validate_logs_report(tio, slug):
     Returns ``(report_markdown, error_count, raw_result)``, or None when the
     ticket is not on the board.
     """
-    entry = tio.find_ticket(slug)
+    entry = tio.inspect_ticket(slug)
     if not entry:
         return None
 
@@ -603,12 +610,16 @@ def _validate_logs_report(tio, slug):
     ticket_fields = {}
     ticket_path = tio.logs_dir / slug / "ticket.md"
     if ticket_path.exists():
-        tio.load_basis(slug, runtime_ticket_path=ticket_path)
+        if not entry.get("authored_drift"):
+            tio.load_basis(slug, runtime_ticket_path=ticket_path)
         document = tio._convert_executable_ticket(ticket_path, slug)
         ticket_fields = {**document.spec.fields, **document.generated}
 
     result = validate_logs(tio.logs_dir, slug, ticket_type, steps_completed, ticket_fields)
     report, error_count = format_validate_logs_report(result, slug)
+    if entry.get("authored_drift"):
+        report += f"\n\n{entry['authored_drift_reason']}; use return-to-draft"
+        error_count += 1
     return report, error_count, result
 
 
@@ -738,7 +749,7 @@ def _cmd_timing(tio, args):
 
     # Use last_update as end_time for completed tickets
     end_time = None
-    entry = tio.find_ticket(args.slug)
+    entry = tio.inspect_ticket(args.slug)
     if entry and entry.get("status") in SETTLED_STATUSES:
         last_update = entry.get("last_update", "")
         if last_update:

@@ -11,6 +11,7 @@ def _ticket_io(tmp_path: Path, entry: dict | None) -> SimpleNamespace:
         logs_dir=tmp_path / "logs",
         tickets_dir=None,
         find_ticket=lambda _slug: entry,
+        inspect_ticket=lambda _slug: entry,
     )
 
 

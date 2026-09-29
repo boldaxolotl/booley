@@ -37,6 +37,8 @@ from .paths import existing_runtime_file, human_log_file, ticket_log_dir
 from .persistence import atomic_replace_bytes, atomic_write_once
 from .scanner import find_ticket_file
 from .ticket_baseline import (
+    AUTHORED_DRIFT_GUIDANCE,
+    AUTHORED_DRIFT_REASON,
     PATH_POLICY,
     BasisParticipant,
     TicketBaseline,
@@ -388,7 +390,12 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
         raise AmendmentError(f"Ticket {slug!r} must be blocked to amend")
     source = ticket.read_bytes()
     document = _convert_ticket(root, slug, source.decode("utf-8"))
-    basis = load_ticket_baseline_from_document(root, slug, document)
+    try:
+        basis = load_ticket_baseline_from_document(root, slug, document)
+    except TicketBaselineError as exc:
+        if str(exc) == AUTHORED_DRIFT_REASON:
+            raise AmendmentError(AUTHORED_DRIFT_GUIDANCE) from exc
+        raise
     heads = validate_current_basis_refs(root, basis)
     repositories = _repositories(root, basis)
     prior_scope = document.spec.fields.get("scope", [])

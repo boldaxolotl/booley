@@ -1644,7 +1644,7 @@ def _requested_review_slug(project_root: Path, slug: str) -> str | None:
     from .review_records import assert_idle, operation_path, read_entry, read_json
 
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    board = tio.find_ticket(slug)
+    board = tio.inspect_ticket(slug)
     if board is None:
         return None
     canonical = Path(board["file"]).stem

@@ -23,8 +23,10 @@ from booley.ticket_board import (
     acceptance_targets,
     basis_publication,
     basis_refresh,
+    cli_handlers,
     draft_transition,
     enqueue_publication,
+    operations,
     ticket_repositories,
     workspace_ops,
 )
@@ -1277,6 +1279,217 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     queued_again.replace(blocked_again)
     reopened_again = tio.return_to_draft("new-generation")
     assert reopened_again["generation"] != reopened["generation"]
+
+
+def test_authored_drift_recovery_reports_and_preserves_current_ticket(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _root, project_dir, tio = _basis_project(tmp_path)
+    slug = "authored-drift-recovery"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Keep the sealed threshold",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    blocked = project_dir / "tickets/board/blocked" / f"{slug}.md"
+    blocked.parent.mkdir(parents=True)
+    queued.replace(blocked)
+    sealed = tio._convert_ticket(blocked, slug, "executable")
+    expected_digest = sealed.generated["machine"]["authored_sha256"]
+    blocked.write_text(
+        blocked.read_text(encoding="utf-8").replace(
+            "summary: Keep the sealed threshold",
+            "summary: Preserve the edited threshold",
+        ),
+        encoding="utf-8",
+    )
+    edited = tio._convert_ticket(blocked, slug, "executable")
+    observed_digest = edited.spec.semantic_digest()
+
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        tio.load_basis(slug)
+
+    show_result = cli_handlers._cmd_show(tio, SimpleNamespace(slug=slug))
+    shown = capsys.readouterr()
+    assert show_result == 0
+    assert "acceptance-input-change-required: authored Ticket changed" in shown.out
+    assert "use return-to-draft" in shown.out
+
+    unblock_result = cli_handlers._cmd_unblock(tio, SimpleNamespace(slug=slug, feedback="retry"))
+    unblocked = capsys.readouterr()
+    assert unblock_result == 2
+    assert (
+        "acceptance-input-change-required: authored Ticket changed; use return-to-draft"
+        in unblocked.err
+    )
+    assert "Traceback" not in unblocked.err
+    assert blocked.exists()
+    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
+
+    reopened = tio.return_to_draft(slug)
+
+    draft = project_dir / "tickets/board/drafts" / f"{slug}.md"
+    draft_fields, _body = parse_frontmatter(draft.read_text(encoding="utf-8"))
+    assert reopened["generation"]
+    assert draft_fields["summary"] == "Preserve the edited threshold"
+    assert "machine" not in draft_fields
+    drift_record = project_dir / "tickets/logs" / slug / "runs/001/authored-drift.json"
+    assert drift_record.read_text(encoding="utf-8") == (
+        "{\n"
+        '  "expected_authored_sha256": "'
+        + expected_digest
+        + '",\n  "observed_authored_sha256": "'
+        + observed_digest
+        + '",\n  "reason": "acceptance-input-change-required: authored Ticket changed"\n}\n'
+    )
+
+
+def test_authored_drift_recovery_preserves_edited_branch_in_new_draft(
+    tmp_path: Path,
+) -> None:
+    root, project_dir, tio = _basis_project(tmp_path)
+    slug = "authored-branch-drift"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Change destination while blocked",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    blocked = project_dir / "tickets/board/blocked" / f"{slug}.md"
+    blocked.parent.mkdir(parents=True)
+    queued.replace(blocked)
+    _git(root, "branch", "next")
+    blocked.write_text(
+        blocked.read_text(encoding="utf-8")
+        .replace("branch: main", "branch: next")
+        .replace(
+            "summary: Change destination while blocked",
+            "summary: Keep the edited destination",
+        ),
+        encoding="utf-8",
+    )
+
+    reopened = tio.return_to_draft(slug)
+
+    draft = project_dir / "tickets/board/drafts" / f"{slug}.md"
+    fields, _body = parse_frontmatter(draft.read_text(encoding="utf-8"))
+    assert reopened["generation"]
+    assert fields["branch"] == "next"
+    assert fields["summary"] == "Keep the edited destination"
+
+
+def test_inspection_does_not_downgrade_drift_with_invalid_machine_identity(
+    tmp_path: Path,
+) -> None:
+    _root, project_dir, tio = _basis_project(tmp_path)
+    slug = "drifted-invalid-identity"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Keep immutable identity",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    fields["summary"] = "Drift the authored meaning"
+    machine = fields["machine"]
+    machine["amendment"] = {
+        "slug": "another-ticket",
+        "operation_id": machine["generation"],
+        "previous_generation": "a" * 32,
+        "actor": "Human",
+        "reason": "test immutable identity",
+        "changes": [
+            {
+                "criterion": "review_rtl_bugs_clean",
+                "before_mandatory": True,
+                "after_mandatory": True,
+                "thresholds": {},
+            }
+        ],
+        "scope_added": [],
+        "optional_conversions": [],
+    }
+    queued.write_text(format_frontmatter(fields, body), encoding="utf-8")
+
+    with pytest.raises(TicketBaselineError, match="amendment names another Ticket"):
+        tio.inspect_ticket(slug)
+
+    machine.pop("amendment")
+    machine["authored_sha256"] = "f" * 64
+    queued.write_text(format_frontmatter(fields, body), encoding="utf-8")
+    with pytest.raises(TicketBaselineError, match="Ticket commit identity changed"):
+        tio.inspect_ticket(slug)
+
+
+def test_authored_drift_stays_strict_for_execution_and_board_mutation(
+    tmp_path: Path,
+) -> None:
+    _root, project_dir, tio = _basis_project(tmp_path)
+    slug = "drifted-execution-gates"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Keep execution sealed",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    queued.write_text(
+        queued.read_text(encoding="utf-8").replace(
+            "summary: Keep execution sealed", "summary: Drift execution inputs"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        operations.op_activate(tio, slug)
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        cli_handlers._cmd_update_board(
+            tio,
+            SimpleNamespace(
+                slug=slug,
+                set=["step=setup"],
+                reset_steps=False,
+                reset_steps_from=None,
+                append_step=None,
+                log=False,
+            ),
+        )
+    assert operations.op_block(tio, slug, "authored Ticket changed", "setup") is True
+    assert (project_dir / "tickets/board/blocked" / f"{slug}.md").exists()
 
 
 def _prepared_ticket(

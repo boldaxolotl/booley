@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -39,9 +39,12 @@ from booley.ticket_board.ticket_repositories import (
 
 from .persistence import atomic_replace_bytes
 from .ticket_baseline import (
+    AUTHORED_DRIFT_REASON,
     TicketBaseline,
     TicketBaselineError,
+    authored_drift_reason,
     load_ticket_baseline_from_document,
+    load_ticket_recovery_baseline_from_document,
     ticket_baseline_from_machine,
 )
 from .ticket_document import (
@@ -83,6 +86,7 @@ class DraftTransitionJournal:
     generation_sha256: str
     archive_dir: str
     has_project: bool
+    authored_drift: dict[str, str] = field(default_factory=dict)
 
     def with_state(
         self,
@@ -132,11 +136,15 @@ def _load_journal(root: Path, logs_dir: Path, slug: str) -> DraftTransitionJourn
 
 def _parse_journal(value: Any) -> DraftTransitionJournal:
     mapping = require_dict(value, field="return-to-draft journal")
-    if set(mapping) != set(DraftTransitionJournal.__dataclass_fields__):
+    schema = require_int(mapping.get("schema"), field="return-to-draft journal schema")
+    expected = set(DraftTransitionJournal.__dataclass_fields__)
+    if schema == 1:
+        expected.remove("authored_drift")
+    if set(mapping) != expected:
         raise BoundaryError("return-to-draft journal has invalid fields")
     state = require_str(mapping, "state")
     return DraftTransitionJournal(
-        schema=require_int(mapping.get("schema"), field="return-to-draft journal schema"),
+        schema=schema,
         operation_id=require_str(mapping, "operation_id"),
         slug=require_str(mapping, "slug"),
         state=cast(Literal["initializing", "prepared", "cutover-ready", "published"], state),
@@ -149,6 +157,11 @@ def _parse_journal(value: Any) -> DraftTransitionJournal:
         generation_sha256=require_str(mapping, "generation_sha256"),
         archive_dir=require_str(mapping, "archive_dir"),
         has_project=require_bool(mapping, "has_project"),
+        authored_drift=(
+            require_dict(mapping.get("authored_drift"), field="return-to-draft authored drift")
+            if schema == 2
+            else {}
+        ),
     )
 
 
@@ -160,8 +173,9 @@ def transition_pending(project_root: Path | str, slug: str) -> bool:
 def _validate_journal(
     root: Path, logs_dir: Path, slug: str, journal: DraftTransitionJournal
 ) -> None:
-    if journal.schema != 1 or journal.slug != slug or journal.state not in _STATES:
+    if journal.schema not in {1, 2} or journal.slug != slug or journal.state not in _STATES:
         raise DraftTransitionError("return-to-draft journal identity or schema is invalid")
+    _validate_authored_drift(journal)
     if not _OPERATION_RE.fullmatch(journal.operation_id):
         raise DraftTransitionError("return-to-draft journal operation ID is invalid")
     try:
@@ -191,6 +205,35 @@ def _validate_journal(
         raise DraftTransitionError("return-to-draft operation path is invalid")
     if archive.parent != archive_root or re.fullmatch(r"[0-9]{3}", archive.name) is None:
         raise DraftTransitionError("return-to-draft publication metadata is invalid")
+
+
+def _validate_authored_drift(journal: DraftTransitionJournal) -> None:
+    if journal.schema == 1:
+        if journal.authored_drift:
+            raise DraftTransitionError("return-to-draft authored drift is invalid")
+        return
+    expected_fields = {
+        "expected_authored_sha256",
+        "observed_authored_sha256",
+        "reason",
+    }
+    if not journal.authored_drift:
+        return
+    digests_valid = all(
+        re.fullmatch(r"[0-9a-f]{64}", journal.authored_drift[key])
+        for key in ("expected_authored_sha256", "observed_authored_sha256")
+        if key in journal.authored_drift
+    )
+    if (
+        set(journal.authored_drift) != expected_fields
+        or journal.authored_drift.get("reason") != AUTHORED_DRIFT_REASON
+        or journal.authored_drift.get("expected_authored_sha256")
+        != journal.machine.get("authored_sha256")
+        or journal.authored_drift.get("observed_authored_sha256")
+        == journal.authored_drift.get("expected_authored_sha256")
+        or not digests_valid
+    ):
+        raise DraftTransitionError("return-to-draft authored drift is invalid")
 
 
 def _next_archive(log_dir: Path) -> Path:
@@ -227,7 +270,12 @@ def _new_journal(
         raise DraftTransitionError(f"return-to-draft requires a blocked ticket, got {status!r}")
     document, draft_content = _draft_content(root, ticket, slug)
     try:
-        basis = load_ticket_baseline_from_document(root, slug, document)
+        drift_reason = authored_drift_reason(document)
+        basis = (
+            load_ticket_recovery_baseline_from_document(root, slug, document)
+            if drift_reason is not None
+            else load_ticket_baseline_from_document(root, slug, document)
+        )
     except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     operation_id = uuid.uuid4().hex
@@ -239,7 +287,7 @@ def _new_journal(
     atomic_replace_bytes(operation / "generation.json", generation_content)
     draft_destination = ticket.parent.parent / "drafts" / ticket.name
     journal = DraftTransitionJournal(
-        1,
+        2,
         operation_id,
         slug,
         "initializing",
@@ -252,6 +300,15 @@ def _new_journal(
         _digest(generation_content),
         str(_next_archive(logs_dir / slug).resolve()),
         False,
+        (
+            {
+                "expected_authored_sha256": document.generated["machine"]["authored_sha256"],
+                "observed_authored_sha256": document.spec.semantic_digest(),
+                "reason": drift_reason,
+            }
+            if drift_reason is not None
+            else {}
+        ),
     )
     _write_journal(root, journal)
     return journal
@@ -290,14 +347,18 @@ def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> TicketBase
     _require_file(candidate, journal.draft_sha256, "replacement draft")
     document = _converted_document(root, blocked, journal.slug, "executable")
     try:
-        basis = load_ticket_baseline_from_document(root, journal.slug, document)
+        basis = (
+            load_ticket_recovery_baseline_from_document(root, journal.slug, document)
+            if journal.authored_drift
+            else load_ticket_baseline_from_document(root, journal.slug, document)
+        )
     except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     errors = validate_basis_refs(
         root,
         basis,
         slug=journal.slug,
-        destination_branch=str(document.spec.fields.get("branch", "")),
+        destination_branch=basis.participant("outer").destination_ref.removeprefix("refs/heads/"),
     )
     if errors:
         raise DraftTransitionError("old Ticket baseline is invalid: " + "; ".join(errors))
@@ -525,6 +586,13 @@ def _archive_runtime(log_dir: Path, archive: Path, operation_id: str) -> None:
             _move_archive_entry(entry, archive / entry.name)
 
 
+def _write_authored_drift_record(archive: Path, authored_drift: dict[str, str]) -> None:
+    if not authored_drift:
+        return
+    content = (json.dumps(authored_drift, indent=2, sort_keys=True) + "\n").encode()
+    atomic_replace_bytes(archive / "authored-drift.json", content, mode=0o644)
+
+
 def _move_archive_entry(source: Path, destination: Path) -> None:
     if destination.exists():
         if source.exists():
@@ -563,6 +631,7 @@ def return_to_draft(
     if journal.state == "cutover-ready":
         _publish_generation(root, journal)
         _archive_runtime(logs / slug, Path(journal.archive_dir), journal.operation_id)
+        _write_authored_drift_record(Path(journal.archive_dir), journal.authored_drift)
         _publish_board(root, journal)
         append_transition(
             f"old Ticket generation {journal.machine['generation']}; "

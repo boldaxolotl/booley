@@ -170,7 +170,7 @@ def _finish_progress(
 
 def _report_failure(tio: Any, slug: str, exc: Exception) -> bool:
     try:
-        current = tio.find_ticket(slug)
+        current = tio.inspect_ticket(slug)
     except (OSError, ValueError) as status_exc:
         print(
             f"Error: completion outcome for '{slug}' is uncertain: {exc}; "
