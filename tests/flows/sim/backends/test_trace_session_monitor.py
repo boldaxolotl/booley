@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 
+import pytest
 from tests.conftest import MINIMAL_FST_BYTES
 
 from booley.flows.sim.trace_session import TraceSession
@@ -96,6 +97,40 @@ class TestStallKill:
                 if p.poll() is None:
                     p.kill()
                     p.wait(timeout=2)
+
+    def test_natural_exit_during_incident_io_is_not_claimed_as_a_stall_kill(
+        self, tmp_path, monkeypatch
+    ):
+        class Proc:
+            pid = 123
+            exited = False
+
+            def poll(self):
+                return 0 if self.exited else None
+
+        class Stream:
+            pid = 456
+
+            def kill(self):
+                raise AssertionError("completed pipeline must not be killed")
+
+        proc = Proc()
+        session = TraceSession(tmp_path)
+
+        def finish_during_incident(*_args, **_kwargs):
+            proc.exited = True
+            return tmp_path / "incident.json"
+
+        monkeypatch.setattr(session, "write_incident", finish_during_incident)
+        monkeypatch.setattr(
+            "booley.runtime.platform_paths.kill_process_tree",
+            lambda _proc: pytest.fail("completed process must not be tree-killed"),
+        )
+
+        session._kill_stalled_pipeline(0, 30.0, proc, Stream())
+
+        assert session.stall_killed is False
+        assert session.stall_message is None
 
 
 class TestTraceStatusManifest:

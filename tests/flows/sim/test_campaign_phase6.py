@@ -49,6 +49,8 @@ from booley.flows.sim.campaign.coordinator import (
     SimulationCampaignCancellationError,
     WorkExecutionRequest,
     _acceptance_ready,
+    _collected_result_facts,
+    _prerequisite_facts,
 )
 from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.campaign.model import SimulationResult, create_simulation_campaign_plan
@@ -62,6 +64,7 @@ from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, Endpoi
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
 from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+from tests.flows.sim.test_campaign_codec_golden import _simulation_result
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
 from tests.flows.sim.test_campaign_phase5_adversarial import _retain_v3_before_reference
@@ -721,6 +724,54 @@ def test_acceptance_result_reference_hashes_exact_stored_bytes(tmp_path: Path) -
     raw = (invocation / reference["path"]).read_bytes()  # type: ignore[index]
     assert raw.endswith(b"\n")
     assert reference["sha256"] == "sha256:" + hashlib.sha256(raw).hexdigest()  # type: ignore[index]
+
+
+def test_migrated_v1_result_references_hash_original_stored_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invocation = tmp_path / "reports/sim/1"
+    store_root = invocation / "targets/sim/campaign"
+    result_path = store_root / "work-items/0001/result.json"
+    result_path.parent.mkdir(parents=True)
+    document = json.loads(_simulation_result("completed", schema=1))
+    document["observations"][0]["cycle_count"] = 12
+    raw = canonical_json_bytes(document)
+    result_path.write_bytes(raw)
+    migrated = decode_simulation_result(raw)
+    store = SimpleNamespace(
+        root=store_root,
+        work_item_directory=lambda _work_item_id: result_path.parent,
+    )
+    recovered = SimpleNamespace(work_item_id="item:0000:0123456789abcdef", result=migrated)
+    recovery = SimpleNamespace(items=(recovered,))
+    item = {"role": "functional", "revision": "current", "target": "sim"}
+
+    consumed, _observations = _collected_result_facts(
+        store, recovery, {recovered.work_item_id: item}
+    )
+    assert consumed[0]["result"]["bytes"] == len(raw)
+    assert consumed[0]["result"]["sha256"] == _digest(raw)
+
+    entry = {
+        "manifest": {"path": "targets/base/campaign/manifest.json"},
+        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "target": "base",
+        "work_item_id": recovered.work_item_id,
+    }
+    manifest = SimpleNamespace(document={"prerequisites": (entry,)})
+    monkeypatch.setattr("booley.flows.sim.campaign.coordinator.CampaignStore", lambda _root: store)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.coordinator._authenticate_prerequisite_manifest",
+        lambda *_args: (manifest, "smoke"),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.coordinator._selected_prerequisite_result",
+        lambda *_args: recovered,
+    )
+
+    prerequisite = _prerequisite_facts(store, manifest)[0]["result"]
+    assert prerequisite["bytes"] == len(raw)
+    assert prerequisite["sha256"] == _digest(raw)
 
 
 def _ledger_bytes(log_dir: Path) -> dict[Path, bytes]:

@@ -276,8 +276,8 @@ preview entry retains `test`, `execution`, `functional`, `assertions`,
 `observations_truncated` disclose whether the preview is complete.
 The independent observation axes mean:
 
-- `execution`: whether the simulator process completed, timed out, or failed
-  before producing trustworthy test evidence;
+- `execution`: whether the simulator completed, timed out, was guard-aborted,
+  or failed before producing trustworthy test evidence;
 - `functional`: the pass/fail/inconclusive test verdict;
 - `assertions`: assertion evidence independently observed for that test.
 
@@ -307,6 +307,10 @@ cocotb Targets use cocotb's result file, with assertion output still able to
 fail the run. Fail sentinels take priority. A clean process that produces no
 valid verdict is `inconclusive`, never a pass. A traced run is likewise
 inconclusive when it cannot confirm a fresh trace artifact.
+Guard aborts remain aborts even when the simulator exits zero. Infrastructure
+aborts grade ERROR/exit 2; an undeclared missing `$readmemh` input is a
+`missing_input` design FAIL/exit 1. Both retain the cause and mark assertions
+`not_observed`.
 
 The Flow records per-test verdicts and can satisfy `sim_pass_<target>` and
 configured per-test Cycle Count Criteria. It also records
@@ -338,7 +342,7 @@ Structured output (`sim/<N>/targets/<encoded-target>/simulation.json`):
 | `target`, `target_identity`, `tb_top`, `eda_tool` | Callable Target selector, durable Target identity, and resolved simulation context. |
 | `passed`, `complete`, `elapsed_s` | Target-level verdict, whether terminal publication completed, and execution duration. An interrupted publication leaves `complete: false` as an explicitly recoverable checkpoint. |
 | `phase_timings_s` | Target aggregation of `setup` (including Target metadata resolution), `pre_sim`, `build`, `run`, and `result_processing`, plus `unattributed` overhead and `execution_total`. Persisted results also include `publication` and the resulting end-to-end `total`. Run-level structured detail separately exposes `resolution_s` for campaign selection and test-map resolution. |
-| `tests[]` | Per-test `name`, `passed`, `verdict`, `timed_out`, `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`, `error_tail`, `test_validated`, `phase_timings_s`, and `resources`. `resources` contains `command_peak_rss_mb` and `command_oom_kill_delta`; supported platforms also add `simulation_user_cpu_s` and `simulation_system_cpu_s`. Trace runs add `trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and `trace_total_ticks`. Optional fields include `artifacts.run_log`, `workload_fingerprint`, and `validation_note`. |
+| `tests[]` | Per-test `name`, `passed`, `verdict`, `termination`, `failure_kind`, `timed_out`, `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`, `error_tail`, `test_validated`, `phase_timings_s`, and `resources`. `resources` contains `command_peak_rss_mb` and `command_oom_kill_delta`; supported platforms also add `simulation_user_cpu_s` and `simulation_system_cpu_s`. Trace runs add `trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and `trace_total_ticks`. Optional fields include `artifacts.run_log`, `workload_fingerprint`, and `validation_note`. |
 | `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
 | `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |
 

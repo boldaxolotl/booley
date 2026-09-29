@@ -380,11 +380,17 @@ def _write_stale_compiler_fixture(root: Path) -> tuple[Path, Path]:
 
 
 def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
+    source_root = Path(__file__).resolve().parents[3] / "src"
+    python_path = os.pathsep.join(
+        part for part in (str(source_root), os.environ.get("PYTHONPATH", "")) if part
+    )
+
     def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
         started = time.monotonic()
         result = subprocess.run(
             command,
             cwd=root,
+            env={**os.environ, "PYTHONPATH": python_path},
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -526,14 +532,29 @@ def _write_partial_timeout_transport(
     )
     result = AdapterResult(
         False,
-        True,
+        False,
         0,
         identity.selected_tests,
+        simulator_returncode=-9,
+        termination="timeout",
         failure_kind="timeout",
+        detail="cocotb batch ended before terminal adapter transport",
         test_results=(
             AdapterTestResult("done", "pass"),
-            AdapterTestResult("active", "timeout"),
-            AdapterTestResult("later", "inconclusive"),
+            AdapterTestResult(
+                "active",
+                "timeout",
+                detail="timed out while running",
+                termination="timeout",
+                failure_kind="timeout",
+            ),
+            AdapterTestResult(
+                "later",
+                "timeout",
+                detail="not run before timeout",
+                termination="timeout",
+                failure_kind="timeout",
+            ),
         ),
     )
     partial_identity = partial_result_identity(identity)
@@ -757,14 +778,29 @@ def test_timeout_transport_preserves_completed_active_and_not_run_tests(
             identity,
             AdapterResult(
                 passed=False,
-                inconclusive=True,
+                inconclusive=False,
                 sva_errors=0,
                 tests=identity.selected_tests,
+                simulator_returncode=-9,
+                termination="timeout",
                 failure_kind="timeout",
+                detail="cocotb simulation timed out",
                 test_results=(
                     AdapterTestResult("done", "pass", elapsed_s=0.1),
-                    AdapterTestResult("active", "timeout", detail="timed out while running"),
-                    AdapterTestResult("later", "inconclusive", detail="did not run"),
+                    AdapterTestResult(
+                        "active",
+                        "timeout",
+                        detail="timed out while running",
+                        termination="timeout",
+                        failure_kind="timeout",
+                    ),
+                    AdapterTestResult(
+                        "later",
+                        "timeout",
+                        detail="did not run before timeout",
+                        termination="timeout",
+                        failure_kind="timeout",
+                    ),
                 ),
             ),
         )
@@ -780,7 +816,7 @@ def test_timeout_transport_preserves_completed_active_and_not_run_tests(
     assert [(test.name, test.verdict, test.timed_out) for test in outcome.tests] == [
         ("done", "pass", False),
         ("active", "timeout", True),
-        ("later", "inconclusive", False),
+        ("later", "timeout", True),
     ]
 
 
@@ -806,8 +842,129 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
     assert [(test.name, test.verdict) for test in outcome.tests] == [
         ("done", "pass"),
         ("active", "timeout"),
-        ("later", "inconclusive"),
+        ("later", "timeout"),
     ]
+
+
+@pytest.mark.parametrize("simulator_returncode", [-15, 0, 7])
+def test_guard_abort_reason_uses_simulator_not_adapter_returncode(
+    tmp_path: Path, simulator_returncode: int
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        _write_transport(
+            handle,
+            prepared,
+            ("smoke",),
+            AdapterResult(
+                passed=False,
+                inconclusive=False,
+                sva_errors=0,
+                tests=("smoke",),
+                simulator_returncode=simulator_returncode,
+                termination="disk_budget",
+                failure_kind="infrastructure",
+                detail="run directory exceeded its disk budget",
+                test_results=(
+                    AdapterTestResult(
+                        "smoke",
+                        "fail",
+                        detail="run directory exceeded its disk budget",
+                        termination="disk_budget",
+                        failure_kind="infrastructure",
+                    ),
+                ),
+            ),
+        )
+        return SubprocessResult(
+            returncode=1,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\nadapter wrapper failed\n",
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+    assert outcome.verdict == "error"
+    assert outcome.tests[0].simulator_returncode == simulator_returncode
+    assert outcome.tests[0].reason.endswith(f"(rc={simulator_returncode})")
+
+
+def test_adapter_exit_one_with_design_result_is_failure_not_infrastructure(
+    tmp_path: Path,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        _write_transport(
+            handle,
+            prepared,
+            ("smoke",),
+            AdapterResult(
+                False,
+                False,
+                0,
+                ("smoke",),
+                simulator_returncode=1,
+                failure_kind="design",
+                test_results=(AdapterTestResult("smoke", "fail", detail="DUT mismatch"),),
+            ),
+        )
+        return SubprocessResult(returncode=1, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n")
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+    assert outcome.verdict == "fail"
+    assert outcome.infrastructure_failure is None
+    assert outcome.tests[0].failure_kind == "design"
+
+
+@pytest.mark.parametrize(
+    ("process", "expected_verdict", "expected_kind"),
+    [
+        (
+            SubprocessResult(returncode=2, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n"),
+            "error",
+            "adapter_protocol",
+        ),
+        (
+            SubprocessResult(
+                returncode=-9,
+                stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+                timed_out=True,
+            ),
+            "fail",
+            None,
+        ),
+    ],
+)
+def test_missing_transport_distinguishes_adapter_error_from_outer_timeout(
+    tmp_path: Path,
+    process: SubprocessResult,
+    expected_verdict: str,
+    expected_kind: str | None,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    outcome = _run_execution(
+        handle,
+        prepared,
+        lambda _command, timeout: process,
+        ("smoke",),
+        cocotb=False,
+    )
+
+    assert outcome.verdict == expected_verdict
+    if expected_kind is not None:
+        assert outcome.infrastructure_failure is not None
+        assert outcome.infrastructure_failure.kind == expected_kind
+    else:
+        assert outcome.infrastructure_failure is None
+        assert outcome.tests[0].timed_out is True
+        assert outcome.tests[0].termination == "completed"
 
 
 def test_unchanged_timeout_partial_result_is_stale(tmp_path: Path) -> None:

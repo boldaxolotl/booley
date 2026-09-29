@@ -16,6 +16,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows.sim.adapter_transport import (
+    AdapterTransportIdentity,
+    read_adapter_result,
+)
 from booley.flows.sim.backends import icarus as ir
 from booley.flows.sim.backends.shared import find_icarus_image
 from booley.flows.sim.trace_session import TraceInspection
@@ -356,7 +360,7 @@ def test_stream_output_kills_on_missing_readmemh(tmp_path: Path):
         "time.sleep(60)"
     )
     start = time.monotonic()
-    lines, proc = ir._stream_output([sys.executable, "-c", script], run, timeout=30)
+    lines, proc, _termination = ir._stream_output([sys.executable, "-c", script], run, timeout=30)
     elapsed = time.monotonic() - start
     out = "".join(lines)
     assert "missing $readmemh" in out
@@ -386,7 +390,7 @@ def test_stream_output_kills_on_disk_runaway(tmp_path: Path, monkeypatch):
         f'open({str(run / "big.bin")!r}, "wb").write(b"0" * 200_000); import time; time.sleep(60)'
     )
     start = time.monotonic()
-    lines, proc = ir._stream_output(
+    lines, proc, _termination = ir._stream_output(
         [sys.executable, "-c", script],
         run,
         timeout=30,
@@ -398,6 +402,67 @@ def test_stream_output_kills_on_disk_runaway(tmp_path: Path, monkeypatch):
     assert "max_rundir_bytes" in out
     assert elapsed < 15  # killed on the disk breach, not at the timeout
     assert proc.poll() is not None
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="run-half execs a POSIX vvp stub; real sims run in-container",
+)
+def test_disk_kill_is_published_as_aborted_infrastructure(tmp_path: Path, monkeypatch) -> None:
+    """A guard-owned kill remains abort evidence even when the child exits zero."""
+    result = _run_disk_kill_adapter(tmp_path, monkeypatch)
+
+    assert result.failure_kind == "infrastructure"
+    assert result.inconclusive is False
+    assert result.termination == "disk_budget"
+    assert result.simulator_returncode == 0
+    assert "run directory" in result.detail
+
+
+def _run_disk_kill_adapter(tmp_path: Path, monkeypatch):
+    import functools
+
+    import booley.flows.sim.run_guard as rg
+
+    monkeypatch.setattr(
+        rg,
+        "DiskBudgetGuard",
+        functools.partial(rg.DiskBudgetGuard, interval=0.02),
+    )
+    build = tmp_path / "build"
+    run = tmp_path / "run"
+    work = tmp_path / "work"
+    build.mkdir()
+    run.mkdir()
+    (build / "sim.scr").write_text("")
+    (build / "sim").write_text("")
+    fake_vvp = tmp_path / "fake-vvp"
+    fake_vvp.write_text(
+        "#!/bin/sh\n"
+        "trap 'exit 0' TERM\n"
+        "dd if=/dev/zero of=guard-growth.bin bs=4096 count=64 2>/dev/null\n"
+        "while :; do sleep 1; done\n"
+    )
+    fake_vvp.chmod(0o755)
+    monkeypatch.setattr(ir, "_find_vvp", lambda: str(fake_vvp))
+    identity = AdapterTransportIdentity(
+        adapter="icarus",
+        attempt_token="attempt-1",
+        target_identity="acme:lib:guard:1#sim_guard",
+        selected_tests=("guard",),
+        result_path=tmp_path / "adapter-result.json",
+    )
+
+    ir.run_icarus_image(
+        build_dir=build,
+        run_cwd=run,
+        work_dir=work,
+        timeout=30,
+        max_rundir_bytes=1024,
+        transport=identity,
+    )
+
+    return read_adapter_result(identity)
 
 
 def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):
