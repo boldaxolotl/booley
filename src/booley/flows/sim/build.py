@@ -9,7 +9,6 @@ command and turn one completed process into typed build evidence.
 from __future__ import annotations
 
 import re
-import secrets
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from booley.core.build_paths import work_root_for
+from booley.flows.eda_failures import classify_eda_failure
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
@@ -49,10 +49,6 @@ _IVERILOG_DESIGN_ERROR_RE = re.compile(
     r"|^error:\s*(?:unable to bind|unable to elaborate|unknown module type|"
     r"invalid module item|syntax error)",
     re.IGNORECASE | re.MULTILINE,
-)
-_MISSING_TOOL_RE = re.compile(
-    r"(?:command not found|No such file or directory|could not invoke fusesoc)",
-    re.IGNORECASE,
 )
 
 
@@ -98,11 +94,6 @@ class BuildOutcome:
     def design_failed(self) -> bool:
         """Whether a compiler diagnostic established a design rejection."""
         return self.verdict == "fail" and self.failure_kind == "design"
-
-
-def new_attempt_token() -> str:
-    """Return an unpredictable token for one build execution attempt."""
-    return secrets.token_hex(16)
 
 
 def prepare_simulation_build(
@@ -296,13 +287,17 @@ def _failed_build_outcome(
             returncode=build_rc,
             reason="abnormal build termination",
         )
-    if _MISSING_TOOL_RE.search(build_output):
+    failure = classify_eda_failure(
+        replace(result, returncode=build_rc, stdout=build_output, stderr=""),
+        authenticated_build=True,
+    )
+    if failure is not None and failure.kind == "infrastructure":
         return _infrastructure_outcome(
             result,
             output,
             ran=True,
             returncode=build_rc,
-            reason="required build tool or file was unavailable",
+            reason=failure.reason,
         )
     if _recognized_design_diagnostic(build_output):
         return BuildOutcome(

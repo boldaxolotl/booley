@@ -1329,6 +1329,45 @@ class TestFailureTailSurfacesStderr:
         assert "stderr tail" not in tail
 
 
+class TestVivadoFailureClassification:
+    def test_passing_route_ignores_incidental_missing_program_text(self) -> None:
+        metrics = FpgaMetrics(returncode=0, lut_count=10, ff_count=5)
+        process = SubprocessResult(
+            returncode=0,
+            stdout="/bin/sh: lsb_release: command not found\n",
+            stderr="",
+        )
+
+        FpgaImplFlow._apply_vivado_failure(
+            FpgaImplFlow(), metrics, process, "", process.stdout, process.stderr
+        )
+
+        assert metrics.returncode == 0
+        assert metrics.infra_error == ""
+
+    def test_fresh_synth_runlog_syntax_error_is_design_failure(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        flow = _flow(tmp_path, state_file)
+        work_root = tmp_path / "wr"
+        synth_dir = work_root / "dut.runs" / "synth_1"
+        synth_dir.mkdir(parents=True)
+        runlog = synth_dir / "runme.log"
+        diagnostic = "ERROR: [Synth 8-2715] syntax error near 'endmodule' [dut.sv:9]"
+        runlog.write_text(diagnostic + "\n", encoding="utf-8")
+        now = time.time()
+        os.utime(runlog, (now, now))
+
+        evidence = flow._collect_vivado_evidence(work_root, min_mtime=now - 1)
+        failure = flow._classify_vivado_failure(
+            SubprocessResult(returncode=1, stdout="", stderr=""), evidence
+        )
+
+        assert failure is not None
+        assert failure.kind == "design"
+        assert diagnostic in failure.diagnostic
+
+
 # ===========================================================================
 # Timeout resolution (unified with asic_synthesize, change #2)
 # ===========================================================================
