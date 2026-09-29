@@ -34,6 +34,10 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
+from booley.flows.sim.execution.engine import (
+    PreparedOrdinaryGroup,
+    SimulationBuildSlotError,
+)
 from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
 
 
@@ -204,6 +208,24 @@ def _build_execution() -> dict[str, object]:
             "cache_decision": "",
         },
     }
+
+
+def test_authenticated_bundle_rejects_timed_out_compiler_process() -> None:
+    evidence = _build_execution()
+    evidence["process"]["timed_out"] = True  # type: ignore[index]
+    group = PreparedOrdinaryGroup.__new__(PreparedOrdinaryGroup)
+    group._lease_active = True
+    group._build_process = None
+    group._build = None
+
+    with pytest.raises(
+        SimulationBuildSlotError,
+        match="recovered bundle evidence is not successful",
+    ):
+        group.bind_authenticated_bundle(evidence)
+
+    assert group._build_process is None
+    assert group._build is None
 
 
 class _Execution:

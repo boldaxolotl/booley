@@ -433,10 +433,16 @@ class PreparedOrdinaryGroup:
         process = evidence["process"]
         build = evidence["build"]
         assert isinstance(process, Mapping) and isinstance(build, Mapping)
-        self._build_process = SubprocessResult(**process)  # type: ignore[arg-type]
-        self._build = BuildOutcome(**build)  # type: ignore[arg-type]
-        if not self._build.passed or self._build_process.returncode != 0:
+        recovered_process = SubprocessResult(**process)  # type: ignore[arg-type]
+        recovered_build = BuildOutcome(**build)  # type: ignore[arg-type]
+        if (
+            not recovered_build.passed
+            or recovered_process.returncode != 0
+            or recovered_process.timed_out
+        ):
             raise SimulationBuildSlotError("recovered bundle evidence is not successful")
+        self._build_process = recovered_process
+        self._build = recovered_build
 
     def launch_snapshot(
         self,
