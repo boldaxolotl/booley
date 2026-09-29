@@ -6,7 +6,9 @@ import contextlib
 import sys
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from booley.flows.run_log import write_run_log_progress
 from booley.flows.sim.trace_session import TraceSession
@@ -15,6 +17,66 @@ RUN_LOG_PROGRESS_INTERVAL_S = 5.0
 MAX_ADOPTED_VCD_BYTES = 2 * 1024**3
 TraceFileSnapshot = dict[Path, tuple[int, int, int]]
 ChildCpuSnapshot = tuple[float, float]
+RunTerminationKind = Literal[
+    "completed",
+    "timeout",
+    "disk_budget",
+    "fatal_init",
+    "sim_time_stall",
+    "trace_stall",
+]
+RunFailureKind = Literal["", "timeout", "infrastructure", "missing_input"]
+SimulationFailureKind = Literal[
+    "",
+    "design",
+    "infrastructure",
+    "timeout",
+    "inconclusive",
+    "artifact",
+    "missing_input",
+]
+
+_TERMINATION_FAILURE_KINDS: dict[RunTerminationKind, frozenset[SimulationFailureKind]] = {
+    "completed": frozenset({"", "design", "inconclusive", "artifact"}),
+    "timeout": frozenset({"timeout"}),
+    "disk_budget": frozenset({"infrastructure"}),
+    "fatal_init": frozenset({"infrastructure", "missing_input"}),
+    "sim_time_stall": frozenset({"infrastructure"}),
+    "trace_stall": frozenset({"infrastructure"}),
+}
+
+
+def allowed_failure_kinds(kind: RunTerminationKind) -> frozenset[SimulationFailureKind]:
+    """Return the single shared failure policy for a run termination."""
+    return _TERMINATION_FAILURE_KINDS[kind]
+
+
+@dataclass(frozen=True)
+class RunTermination:
+    """Structured reason a live simulator stopped.
+
+    Only ``completed`` permits verdict inference from sentinels and return code.
+    Every other value records an adapter-owned abort at the process boundary.
+    """
+
+    kind: RunTerminationKind = "completed"
+    detail: str = ""
+    failure_kind: RunFailureKind = ""
+    missing_input_path: str = ""
+
+    def __post_init__(self) -> None:
+        if self.kind == "completed":
+            if self.detail or self.failure_kind or self.missing_input_path:
+                raise ValueError("completed termination cannot carry abort evidence")
+            return
+        expected = allowed_failure_kinds(self.kind)
+        if not self.detail or self.failure_kind not in expected:
+            raise ValueError(f"invalid {self.kind} termination evidence")
+
+    @property
+    def aborted(self) -> bool:
+        """Whether a guard, deadline, or fatal initializer stopped the run."""
+        return self.kind != "completed"
 
 
 def child_cpu_snapshot() -> ChildCpuSnapshot | None:

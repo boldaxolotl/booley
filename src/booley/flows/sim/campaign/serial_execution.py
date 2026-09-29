@@ -1389,7 +1389,7 @@ def _result(
     precedence = {"pass": 0, "inconclusive": 1, "fail": 2, "error": 3}
     grade = max(grades, key=lambda item: precedence[item.value]).value
     document = {
-        "$schema": "booley.simulation-result/v1",
+        "$schema": "booley.simulation-result/v2",
         **_common(request),
         "attempt_id": request.attempt_id,
         "attempt_ordinal": request.attempt_ordinal,
@@ -1423,12 +1423,20 @@ def _observation(
     test: SimulationTestOutcome, *, execution: str | None = None
 ) -> dict[str, object]:
     observed_execution = execution or (
-        "timeout" if test.timed_out else "crash" if test.crashed else "completed"
+        "timeout"
+        if test.timed_out
+        else "crash"
+        if test.crashed
+        else "aborted"
+        if test.termination != "completed"
+        else "completed"
     )
-    blocked = observed_execution in {"blocked_by_build", "setup_error"}
+    blocked = observed_execution in {"blocked_by_build", "setup_error", "not_run"}
     functional = (
         "not_observed"
-        if blocked or observed_execution in {"timeout", "crash"}
+        if blocked
+        or observed_execution in {"timeout", "crash"}
+        or (observed_execution == "aborted" and test.failure_kind == "infrastructure")
         else "pass"
         if test.verdict == "pass"
         else "inconclusive"
@@ -1437,7 +1445,7 @@ def _observation(
     )
     assertions = (
         "not_observed"
-        if blocked or observed_execution in {"timeout", "crash"}
+        if blocked or observed_execution in {"timeout", "crash", "aborted"}
         else "dirty"
         if test.sva_errors
         else "clean"
@@ -1446,7 +1454,11 @@ def _observation(
         "test": test.name or None,
         "execution": observed_execution,
         "failure_class": (
-            "design" if blocked or observed_execution == "timeout" or not test.passed else None
+            "infrastructure"
+            if test.failure_kind == "infrastructure"
+            else "design"
+            if blocked or observed_execution in {"timeout", "aborted"} or not test.passed
+            else None
         ),
         "functional": functional,
         "assertions": assertions,
@@ -1457,6 +1469,8 @@ def _observation(
 
 
 def _result_state(tests: tuple[SimulationTestOutcome, ...]) -> str:
+    if any(test.termination != "completed" for test in tests):
+        return "aborted"
     if any(test.crashed for test in tests):
         return "crash"
     if any(test.timed_out for test in tests):

@@ -67,9 +67,7 @@ def check_case(root: Path, harness: str, outcome: str) -> dict:
     }
     (root / "verdicts.json").write_text(json.dumps(evidence, indent=2) + "\n")
     expected = (
-        "inconclusive"
-        if harness == "cocotb" and outcome in {"signal", "timeout"}
-        else _EXPECTED[outcome]
+        "inconclusive" if harness == "cocotb" and outcome == "signal" else _EXPECTED[outcome]
     )
     assert evidence["ordinary"] == [expected], evidence
     assert evidence["coverage"] == evidence["ordinary"], evidence

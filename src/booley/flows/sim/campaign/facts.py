@@ -229,8 +229,10 @@ def _validate_observation(value: object, index: int) -> None:
         "completed",
         "timeout",
         "crash",
+        "aborted",
         "setup_error",
         "blocked_by_build",
+        "not_run",
     }:
         raise SimulationCampaignIntegrityError("observation execution is invalid")
     if item["failure_class"] not in {None, "design", "infrastructure"}:

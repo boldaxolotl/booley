@@ -1322,6 +1322,8 @@ A few conventions worth calling out in that example:
   configured `run_cwd`; the temporary entry is removed after the run. An identical
   file already present there is preserved, while a different file at the same path
   is an input-setup error rather than being overwritten.
+  A missing declared `$readmemh` destination is a staging/infrastructure error;
+  an undeclared path is a `missing_input` design failure with a fileset hint.
 - **`flow_options.arch`** (and any other Edalize-only knob) is plumbing Booley
   passes through to the toolchain. The built-in synth path drives its own
   PDK/target via the OpenROAD engine and ignores `arch`.

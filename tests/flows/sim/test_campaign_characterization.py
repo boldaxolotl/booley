@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,15 +16,25 @@ from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
+    AdapterTransportIdentity,
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.build_session import SimulationBuildSession
+from booley.flows.sim.campaign.coordinator import (
+    CampaignPolicy,
+    NewCampaignRunRequest,
+    SimulationCampaign,
+)
+from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
+from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
+from booley.flows.sim.execution.contract import SimulationArtifactEvidence
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.test_campaign_phase5_adversarial import _plan, _unmanaged
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 
@@ -200,6 +212,7 @@ def _assert_projection_shapes(report, outcome) -> None:
         "cycles",
         "elapsed_s",
         "error_tail",
+        "failure_kind",
         "name",
         "passed",
         "phase_timings_s",
@@ -207,6 +220,7 @@ def _assert_projection_shapes(report, outcome) -> None:
         "sva_errors",
         "test_validated",
         "timed_out",
+        "termination",
         "verdict",
         "workload_fingerprint",
     }
@@ -419,3 +433,119 @@ def test_leased_session_build_and_run_counts(
     assert [build.ran for build in outcome.builds] == [True] + [False] * (expected_groups - 1)
     assert len(build_commands) == expected_builds
     assert len(run_commands) == expected_runs
+
+
+class _AdapterAbortExecution(_SessionBoundaryExecution):
+    cocotb_path: Path | None = None
+
+    def _prepare_build(self, handle):
+        prepared, trace = super()._prepare_build(handle)
+        executable = prepared.build_root / "Vtop"
+        executable.write_bytes(b"authenticated simulator image")
+        executable.chmod(0o755)
+        return prepared, trace
+
+    def _invoke_process(self, command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        if "BOOLEY_BUILD_STAGE" in command[-1]:
+            identity = self.identities[-1]
+            return SubprocessResult(
+                returncode=0,
+                stdout=f"BOOLEY_BUILD_STAGE token={identity.attempt_token} rc=0\n",
+            )
+        tokens = shlex.split(command[-1])
+        selected = tuple(
+            token.split("=", 1)[1] for token in tokens if token.startswith("--selected-test=")
+        )
+        identity = AdapterTransportIdentity(
+            "cocotb",
+            tokens[tokens.index("--attempt-token") + 1],
+            tokens[tokens.index("--target-identity") + 1],
+            selected,
+            Path(tokens[tokens.index("--adapter-result") + 1]),
+        )
+        detail = "$readmemh: Cannot open memory.hex"
+        self.cocotb_path = identity.result_path.parent / "cocotb_results.json"
+        self.cocotb_path.write_text(
+            json.dumps(
+                {
+                    "state": "ok",
+                    "detail": "",
+                    "tests": [
+                        {
+                            "name": name,
+                            "module": "test_counter",
+                            "status": "fail",
+                            "failure": f"{detail} (rc=7)",
+                            "elapsed_s": 0.01,
+                        }
+                        for name in selected
+                    ],
+                    "skipped_unselected": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        write_adapter_result(
+            identity,
+            AdapterResult(
+                False,
+                False,
+                0,
+                selected,
+                simulator_returncode=7,
+                termination="fatal_init",
+                missing_input_path="memory.hex",
+                failure_kind="missing_input",
+                detail=detail,
+                test_results=tuple(
+                    AdapterTestResult(
+                        name,
+                        "fail",
+                        detail=detail,
+                        termination="fatal_init",
+                        failure_kind="missing_input",
+                    )
+                    for name in selected
+                ),
+            ),
+        )
+        return SubprocessResult(returncode=0, stdout="adapter wrapper exited cleanly\n")
+
+    def _completed_group(self, *args, **kwargs):
+        outcome = super()._completed_group(*args, **kwargs)
+        assert self.cocotb_path is not None
+        artifact = SimulationArtifactEvidence(
+            "cocotb_results_json",
+            str(self.cocotb_path),
+            self.cocotb_path.stat().st_size,
+            tuple(test.name for test in outcome.tests),
+        )
+        return replace(outcome, artifacts=(*outcome.artifacts, artifact))
+
+
+def test_adapter_termination_reaches_normalized_campaign_result(tmp_path: Path) -> None:
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
+    execution = _AdapterAbortExecution(eda_tool="verilator", cocotb=True)
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: execution,  # type: ignore[arg-type,return-value]
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    outcome = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        )
+    )
+
+    assert outcome.complete is True
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    result = store.scan().items[0].result
+    assert result is not None
+    observation = result.document["observations"][0]
+    assert result.document["state"] == "aborted"
+    assert observation["execution"] == "aborted"
+    assert observation["failure_class"] == "design"
+    assert observation["functional"] == "fail"
+    assert observation["detail"] == {"reason": "$readmemh: Cannot open memory.hex (rc=7)"}
