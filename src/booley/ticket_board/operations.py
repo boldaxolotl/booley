@@ -698,11 +698,6 @@ def op_unblock(
     if status != "blocked":
         print(f"Error: ticket '{slug}' is {status}, not blocked", file=sys.stderr)
         return False
-    if entry.get("authored_drift"):
-        from .ticket_baseline import AUTHORED_DRIFT_GUIDANCE
-
-        print(AUTHORED_DRIFT_GUIDANCE, file=sys.stderr)
-        return False
     if not _queue_recovery_permitted(tio, entry, slug):
         return False
     step = entry.get("blocked_step", "")
@@ -1562,8 +1557,13 @@ def _validated_reset_context(
     if file_path is None:
         return None
     current = tio.inspect_ticket(slug)
-    if current is None:
-        print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
+    if current is None or current.get("authored_drift"):
+        if current is None:
+            print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
+        else:
+            from .ticket_baseline import AUTHORED_DRIFT_GUIDANCE
+
+            print(AUTHORED_DRIFT_GUIDANCE, file=sys.stderr)
         return None
     if "acceptance_basis" in current or (
         current.get("status") != "draft" and current.get("machine") is None

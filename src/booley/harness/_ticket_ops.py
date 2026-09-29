@@ -55,6 +55,7 @@ from booley.ticket_board.ticket_document import (
 )
 from booley.ticket_board.ticket_validation import validate_ticket_document
 from booley.ticket_board.validation import (
+    append_authored_drift_diagnostic,
     format_validate_logs_report,
 )
 from booley.ticket_board.validation import validate_logs as tb_validate_logs
@@ -276,6 +277,10 @@ class DirectTicketOps:
         if ticket_type not in VALID_TYPES:
             entry = tio.inspect_ticket(ticket_type)
             if entry:
+                if entry.get("authored_drift"):
+                    from booley.ticket_board.ticket_baseline import AUTHORED_DRIFT_GUIDANCE
+
+                    raise TicketCLIError("next-stage", 2, AUTHORED_DRIFT_GUIDANCE)
                 planned = entry.get("planned_steps", [])
                 ticket_type = entry.get("type", "feature")
                 if ticket_type not in VALID_TYPES:
@@ -474,9 +479,7 @@ class DirectTicketOps:
                 ticket_fields = {**converted.document.spec.fields, **converted.document.generated}
         result = tb_validate_logs(tio.logs_dir, slug, ticket_type, steps_completed, ticket_fields)
         report, error_count = format_validate_logs_report(result, slug)
-        if entry.get("authored_drift"):
-            report += f"\n\n{entry['authored_drift_reason']}; use return-to-draft"
-            error_count += 1
+        report, error_count = append_authored_drift_diagnostic(report, error_count, entry)
         return error_count == 0, report
 
     def timing(self, project_root: Path, slug: str, *, save: bool = False) -> str:

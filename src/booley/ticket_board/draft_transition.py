@@ -55,9 +55,11 @@ from .ticket_document import (
 )
 from .workspace_ops import (
     AuthoringWorkspace,
+    TicketBaselineOperationError,
     _generation_branch,
     _generation_file,
     open_authoring_generation,
+    preflight_authoring_destination,
     validate_basis_refs,
 )
 
@@ -219,18 +221,20 @@ def _validate_authored_drift(journal: DraftTransitionJournal) -> None:
     }
     if not journal.authored_drift:
         return
+    try:
+        expected_digest = require_str(journal.authored_drift, "expected_authored_sha256")
+        observed_digest = require_str(journal.authored_drift, "observed_authored_sha256")
+        reason = require_str(journal.authored_drift, "reason")
+    except BoundaryError as exc:
+        raise DraftTransitionError("return-to-draft authored drift is invalid") from exc
     digests_valid = all(
-        re.fullmatch(r"[0-9a-f]{64}", journal.authored_drift[key])
-        for key in ("expected_authored_sha256", "observed_authored_sha256")
-        if key in journal.authored_drift
+        re.fullmatch(r"[0-9a-f]{64}", value) for value in (expected_digest, observed_digest)
     )
     if (
         set(journal.authored_drift) != expected_fields
-        or journal.authored_drift.get("reason") != AUTHORED_DRIFT_REASON
-        or journal.authored_drift.get("expected_authored_sha256")
-        != journal.machine.get("authored_sha256")
-        or journal.authored_drift.get("observed_authored_sha256")
-        == journal.authored_drift.get("expected_authored_sha256")
+        or reason != AUTHORED_DRIFT_REASON
+        or expected_digest != journal.machine.get("authored_sha256")
+        or observed_digest == expected_digest
         or not digests_valid
     ):
         raise DraftTransitionError("return-to-draft authored drift is invalid")
@@ -259,6 +263,27 @@ def _draft_content(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument,
     return document, content
 
 
+def _load_transition_basis(
+    root: Path, slug: str, document: TicketDocument, drift_reason: str | None
+) -> TicketBaseline:
+    try:
+        if drift_reason is not None:
+            return load_ticket_recovery_baseline_from_document(root, slug, document)
+        return load_ticket_baseline_from_document(root, slug, document)
+    except TicketBaselineError as exc:
+        raise DraftTransitionError(str(exc)) from exc
+
+
+def _authored_drift_record(document: TicketDocument, drift_reason: str | None) -> dict[str, str]:
+    if drift_reason is None:
+        return {}
+    return {
+        "expected_authored_sha256": document.generated["machine"]["authored_sha256"],
+        "observed_authored_sha256": document.spec.semantic_digest(),
+        "reason": drift_reason,
+    }
+
+
 def _new_journal(
     root: Path,
     ticket: Path,
@@ -269,15 +294,13 @@ def _new_journal(
     if status != "blocked":
         raise DraftTransitionError(f"return-to-draft requires a blocked ticket, got {status!r}")
     document, draft_content = _draft_content(root, ticket, slug)
+    fields = dict(document.spec.fields)
     try:
-        drift_reason = authored_drift_reason(document)
-        basis = (
-            load_ticket_recovery_baseline_from_document(root, slug, document)
-            if drift_reason is not None
-            else load_ticket_baseline_from_document(root, slug, document)
-        )
-    except TicketBaselineError as exc:
+        preflight_authoring_destination(root, fields)
+    except TicketBaselineOperationError as exc:
         raise DraftTransitionError(str(exc)) from exc
+    drift_reason = authored_drift_reason(document)
+    basis = _load_transition_basis(root, slug, document, drift_reason)
     operation_id = uuid.uuid4().hex
     operation = _operation_dir(root, operation_id)
     draft_path = operation / "draft.md"
@@ -300,15 +323,7 @@ def _new_journal(
         _digest(generation_content),
         str(_next_archive(logs_dir / slug).resolve()),
         False,
-        (
-            {
-                "expected_authored_sha256": document.generated["machine"]["authored_sha256"],
-                "observed_authored_sha256": document.spec.semantic_digest(),
-                "reason": drift_reason,
-            }
-            if drift_reason is not None
-            else {}
-        ),
+        _authored_drift_record(document, drift_reason),
     )
     _write_journal(root, journal)
     return journal
@@ -487,11 +502,13 @@ def _relocate_worktrees(
     if journal.has_project and project_repository is not None:
         project_path = ticket_project_worktree(canonical_outer)
         _move_worktree(project_repository, new_ref, project_path)
+    outer_base = _git(canonical_outer, "rev-parse", "HEAD")
+    project_base = _git(project_path, "rev-parse", "HEAD") if project_path else ""
     return AuthoringWorkspace(
         canonical_outer,
         project_path,
-        old_outer.destination_sha,
-        basis.project_sha and basis.participant("project").destination_sha,
+        outer_base,
+        project_base,
         journal.generation,
     )
 
@@ -501,11 +518,12 @@ def _published_worktrees(
 ) -> AuthoringWorkspace:
     outer = resolve_project_dir(root) / "worktrees" / journal.slug
     project = ticket_project_worktree(outer) if journal.has_project else None
-    project_base = basis.participant("project").destination_sha if journal.has_project else ""
+    outer_base = _git(outer, "rev-parse", "HEAD")
+    project_base = _git(project, "rev-parse", "HEAD") if project else ""
     return AuthoringWorkspace(
         outer,
         project,
-        basis.participant("outer").destination_sha,
+        outer_base,
         project_base,
         journal.generation,
     )

@@ -324,6 +324,42 @@ def _fresh(ctx: BlockedContext, source_sha: str) -> Path | None:
     return None
 
 
+def _publish_blocked_dossier(
+    ctx: BlockedContext,
+    slug: str,
+    diagnosis: dict,
+    result: Any,
+    duration: float,
+    source_sha: str,
+) -> Path:
+    package = {
+        "version": BLOCKED_PACKAGE_VERSION,
+        "kind": "blocked",
+        "slug": slug,
+        "ticket_path": str(ctx.ticket_path),
+        "blocked_log_path": str(ctx.log_dir / "blocked.md"),
+        "authored_drift": ctx.authored_drift,
+        "authored_drift_reason": ctx.authored_drift_reason,
+        "diagnosis": diagnosis,
+    }
+    path = _package_path(ctx)
+    _write_json(path, package)
+    _write_json(
+        _manifest_path(ctx),
+        {
+            "version": BLOCKED_PACKAGE_VERSION,
+            "status": "ready",
+            "source_sha256": source_sha,
+            "package_path": str(path),
+            "package_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "duration_s": round(duration, 2),
+            "cost_usd": round(result.cost_usd, 4),
+            "updated_at": utc_now_rfc3339(),
+        },
+    )
+    return path
+
+
 async def prepare_blocked_dossier(
     project_root: Path, slug: str, *, force: bool = False
 ) -> BlockedPrepOutcome:
@@ -341,29 +377,7 @@ async def prepare_blocked_dossier(
         duration = time.monotonic() - started
         _record_call(ctx, result, duration)
         source_sha = _source_sha(ctx)
-        package = {
-            "version": BLOCKED_PACKAGE_VERSION,
-            "kind": "blocked",
-            "slug": slug,
-            "ticket_path": str(ctx.ticket_path),
-            "blocked_log_path": str(ctx.log_dir / "blocked.md"),
-            "authored_drift": ctx.authored_drift,
-            "authored_drift_reason": ctx.authored_drift_reason,
-            "diagnosis": diagnosis,
-        }
-        path = _package_path(ctx)
-        _write_json(path, package)
-        manifest = {
-            "version": BLOCKED_PACKAGE_VERSION,
-            "status": "ready",
-            "source_sha256": source_sha,
-            "package_path": str(path),
-            "package_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            "duration_s": round(duration, 2),
-            "cost_usd": round(result.cost_usd, 4),
-            "updated_at": utc_now_rfc3339(),
-        }
-        _write_json(_manifest_path(ctx), manifest)
+        path = _publish_blocked_dossier(ctx, slug, diagnosis, result, duration, source_sha)
         return BlockedPrepOutcome("ready", "blocked dossier prepared", path)
     except Exception as exc:
         logger.warning("Blocked dossier preparation failed for %s: %s", slug, exc, exc_info=True)

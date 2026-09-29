@@ -11,6 +11,7 @@ import json
 import subprocess
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -176,8 +177,31 @@ def test_draft_journal_reads_schema_one_and_validates_schema_two_drift(
     monkeypatch.setattr(
         draft_transition, "_transition_root", lambda _root: tmp_path / "operations"
     )
+    expected_digest = str(parsed.machine["authored_sha256"])
+    observed_digest = "5" * 64 if expected_digest != "5" * 64 else "6" * 64
+    valid_two = replace(
+        parsed,
+        schema=2,
+        authored_drift={
+            "expected_authored_sha256": expected_digest,
+            "observed_authored_sha256": observed_digest,
+            "reason": draft_transition.AUTHORED_DRIFT_REASON,
+        },
+    )
+    draft_transition._validate_journal(tmp_path, tmp_path / "logs", "ticket", valid_two)
     with pytest.raises(draft_transition.DraftTransitionError, match="authored drift is invalid"):
         draft_transition._validate_journal(tmp_path, tmp_path / "logs", "ticket", parsed_two)
+
+    invalid_type = replace(
+        parsed_two,
+        authored_drift={
+            "expected_authored_sha256": 4,
+            "observed_authored_sha256": "5" * 64,
+            "reason": draft_transition.AUTHORED_DRIFT_REASON,
+        },
+    )
+    with pytest.raises(draft_transition.DraftTransitionError, match="authored drift is invalid"):
+        draft_transition._validate_journal(tmp_path, tmp_path / "logs", "ticket", invalid_type)
 
 
 def test_draft_cutover_uses_recovery_identity_for_persisted_authored_drift(
@@ -259,7 +283,9 @@ def test_draft_transition_requires_blocked_basis_and_exact_files(
         )
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
-    monkeypatch.setattr(draft_transition, "_draft_content", lambda *_args: (object(), b"draft"))
+    document = SimpleNamespace(spec=SimpleNamespace(fields={"branch": "main"}))
+    monkeypatch.setattr(draft_transition, "_draft_content", lambda *_args: (document, b"draft"))
+    monkeypatch.setattr(draft_transition, "preflight_authoring_destination", lambda *_args: None)
     monkeypatch.setattr(draft_transition, "authored_drift_reason", lambda *_args: None)
     monkeypatch.setattr(
         draft_transition,

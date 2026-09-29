@@ -23,6 +23,7 @@ from .constants import (
 from .git_status import parse_porcelain_v1_z
 from .validation_logs import (  # noqa: F401  # re-exported for backward compatibility
     _validate_state_file,
+    append_authored_drift_diagnostic,
     format_validate_logs_report,
     validate_logs,
 )

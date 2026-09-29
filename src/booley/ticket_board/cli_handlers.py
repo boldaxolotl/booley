@@ -67,6 +67,7 @@ from .reporting import (
 )
 from .scanner import _load_state_data
 from .validation import (
+    append_authored_drift_diagnostic,
     format_validate_logs_report,
     validate_logs,
 )
@@ -100,6 +101,40 @@ def _print_acceptance_state(entry) -> None:
         print(f"acceptance: {acceptance_state}")
 
 
+def _print_ticket_overview(entry, tio, slug: str, ticket_file: Path, logs_dir: Path) -> None:
+    worktree = resolve_project_dir(tio._project_root) / "worktrees" / slug
+    worktree_note = "" if worktree.is_dir() else "  (absent)"
+    print(f"ticket:    {slug}")
+    print(f"status:    {entry.get('status', '')}")
+    _print_acceptance_state(entry)
+    print(f"file:      {ticket_file}")
+    print(f"logs:      {logs_dir}")
+    print(f"worktree:  {worktree}{worktree_note}")
+    print(f"branch:    {entry.get('branch', '') or '(none)'}")
+    print(f"feature:   {entry.get('feature_branch', slug)}")
+    if entry.get("authored_drift"):
+        print(f"drift:     {entry['authored_drift_reason']}; use return-to-draft")
+
+
+def _print_criteria_summary(
+    mandatory: dict, optional: dict, state_crit: dict, accepted_error: str | None
+) -> None:
+    def met(key: str) -> bool:
+        row = state_crit.get(key)
+        return bool(row.get("met")) if isinstance(row, dict) else False
+
+    if accepted_error:
+        print(
+            f"criteria:  mandatory ?/{len(mandatory)}, optional ?/{len(optional)} "
+            f"({accepted_error})"
+        )
+        return
+    print(
+        f"criteria:  mandatory {sum(met(key) for key in mandatory)}/{len(mandatory)} met, "
+        f"optional {sum(met(key) for key in optional)}/{len(optional)} met"
+    )
+
+
 def _cmd_show(tio, args):
     """Show one ticket's paths, branch, and criteria split -- or the board.
 
@@ -125,42 +160,14 @@ def _cmd_show(tio, args):
     slug = Path(entry["file"]).stem
     ticket_file = Path(tio.tickets_dir) / entry["file"]
     logs_dir = ticket_log_dir(tio.logs_dir, slug)
-    worktree_root = resolve_project_dir(tio._project_root)
-    worktree = worktree_root / "worktrees" / slug
     criteria = entry.get("criteria") or {}
     mandatory = criteria.get("mandatory") or {}
     optional = criteria.get("optional") or {}
 
     state_crit, accepted_error = _show_criteria(entry, tio, slug, logs_dir)
 
-    def _met(key: str) -> bool:
-        entry = state_crit.get(key)
-        return bool(entry.get("met")) if isinstance(entry, dict) else False
-
-    mand_met = sum(1 for k in mandatory if _met(k))
-    opt_met = sum(1 for k in optional if _met(k))
-
-    wt_note = "" if worktree.is_dir() else "  (absent)"
-    print(f"ticket:    {slug}")
-    print(f"status:    {entry.get('status', '')}")
-    _print_acceptance_state(entry)
-    print(f"file:      {ticket_file}")
-    print(f"logs:      {logs_dir}")
-    print(f"worktree:  {worktree}{wt_note}")
-    print(f"branch:    {entry.get('branch', '') or '(none)'}")
-    print(f"feature:   {entry.get('feature_branch', slug)}")
-    if entry.get("authored_drift"):
-        print(f"drift:     {entry['authored_drift_reason']}; use return-to-draft")
-    if accepted_error:
-        print(
-            f"criteria:  mandatory ?/{len(mandatory)}, optional ?/{len(optional)} "
-            f"({accepted_error})"
-        )
-    else:
-        print(
-            f"criteria:  mandatory {mand_met}/{len(mandatory)} met, "
-            f"optional {opt_met}/{len(optional)} met"
-        )
+    _print_ticket_overview(entry, tio, slug, ticket_file, logs_dir)
+    _print_criteria_summary(mandatory, optional, state_crit, accepted_error)
     return 0
 
 
@@ -360,7 +367,11 @@ def _cmd_update_board(tio, args):
         return 2
     canonical_slug = resolved_path.stem
 
-    old_entry = tio.find_ticket(canonical_slug)
+    try:
+        old_entry = tio.find_ticket(canonical_slug)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     old_status = old_entry.get("status", "running") if old_entry else "running"
     old_step = old_entry.get("step", "") if old_entry else ""
 
@@ -617,9 +628,7 @@ def _validate_logs_report(tio, slug):
 
     result = validate_logs(tio.logs_dir, slug, ticket_type, steps_completed, ticket_fields)
     report, error_count = format_validate_logs_report(result, slug)
-    if entry.get("authored_drift"):
-        report += f"\n\n{entry['authored_drift_reason']}; use return-to-draft"
-        error_count += 1
+    report, error_count = append_authored_drift_diagnostic(report, error_count, entry)
     return report, error_count, result
 
 

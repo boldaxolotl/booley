@@ -37,7 +37,17 @@ def _diagnosis() -> dict:
 
 @pytest.mark.asyncio
 async def test_prepare_blocked_dossier_persists_agent_diagnosis(tmp_path: Path, monkeypatch):
-    ctx = _context(tmp_path)
+    plain = _context(tmp_path)
+    ctx = bp.BlockedContext(
+        plain.project_root,
+        plain.slug,
+        plain.ticket_path,
+        plain.log_dir,
+        plain.runtime_dir,
+        plain.worktree,
+        authored_drift=True,
+        authored_drift_reason="acceptance-input-change-required: authored Ticket changed",
+    )
 
     async def invoke(_ctx):
         return AgentResult(structured=_diagnosis(), cost_usd=0.02)
@@ -51,6 +61,8 @@ async def test_prepare_blocked_dossier_persists_agent_diagnosis(tmp_path: Path, 
     assert outcome.ready
     package = json.loads(outcome.package_path.read_text(encoding="utf-8"))
     assert package["diagnosis"]["blockers"][0]["name"] == "sim_pass"
+    assert package["authored_drift"] is True
+    assert package["authored_drift_reason"] == ctx.authored_drift_reason
     manifest = json.loads((ctx.runtime_dir / "blocked-manifest.json").read_text())
     assert manifest["source_sha256"] == "source"
     assert manifest["cost_usd"] == 0.02
