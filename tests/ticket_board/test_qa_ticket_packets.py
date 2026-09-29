@@ -63,3 +63,12 @@ def test_rendered_qa_packet_converts_through_ticket_boundary(
     assert len(plan.entries) == target_count
     capabilities = {criterion.capability for criterion in conversion.document.spec.criteria}
     assert ("FPGA" in capabilities) is fpga
+    if name == "evolution.md":
+        bugs = [
+            criterion
+            for criterion in conversion.document.spec.criteria
+            if criterion.capability == "REVIEW"
+            and criterion.target == "rtl"
+            and criterion.test == "bugs"
+        ]
+        assert [criterion.parameter for criterion in bugs] == ["clean"]

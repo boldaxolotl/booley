@@ -654,19 +654,29 @@ def test_serializer_detects_invalid_or_changed_converted_document() -> None:
         serialize_ticket_document(converted.document, changed_context)
 
 
-def test_review_done_and_clean_can_have_different_requirements() -> None:
+def test_review_list_rejects_redundant_done_and_clean_at_leaf() -> None:
+    conversion = convert_ticket_document(
+        _ticket("  REVIEW:\n    rtl:\n      bugs: [done, clean]\n"), _context()
+    )
+
+    assert conversion.document is None
+    (diagnostic,) = conversion.diagnostics
+    assert (diagnostic.line, diagnostic.column) == (10, 7)
+    assert "clean already implies done" in diagnostic.message
+    assert "amend REVIEW outcome to clean" in diagnostic.message
+
+
+def test_review_done_and_clean_cannot_have_different_requirements() -> None:
     ticket = _ticket("  REVIEW: {rtl: {bugs: done}}\n")
     ticket = ticket.replace(
         "---\n\n## Description",
         "CRITERIA_OPTIONAL:\n  REVIEW: {rtl: {bugs: clean}}\n---\n\n## Description",
     )
     conversion = convert_ticket_document(ticket, _context())
-    assert conversion.diagnostics == ()
-    assert conversion.document is not None
-    assert {(item.parameter, item.mandatory) for item in conversion.document.spec.criteria} == {
-        ("done", True),
-        ("clean", False),
-    }
+    assert conversion.document is None
+    (diagnostic,) = conversion.diagnostics
+    assert "clean already implies done" in diagnostic.message
+    assert "amend REVIEW outcome to clean" in diagnostic.message
 
 
 @pytest.mark.parametrize("annotation", ("new", "temp", "replaces lint_old"))

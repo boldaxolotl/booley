@@ -156,10 +156,12 @@ def test_draft_cutover_file_helpers_reject_conflicts_and_preserve_idempotence(
     draft_transition._move_archive_entry(source, destination)
 
 
-def test_draft_transition_requires_blocked_basis_and_exact_files(
+def test_draft_transition_requires_queued_or_blocked_basis_and_exact_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with pytest.raises(draft_transition.DraftTransitionError, match="requires a blocked"):
+    with pytest.raises(
+        draft_transition.DraftTransitionError, match="requires a queued or blocked"
+    ):
         draft_transition.return_to_draft(
             tmp_path,
             tmp_path / "ticket.md",

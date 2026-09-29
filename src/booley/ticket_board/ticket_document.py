@@ -221,6 +221,7 @@ class TicketConversionContext:
     stage: TicketStage
     resolve_view: Callable[[Mapping[str, Any]], TicketAuthoringView]
     checkout_root: Callable[[], Path] | None = None
+    _allow_legacy_review_outcomes: bool = False
 
 
 class _TargetResolutionError(ValueError):
@@ -595,6 +596,8 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
         flags = _on_success(fields)
         mandatory = fields[_MANDATORY]
         optional = fields.get(_OPTIONAL, {})
+        if not context._allow_legacy_review_outcomes:
+            _validate_review_outcomes(mandatory, optional, locations)
         _reject_retired_coverage_criteria(mandatory, optional)
         mentions = (
             *_targets_from_section(mandatory, _MANDATORY, locations),
@@ -635,6 +638,37 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
         )
     except (ValueError, OSError, yaml.YAMLError) as exc:
         return TicketConversion(locals().get("preview"), (_diagnostic(exc),), None)
+
+
+def _validate_review_outcomes(
+    mandatory: Mapping[str, Any],
+    optional: Mapping[str, Any],
+    locations: Mapping[tuple[str, ...], tuple[int, int]],
+) -> None:
+    seen: set[tuple[str, str]] = set()
+    for section_name, section in ((_MANDATORY, mandatory), (_OPTIONAL, optional)):
+        review = section.get("REVIEW")
+        if not isinstance(review, Mapping):
+            continue
+        for category, focuses in review.items():
+            if not isinstance(category, str) or not isinstance(focuses, Mapping):
+                continue
+            for focus, outcome in focuses.items():
+                if not isinstance(focus, str):
+                    continue
+                line, column = locations.get((section_name, "REVIEW", category, focus), (1, 1))
+                identity = (category, focus)
+                if (
+                    not isinstance(outcome, str)
+                    or outcome not in {"done", "clean"}
+                    or identity in seen
+                ):
+                    raise ValueError(
+                        "REVIEW outcome must be scalar done or clean; "
+                        "clean already implies done. For an existing pair, "
+                        f"amend REVIEW outcome to clean at {line}:{column}"
+                    )
+                seen.add(identity)
 
 
 def _reject_retired_coverage_criteria(

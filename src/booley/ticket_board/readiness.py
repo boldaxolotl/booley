@@ -106,6 +106,12 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
         )
     warnings = tuple(item for item in results if item.startswith("[warning] "))
     errors = [item for item in results if not item.startswith("[warning] ")]
+    if any("clean already implies done" in item for item in errors):
+        errors.append(
+            "recover the published Ticket with "
+            f"python -m booley.ticket_board return-to-draft {slug}, then confirm "
+            "REVIEW uses scalar clean before re-enqueueing"
+        )
     return ReadinessResult(ticket, tuple(errors), warnings)
 
 

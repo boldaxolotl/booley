@@ -203,6 +203,37 @@ def test_readiness_without_worktree_checks_current_generation_ref(tmp_path: Path
     assert any("protected path" in error for error in result.errors)
 
 
+def test_operational_legacy_review_pair_reports_recovery_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    project = root / ".booley_project"
+    ticket = project / "tickets/board/queue/legacy-pair.md"
+    ticket.parent.mkdir(parents=True)
+    content = b"legacy published ticket\n"
+    ticket.write_bytes(content)
+    status_before = _git(root, "status", "--porcelain", "--untracked-files=all")
+    monkeypatch.setattr(
+        readiness_module,
+        "validate_executable_ticket",
+        lambda *_args: [
+            "12:7: REVIEW outcome must be scalar done or clean; clean already implies done. "
+            "For an existing pair, amend REVIEW outcome to clean at 12:7"
+        ],
+    )
+
+    result = check_ticket_ready(root, "legacy-pair")
+
+    assert result.ready is False
+    assert "12:7" in result.errors[0]
+    assert "clean already implies done" in result.errors[0]
+    assert "python -m booley.ticket_board return-to-draft legacy-pair" in result.errors[1]
+    assert ticket.read_bytes() == content
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == status_before
+
+
 def test_worktree_discovery_failure_is_loud(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

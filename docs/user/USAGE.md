@@ -1077,6 +1077,13 @@ options and `BOOLEY_CONSOLE` override have been removed. Redirected output,
 logs remain available, and `--dry-run` / `--check-ready` print validation results
 without opening the Console.
 
+For one Ticket, `booley run --ticket <slug> --check-ready` and
+`booley board check-ready <slug>` perform the same observational readiness
+check. A published legacy Ticket that declares both `done` and `clean` for one
+REVIEW category/focus is not ready. Recover it with
+`python -m booley.ticket_board return-to-draft <slug>`; the draft is normalized
+to `clean`, which you should confirm before re-enqueueing it.
+
 ```bash
 # Execute a single ticket end-to-end in the full-screen Console
 booley run --ticket <slug>
