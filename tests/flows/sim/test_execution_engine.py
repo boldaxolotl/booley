@@ -380,11 +380,17 @@ def _write_stale_compiler_fixture(root: Path) -> tuple[Path, Path]:
 
 
 def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
+    source_root = Path(__file__).resolve().parents[3] / "src"
+    python_path = os.pathsep.join(
+        part for part in (str(source_root), os.environ.get("PYTHONPATH", "")) if part
+    )
+
     def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
         started = time.monotonic()
         result = subprocess.run(
             command,
             cwd=root,
+            env={**os.environ, "PYTHONPATH": python_path},
             capture_output=True,
             text=True,
             timeout=timeout,
