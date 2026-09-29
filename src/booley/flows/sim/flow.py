@@ -112,6 +112,7 @@ from .build import (
     classify_build_outcome,
     prepare_simulation_build,
     setup_failure_outcome,
+    simulation_setup_command,
 )
 from .build_session import (
     SimulationBuildSession,
@@ -4511,7 +4512,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         try:
             handle = self._target_handle(target)
             build_root = preview_generation_root(handle)
-            setup = fusesoc_registry.setup_command_for_handle(
+            setup = simulation_setup_command(
                 handle,
                 build_root=build_root,
             )

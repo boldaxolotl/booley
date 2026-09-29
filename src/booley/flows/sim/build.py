@@ -13,14 +13,14 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from booley.core.build_paths import work_root_for
 from booley.flows.eda_failures import classify_eda_failure
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import TargetHandle, TargetInspection
 from booley.targets.parameter_integrity import (
     ParameterIntegrityError,
     validate_top_parameter_intent,
@@ -29,6 +29,7 @@ from booley.targets.parameter_integrity import (
 from .. import edam as edam_layer
 from ..base import SubprocessResult
 from . import edam as sim_edam
+from .build_parallelism import LaneKind, verilator_backend_arguments
 
 BuildVerdict = Literal["pass", "fail"] | None
 BuildFailureKind = Literal["design", "infrastructure"] | None
@@ -129,6 +130,7 @@ def prepare_simulation_build(
     build_root: Path | None = None,
     resolution_vlnv: str | None = None,
     environment: Mapping[str, str] | None = None,
+    lane_kind: LaneKind = "heavy",
 ) -> PreparedSimulationBuild:
     """Resolve and prepare the simulator image used by normal Simulation."""
     try:
@@ -138,6 +140,7 @@ def prepare_simulation_build(
             build_root=build_root,
             resolution_vlnv=resolution_vlnv,
             environment=environment,
+            lane_kind=lane_kind,
         )
     except (
         fusesoc_registry.FuseSocError,
@@ -155,27 +158,27 @@ def _prepare_simulation_build(
     build_root: Path | None,
     resolution_vlnv: str | None,
     environment: Mapping[str, str] | None,
+    lane_kind: LaneKind,
 ) -> PreparedSimulationBuild:
     """Prepare one supported simulator Target after boundary normalization."""
-    root = handle.project_root
+    root = fusesoc_registry.require_current_target_handle(handle)
     target = handle.selector
     work_root = build_root or work_root_for(root, "sim", target, variant=variant)
+    inspection = TargetCatalog.build(root).inspect(handle)
+    backend_arguments = verilator_backend_arguments(inspection, lane_kind=lane_kind)
     resolved = fusesoc_registry.resolve_target_handle(
         handle,
         build_root=work_root,
         resolution_vlnv=resolution_vlnv,
+        backend_arguments=backend_arguments,
     )
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = _validated_simulator(handle, resolved)
     _stage_doctor_overlay(root, resolved.build_root)
-    try:
-        inspection = TargetCatalog.build(root).inspect(handle)
-        fileset = {
-            "rtl": tuple(inspection.rtl_files),
-            "tb": tuple(inspection.tb_files),
-        }
-    except Exception:  # noqa: BLE001 — report context cannot invalidate the build
-        fileset = {}
+    fileset = {
+        "rtl": tuple(inspection.rtl_files),
+        "tb": tuple(inspection.tb_files),
+    }
     rel = edam_layer.relpath_for_make(resolved.build_root, root)
     return PreparedSimulationBuild(
         target=target,
@@ -189,6 +192,26 @@ def _prepare_simulation_build(
         environment=dict(environment or {}),
         fileset=fileset,
     )
+
+
+def simulation_setup_command(
+    handle: TargetHandle,
+    *,
+    build_root: Path,
+    resolution_vlnv: str | None = None,
+    lane_kind: LaneKind = "heavy",
+    inspection: TargetInspection | None = None,
+) -> list[str]:
+    """Preview the exact FuseSoC setup command used by Simulation preparation."""
+    root = fusesoc_registry.require_current_target_handle(handle)
+    inspection = inspection or TargetCatalog.build(root).inspect(handle)
+    backend_arguments = verilator_backend_arguments(inspection, lane_kind=lane_kind)
+    kwargs: dict[str, Any] = {"build_root": build_root}
+    if resolution_vlnv is not None:
+        kwargs["resolution_vlnv"] = resolution_vlnv
+    if backend_arguments:
+        kwargs["backend_arguments"] = backend_arguments
+    return fusesoc_registry.setup_command_for_handle(handle, **kwargs)
 
 
 def _stage_doctor_overlay(project_root: Path, build_root: Path) -> None:

@@ -293,6 +293,44 @@ def test_cached_inspection_mappings_are_deeply_immutable(project: Path) -> None:
     assert "mutated" not in cached.inputs[0].attributes
 
 
+@pytest.mark.parametrize(
+    ("target_body", "expected_flow", "expected_tool"),
+    (
+        (
+            "flow: sim\nflow_options:\n  tool: verilator\n  make_options: [OPT_FAST=-O3]",
+            ("OPT_FAST=-O3",),
+            (),
+        ),
+        (
+            "default_tool: verilator\ntools:\n  verilator:\n    make_options: [-j7]",
+            (),
+            ("-j7",),
+        ),
+    ),
+    ids=("modern-flow-api", "legacy-tool-api"),
+)
+def test_inspection_exposes_condition_selected_backend_options(
+    tmp_path: Path,
+    target_body: str,
+    expected_flow: tuple[str, ...],
+    expected_tool: tuple[str, ...],
+) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+    _write_core(
+        tmp_path,
+        "options.core",
+        "acme:ip:options:1.0",
+        f"sim:\n{textwrap.indent(target_body, '  ')}\n  filesets: [rtl]\n  toplevel: a\n",
+    )
+
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim", for_flow="sim"))
+
+    assert tuple(inspection.flow_options.get("make_options", ())) == expected_flow
+    assert tuple(inspection.tool_options.get("make_options", ())) == expected_tool
+
+
 def test_inspection_normalizes_windows_fileset_paths_on_posix(tmp_path: Path) -> None:
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")

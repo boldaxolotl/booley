@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _CLASS_HEAVY = "heavy"
 _CLASS_LIGHT = "light"
 _CLASS_TICKET = "ticket"
+
+
+def load_job_budget_config() -> dict[str, Any]:
+    """Load the Project configuration that owns the shared Job Slot budget."""
+    from booley.runtime.shared_infra import _load_rtl_config
+
+    try:
+        return _load_rtl_config(None) or {}
+    except Exception:  # noqa: BLE001 — malformed/unavailable config uses safe defaults
+        return {}
 
 
 @dataclass(frozen=True, slots=True)
