@@ -65,6 +65,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- `python -m booley.ticket_board validate-logs <slug>` now renders its normal
+  Markdown and machine-readable JSON diagnostics for executable Tickets with
+  runtime snapshots instead of raising `AttributeError`.
+  ([#849](https://github.com/boldaxolotl/Booley/issues/849))
 - Clean liberty-mapped synthesis no longer receives false no-driver, ABC
   multi-output, `IFP-0028`, `GPL-0302`, or `STA-0349` advisories from Booley's
   generated Yosys and OpenROAD scripts. OpenROAD now removes every eligible
