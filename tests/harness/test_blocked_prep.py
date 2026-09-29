@@ -219,6 +219,10 @@ async def test_render_checks_snapshot_and_package_integrity(
     assert bp.render_blocked_dossier(tmp_path, "demo").message == (
         "blocked dossier is stale: run_log evidence integrity changed"
     )
+    snapshot.unlink()
+    assert bp.render_blocked_dossier(tmp_path, "demo").message == (
+        "blocked dossier is stale: run_log evidence missing"
+    )
     snapshot.write_text("blocked\n", encoding="utf-8")
     outcome.package_path.write_text("{}\n", encoding="utf-8")
     assert bp.render_blocked_dossier(tmp_path, "demo").message == (
@@ -257,6 +261,21 @@ def test_git_failure_names_operation(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     with pytest.raises(RuntimeError, match="worktree/head collection failed: bad head"):
         bp._collect_live_inputs(ctx)
+
+
+def test_git_timeout_names_operation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def time_out(command, **_kwargs):
+        raise subprocess.TimeoutExpired(command, 30)
+
+    monkeypatch.setattr(bp.subprocess, "run", time_out)
+
+    with pytest.raises(RuntimeError, match="worktree/head collection timed out"):
+        bp._run_git(tmp_path, "worktree/head", "rev-parse", "HEAD")
+
+
+def test_state_projection_names_malformed_json() -> None:
+    with pytest.raises(RuntimeError, match="state input is malformed"):
+        bp._state_projection(b"{")
 
 
 def _context_with_worktree(tmp_path: Path) -> tuple[bp.BlockedContext, Path]:
