@@ -201,6 +201,18 @@ def required_board_directories(tickets_dir: Path) -> list[Path]:
     return [board_root(tickets_dir), state_root(tickets_dir)]
 
 
+def legacy_state_directories(tickets_dir: Path) -> list[Path]:
+    """Return the pre-ADR-0065 ``board/<state>/`` directories that exist, sorted.
+
+    Before state records, a Ticket's state was the name of the board
+    subdirectory holding its document. Current code never looks inside these
+    directories, so Tickets left in them are invisible.
+    """
+    root = board_root(tickets_dir)
+    names = sorted({state.dir_name for state in TicketState})
+    return [root / name for name in names if (root / name).is_dir()]
+
+
 def board_relative_document_path(slug: str) -> Path:
     """Return the document path for *slug*, relative to the tickets dir."""
     return Path(BOARD_DIR_NAME, f"{_require_slug(slug)}.md")

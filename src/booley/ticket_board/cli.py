@@ -50,8 +50,9 @@ from .helpers import (
     ensure_utf8_output,
 )
 from .io import TicketIO
+from .legacy_layout import LegacyBoardLayoutError
 from .lifecycle import board_target_choices
-from .operations import reconcile_board
+from .operations import open_board
 from .ticket_history import TicketHistoryError
 
 
@@ -473,11 +474,9 @@ def main(argv: list[str] | None = None) -> int:
     handler = HANDLERS.get(command)
     if handler is not None:
         try:
-            if command not in READ_ONLY_COMMANDS:
-                # Finish closing work a crash or a failed commit left behind.
-                reconcile_board(tio)
+            open_board(tio, recover=command not in READ_ONLY_COMMANDS)
             return handler(tio, args)
-        except (StateRecordError, TicketHistoryError) as exc:
+        except (LegacyBoardLayoutError, StateRecordError, TicketHistoryError) as exc:
             # A broken state record fails closed: say which one instead of a traceback.
             print(f"Error: {exc}", file=sys.stderr)
             return 2

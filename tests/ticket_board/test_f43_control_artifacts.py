@@ -120,9 +120,8 @@ def test_authored_draft_validates_without_hiding_product_changes(
 ) -> None:
     root, tio = _project(tmp_path, monkeypatch)
     ticket = _ticket(tio)
-    _git(root, "add", "-f", str(ticket.relative_to(root)))
-    _commit_all(root, "add draft ticket")
-    _git(root / ".booley_project" / "worktrees" / "change-target", "reset", "--hard", "main")
+    # Board documents are ignored (ADR 0065), so authoring edits never show
+    # up as Git changes; product edits still must.
     _replace_ticket(ticket, "type: refactor\n", "type: refactor\npriority: high\n")
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))

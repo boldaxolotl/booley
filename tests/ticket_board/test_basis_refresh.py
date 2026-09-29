@@ -22,8 +22,10 @@ from booley.ticket_board.basis_refresh import (
     load_basis_refresh,
     prepare_waiting_basis_refresh,
 )
+from booley.ticket_board.board_layout import read_state_record
 from booley.ticket_board.frontmatter import format_frontmatter
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     ProviderTargetBinding,
@@ -143,9 +145,11 @@ def _write_published_ticket(
     machine = ticket_machine_from_spec(basis, converted.document.spec, generation)
     _git(root, "update-ref", outer_ref, outer_head)
     _git(project, "update-ref", project_ref, project_head)
-    ticket = project / "tickets" / "board" / status / f"{slug}.md"
-    ticket.parent.mkdir(parents=True, exist_ok=True)
-    ticket.write_text(format_frontmatter({**fields, "machine": machine}, body), encoding="utf-8")
+    content = format_frontmatter({**fields, "machine": machine}, body)
+    if status == "done":
+        place_closed_ticket(project / "tickets", slug, content, generation=generation)
+    else:
+        place_ticket(project / "tickets", slug, status, content)
     return replace(basis, machine=machine)
 
 
@@ -240,7 +244,7 @@ def test_promotion_reconstructs_paired_basis_before_provider_validation(
 
     error = capsys.readouterr().err
     assert "provider Ticket 'provider' no longer exports 'acme:lib:toy:1.0#removed'" in error
-    assert (project / "tickets/board/blocked/consumer.md").is_file()
+    assert read_state_record(project / "tickets", "consumer").state is TicketState.BLOCKED
     reconstructed = next((project / ".runtime/acceptance/refresh").glob("*/old-basis"))
     assert "/.booley_project" not in (reconstructed / ".git" / "info" / "exclude").read_text(
         encoding="utf-8"

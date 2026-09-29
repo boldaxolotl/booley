@@ -106,6 +106,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import CoreSources, FuseSocError, TargetHandle, TargetRef
 from booley.targets.flow_names import config_section
 from booley.ticket_board.board_layout import required_board_directories
+from booley.ticket_board.legacy_layout import legacy_layout_problems, migration_pointer
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
@@ -2779,6 +2780,7 @@ def _run_ticket_preflight_parity_checks(
         return
 
     _check_tickets_tree(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_ticket_board_layout(project.project_dir, reporter.pass_, reporter.fail_)
     _check_project_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
     _check_ticket_history_committed(project.project_dir, reporter.pass_, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
@@ -2806,6 +2808,18 @@ def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
         )
         return
     _pass("tickets tree present")
+
+
+def _check_ticket_board_layout(project_dir: Path, _pass: Check, _fail: Fail) -> None:
+    """Fail while the board keeps pre-ADR-0065 leftovers board commands refuse to run on."""
+    problems = legacy_layout_problems(project_dir / "tickets")
+    for problem in problems:
+        _fail(
+            f"Ticket Board needs a manual migration: {problem.summary}",
+            f"{problem.fix}; {migration_pointer()}",
+        )
+    if not problems:
+        _pass("Ticket Board uses state records")
 
 
 def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> None:

@@ -1204,9 +1204,12 @@ async def test_board_show_blocked_uses_dossier_without_review_package(
     monkeypatch.delenv("TICKETS_DIR", raising=False)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
-    ticket = tmp_path / ".booley_project" / "tickets" / "board" / "blocked" / "demo.md"
-    ticket.parent.mkdir(parents=True)
-    ticket.write_text(
+    from tests.ticket_board.conftest import place_ticket
+
+    ticket = place_ticket(
+        tmp_path / ".booley_project" / "tickets",
+        "demo",
+        "blocked",
         format_frontmatter(
             {
                 "summary": "demo",
@@ -1219,7 +1222,6 @@ async def test_board_show_blocked_uses_dossier_without_review_package(
             },
             "## Description\nDemo work.\n",
         ),
-        encoding="utf-8",
     )
     worktree = tmp_path / ".booley_project" / "worktrees" / "demo"
     worktree.mkdir(parents=True)
@@ -1289,7 +1291,7 @@ async def test_board_show_blocked_names_changed_dossier_input(
             pass
 
         def inspect_ticket(self, _slug):
-            return {"file": "board/blocked/demo.md", "status": "blocked"}
+            return {"file": "board/demo.md", "status": "blocked"}
 
     monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: context)
     monkeypatch.setattr(blocked_prep, "_invoke", invoke)

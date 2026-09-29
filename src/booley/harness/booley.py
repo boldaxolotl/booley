@@ -79,6 +79,7 @@ from booley.runtime.timefmt import UtcLogFormatter, format_human_datetime
 from booley.ticket_board.board_layout import documents_in_state, locate_document
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.legacy_layout import LegacyBoardLayoutError, require_current_layout
 from booley.ticket_board.lifecycle import TicketState
 
 if TYPE_CHECKING:
@@ -1245,7 +1246,7 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
 
     try:
         return _run_board_command(args, project_root)
-    except (StateRecordError, TicketHistoryError) as exc:
+    except (LegacyBoardLayoutError, StateRecordError, TicketHistoryError) as exc:
         # A broken state record fails closed: say which one instead of a traceback.
         print(f"Error: {exc}", file=sys.stderr)
         return 2
@@ -1257,11 +1258,9 @@ def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
 
     board_cmd = getattr(args, "board_command", None)
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    if board_cmd not in _READ_ONLY_BOARD_COMMANDS:
-        # Finish closing work a crash or a failed commit left behind.
-        from booley.ticket_board.operations import reconcile_board
+    from booley.ticket_board.operations import open_board
 
-        reconcile_board(tio)
+    open_board(tio, recover=board_cmd not in _READ_ONLY_BOARD_COMMANDS)
 
     if board_cmd is None or (board_cmd == "show" and not getattr(args, "slug", None)):
         from booley.ticket_board.io import scan_all_tickets
@@ -2632,7 +2631,13 @@ def _dispatch_main() -> int:  # noqa: PLR0911 -- preserves command exit codes
     if early is not None:
         return early
 
-    # Only 'run' subcommand reaches here.
+    # Only 'run' subcommand reaches here. An old-layout board looks empty, so
+    # the runner would idle on it instead of saying why.
+    try:
+        require_current_layout(tickets_dir_from_project_root(project_root))
+    except LegacyBoardLayoutError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     if args.check_ready:
         return _check_ticket_readiness(args, project_root)
     if args.dry_run:

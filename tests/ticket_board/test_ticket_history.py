@@ -547,16 +547,17 @@ def test_move_ticket_to_archived_is_refused(tio, capsys):
 
 
 def test_read_only_cli_commands_never_recover(tio, monkeypatch):
-    from booley.ticket_board import cli
+    from booley.ticket_board import cli, operations
 
     calls = []
     monkeypatch.setattr(cli, "detect_tickets_dir", lambda: tio.tickets_dir)
-    monkeypatch.setattr(cli, "reconcile_board", calls.append)
+    monkeypatch.setattr(operations, "reconcile_board", calls.append)
 
     cli.main(["classify"])
     assert calls == []
     cli.main(["promote-waiting"])
-    assert len(calls) == 1
+    # The CLI recovers first, then op_promote_waiting recovers on its own.
+    assert len(calls) == 2
 
 
 def test_lost_done_close_is_finished_by_the_next_promotion(tmp_path, monkeypatch):

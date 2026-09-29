@@ -432,8 +432,12 @@ draft ──► queued ──► running ──► review ──► done
   it left off.
 - **review**: the criteria passed and the Ticket waits for your decision.
 
-The files live in `.booley_project/board/` folders with the same names, except
-`drafts/` (`draft`), `queue/` (`queued`), and `active/` (`running`).
+Each live Ticket is one file, `.booley_project/tickets/board/<slug>.md`, and
+its status is kept beside it in `tickets/state/<slug>.json`. Both are ignored
+by Git. When a Ticket is done or archived, its document moves to
+`tickets/history/<slug>.md`, which Booley commits. Boards made before this
+layout need a one-time manual migration; see
+[Migrating a Ticket Board to state records](#migrating-a-ticket-board-to-state-records).
 
 **Reviewing a finished Ticket.** `/booley-ticket-triage` walks you through it.
 It shows the diff, the criteria results, any files outside the scope, and, with
@@ -461,6 +465,81 @@ also handy for looking at a blocked Ticket's partial work. `booley board show
 Two Git surprises are covered in Troubleshooting:
 [Ticket worktrees show as `prunable`](TROUBLESHOOTING.md#ticket-worktrees-show-as-prunable-on-the-host)
 and [`git` cannot see files under `.booley_project/`](TROUBLESHOOTING.md#git-cannot-see-files-under-booley_project).
+
+### Migrating a Ticket Board to state records
+
+Older Booley versions kept each Ticket in a folder named after its status
+(`board/queue/`, `board/active/`, `board/done/`, ...) and tracked those files
+in Git. Current Booley reads only `board/<slug>.md` plus its state record, so
+on an old board it would see no Tickets at all. Until you migrate, `booley
+doctor` FAILs and `booley board` and `booley run` refuse to start, naming what
+is left over. There is no migration command; the steps take a few minutes.
+
+1. Make sure no Ticket is being worked on: stop every `booley run` first.
+   A Ticket left in `board/active/` was interrupted; it migrates as `blocked`
+   (step 2), and triage sends it back to the queue with its work kept.
+2. For each document in `tickets/board/<folder>/`, except `done/` and
+   `archived/`, move it to `tickets/board/<slug>.md`. If the folder is not
+   `drafts/`, also write `tickets/state/<slug>.json`. A draft has no state
+   record.
+
+   | Old folder | `state` in the record |
+   | --- | --- |
+   | `drafts/` | no record |
+   | `queue/` | `queued` |
+   | `waiting/` | `waiting` |
+   | `active/` | `blocked`, with `"blocked_reason": "migrated while running"` |
+   | `blocked/` | `blocked` |
+   | `review/` | `review` |
+
+   The record holds exactly these keys. If the Ticket has a progress file,
+   `tickets/logs/<slug>/.runtime/progress.json` (or the older
+   `tickets/logs/<slug>/progress.json`), copy its values over the defaults
+   below, so the Ticket keeps its progress:
+
+   ```json
+   {
+     "schema": 1,
+     "state": "queued",
+     "step": "",
+     "steps_completed": [],
+     "workspace_intent": "fresh",
+     "last_update": "",
+     "failed_step": null,
+     "error": null,
+     "blocked_reason": null,
+     "blocked_step": null,
+     "execution_id": "",
+     "execution_owner_pid": null
+   }
+   ```
+
+3. Move each document in `board/done/` and `board/archived/` to
+   `tickets/history/<slug>.md`. Add a `closed:` block as the **last** key of
+   its frontmatter, with the outcome `done` or `archived` and the close date
+   in UTC. For `generation`, copy the document's `machine.generation` value if
+   it has one; otherwise leave it empty:
+
+   ```yaml
+   closed:
+     outcome: done
+     date: '2026-09-30T12:00:00Z'
+     generation: ''
+   ```
+
+4. Delete the emptied `board/<folder>/` directories.
+5. Make sure `.booley_project/.gitignore` ignores `tickets/board/` and
+   `tickets/state/` (`booley doctor` names any missing pattern), then stop
+   tracking the old files and commit the removal and the new history files:
+
+   ```bash
+   git rm -r --cached --ignore-unmatch -- .booley_project/tickets/board .booley_project/tickets/state
+   git add .booley_project/.gitignore .booley_project/tickets/history
+   git commit -m "Migrate the Ticket Board to state records"
+   ```
+
+6. Run `booley doctor` (the Ticket Board checks should pass) and `booley board`
+   (it should list the same open Tickets as before).
 
 ## Running Unattended
 

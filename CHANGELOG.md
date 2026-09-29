@@ -43,6 +43,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   Check Target build. Projects whose simulator-image builds need more than one
   hour must set `[flows.sim].build_timeout_ms` explicitly.
 
+- The Ticket Board now keeps each live Ticket at `tickets/board/<slug>.md`
+  with its status in an ignored `tickets/state/<slug>.json`, and moves done
+  and archived Tickets into the tracked `tickets/history/`. Boards made by
+  earlier versions need a one-time manual migration: until then `booley
+  doctor` FAILs and `booley board` and `booley run` refuse to start, both when
+  Tickets remain in the old `board/<status>/` folders and when Git still
+  tracks files under `tickets/board/` or `tickets/state/`. Follow
+  [Migrating a Ticket Board to state records](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#migrating-a-ticket-board-to-state-records).
 - REVIEW category/focus declarations now require exactly one scalar `done` or
   `clean` outcome. Lists and mandatory/optional pairs are invalid, including in
   already-published Tickets. `booley board check-ready <slug>` is equivalent to

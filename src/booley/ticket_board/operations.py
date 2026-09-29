@@ -26,6 +26,7 @@ from .board_layout import RUNTIME_DEFAULTS
 from .git_ops import cleanup_worktree_and_branch
 from .helpers import parse_arrow, slug_from_file
 from .io import scan_all_tickets
+from .legacy_layout import require_current_layout
 from .lifecycle import (
     STATE_BY_STATUS,
     TicketState,
@@ -831,6 +832,20 @@ def reconcile_board(tio: Any) -> None:
 
     _close_finished_done_tickets(tio)
     recover_ticket_history(tio)
+
+
+def open_board(tio: Any, *, recover: bool) -> None:
+    """Check what every board command needs before it touches the board.
+
+    Refuses a board in the pre-ADR-0065 layout, which hides its Tickets, so
+    even a read-only view would show the wrong board. Then, when *recover* is
+    set (commands that change the board), finishes closing work a crash or a
+    failed commit left behind; read-only commands skip that because it can
+    commit to the Project repository.
+    """
+    require_current_layout(tio.tickets_dir)
+    if recover:
+        reconcile_board(tio)
 
 
 def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
