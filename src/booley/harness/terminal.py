@@ -107,6 +107,13 @@ def close_log() -> None:
             _log_file = None
 
 
+def flush_log() -> None:
+    """Flush buffered run-log output without emitting any new content."""
+    with _output_lock:
+        if _log_file is not None:
+            _log_file.flush()
+
+
 def _emit(*args: str, flush: bool = False) -> None:
     """Print to stdout and, if open, mirror ANSI-stripped text to run.log.
 
