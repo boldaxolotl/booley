@@ -35,12 +35,12 @@ def parse_porcelain_v1_z(output: str) -> tuple[GitStatusEntry, ...]:
         if len(record) < 4 or record[2] != " ":
             raise ValueError(f"malformed Git porcelain record: {record!r}")
         status = record[:2]
-        path = record[3:].replace("\\", "/").removeprefix("./")
+        path = record[3:].removeprefix("./")
         source_path = None
         if "R" in status or "C" in status:
             if index >= len(fields):
                 raise ValueError(f"Git porcelain rename has no source: {record!r}")
-            source_path = fields[index].replace("\\", "/").removeprefix("./")
+            source_path = fields[index].removeprefix("./")
             index += 1
         entries.append(GitStatusEntry(status, path, source_path))
     return tuple(entries)

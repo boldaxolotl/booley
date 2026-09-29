@@ -1,6 +1,7 @@
 """Basis Refresh reconstructs only approved consumer-authored controls."""
 
 import json
+import subprocess
 import tomllib
 from dataclasses import replace
 from pathlib import Path
@@ -10,7 +11,8 @@ import pytest
 import yaml
 
 from booley.core.models import TargetPlan, TargetPlanRole
-from booley.ticket_board import basis_publication, basis_refresh
+from booley.runtime.project_dir import reset_cache
+from booley.ticket_board import basis_publication, basis_refresh, operations
 from booley.ticket_board.basis_refresh import (
     BasisRefreshError,
     _reapply_placeholders,
@@ -21,13 +23,23 @@ from booley.ticket_board.basis_refresh import (
     prepare_waiting_basis_refresh,
 )
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.io import TicketIO
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     ProviderTargetBinding,
     TicketBaseline,
+    ticket_machine_digest,
     ticket_machine_fields,
+    ticket_machine_from_spec,
+)
+from booley.ticket_board.ticket_document import (
+    TicketAuthoringView,
+    TicketConversionContext,
+    convert_ticket_document,
 )
 from booley.ticket_board.workspace_ops import AuthoringWorkspace
+
+from .conftest import make_paired_repository
 
 
 def _fake_document():
@@ -56,6 +68,184 @@ def _write_core(path: Path, targets: dict) -> None:
             sort_keys=False,
         ),
         encoding="utf-8",
+    )
+
+
+def _git(repository: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
+def _ticket_identity_commit(
+    root: Path,
+    slug: str,
+    machine: dict,
+    parent: str,
+) -> str:
+    message = (
+        f"Publish {slug}\n\n"
+        f"Booley-Ticket-Slug: {slug}\n"
+        f"Booley-Authored-SHA256: {machine['authored_sha256']}\n"
+        f"Booley-Machine-SHA256: {ticket_machine_digest(machine)}\n"
+    )
+    result = subprocess.run(
+        ["git", "commit-tree", f"{parent}^{{tree}}", "-p", parent],
+        cwd=root,
+        input=message,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
+def _write_published_ticket(
+    root: Path,
+    project: Path,
+    slug: str,
+    status: str,
+    fields: dict,
+    body: str,
+    generation: str,
+    *,
+    providers: tuple[ProviderTargetBinding, ...] = (),
+) -> TicketBaseline:
+    outer_destination = _git(root, "rev-parse", "main")
+    project_head = _git(project, "rev-parse", "main")
+    outer_ref = f"refs/heads/booley-generation/{generation[:16]}/{slug}"
+    project_ref = f"refs/heads/booley-generation/{generation[:16]}/{slug}-project"
+    participants = (
+        BasisParticipant("outer", "0" * 40, outer_ref, "refs/heads/main", outer_destination),
+        BasisParticipant("project", project_head, project_ref, "refs/heads/main", project_head),
+    )
+    preliminary = TicketBaseline(participants, providers=providers)
+    view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ())
+    converted = convert_ticket_document(
+        format_frontmatter(fields, body),
+        TicketConversionContext("draft", lambda _generated: view),
+    )
+    assert converted.document is not None
+    machine = ticket_machine_from_spec(preliminary, converted.document.spec, generation)
+    outer_head = _ticket_identity_commit(root, slug, machine, outer_destination)
+    basis = replace(
+        preliminary,
+        participants=(replace(participants[0], authoring_sha=outer_head), participants[1]),
+    )
+    machine = ticket_machine_from_spec(basis, converted.document.spec, generation)
+    _git(root, "update-ref", outer_ref, outer_head)
+    _git(project, "update-ref", project_ref, project_head)
+    ticket = project / "tickets" / "board" / status / f"{slug}.md"
+    ticket.parent.mkdir(parents=True, exist_ok=True)
+    ticket.write_text(format_frontmatter({**fields, "machine": machine}, body), encoding="utf-8")
+    return replace(basis, machine=machine)
+
+
+def _paired_refresh_repositories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    root = tmp_path / "project"
+    project = make_paired_repository(root)
+    (project / "tickets").mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    reset_cache()
+    return root, project
+
+
+def _publish_missing_target_refresh(root: Path, project: Path) -> TicketBaseline:
+    common = {
+        "type": "bugfix",
+        "branch": "main",
+        "project_destination_ref": "refs/heads/main",
+        "scope": ["README.md"],
+        "on_success": ["review"],
+        "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "clean"}}},
+    }
+    provider_generation = "1" * 32
+    _write_published_ticket(
+        root,
+        project,
+        "provider",
+        "done",
+        {**common, "summary": "Accepted provider"},
+        "## Description\n\nNo longer exports the Target.\n",
+        provider_generation,
+    )
+    binding = ProviderTargetBinding(
+        "provider", provider_generation, "acme:lib:toy:1.0#removed", "persistent", "2" * 64
+    )
+    return _write_published_ticket(
+        root,
+        project,
+        "consumer",
+        "waiting",
+        {**common, "summary": "Waiting consumer", "dependencies": ["provider"]},
+        "## Description\n\nRefresh after provider acceptance.\n",
+        "3" * 32,
+        providers=(binding,),
+    )
+
+
+def _remove_canonical_generation_worktree(
+    root: Path, project: Path, basis: TicketBaseline
+) -> None:
+    canonical = project / "worktrees/consumer"
+    canonical.parent.mkdir(parents=True)
+    _git(
+        root,
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        str(canonical),
+        basis.participant("outer").authoring_sha,
+    )
+    nested = canonical / ".booley_project"
+    _git(
+        project,
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        str(nested),
+        basis.participant("project").authoring_sha,
+    )
+    assert nested.is_dir()
+    _git(project, "worktree", "remove", "--force", str(nested))
+    _git(root, "worktree", "remove", "--force", str(canonical))
+    assert not canonical.exists()
+
+
+def test_promotion_reconstructs_paired_basis_before_provider_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    _remove_canonical_generation_worktree(root, project, basis)
+    board = TicketIO(project / "tickets", project_root=root)
+
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == ""
+    assert operations.op_promote_waiting(board) == []
+
+    error = capsys.readouterr().err
+    assert "provider Ticket 'provider' no longer exports 'acme:lib:toy:1.0#removed'" in error
+    assert (project / "tickets/board/blocked/consumer.md").is_file()
+    reconstructed = next((project / ".runtime/acceptance/refresh").glob("*/old-basis"))
+    assert "/.booley_project" not in (reconstructed / ".git" / "info" / "exclude").read_text(
+        encoding="utf-8"
+    )
+    assert _git(reconstructed, "status", "--porcelain", "--untracked-files=all") == (
+        "?? .booley_project/"
     )
 
 
