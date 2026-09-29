@@ -298,8 +298,7 @@ or runs. Campaigns from older Booley releases may need to be recollected.
 which tests to add, and possible waiver candidates for human review.
 
 ```bash
-booley flow coverage_analyst --campaign <exact coverage.json> \
-  --instruction "Why is branch coverage low in the arbiter?"
+booley flow coverage_analyst --campaign <exact coverage.json>
 ```
 
 It never runs simulation, changes Criteria, or approves waivers. See
