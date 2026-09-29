@@ -67,7 +67,7 @@ test = [
     "pytest-xdist==3.8.0",
     "pytest-timeout==2.4.0",
     "pytest-cov==7.1.0",
-    "diff-cover==10.5.1",
+    "diff-cover==10.6.0",
 ]
 quality = [
     "pyright==1.1.414",
@@ -96,7 +96,7 @@ dev = [
     "pytest-cov==7.1.0",
     # CI quality gates. Exact pins keep local and hosted results reproducible;
     # the quality extra repeats these pins for a smaller hosted install.
-    "diff-cover==10.5.1",
+    "diff-cover==10.6.0",
     "pyright==1.1.414",
     "mutmut==3.8.0",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in
