@@ -973,7 +973,9 @@ def _add_targets_subparser(sub) -> None:
         help="Target to detail (bare name or vlnv#name), or a glob like "
         "'soc*' to filter the listing",
     )
+    # --for is the advertised spelling; --for-flow stays as a long-form alias.
     targets_p.add_argument(
+        "--for",
         "--for-flow",
         dest="for_flow",
         metavar="FLOW",
@@ -1806,22 +1808,19 @@ def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     from booley.targets.flow_names import canonical
 
     raw_name = getattr(args, "endpoint_name", None)
-    name = canonical(raw_name) if raw_name else None
-    if not name:
-        print(
-            f"ERROR: `booley {args.command}` needs a name.\n\nAvailable Flows:\n"
-            + _flow_listing([item for item in mcp_tools if item.kind == "flow"]),
-            file=sys.stderr,
-        )
-        return 2
+    flows = [item for item in mcp_tools if item.kind == "flow"]
+    if raw_name is None:
+        print(f"Available Flows:\n{_flow_listing(flows)}")
+        return 0
 
+    name = canonical(raw_name)
     info = next(
-        (t for t in mcp_tools if t.name == name and t.kind == "flow"),
+        (flow for flow in flows if flow.name == name),
         None,
     )
     if info is None:
         print(
-            f"ERROR: {name!r} is not a flow.\n",
+            f"ERROR: {name!r} is not a flow.\n\nAvailable Flows:\n{_flow_listing(flows)}",
             file=sys.stderr,
         )
         return 2
@@ -1890,11 +1889,11 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     as_json: bool = getattr(args, "json", False)
 
     if selector and not target_surface.is_glob(selector):
-        # Detail view. --for-flow is a listing filter — combining it with a single
+        # Detail view. --for is a listing filter — combining it with a single
         # Target would silently answer a different question, so refuse.
         if for_flow:
             print(
-                "ERROR: --for-flow filters the listing; it cannot combine with a "
+                "ERROR: --for filters the listing; it cannot combine with a "
                 "single-Target detail view.",
                 file=sys.stderr,
             )
@@ -1914,7 +1913,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     except fusesoc_registry.FuseSocError as exc:  # e.g. cross-root VLNV collision
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    except ValueError as exc:  # --for-flow names a non-Target-aware endpoint
+    except ValueError as exc:  # --for names a non-Target-aware endpoint
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

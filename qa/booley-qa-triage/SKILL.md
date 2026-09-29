@@ -64,9 +64,8 @@ Triage is a conversation, one **brief** per turn.
      covers every affected place the audit finds. When the decision widens scope in
      other ways (for example "add a Doctor check"), write that into the issue too.
      Follow the issue rules in `AGENTS.md`: scan title and body with the
-     confidential-content guard, then `gh issue create`. Label with `qa-triage`
-     (it marks the issue as filed by this skill), with `bug`, `documentation`, or
-     `enhancement`, and with the triage role from
+     confidential-content guard, then `gh issue create`. Label with `bug`,
+     `documentation`, or `enhancement`, and with the triage role from
      `docs/internals/agents/triage-labels.md` (`ready-for-agent` when the fix is
      decided, `needs-triage` for open design).
    - `comment on #<n>`: same drafting and scan, then `gh issue comment`.
