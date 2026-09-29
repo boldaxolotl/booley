@@ -203,6 +203,23 @@ and cover properties) into a **Coverage Campaign**, check it against Coverage
 Criteria, and hand it to the Coverage Analyst for waiver candidates and
 testbench improvements.
 
+#### How coverage is measured
+
+Coverage is measured per Target, per run:
+
+1. Each selected test runs in its own simulator process and writes its own
+   Verilator coverage database.
+2. Booley merges those databases into one result for the Target: a point is
+   covered if any test hit it. Per-test hit counts are kept, so you can see
+   which test covered what.
+3. Each metric's percentage is covered RTL points divided by eligible RTL
+   points. Testbench and generated code are reported but not scored. When
+   approved waivers apply (see [Collecting vs. gating](#collecting-vs-gating)),
+   waived points are left out of the count.
+
+Each Target gets its own Coverage Campaign. Nothing is merged across Targets or
+across runs.
+
 #### Quick start
 
 ```bash
