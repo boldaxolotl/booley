@@ -1468,25 +1468,51 @@ class TestCmdFlow:
         _FakeFlow.rc = rc
         assert tlr._cmd_flow(self._args(["flow", "fakeflow"]), Path("/work")) == rc
 
-    def test_unknown_endpoint_name_lists_available_endpoints(self, capsys):
+    def test_unknown_flow_name_lists_available_flows(self, capsys):
         rc = tlr._cmd_flow(self._args(["flow", "nosuchtool"]), Path("/work"))
         assert rc == 2
-        err = capsys.readouterr().err
-        assert "not a flow" in err
+        streams = capsys.readouterr()
+        assert streams.out == ""
+        assert streams.err == (
+            "ERROR: 'nosuchtool' is not a flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
+        )
         assert not _FakeFlow.calls
 
     def test_missing_flow_name_lists_available_flows(self, capsys):
         rc = tlr._cmd_flow(self._args(["flow"]), Path("/work"))
+        assert rc == 0
+        streams = capsys.readouterr()
+        assert "Available Flows:" in streams.out
+        assert "fakeflow" in streams.out
+        assert streams.err == ""
+
+    def test_bare_flow_main_lists_on_stdout(self, tmp_path, monkeypatch, capsys):
+        args = self._args(["flow"])
+        monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+        monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
+        monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
+        monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
+
+        assert tlr.main() == 0
+        streams = capsys.readouterr()
+        assert "Available Flows:" in streams.out
+        assert "fakeflow" in streams.out
+        assert streams.err == ""
+
+    def test_empty_flow_name_is_unknown(self, capsys):
+        rc = tlr._cmd_flow(self._args(["flow", ""]), Path("/work"))
         assert rc == 2
-        err = capsys.readouterr().err
-        assert "needs a name" in err
-        assert "fakeflow" in err
+        streams = capsys.readouterr()
+        assert streams.out == ""
+        assert streams.err == (
+            "ERROR: '' is not a flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
+        )
 
     def test_listing_trims_the_llm_facing_description(self, capsys):
         tlr._cmd_flow(self._args(["flow"]), Path("/work"))
-        err = capsys.readouterr().err
-        assert "A fake Flow" in err
-        assert "must not be shown" not in err
+        out = capsys.readouterr().out
+        assert "A fake Flow" in out
+        assert "must not be shown" not in out
 
     def test_unloadable_endpoint_errors_without_running(self, monkeypatch, capsys):
         monkeypatch.setattr(tlr, "_load_mcp_tool_class", lambda _info: None)
