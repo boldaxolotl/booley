@@ -731,6 +731,11 @@ A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when th
 Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
 
+Editing valid authored content in a sealed Ticket is reported by `board show` as authored
+drift. `unblock` cannot resume that generation; use `return-to-draft` instead. The new
+draft preserves the Ticket's current authored content, while Booley archives the sealed
+generation and its evidence.
+
 `create-file` materializes an isolated Ticket Workspace. This is where the
 Ticket-creation agent adds any Target the Ticket will require; the Project's
 destination branch stays fully functional and Doctor-clean until acceptance.

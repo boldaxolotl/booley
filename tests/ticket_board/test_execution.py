@@ -210,6 +210,21 @@ class TestClassifyTickets:
 
 
 class TestResumeDetect:
+    def test_reports_authored_drift(self):
+        reason = "acceptance-input-change-required: authored Ticket changed"
+        result = resume_detect(
+            {
+                "status": "queued",
+                "steps_completed": [],
+                "feature_branch": "feat",
+                "authored_drift": True,
+                "authored_drift_reason": reason,
+            }
+        )
+
+        assert result["authored_drift"] is True
+        assert result["authored_drift_reason"] == reason
+
     def test_fresh_queued(self):
         entry = {"status": "queued", "steps_completed": [], "feature_branch": "feat"}
         result = resume_detect(entry)

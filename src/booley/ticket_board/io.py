@@ -190,6 +190,33 @@ class TicketIO:
 
         Returns dict or None.
         """
+        return self._find_ticket(slug, inspect=False)
+
+    def inspect_ticket(self, slug: str) -> dict[str, Any] | None:
+        """Inspect a Ticket while reporting recoverable authored drift."""
+        return self._find_ticket(slug, inspect=True)
+
+    def _validate_ticket_lookup(
+        self, document: Any, canonical_slug: str, *, inspect: bool
+    ) -> str | None:
+        if not (self._project_root / ".git").exists():
+            return None
+        from .ticket_baseline import (
+            authored_drift_reason,
+            load_ticket_baseline_from_document,
+            load_ticket_recovery_baseline_from_document,
+        )
+
+        drift_reason = authored_drift_reason(document)
+        if inspect and drift_reason is not None:
+            load_ticket_recovery_baseline_from_document(
+                self._project_root, canonical_slug, document
+            )
+        else:
+            load_ticket_baseline_from_document(self._project_root, canonical_slug, document)
+        return drift_reason
+
+    def _find_ticket(self, slug: str, *, inspect: bool) -> dict[str, Any] | None:
         file_path, status = find_ticket_file(
             self.tickets_dir, slug, project_root=self._project_root
         )
@@ -199,10 +226,11 @@ class TicketIO:
         stage = "draft" if status == "draft" else "executable"
         canonical_slug = file_path.stem
         document = self._convert_ticket(file_path, canonical_slug, stage)
-        if stage == "executable":
-            from .ticket_baseline import load_ticket_baseline_from_document
-
-            load_ticket_baseline_from_document(self._project_root, canonical_slug, document)
+        authored_drift = (
+            self._validate_ticket_lookup(document, canonical_slug, inspect=inspect)
+            if stage == "executable"
+            else None
+        )
         fields = self._project_document(document)
 
         # Derive relative file path
@@ -214,6 +242,9 @@ class TicketIO:
         # Prefer frontmatter feature_branch (matches scan_all_tickets);
         # fall back to filename stem for legacy tickets without the field.
         entry["feature_branch"] = fields.get("feature_branch") or file_path.stem
+        if authored_drift is not None:
+            entry["authored_drift"] = True
+            entry["authored_drift_reason"] = authored_drift
         journal_state = acceptance_state(self.tickets_dir, file_path.stem)
         if journal_state is not None:
             entry["acceptance_state"] = str(journal_state)

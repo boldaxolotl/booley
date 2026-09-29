@@ -42,6 +42,8 @@ from .acceptance_targets import AcceptanceTargetBinding, validate_binding_select
 
 SCHEMA_VERSION = 1
 BLOCK_REASON = "acceptance-input-change-required"
+AUTHORED_DRIFT_REASON = f"{BLOCK_REASON}: authored Ticket changed"
+AUTHORED_DRIFT_GUIDANCE = f"{AUTHORED_DRIFT_REASON}; use return-to-draft"
 TICKET_REF_PREFIX = "refs/heads/booley-generation"
 
 _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -186,7 +188,7 @@ def ticket_baseline_from_fields(fields: Mapping[str, Any], body: str) -> TicketB
     except BoundaryError as exc:
         raise TicketBaselineError(str(exc)) from exc
     if machine["authored_sha256"] != authored_ticket_digest(fields, body):
-        raise TicketBaselineError(f"{BLOCK_REASON}: authored Ticket changed")
+        raise TicketBaselineError(AUTHORED_DRIFT_REASON)
     return basis
 
 
@@ -719,8 +721,8 @@ def load_ticket_baseline_from_document(
     spec = document.spec
     machine = document.generated.get("machine")
     basis = ticket_baseline_from_machine(machine)
-    if machine["authored_sha256"] != spec.semantic_digest():
-        raise TicketBaselineError(f"{BLOCK_REASON}: authored Ticket changed")
+    if authored_drift_reason(document) is not None:
+        raise TicketBaselineError(AUTHORED_DRIFT_REASON)
     amendment = machine.get("amendment")
     if isinstance(amendment, Mapping) and amendment.get("slug") != slug:
         raise TicketBaselineError(f"{BLOCK_REASON}: amendment names another Ticket")
@@ -744,6 +746,30 @@ def load_ticket_baseline_from_document(
         basis.providers,
         machine=dict(machine),
     )
+
+
+def authored_drift_reason(document: TicketDocument) -> str | None:
+    """Return the canonical reason when valid machine metadata no longer seals the spec."""
+    basis = ticket_baseline_from_machine(document.generated.get("machine"))
+    machine = basis.machine
+    if machine["authored_sha256"] == document.spec.semantic_digest():
+        return None
+    return AUTHORED_DRIFT_REASON
+
+
+def load_ticket_recovery_baseline_from_document(
+    project_root: Path | str,
+    slug: str,
+    document: TicketDocument,
+) -> TicketBaseline:
+    """Load immutable Ticket identity without trusting drifted authored meaning."""
+    basis = ticket_baseline_from_machine(document.generated.get("machine"))
+    machine = basis.machine
+    amendment = machine.get("amendment")
+    if isinstance(amendment, Mapping) and amendment.get("slug") != slug:
+        raise TicketBaselineError(f"{BLOCK_REASON}: amendment names another Ticket")
+    validate_ticket_commit_trailers(project_root, slug, basis, machine)
+    return basis
 
 
 def _canonical_document_bindings(

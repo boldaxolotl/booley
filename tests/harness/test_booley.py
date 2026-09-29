@@ -1071,6 +1071,9 @@ def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, cap
         def find_ticket(self, _slug):
             return self.board
 
+        def inspect_ticket(self, slug):
+            return self.find_ticket(slug)
+
     monkeypatch.setattr(io, "TicketIO", FakeTio)
     missing_args = tlr._build_parser().parse_args(["board", "show", "demo"])
     assert tlr._cmd_board_show(missing_args, tmp_path) == 2
@@ -1128,6 +1131,9 @@ def test_board_show_does_not_append_review_guidance_to_accepted_failure(
 
         def find_ticket(self, _slug):
             return {"file": "board/review/demo.md", "status": "review", "summary": "work"}
+
+        def inspect_ticket(self, slug):
+            return self.find_ticket(slug)
 
     monkeypatch.setattr(io, "TicketIO", FakeTio)
     monkeypatch.setattr(

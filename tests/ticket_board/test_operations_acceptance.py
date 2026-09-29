@@ -45,6 +45,7 @@ def _handoff_tio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
         tickets_dir=tmp_path,
         _project_root=tmp_path,
         find_ticket=lambda _slug: entry,
+        inspect_ticket=lambda _slug: entry,
     )
     monkeypatch.setattr(operations, "existing_human_log_file", lambda *_args: run_log)
     monkeypatch.setattr(operations, "_validate_transitions_for_handoff", lambda *_args: True)
@@ -95,6 +96,7 @@ def test_reset_helpers_report_missing_basis_and_preflight_failure(
         tickets_dir=tmp_path,
         logs_dir=tmp_path,
         find_ticket=lambda _slug: entry,
+        inspect_ticket=lambda _slug: entry,
         _ticket_lock=lambda _slug: nullcontext(),
         _load_basis_unlocked=lambda _slug: None,
     )
