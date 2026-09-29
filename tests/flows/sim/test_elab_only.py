@@ -621,6 +621,18 @@ def test_elaboration_plan_discloses_build_budget_as_its_timeout(
     assert unit.recipe["build_timeout_ms"] == 7000
 
 
+def test_elaboration_resolves_build_budget_from_project_config(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".booley_project"
+    config_dir.mkdir()
+    (config_dir / "booley.toml").write_text(
+        "[flows.sim]\nbuild_timeout_ms = 7000\n",
+        encoding="utf-8",
+    )
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+
+    assert flow._effective_build_timeout_ms() == 7000
+
+
 def test_setup_failure_archives_current_error_without_reusing_old_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
