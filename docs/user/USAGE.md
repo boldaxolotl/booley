@@ -186,8 +186,7 @@ was wrong or what evidence you want next.
 
 Inside the container, the agent **never asks for permission** before acting.
 That is deliberate: the container itself is the safety boundary. It can only
-see your project, and its only network access is to the AI provider. (Claude
-users can press `shift+tab` to switch back to a more cautious mode.) Booley
+see your project, and its only network access is to the AI provider. Booley
 does not change your agent settings outside the container.
 
 **Always review changes yourself.** Use `git diff` in a container terminal and
