@@ -34,6 +34,10 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
+from booley.flows.sim.execution.engine import (
+    PreparedOrdinaryGroup,
+    SimulationBuildSlotError,
+)
 from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
 
 
@@ -146,9 +150,6 @@ class _Group:
         self._counters["compile"] += 1
         return SimpleNamespace(passed=True)
 
-    def reuse_compilation_from(self, _source: object) -> None:
-        self._counters["memory_reuse"] += 1
-
     def build_recovery_document(self):
         return _build_execution()
 
@@ -204,6 +205,24 @@ def _build_execution() -> dict[str, object]:
             "cache_decision": "",
         },
     }
+
+
+def test_authenticated_bundle_rejects_timed_out_compiler_process() -> None:
+    evidence = _build_execution()
+    evidence["process"]["timed_out"] = True  # type: ignore[index]
+    group = PreparedOrdinaryGroup.__new__(PreparedOrdinaryGroup)
+    group._lease_active = True
+    group._build_process = None
+    group._build = None
+
+    with pytest.raises(
+        SimulationBuildSlotError,
+        match="recovered bundle evidence is not successful",
+    ):
+        group.bind_authenticated_bundle(evidence)
+
+    assert group._build_process is None
+    assert group._build is None
 
 
 class _Execution:
@@ -287,7 +306,7 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
     store = CampaignStore(tmp_path / "campaign")
     store.publish_manifest(manifest)
     items = manifest.document["work_items"]
-    counters = {"compile": 0, "memory_reuse": 0, "durable_reuse": 0, "launch": 0}
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
 
     first = _executor(build_root, counters).execute(
         _request(store, manifest, items[0], project, invocation=1)
@@ -307,7 +326,6 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
 
     assert counters == {
         "compile": 2,
-        "memory_reuse": 0,
         "durable_reuse": 1,
         "launch": 3,
     }
@@ -331,7 +349,7 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    counters = {"compile": 0, "memory_reuse": 0, "durable_reuse": 0, "launch": 0}
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     hooks: list[tuple[tuple[str, ...], bool, Path | None]] = []
 
     def record_hook(
@@ -411,7 +429,7 @@ def test_changed_packaged_source_fails_disclosure_equality_before_compile(
     (build_root / "simv").write_bytes(b"image")
     store = CampaignStore(tmp_path / "campaign")
     store.publish_manifest(manifest)
-    counters = {"compile": 0, "memory_reuse": 0, "durable_reuse": 0, "launch": 0}
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
 
     with pytest.raises(
         SimulationCampaignIntegrityError,
@@ -433,7 +451,7 @@ def test_changed_packaged_source_fails_disclosure_equality_before_compile(
 def _assert_private_legacy_results(outcome, counters, hooks, invocation) -> None:
     assert outcome.complete is True
     assert counters["compile"] == 2
-    assert counters["memory_reuse"] == counters["durable_reuse"] == 0
+    assert counters["durable_reuse"] == 0
     assert hooks == [(("alpha",), True, None), (("beta",), True, None)]
     store = CampaignStore(invocation / "targets/sim/campaign")
     private_results = tuple(
@@ -460,7 +478,7 @@ def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    counters = {"compile": 0, "memory_reuse": 0, "durable_reuse": 0, "launch": 0}
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     monkeypatch.setattr(serial_execution, "_run_hook", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         serial_execution.TargetCatalog,
@@ -494,7 +512,7 @@ def test_immutable_hook_compile_surface_mutation_stops_before_snapshot_launch(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    counters = {"compile": 0, "memory_reuse": 0, "durable_reuse": 0, "launch": 0}
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     surfaces = iter(("before", "after"))
     monkeypatch.setattr(serial_execution, "project_compile_surface", lambda _root: next(surfaces))
     monkeypatch.setattr(serial_execution, "_run_hook", lambda *_args, **_kwargs: None)

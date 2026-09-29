@@ -370,23 +370,6 @@ class PreparedOrdinaryGroup:
             self._started,
         )
 
-    def reuse_compilation_from(self, source: PreparedOrdinaryGroup) -> None:
-        """Bind this test-specific launch to an authenticated successful build.
-
-        The caller still prepares this group's adapter command under the Target
-        lease, but no compiler is run.  The executable bytes are supplied later
-        from the campaign-owned authenticated Simulator Bundle snapshot.
-        """
-        if not self._lease_active:
-            raise SimulationBuildSlotError("ordinary Simulation build lease has ended")
-        if self._build is not None:
-            raise SimulationBuildSlotError("ordinary Simulation group already has a build")
-        process, build = source._compiled()
-        if not build.passed or process.returncode != 0 or process.timed_out:
-            raise SimulationBuildSlotError("shared Simulation build is not reusable")
-        self._build_process = process
-        self._build = build
-
     def build_recovery_document(self) -> dict[str, object]:
         """Return the exact compiler process and normalized build for durability."""
         process, build = self._compiled()
@@ -421,8 +404,7 @@ class PreparedOrdinaryGroup:
     def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None:
         """Mark preparation ready to launch a campaign-authenticated bundle.
 
-        This is the process-recovery counterpart of ``reuse_compilation_from``:
-        the durable Build Result has already authenticated the compiler outcome,
+        The durable Build Result has already authenticated the compiler outcome,
         so only the test-specific adapter preparation is reconstructed.
         """
         if not self._lease_active:
@@ -432,10 +414,16 @@ class PreparedOrdinaryGroup:
         process = evidence["process"]
         build = evidence["build"]
         assert isinstance(process, Mapping) and isinstance(build, Mapping)
-        self._build_process = SubprocessResult(**process)  # type: ignore[arg-type]
-        self._build = BuildOutcome(**build)  # type: ignore[arg-type]
-        if not self._build.passed or self._build_process.returncode != 0:
+        recovered_process = SubprocessResult(**process)  # type: ignore[arg-type]
+        recovered_build = BuildOutcome(**build)  # type: ignore[arg-type]
+        if (
+            not recovered_build.passed
+            or recovered_process.returncode != 0
+            or recovered_process.timed_out
+        ):
             raise SimulationBuildSlotError("recovered bundle evidence is not successful")
+        self._build_process = recovered_process
+        self._build = recovered_build
 
     def launch_snapshot(
         self,

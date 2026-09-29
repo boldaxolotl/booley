@@ -904,9 +904,6 @@ class _ParallelGroup:
         self.state.compile_count += 1
         return SimpleNamespace(passed=True)
 
-    def reuse_compilation_from(self, _source) -> None:
-        return None
-
     def build_recovery_document(self):
         return _build_execution()
 
