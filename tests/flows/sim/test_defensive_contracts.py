@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,11 +9,14 @@ from booley.flows.endpoint_admission import (
     AdmissionContext,
     AdmissionGate,
     _admission_cancellation,
+    _simulation_admission,
 )
 from booley.flows.sim.campaign.model import _freeze_json
 from booley.flows.sim.config import parse_run_cwd_template
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
+from booley.runtime.endpoint_execution import ExecutionResult, execute_endpoint
+from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
 
 
 def _context(**overrides):
@@ -57,6 +61,100 @@ def test_admission_gate_can_only_be_entered_once() -> None:
         pass
     with pytest.raises(RuntimeError, match="exactly once"), gate.enter():
         pass
+
+
+@pytest.mark.parametrize("runtime_execution_id", ["e" * 32, "", None])
+def test_admission_gate_separates_runtime_and_parent_identity(
+    monkeypatch: pytest.MonkeyPatch, runtime_execution_id: str | None
+) -> None:
+    if runtime_execution_id is None:
+        monkeypatch.delenv(RUNTIME_EXECUTION_ENV, raising=False)
+    else:
+        monkeypatch.setenv(RUNTIME_EXECUTION_ENV, runtime_execution_id)
+
+    class Endpoint:
+        _invocation_id = "sim-20260925T153819Z-1"
+
+        @staticmethod
+        def _acquire_job_slot():
+            return None, None
+
+    with AdmissionGate(Endpoint()).enter() as admission:  # type: ignore[arg-type]
+        expected = ExecutionId(runtime_execution_id) if runtime_execution_id else None
+        assert admission.execution_id == expected
+        assert isinstance(admission.parent_execution_id, ExecutionId)
+        if expected is not None:
+            assert admission.parent_execution_id == expected
+
+
+def test_admission_context_canonicalizes_empty_runtime_identity() -> None:
+    context = _context(execution_id="")
+
+    assert context.execution_id is None
+    assert isinstance(context.parent_execution_id, ExecutionId)
+
+
+def test_admission_context_rejects_malformed_runtime_identity() -> None:
+    with pytest.raises(ValueError, match=RUNTIME_EXECUTION_ENV):
+        _context(execution_id="sim-20260925T153819Z-1")
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_malformed_runtime_identity_rejects_before_slot_acquisition(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "sim-20260925T153819Z-1")
+    acquisitions = 0
+
+    class Endpoint:
+        _invocation_id = "sim-20260925T153819Z-1"
+
+        @staticmethod
+        def _acquire_job_slot():
+            nonlocal acquisitions
+            acquisitions += 1
+            return (object(), object()) if managed else (None, None)
+
+    with (
+        pytest.raises(ValueError, match=RUNTIME_EXECUTION_ENV),
+        AdmissionGate(
+            Endpoint()  # type: ignore[arg-type]
+        ).enter(),
+    ):
+        pass
+    assert acquisitions == 0
+
+
+def test_simulation_admission_reports_malformed_runtime_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "sim-20260925T153819Z-1")
+
+    class Endpoint:
+        _invocation_id = "sim-20260925T153819Z-1"
+
+        @staticmethod
+        def _acquire_job_slot():
+            raise AssertionError("slot acquisition must not run")
+
+        def admission(self, prepared):
+            return _simulation_admission(self, prepared)
+
+        @staticmethod
+        def record_acceptance(_prepared, _outcome) -> None:
+            pass
+
+        @staticmethod
+        def finish_execution(
+            _prepared, outcome, *, started, acceptance_recorded
+        ) -> ExecutionResult:
+            return ExecutionResult(outcome.exit_code, outcome)
+
+    prepared = SimpleNamespace(non_persisting_dry_run=False)
+    result = execute_endpoint(Endpoint(), prepared)  # type: ignore[arg-type]
+
+    assert result.exit_code == 2
+    assert RUNTIME_EXECUTION_ENV in result.outcome.report_text
 
 
 def test_unmanaged_admission_never_reports_cancellation() -> None:
