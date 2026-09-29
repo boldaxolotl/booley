@@ -242,6 +242,11 @@ def _configure_golden_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from booley.flows.synth.backends import pipeline as syn_make
 
     monkeypatch.delenv("PRJ_LIB_DIR", raising=False)
+    monkeypatch.setattr(
+        syn_make,
+        "new_attempt_token",
+        lambda: "0123456789abcdef0123456789abcdef",
+    )
     tool = _make_tool(tmp_path, 'synth_mode = "logical"\n')
     cmd = tool._build_synth_cmd("lite")  # rmtree's the work root — materialize after
     _materialize_resolved_sources(tmp_path)

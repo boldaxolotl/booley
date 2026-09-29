@@ -10,6 +10,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from booley.core.file_lock import active_child_lease_fd
+from booley.flows.eda_failures import find_missing_executable
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
 from booley.runtime.platform_paths import (
@@ -23,7 +24,6 @@ from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
 from .contract import PreSimEvidence
-from .failures import find_missing_executable
 
 
 def run_pre_sim_commands(
