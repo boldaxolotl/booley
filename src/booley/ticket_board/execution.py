@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,6 @@ from .constants import (
     VALID_TYPES,
 )
 from .helpers import (
-    compute_done_slugs,
     detect_tickets_dir,
     parse_iso,
     read_lock_pid,
@@ -167,12 +167,17 @@ def _check_orphan(t, now, orphan_threshold_min, logs_dir):
 
 
 def classify_tickets(
-    tickets: list[dict[str, Any]], orphan_threshold_min: int = 30, logs_dir: Any = None
+    tickets: list[dict[str, Any]],
+    orphan_threshold_min: int = 30,
+    logs_dir: Any = None,
+    *,
+    done_slugs: Collection[str],
 ) -> dict[str, list[dict[str, Any]]]:
     """Partition tickets into executable, active, blocked, waiting-on-deps, review, and orphaned lists.
 
     Waiting tickets are reported as waiting. Queued tickets
-    are executable only if all their dependencies are done.
+    are executable only if all their dependencies are in *done_slugs*: the
+    Tickets Ticket History records as closed done.
 
     Orphaned tickets are 'running' tickets detected by:
       1. PID liveness — if the lock file contains a PID and that process is dead
@@ -182,8 +187,6 @@ def classify_tickets(
         logs_dir = detect_tickets_dir() / "logs"
     executable, active, blocked, waiting, review, orphaned = [], [], [], [], [], []
     now = datetime.now(UTC)
-
-    done_slugs = compute_done_slugs(tickets)
 
     for t in tickets:
         status = t.get("status", "")

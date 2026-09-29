@@ -8,12 +8,15 @@ compare-and-swap target of every transition: callers read it and replace it
 while holding the per-Ticket lock, and one atomic replace commits the
 transition, the way the old ``board/<state>/`` directory rename did.
 
+Closing a Ticket (done or archived) moves its document once to the tracked
+``<tickets>/history/<slug>.md``; see :mod:`booley.ticket_board.ticket_history`.
+
 A document without a state record is a draft. Only an absent record means
 draft: a record that cannot be read or parsed, has an unknown schema, or has
 invalid fields raises :class:`StateRecordError`, so every command on that Ticket
 fails without changing anything.
 
-No other module joins board or state paths; callers go through the functions
+No other module joins board, state, or history paths; callers go through the functions
 here, or through :class:`booley.ticket_board.io.TicketIO` for locked writes.
 """
 
@@ -33,6 +36,7 @@ from .persistence import atomic_replace_bytes, durable_unlink
 logger = logging.getLogger(__name__)
 
 STATE_DIR_NAME = "state"
+HISTORY_DIR_NAME = "history"
 STATE_RECORD_SCHEMA = 1
 
 # Runtime fields a state record carries next to its state, with their defaults.
@@ -161,6 +165,32 @@ def board_root(tickets_dir: Path) -> Path:
 def state_root(tickets_dir: Path) -> Path:
     """Return ``<tickets_dir>/state``, the directory of Ticket state records."""
     return Path(tickets_dir) / STATE_DIR_NAME
+
+
+def history_root(tickets_dir: Path) -> Path:
+    """Return ``<tickets_dir>/history``, the tracked directory of Closed Tickets."""
+    return Path(tickets_dir) / HISTORY_DIR_NAME
+
+
+def history_document_path(tickets_dir: Path, slug: str) -> Path:
+    """Return the Ticket History path of the Closed Ticket named *slug*."""
+    return history_root(tickets_dir) / f"{_require_slug(slug)}.md"
+
+
+def history_documents(tickets_dir: Path) -> list[Path]:
+    """Return every Closed Ticket document in Ticket History, sorted by path."""
+    root = history_root(tickets_dir)
+    if not root.is_dir():
+        return []
+    return sorted(path for path in root.glob("*.md") if path.is_file())
+
+
+def history_slug(tickets_dir: Path, path: Path) -> str | None:
+    """Return the slug of *path* if it names a document directly in Ticket History."""
+    path = Path(path)
+    if path.suffix != ".md" or not _same_directory(path.parent, history_root(tickets_dir)):
+        return None
+    return path.stem
 
 
 def required_board_directories(tickets_dir: Path) -> list[Path]:

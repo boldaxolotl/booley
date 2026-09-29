@@ -334,7 +334,12 @@ def test_completion_acceptance_reports_unreadable_corrupt_and_valid_snapshots(
 
     monkeypatch.setattr(operations, "_validate_accepted_snapshot", validate)
     monkeypatch.setattr(operations, "_approve_transition", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_args, **_kwargs: None)
+    finished: list[dict[str, bool]] = []
+    monkeypatch.setattr(
+        operations,
+        "_finish_completed_ticket",
+        lambda *_args, **kwargs: finished.append(kwargs) or True,
+    )
     tio = _review_tio(tmp_path)
 
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
@@ -342,3 +347,5 @@ def test_completion_acceptance_reports_unreadable_corrupt_and_valid_snapshots(
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
     assert "broken binding" in capsys.readouterr().err
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is True
+    # Only the valid snapshot reaches completion, which closes the Ticket.
+    assert finished == [{"cleanup": False, "close": True}]

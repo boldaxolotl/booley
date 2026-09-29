@@ -259,7 +259,7 @@ def test_completion_reports_premature_done_as_blocked(tmp_path: Path) -> None:
     root, tio, _request, base = _single_repository_acceptance(tmp_path)
     tio.entry["status"] = "done"
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
 
     assert _git(root, "rev-parse", "main") == base
 

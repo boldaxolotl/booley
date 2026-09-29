@@ -142,6 +142,44 @@ def place_ticket(tickets_dir: Path, slug: str, board_name: str, content: str) ->
     return path
 
 
+def place_closed_ticket(
+    tickets_dir: Path,
+    slug: str,
+    content: str,
+    outcome: str = "done",
+    generation: str = "",
+) -> Path:
+    """Write *content* as the Ticket History document of a Closed Ticket.
+
+    Closed Tickets live only in ``history/<slug>.md`` (ADR 0065): no board
+    document and no state record. Only outcome ``done`` satisfies dependencies.
+    """
+    from booley.ticket_board.board_layout import history_document_path
+    from booley.ticket_board.lifecycle import STATE_BY_STATUS
+    from booley.ticket_board.ticket_history import ClosedBlock, with_closed_block
+
+    path = history_document_path(tickets_dir, slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    block = ClosedBlock.now(STATE_BY_STATUS[outcome], generation)
+    path.write_text(with_closed_block(content, block), encoding="utf-8")
+    return path
+
+
+def make_closed_ticket(
+    tio: TicketIO,
+    slug: str,
+    outcome: str = "done",
+    extra_fields: dict | None = None,
+    body: str = "## Description\nSome work.\n",
+) -> Path:
+    """Create a Closed Ticket in Ticket History with *outcome* (done or archived)."""
+    from booley.ticket_board.frontmatter import format_frontmatter
+
+    fields = {"summary": slug.replace("-", " "), "type": "feature", "branch": "master"}
+    fields.update(extra_fields or {})
+    return place_closed_ticket(tio.tickets_dir, slug, format_frontmatter(fields, body), outcome)
+
+
 @pytest.fixture(autouse=True)
 def _no_ntfy(monkeypatch):
     """Silence all ntfy.sh notifications during tests."""

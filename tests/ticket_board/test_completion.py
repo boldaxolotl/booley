@@ -16,6 +16,7 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import completion
+from booley.ticket_board.acceptance_journal import AcceptanceOutcome
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
 from booley.ticket_board.acceptance_journal._repository import (
     FaultingAcceptanceRepositories,
@@ -291,7 +292,7 @@ def test_complete_rejects_ticket_without_destination_branch(
     _root, _project, tio, _participants = _paired_completion(tmp_path, monkeypatch)
     tio.entry.pop("branch")
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert "Ticket has no destination branch" in capsys.readouterr().err
 
 
@@ -413,14 +414,14 @@ def test_complete_requires_merge_policy() -> None:
 
 
 def test_complete_reports_missing_ticket(capsys: pytest.CaptureFixture[str]) -> None:
-    assert complete_review_ticket(_BoundaryTicketIO(None), "missing", _Policy()) is False
+    assert complete_review_ticket(_BoundaryTicketIO(None), "missing", _Policy()) is None
     assert "ticket 'missing' not found" in capsys.readouterr().err
 
 
 def test_complete_reports_malformed_contract(capsys: pytest.CaptureFixture[str]) -> None:
     tio = _BoundaryTicketIO({"status": "review", "target_contract": {}})
 
-    assert complete_review_ticket(tio, "bad-basis", _Policy()) is False
+    assert complete_review_ticket(tio, "bad-basis", _Policy()) is None
     assert "cannot complete 'bad-basis'" in capsys.readouterr().err
 
 
@@ -447,7 +448,7 @@ def test_complete_ignores_noncanonical_policy_removals(
     tio = _TicketIO(root, basis)
 
     policy = SimpleNamespace(merge=True, cleanup=False, remove_targets=("baseline",))
-    assert complete_review_ticket(tio, "change-target", policy)
+    assert complete_review_ticket(tio, "change-target", policy) is AcceptanceOutcome.COMPLETE
     assert capsys.readouterr().err == ""
 
 
@@ -468,7 +469,7 @@ def test_complete_rejects_legacy_contract_schema(
         }
     )
 
-    assert complete_review_ticket(tio, "legacy", _Policy()) is False
+    assert complete_review_ticket(tio, "legacy", _Policy()) is None
     assert "legacy Target Contract tickets are unsupported" in capsys.readouterr().err
 
 
@@ -485,7 +486,7 @@ def test_complete_rejects_retired_integration_metadata(
         }
     )
 
-    assert complete_review_ticket(tio, "ambiguous", _Policy()) is False
+    assert complete_review_ticket(tio, "ambiguous", _Policy()) is None
     error = capsys.readouterr().err
     assert "integration_base" in error
     assert "Tickets with a recorded baseline" in error
@@ -511,7 +512,7 @@ def test_complete_rejects_destination_ref_as_cleanup_target(
     )
     tio = _TicketIO(root, unsafe)
 
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is None
     assert "Ticket ref is also the destination ref" in capsys.readouterr().err
 
 
@@ -529,7 +530,7 @@ def test_complete_publishes_recorded_branch_before_approving(tmp_path: Path) -> 
     )
     tio = _TicketIO(root, _contract(root, (participant,)))
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
     assert _git(root, "show", "main:design.txt") == "implemented"
     assert tio.entry["status"] == "done"
@@ -559,7 +560,7 @@ def test_complete_merges_ticket_onto_advanced_destination_without_rebasing(tmp_p
     advanced = _git(root, "rev-parse", "HEAD")
     tio = _TicketIO(root, basis)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
     assert _git(root, "show", "main:design.txt") == "implemented"
     assert _git(root, "show", "main:baseline.txt") == "advanced baseline"
@@ -604,7 +605,7 @@ def test_complete_rejects_destination_change_to_dynamically_referenced_hook(
     tio = _TicketIO(root, basis)
 
     assert ticket_sha != basis_sha
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert "protected path(s) changed: hooks/prepare.py" in capsys.readouterr().err
 
 
@@ -624,7 +625,7 @@ def test_complete_cleans_recorded_ticket_ref_after_acceptance(tmp_path: Path) ->
 
     result = complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
 
-    assert result is True
+    assert result is AcceptanceOutcome.COMPLETE
     assert _git(root, "show", "main:design.txt") == "implemented"
     assert (
         subprocess.run(
@@ -663,7 +664,10 @@ def test_completion_snapshot_retry_uses_journal_sources_after_ref_cleanup(
         ),
     )
     tio = _TicketIO(root, basis)
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+        is AcceptanceOutcome.COMPLETE
+    )
     assert acceptance_impl._ref_commit(root, "refs/heads/change-target") is None
     identity = basis.ticket_identity()
     monkeypatch.setattr(acceptance_ledger, "validate_review_package_binding", lambda *_: None)
@@ -756,8 +760,11 @@ def test_retry_cannot_change_frozen_cleanup_policy(tmp_path: Path, capsys) -> No
     )
     tio = _TicketIO(root, _contract(root, (participant,)))
 
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=False)) is True
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=False))
+        is AcceptanceOutcome.COMPLETE
+    )
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is None
     assert "cleanup policy changed" in capsys.readouterr().err
     assert acceptance_impl._ref_commit(root, participant.ticket_ref) == ticket_sha
 
@@ -797,7 +804,7 @@ def test_cleanup_refuses_moved_ticket_ref_and_retry_uses_recorded_identity(
 
     monkeypatch.setattr(acceptance_impl, "_validate_source_surface", move_ref)
 
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is None
     assert tio.entry["status"] == "done"
     assert notifications == ["DONE: change-target"]
     assert _git(root, "rev-parse", "change-target") == late_sha
@@ -805,7 +812,10 @@ def test_cleanup_refuses_moved_ticket_ref_and_retry_uses_recorded_identity(
 
     monkeypatch.setattr(acceptance_impl, "_validate_source_surface", validate_surface)
     _git(root, "branch", "-f", "change-target", ticket_sha)
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+        is AcceptanceOutcome.COMPLETE
+    )
     assert notifications == ["DONE: change-target"]
     assert (
         subprocess.run(
@@ -837,13 +847,19 @@ def test_cleanup_preserves_dirty_ticket_worktree_until_retry(
     )
     tio = _TicketIO(root, _contract(root, (participant,)))
 
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+        is AcceptanceOutcome.ACCEPTED_PENDING
+    )
     assert ticket_worktree.exists()
     assert _git(root, "rev-parse", "change-target") == ticket_sha
     assert "dirty Ticket worktree" in capsys.readouterr().err
 
     _git(ticket_worktree, "restore", "design.txt")
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+        is AcceptanceOutcome.COMPLETE
+    )
     assert not ticket_worktree.exists()
 
 
@@ -858,7 +874,10 @@ def test_retry_resumes_after_project_cleanup_completed_before_journal_write(
     )
     _install_acceptance_runner(monkeypatch, store=faulting_store)
 
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+        is AcceptanceOutcome.ACCEPTED_PENDING
+    )
     assert "cleanup is pending" in capsys.readouterr().err
     assert acceptance_impl._ref_commit(project, "refs/heads/booley-ticket/change-target") is None
     assert (
@@ -867,7 +886,10 @@ def test_retry_resumes_after_project_cleanup_completed_before_journal_write(
     )
 
     _install_acceptance_runner(monkeypatch)
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+        is AcceptanceOutcome.COMPLETE
+    )
     assert acceptance_impl._ref_commit(root, "refs/heads/change-target") is None
     journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
@@ -902,7 +924,7 @@ def test_unfinished_publication_blocks_another_ticket(tmp_path: Path, capsys) ->
     acceptance = root / ".booley_project" / ".runtime" / "acceptance"
     acceptance.mkdir(parents=True)
     (acceptance / "earlier.json").write_text(json.dumps(data), encoding="utf-8")
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert "resume it first" in capsys.readouterr().err
     assert _git(root, "show", "main:design.txt") == "base"
 
@@ -925,7 +947,7 @@ def test_malformed_finished_journal_blocks_another_ticket(tmp_path: Path, capsys
     )
     tio = _TicketIO(root, _contract(root, (participant,)))
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert "earlier acceptance journal" in capsys.readouterr().err
     assert _git(root, "show", "main:design.txt") == "base"
 
@@ -957,7 +979,7 @@ def test_cross_repository_plan_conflict_leaves_repositories_unmodified(
     outer_worktrees = _git(root, "worktree", "list", "--porcelain")
     project_worktrees = _git(project, "worktree", "list", "--porcelain")
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
 
     outer_refs = _git(root, "for-each-ref", "--format=%(refname)", "refs/booley/acceptance")
     project_refs = _git(project, "for-each-ref", "--format=%(refname)", "refs/booley/acceptance")
@@ -984,7 +1006,7 @@ def test_cleanup_validates_every_identity_before_removing_any_ref(
 
     monkeypatch.setattr(completion, "_approve", move_outer_staging_ref)
 
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is None
 
     assert "acceptance recovery is blocked" in capsys.readouterr().err
     assert (
@@ -1021,7 +1043,7 @@ def test_cleanup_prevalidates_keepalives_before_removing_any_artifact(
 
     monkeypatch.setattr(completion, "_approve", substitute_source_keepalive)
 
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is None
 
     repositories = {"outer": root, "project": project}
     journal = _acceptance_journal(root)
@@ -1041,7 +1063,10 @@ def test_retry_rejects_recreated_artifact_for_cleaned_participant(
         FileAcceptanceStore(), AcceptanceCheckpoint.PROJECT_CLEANED, "after"
     )
     _install_acceptance_runner(monkeypatch, store=faulting_store)
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+        is AcceptanceOutcome.ACCEPTED_PENDING
+    )
     journal = _acceptance_journal(root)
     assert journal["state"] == "cleanup-project"
     assert acceptance_impl._ref_commit(root, participants[0].ticket_ref) is not None
@@ -1053,7 +1078,7 @@ def test_retry_rejects_recreated_artifact_for_cleaned_participant(
         participants[1].ticket_ref,
         journal["sources"]["project"],
     )
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is None
     assert acceptance_impl._ref_commit(root, participants[0].ticket_ref) is not None
     assert _acceptance_journal(root)["state"] == "cleanup-project"
 
@@ -1140,7 +1165,7 @@ def _single_target_removal_completion(
 def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path) -> None:
     root, tio, canonical = _single_target_removal_completion(tmp_path)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
     merged_core = _git(root, "show", "main:toy.core")
     assert "  baseline:" not in merged_core
@@ -1156,7 +1181,7 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
 def test_finalization_retains_submodule_target_and_test_registration(tmp_path: Path) -> None:
     root, tio, _canonical = _single_target_removal_completion(tmp_path, retained_submodule=True)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
     retained = _git(root, "show", "main:.booley_project/tests.toml")
     assert '"acme:lib:retained:1.0#retained"' in retained
@@ -1219,7 +1244,7 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
     )
     tio = _TicketIO(root, basis)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
     assert "  baseline:" not in _git(project, "show", "main:cores/toy.core")
     assert "  candidate:" in _git(project, "show", "main:cores/toy.core")
@@ -1361,12 +1386,12 @@ def test_schema_two_retry_is_rejected_after_hard_cutoff(
         monkeypatch, "interrupted after finalized journal write"
     )
     policy = _Policy()
-    assert complete_review_ticket(tio, "change-target", policy) is False
+    assert complete_review_ticket(tio, "change-target", policy) is None
     journal = _acceptance_journal(root)
     _downgrade_to_finalization_schema_two(root, journal)
     monkeypatch.setattr(acceptance_impl, "_update_finalized_refs", update_finalized_refs)
 
-    assert complete_review_ticket(tio, "change-target", policy) is False
+    assert complete_review_ticket(tio, "change-target", policy) is None
     assert "acceptance journal schema must be 5" in capsys.readouterr().err
 
 
@@ -1381,7 +1406,7 @@ def test_schema_two_retry_rejects_unrelated_staging_identity(
         monkeypatch, "interrupted after finalized journal write"
     )
     policy = _Policy()
-    assert complete_review_ticket(tio, "change-target", policy) is False
+    assert complete_review_ticket(tio, "change-target", policy) is None
     journal = _acceptance_journal(root)
     project_candidate = journal["candidates"]["project"]
     _git(
@@ -1394,7 +1419,7 @@ def test_schema_two_retry_rejects_unrelated_staging_identity(
     _downgrade_to_finalization_schema_two(root, journal)
     monkeypatch.setattr(acceptance_impl, "_update_finalized_refs", update_finalized_refs)
 
-    assert complete_review_ticket(tio, "change-target", policy) is False
+    assert complete_review_ticket(tio, "change-target", policy) is None
     _assert_destinations_unchanged(root, project, participants)
 
 
@@ -1420,7 +1445,7 @@ def test_retry_rejects_unknown_finalization_identity_before_any_ref_moves(
     update_finalized_refs = _interrupt_finalized_ref_updates(
         monkeypatch, "interrupted after finalized journal write"
     )
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
 
     journal = _acceptance_journal(root)
     outer_staging = journal["candidates"]["outer"]["staging_ref"]
@@ -1443,7 +1468,7 @@ def test_retry_rejects_unknown_finalization_identity_before_any_ref_moves(
     )
     monkeypatch.setattr(acceptance_impl, "_update_finalized_refs", update_finalized_refs)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert acceptance_impl._ref_commit(root, outer_staging) == outer_prepared
     assert acceptance_impl._ref_commit(project, project_staging) == participants[1].destination_sha
     _assert_destinations_unchanged(root, project, participants)
@@ -1461,7 +1486,7 @@ def test_retry_rejects_tag_object_at_finalized_staging_identity(
         monkeypatch, "interrupted after finalized journal write"
     )
     policy = _Policy()
-    assert complete_review_ticket(tio, "change-target", policy) is False
+    assert complete_review_ticket(tio, "change-target", policy) is None
 
     journal = _acceptance_journal(root)
     candidate = journal["candidates"]["project"]
@@ -1470,7 +1495,7 @@ def test_retry_rejects_tag_object_at_finalized_staging_identity(
     _git(project, "update-ref", candidate["staging_ref"], tag_object, candidate["prepared_sha"])
     monkeypatch.setattr(acceptance_impl, "_update_finalized_refs", update_finalized_refs)
 
-    assert complete_review_ticket(tio, "change-target", policy) is False
+    assert complete_review_ticket(tio, "change-target", policy) is None
     assert _git(project, "rev-parse", candidate["staging_ref"]) == tag_object
     _assert_destinations_unchanged(root, project, participants)
     assert tio.entry["status"] == "review"
@@ -1548,11 +1573,11 @@ def test_retry_converges_each_finalization_ref_update(
         tmp_path, monkeypatch
     )
     cas_ref, interrupted = _interrupt_finalization_ref_update(monkeypatch, role, timing)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert interrupted == [True]
 
     monkeypatch.setattr(acceptance_impl, "_cas_ref", cas_ref)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
     _assert_retained_target_removal_completion(root, project, tio, participants)
 
 
@@ -1566,7 +1591,7 @@ def test_retry_recreates_absent_staging_ref_at_finalized_identity(
     update_finalized_refs = _interrupt_finalized_ref_updates(
         monkeypatch, "before finalization ref updates"
     )
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     journal = _acceptance_journal(root)
     project_candidate = journal["candidates"]["project"]
     _git(
@@ -1579,7 +1604,7 @@ def test_retry_recreates_absent_staging_ref_at_finalized_identity(
     )
 
     monkeypatch.setattr(acceptance_impl, "_update_finalized_refs", update_finalized_refs)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
     assert (
         acceptance_impl._ref_commit(project, project_candidate["staging_ref"])
         == project_candidate["finalized_sha"]
@@ -1600,7 +1625,7 @@ def test_target_finalization_cleanup_removes_all_journal_owned_refs(
             "change-target",
             _Policy(cleanup=True),
         )
-        is True
+        is AcceptanceOutcome.COMPLETE
     )
 
     journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
@@ -1632,7 +1657,7 @@ def test_retry_converges_finalized_identity_journal_interruption(
         FileAcceptanceStore(), AcceptanceCheckpoint.CANDIDATES_FINALIZED, timing
     )
     _install_acceptance_runner(monkeypatch, store=faulting_store)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert faulting_store.triggered is True
 
     acceptance_worktrees = root / ".booley_project" / ".runtime" / "acceptance-worktrees"
@@ -1648,7 +1673,7 @@ def test_retry_converges_finalized_identity_journal_interruption(
             assert f"unreachable commit {finalized}" not in unreachable
 
     _install_acceptance_runner(monkeypatch)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
 
 @pytest.mark.parametrize(
@@ -1686,7 +1711,7 @@ def test_retry_converges_each_finalized_keepalive_update(
         raise completion.CompletionError(f"after {role} finalized keepalive")
 
     monkeypatch.setattr(acceptance_impl, "_cas_ref", interrupt)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert interrupted is True
     journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
@@ -1696,7 +1721,7 @@ def test_retry_converges_each_finalized_keepalive_update(
         assert f"unreachable commit {finalized}" not in unreachable
 
     monkeypatch.setattr(acceptance_impl, "_cas_ref", cas_ref)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
 
 @pytest.mark.parametrize(
@@ -1725,11 +1750,11 @@ def test_retry_converges_finalization_worktree_removal(
         raise completion.CompletionError("after finalization worktree removal")
 
     monkeypatch.setattr(acceptance_impl, "_remove_finalization_worktrees", interrupt)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert calls == 2
 
     monkeypatch.setattr(acceptance_impl, "_remove_finalization_worktrees", remove_worktrees)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
     acceptance_worktrees = root / ".booley_project" / ".runtime" / "acceptance-worktrees"
     assert not any(acceptance_worktrees.iterdir())
 
@@ -1772,7 +1797,7 @@ def test_staging_move_during_publication_leaves_its_destination_unmoved(
         tmp_path, monkeypatch
     )
     moved = _move_outer_staging_during_publication(root, participants[0], monkeypatch)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert moved == [True]
     assert tio.entry["status"] == "review"
 
@@ -1848,7 +1873,7 @@ def test_complete_publishes_project_repository_before_outer(tmp_path: Path, monk
     )
     tio = _TicketIO(root, _contract(root, participants))
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
     assert _git(project, "show", "main:design.txt") == "project implementation"
     assert _git(root, "show", "main:design.txt") == "outer implementation"
@@ -1867,7 +1892,7 @@ def test_complete_preserves_unrelated_untracked_project_state(
     other_ticket.write_bytes(other_ticket_bytes)
     diagnostic.write_bytes(diagnostic_bytes)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
     assert other_ticket.read_bytes() == other_ticket_bytes
     assert diagnostic.read_bytes() == diagnostic_bytes
@@ -1897,7 +1922,7 @@ def test_project_gitignore_backfill_blocks_until_committed(
         InitContext(project_root=dirty_root),
     )
 
-    assert complete_review_ticket(dirty_tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(dirty_tio, "change-target", _Policy()) is None
     assert ".gitignore" in capsys.readouterr().err
 
     root, project, _tio, participants = _paired_completion(
@@ -1927,7 +1952,7 @@ def test_project_gitignore_backfill_blocks_until_committed(
     diagnostic.parent.mkdir()
     diagnostic.write_text("ignored diagnostic\n", encoding="utf-8")
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
     assert diagnostic.read_text(encoding="utf-8") == "ignored diagnostic\n"
 
 
@@ -1965,7 +1990,7 @@ def test_complete_rejects_untracked_candidate_path_overlap(
     untracked_bytes = b"local bytes must survive\n"
     untracked.write_bytes(untracked_bytes)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
 
     assert untracked.read_bytes() == untracked_bytes
     assert (
@@ -1996,7 +2021,7 @@ def test_complete_preserves_unrelated_untracked_outer_state(tmp_path: Path) -> N
     untracked_bytes = b"unrelated local state\n"
     untracked.write_bytes(untracked_bytes)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
     assert untracked.read_bytes() == untracked_bytes
     assert _git(root, "show", "main:design.txt") == "implemented"
@@ -2039,14 +2064,14 @@ def test_retry_rolls_forward_after_only_project_was_published(
         completion.CompletionError("simulated interruption"),
     )
     _install_acceptance_runner(monkeypatch, repositories=repositories)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert _git(project, "show", "main:design.txt") == "project implementation"
     assert _git(root, "show", "main:design.txt") == "base"
     assert tio.entry["status"] == "review"
 
     _install_acceptance_runner(monkeypatch)
     _git(project, "update-ref", "refs/heads/main", project_base)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert _git(root, "show", "main:design.txt") == "base"
     assert tio.entry["status"] == "review"
 
@@ -2058,7 +2083,7 @@ def test_retry_rolls_forward_after_only_project_was_published(
         journal["candidates"]["project"]["finalized_sha"],
         project_base,
     )
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
     assert _git(root, "show", "main:design.txt") == "outer implementation"
     assert tio.entry["status"] == "done"
 
@@ -2084,13 +2109,16 @@ def test_board_approval_write_failure_reports_accepted_pending_until_retry(
         FileAcceptanceStore(), AcceptanceCheckpoint.DONE, "before"
     )
     _install_acceptance_runner(monkeypatch, store=faulting_store)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy())
+        is AcceptanceOutcome.ACCEPTED_PENDING
+    )
     assert tio.entry["status"] == "done"
     assert _git(root, "show", "main:design.txt") == "implemented"
     assert "acceptance recovery is incomplete" in capsys.readouterr().err
 
     _install_acceptance_runner(monkeypatch)
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
     journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
     assert json.loads(journal_path.read_text(encoding="utf-8"))["state"] == "done"
 
@@ -2123,7 +2151,7 @@ def test_board_approval_reconciles_any_uncertain_adapter_result(
 
     monkeypatch.setattr(completion, "_approve", uncertain_approval)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
     assert tio.entry["status"] == "done"
     assert _acceptance_journal(root)["state"] == "done"
 
@@ -2157,7 +2185,7 @@ def test_ticket_ref_move_after_pinning_prevents_retained_ref_mismatch(
 
     monkeypatch.setattr(acceptance_impl, "_validate_source_surface", move_ref)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert _git(root, "show", "main:design.txt") == "base"
     assert tio.entry["status"] == "review"
 
@@ -2190,7 +2218,7 @@ def test_complete_rejects_target_control_drift_after_basis_publication(tmp_path:
     _git(root, "switch", "main")
     tio = _TicketIO(root, basis)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
 
     assert _git(root, "show", "main:design.txt") == "base"
     assert "toy:1.0" in _git(root, "show", "main:toy.core")
@@ -2225,7 +2253,7 @@ def test_complete_rejects_concurrent_change_to_same_control_path(tmp_path: Path)
     (root / ".booley_project").mkdir()
     tio = _TicketIO(root, basis)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
 
     assert "toy:3.0" in _git(root, "show", "main:toy.core")
     assert tio.entry["status"] == "review"
@@ -2251,7 +2279,7 @@ def test_complete_rejects_unrelated_dirty_product_edit(tmp_path: Path) -> None:
     tio = _TicketIO(root, _contract(root, (participant,)))
     unrelated.write_text("dirty local edit\n", encoding="utf-8")
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
 
     assert _git(root, "show", "main:design.txt") == "base"
     assert tio.entry["status"] == "review"
@@ -2265,7 +2293,7 @@ def test_complete_accepts_project_board_transition_through_bind_mount_alias(
     _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
 
     assert (project / "tickets" / "board" / "change-target.md").is_file()
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
 
 
 def test_complete_rejects_staged_board_transition_through_bind_mount_alias(
@@ -2276,7 +2304,7 @@ def test_complete_rejects_staged_board_transition_through_bind_mount_alias(
     _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
     _git(project, "add", "tickets/board/change-target.md")
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert tio.entry["status"] == "review"
 
 
@@ -2289,7 +2317,7 @@ def test_complete_preserves_unrelated_project_edit_through_bind_mount_alias(
     unrelated = project / "unrelated.txt"
     unrelated.write_text("unrelated\n", encoding="utf-8")
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert complete_review_ticket(tio, "change-target", _Policy()) is AcceptanceOutcome.COMPLETE
     assert unrelated.read_text(encoding="utf-8") == "unrelated\n"
 
 
@@ -2301,7 +2329,7 @@ def test_complete_rejects_tracked_project_edit_through_bind_mount_alias(
     _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
     (project / "design.txt").write_text("tracked local edit\n", encoding="utf-8")
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert tio.entry["status"] == "review"
 
 
@@ -2332,7 +2360,7 @@ def test_complete_rejects_unrelated_tracked_ticket_board_edit(
     # Only this Ticket's own board document may change during completion.
     other.write_text("other ticket, edited\n", encoding="utf-8")
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
     assert tio.entry["status"] == "review"
     assert other.read_text(encoding="utf-8") == "other ticket, edited\n"
     assert acceptance_impl._ref_commit(project, "refs/heads/main") == project_base

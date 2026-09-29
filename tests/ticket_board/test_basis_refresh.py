@@ -38,6 +38,7 @@ from booley.ticket_board.ticket_document import (
     convert_ticket_document,
 )
 from booley.ticket_board.workspace_ops import AuthoringWorkspace
+from tests.ticket_board.conftest import place_closed_ticket, place_ticket
 
 from .conftest import make_paired_repository
 
@@ -396,10 +397,8 @@ def test_provider_refresh_requires_pinned_generation_even_with_same_surface(
             ]
         ),
     )
-    ticket = tmp_path / "provider.md"
-    ticket.write_text("---\n---\n", encoding="utf-8")
-    monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
-    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
+    place_closed_ticket(_tickets_dir(tmp_path), "provider", "---\n---\n")
+    monkeypatch.setattr(basis_refresh, "_converted_text", lambda *_args: _fake_document())
     monkeypatch.setattr(
         basis_refresh, "load_ticket_baseline_from_document", lambda *_args: refreshed_provider
     )
@@ -410,6 +409,13 @@ def test_provider_refresh_requires_pinned_generation_even_with_same_surface(
             _verify_providers(tmp_path, tmp_path, consumer)
     else:
         assert _verify_providers(tmp_path, tmp_path, consumer) == (binding,)
+
+
+def _tickets_dir(root: Path) -> Path:
+    """Return the tickets directory _verify_providers resolves for checkout *root*."""
+    project = root / ".booley_project"
+    project.mkdir(exist_ok=True)
+    return project / "tickets"
 
 
 def _participant() -> BasisParticipant:
@@ -577,14 +583,33 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
         "provider", "a" * 32, "acme:lib:toy:1.0#future", "persistent", "b" * 64
     )
     consumer = TicketBaseline((_participant(),), providers=(binding,))
-    monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (None, None))
+    tickets = _tickets_dir(tmp_path)
+    # A provider that never closed is not accepted, even with a live board document.
+    place_ticket(tickets, "provider", "done", "---\n---\n")
+    with pytest.raises(BasisRefreshError, match="is not accepted"):
+        _verify_providers(tmp_path, tmp_path, consumer)
+    (tickets / "board" / "provider.md").unlink()
+
+    # Only outcome done accepts a provider; an archived one never does.
+    history = place_closed_ticket(tickets, "provider", "---\n---\n", outcome="archived")
     with pytest.raises(BasisRefreshError, match="is not accepted"):
         _verify_providers(tmp_path, tmp_path, consumer)
 
-    ticket = tmp_path / "provider.md"
-    ticket.write_text("---\n---\n", encoding="utf-8")
-    monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
-    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
+    # A malformed history record fails closed instead of reading as absent.
+    history.write_text("---\nclosed:\n  outcome: bogus\n---\n", encoding="utf-8")
+    with pytest.raises(BasisRefreshError, match="history document"):
+        _verify_providers(tmp_path, tmp_path, consumer)
+
+    authored = "---\nsummary: Provider\n---\n## Description\nProvide.\n"
+    place_closed_ticket(tickets, "provider", authored)
+    converted: list[str] = []
+
+    def convert(_root: Path, text: str, slug: str) -> SimpleNamespace:
+        assert slug == "provider"
+        converted.append(text)
+        return _fake_document()
+
+    monkeypatch.setattr(basis_refresh, "_converted_text", convert)
     monkeypatch.setattr(
         basis_refresh,
         "load_ticket_baseline_from_document",
@@ -592,6 +617,8 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
     )
     with pytest.raises(BasisRefreshError, match="no valid accepted basis"):
         _verify_providers(tmp_path, tmp_path, consumer)
+    # The provider basis comes from the document as it closed, without the closed block.
+    assert converted == [authored]
 
     provider_basis = TicketBaseline((_participant(),))
     monkeypatch.setattr(

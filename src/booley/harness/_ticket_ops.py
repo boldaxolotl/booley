@@ -53,6 +53,7 @@ from booley.ticket_board.ticket_document import (
     convert_ticket_document,
     ticket_conversion_context,
 )
+from booley.ticket_board.ticket_history import done_slugs, read_closed_ticket
 from booley.ticket_board.ticket_validation import validate_ticket_document
 from booley.ticket_board.validation import (
     append_authored_drift_diagnostic,
@@ -221,6 +222,7 @@ class DirectTicketOps:
         return classify_tickets(
             scan_all_tickets(tio.tickets_dir, project_root=tio._project_root),
             logs_dir=tio.logs_dir,
+            done_slugs=done_slugs(tio.tickets_dir),
         )
 
     def parse_ticket(self, project_root: Path, path: str) -> dict[str, Any]:
@@ -308,9 +310,13 @@ class DirectTicketOps:
         return evidence
 
     def ticket_status(self, project_root: Path, slug: str) -> str:
-        """Current board status, or "" when the ticket is not on the board."""
-        entry = self._tio(project_root).inspect_ticket(slug)
-        return entry.get("status", "") if entry else ""
+        """Current status: board status, else the Closed Ticket's outcome, else ""."""
+        tio = self._tio(project_root)
+        entry = tio.inspect_ticket(slug)
+        if entry:
+            return entry.get("status", "")
+        closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
+        return closed.closed.outcome.status if closed is not None else ""
 
     # -- State-changing ----------------------------------------------------
 

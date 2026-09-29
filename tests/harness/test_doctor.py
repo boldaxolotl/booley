@@ -685,6 +685,114 @@ def test_tickets_tree_requires_state_record_directory(tmp_path):
     assert rec.events == [("pass", "tickets tree present")]
 
 
+def _history_probe(project_dir: Path) -> doctor._Reporter:
+    """Run the Ticket History commit probe against *project_dir* and return its reporter."""
+    reporter = doctor._Reporter.create()
+    doctor._check_ticket_history_committed(project_dir, reporter.pass_, reporter.warn_)
+    return reporter
+
+
+def _history_git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+
+def _history_repo(tmp_path: Path, monkeypatch) -> Path:
+    """Return a project dir inside a fresh Git repository with one initial commit."""
+    for key, value in {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }.items():
+        monkeypatch.setenv(key, value)
+    _history_git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "README").write_text("x\n", encoding="utf-8")
+    _history_git(tmp_path, "add", "README")
+    _history_git(tmp_path, "commit", "-q", "-m", "init")
+    # The default Stealth policy bans "ticket"; this repository opts out.
+    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley_project" / "booley.toml").write_text(
+        "[stealth]\nenabled = false\n", encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_ticket_history_probe_passes_without_history(tmp_path, monkeypatch):
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    (project_dir / "tickets").mkdir()
+
+    reporter = _history_probe(project_dir)
+
+    assert reporter.findings is not None
+    assert [(f.severity, f.message) for f in reporter.findings] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_warns_until_records_are_committed(tmp_path, monkeypatch):
+    """An uncommitted record WARNs with its slug; Booley's commit clears it (ADR 0065)."""
+    from booley.ticket_board.history_publication import commit_history_record
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    tickets_dir = project_dir / "tickets"
+    place_closed_ticket(tickets_dir, "alpha", "---\nsummary: a\n---\n")
+    place_closed_ticket(tickets_dir, "beta", "---\nsummary: b\n---\n", outcome="archived")
+
+    reporter = _history_probe(project_dir)
+
+    assert reporter.findings is not None
+    warnings = [f for f in reporter.findings if f.severity == "warn"]
+    assert len(warnings) == 1
+    assert warnings[0].check_id == "tickets.history-uncommitted"
+    assert "2 Closed Ticket history record(s) not committed yet (alpha, beta)" in (
+        warnings[0].message
+    )
+    assert not any(f.severity == "pass" for f in reporter.findings)
+
+    assert commit_history_record(tickets_dir, "alpha", policy_root=tmp_path)
+    reporter = _history_probe(project_dir)
+    warnings = [f for f in reporter.findings or [] if f.severity == "warn"]
+    assert len(warnings) == 1
+    assert "(beta)" in warnings[0].message
+    assert "alpha" not in warnings[0].message
+
+    assert commit_history_record(tickets_dir, "beta", policy_root=tmp_path)
+    reporter = _history_probe(project_dir)
+    assert [(f.severity, f.message) for f in reporter.findings or []] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_passes_for_records_committed_by_hand(tmp_path, monkeypatch):
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    place_closed_ticket(project_dir / "tickets", "alpha", "---\nsummary: a\n---\n")
+    _history_git(project_dir, "add", "tickets")
+    _history_git(project_dir, "commit", "-q", "-m", "history")
+
+    reporter = _history_probe(project_dir)
+
+    assert [(f.severity, f.message) for f in reporter.findings or []] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_has_nothing_to_warn_outside_a_repository(tmp_path, monkeypatch):
+    """No repository tracks history, so an uncommitted record is not a finding."""
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    place_closed_ticket(tmp_path / "tickets", "alpha", "---\nsummary: a\n---\n")
+
+    reporter = _history_probe(tmp_path)
+
+    assert [(f.severity, f.message) for f in reporter.findings or []] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
 def test_doctor_reports_ticket_board_import_failure(tmp_path, monkeypatch, capsys):
     project_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, project_dir)

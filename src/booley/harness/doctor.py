@@ -2800,6 +2800,7 @@ def _run_ticket_preflight_parity_checks(
         return
 
     _check_tickets_tree(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_ticket_history_committed(project.project_dir, reporter.pass_, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
     _check_ticket_board_import(project.project_root, reporter.pass_, reporter.fail_)
@@ -2825,6 +2826,37 @@ def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
         )
         return
     _pass("tickets tree present")
+
+
+def _check_ticket_history_committed(project_dir: Path, _pass: Check, _warn: Check) -> None:
+    """Warn about Closed Tickets whose history record Booley has not committed yet.
+
+    Closing never waits for the commit (ADR 0065); the next board operation
+    retries it. A record that stays uncommitted means that retry keeps failing
+    (for example a detached HEAD or a missing Git identity).
+    """
+    from booley.ticket_board.history_publication import (
+        HistoryCommitError,
+        pending_history_commits,
+    )
+
+    _warn = _warning_sink(_warn, "tickets.history-uncommitted")
+    try:
+        pending = pending_history_commits(project_dir / "tickets")
+    except HistoryCommitError as exc:
+        _warn(
+            f"cannot inspect Ticket History commits: {exc}",
+            "fix the repository state, then run any `booley board` command",
+        )
+        return
+    if not pending:
+        _pass("Ticket History committed")
+        return
+    shown = ", ".join(pending[:5]) + (", …" if len(pending) > 5 else "")
+    _warn(
+        f"{len(pending)} Closed Ticket history record(s) not committed yet ({shown})",
+        "run any `booley board` command to retry the commit and read its warning",
+    )
 
 
 def _check_git_state(project_root: Path, _pass: Check, _note: Check, _fail: Fail) -> None:

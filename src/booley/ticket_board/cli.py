@@ -49,8 +49,10 @@ from .helpers import (
     detect_tickets_dir,
     ensure_utf8_output,
 )
+from .history_publication import recover_ticket_history
 from .io import TicketIO
 from .lifecycle import board_target_choices
+from .ticket_history import TicketHistoryError
 
 
 def _add_query_subcommands(sub: argparse._SubParsersAction) -> None:
@@ -287,18 +289,17 @@ def _add_reporting_subcommands(sub: argparse._SubParsersAction) -> None:
     )
 
     # archive
-    p = sub.add_parser("archive", help="Archive done tickets (or a specific ticket by slug)")
+    p = sub.add_parser("archive", help="Abandon a live ticket, closing it as archived")
     p.add_argument(
-        "slug", nargs="?", default=None, help="Specific ticket to archive (default: all done/)"
+        "slug",
+        nargs="?",
+        default=None,
+        help="Live ticket to abandon (default: resume interrupted archives)",
     )
-    p.add_argument(
-        "--keep-logs", action="store_true", help="Keep log directories (default: remove them too)"
-    )
-    p.add_argument(
-        "--force",
-        action="store_true",
-        help="Archive a ticket that is not 'done' (discards its state)",
-    )
+    # Accepted for one release so existing scripts keep working; logs are
+    # always kept now and archiving a live ticket needs no override.
+    p.add_argument("--keep-logs", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
 
     # log-incident
     p = sub.add_parser("log-incident", help="Append an incident to logs/<slug>/incidents.md")
@@ -383,6 +384,28 @@ def build_parser() -> argparse.ArgumentParser:
 # Dispatch table: command name -> handler function
 # ---------------------------------------------------------------------------
 
+# Commands that only read the board; they never trigger Ticket History recovery,
+# which can commit to the Project repository.
+READ_ONLY_COMMANDS = frozenset(
+    {
+        "board",
+        "show",
+        "slug",
+        "read-board",
+        "parse-ticket",
+        "validate-ticket",
+        "next-step",
+        "steps",
+        "classify",
+        "detect-orphans",
+        "mutation-config",
+        "resume",
+        "validate-logs",
+        "timing",
+        "usage",
+    }
+)
+
 HANDLERS = {
     # Pure output commands
     "board": _cmd_board,
@@ -450,8 +473,11 @@ def main(argv: list[str] | None = None) -> int:
     handler = HANDLERS.get(command)
     if handler is not None:
         try:
+            if command not in READ_ONLY_COMMANDS:
+                # Finish interrupted closings and retry uncommitted history first.
+                recover_ticket_history(tio)
             return handler(tio, args)
-        except StateRecordError as exc:
+        except (StateRecordError, TicketHistoryError) as exc:
             # A broken state record fails closed: say which one instead of a traceback.
             print(f"Error: {exc}", file=sys.stderr)
             return 2

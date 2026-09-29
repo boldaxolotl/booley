@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 import uuid
 from dataclasses import replace
@@ -545,18 +546,12 @@ def _require_selected_package(tio: TicketIO, ctx: prep.ReviewPrepContext) -> Non
 
 def _approve_done_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_cleanup: bool) -> bool:
     """Retry terminal actions for a previously accepted Ticket."""
-    from booley.core.models import OnSuccess
-
     from .operations import _completion_acceptance_valid, op_complete
 
     if _completion_acceptance_valid(tio, slug) is None:
         return False
-    entry = tio.find_ticket(slug)
-    assert entry is not None
-    policy = OnSuccess.from_dict(entry.get("on_success"))
-    if policy.merge and not no_merge:
-        return op_complete(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
-    return True
+    # A done Ticket is still live: completion must finish and close it.
+    return op_complete(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
 
 
 def _recover_for_approval(tio: TicketIO, slug: str) -> None:
@@ -703,6 +698,21 @@ def _accepted_unselected_handoff_for_ticket(
     return _accepted_unselected_handoff(project_root, canonical, tio)
 
 
+def _approve_closed_ticket(tio: TicketIO, slug: str) -> bool:
+    """Treat a repeated approve of a Ticket that already closed done as a no-op."""
+    from .ticket_history import read_closed_ticket
+
+    closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
+    if closed is None:
+        raise ReviewEntryError(f"ticket {slug!r} not found")
+    if closed.closed.outcome is not TicketState.DONE:
+        raise ReviewEntryError(
+            f"ticket {slug!r} is already closed ({closed.closed.outcome.status})"
+        )
+    print(f"Ticket '{slug}' is already closed (done); nothing to approve.", file=sys.stderr)
+    return True
+
+
 def approve_review_command(
     project_root: Path, slug: str, *, no_merge: bool = False, no_cleanup: bool = False
 ) -> bool:
@@ -710,7 +720,7 @@ def approve_review_command(
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
     board = tio.find_ticket(slug)
     if board is None:
-        raise ReviewEntryError(f"ticket {slug!r} not found")
+        return _approve_closed_ticket(tio, slug)
     slug = Path(board["file"]).stem
     if board["status"] == "done":
         return _approve_done_ticket(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)

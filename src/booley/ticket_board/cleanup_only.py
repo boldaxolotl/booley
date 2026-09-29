@@ -33,6 +33,22 @@ def _journal_path(root: Path, slug: str, basis: TicketBaseline) -> Path:
     return runtime_dir(root) / "acceptance" / "cleanup-only" / slug / f"{basis.basis_id}.json"
 
 
+def cleanup_only_pending(root: Path, slug: str) -> bool:
+    """Return whether a cleanup-only completion of *slug* has not reached done.
+
+    An unreadable journal counts as pending: only a retry may decide it.
+    """
+    validate_ticket_slug(slug)
+    for path in (runtime_dir(root) / "acceptance" / "cleanup-only" / slug).glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return True
+        if not isinstance(record, dict) or record.get("state") != "done":
+            return True
+    return False
+
+
 def _source_ref(slug: str, basis: TicketBaseline, role: str) -> str:
     return f"refs/booley/acceptance/cleanup-only/{slug}/{basis.basis_id}/{role}"
 

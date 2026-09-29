@@ -111,10 +111,10 @@ SETTLED_STATUSES: frozenset[str] = frozenset(s.status for s in SETTLED_STATES)
 # harness moves from the source state recorded under the per-ticket lock.
 # Admin escape hatches (reset/archive) deliberately use separate primitives.
 #
-# op_archive(slug) can archive a ticket "from any status" — that admin escape
-# hatch is intentionally NOT modelled as an edge from every state (it would
-# dilute the normal-lifecycle graph); callers that archive out-of-band should
-# not route through validate_transition.
+# op_archive(slug) abandons a live ticket from any status except done — that
+# admin escape hatch is intentionally NOT modelled as an edge from every state
+# (it would dilute the normal-lifecycle graph); it closes the Ticket into
+# Ticket History instead of writing an archived state record.
 TRANSITIONS: dict[TicketState, frozenset[TicketState]] = {
     TicketState.DRAFT: frozenset(
         {TicketState.QUEUED, TicketState.WAITING}  # enqueue (deps met / unmet)
@@ -144,8 +144,10 @@ TRANSITIONS: dict[TicketState, frozenset[TicketState]] = {
         }
     ),
     TicketState.REVIEW: frozenset({TicketState.DONE}),  # approve/complete
-    TicketState.DONE: frozenset({TicketState.ARCHIVED}),  # archive
-    TicketState.ARCHIVED: frozenset(),  # terminal
+    # done and archived close the Ticket into Ticket History (ticket_history);
+    # a done Ticket stays on the board only until its completion finishes.
+    TicketState.DONE: frozenset(),
+    TicketState.ARCHIVED: frozenset(),
 }
 
 

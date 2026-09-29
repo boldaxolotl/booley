@@ -60,7 +60,6 @@ from .frontmatter import (
     prepare_frontmatter_update,
 )
 from .helpers import (
-    compute_done_slugs,
     lock_fd,
     now_iso,
     slug_from_file,
@@ -446,6 +445,10 @@ class TicketIO:
                     file=sys.stderr,
                 )
                 return False
+            if destination is TicketState.ARCHIVED:
+                # Abandoning closes the Ticket into Ticket History (ADR 0065).
+                print(f"Error: use 'booley board archive {slug}' to abandon it", file=sys.stderr)
+                return False
             source = STATE_BY_STATUS.get(status or "")
             if self._crosses_draft(slug, source, destination) or self._enqueue_pending(slug):
                 return False
@@ -816,20 +819,7 @@ class TicketIO:
         if prepared is None:
             return None
         content = prepared
-        existing, status = find_ticket_file(
-            self.tickets_dir, slug, project_root=self._project_root
-        )
-        if existing is not None:
-            print(f"Error: ticket '{slug}' already exists ({status}): {existing}", file=sys.stderr)
-            return None
-        leftover = state_record_path(self.tickets_dir, slug)
-        if leftover.exists():
-            # A draft has no state record; a leftover one would make the new
-            # document a live Ticket in an unrelated state.
-            print(
-                f"Error: ticket '{slug}' has a state record without a document: {leftover}",
-                file=sys.stderr,
-            )
+        if not self._slug_available(slug):
             return None
         file_path = ticket_document_path(self.tickets_dir, slug)
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -843,6 +833,36 @@ class TicketIO:
             return None
         self._materialize_ticket_workspace(file_path, slug)
         return file_path
+
+    def _slug_available(self, slug: str) -> bool:
+        """Report why *slug* cannot name a new draft; slugs are unique across
+        the board and Ticket History."""
+        from .ticket_history import slug_is_closed
+
+        existing, status = find_ticket_file(
+            self.tickets_dir, slug, project_root=self._project_root
+        )
+        if existing is not None:
+            print(f"Error: ticket '{slug}' already exists ({status}): {existing}", file=sys.stderr)
+            return False
+        if slug_is_closed(self.tickets_dir, slug):
+            # Closed Tickets are never reopened and their slugs stay taken.
+            print(
+                f"Error: ticket '{slug}' already closed; Ticket History keeps its slug. "
+                "Choose a new slug for new work.",
+                file=sys.stderr,
+            )
+            return False
+        leftover = state_record_path(self.tickets_dir, slug)
+        if leftover.exists():
+            # A draft has no state record; a leftover one would make the new
+            # document a live Ticket in an unrelated state.
+            print(
+                f"Error: ticket '{slug}' has a state record without a document: {leftover}",
+                file=sys.stderr,
+            )
+            return False
+        return True
 
     def _prepare_new_ticket_content(self, slug: str, content: str) -> str | None:
         """Validate a v2 draft and persist inferred paired routing in its human text."""
@@ -942,8 +962,10 @@ class TicketIO:
                 file=sys.stderr,
             )
             return False, True
-        done_slugs = compute_done_slugs(all_tickets)
-        return not all(d in done_slugs for d in deps), False
+        from .ticket_history import done_slugs
+
+        closed_done = done_slugs(self.tickets_dir)
+        return not all(d in closed_done for d in deps), False
 
     def _finish_enqueue_publication(self, journal) -> bool:
         """Roll a prepared enqueue forward through its exact-once side effects."""

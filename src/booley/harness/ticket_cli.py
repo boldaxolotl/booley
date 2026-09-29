@@ -228,7 +228,7 @@ def unblock(
 
 
 def ticket_status(project_root: Path, slug: str) -> str:
-    """Current board status of a ticket, or "" when it is not on the board."""
+    """Status of a ticket: its board status, its closed outcome, or "" if unknown."""
     return get_ticket_ops().ticket_status(project_root, slug)
 
 

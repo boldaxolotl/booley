@@ -15,10 +15,12 @@ from booley.ticket_board.criteria_markdown import (
     render_criteria_section,
 )
 from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.history_publication import pending_history_commits
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.operations import op_complete
 from booley.ticket_board.scanner import find_ticket_file
+from booley.ticket_board.ticket_history import read_closed_ticket
 from booley.ticket_board.validation import validate_ticket_fields
 
 
@@ -63,7 +65,9 @@ def _project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
     )
     project = root / ".booley_project"
     (project / "tickets" / "board").mkdir(parents=True)
-    (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project / ".gitignore").write_text(
+        "/worktrees/\n/.runtime/\n/tickets/state/\n/tickets/logs/\n", encoding="utf-8"
+    )
     (project / "booley.toml").write_text(
         "[flows.lint]\ndefault_target = 'lint_toy'\n", encoding="utf-8"
     )
@@ -373,5 +377,13 @@ def test_review_completion_ignores_its_board_transition_but_not_product_edits(
 
     unrelated_ticket.write_text(unrelated_original, encoding="utf-8")
     assert op_complete(tio, "change-target") is True
-    assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "done"
+    # A finished completion closes the Ticket into Ticket History.
+    assert find_ticket_file(tio.tickets_dir, "change-target") == (None, None)
+    assert not (tio.tickets_dir / "board" / "change-target.md").exists()
+    closed = read_closed_ticket(tio.tickets_dir, "change-target")
+    assert closed is not None
+    assert closed.closed.outcome is TicketState.DONE
+    # Closing commits the history record wherever Git tracks it (a global
+    # ignore of .booley_project/ leaves nothing to commit).
+    assert pending_history_commits(tio.tickets_dir) == []
     assert "lint_toy_new" in (root / "toy.core").read_text(encoding="utf-8")

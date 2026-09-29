@@ -92,6 +92,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_git_state",
             "_check_repo_footprint",
             "_check_ticket_board_import",
+            "_check_ticket_history_committed",
             "_check_tickets_tree",
         }
     ),

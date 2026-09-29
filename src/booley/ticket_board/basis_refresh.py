@@ -23,9 +23,9 @@ from booley.targets.domain import FuseSocError
 from booley.ticket_board.ticket_repositories import paired_project_repository
 
 from .basis_publication import BasisPublicationError
+from .lifecycle import TicketState
 from .persistence import atomic_replace_bytes
 from .planned_dependencies import PlannedDependencyError, target_surface_sha256
-from .scanner import find_ticket_file
 from .target_surface_edit import (
     TargetSurfaceEditError,
     merge_target_definition,
@@ -40,6 +40,7 @@ from .ticket_baseline import (
     ticket_machine_from_spec,
 )
 from .ticket_document import TicketDocument, convert_ticket_document, ticket_conversion_context
+from .ticket_history import TicketHistoryError, read_closed_ticket
 from .workspace_ops import (
     AuthoringWorkspace,
     TicketBaselineOperationError,
@@ -61,8 +62,12 @@ class BasisRefreshError(RuntimeError):
 
 
 def _converted_ticket(root: Path, ticket: Path, slug: str) -> TicketDocument:
+    return _converted_text(root, ticket.read_text(encoding="utf-8"), slug)
+
+
+def _converted_text(root: Path, text: str, slug: str) -> TicketDocument:
     with ticket_conversion_context(root, slug, "executable") as context:
-        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+        converted = convert_ticket_document(text, context)
     if converted.document is None:
         detail = "; ".join(item.message for item in converted.diagnostics)
         raise BasisRefreshError(f"Ticket document is invalid: {detail}")
@@ -286,11 +291,14 @@ def _verify_providers(
     for binding in basis.providers:
         provider_basis = verified.get(binding.provider)
         if provider_basis is None:
-            ticket, status = find_ticket_file(tickets, binding.provider)
-            if ticket is None or status != "done":
+            try:
+                closed = read_closed_ticket(tickets, binding.provider)
+            except TicketHistoryError as exc:
+                raise BasisRefreshError(str(exc)) from exc
+            if closed is None or closed.closed.outcome is not TicketState.DONE:
                 raise BasisRefreshError(f"provider Ticket {binding.provider!r} is not accepted")
             try:
-                provider_document = _converted_ticket(root, ticket, binding.provider)
+                provider_document = _converted_text(root, closed.document, binding.provider)
                 provider_basis = load_ticket_baseline_from_document(
                     root, binding.provider, provider_document
                 )

@@ -41,6 +41,7 @@ from booley.ticket_board.ticket_baseline import (
     requires_return_to_draft,
 )
 from booley.ticket_board.ticket_document import TicketDocument
+from booley.ticket_board.ticket_history import done_slugs
 from booley.ticket_board.ticket_validation import (
     is_operational_ticket_status,
     validate_executable_ticket,
@@ -199,11 +200,10 @@ def _check_dependencies(ctx: TicketContext) -> None:
     """Raise FatalError if any ticket dependencies are unmet."""
     if not ctx.dependencies:
         return
-    # Check done Tickets directly -- classify() only returns actionable
-    # tickets (executable/blocked/waiting/review/orphaned), not done ones.
+    # Only Tickets that closed done satisfy a dependency (ADR 0065).
     tickets_dir = tickets_dir_from_project_root(ctx.project_root)
-    done_slugs = {f.stem for f in documents_in_state(tickets_dir, TicketState.DONE)}
-    unmet = [dep for dep in ctx.dependencies if dep not in done_slugs]
+    closed_done = done_slugs(tickets_dir)
+    unmet = [dep for dep in ctx.dependencies if dep not in closed_done]
     if unmet:
         raise FatalError(f"Unmet dependencies: {', '.join(unmet)} -- leaving in queue")
 

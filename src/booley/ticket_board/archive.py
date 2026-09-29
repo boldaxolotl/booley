@@ -1,6 +1,14 @@
-"""Ticket archive operations — remove completed/specific tickets from the board.
+"""Archive: abandon a live Ticket, closing it into Ticket History (ADR 0065).
 
-Extracted from operations.py for single-responsibility (P8).
+Archiving releases the Ticket's worktrees and refs, then closes it with outcome
+archived (:func:`booley.ticket_board.ticket_history.close_ticket`) and commits
+the history record. Logs are kept. A done Ticket closes by itself when its
+completion finishes, so it is never archived; a Closed Ticket is never
+reopened. Waiting dependents of an archived Ticket are blocked lazily by
+waiting promotion, not here.
+
+A marker under ``.runtime/acceptance/archive/`` makes each archive resumable
+after a crash; it is removed once the Ticket is closed.
 """
 
 from __future__ import annotations
@@ -8,23 +16,23 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import require_bool, require_dict, require_str
+from booley.core.boundary import require_bool, require_dict, require_str, require_str_value
 from booley.runtime.project_dir import runtime_dir
 
 from .archive_generation import plan_generation, release_generation
-from .board_layout import board_relative_document_path, delete_state_record, documents_in_state
+from .board_layout import board_relative_document_path
 from .frontmatter import parse_frontmatter
 from .git_ops import cleanup_worktree_and_branch
-from .io import scan_all_tickets
+from .history_publication import publish_history_record
 from .lifecycle import TicketState
-from .paths import existing_ticket_runtime_file, ticket_log_dir
-from .persistence import atomic_replace_bytes
+from .paths import ticket_log_dir
+from .persistence import atomic_replace_bytes, durable_unlink
+from .ticket_history import ClosedBlock, close_ticket, read_closed_ticket, ticket_generation
 from .ticket_repositories import (
     TicketWorkspace,
     WorkspaceDisposition,
@@ -48,54 +56,6 @@ def _cleanup_session_files(log_dir: Path) -> None:
         f.unlink()
 
 
-def _warn_dependents(tio, slug):
-    """Warn about waiting tickets that depend on the slug being archived."""
-    all_tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
-    dependents = [
-        t.get("feature_branch") or Path(t.get("file", "")).stem
-        for t in all_tickets
-        if t.get("status") == "waiting" and slug in t.get("dependencies", [])
-    ]
-    if dependents:
-        print(
-            f"WARNING: these tickets depend on '{slug}' and will be "
-            f"stuck in waiting/: {', '.join(dependents)}. Edit their "
-            f"dependencies or archive them too.",
-            file=sys.stderr,
-        )
-
-
-def _cleanup_log_dir(log_dir, keep_logs):
-    """Remove log dir contents except the lock held by the caller."""
-    _cleanup_session_files(log_dir)
-    if not keep_logs and log_dir.exists():
-        for entry_path in log_dir.iterdir():
-            if entry_path.name == ".runtime":
-                runtime_lock = entry_path / "ticket.lock"
-                for runtime_entry in entry_path.iterdir():
-                    if runtime_entry == runtime_lock:
-                        continue
-                    if runtime_entry.is_dir():
-                        shutil.rmtree(str(runtime_entry))
-                    else:
-                        runtime_entry.unlink()
-                continue
-            if entry_path.name == "ticket.lock":
-                continue
-            if entry_path.is_dir():
-                shutil.rmtree(str(entry_path))
-            else:
-                entry_path.unlink()
-
-
-def _cleanup_log_dir_phase2(log_dir, keep_logs):
-    """Phase 2 cleanup: remove lock file and empty dir after lock release."""
-    if not keep_logs and log_dir.exists():
-        existing_ticket_runtime_file(log_dir, "ticket.lock").unlink(missing_ok=True)
-        (log_dir / ".runtime").rmdir()
-        log_dir.rmdir()
-
-
 def _marker_path(root: Path, slug: str) -> Path:
     return runtime_dir(root) / "acceptance" / "archive" / f"{slug}.json"
 
@@ -114,19 +74,19 @@ def _load_marker(path: Path, slug: str) -> dict | None:
         "summary",
         "status",
         "step",
-        "keep_logs",
+        "generation",
         "transitioned",
-        "unlinked",
+        "closed",
         "descriptor_retired",
-        "logs_cleaned",
     }
     if set(marker) != expected:
         raise ValueError(f"archive marker is invalid: {path}")
     ticket = Path(require_str(marker, "file"))
     for key in ("digest", "summary", "status"):
         require_str(marker, key)
-    for key in ("keep_logs", "transitioned", "unlinked", "descriptor_retired", "logs_cleaned"):
+    for key in ("transitioned", "closed", "descriptor_retired"):
         require_bool(marker, key)
+    require_str_value(marker["generation"], field="archive marker generation", allow_empty=True)
     # A blank step is valid for an untouched draft Ticket.
     if marker["step"] != "":
         require_str(marker, "step")
@@ -171,8 +131,7 @@ def _pending_operations(tio: Any, slug: str) -> None:
 
 
 def _finish_archive(tio: Any, slug: str, marker_path: Path, marker: dict) -> None:
-    """Persist each finalization checkpoint outside the log directory."""
-    log_dir = ticket_log_dir(tio.logs_dir, slug)
+    """Close the Ticket as archived, persisting each checkpoint in the marker."""
     if not marker["transitioned"]:
         from .paths import human_log_file
 
@@ -188,50 +147,80 @@ def _finish_archive(tio: Any, slug: str, marker_path: Path, marker: dict) -> Non
             )
         marker["transitioned"] = True
         _save_marker(marker_path, marker)
-    ticket_path = tio.tickets_dir / marker["file"]
-    if ticket_path.exists():
-        digest = hashlib.sha256(ticket_path.read_bytes()).hexdigest()
-        if digest != marker["digest"]:
-            raise RuntimeError(f"Ticket {slug} changed during archive finalization")
-        ticket_path.unlink()
-    # The state record goes with the document; phase 3 of ADR 0065 replaces
-    # this unlink with the move to Ticket History.
-    delete_state_record(tio.tickets_dir, slug)
-    marker["unlinked"] = True
-    _save_marker(marker_path, marker)
+    if not marker["closed"]:
+        ticket_path = tio.tickets_dir / marker["file"]
+        if ticket_path.exists():
+            digest = hashlib.sha256(ticket_path.read_bytes()).hexdigest()
+            if digest != marker["digest"]:
+                raise RuntimeError(f"Ticket {slug} changed during archive finalization")
+        block = ClosedBlock.now(TicketState.ARCHIVED, marker["generation"])
+        close_ticket(tio.tickets_dir, slug, block)
+        marker["closed"] = True
+        _save_marker(marker_path, marker)
     descriptor = runtime_dir(Path(tio._project_root)) / "acceptance" / "drafts" / f"{slug}.json"
     descriptor.unlink(missing_ok=True)
     marker["descriptor_retired"] = True
     _save_marker(marker_path, marker)
-    _cleanup_log_dir(log_dir, marker["keep_logs"])
+    _cleanup_session_files(ticket_log_dir(tio.logs_dir, slug))
 
 
-def _prepare_marker(tio: Any, slug: str, path: Path, keep_logs: bool, force: bool) -> dict:
-    """Read the Ticket under lock, then release its generation once."""
+def _refuse_closed_or_done(tio: Any, slug: str, status: str | None) -> None:
+    if status == TicketState.DONE.status:
+        raise RuntimeError(
+            "Ticket is done and closes when its completion finishes; "
+            f"retry with 'booley board approve {slug}'"
+        )
+    if status is None:
+        closed = read_closed_ticket(tio.tickets_dir, slug)
+        if closed is not None:
+            raise RuntimeError(f"Ticket is already closed ({closed.closed.outcome.status})")
+        raise RuntimeError("Ticket not found")
+
+
+def _prepare_marker(tio: Any, slug: str, path: Path) -> dict:
+    """Read the live Ticket under lock, then release its generation once."""
     from .io import find_ticket_file
 
     file_path, status = find_ticket_file(tio.tickets_dir, slug)
     marker = _load_marker(path, slug)
-    if file_path is None:
-        if marker is None or marker["logs_cleaned"]:
-            raise RuntimeError("Ticket not found")
+    if marker is not None:
+        if (
+            file_path is not None
+            and hashlib.sha256(file_path.read_bytes()).hexdigest() != (marker["digest"])
+        ):
+            raise RuntimeError("Ticket changed during unfinished archive")
         return marker
-    if status != "done" and not force and marker is None:
-        raise RuntimeError(f"Ticket is {status!r}; use --force to archive it")
+    _refuse_closed_or_done(tio, slug, status if file_path is not None else None)
+    assert file_path is not None and status is not None
     fields = tio.inspect_ticket(slug)
     if fields is None:
         raise RuntimeError("Ticket disappeared during archive")
     digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
-    if marker is not None and not marker["logs_cleaned"]:
-        if marker["digest"] != digest:
-            raise RuntimeError("Ticket changed during unfinished archive")
-        return marker
     _pending_operations(tio, slug)
-    release_generation(plan_generation(Path(tio._project_root), slug, status, fields))
-    if has_project_ticket_branch(Path(tio._project_root), slug):
-        ok, detail = TicketWorkspace.retire(
-            Path(tio._project_root), slug, WorkspaceDisposition.DISCARD
-        )
+    root = Path(tio._project_root)
+    generation = ticket_generation(root, slug, fields)
+    _release_workspaces(tio, slug, status, fields, file_path)
+    marker = {
+        "digest": digest,
+        "file": str(file_path.relative_to(tio.tickets_dir)),
+        "summary": fields.get("summary", slug),
+        "status": status,
+        "step": fields.get("step", ""),
+        "generation": generation,
+        "transitioned": False,
+        "closed": False,
+        "descriptor_retired": False,
+    }
+    _save_marker(path, marker)
+    return marker
+
+
+def _release_workspaces(tio: Any, slug: str, status: str, fields: dict, file_path: Path) -> None:
+    """Release the Ticket's worktrees and refs before it closes."""
+    root = Path(tio._project_root)
+    release_generation(plan_generation(root, slug, status, fields))
+    if has_project_ticket_branch(root, slug):
+        ok, detail = TicketWorkspace.retire(root, slug, WorkspaceDisposition.DISCARD)
         if not ok:
             raise RuntimeError(f"legacy project workspace cleanup failed: {detail}")
     # find_ticket supplies the slug as a fallback alias. Only an explicitly
@@ -240,25 +229,10 @@ def _prepare_marker(tio: Any, slug: str, path: Path, keep_logs: bool, force: boo
     feature_branch = authored_fields.get("feature_branch", "")
     if feature_branch and not cleanup_worktree_and_branch(feature_branch, force=True):
         raise RuntimeError(f"feature branch cleanup failed: {feature_branch}")
-    _warn_dependents(tio, slug)
-    marker = {
-        "digest": digest,
-        "file": str(file_path.relative_to(tio.tickets_dir)),
-        "summary": fields.get("summary", slug),
-        "status": status,
-        "step": fields.get("step", ""),
-        "keep_logs": keep_logs,
-        "transitioned": False,
-        "unlinked": False,
-        "descriptor_retired": False,
-        "logs_cleaned": False,
-    }
-    _save_marker(path, marker)
-    return marker
 
 
-def _archive_single(tio: Any, slug: str, keep_logs: bool, force: bool) -> ArchiveOutcome:
-    """Archive one Ticket under its lock, including recovery after unlink."""
+def _archive_single(tio: Any, slug: str) -> ArchiveOutcome:
+    """Archive one Ticket under its lock, resuming an interrupted archive."""
     from .helpers import validate_ticket_slug
     from .io import find_ticket_file
 
@@ -269,14 +243,12 @@ def _archive_single(tio: Any, slug: str, keep_logs: bool, force: bool) -> Archiv
         file_path, _ = find_ticket_file(tio.tickets_dir, slug)
         if file_path is not None:
             slug = file_path.stem
-        log_dir = ticket_log_dir(tio.logs_dir, slug)
         marker_path = _marker_path(Path(tio._project_root), slug)
         with tio._ticket_lock(slug):
-            marker = _prepare_marker(tio, slug, marker_path, keep_logs, force)
+            marker = _prepare_marker(tio, slug, marker_path)
             _finish_archive(tio, slug, marker_path, marker)
-        _cleanup_log_dir_phase2(log_dir, marker["keep_logs"])
-        marker["logs_cleaned"] = True
-        _save_marker(marker_path, marker)
+        durable_unlink(marker_path)
+        publish_history_record(tio.tickets_dir, slug, policy_root=Path(tio._project_root))
         outcome.archived.append(marker["summary"])
     except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
         outcome.failures[slug] = str(exc)
@@ -284,43 +256,35 @@ def _archive_single(tio: Any, slug: str, keep_logs: bool, force: bool) -> Archiv
     return outcome
 
 
-def op_archive(
-    tio: Any, slug: str | None = None, keep_logs: bool = False, force: bool = False
-) -> ArchiveOutcome:
-    """Archive tickets: remove from board and clean up files.
+def op_archive(tio: Any, slug: str | None = None) -> ArchiveOutcome:
+    """Abandon the live Ticket *slug*, closing it with outcome archived.
 
-    When *slug* is provided, archives that specific ticket — from any status
-    if *force*, otherwise ``done`` only (A-5).
-    When no slug, cleans all done/ tickets.
-    Returns archived summaries and per-Ticket failures.
+    Without *slug*, only resumes archives a crash interrupted. Returns archived
+    summaries and per-Ticket failures.
     """
     if slug is not None:
-        return _archive_single(tio, slug, keep_logs, force)
-
+        return _archive_single(tio, slug)
     outcome = ArchiveOutcome()
-    for md_file in documents_in_state(tio.tickets_dir, TicketState.DONE):
-        single = _archive_single(tio, md_file.stem, keep_logs, force)
-        outcome.archived.extend(single.archived)
-        outcome.failures.update(single.failures)
     archive_dir = runtime_dir(Path(tio._project_root)) / "acceptance" / "archive"
     for marker_path in sorted(archive_dir.glob("*.json")):
-        slug = marker_path.stem
-        if slug in outcome.failures:
-            continue
-        try:
-            marker = _load_marker(marker_path, slug)
-            if marker is None or marker["logs_cleaned"]:
-                continue
-            ticket_path = tio.tickets_dir / marker["file"]
-            if ticket_path.exists():
-                continue
-            single = _archive_single(tio, slug, keep_logs, force)
-            outcome.archived.extend(single.archived)
-            outcome.failures.update(single.failures)
-        except (OSError, ValueError, RuntimeError) as exc:
-            outcome.failures[slug] = str(exc)
-            print(f"Error: could not resume archive '{slug}': {exc}", file=sys.stderr)
+        single = _archive_single(tio, marker_path.stem)
+        outcome.archived.extend(single.archived)
+        outcome.failures.update(single.failures)
     return outcome
+
+
+def run_archive_command(
+    tio: Any, slug: str | None, *, force: bool = False, keep_logs: bool = False
+) -> int:
+    """Run ``archive`` for either CLI; the retired flags only earn a note."""
+    for flag, given in (("--force", force), ("--keep-logs", keep_logs)):
+        if given:
+            print(
+                f"Note: {flag} has no effect: archive abandons any live Ticket and keeps "
+                "its logs; the flag will be removed",
+                file=sys.stderr,
+            )
+    return report_archive_outcome(op_archive(tio, slug=slug))
 
 
 def report_archive_outcome(outcome: ArchiveOutcome) -> int:
@@ -333,5 +297,5 @@ def report_archive_outcome(outcome: ArchiveOutcome) -> int:
         print("Failed to archive: " + ", ".join(outcome.failures), file=sys.stderr)
         return 1
     if not outcome.archived:
-        print("No tickets to archive.")
+        print("No interrupted archives to resume; name a Ticket to archive it.")
     return 0

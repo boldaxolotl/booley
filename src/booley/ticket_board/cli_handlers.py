@@ -27,7 +27,7 @@ from .analytics import (
     parse_transitions_log,
     usage_entries_to_steps,
 )
-from .archive import op_archive, report_archive_outcome
+from .archive import run_archive_command
 from .board_layout import RUNTIME_DEFAULTS, document_stage, read_state_record
 from .constants import VALID_TYPES
 from .evidence import op_collect_evidence
@@ -64,6 +64,7 @@ from .reporting import (
     format_usage_report,
 )
 from .scanner import _load_state_data
+from .ticket_history import done_slugs
 from .validation import (
     append_authored_drift_diagnostic,
     format_validate_logs_report,
@@ -278,7 +279,9 @@ def _cmd_next_step_or_steps(tio, args, command):
 
 def _cmd_classify(tio, args):
     tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
-    result = classify_tickets(tickets, logs_dir=tio.logs_dir)
+    result = classify_tickets(
+        tickets, logs_dir=tio.logs_dir, done_slugs=done_slugs(tio.tickets_dir)
+    )
     if args.format == "counts":
         for key in ("executable", "active", "blocked", "waiting", "review", "orphaned"):
             print(f"{key}={len(result.get(key, []))}")
@@ -290,7 +293,12 @@ def _cmd_classify(tio, args):
 
 def _cmd_detect_orphans(tio, args):
     tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
-    result = classify_tickets(tickets, orphan_threshold_min=args.threshold, logs_dir=tio.logs_dir)
+    result = classify_tickets(
+        tickets,
+        orphan_threshold_min=args.threshold,
+        logs_dir=tio.logs_dir,
+        done_slugs=done_slugs(tio.tickets_dir),
+    )
     orphaned = result.get("orphaned", [])
     if not orphaned:
         print("No orphaned tickets found.")
@@ -595,11 +603,12 @@ def _cmd_enqueue(tio, args):
 
 
 def _cmd_archive(tio, args):
-    slug = getattr(args, "slug", None)
-    outcome = op_archive(
-        tio, slug=slug, keep_logs=args.keep_logs, force=getattr(args, "force", False)
+    return run_archive_command(
+        tio,
+        getattr(args, "slug", None),
+        force=getattr(args, "force", False),
+        keep_logs=getattr(args, "keep_logs", False),
     )
-    return report_archive_outcome(outcome)
 
 
 def _cmd_log_incident(tio, args):

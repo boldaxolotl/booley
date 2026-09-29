@@ -89,13 +89,14 @@ class TestTransitions:
         assert can_transition(TicketState.BLOCKED, TicketState.RUNNING)
         assert can_transition(TicketState.REVIEW, TicketState.DONE)
         assert can_transition(TicketState.WAITING, TicketState.QUEUED)
-        assert can_transition(TicketState.DONE, TicketState.ARCHIVED)
         assert can_transition(TicketState.RUNNING, TicketState.RUNNING)  # resume
 
     def test_known_illegal_edges(self):
         assert not can_transition(TicketState.DONE, TicketState.QUEUED)
         assert not can_transition(TicketState.DRAFT, TicketState.RUNNING)
         assert not can_transition(TicketState.ARCHIVED, TicketState.DONE)
+        # Done closes into Ticket History; there is no done -> archived edge.
+        assert not can_transition(TicketState.DONE, TicketState.ARCHIVED)
         assert not can_transition(TicketState.BLOCKED, TicketState.DONE)
         assert not can_transition(TicketState.REVIEW, TicketState.QUEUED)
 
@@ -110,6 +111,9 @@ class TestTransitions:
 
     def test_archived_is_a_sink(self):
         assert TRANSITIONS[TicketState.ARCHIVED] == frozenset()
+
+    def test_done_is_a_sink(self):
+        assert TRANSITIONS[TicketState.DONE] == frozenset()
 
     def test_every_state_has_an_entry(self):
         assert set(TRANSITIONS) == set(TicketState)

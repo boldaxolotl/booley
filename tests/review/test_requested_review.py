@@ -39,11 +39,24 @@ from booley.ticket_board import review_preparation as prep
 from booley.ticket_board.board_layout import (
     RUNTIME_DEFAULTS,
     read_state_record,
+    state_record_path,
+    ticket_document_path,
     write_state_record,
 )
 from booley.ticket_board.review_lifecycle import request_review_command
-from booley.ticket_board.review_records import read_entry
+from booley.ticket_board.review_records import ReviewEntryError, read_entry
+from booley.ticket_board.ticket_history import read_closed_ticket
 from tests.ticket_board.test_ticket_baseline import _basis_project
+
+
+def _assert_closed_done(tio, slug):
+    """Assert *slug* closed into Ticket History as done and left the board (ADR 0065)."""
+    assert tio.find_ticket(slug) is None
+    assert not ticket_document_path(tio.tickets_dir, slug).exists()
+    assert not state_record_path(tio.tickets_dir, slug).exists()
+    closed = read_closed_ticket(tio.tickets_dir, slug)
+    assert closed is not None
+    assert closed.closed.outcome is TicketState.DONE
 
 
 def _on_success(options):
@@ -283,13 +296,13 @@ def test_automatic_accepted_handoff_can_be_publicly_approved(blocked, monkeypatc
             assert operations._approve_transition(
                 tio, slug, actor="test", detail="configured merge"
             )
-            operations._finish_completed_ticket(tio, slug, cleanup=False)
+            operations._finish_completed_ticket(tio, slug, cleanup=False, close=True)
             return True
 
         monkeypatch.setattr(operations, "_complete_with_merge", complete_with_merge)
 
     assert approve_review_command(root, "demo", no_merge=no_merge)
-    assert tio.find_ticket("demo")["status"] == "done"
+    _assert_closed_done(tio, "demo")
     assert merged == ([] if no_merge else [True])
 
 
@@ -356,7 +369,6 @@ def test_stale_accepted_handoff_refuses_approval_without_state_change(
 def test_stale_accepted_handoff_surfaces_public_recovery_guidance(blocked, monkeypatch, capsys):
     from booley.harness import booley as harness
     from booley.ticket_board.review_lifecycle import review_command, run_review_command
-    from booley.ticket_board.review_records import ReviewEntryError
 
     stale = _stale_automatic_handoff(blocked, monkeypatch)
 
@@ -389,7 +401,6 @@ def test_stale_accepted_handoff_surfaces_public_recovery_guidance(blocked, monke
 def test_current_accepted_review_validation_names_immutable_exits(blocked, monkeypatch):
     from booley.ticket_board import review_preparation
     from booley.ticket_board.review_lifecycle import run_review_command
-    from booley.ticket_board.review_records import ReviewEntryError
 
     root, _tio, _worktree = blocked
     _automatic_accepted_handoff(blocked, monkeypatch)
@@ -445,7 +456,6 @@ def test_stale_selected_accepted_review_uses_shared_approval_diagnostic(blocked,
         review_command,
         run_review_command,
     )
-    from booley.ticket_board.review_records import ReviewEntryError
     from tests.ticket_board.test_ticket_baseline import _git
 
     root, tio, worktree = blocked
@@ -498,7 +508,7 @@ def test_accepted_handoff_honors_independent_merge_override(blocked, monkeypatch
     root, tio, _package = _automatic_accepted_handoff(blocked, monkeypatch)
 
     assert approve_review_command(root, "demo", no_merge=True)
-    assert tio.find_ticket("demo")["status"] == "done"
+    _assert_closed_done(tio, "demo")
 
 
 @pytest.mark.parametrize(
@@ -565,7 +575,7 @@ def test_accepted_handoff_guides_review_when_bound_package_changed(blocked, monk
     assert not outcome.ready
     assert "booley board approve demo" in outcome.message
     assert approve_review_command(root, "demo", no_merge=True)
-    assert tio.find_ticket("demo")["status"] == "done"
+    _assert_closed_done(tio, "demo")
 
 
 @pytest.mark.parametrize(
@@ -589,7 +599,6 @@ def test_legacy_accepted_handoff_without_package_returns_guidance(blocked, monke
 
 def test_validate_action_names_public_approve_command(tmp_path, monkeypatch):
     from booley.ticket_board import review_lifecycle
-    from booley.ticket_board.review_records import ReviewEntryError
 
     tio = SimpleNamespace(
         logs_dir=tmp_path,
@@ -804,7 +813,6 @@ def test_board_approve_rejects_changed_selected_head(blocked):
 
 def test_concurrent_mutator_is_fenced_during_generation(blocked, monkeypatch):
     from booley.ticket_board import review_lifecycle as requests
-    from booley.ticket_board.review_records import ReviewEntryError
 
     root, tio, _ = blocked
     original = prep._prepare_resolved_review
@@ -1086,7 +1094,6 @@ def test_scoped_context_rejects_foreign_worktree_and_state(blocked, monkeypatch)
 
 def test_review_exec_rejects_preexisting_basis_drift(blocked):
     from booley.ticket_board import review_execution as interactive
-    from booley.ticket_board.review_records import ReviewEntryError
 
     root, tio, _worktree = blocked
     assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
@@ -1332,7 +1339,7 @@ def _finish_interactive_fixture(root, tio, interrupt, monkeypatch):
     from booley.ticket_board.operations import op_complete
 
     assert op_complete(tio, "demo")
-    assert tio.find_ticket("demo")["status"] == "done"
+    _assert_closed_done(tio, "demo")
 
 
 @pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
@@ -1386,9 +1393,13 @@ def test_board_approve_freezes_selected_package_without_agent(blocked, monkeypat
     assert approve_review_command(root, "demo")
     if interrupt:
         assert (tio.logs_dir / "demo" / "acceptance" / "accepted.json").read_bytes() == frozen
-    assert tio.find_ticket("demo")["status"] == "done"
+    _assert_closed_done(tio, "demo")
     assert (tio.logs_dir / "demo" / "acceptance" / "accepted.json").exists()
+    # Approving a Ticket that already closed done is a no-op that leaves its
+    # Ticket History record untouched (ADR 0065).
+    record = read_closed_ticket(tio.tickets_dir, "demo").path.read_bytes()
     assert approve_review_command(root, "demo")
+    assert read_closed_ticket(tio.tickets_dir, "demo").path.read_bytes() == record
 
 
 @pytest.mark.parametrize("damage", ["missing", "downgraded"])
@@ -1419,7 +1430,6 @@ def test_finalize_requires_every_basis_mandatory_criterion(blocked, damage):
 )
 def test_review_entry_rejects_missing_required_fields(blocked, field):
     from booley.ticket_board.review_records import (
-        ReviewEntryError,
         criteria_projection,
         digest,
         entry_path,
@@ -1437,7 +1447,7 @@ def test_review_entry_rejects_missing_required_fields(blocked, field):
 
 @pytest.mark.parametrize("bad", ["true", 1, None, {}])
 def test_review_entry_rejects_invalid_criterion_flags(blocked, bad):
-    from booley.ticket_board.review_records import ReviewEntryError, digest, entry_path
+    from booley.ticket_board.review_records import digest, entry_path
 
     root, tio, _ = blocked
     assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
@@ -1494,7 +1504,6 @@ def _repair_accepted_fixture(root, tio, outcome, interrupt, monkeypatch):
 )
 def test_invalid_review_metadata_is_rejected_before_projection(blocked, keys, value):
     from booley.ticket_board.review_records import (
-        ReviewEntryError,
         criteria_projection,
         digest,
         entry_path,
@@ -1515,7 +1524,6 @@ def test_invalid_review_metadata_is_rejected_before_projection(blocked, keys, va
 
 def test_invalid_json_and_checksum_fail_before_reading_criteria(tmp_path):
     from booley.ticket_board.review_records import (
-        ReviewEntryError,
         criteria_projection,
         entry_path,
     )
@@ -1642,7 +1650,6 @@ def test_accepted_regeneration_rejects_changed_inputs(tmp_path, monkeypatch):
 
 def test_review_lifecycle_reports_missing_and_stale_selection(tmp_path, monkeypatch):
     from booley.ticket_board import review_lifecycle
-    from booley.ticket_board.review_records import ReviewEntryError
 
     tio = TicketIO(tmp_path / "tickets", project_root=tmp_path)
     with pytest.raises(ReviewEntryError, match="no selected review"):
@@ -1664,7 +1671,6 @@ def test_selected_accepted_heads_must_match_criteria_satisfaction_record(tmp_pat
         StaleAcceptanceError,
         compare_accepted_heads,
     )
-    from booley.ticket_board.review_records import ReviewEntryError
 
     row = {
         "heads": {"outer": "b" * 40},
@@ -1707,7 +1713,6 @@ def test_approval_recovery_translates_stale_acceptance(monkeypatch, tmp_path):
         StaleAcceptanceError,
         compare_accepted_heads,
     )
-    from booley.ticket_board.review_records import ReviewEntryError
 
     drift = compare_accepted_heads(
         {"outer": "a" * 40},
@@ -1739,7 +1744,6 @@ def test_approve_done_ticket_handles_invalid_and_merge_paths(monkeypatch):
 
 def test_approve_review_ticket_rejects_missing_completion_and_target_plan(monkeypatch):
     from booley.ticket_board import operations, review_lifecycle
-    from booley.ticket_board.review_records import ReviewEntryError
 
     tio = SimpleNamespace(load_basis=lambda _slug: SimpleNamespace(target_plan=object()))
     monkeypatch.setattr(operations, "_completion_context", lambda *_args: None)
@@ -1758,7 +1762,6 @@ def test_approve_review_ticket_rejects_missing_completion_and_target_plan(monkey
 
 def test_approve_review_ticket_rejects_corrupt_acceptance(monkeypatch, tmp_path):
     from booley.ticket_board import operations, review_lifecycle
-    from booley.ticket_board.review_records import ReviewEntryError
 
     class Lock:
         def __enter__(self):
@@ -1808,7 +1811,6 @@ def test_approve_review_command_rejects_missing_and_non_review_ticket(blocked):
 @pytest.mark.asyncio
 async def test_review_command_reports_blocked_dossier_and_state_errors(blocked, monkeypatch):
     from booley.ticket_board import review_lifecycle
-    from booley.ticket_board.review_records import ReviewEntryError
 
     root, tio, _ = blocked
     original_assert_idle = review_lifecycle.assert_idle
@@ -1951,7 +1953,6 @@ async def test_review_command_reports_missing_corrupt_and_wrong_state(tmp_path, 
 
 def test_run_review_command_rejects_invalid_entry_states(tmp_path, monkeypatch):
     from booley.ticket_board import review_execution
-    from booley.ticket_board.review_records import ReviewEntryError
 
     class FakeTio:
         board: ClassVar[dict[str, str] | None] = {

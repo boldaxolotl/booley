@@ -19,7 +19,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from tests.ticket_board.conftest import place_ticket, publish_handoff_snapshot
+from tests.ticket_board.conftest import (
+    make_closed_ticket,
+    place_ticket,
+    publish_handoff_snapshot,
+)
 
 # Import from the scripts directory (one level up from unit/)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -95,6 +99,7 @@ from booley.ticket_board.paths import (
     human_log_file,
     runtime_file,
 )
+from booley.ticket_board.ticket_history import done_slugs, read_closed_ticket
 
 # Test-local mirror of the filename sets that used to live in paths.py
 # (RUNTIME_FILENAMES / HUMAN_LOG_FILENAMES had no production callers and
@@ -447,7 +452,7 @@ class TestAcceptanceProgress:
         assert set(by_slug) == {"legacy", "new-ticket"}
         assert error in by_slug["legacy"]["acceptance_error"]
         assert "acceptance_error" not in by_slug["new-ticket"]
-        assert classify_tickets(tickets)["executable"] == [by_slug["new-ticket"]]
+        assert classify_tickets(tickets, done_slugs=())["executable"] == [by_slug["new-ticket"]]
         assert any("continuing Board scan" in message for message in caplog.messages)
         assert not any("recreate" in message for message in caplog.messages)
 
@@ -506,7 +511,7 @@ class TestClassifyTickets:
             },
             {"status": "blocked", "feature_branch": "stuck"},
         ]
-        result = classify_tickets(tickets)
+        result = classify_tickets(tickets, done_slugs=())
         assert len(result["executable"]) == 1
         assert result["executable"][0]["feature_branch"] == "ready"
         assert len(result["blocked"]) == 1
@@ -515,15 +520,24 @@ class TestClassifyTickets:
 
     def test_dependency_resolution(self):
         tickets = [
-            {"status": "done", "feature_branch": "dep-a"},
             {"status": "queued", "feature_branch": "child", "dependencies": ["dep-a"]},
         ]
-        result = classify_tickets(tickets)
+        result = classify_tickets(tickets, done_slugs={"dep-a"})
         assert len(result["executable"]) == 1
         assert result["executable"][0]["feature_branch"] == "child"
 
+    def test_board_done_ticket_does_not_satisfy_dependency(self):
+        """Only a Ticket History done record satisfies a dependency (ADR 0065)."""
+        tickets = [
+            {"status": "done", "feature_branch": "dep-a"},
+            {"status": "queued", "feature_branch": "child", "dependencies": ["dep-a"]},
+        ]
+        result = classify_tickets(tickets, done_slugs=())
+        assert result["executable"] == []
+        assert [t["feature_branch"] for t in result["waiting"]] == ["child"]
+
     def test_empty_board(self):
-        result = classify_tickets([])
+        result = classify_tickets([], done_slugs=())
         assert result == {
             "executable": [],
             "active": [],
@@ -2727,9 +2741,9 @@ class TestOpApprove:
 
 class TestOpPromoteWaiting:
     def test_promotes_when_deps_done(self, tmp_path):
-        """Waiting ticket moves to queue/ when all deps are done."""
+        """Waiting ticket moves to queue/ when all deps closed done."""
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "done", "dep-a", extra_fields={"summary": "dep a"})
+        make_closed_ticket(tio, "dep-a", extra_fields={"summary": "dep a"})
         make_ticket_in_dir(
             tio, "waiting", "child", extra_fields={"dependencies": ["dep-a"], "summary": "child"}
         )
@@ -2739,6 +2753,45 @@ class TestOpPromoteWaiting:
         # File should now be in queue/
         _path, status = find_ticket_file(tio.tickets_dir, "child")
         assert status == "queued"
+
+    def test_board_done_dependency_does_not_promote(self, tmp_path):
+        """A dep still on the board in state done has not closed: child keeps waiting."""
+        from booley.runtime.project_dir import runtime_dir
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "done", "dep-a", extra_fields={"summary": "dep a"})
+        # Its cleanup-only completion is unfinished, so the dep must stay live.
+        journal = runtime_dir(tmp_path) / "acceptance" / "cleanup-only" / "dep-a" / "b.json"
+        journal.parent.mkdir(parents=True)
+        journal.write_text('{"state": "approved"}', encoding="utf-8")
+        make_ticket_in_dir(
+            tio, "waiting", "child", extra_fields={"dependencies": ["dep-a"], "summary": "child"}
+        )
+        assert op_promote_waiting(tio) == []
+        _path, status = find_ticket_file(tio.tickets_dir, "child")
+        assert status == "waiting"
+
+    def test_archived_dependency_blocks_waiting_ticket(self, tmp_path, capsys):
+        """A dep closed archived never completes: the waiting child is blocked, idempotently."""
+        tio = make_tio(tmp_path)
+        make_closed_ticket(tio, "dep-a", outcome="archived")
+        make_closed_ticket(tio, "dep-b")
+        make_ticket_in_dir(
+            tio,
+            "waiting",
+            "child",
+            extra_fields={"dependencies": ["dep-a", "dep-b"], "summary": "child"},
+        )
+
+        assert op_promote_waiting(tio) == []
+
+        _path, status = find_ticket_file(tio.tickets_dir, "child")
+        assert status == "blocked"
+        assert load_progress(tio.logs_dir, "child")["blocked_reason"] == "dependency-archived"
+        assert "dependency archived: dep-a" in capsys.readouterr().err
+        # A second pass leaves the already-blocked Ticket alone.
+        assert op_promote_waiting(tio) == []
+        assert find_ticket_file(tio.tickets_dir, "child")[1] == "blocked"
 
     def test_stays_waiting_when_deps_unmet(self, tmp_path):
         """Waiting ticket stays in waiting/ when deps are not done."""
@@ -2752,11 +2805,40 @@ class TestOpPromoteWaiting:
         _path, status = find_ticket_file(tio.tickets_dir, "child")
         assert status == "waiting"
 
-    def test_archived_bound_provider_blocks_for_return_to_draft(
+    def test_archived_bound_provider_blocks_as_dependency_archived(
         self, tmp_path, monkeypatch, capsys
     ):
+        """The archived-dependency rule runs before the provider availability check."""
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "archived", "dep-a")
+        make_closed_ticket(tio, "dep-a", outcome="archived")
+        make_ticket_in_dir(
+            tio,
+            "waiting",
+            "child",
+            extra_fields={
+                "dependencies": ["dep-a"],
+                "machine": {"generation": "0" * 32},
+            },
+        )
+        provider = SimpleNamespace(provider="dep-a")
+        monkeypatch.setattr(
+            tio,
+            "load_basis",
+            lambda _slug: SimpleNamespace(providers=(provider,)),
+        )
+
+        assert op_promote_waiting(tio) == []
+
+        _path, status = find_ticket_file(tio.tickets_dir, "child")
+        assert status == "blocked"
+        assert load_progress(tio.logs_dir, "child")["blocked_reason"] == "dependency-archived"
+        assert "dependency archived: dep-a" in capsys.readouterr().err
+
+    def test_missing_bound_provider_blocks_for_return_to_draft(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A provider neither live on the board nor closed done is unavailable."""
+        tio = make_tio(tmp_path)
         make_ticket_in_dir(
             tio,
             "waiting",
@@ -2790,7 +2872,7 @@ class TestOpPromoteWaiting:
         from booley.ticket_board import basis_refresh
 
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "done", "dep-a")
+        make_closed_ticket(tio, "dep-a")
         make_ticket_in_dir(
             tio,
             "waiting",
@@ -2830,7 +2912,7 @@ class TestOpPromoteWaiting:
         from booley.ticket_board import basis_publication, basis_refresh
 
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "done", "dep-a")
+        make_closed_ticket(tio, "dep-a")
         make_ticket_in_dir(
             tio,
             "waiting",
@@ -2855,7 +2937,7 @@ class TestOpPromoteWaiting:
         from booley.ticket_board import basis_refresh
 
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "done", "dep-a")
+        make_closed_ticket(tio, "dep-a")
         make_ticket_in_dir(
             tio,
             "waiting",
@@ -2971,7 +3053,7 @@ class TestOpReset:
 
     def test_reset_from_failed(self, tmp_path):
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "archived", "my-ticket")
+        make_ticket_in_dir(tio, "blocked", "my-ticket")
         make_progress(
             tio,
             "my-ticket",
@@ -3338,9 +3420,22 @@ class TestOpReset:
         tio = make_tio(tmp_path)
         assert op_reset(tio, "nonexistent") is False
 
+    @pytest.mark.parametrize("outcome", ["done", "archived"])
+    def test_reset_never_reopens_closed_ticket(self, tmp_path, outcome):
+        """A Closed Ticket lives only in Ticket History and is never reopened."""
+        tio = make_tio(tmp_path)
+        history = make_closed_ticket(tio, "my-ticket", outcome=outcome)
+        before = history.read_bytes()
+
+        assert op_reset(tio, "my-ticket") is False
+
+        assert history.read_bytes() == before
+        assert not ticket_document_path(tio.tickets_dir, "my-ticket").exists()
+        assert read_state_record(tio.tickets_dir, "my-ticket") is None
+
     def test_reset_logs_transition(self, tmp_path):
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "archived", "my-ticket", extra_fields={"step": "sim-debug-loop"})
+        make_ticket_in_dir(tio, "blocked", "my-ticket", extra_fields={"step": "sim-debug-loop"})
 
         op_reset(tio, "my-ticket")
 
@@ -3506,36 +3601,57 @@ class TestClassifyWithReview:
             {"status": "review", "feature_branch": "in-review"},
             {"status": "queued", "feature_branch": "ready", "dependencies": []},
         ]
-        result = classify_tickets(tickets)
+        result = classify_tickets(tickets, done_slugs=())
         assert len(result["review"]) == 1
         assert result["review"][0]["feature_branch"] == "in-review"
         assert len(result["executable"]) == 1
 
 
-class TestOpArchive:
-    """archive removes done tickets from done/ directory."""
+def assert_closed_archived(tio, slug):
+    """Assert *slug* left the board and closed into Ticket History as archived."""
+    closed = read_closed_ticket(tio.tickets_dir, slug)
+    assert closed is not None
+    assert closed.closed.outcome is TicketState.ARCHIVED
+    assert not ticket_document_path(tio.tickets_dir, slug).exists()
+    assert read_state_record(tio.tickets_dir, slug) is None
 
-    def test_archives_done_tickets(self, tmp_path):
+
+class TestOpArchive:
+    """archive abandons a live Ticket, closing it into Ticket History as archived."""
+
+    def test_archives_live_ticket_and_keeps_logs(self, tmp_path):
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "done", "t1", extra_fields={"summary": "done ticket"})
+        make_ticket_in_dir(tio, "blocked", "t1", extra_fields={"summary": "blocked ticket"})
         make_ticket_in_dir(tio, "active", "t2", extra_fields={"summary": "active ticket"})
         write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
+        session_id = tio.logs_dir / "t1" / "planning.session_id"
+        session_id.write_text("stale", encoding="utf-8")
 
-        archived = op_archive(tio)
+        archived = op_archive(tio, slug="t1")
 
-        assert archived.archived == ["done ticket"]
-        assert record_state(tio.tickets_dir, "t1") is not TicketState.DONE
-        assert not (tio.logs_dir / "t1").exists()
+        assert archived.archived == ["blocked ticket"]
+        assert archived.failures == {}
+        assert_closed_archived(tio, "t1")
+        # Logs are kept; only stale resume IDs are dropped.
+        assert _test_step_artifact(tio.logs_dir, "t1", "planning", "plan.md").exists()
+        assert not session_id.exists()
+        # The archive's runtime marker is gone once the Ticket closed.
+        assert not list((tmp_path / ".runtime" / "acceptance" / "archive").glob("*.json"))
         # active ticket should still exist
         assert record_state(tio.tickets_dir, "t2") is TicketState.RUNNING
 
-    def test_keep_logs(self, tmp_path):
+    def test_bare_archive_leaves_done_tickets_on_board(self, tmp_path):
+        """Without a slug, archive only resumes interrupted archives: no done sweep."""
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "done", "t1", extra_fields={"summary": "done"})
         write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
 
-        op_archive(tio, keep_logs=True)
+        archived = op_archive(tio)
 
+        assert archived.archived == []
+        assert archived.failures == {}
+        assert record_state(tio.tickets_dir, "t1") is TicketState.DONE
+        assert read_closed_ticket(tio.tickets_dir, "t1") is None
         assert _test_step_artifact(tio.logs_dir, "t1", "planning", "plan.md").exists()
 
     def test_nothing_to_archive(self, tmp_path):
@@ -3543,6 +3659,32 @@ class TestOpArchive:
         make_ticket_in_dir(tio, "active", "t1")
         archived = op_archive(tio)
         assert archived.archived == []
+        assert record_state(tio.tickets_dir, "t1") is TicketState.RUNNING
+
+    def test_bare_archive_resumes_interrupted_archive(self, tmp_path, monkeypatch):
+        from booley.ticket_board import archive as archive_module
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "queue", "t1", extra_fields={"summary": "queued ticket"})
+        real_close = archive_module.close_ticket
+
+        def crash(*_args):
+            raise OSError("crashed while closing")
+
+        monkeypatch.setattr(archive_module, "close_ticket", crash)
+        interrupted = op_archive(tio, slug="t1")
+        assert interrupted.archived == []
+        assert "crashed while closing" in interrupted.failures["t1"]
+        assert read_closed_ticket(tio.tickets_dir, "t1") is None
+        assert (tmp_path / ".runtime" / "acceptance" / "archive" / "t1.json").exists()
+
+        monkeypatch.setattr(archive_module, "close_ticket", real_close)
+        resumed = op_archive(tio)
+
+        assert resumed.archived == ["queued ticket"]
+        assert resumed.failures == {}
+        assert_closed_archived(tio, "t1")
+        assert not (tmp_path / ".runtime" / "acceptance" / "archive" / "t1.json").exists()
 
 
 class TestValidateCriteriaField:
@@ -4002,25 +4144,51 @@ class TestCLIUsageEndToEnd:
 class TestCLIArchive:
     """Test archive CLI subcommand."""
 
-    def test_archive_cli(self, tmp_path, capsys):
+    @staticmethod
+    def _tickets(tmp_path):
         tickets_dir = tmp_path / "tickets"
         for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
+        return tickets_dir, TicketIO(tickets_dir, project_root=tmp_path)
 
-        tio = TicketIO(tickets_dir)
-        make_ticket_in_dir(tio, "done", "t1", extra_fields={"summary": "Done ticket"})
+    def test_archive_cli(self, tmp_path, capsys):
+        tickets_dir, tio = self._tickets(tmp_path)
+        make_ticket_in_dir(tio, "blocked", "t1", extra_fields={"summary": "Blocked ticket"})
         make_ticket_in_dir(tio, "active", "t2", extra_fields={"summary": "Active ticket"})
+
+        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
+            rc = main(argv=["archive", "t1"])
+        assert rc == 0
+        output = capsys.readouterr().out
+        assert "Blocked ticket" in output
+        # the archived ticket closed into Ticket History
+        assert_closed_archived(tio, "t1")
+        # active ticket should still exist
+        assert record_state(tickets_dir, "t2") is TicketState.RUNNING
+
+    def test_bare_archive_cli_only_resumes(self, tmp_path, capsys):
+        tickets_dir, tio = self._tickets(tmp_path)
+        make_ticket_in_dir(tio, "done", "t1", extra_fields={"summary": "Done ticket"})
 
         with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
             rc = main(argv=["archive"])
         assert rc == 0
         output = capsys.readouterr().out
-        assert "Done ticket" in output
-        # done ticket should be removed
-        assert record_state(tickets_dir, "t1") is not TicketState.DONE
-        # active ticket should still exist
-        assert record_state(tickets_dir, "t2") is TicketState.RUNNING
+        assert "No interrupted archives to resume; name a Ticket to archive it." in output
+        assert "Done ticket" not in output
+        assert record_state(tickets_dir, "t1") is TicketState.DONE
+
+    def test_legacy_flags_are_accepted_no_ops(self, tmp_path, capsys):
+        tickets_dir, tio = self._tickets(tmp_path)
+        make_ticket_in_dir(tio, "blocked", "t1", extra_fields={"summary": "Blocked ticket"})
+        write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
+
+        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
+            rc = main(argv=["archive", "t1", "--force", "--keep-logs"])
+        assert rc == 0
+        assert_closed_archived(tio, "t1")
+        assert _test_step_artifact(tio.logs_dir, "t1", "planning", "plan.md").exists()
 
 
 class TestInitAlreadyActive:
@@ -4300,26 +4468,23 @@ class TestCLIApproveBoundary:
 
 
 class TestClassifyAutoApproved:
-    """Auto-approved tickets (status=done) should unblock dependents."""
+    """Auto-approved tickets closed done in Ticket History unblock dependents."""
 
     def test_done_tickets_unblock_deps(self, tmp_path):
-        """When ticket A is auto-approved (done), ticket B depending on A
+        """When ticket A is auto-approved and closed done, ticket B depending on A
         should become executable."""
+        tio = make_tio(tmp_path)
+        make_closed_ticket(tio, "ticket-a", extra_fields={"summary": "A"})
         result = classify_tickets(
             [
-                {
-                    "file": "done/ticket-a.md",
-                    "summary": "A",
-                    "status": "done",
-                    "feature_branch": "ticket-a",
-                },
                 {
                     "file": "queue/ticket-b.md",
                     "summary": "B",
                     "status": "queued",
                     "dependencies": ["ticket-a"],
                 },
-            ]
+            ],
+            done_slugs=done_slugs(tio.tickets_dir),
         )
         # ticket-b should be executable (not waiting)
         assert len(result["executable"]) == 1
@@ -5165,7 +5330,7 @@ class TestClassifyPriority:
                 "dependencies": [],
             },
         ]
-        result = classify_tickets(tickets)
+        result = classify_tickets(tickets, done_slugs=())
         slugs = [t["feature_branch"] for t in result["executable"]]
         assert slugs == ["high-t", "med-t", "low-t"]
 
@@ -5186,7 +5351,7 @@ class TestClassifyPriority:
                 "steps_completed": ["setup"],
             },
         ]
-        result = classify_tickets(tickets)
+        result = classify_tickets(tickets, done_slugs=())
         slugs = [t["feature_branch"] for t in result["executable"]]
         assert slugs == ["started", "fresh"]
 
@@ -5202,7 +5367,7 @@ class TestClassifyPriority:
                 "dependencies": [],
             },
         ]
-        result = classify_tickets(tickets)
+        result = classify_tickets(tickets, done_slugs=())
         slugs = [t["feature_branch"] for t in result["executable"]]
         assert slugs == ["high-t", "no-prio", "low-t"]
 
@@ -5320,14 +5485,13 @@ class TestInlineYamlLists:
     def test_inline_list_dependency_resolution(self):
         """End-to-end: inline list deps are properly resolved by classify_tickets."""
         tickets = [
-            {"status": "done", "feature_branch": "dep-a"},
             {
                 "status": "queued",
                 "feature_branch": "child",
                 "dependencies": ["dep-a", "dep-b"],
             },  # dep-b not done
         ]
-        result = classify_tickets(tickets)
+        result = classify_tickets(tickets, done_slugs={"dep-a"})
         # child should be waiting because dep-b is not done
         assert len(result["executable"]) == 0
         assert len(result["waiting"]) == 1
@@ -5389,19 +5553,19 @@ class TestFeatureBranchIdentity:
         tickets = scan_all_tickets(tmp_path)
         assert tickets[0]["feature_branch"] == "my-ticket"
 
-    def test_dependency_resolution_uses_frontmatter_branch(self, tmp_path):
-        """classify_tickets resolves deps via feature_branch from frontmatter."""
-        # Done ticket: filename is "old-name.md" but feature_branch is "real-dep"
-        write_simple_v2_ticket(
-            board_path(tmp_path, "old-name", "done"), "dep ticket", feature_branch="real-dep"
-        )
+    def test_dependency_resolution_uses_history_slug(self, tmp_path):
+        """Dependencies resolve by the Closed Ticket's history slug (ADR 0065)."""
+        tio = TicketIO(tmp_path, project_root=tmp_path)
+        make_closed_ticket(tio, "real-dep", extra_fields={"summary": "dep ticket"})
         # Queued ticket depends on "real-dep"
         write_simple_v2_ticket(
             board_path(tmp_path, "child-ticket", "queue"), "child", dependencies=("real-dep",)
         )
         tickets = scan_all_tickets(tmp_path, project_root=tmp_path)
-        result = classify_tickets(tickets)
-        # Child should be executable because "real-dep" is done
+        # The Closed Ticket left the board: only the child is scanned.
+        assert [t["feature_branch"] for t in tickets] == ["child-ticket"]
+        result = classify_tickets(tickets, done_slugs=done_slugs(tmp_path))
+        # Child should be executable because "real-dep" closed done
         assert len(result["executable"]) == 1
         assert result["executable"][0]["feature_branch"] == "child-ticket"
 
@@ -5472,7 +5636,7 @@ class TestOrphanThreshold:
         tickets = [
             {"status": "running", "feature_branch": "x", "last_update": last_update},
         ]
-        result = classify_tickets(tickets)
+        result = classify_tickets(tickets, done_slugs=())
         # 20 min < 30 min threshold → not orphaned
         assert len(result["orphaned"]) == 0
 
@@ -5485,7 +5649,7 @@ class TestOrphanThreshold:
         tickets = [
             {"status": "running", "feature_branch": "x", "last_update": last_update},
         ]
-        result = classify_tickets(tickets)
+        result = classify_tickets(tickets, done_slugs=())
         assert len(result["orphaned"]) == 1
 
     def test_custom_threshold_override(self):
@@ -5497,7 +5661,7 @@ class TestOrphanThreshold:
         tickets = [
             {"status": "running", "feature_branch": "x", "last_update": last_update},
         ]
-        result = classify_tickets(tickets, orphan_threshold_min=5)
+        result = classify_tickets(tickets, orphan_threshold_min=5, done_slugs=())
         assert len(result["orphaned"]) == 1
 
 
@@ -5802,7 +5966,7 @@ class TestOpResetPreservesTicketMd:
     def test_ticket_md_survives_reset(self, tmp_path):
         """op_reset should preserve ticket.md in logs dir."""
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "archived", "my-ticket")
+        make_ticket_in_dir(tio, "blocked", "my-ticket")
         log_dir = tio.logs_dir / "my-ticket"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "ticket.md").write_text("original ticket")
@@ -5822,7 +5986,7 @@ class TestOpResetPreservesBlockedMd:
     def test_blocked_md_survives_reset(self, tmp_path):
         """op_reset should preserve blocked.md in logs dir (append-only log)."""
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "archived", "my-ticket")
+        make_ticket_in_dir(tio, "blocked", "my-ticket")
         log_dir = tio.logs_dir / "my-ticket"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "blocked.md").write_text("# Escalation History\n\nold block\n")
@@ -6080,9 +6244,20 @@ class TestBoardMoveTerminalActionOverrides:
 
     def test_no_merge_allows_configured_cleanup(self, tmp_path):
         tio = self._review_ticket(tmp_path, merge=True, cleanup=True)
-        with patch("booley.ticket_board.cleanup_only.advance_cleanup_only") as cleanup:
+
+        def approve(tio, slug, *_args):
+            # Cleanup-only completion approves the Ticket as done before it closes.
+            record = read_state_record(tio.tickets_dir, slug)
+            write_state_record(tio.tickets_dir, slug, record.with_state(TicketState.DONE))
+
+        with patch(
+            "booley.ticket_board.cleanup_only.advance_cleanup_only", side_effect=approve
+        ) as cleanup:
             assert op_board_move(tio, "my-ticket", "done", no_merge=True) is True
         cleanup.assert_called_once()
+        closed = read_closed_ticket(tio.tickets_dir, "my-ticket")
+        assert closed is not None and closed.closed.outcome is TicketState.DONE
+        assert not ticket_document_path(tio.tickets_dir, "my-ticket").exists()
 
     def test_overrides_never_enable_a_declined_action(self, tmp_path):
         """Subtractive only: a ticket that opted out of merging does not start
@@ -6100,55 +6275,50 @@ class TestBoardMoveTerminalActionOverrides:
 class TestArchiveWithSlug:
     """Test op_archive with slug parameter for per-ticket archiving."""
 
-    def test_archive_done_ticket_by_slug(self, tmp_path):
-        """Archive a specific done ticket by slug."""
+    @pytest.mark.parametrize("board", ["drafts", "waiting", "queue", "blocked", "review"])
+    def test_archive_live_ticket_by_slug(self, tmp_path, board):
+        """Any live Ticket that is not done is abandoned without --force."""
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "done", "t1", extra_fields={"summary": "done ticket"})
+        make_ticket_in_dir(tio, board, "t1", extra_fields={"summary": "live ticket"})
         write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
 
         archived = op_archive(tio, slug="t1")
-        assert archived.archived == ["done ticket"]
-        assert record_state(tio.tickets_dir, "t1") is not TicketState.DONE
-        assert not (tio.logs_dir / "t1").exists()
+        assert archived.archived == ["live ticket"]
+        assert_closed_archived(tio, "t1")
+        assert _test_step_artifact(tio.logs_dir, "t1", "planning", "plan.md").exists()
 
-    def test_archive_blocked_ticket_refused_without_force(self, tmp_path):
-        """A non-done ticket is NOT archived without force (A-5)."""
+    def test_archive_done_ticket_refused(self, tmp_path, capsys):
+        """A done Ticket closes when its completion finishes; archive refuses it."""
         tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "blocked", "t1", extra_fields={"summary": "blocked ticket"})
+        make_ticket_in_dir(tio, "done", "t1", extra_fields={"summary": "done ticket"})
         write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
 
         archived = op_archive(tio, slug="t1")
         assert archived.archived == []
-        assert record_state(tio.tickets_dir, "t1") is TicketState.BLOCKED
-
-    def test_archive_blocked_ticket_by_slug_with_force(self, tmp_path):
-        """Archive a specific blocked ticket by slug with force=True."""
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "blocked", "t1", extra_fields={"summary": "blocked ticket"})
-        write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
-
-        archived = op_archive(tio, slug="t1", force=True)
-        assert archived.archived == ["blocked ticket"]
-        assert record_state(tio.tickets_dir, "t1") is not TicketState.BLOCKED
-
-    def test_archive_slug_keep_logs(self, tmp_path):
-        """Archive with slug + keep_logs preserves log directory."""
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "done", "t1", extra_fields={"summary": "done ticket"})
-        write_stage_file(tio.logs_dir, "t1", "planning", "plan.md", "plan")
-
-        archived = op_archive(tio, slug="t1", keep_logs=True)
-        assert len(archived.archived) == 1
-        # Ticket file should be gone
-        assert record_state(tio.tickets_dir, "t1") is not TicketState.DONE
-        # Logs should be preserved
+        assert "closes when its completion finishes" in archived.failures["t1"]
+        assert "could not archive 't1'" in capsys.readouterr().err
+        assert record_state(tio.tickets_dir, "t1") is TicketState.DONE
+        assert read_closed_ticket(tio.tickets_dir, "t1") is None
         assert _test_step_artifact(tio.logs_dir, "t1", "planning", "plan.md").exists()
 
+    @pytest.mark.parametrize("outcome", ["done", "archived"])
+    def test_archive_closed_ticket_refused(self, tmp_path, outcome):
+        """A Closed Ticket is never reopened or re-closed."""
+        tio = make_tio(tmp_path)
+        history = make_closed_ticket(tio, "t1", outcome=outcome)
+        before = history.read_bytes()
+
+        archived = op_archive(tio, slug="t1")
+        assert archived.archived == []
+        assert archived.failures["t1"] == f"Ticket is already closed ({outcome})"
+        assert history.read_bytes() == before
+
     def test_archive_slug_not_found(self, tmp_path):
-        """Archive nonexistent slug returns empty list."""
+        """Archive nonexistent slug reports a failure and archives nothing."""
         tio = make_tio(tmp_path)
         archived = op_archive(tio, slug="nonexistent")
         assert archived.archived == []
+        assert archived.failures["nonexistent"] == "Ticket not found"
 
 
 class TestActivateTransitionDetail:

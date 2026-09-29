@@ -525,17 +525,18 @@ def _add_board_subparsers(sub) -> None:
     )
 
     archive_p = board_sub.add_parser(
-        "archive", help="Archive done tickets or a specific ticket", parents=[root_opt]
+        "archive", help="Abandon a live ticket, closing it as archived", parents=[root_opt]
     )
     archive_p.add_argument(
-        "slug", nargs="?", default=None, help="Specific ticket (default: all done/)"
+        "slug",
+        nargs="?",
+        default=None,
+        help="Live ticket to abandon (default: resume interrupted archives)",
     )
-    archive_p.add_argument("--keep-logs", action="store_true", help="Keep log directories")
-    archive_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Archive a ticket that is not 'done' (discards its state)",
-    )
+    # Accepted for one release so existing scripts keep working; logs are
+    # always kept now and archiving a live ticket needs no override.
+    archive_p.add_argument("--keep-logs", action="store_true", help=argparse.SUPPRESS)
+    archive_p.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
 
 
 def _add_board_review_subparsers(board_sub, root_opt) -> None:
@@ -1231,12 +1232,18 @@ def _cmd_board_create(tio: TicketIO, slug: str, project_root: Path) -> bool:
     return tio.create_ticket_document(slug, stub) is not None
 
 
+# Board commands that only read; they never trigger Ticket History recovery,
+# which can commit to the Project repository.
+_READ_ONLY_BOARD_COMMANDS = frozenset({None, "show", "review-briefing", "blocked-briefing"})
+
+
 def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
     from booley.ticket_board.board_layout import StateRecordError
+    from booley.ticket_board.ticket_history import TicketHistoryError
 
     try:
         return _run_board_command(args, project_root)
-    except StateRecordError as exc:
+    except (StateRecordError, TicketHistoryError) as exc:
         # A broken state record fails closed: say which one instead of a traceback.
         print(f"Error: {exc}", file=sys.stderr)
         return 2
@@ -1247,6 +1254,14 @@ def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 
     board_cmd = getattr(args, "board_command", None)
+
+    if board_cmd not in _READ_ONLY_BOARD_COMMANDS:
+        # Finish interrupted closings and retry uncommitted Ticket History first.
+        from booley.ticket_board.history_publication import recover_ticket_history
+
+        recover_ticket_history(
+            TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+        )
 
     if board_cmd is None or (board_cmd == "show" and not getattr(args, "slug", None)):
         from booley.ticket_board.io import scan_all_tickets
@@ -1310,15 +1325,14 @@ def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _cmd_board_archive(args: argparse.Namespace, tio: TicketIO) -> int:
-    from booley.ticket_board.archive import op_archive, report_archive_outcome
+    from booley.ticket_board.archive import run_archive_command
 
-    outcome = op_archive(
+    return run_archive_command(
         tio,
-        slug=args.slug,
-        keep_logs=getattr(args, "keep_logs", False),
+        args.slug,
         force=getattr(args, "force", False),
+        keep_logs=getattr(args, "keep_logs", False),
     )
-    return report_archive_outcome(outcome)
 
 
 def _cmd_requested_review(args: argparse.Namespace, project_root: Path, action: str) -> int:

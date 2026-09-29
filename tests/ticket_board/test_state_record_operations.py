@@ -243,13 +243,17 @@ class TestFailClosed:
         self._assert_untouched(tio, document, doc, record)
 
     def test_archive(self, tio: TicketIO, content: bytes) -> None:
-        from booley.ticket_board.archive import op_archive
+        from booley.ticket_board.archive import _marker_path, op_archive
+        from booley.ticket_board.ticket_history import read_closed_ticket
 
         document, doc, record = _corrupt(tio, content)
-        outcome = op_archive(tio, "t1", force=True)
+        outcome = op_archive(tio, "t1")
         assert "t1" in outcome.failures
         assert "state record" in outcome.failures["t1"]
         self._assert_untouched(tio, document, doc, record)
+        # The Ticket never closed and no resumable archive was left behind.
+        assert read_closed_ticket(tio.tickets_dir, "t1") is None
+        assert not _marker_path(tio._project_root, "t1").exists()
 
     def test_return_to_draft(self, tio: TicketIO, content: bytes) -> None:
         document, doc, record = _corrupt(tio, content)

@@ -37,6 +37,7 @@ from booley.ticket_board.ticket_baseline import (
     ticket_machine_fields,
 )
 from tests.criterion_endpoint_support import builtin_endpoint_catalog
+from tests.ticket_board.conftest import place_closed_ticket
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1208,8 +1209,8 @@ class TestDependencies:
         fields = dict(_MINIMAL_FIELDS, dependencies=["dep-a", "dep-b"])
         _mock_cli_defaults(mock_cli, action="fresh", fields=fields)
         tickets_dir = project_root / _TICKETS_REL
-        _place_ticket(tickets_dir, "dep-a", TicketState.DONE, "---\n---\n")
-        _place_ticket(tickets_dir, "dep-b", TicketState.DONE, "---\n---\n")
+        place_closed_ticket(tickets_dir, "dep-a", "---\n---\n")
+        place_closed_ticket(tickets_dir, "dep-b", "---\n---\n")
         from booley.harness.setup.intake import run
 
         ctx = await run(str(sample_ticket), project_root)
@@ -1220,10 +1221,26 @@ class TestDependencies:
     async def test_partial_deps_raises(self, mock_cli, project_root, sample_ticket):
         fields = dict(_MINIMAL_FIELDS, dependencies=["dep-a", "dep-missing"])
         _mock_cli_defaults(mock_cli, action="fresh", fields=fields)
-        _place_ticket(project_root / _TICKETS_REL, "dep-a", TicketState.DONE, "---\n---\n")
+        place_closed_ticket(project_root / _TICKETS_REL, "dep-a", "---\n---\n")
         from booley.harness.setup.intake import run
 
         with pytest.raises(FatalError, match=r"Unmet dependencies.*dep-missing"):
+            await run(str(sample_ticket), project_root)
+
+    @pytest.mark.asyncio
+    @patch("booley.harness.setup.intake.ticket_cli")
+    async def test_board_done_or_archived_history_does_not_satisfy(
+        self, mock_cli, project_root, sample_ticket
+    ):
+        """Only Ticket History outcome done satisfies a dependency (ADR 0065)."""
+        fields = dict(_MINIMAL_FIELDS, dependencies=["dep-board", "dep-archived"])
+        _mock_cli_defaults(mock_cli, action="fresh", fields=fields)
+        tickets_dir = project_root / _TICKETS_REL
+        _place_ticket(tickets_dir, "dep-board", TicketState.DONE, "---\n---\n")
+        place_closed_ticket(tickets_dir, "dep-archived", "---\n---\n", outcome="archived")
+        from booley.harness.setup.intake import run
+
+        with pytest.raises(FatalError, match=r"Unmet dependencies: dep-board, dep-archived"):
             await run(str(sample_ticket), project_root)
 
 

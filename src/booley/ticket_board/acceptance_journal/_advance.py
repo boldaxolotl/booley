@@ -11,7 +11,8 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -1714,6 +1715,60 @@ def cleanup_finished(root: Path, slug: str) -> bool:
     except AcceptanceJournalError as exc:
         raise AcceptanceOperationError(str(exc)) from exc
     return bool(journal.cleanup and journal.state is JournalState.DONE)
+
+
+@contextmanager
+def publication_idle(root: Path) -> Iterator[None]:
+    """Hold the acceptance publication lock while no publication is in flight.
+
+    Other writers of the destination branches (the Ticket History commit) run
+    inside this block, so they can never move a branch between an acceptance's
+    preparation and its publication. Raises ``LockContentionError`` while an
+    acceptance is running and :class:`AcceptanceOperationError` while a journal
+    has unfinished publication.
+    """
+    store = FileAcceptanceStore()
+    anchor = store.path(root.resolve(), "publication")
+    with store.locked(anchor):
+        for candidate in store.journals(anchor.parent):
+            try:
+                journal = store.load_persisted(candidate)
+            except AcceptanceJournalError as exc:
+                raise AcceptanceOperationError(
+                    f"cannot inspect acceptance journal {candidate}: {exc}"
+                ) from exc
+            if JournalState(journal["state"]).publication_pending:
+                raise AcceptanceOperationError(
+                    f"Ticket {candidate.stem!r} has unfinished acceptance publication"
+                )
+        yield
+
+
+def acceptance_finished(root: Path, slug: str) -> bool | None:
+    """Return whether *slug*'s acceptance fully finished, or ``None`` without a journal.
+
+    Finished means the journal reached done and every keepalive ref of its
+    transaction was retired, which is what a COMPLETE outcome reports.
+    """
+    store = FileAcceptanceStore()
+    path = store.path(root.resolve(), slug)
+    if not path.exists():
+        return None
+    try:
+        journal = store.load_persisted(path)
+    except AcceptanceJournalError as exc:
+        raise AcceptanceOperationError(str(exc)) from exc
+    if journal.state is not JournalState.DONE:
+        return False
+    prefix = f"refs/booley/acceptance/{journal['transaction']}/"
+    repositories = [root.resolve()]
+    project = LocalAcceptanceRepositories().project_repository(root.resolve())
+    if project is not None:
+        repositories.append(project)
+    return not any(
+        _require_git(repository, "for-each-ref", "--format=%(refname)", prefix)
+        for repository in repositories
+    )
 
 
 @dataclass(frozen=True)

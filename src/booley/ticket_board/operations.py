@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 from .board_layout import RUNTIME_DEFAULTS
 from .git_ops import cleanup_worktree_and_branch
-from .helpers import compute_done_slugs, parse_arrow, slug_from_file
+from .helpers import parse_arrow, slug_from_file
 from .io import scan_all_tickets
 from .lifecycle import (
     STATE_BY_STATUS,
@@ -820,24 +820,41 @@ def op_approve(tio: Any, slug: str) -> bool:
 
 
 def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
-    """Queue waiting tickets whose dependencies are all done.
+    """Queue waiting tickets whose dependencies all closed done.
+
+    Dependencies resolve from Ticket History. A waiting Ticket with an
+    archived dependency is blocked here, lazily: the check is idempotent, so
+    archive never fans out to its dependents and a crash cannot leave them
+    half-updated.
 
     Returns list of promoted ticket dicts: [{"slug": ..., "summary": ...}].
     """
+    from .history_publication import recover_ticket_history
+    from .ticket_history import closed_outcomes
+
+    _close_finished_done_tickets(tio)
+    recover_ticket_history(tio)
     tickets = scan_all_tickets(tio.tickets_dir, project_root=Path(tio._project_root))
     from .basis_refresh import recover_published_basis_refreshes
 
     recover_published_basis_refreshes(Path(tio._project_root), tickets)
 
-    done_slugs = compute_done_slugs(tickets)
+    closed = closed_outcomes(tio.tickets_dir)
+    done_slugs = {slug for slug, outcome in closed.items() if outcome is TicketState.DONE}
 
     promoted = []
     for t in tickets:
         if t.get("status") != "waiting":
             continue
-        provider_error = _waiting_provider_error(tio, t, tickets)
+        slug = t.get("feature_branch") or slug_from_file(t.get("file", ""))
+        archived = sorted(
+            dep for dep in t.get("dependencies", []) if closed.get(dep) is TicketState.ARCHIVED
+        )
+        if archived:
+            _block_archived_dependency(tio, slug, archived)
+            continue
+        provider_error = _waiting_provider_error(tio, t, tickets, done_slugs)
         if provider_error:
-            slug = t.get("feature_branch") or slug_from_file(t.get("file", ""))
             print(
                 f"Error: cannot promote '{slug}': acceptance-input-change-required: "
                 f"{provider_error}",
@@ -855,16 +872,39 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     return promoted
 
 
+def _block_archived_dependency(tio: Any, slug: str, archived: list[str]) -> None:
+    """Block a waiting Ticket whose dependency closed archived (idempotent)."""
+    blocked = _op_move_and_log(
+        tio,
+        slug,
+        TicketState.BLOCKED,
+        {"blocked_reason": "dependency-archived", "blocked_step": "setup"},
+        (
+            "waiting:init",
+            "blocked:setup",
+            "ticket-board",
+            f"dependency archived: {', '.join(archived)}",
+        ),
+        expected_status="waiting",
+    )
+    if blocked:
+        print(
+            f"Blocked '{slug}': dependency archived: {', '.join(archived)}. Edit its "
+            f"dependencies, then unblock it, or archive it too.",
+            file=sys.stderr,
+        )
+
+
 def _waiting_provider_error(
-    tio: Any, ticket: dict[str, Any], tickets: list[dict[str, Any]]
+    tio: Any,
+    ticket: dict[str, Any],
+    tickets: list[dict[str, Any]],
+    done_slugs: set[str],
 ) -> str:
     if ticket.get("machine") is None:
         return ""
-    available = {
-        slug_from_file(item.get("file", ""))
-        for item in tickets
-        if item.get("status") != "archived"
-    }
+    # A provider is available while live on the board or once closed done.
+    available = {slug_from_file(item.get("file", "")) for item in tickets} | done_slugs
     dependencies = {item for item in ticket.get("dependencies", ()) if isinstance(item, str)}
     unavailable = dependencies - available
     if not unavailable:
@@ -1194,12 +1234,13 @@ def op_complete(
         except (CleanupOnlyError, OSError, ValueError) as exc:
             print(f"Error: cleanup-only completion failed for '{slug}': {exc}", file=sys.stderr)
             return False
-        _finish_completed_ticket(tio, slug, cleanup=True)
-        return True
-    if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
+        return _finish_completed_ticket(tio, slug, cleanup=True, close=True)
+    # A done Ticket here is a retry after approval succeeded but closing did not.
+    if (tio.find_ticket(slug) or {}).get("status") != TicketState.DONE.status and not (
+        _approve_transition(tio, slug, actor="op-complete", detail="terminal actions")
+    ):
         return False
-    _finish_completed_ticket(tio, slug, cleanup=False)
-    return True
+    return _finish_completed_ticket(tio, slug, cleanup=False, close=True)
 
 
 def _prepare_completion_request(
@@ -1256,7 +1297,8 @@ def _completion_context(
         return None
 
     status = entry.get("status", "")
-    if status != "review" and not (status == "done" and on_success.merge):
+    # done is a live Ticket whose completion must still finish and close it.
+    if status not in {TicketState.REVIEW.status, TicketState.DONE.status}:
         print(
             f"Error: cannot complete '{slug}' from status '{status}'; must be in review",
             file=sys.stderr,
@@ -1266,27 +1308,34 @@ def _completion_context(
 
 
 def _complete_with_merge(tio: Any, slug: str, on_success: Any, snapshot: Any) -> bool:
-    from .acceptance_journal import cleanup_finished
+    from .acceptance_journal import AcceptanceOutcome, cleanup_finished
     from .completion import complete_review_ticket
 
-    if not complete_review_ticket(
+    outcome = complete_review_ticket(
         tio,
         slug,
         on_success,
         expected_sources=snapshot.participant_heads,
-    ):
+    )
+    if outcome is None:
         detail = _acceptance_failure_detail(tio, slug)
         print(f"Error: acceptance failed for '{slug}'; {detail}", file=sys.stderr)
         return False
     finished_cleanup = on_success.cleanup and cleanup_finished(
         Path(tio._project_root).resolve(), slug
     )
-    _finish_completed_ticket(tio, slug, cleanup=finished_cleanup)
-    return True
+    # Closing is the Acceptance Journal's final step: only a complete
+    # acceptance moves the Ticket to history; a retry finishes the rest.
+    return _finish_completed_ticket(
+        tio, slug, cleanup=finished_cleanup, close=outcome is AcceptanceOutcome.COMPLETE
+    )
 
 
-def _finish_completed_ticket(tio: Any, slug: str, *, cleanup: bool) -> None:
-    """Release ephemeral execution state after durable acceptance."""
+def _finish_completed_ticket(tio: Any, slug: str, *, cleanup: bool, close: bool) -> bool:
+    """Release ephemeral execution state after durable acceptance, then close.
+
+    Returns whether the Ticket closed (or was left live on purpose).
+    """
     if cleanup:
         from booley.harness.setup.worktree_lock_gc import release_worktree_locks
 
@@ -1295,7 +1344,77 @@ def _finish_completed_ticket(tio: Any, slug: str, *, cleanup: bool) -> None:
     from .archive import _cleanup_session_files
 
     _cleanup_session_files(tio.logs_dir / slug)
+    # Promotion commits the fresh history record (recover_ticket_history).
+    succeeded = _close_done_ticket(tio, slug) if close else True
     op_promote_waiting(tio)
+    return succeeded
+
+
+class _NotClosableError(RuntimeError):
+    """A done Ticket cannot close yet; its completion must finish first."""
+
+
+def _close_done_ticket(tio: Any, slug: str) -> bool:
+    """Move a done Ticket to Ticket History (the commit follows in recovery).
+
+    Closing never releases worktrees or refs itself: completion's cleanup
+    policy decides that, and a Ticket completed without cleanup keeps its
+    branch for inspection.
+    """
+    from .acceptance_journal import AcceptanceJournalError, JournalState, acceptance_state
+    from .ticket_history import ClosedBlock, TicketHistoryError, close_ticket, ticket_generation
+
+    try:
+        with tio._ticket_lock(slug):
+            entry = tio.find_ticket(slug)
+            if entry is not None and entry.get("status") != TicketState.DONE.status:
+                raise _NotClosableError(f"Ticket is {entry.get('status')!r}, not done")
+            journal = acceptance_state(tio.tickets_dir, slug)
+            if journal is not None and journal is not JournalState.DONE:
+                raise _NotClosableError(f"its acceptance is still {journal}")
+            generation = ticket_generation(Path(tio._project_root), slug, entry) if entry else ""
+            close_ticket(tio.tickets_dir, slug, ClosedBlock.now(TicketState.DONE, generation))
+    except (
+        _NotClosableError,
+        AcceptanceJournalError,
+        TicketHistoryError,
+        OSError,
+        TimeoutError,
+        ValueError,
+    ) as exc:
+        print(
+            f"Error: '{slug}' is done but could not close into Ticket History: {exc}; "
+            f"retry 'booley board approve {slug}'",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _close_finished_done_tickets(tio: Any) -> None:
+    """Close done Tickets whose completion finished but whose close was lost.
+
+    A crash between the end of completion and the close leaves a done Ticket
+    on the board. Its completion is finished when its Acceptance Journal is
+    done with every keepalive retired (or it has none) and no cleanup-only
+    completion is pending; then closing is safe and idempotent.
+    """
+    from .acceptance_journal import AcceptanceOperationError, acceptance_finished
+    from .board_layout import documents_in_state
+    from .cleanup_only import cleanup_only_pending
+
+    root = Path(tio._project_root)
+    for document in documents_in_state(tio.tickets_dir, TicketState.DONE):
+        slug = document.stem
+        try:
+            finished = acceptance_finished(root, slug) is not False and not (
+                cleanup_only_pending(root, slug)
+            )
+        except (AcceptanceOperationError, OSError, ValueError) as exc:
+            print(f"Warning: cannot inspect completion of '{slug}': {exc}", file=sys.stderr)
+            continue
+        if finished:
+            _close_done_ticket(tio, slug)
 
 
 def op_board_move(
