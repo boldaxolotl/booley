@@ -48,7 +48,7 @@ is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
 | `--report-dir <path>` | Write reports here instead of the default report root. |
 | `--diagnostic` | Run without recording Ticket Criteria. A strict Ticket requires it for Flow/Target pairs outside its baseline. |
 | `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
-| `--timeout-ms <ms>` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. The old `--timeout` spelling is a deprecated alias. |
+| `--timeout-ms <ms>` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. |
 
 ## Reading results
 
@@ -96,7 +96,7 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 | `--tests-file <path>` | Read exact test names from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run tests (default), or only elaborate (see [Elaboration checks](#elaboration-checks)). |
 | `--trace` | Capture a waveform. Use it to debug a failure, not for pass/fail checks. |
-| `--coverage` / `--cov` | Collect native coverage (see [Coverage](#coverage)). |
+| `--coverage` / `--cov` | Collect coverage (see [Coverage](#coverage)). |
 | `--resume-from <manifest.json>` | Resume an interrupted run (see [Resuming](#resuming-an-interrupted-run)). |
 | `--result-verbosity <compact\|full>` | cocotb console detail. `full` prints every testcase; the complete XML/JSON is always kept. |
 | `--no-kill` | Skip the pre-run cleanup of stale simulator processes. Diagnostic use only. |
@@ -109,10 +109,10 @@ Test selection rules:
   `tests.toml`. Naming tests gives an exact explicit suite, which overrides those
   entries. A Target whose whole suite is skipped fails preflight instead of
   passing vacuously.
-- There is no `--skip` option. Put lasting exclusions in `tests.toml`.
 
-The deprecated aliases `--elab-only`, `--build-only`, and `--standalone` still
-map to the `--mode` values for one compatibility window.
+Multiple simulator processes can run in parallel up to `[jobs].max_heavy`
+(default `1`, i.e. serial). Tests sharing a literal `run_cwd` always run one at a
+time.
 
 ### Verdicts and Criteria
 
@@ -125,17 +125,18 @@ Each test gets one verdict:
 - A test that exits cleanly without a valid verdict is **inconclusive**, never a
   pass. So is a `--trace` run that produced no fresh waveform.
 
-A run can satisfy these Criteria:
+Criteria are Ticket Mode acceptance conditions: a Ticket declares them, and
+Flow runs made for that Ticket record whether they were met (see
+[Acceptance Criteria](USAGE.md#acceptance-criteria)). An Interactive Mode run
+only reports its verdict and exit code; it records no Criteria.
+
+Within a Ticket, a `sim` run can satisfy these Criteria:
 
 - `elab_pass_<target>`: recorded as soon as the build succeeds, so a later test
   failure does not erase it.
 - `sim_pass_<target>`: requires every test in the Target's Required Simulation
   Suite to pass. Passing a hand-picked subset does not count.
 - Per-test Cycle Count Criteria, when configured.
-
-Multiple simulator processes can run in parallel up to `[jobs].max_heavy`
-(default `1`, i.e. serial). Tests sharing a literal `run_cwd` always run one at a
-time.
 
 ### Elaboration checks
 
@@ -174,7 +175,7 @@ booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
 
 ### Coverage
 
-`sim` can collect native Verilator coverage (line, branch, expression, toggle,
+`sim` can collect Verilator coverage (line, branch, expression, toggle,
 and cover properties) into a **Coverage Campaign**, check it against Coverage
 Criteria, and hand it to the Coverage Analyst for explanation.
 
@@ -201,7 +202,7 @@ The verdict card prints the exact `coverage.json` path to use in step 2.
 - Coverage builds are cached separately from normal and trace builds.
 - Testbench properties such as excluding reset from coverage, or hooks for a
   custom C++ main, live in the Target's `.core`. See
-  [Native coverage configuration](CONFIG.md#native-coverage-configuration).
+  [Coverage configuration](CONFIG.md#native-coverage-configuration).
 
 #### Collecting vs. gating
 
@@ -234,7 +235,7 @@ Only points in the RTL count toward the percentages; testbench and generated
 code are reported but not scored. Points that are legitimately unreachable or
 out of scope can be waived by a human in a project-wide approval directory.
 Waivers are checked per Target: one invalid approval blocks that Target's
-evaluation. See [Native coverage configuration](CONFIG.md#native-coverage-configuration)
+evaluation. See [Coverage configuration](CONFIG.md#native-coverage-configuration)
 and [Approved coverage waivers](CONFIG.md#approved-coverage-waivers) for the
 full syntax.
 
@@ -284,8 +285,8 @@ It never runs simulation, changes Criteria, or approves waivers. See
 
 #### Cleaning up old Campaigns
 
-Native databases are large. Booley never deletes evidence automatically; prune
-an exact run explicitly:
+Raw Verilator coverage databases are large. Booley never deletes evidence
+automatically; prune an exact run explicitly:
 
 ```bash
 # Drop one Target's raw/merged databases; the Campaign stays analyzable
