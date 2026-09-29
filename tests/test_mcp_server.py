@@ -482,7 +482,7 @@ class TestMcpToolTimeoutSeconds:
                 {"target": "a,b", "timeout_ms": 600_000, "trace": False},
                 {"default_timeout": 1290},
             )
-        assert timeout == 4 * (3600 + 600 + 600) + 30
+        assert timeout == 2 * 3600 + 4 * (600 + 600) + 30
 
     def test_simulate_trace_margin_scales_by_work_units(self):
         with patch(
@@ -512,7 +512,7 @@ class TestMcpToolTimeoutSeconds:
                 },
                 {"default_timeout": 1},
             )
-        assert timeout == 2 * 3600 + 10
+        assert timeout == 2 * 3600 + 10 + 30
         assert resolve_units.call_args.args[-1] is SimulationMode.ELAB_ONLY_STANDALONE
 
     def test_elab_only_budget_counts_only_target_builds(self):
@@ -522,7 +522,7 @@ class TestMcpToolTimeoutSeconds:
             {"default_timeout": 1},
         )
 
-        assert timeout == 2 * 3600
+        assert timeout == 2 * 3600 + 30
 
     def test_cycle_count_baseline_uses_same_budget_for_both_revisions(
         self,

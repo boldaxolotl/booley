@@ -335,10 +335,13 @@ class PreparedOrdinaryGroup:
             attempt.identity.attempt_token,
             environment=dict(attempt.simulator_environment),
         )
-        process = self._execution._invoke(
-            ["sh", "-c", script], timeout=self._execution._build_timeout_s()
+        timeout_s = self._execution._build_timeout_s()
+        process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
+        build = classify_build_outcome(
+            process,
+            attempt.identity.attempt_token,
+            timeout_s=timeout_s,
         )
-        build = classify_build_outcome(process, attempt.identity.attempt_token)
         self._attempt = attempt
         self._build_process = process
         self._build = build
@@ -818,7 +821,11 @@ class SimulationExecution:
             )
             if attempt.reused
             else replace(
-                classify_build_outcome(process, attempt.identity.attempt_token),
+                classify_build_outcome(
+                    process,
+                    attempt.identity.attempt_token,
+                    timeout_s=self._build_timeout_s(),
+                ),
                 cache_decision=attempt.cache_decision,
             )
         )
@@ -908,8 +915,13 @@ class SimulationExecution:
                 attempt.identity.attempt_token,
                 environment=dict(attempt.simulator_environment),
             )
-            build_process = self._invoke(["sh", "-c", script], timeout=self._build_timeout_s())
-            build = classify_build_outcome(build_process, attempt.identity.attempt_token)
+            timeout_s = self._build_timeout_s()
+            build_process = self._invoke(["sh", "-c", script], timeout=timeout_s)
+            build = classify_build_outcome(
+                build_process,
+                attempt.identity.attempt_token,
+                timeout_s=timeout_s,
+            )
             if not build.passed or build_process.returncode != 0 or build_process.timed_out:
                 return AdapterAttemptOutcome(build_process, None, None)
             session.authorize_fresh_image(attempt.prepared, inputs, attempt.cache_key)

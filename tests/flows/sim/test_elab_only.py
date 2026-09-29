@@ -377,10 +377,13 @@ def test_timeout_before_terminal_record_has_no_verdict() -> None:
     outcome = classify_build_outcome(
         _result("still compiling", rc=-1, timed_out=True),
         "abc123",
+        timeout_s=7,
     )
 
     assert outcome.verdict is None
     assert outcome.failure_kind == "infrastructure"
+    assert outcome.reason == ("build timed out after 7 s (raise [flows.sim].build_timeout_ms)")
+    assert outcome.output.startswith(outcome.reason)
 
 
 def test_signal_style_build_exit_has_no_design_verdict() -> None:

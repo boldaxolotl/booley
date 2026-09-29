@@ -245,18 +245,29 @@ def build_stage_script(
     )
 
 
-def classify_build_outcome(result: SubprocessResult, token: str) -> BuildOutcome:
+def classify_build_outcome(
+    result: SubprocessResult,
+    token: str,
+    *,
+    timeout_s: int | None = None,
+) -> BuildOutcome:
     """Classify current-attempt build evidence, failing closed on ambiguity."""
     output = result.stdout + ("\n" + result.stderr if result.stderr else "")
     records = [
         match for match in _TERMINAL_RECORD_RE.finditer(result.stdout) if match["token"] == token
     ]
     if len(records) != 1:
+        reason = (
+            _build_timeout_reason(timeout_s)
+            if result.timed_out
+            else "missing or duplicate authenticated terminal build record"
+        )
+        detail = f"{reason}\n{output}" if result.timed_out and output else output
         return _infrastructure_outcome(
             result,
-            output,
+            detail,
             ran=bool(records),
-            reason="missing or duplicate authenticated terminal build record",
+            reason=reason,
             terminal_record=False,
         )
     record = records[0]
@@ -270,7 +281,18 @@ def classify_build_outcome(result: SubprocessResult, token: str) -> BuildOutcome
         build_output += "\n" + result.stderr
     if build_rc == 0:
         return _successful_build_outcome(build_result, output, build_rc)
-    return _failed_build_outcome(build_result, output, build_output, build_rc)
+    return _failed_build_outcome(
+        build_result,
+        output,
+        build_output,
+        build_rc,
+        timeout_s=timeout_s,
+    )
+
+
+def _build_timeout_reason(timeout_s: int | None) -> str:
+    limit = f" after {timeout_s} s" if timeout_s is not None else ""
+    return f"build timed out{limit} (raise [flows.sim].build_timeout_ms)"
 
 
 def _successful_build_outcome(
@@ -298,15 +320,20 @@ def _failed_build_outcome(
     output: str,
     build_output: str,
     build_rc: int,
+    *,
+    timeout_s: int | None,
 ) -> BuildOutcome:
     """Classify one authenticated nonzero build result."""
     if result.timed_out or result.oom_kill_delta > 0 or build_rc < 0 or build_rc >= 128:
+        reason = (
+            _build_timeout_reason(timeout_s) if result.timed_out else "abnormal build termination"
+        )
         return _infrastructure_outcome(
             result,
-            output,
+            f"{reason}\n{output}" if result.timed_out and output else output,
             ran=True,
             returncode=build_rc,
-            reason="abnormal build termination",
+            reason=reason,
         )
     failure = classify_eda_failure(
         replace(result, returncode=build_rc, stdout=build_output, stderr=""),

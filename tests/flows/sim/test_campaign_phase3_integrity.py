@@ -330,6 +330,51 @@ def test_campaign_policy_carries_build_budget_into_execution_options(
     )
 
     assert captured == [SimulationOptions(timeout_ms=5000, build_timeout_ms=7000)]
+    assert counters["compile"] == 1
+
+
+def test_private_campaign_build_uses_carried_build_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disclosures = {"alpha": _legacy_disclosures()["alpha"]}
+    base_manifest = _manifest_for(("alpha",), access="legacy-per-test")
+    document = json.loads(canonical_json_bytes(base_manifest.document))
+    document.pop("fingerprints")
+    document["planning_disclosures"] = list(disclosures.values())
+    manifest = finalize_manifest(document)
+    project = tmp_path / "project"
+    project.mkdir()
+    build_root = tmp_path / "engine-build"
+    build_root.mkdir()
+    (build_root / "simv").write_bytes(b"image")
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    captured: list[SimulationOptions] = []
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+
+    def factory(options: SimulationOptions) -> _Execution:
+        captured.append(options)
+        return _Execution(build_root, counters, disclosures=disclosures)
+
+    monkeypatch.setattr(serial_execution, "_run_hook", lambda *_args, **_kwargs: None)
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=factory,  # type: ignore[arg-type,return-value]
+    )
+    executor.execute(
+        _request(
+            store,
+            manifest,
+            manifest.document["work_items"][0],
+            project,
+            invocation=1,
+            policy=CampaignPolicy(timeout_seconds=5, build_timeout_seconds=7),
+        )
+    )
+
+    assert captured == [SimulationOptions(timeout_ms=5000, build_timeout_ms=7000)]
+    assert counters["compile"] == 1
 
 
 def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation(

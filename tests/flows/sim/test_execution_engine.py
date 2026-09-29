@@ -732,6 +732,64 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
     _assert_authoritative_cocotb_outcome(outcome)
 
 
+def test_fresh_adapter_uses_build_budget_before_run_budget(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=True)
+    timeouts: list[int] = []
+    attempt_box: dict[str, Any] = {}
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        timeouts.append(timeout)
+        if "BOOLEY_BUILD_STAGE" in command[-1]:
+            return SubprocessResult(
+                returncode=0,
+                stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+            )
+        write_adapter_result(
+            attempt_box["attempt"].identity,
+            AdapterResult(
+                passed=True,
+                inconclusive=False,
+                sva_errors=0,
+                tests=("reset", "count"),
+                test_results=(
+                    AdapterTestResult("reset", "pass"),
+                    AdapterTestResult("count", "pass"),
+                ),
+            ),
+        )
+        return SubprocessResult(returncode=0, stdout="adapter complete\n")
+
+    execution = SimulationExecution(
+        invoke=invoke,
+        options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
+    )
+    session = MagicMock()
+    session.new_generation.return_value = prepared.work_root
+    session.capture_inputs.return_value = {}
+    session.reusable_key.return_value = None
+    session.try_reuse.return_value = None
+    execution._build_session = session
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=True),
+        ),
+        _compile_surface_patch(handle),
+        patch(
+            "booley.flows.sim.execution.engine.prepare_simulation_build",
+            return_value=prepared,
+        ),
+        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
+    ):
+        attempt = execution._prepare_attempt(handle, ("reset", "count"))
+        attempt_box["attempt"] = attempt
+        result = execution._execute_fresh_adapter(handle, attempt)
+
+    assert result.result is not None
+    assert timeouts == [7, 5]
+
+
 def test_default_cocotb_selection_snapshots_discovered_test_names(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=True)

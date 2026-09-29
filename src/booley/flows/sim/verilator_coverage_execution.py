@@ -229,8 +229,9 @@ class VerilatorCoverageExecution:
         )
         script = _in_directory_script(self._handle.project_root, script)
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
-        process = self._invoke(["sh", "-c", script], timeout=max(1, timeout_ms // 1000))
-        outcome = classify_build_outcome(process, token)
+        timeout_s = max(1, timeout_ms // 1000)
+        process = self._invoke(["sh", "-c", script], timeout=timeout_s)
+        outcome = classify_build_outcome(process, token, timeout_s=timeout_s)
         if not outcome.passed:
             return SimulationBuildResult(False, outcome.output or outcome.reason, identity)
         self._prepared = prepared

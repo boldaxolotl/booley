@@ -4384,11 +4384,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 environment=prepared.environment,
             ),
         ]
-        proc = self._execute_boundary(
-            command,
-            timeout=max(1, self._effective_build_timeout_ms() // 1000),
-        )
-        outcome = classify_build_outcome(proc, token)
+        timeout_s = max(1, self._effective_build_timeout_ms() // 1000)
+        proc = self._execute_boundary(command, timeout=timeout_s)
+        outcome = classify_build_outcome(proc, token, timeout_s=timeout_s)
         result = ElabOnlyTargetResult(
             target=target,
             target_identity=prepared.target_identity,
