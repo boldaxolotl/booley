@@ -1,4 +1,4 @@
-"""Recoverable queued/blocked-to-draft transition for recorded Tickets."""
+"""Recoverable blocked-to-draft transition for Tickets with a recorded baseline."""
 
 from __future__ import annotations
 
@@ -10,12 +10,9 @@ import shutil
 import subprocess
 import uuid
 from collections.abc import Callable
-from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
-
-import yaml
 
 from booley.core.boundary import (
     BoundaryError,
@@ -50,7 +47,6 @@ from .ticket_baseline import (
 from .ticket_document import (
     TicketDocument,
     convert_ticket_document,
-    legacy_review_outcomes_present,
     serialize_ticket_document,
     ticket_conversion_context,
 )
@@ -186,9 +182,8 @@ def _validate_journal(
     if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in digests):
         raise DraftTransitionError("return-to-draft content identity is invalid")
     blocked = Path(journal.blocked_ticket).resolve()
-    valid_sources = {(board / state / f"{slug}.md").resolve() for state in ("blocked", "queue")}
-    if blocked not in valid_sources:
-        raise DraftTransitionError("return-to-draft source Ticket path is invalid")
+    if blocked != (board / "blocked" / f"{slug}.md").resolve():
+        raise DraftTransitionError("return-to-draft blocked Ticket path is invalid")
     archive = Path(journal.archive_dir).resolve()
     archive_root = (logs_dir / slug / "runs").resolve()
     operation = _operation_dir(root, journal.operation_id).resolve()
@@ -204,89 +199,21 @@ def _next_archive(log_dir: Path) -> Path:
     return runs / f"{(max(existing, default=0) + 1):03d}"
 
 
-def _converted_document(
-    root: Path,
-    ticket: Path,
-    slug: str,
-    stage: str,
-    *,
-    allow_legacy_review_outcomes: bool = False,
-) -> TicketDocument:
+def _converted_document(root: Path, ticket: Path, slug: str, stage: str) -> TicketDocument:
     with ticket_conversion_context(root, slug, stage) as context:
-        recovery_context = replace(
-            context,
-            _allow_legacy_review_outcomes=allow_legacy_review_outcomes,
-        )
-        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), recovery_context)
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
     if converted.document is None:
         details = "; ".join(item.message for item in converted.diagnostics)
         raise DraftTransitionError(f"Ticket is invalid: {details}")
     return converted.document
 
 
-def _normalized_review_fields(fields: dict[str, Any]) -> dict[str, Any]:
-    normalized = deepcopy(fields)
-    if not legacy_review_outcomes_present(normalized):
-        return normalized
-    mandatory = normalized["CRITERIA_MANDATORY"]
-    optional = normalized.get("CRITERIA_OPTIONAL", {})
-    leaves: dict[tuple[str, str], list[tuple[dict[str, Any], Any, bool]]] = {}
-    for section, required in ((mandatory, True), (optional, False)):
-        review = section.get("REVIEW", {})
-        for category, focuses in review.items():
-            for focus, outcome in focuses.items():
-                leaves.setdefault((category, focus), []).append((focuses, outcome, required))
-    for (category, focus), entries in leaves.items():
-        values = [
-            value for _focuses, outcome, _required in entries for value in _outcomes(outcome)
-        ]
-        destination = (
-            mandatory if any(required for _focuses, _outcome, required in entries) else optional
-        )
-        for focuses, _outcome, _required in entries:
-            focuses.pop(focus)
-        _prune_review_sections(mandatory, optional)
-        review = destination.setdefault("REVIEW", {})
-        review.setdefault(category, {})[focus] = "clean" if "clean" in values else "done"
-    if not optional:
-        normalized.pop("CRITERIA_OPTIONAL", None)
-    return normalized
-
-
-def _outcomes(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else [value]
-
-
-def _prune_review_sections(*sections: dict[str, Any]) -> None:
-    for section in sections:
-        review = section.get("REVIEW")
-        if not isinstance(review, dict):
-            continue
-        for category in list(review):
-            if not review[category]:
-                review.pop(category)
-        if not review:
-            section.pop("REVIEW")
-
-
-def _draft_content(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument, bytes, bool]:
-    document = _converted_document(
-        root,
-        ticket,
-        slug,
-        "executable",
-        allow_legacy_review_outcomes=True,
-    )
-    legacy_review_outcomes = legacy_review_outcomes_present(document.spec.fields)
-    fields = _normalized_review_fields(dict(document.spec.fields))
-    source = "---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n" + document.spec.body
+def _draft_content(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument, bytes]:
+    document = _converted_document(root, ticket, slug, "executable")
+    draft = TicketDocument(document.spec, {})
     with ticket_conversion_context(root, slug, "draft") as context:
-        converted = convert_ticket_document(source, context)
-        if converted.document is None:
-            details = "; ".join(item.message for item in converted.diagnostics)
-            raise DraftTransitionError(f"Normalized draft is invalid: {details}")
-        content = serialize_ticket_document(converted.document, context).encode()
-    return document, content, legacy_review_outcomes
+        content = serialize_ticket_document(draft, context).encode()
+    return document, content
 
 
 def _new_journal(
@@ -296,16 +223,9 @@ def _new_journal(
     status: str,
     logs_dir: Path,
 ) -> DraftTransitionJournal:
-    if status not in {"queued", "blocked"}:
-        raise DraftTransitionError(
-            f"return-to-draft requires a queued or blocked ticket, got {status!r}"
-        )
-    document, draft_content, legacy_review_outcomes = _draft_content(root, ticket, slug)
-    if status == "queued" and not legacy_review_outcomes:
-        raise DraftTransitionError(
-            "return-to-draft requires a blocked Ticket or a queued Ticket with legacy "
-            "REVIEW outcomes"
-        )
+    if status != "blocked":
+        raise DraftTransitionError(f"return-to-draft requires a blocked ticket, got {status!r}")
+    document, draft_content = _draft_content(root, ticket, slug)
     try:
         basis = load_ticket_baseline_from_document(root, slug, document)
     except TicketBaselineError as exc:
@@ -368,13 +288,7 @@ def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> TicketBase
     _require_file(blocked, journal.blocked_sha256, "blocked Ticket")
     candidate = _operation_dir(root, journal.operation_id) / "draft.md"
     _require_file(candidate, journal.draft_sha256, "replacement draft")
-    document = _converted_document(
-        root,
-        blocked,
-        journal.slug,
-        "executable",
-        allow_legacy_review_outcomes=True,
-    )
+    document = _converted_document(root, blocked, journal.slug, "executable")
     try:
         basis = load_ticket_baseline_from_document(root, journal.slug, document)
     except TicketBaselineError as exc:
@@ -628,7 +542,7 @@ def return_to_draft(
     *,
     status: str,
     logs_dir: Path | str,
-    append_transition: Callable[[str, str], None],
+    append_transition: Callable[[str], None],
 ) -> AuthoringWorkspace:
     """Prepare and recoverably publish a fresh Ticket draft."""
     root = Path(project_root).resolve()
@@ -650,16 +564,11 @@ def return_to_draft(
         _publish_generation(root, journal)
         _archive_runtime(logs / slug, Path(journal.archive_dir), journal.operation_id)
         _publish_board(root, journal)
-        source_status = _source_status(journal)
         append_transition(
-            source_status,
             f"old Ticket generation {journal.machine['generation']}; "
-            f"new draft identity {journal.generation}; {journal.operation_id}",
+            f"new draft identity {journal.generation}; "
+            f"{journal.operation_id}"
         )
         journal = journal.with_state("published")
         _write_journal(root, journal)
     return _finish_published_transition(root, journal, basis)
-
-
-def _source_status(journal: DraftTransitionJournal) -> str:
-    return "queued" if Path(journal.blocked_ticket).parent.name == "queue" else "blocked"

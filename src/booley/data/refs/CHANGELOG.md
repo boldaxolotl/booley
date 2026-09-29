@@ -28,12 +28,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
-- REVIEW category/focus declarations now require one scalar `done` or `clean`
-  outcome; legacy lists or mandatory/optional pairs make a published Ticket not
-  ready. Use `python -m booley.ticket_board return-to-draft <slug>` on a queued
-  or blocked legacy Ticket to normalize the outcome to `clean`, confirm the
-  draft, and re-enqueue it. `booley board check-ready <slug>` is equivalent to
-  `booley run --ticket <slug> --check-ready`.
+- REVIEW category/focus declarations now require exactly one scalar `done` or
+  `clean` outcome. Lists and mandatory/optional pairs are invalid, including in
+  already-published Tickets. `booley board check-ready <slug>` is equivalent to
+  `booley run --ticket <slug> --check-ready` for detecting the invalid grammar.
 - Projects that placed formal proof artifacts at `<anchor>/proofs/...` as a
   workaround must move them beneath
   `<anchor>/<approval-directory>/proofs/...`. Keep the authored proof reference

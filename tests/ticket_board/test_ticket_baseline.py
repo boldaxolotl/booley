@@ -31,7 +31,6 @@ from booley.ticket_board import (
 from booley.ticket_board import (
     ticket_baseline as ticket_baseline_module,
 )
-from booley.ticket_board import ticket_document as ticket_document_module
 from booley.ticket_board.acceptance_journal import JournalState
 from booley.ticket_board.acceptance_path_policy import is_static_acceptance_path
 from booley.ticket_board.acceptance_targets import (
@@ -57,10 +56,6 @@ from booley.ticket_board.ticket_baseline import (
     validate_current_basis_refs,
     validate_ticket_view,
     worktree_for_ref,
-)
-from booley.ticket_board.ticket_document import (
-    convert_ticket_document,
-    ticket_conversion_context,
 )
 from tests.harness.git_support import git_stdout as _git
 
@@ -1282,150 +1277,6 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     queued_again.replace(blocked_again)
     reopened_again = tio.return_to_draft("new-generation")
     assert reopened_again["generation"] != reopened["generation"]
-
-
-def _queued_review_ticket(
-    tmp_path: Path, slug: str
-) -> tuple[Path, Path, TicketIO, Path, dict, str]:
-    root, project_dir, tio = _basis_project(tmp_path)
-    ticket = _create_v2_ticket(
-        tio,
-        slug,
-        TicketFileSpec(
-            summary="Normalize review outcomes",
-            ticket_type="bugfix",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
-        ),
-    )
-    assert ticket is not None
-    assert tio.enqueue_ticket(slug)
-    (tio.logs_dir / f"{slug}/.runtime/ticket.lock").unlink(missing_ok=True)
-    source = project_dir / f"tickets/board/queue/{slug}.md"
-    fields, body = parse_frontmatter(source.read_text(encoding="utf-8"))
-    return root, project_dir, tio, source, fields, body
-
-
-@pytest.mark.parametrize("source_status", ["queued", "blocked"])
-@pytest.mark.parametrize("legacy_list", [["done", "clean"], ["clean"]])
-def test_return_to_draft_normalizes_legacy_review_pair(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    source_status: str,
-    legacy_list: list[str],
-) -> None:
-    root, project_dir, tio = _basis_project(tmp_path)
-    ticket = _create_v2_ticket(
-        tio,
-        "legacy-review-pair",
-        TicketFileSpec(
-            summary="Normalize review outcomes",
-            ticket_type="bugfix",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
-        ),
-    )
-    assert ticket is not None
-    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    if source_status == "queued" or len(legacy_list) == 1:
-        fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"]["bugs"] = legacy_list
-    else:
-        fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"]["bugs"] = "done"
-        fields["CRITERIA_OPTIONAL"] = {"REVIEW": {"rtl": {"bugs": "clean"}}}
-    ticket.write_text(format_frontmatter(fields, body), encoding="utf-8")
-    strict_normalize = ticket_document_module._normalize_criteria
-
-    def legacy_normalize(*args: object, **kwargs: object):
-        kwargs["allow_legacy_review_outcomes"] = True
-        return strict_normalize(*args, **kwargs)
-
-    with monkeypatch.context() as context:
-        context.setattr(ticket_document_module, "_normalize_criteria", legacy_normalize)
-        assert tio.enqueue_ticket("legacy-review-pair")
-    (tio.logs_dir / "legacy-review-pair/.runtime/ticket.lock").unlink(missing_ok=True)
-    source = project_dir / "tickets/board/queue/legacy-review-pair.md"
-    if source_status == "blocked":
-        blocked = project_dir / "tickets/board/blocked/legacy-review-pair.md"
-        blocked.parent.mkdir(parents=True)
-        source.replace(blocked)
-        source = blocked
-
-    tio.return_to_draft("legacy-review-pair")
-
-    draft = project_dir / "tickets/board/drafts/legacy-review-pair.md"
-    draft_fields, _ = parse_frontmatter(draft.read_text(encoding="utf-8"))
-    assert draft_fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"]["bugs"] == "clean"
-    assert "CRITERIA_OPTIONAL" not in draft_fields
-    with ticket_conversion_context(root, "legacy-review-pair", "draft") as context:
-        converted = convert_ticket_document(draft.read_text(encoding="utf-8"), context)
-    assert converted.document is not None
-    transition = tio.logs_dir / "legacy-review-pair/human-logs/transitions.log"
-    assert f"{source_status} -> draft" in transition.read_text(encoding="utf-8")
-    assert (tio.logs_dir / "legacy-review-pair/runs/001").is_dir()
-
-
-def test_queued_return_to_draft_rejects_nonlegacy_ticket(tmp_path: Path) -> None:
-    _root, _project_dir, tio, _source, _fields, _body = _queued_review_ticket(
-        tmp_path, "ordinary-queued"
-    )
-
-    with pytest.raises(
-        draft_transition.DraftTransitionError,
-        match="queued Ticket with legacy REVIEW outcomes",
-    ):
-        tio.return_to_draft("ordinary-queued")
-
-
-def test_return_to_draft_keeps_entirely_optional_legacy_pair_optional(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _root, project_dir, tio = _basis_project(tmp_path)
-    ticket = _create_v2_ticket(
-        tio,
-        "optional-legacy-pair",
-        TicketFileSpec(
-            summary="Normalize optional review outcomes",
-            ticket_type="bugfix",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
-        ),
-    )
-    assert ticket is not None
-    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"] = {"spec": "done"}
-    fields["CRITERIA_OPTIONAL"] = {"REVIEW": {"rtl": {"bugs": ["done", "clean"]}}}
-    ticket.write_text(format_frontmatter(fields, body), encoding="utf-8")
-    strict_normalize = ticket_document_module._normalize_criteria
-
-    def legacy_normalize(*args: object, **kwargs: object):
-        kwargs["allow_legacy_review_outcomes"] = True
-        return strict_normalize(*args, **kwargs)
-
-    with monkeypatch.context() as context:
-        context.setattr(ticket_document_module, "_normalize_criteria", legacy_normalize)
-        assert tio.enqueue_ticket("optional-legacy-pair")
-    (tio.logs_dir / "optional-legacy-pair/.runtime/ticket.lock").unlink(missing_ok=True)
-
-    tio.return_to_draft("optional-legacy-pair")
-
-    draft = project_dir / "tickets/board/drafts/optional-legacy-pair.md"
-    draft_fields, _body = parse_frontmatter(draft.read_text(encoding="utf-8"))
-    assert draft_fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"] == {"spec": "done"}
-    assert draft_fields["CRITERIA_OPTIONAL"]["REVIEW"]["rtl"] == {"bugs": "clean"}
-
-
-def test_return_to_draft_rejects_unrelated_invalid_review_value(tmp_path: Path) -> None:
-    _root, _project_dir, tio, source, fields, body = _queued_review_ticket(
-        tmp_path, "invalid-review"
-    )
-    fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"]["bugs"] = "cleen"
-    source.write_text(format_frontmatter(fields, body), encoding="utf-8")
-
-    with pytest.raises(draft_transition.DraftTransitionError, match="Legacy REVIEW recovery"):
-        tio.return_to_draft("invalid-review")
 
 
 def _prepared_ticket(

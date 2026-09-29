@@ -204,7 +204,7 @@ def test_readiness_without_worktree_checks_current_generation_ref(tmp_path: Path
     assert any("protected path" in error for error in result.errors)
 
 
-def test_operational_legacy_review_pair_reports_recovery_without_mutation(
+def test_operational_legacy_review_pair_reports_hard_cutoff_without_mutation(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "demo"
@@ -240,9 +240,9 @@ def test_operational_legacy_review_pair_reports_recovery_without_mutation(
     result = check_ticket_ready(root, "legacy-pair")
 
     assert result.ready is False
+    assert len(result.errors) == 1
     assert result.errors[0].startswith("12:7: ")
     assert "clean already implies done" in result.errors[0]
-    assert "python -m booley.ticket_board return-to-draft legacy-pair" in result.errors[1]
     assert ticket.read_bytes() == content
     assert _git(root, "status", "--porcelain", "--untracked-files=all") == status_before
 

@@ -1058,7 +1058,7 @@ class TicketIO:
             return [str(exc)]
 
     def return_to_draft(self, slug: str) -> dict[str, str]:
-        """Preserve a queued or blocked generation and reopen a draft workspace."""
+        """Preserve a blocked generation and reopen a new draft workspace."""
         from .draft_transition import return_to_draft, transition_pending
 
         ticket_path, status = find_ticket_file(
@@ -1082,9 +1082,7 @@ class TicketIO:
                 slug,
                 status=current_status or status or "",
                 logs_dir=self.logs_dir,
-                append_transition=lambda source, detail: self._append_return_transition_once(
-                    slug, source, detail
-                ),
+                append_transition=lambda detail: self._append_return_transition_once(slug, detail),
             )
         return result.as_dict()
 
@@ -1110,14 +1108,12 @@ class TicketIO:
                 f"ticket {slug!r} has an Acceptance publication in progress ({state})"
             )
 
-    def _append_return_transition_once(self, slug: str, source: str, detail: str) -> None:
+    def _append_return_transition_once(self, slug: str, detail: str) -> None:
         operation_id = detail.rsplit("; ", maxsplit=1)[-1]
         path = human_log_file(self.logs_dir, slug, "transitions.log")
         if path.exists() and operation_id in path.read_text(encoding="utf-8"):
             return
-        if source not in {"queued", "blocked"}:
-            raise RuntimeError("return-to-draft source state is invalid")
-        self._append_transition_unlocked(slug, source, "draft", "return-to-draft", detail)
+        self._append_transition_unlocked(slug, "blocked", "draft", "return-to-draft", detail)
 
     def _detect_dep_cycle(self, slug, deps, all_tickets=None):
         """Check for circular dependencies. Returns cycle path list or None.

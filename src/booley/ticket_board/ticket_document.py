@@ -221,7 +221,6 @@ class TicketConversionContext:
     stage: TicketStage
     resolve_view: Callable[[Mapping[str, Any]], TicketAuthoringView]
     checkout_root: Callable[[], Path] | None = None
-    _allow_legacy_review_outcomes: bool = False
 
 
 class _TargetResolutionError(ValueError):
@@ -601,12 +600,7 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
             *_targets_from_section(mandatory, _MANDATORY, locations),
             *_targets_from_section(optional, _OPTIONAL, locations),
         )
-        _validate_criterion_syntax(
-            mandatory,
-            optional,
-            locations,
-            allow_legacy_review_outcomes=context._allow_legacy_review_outcomes,
-        )
+        _validate_criterion_syntax(mandatory, optional, locations)
         preview = TicketPreview(
             str(fields["summary"]),
             flags,
@@ -621,13 +615,7 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
             raise ValueError("Executable Ticket requires machine baseline metadata")
         _validate_generated_fields(generated)
         view = context.resolve_view(generated)
-        criteria = _normalize_criteria(
-            mandatory,
-            optional,
-            view,
-            locations,
-            allow_legacy_review_outcomes=context._allow_legacy_review_outcomes,
-        )
+        criteria = _normalize_criteria(mandatory, optional, view, locations)
         target_plan = _derive_target_plan(tuple(mentions), criteria, flags, view)
         authored = {key: value for key, value in fields.items() if key not in _GENERATED_KEYS}
         spec = TicketSpec(authored, body, criteria, tuple(mentions), flags, target_plan)
@@ -700,39 +688,6 @@ def _reject_retired_coverage_criteria(
             )
 
 
-def legacy_review_outcomes_present(fields: Mapping[str, Any]) -> bool:
-    """Return whether authored fields use a formerly valid REVIEW list or pair."""
-    seen: set[tuple[str, str]] = set()
-    for section_name in (_MANDATORY, _OPTIONAL):
-        section = fields.get(section_name)
-        if not isinstance(section, Mapping):
-            continue
-        review = section.get("REVIEW")
-        if not isinstance(review, Mapping):
-            continue
-        for category, focuses in review.items():
-            if not isinstance(category, str) or not isinstance(focuses, Mapping):
-                continue
-            for focus, outcome in focuses.items():
-                if not isinstance(focus, str):
-                    continue
-                identity = (category, focus)
-                if isinstance(outcome, list):
-                    if (
-                        outcome
-                        and all(
-                            isinstance(value, str) and value in {"done", "clean"}
-                            for value in outcome
-                        )
-                        and len(outcome) == len(set(outcome))
-                    ):
-                        return True
-                elif identity in seen and outcome in {"done", "clean"}:
-                    return True
-                seen.add(identity)
-    return False
-
-
 def serialize_ticket_document(document: TicketDocument, context: TicketConversionContext) -> str:
     """Render v2 frontmatter and prove it preserves the converted Ticket meaning."""
     if set(document.generated) - _GENERATED_KEYS:
@@ -763,8 +718,6 @@ def _validate_criterion_syntax(
     mandatory: Mapping[str, Any],
     optional: Mapping[str, Any],
     locations: Mapping[tuple[str, ...], tuple[int, int]],
-    *,
-    allow_legacy_review_outcomes: bool = False,
 ) -> None:
     """Check all declarations before a missing draft Target can defer resolution."""
     names = {"__registered_for_syntax__"}
@@ -792,13 +745,7 @@ def _validate_criterion_syntax(
             if name not in _CAPABILITIES
         ),
     )
-    _normalize_criteria(
-        mandatory,
-        optional,
-        view,
-        locations,
-        allow_legacy_review_outcomes=allow_legacy_review_outcomes,
-    )
+    _normalize_criteria(mandatory, optional, view, locations)
 
 
 def _normalize_criteria(
@@ -806,8 +753,6 @@ def _normalize_criteria(
     optional: Mapping[str, Any],
     view: TicketAuthoringView,
     locations: Mapping[tuple[str, ...], tuple[int, int]],
-    *,
-    allow_legacy_review_outcomes: bool = False,
 ) -> tuple[TicketCriterion, ...]:
     """Expand authored capability blocks into stable atomic requirements."""
     rows: list[TicketCriterion] = []
@@ -830,14 +775,13 @@ def _normalize_criteria(
                 view,
                 locations,
                 annotations,
-                allow_legacy_review_outcomes=allow_legacy_review_outcomes,
             )
             if not parsed:
                 raise ValueError(f"{section_name}.{capability} must not be empty")
             for row in parsed:
                 if row.capability == "REVIEW":
                     review_identity = (row.target, row.test)
-                    if review_identity in review_seen and not allow_legacy_review_outcomes:
+                    if review_identity in review_seen:
                         raise ValueError(
                             "REVIEW category/focus must choose one scalar done or clean outcome; "
                             "clean already implies done; amend REVIEW outcome to "
@@ -987,8 +931,6 @@ def _capability_rows(
     view: TicketAuthoringView,
     locations: Mapping[tuple[str, ...], tuple[int, int]],
     annotations: dict[str, tuple[str | None, str | None]],
-    *,
-    allow_legacy_review_outcomes: bool = False,
 ) -> tuple[TicketCriterion, ...]:
     if capability not in _CAPABILITIES:
         if not re.fullmatch(r"[A-Z][A-Z0-9_]*", capability) or declaration is not True:
@@ -996,13 +938,7 @@ def _capability_rows(
         line, column = locations.get((section_name, capability), (1, 1))
         return (_criterion(capability, required, None, None, None, True, line, column),)
     if capability == "REVIEW":
-        return _review_rows(
-            declaration,
-            section_name,
-            required,
-            locations,
-            allow_legacy_review_outcomes=allow_legacy_review_outcomes,
-        )
+        return _review_rows(declaration, section_name, required, locations)
     if capability == "ELAB_STANDALONE":
         return _standalone_rows(declaration, section_name, required, view, locations, annotations)
     rows: list[TicketCriterion] = []
@@ -1187,8 +1123,6 @@ def _review_rows(
     section_name: str,
     required: bool,
     locations: Mapping[tuple[str, ...], tuple[int, int]],
-    *,
-    allow_legacy_review_outcomes: bool = False,
 ) -> tuple[TicketCriterion, ...]:
     categories = _nonempty_mapping(declaration, "REVIEW")
     rows = []
@@ -1199,29 +1133,14 @@ def _review_rows(
             if focus not in _REVIEW_FOCUS[category]:
                 raise ValueError(f"REVIEW {category} focus {focus!r} is unknown")
             line, column = locations.get((section_name, "REVIEW", category, focus), (1, 1))
-            if allow_legacy_review_outcomes:
-                values = outcome if isinstance(outcome, list) else [outcome]
-                if (
-                    not values
-                    or any(not isinstance(value, str) for value in values)
-                    or len(values) != len(set(values))
-                    or set(values) - {"done", "clean"}
-                ):
-                    raise ValueError(
-                        "Legacy REVIEW recovery accepts only done, clean, or their unique list "
-                        f"forms at {line}:{column}"
-                    )
-            else:
-                if not isinstance(outcome, str) or outcome not in {"done", "clean"}:
-                    raise ValueError(
-                        "REVIEW outcome must be scalar done or clean; lists are not allowed. "
-                        "clean already implies done; amend REVIEW outcome to "
-                        f"clean at {line}:{column}"
-                    )
-                values = [outcome]
-            rows.extend(
+            if not isinstance(outcome, str) or outcome not in {"done", "clean"}:
+                raise ValueError(
+                    "REVIEW outcome must be scalar done or clean; lists are not allowed. "
+                    "clean already implies done; amend REVIEW outcome to "
+                    f"clean at {line}:{column}"
+                )
+            rows.append(
                 _criterion("REVIEW", required, category, focus, outcome, outcome, line, column)
-                for outcome in values
             )
     return tuple(rows)
 
