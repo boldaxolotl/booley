@@ -2971,3 +2971,26 @@ def test_ordinary_group_refuses_snapshot_launch_until_lease_released(
         pytest.raises(SimulationBuildSlotError, match="leave ordinary_group"),
     ):
         group.launch_snapshot(tmp_path / "snapshot", tmp_path / "run")
+
+
+def test_missing_literal_run_cwd_fails_plain_run_before_any_build(tmp_path: Path) -> None:
+    """Issue #881: the plain engine path reports the missing directory before building."""
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
+    invocations: list[list[str]] = []
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        invocations.append(command)
+        return SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n")
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+    assert outcome.verdict == "fail"
+    detail = outcome.tests[0].error_tail
+    assert detail.startswith("sim setup failed: literal run directory must already exist")
+    assert ".gitkeep" in detail
+    assert invocations == []

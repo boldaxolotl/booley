@@ -765,6 +765,9 @@ def test_all_candidate_manifests_publish_before_first_baseline_work() -> None:
         pass
 
     class Campaign:
+        def preflight(self, request):
+            calls.append(("preflight", request))
+
         def publish_new(self, request):
             calls.append(("publish", request))
 
@@ -780,6 +783,8 @@ def test_all_candidate_manifests_publish_before_first_baseline_work() -> None:
         )
 
     assert calls == [
+        ("preflight", baseline),
+        ("preflight", candidate),
         ("publish", baseline),
         ("publish", candidate),
         ("run", baseline),

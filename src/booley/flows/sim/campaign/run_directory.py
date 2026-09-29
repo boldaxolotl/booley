@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.sim.campaign_reports import is_report_link
+from booley.flows.sim.config import literal_run_cwd_error
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.project_dir import checkout_runtime_dir
 
@@ -28,6 +29,24 @@ class RunDirectory:
     collision_key: str
     owned: bool
     lock_path: Path
+
+
+def _absolute(rendered: str, project_root: Path) -> Path:
+    """Resolve one rendered run_cwd against the Project root without following links."""
+    path = Path(rendered)
+    return (path if path.is_absolute() else project_root / path).absolute()
+
+
+def literal_run_path(configured: str, *, project_root: Path) -> Path:
+    """Return the absolute path a literal run_cwd names."""
+    return _absolute(configured, project_root)
+
+
+def require_literal_run_directory(path: Path) -> None:
+    """Raise with the actionable remedy unless ``path`` is an existing real directory."""
+    message = literal_run_cwd_error(path)
+    if message is not None:
+        raise SimulationCampaignIntegrityError(message)
 
 
 def expand_run_directory(
@@ -55,8 +74,7 @@ def expand_run_directory(
         rendered = rendered.replace("{" + name + "}", value)
     if "{" in rendered or "}" in rendered or not rendered or "\0" in rendered:
         raise SimulationCampaignIntegrityError("run-directory template is invalid")
-    path = Path(rendered)
-    resolved = (path if path.is_absolute() else project_root / path).absolute()
+    resolved = _absolute(rendered, project_root)
     collision_key = os.path.normcase(str(resolved.resolve(strict=False)))
     lock_name = hashlib.sha256(collision_key.encode("utf-8")).hexdigest() + ".lock"
     return RunDirectory(
@@ -90,10 +108,7 @@ def _claimed_run_directory(run: RunDirectory, *, identity: Mapping[str, str]) ->
     if set(identity) != _FIELDS or any(not value for value in identity.values()):
         raise SimulationCampaignIntegrityError("run-directory identity is incomplete")
     if not run.owned:
-        if is_report_link(run.path) or not run.path.is_dir():
-            raise SimulationCampaignIntegrityError(
-                f"literal run directory must already exist: {run.path}"
-            )
+        require_literal_run_directory(run.path)
         yield run.path
         return
     _require_no_links(run.path)
@@ -211,6 +226,8 @@ __all__ = [
     "claimed_run_directory",
     "cleanup_interrupted_run_directory",
     "expand_run_directory",
+    "literal_run_path",
+    "require_literal_run_directory",
     "restore_run_directory",
     "restore_run_directory_from_project_data",
 ]

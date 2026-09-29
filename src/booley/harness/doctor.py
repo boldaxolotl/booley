@@ -40,7 +40,13 @@ from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import BoundaryError, is_str_list, require_int
 from booley.flows import execution
 from booley.flows.base import DEFAULT_TIMEOUT_S
-from booley.flows.sim.config import DEFAULT_SIM_BUILD_TIMEOUT_MS, DEFAULT_SIM_TIMEOUT_MS
+from booley.flows.sim.config import (
+    DEFAULT_SIM_BUILD_TIMEOUT_MS,
+    DEFAULT_SIM_TIMEOUT_MS,
+    LITERAL_RUN_CWD_REMEDY,
+    literal_run_cwd_error,
+    parse_run_cwd_template,
+)
 from booley.fusesoc import (
     core_security,
     fusesoc_registry,
@@ -3081,6 +3087,8 @@ def _run_flow_audit(
                     f"line(s)); they run in the Sandbox before "
                     "each sim run (BOOLEY_* env contract, ADR 0039)"
                 )
+        if flow_name == "sim":
+            _check_sim_run_cwd(project, _pass, _warn)
         targets = _check_doctor_targets(project, flow_name, _fail)
         if not targets:
             continue
@@ -4419,6 +4427,74 @@ def _readmem_literal_targets(root: Path) -> list[str]:
                         targets.add(cand.resolve().relative_to(root_res).as_posix())
                     break
     return sorted(targets)
+
+
+def _git_output(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
+    """Run one read-only git command; None when git is missing or times out."""
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+
+def _literal_sim_run_cwd(project: ProjectAudit) -> str | None:
+    """Return the configured literal sim ``run_cwd``; None when unset, ``.``, or templated."""
+    flows = project.booley_toml.get("flows", {})
+    sim = config_section(flows, "sim") if isinstance(flows, dict) else {}
+    configured = str(sim.get("run_cwd") or ".")
+    if configured == ".":
+        return None
+    try:
+        # Templated values are Booley-owned; an invalid template is rejected by planning.
+        return None if parse_run_cwd_template(configured) else configured
+    except ValueError:
+        return None
+
+
+def _check_sim_run_cwd(project: ProjectAudit, _pass: Check, _warn: Check) -> None:
+    """Warn when a literal ``[flows.sim].run_cwd`` will be missing at run time.
+
+    Booley never creates a literal ``run_cwd`` (docs/user/CONFIG.md), so it must
+    exist in every checkout and Ticket worktree. That means a real directory that
+    holds at least one *committed* file: an empty directory, a gitignored one, or
+    one whose placeholder is only staged vanishes in a fresh checkout. Unset,
+    ``.``, and templated values (Booley-owned) are not checked.
+    """
+    configured = _literal_sim_run_cwd(project)
+    if configured is None:
+        return
+    path = (project.project_root / configured).absolute()
+    problem = literal_run_cwd_error(path)
+    if problem is not None:
+        _warning_sink(_warn, "sim.run-cwd-missing", subject=configured)(
+            problem, LITERAL_RUN_CWD_REMEDY
+        )
+        return
+    if not path.resolve().is_relative_to(project.project_root.resolve()):
+        _pass(f"sim run_cwd {configured} is outside the checkout (shared by every worktree)")
+        return
+    inside = _git_output(["rev-parse", "--is-inside-work-tree"], path)
+    if inside is None or inside.returncode != 0:
+        return  # not in a repository: tracking is unknowable, stay quiet
+    # The committed tree (not the index): a staged-only placeholder does not count.
+    # git resolves the innermost repository that owns the directory.
+    tree = _git_output(["ls-tree", "-r", "--name-only", "HEAD", "--", "."], path)
+    if tree is None or tree.returncode != 0 or not tree.stdout.strip():
+        _warning_sink(_warn, "sim.run-cwd-untracked", subject=configured)(
+            f"sim run_cwd {configured} exists but contains no committed file "
+            "(gitignored, untracked, or only staged), so it will be missing in a "
+            "fresh checkout or Ticket worktree",
+            LITERAL_RUN_CWD_REMEDY,
+        )
+        return
+    _pass(f"sim run_cwd {configured} is committed")
 
 
 def _check_readmemh_targets_tracked(

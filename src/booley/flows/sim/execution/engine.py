@@ -50,6 +50,8 @@ from booley.flows.sim.build_session import (
 )
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
+    literal_run_cwd_error,
+    parse_run_cwd_template,
     resolve_cycle_sentinels,
     resolve_max_rundir_bytes,
     resolve_pre_sim_commands,
@@ -620,6 +622,9 @@ class SimulationExecution:
         """Execute the selected Target and return immutable normalized evidence."""
         started = time.monotonic()
         self._reset_build_roots.clear()
+        run_cwd_problem = _literal_run_cwd_problem(handle.project_root)
+        if run_cwd_problem is not None:
+            return _setup_failure(handle, run_cwd_problem, started)
         try:
             inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         except fusesoc_registry.FuseSocError as exc:
@@ -1636,6 +1641,18 @@ def _setup_infrastructure_failure(
         tests=(),
         infrastructure_failure=failure,
     )
+
+
+def _literal_run_cwd_problem(root: Path) -> str | None:
+    """Explain an unusable literal ``run_cwd`` before any build; templated values pass."""
+    configured = resolve_run_cwd(root)
+    try:
+        placeholders = parse_run_cwd_template(configured)
+    except ValueError as exc:
+        return str(exc)
+    if placeholders:
+        return None
+    return literal_run_cwd_error((root / configured).absolute())
 
 
 def _setup_failure(handle: TargetHandle, detail: str, started: float) -> SimulationTargetOutcome:

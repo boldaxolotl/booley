@@ -57,7 +57,11 @@ from booley.flows.sim.backends.cocotb_results import (
     parse_results_line,
 )
 from booley.flows.sim.build import PreparedSimulationBuild, prepare_simulation_build
-from booley.flows.sim.config import resolve_run_cwd
+from booley.flows.sim.config import (
+    literal_run_cwd_error,
+    parse_run_cwd_template,
+    resolve_run_cwd,
+)
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.flows.sim.runner import SIM_RUN_HALVES, resolve_sim_sentinels
 from booley.flows.target_campaign import (
@@ -1389,6 +1393,19 @@ replacement must differ, and every proposal must remain a single source edit.
 
     def _run_pristine_baseline(self, plan: MutationRunPlan) -> McpToolResult | None:
         """Build and run the byte-identical project before any proposal is applied."""
+        run_cwd_problem = _literal_run_cwd_problem(plan.work_dir)
+        if run_cwd_problem is not None:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"mutation baseline cannot run: {run_cwd_problem}",
+                detail=_failure_detail(
+                    phase="baseline_run_cwd",
+                    reason=run_cwd_problem,
+                    specs=[],
+                    work_dir=plan.work_dir,
+                    log_tail="",
+                ),
+            )
         build_path = lock_mod.baseline_build_dir()
         shutil.rmtree(build_path, ignore_errors=True)
         build_path.mkdir(parents=True, exist_ok=True)
@@ -2845,6 +2862,17 @@ def _describe_evidence(evidence: dict[str, Any]) -> str:
     resolved = evidence.get("resolved") or []
     fingerprint = evidence.get("source_fingerprint", "unknown source")
     return f"{len(resolved)} isolated exact replacement(s) from {fingerprint}"
+
+
+def _literal_run_cwd_problem(work_dir: Path) -> str | None:
+    """Explain an unusable literal ``run_cwd``; templated or invalid values are left alone."""
+    configured = resolve_run_cwd(work_dir)
+    try:
+        if parse_run_cwd_template(configured):
+            return None
+    except ValueError:
+        return None
+    return literal_run_cwd_error((Path(work_dir) / configured).absolute())
 
 
 def _failure_detail(
