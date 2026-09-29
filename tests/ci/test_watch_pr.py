@@ -571,6 +571,29 @@ def test_queue_terminal_states(state: watch_pr.Snapshot, expected: str) -> None:
     assert watch_pr.classify_queue(state, memory, remaining_seconds=600).outcome == expected
 
 
+def test_requeue_ignores_stale_dequeued_label_and_waits_for_merge() -> None:
+    """Mergify adds ``queued`` before clearing the prior attempt's ``dequeued`` label."""
+    transport = FakeTransport(
+        queue=[
+            snapshot(labels={"queued", "dequeued"}),
+            snapshot(labels={"queued", "merge-queue-checking"}),
+            snapshot(state="merged", merged_at="2026-09-29T09:31:45Z"),
+        ]
+    )
+
+    result = run_watch(transport, FakeClock(), mode="queue", timeout=2000)
+
+    assert result.outcome == "merged"
+
+
+@pytest.mark.parametrize("active", ["queued", "merge-queue-checking"])
+def test_dequeued_label_beside_active_queue_label_stays_pending(active: str) -> None:
+    memory = watch_pr.QueueMemory(initialized=True)
+    state = snapshot(labels={active, "dequeued"})
+
+    assert watch_pr.classify_queue(state, memory, remaining_seconds=600).outcome == "pending"
+
+
 def test_queue_transient_label_inconsistency_stays_pending() -> None:
     first = snapshot(labels=set(), mergify_state="pending")
     second = snapshot(labels={"queued"}, mergify_state="pending")

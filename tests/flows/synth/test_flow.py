@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.evidence.recipe import implementation_comparison_basis
 from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
@@ -2618,6 +2620,79 @@ class TestCriterionKey:
 
 
 class TestBuildSynthCmd:
+    def test_recipe_identity_ignores_isolated_checkout_path(self, tmp_path: Path) -> None:
+        left_root = tmp_path / "baseline"
+        right_root = tmp_path / "candidate"
+        constraint = Path("constraints/dut.sdc")
+        for root in (left_root, right_root):
+            path = root / constraint
+            path.parent.mkdir(parents=True)
+            path.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+
+        left = _fake_synth_resolved(tmp_path / "left-build")
+        right = _fake_synth_resolved(tmp_path / "right-build")
+        left = dataclasses.replace(
+            left,
+            files=(
+                fusesoc_registry.ResolvedFile(
+                    name=str(left_root / constraint),
+                    file_type="SDC",
+                    core="::syn_demo:0",
+                ),
+            ),
+        )
+        right = dataclasses.replace(
+            right,
+            files=(
+                fusesoc_registry.ResolvedFile(
+                    name=str(right_root / constraint),
+                    file_type="SDC",
+                    core="::syn_demo:0",
+                ),
+            ),
+        )
+
+        left_snapshot = synthesis_recipe_snapshot(left, default_recipe_args(), target="lite")
+        right_snapshot = synthesis_recipe_snapshot(right, default_recipe_args(), target="lite")
+
+        assert left_snapshot == right_snapshot
+        assert synthesis_recipe_snapshot_fingerprint(
+            left_snapshot
+        ) == synthesis_recipe_snapshot_fingerprint(right_snapshot)
+        assert left_snapshot["flow"] == "synth"
+        assert left_snapshot["constraints"] == [
+            {
+                "core": "::syn_demo:0",
+                "sha256": hashlib.sha256((left_root / constraint).read_bytes()).hexdigest(),
+            }
+        ]
+
+        (right_root / constraint).write_text(
+            "create_clock -period 5 [get_ports clk]\n", encoding="utf-8"
+        )
+        changed_snapshot = synthesis_recipe_snapshot(right, default_recipe_args(), target="lite")
+        assert synthesis_recipe_snapshot_fingerprint(
+            changed_snapshot
+        ) != synthesis_recipe_snapshot_fingerprint(left_snapshot)
+        assert implementation_comparison_basis(
+            changed_snapshot
+        ) != implementation_comparison_basis(left_snapshot)
+
+    def test_stable_constraint_identity_preserves_selfcompare_diagnostic(
+        self,
+    ) -> None:
+        flow = AsicSynthesizeFlow()
+        flow._baseline_selfcompare_msg = "baseline and candidate resolve identically"
+        current = {"lite": SynthMetrics(recipe_fingerprint="same")}
+        baseline = {"lite": SynthMetrics(recipe_fingerprint="same")}
+
+        flow._discard_stale_selfcompare(["lite"], current, baseline)
+
+        assert flow._baseline_selfcompare_msg is not None
+        current["lite"].recipe_fingerprint = "changed"
+        flow._discard_stale_selfcompare(["lite"], current, baseline)
+        assert flow._baseline_selfcompare_msg is None
+
     @staticmethod
     def _append_sdc_args(
         flow: AsicSynthesizeFlow,
@@ -2667,15 +2742,15 @@ class TestBuildSynthCmd:
             default_recipe_args(),
             target="lite",
         )
-        assert snapshot["schema"] == 3
+        assert snapshot["schema"] == 4
         assert "default_clock_ps" not in snapshot
 
-        previous = {**snapshot, "schema": 2}
+        previous = {**snapshot, "schema": 3}
         assert synthesis_recipe_snapshot_fingerprint(previous) != (
             synthesis_recipe_snapshot_fingerprint(snapshot)
         )
         assert synthesis_recipe_changes(previous, snapshot) == [
-            {"path": "schema", "before": 2, "after": 3}
+            {"path": "schema", "before": 3, "after": 4}
         ]
 
     def test_default_ppa_profile_forwarded(self, flow_and_state, tmp_path: Path):

@@ -230,9 +230,8 @@ def test_readme_uses_current_slim_image_storage_guidance() -> None:
 
     assert "15 GB of Docker storage" not in readme
     assert "21 GB" not in readme
-    assert "4 GB of Docker storage" in readme
-    assert "6 GB" in readme
-    assert "for image with RISC-V tools included" in readme
+    assert "about **4 GB** free for the image" in readme
+    assert "(**6 GB** with the RISC-V toolchain)" in readme
     assert "On the measured containerd store" not in readme
     assert "1.58/2.02 GB" not in readme
     assert "2.82/4.48 GB" not in readme

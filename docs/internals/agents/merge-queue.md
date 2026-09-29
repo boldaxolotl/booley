@@ -161,7 +161,9 @@ queue/dequeue commands, while later exact control commands are competing-owner
 evidence. The watcher relies on the configured `queued`,
 `merge-queue-checking`, and `dequeued` labels plus Mergify check data, not new
 bot status comments. Queue head updates are expected. An old failed attempt
-does not stop a newer pending or same-head retry.
+does not stop a newer pending or same-head retry. Likewise, a `dequeued` label
+beside `queued` or `merge-queue-checking` is the previous attempt's leftover
+during a requeue, not a new dequeue.
 
 Cancellation is `cancelled` (exit 130 for SIGINT or 143 for SIGTERM).
 

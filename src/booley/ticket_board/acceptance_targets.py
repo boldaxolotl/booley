@@ -677,13 +677,20 @@ def _validate_comparison_basis(
         return [f"{binding.label}: cannot compare Target measurement basis: {exc}"]
     if snapshots is None:
         return []
-    from booley.evidence.recipe import implementation_comparison_basis, recipe_changes
+    from booley.evidence.recipe import (
+        InvalidRecipeSnapshotError,
+        implementation_comparison_basis,
+        recipe_changes,
+    )
 
     baseline_snapshot, candidate_snapshot = snapshots
-    changes = recipe_changes(
-        implementation_comparison_basis(baseline_snapshot),
-        implementation_comparison_basis(candidate_snapshot),
-    )
+    try:
+        changes = recipe_changes(
+            implementation_comparison_basis(baseline_snapshot),
+            implementation_comparison_basis(candidate_snapshot),
+        )
+    except InvalidRecipeSnapshotError as exc:
+        return [f"{binding.label}: incompatible Target measurement basis: {exc}"]
     if not changes:
         return []
     paths = ", ".join(str(change.get("path")) for change in changes[:5])

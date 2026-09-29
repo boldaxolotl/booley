@@ -264,11 +264,13 @@ def test_changed_fpga_recipe_is_evidence_not_a_rejection(
         "flow": "fpga",
         "target": "default",
         "flow_options": {"part": "old"},
+        "constraints": [],
     }
     current_snapshot = {
         "flow": "fpga",
         "target": "default",
         "flow_options": {"part": "new"},
+        "constraints": [],
     }
     flow.state.init_criteria(
         {"fpga_impl_ok_default": True},

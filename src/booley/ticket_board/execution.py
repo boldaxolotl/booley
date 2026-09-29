@@ -249,6 +249,9 @@ def resume_detect(entry: dict[str, Any]) -> dict[str, Any]:
     _resolve_ticket_type(entry)  # validates, side-effect: warning
 
     result = {"feature_branch": entry.get("feature_branch", "")}
+    if entry.get("authored_drift"):
+        result["authored_drift"] = True
+        result["authored_drift_reason"] = entry.get("authored_drift_reason", "")
 
     if status == "running" and steps_done:
         next_step = next_from_planned(STEP_ORDER, steps_done[-1])

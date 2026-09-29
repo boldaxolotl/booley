@@ -4,9 +4,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_list,
+    require_str_value,
+)
+
+_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
+_COMPATIBLE_SCHEMA_PAIRS = {("synth", 3, 4), ("fpga", 2, 3)}
+
+
+class InvalidRecipeSnapshotError(ValueError):
+    """Raised when persisted recipe evidence cannot identify its constraints."""
+
+
+def constraint_recipe_entry(
+    core: str | None,
+    digest: str | None,
+    *,
+    fallback_vlnv: str,
+) -> dict[str, Any]:
+    """Build path-free provenance for one ordered implementation constraint."""
+    return {"core": core or fallback_vlnv, "sha256": digest}
 
 
 def recipe_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
@@ -28,16 +53,108 @@ def implementation_comparison_basis(snapshot: Mapping[str, Any]) -> dict[str, An
             "part": options.get("part"),
             "out_of_context": options.get("out_of_context", False),
             "ppa_profile": jsonable(snapshot.get("ppa_profile")),
-            "constraints": jsonable(snapshot.get("constraints", [])),
+            "constraints": _constraint_digests(snapshot),
         }
     return {
         "flow": "synth",
         "vlnv": snapshot.get("vlnv"),
         "toplevel": snapshot.get("toplevel"),
         "recipe_args": jsonable(snapshot.get("recipe_args", [])),
-        "constraints": jsonable(snapshot.get("constraints", [])),
+        "constraints": _constraint_digests(snapshot),
         "technology": jsonable(snapshot.get("technology")),
     }
+
+
+def compatible_recipe_snapshots(
+    legacy: Mapping[str, Any],
+    current: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Normalize one allowlisted persisted recipe-schema transition."""
+    legacy_flow = _recipe_flow(legacy)
+    current_flow = _recipe_flow(current)
+    pair = (legacy_flow, legacy.get("schema"), current.get("schema"))
+    if legacy_flow != current_flow or pair not in _COMPATIBLE_SCHEMA_PAIRS:
+        return None
+    normalized_legacy = jsonable(legacy)
+    normalized_current = jsonable(current)
+    normalized_legacy["flow"] = legacy_flow
+    normalized_legacy["schema"] = normalized_current["schema"]
+    normalized_legacy["constraints"] = _constraint_digests(legacy)
+    normalized_current["constraints"] = _constraint_digests(current)
+    return normalized_legacy, normalized_current
+
+
+def validated_recipe_compatibility(
+    frozen_snapshot: Any,
+    frozen_fingerprint: Any,
+    rerun_snapshot: Any,
+    rerun_fingerprint: Any,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Validate persisted evidence and adapt one known schema transition."""
+    try:
+        frozen = require_dict(frozen_snapshot, field="frozen recipe snapshot")
+        rerun = require_dict(rerun_snapshot, field="rerun recipe snapshot")
+        frozen_digest = require_str_value(frozen_fingerprint, field="frozen recipe fingerprint")
+        rerun_digest = require_str_value(rerun_fingerprint, field="rerun recipe fingerprint")
+    except BoundaryError:
+        return None
+    fingerprints_match = (
+        recipe_snapshot_fingerprint(frozen) == frozen_digest
+        and recipe_snapshot_fingerprint(rerun) == rerun_digest
+    )
+    if not fingerprints_match:
+        return None
+    try:
+        normalized = compatible_recipe_snapshots(frozen, rerun)
+    except InvalidRecipeSnapshotError:
+        return None
+    if normalized is None or normalized[0] != normalized[1]:
+        return None
+    return normalized
+
+
+def _recipe_flow(snapshot: Mapping[str, Any]) -> str | None:
+    flow = snapshot.get("flow")
+    if isinstance(flow, str):
+        return flow
+    if snapshot.get("schema") == 3:
+        return "synth"
+    return None
+
+
+def _constraint_digests(snapshot: Mapping[str, Any]) -> list[str]:
+    try:
+        constraints = require_list(snapshot.get("constraints"), field="recipe constraints")
+    except BoundaryError as exc:
+        raise InvalidRecipeSnapshotError(str(exc)) from exc
+    digests: list[str] = []
+    for index, raw_constraint in enumerate(constraints):
+        try:
+            constraint = require_dict(raw_constraint, field=f"recipe constraint {index}")
+            digest = require_str_value(
+                constraint.get("sha256"),
+                field=f"recipe constraint {index} SHA-256 digest",
+            )
+        except BoundaryError as exc:
+            raise InvalidRecipeSnapshotError(
+                f"recipe constraint {index} has no valid SHA-256 digest"
+            ) from exc
+        if _SHA256_RE.fullmatch(digest) is None:
+            raise InvalidRecipeSnapshotError(
+                f"recipe constraint {index} has no valid SHA-256 digest"
+            )
+        digests.append(digest.lower())
+    return digests
+
+
+def recipe_constraints_valid(snapshot: Any) -> bool:
+    """Return whether persisted recipe evidence identifies every constraint."""
+    try:
+        parsed = require_dict(snapshot, field="recipe snapshot")
+        _constraint_digests(parsed)
+    except (BoundaryError, InvalidRecipeSnapshotError):
+        return False
+    return True
 
 
 def recipe_changes(

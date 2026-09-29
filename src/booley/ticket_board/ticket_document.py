@@ -67,7 +67,8 @@ _REVIEW_FOCUS = {
     "rtl": frozenset({"bugs", "spec", "protocol", "security", "optimization", "code_style"}),
     "tb": frozenset({"quality"}),
 }
-_GENERATED_KEYS = frozenset({"machine", "acceptance_amendment", "created", "feature_branch"})
+_GENERATED_KEY_ORDER = ("machine", "created", "feature_branch", "acceptance_amendment")
+_GENERATED_KEYS = frozenset(_GENERATED_KEY_ORDER)
 _DIRECT_RETIRED_COVERAGE_METRICS = {
     "coverage_branch": "branch",
     "coverage_expression": "expression",
@@ -608,7 +609,7 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
             _reference_selectors(mandatory, optional, tuple(mentions)),
             fields,
         )
-        generated = {key: fields[key] for key in _GENERATED_KEYS if key in fields}
+        generated = {key: fields[key] for key in _GENERATED_KEY_ORDER if key in fields}
         if context.stage == "draft" and generated:
             raise ValueError("Draft Ticket cannot contain generated execution metadata")
         if context.stage == "executable" and "machine" not in generated:
@@ -695,7 +696,9 @@ def serialize_ticket_document(document: TicketDocument, context: TicketConversio
     fields = {
         key: value for key, value in document.spec.fields.items() if key not in _GENERATED_KEYS
     }
-    fields.update(document.generated)
+    fields.update(
+        (key, document.generated[key]) for key in _GENERATED_KEY_ORDER if key in document.generated
+    )
     rendered = (
         "---\n"
         + yaml.safe_dump(fields, sort_keys=False, allow_unicode=True)

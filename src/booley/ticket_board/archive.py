@@ -215,7 +215,7 @@ def _prepare_marker(tio: Any, slug: str, path: Path, keep_logs: bool, force: boo
         return marker
     if status != "done" and not force and marker is None:
         raise RuntimeError(f"Ticket is {status!r}; use --force to archive it")
-    fields = tio.find_ticket(slug)
+    fields = tio.inspect_ticket(slug)
     if fields is None:
         raise RuntimeError("Ticket disappeared during archive")
     digest = hashlib.sha256(file_path.read_bytes()).hexdigest()

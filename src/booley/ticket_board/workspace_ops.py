@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from booley.core.differences import format_differences
 from booley.runtime.filesystem_utils import safe_rmtree
@@ -212,6 +213,15 @@ def _outer_destination_commit(repository: Path, branch: str) -> str:
             f"outer `branch` {branch!r} does not exist in the outer repository"
         )
     return sha
+
+
+def preflight_authoring_destination(root: Path, fields: dict[str, Any]) -> None:
+    """Validate an authored destination before a recoverable transaction starts."""
+    branch = fields.get("branch")
+    if not isinstance(branch, str) or not branch:
+        raise TicketBaselineOperationError("ticket has no destination branch")
+    _preflight_project_repository(root, branch, fields.get("project_destination_ref"))
+    _outer_destination_commit(root, branch)
 
 
 def _branch_sha(repository: Path, branch: str) -> str:

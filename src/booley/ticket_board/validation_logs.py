@@ -16,6 +16,7 @@ Consumers: ``_ticket_ops.py`` and ``cli.py`` (``_cmd_validate_logs``) import
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -180,3 +181,15 @@ def format_validate_logs_report(result: dict[str, Any], slug: str) -> tuple[str,
         lines.append(f"**{errors} issue(s) found.**")
 
     return "\n".join(lines), errors
+
+
+def append_authored_drift_diagnostic(
+    report: str, error_count: int, entry: Mapping[str, Any]
+) -> tuple[str, int]:
+    """Append the shared recovery diagnostic for a drifted Ticket."""
+    if not entry.get("authored_drift"):
+        return report, error_count
+    return (
+        f"{report}\n\n{entry['authored_drift_reason']}; use return-to-draft",
+        error_count + 1,
+    )

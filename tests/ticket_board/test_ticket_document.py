@@ -78,6 +78,29 @@ def test_conversion_expands_sim_and_synth_thresholds() -> None:
     assert conversion.document.spec.target_plan.entries[0].target == "synth_core"
 
 
+def test_serialization_uses_stable_generated_field_order() -> None:
+    converted = convert_ticket_document(_ticket("  REVIEW: {rtl: {bugs: done}}\n"), _context())
+    assert converted.document is not None
+    view = TicketAuthoringView(
+        resolve_target=lambda selector, _flow: selector,
+        tests_for_target=lambda _target: (),
+    )
+    context = TicketConversionContext("executable", lambda _generated: view)
+    document = TicketDocument(
+        converted.document.spec,
+        {
+            "feature_branch": "ticket",
+            "created": "2026-09-29T00:00:00Z",
+            "machine": {},
+        },
+    )
+
+    rendered = serialize_ticket_document(document, context)
+
+    assert rendered.index("machine:") < rendered.index("created:")
+    assert rendered.index("created:") < rendered.index("feature_branch:")
+
+
 def test_registered_project_criterion_uses_flow_name_syntax() -> None:
     view = TicketAuthoringView(
         resolve_target=lambda selector, _flow: selector,
@@ -1039,6 +1062,12 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
     queued.write_text(
         queued.read_text(encoding="utf-8").replace("- merge\n", "- review\n"),
         encoding="utf-8",
+    )
+    inspected = board.inspect_ticket("basis-v2")
+    assert inspected is not None
+    assert inspected["authored_drift"] is True
+    assert inspected["authored_drift_reason"] == (
+        "acceptance-input-change-required: authored Ticket changed"
     )
     with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
         board.load_basis("basis-v2")

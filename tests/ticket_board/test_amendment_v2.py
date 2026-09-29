@@ -122,6 +122,28 @@ def test_review_optional_move_rejects_destination_collision() -> None:
     assert optional == {"REVIEW": {"rtl": {"bugs": "clean"}}}
 
 
+def test_v2_amendment_proposal_preserves_authored_body_whitespace(tmp_path: Path) -> None:
+    spec, view = _spec("  REVIEW: {rtl: {bugs: done}}\n")
+    body = "\n## Description\n\nCheck the result.  \n\n"
+    spec = TicketSpec(
+        spec.fields,
+        body,
+        spec.criteria,
+        spec.targets,
+        spec.on_success,
+        spec.target_plan,
+    )
+
+    proposal = build_v2_amendment_proposal(
+        spec, _request(spec.criteria[0].identity, make_optional=True), tmp_path, view
+    )
+    text = "---\n" + yaml.safe_dump(proposal.fields, sort_keys=False) + "---\n" + spec.body
+    converted = convert_ticket_document(text, TicketConversionContext("draft", lambda _: view))
+
+    assert converted.document is not None, converted.diagnostics
+    assert converted.document.spec.body == body
+
+
 def test_v2_amendment_moves_scalar_synth_pass_to_optional(tmp_path: Path) -> None:
     spec, view = _spec("  SYNTH: {synth_a: pass}\n")
 
