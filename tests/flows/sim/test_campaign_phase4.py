@@ -47,6 +47,7 @@ from booley.flows.sim.campaign.scheduler import (
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
+from booley.runtime import execution_recovery
 from booley.runtime.execution_records import (
     ExecutionId,
     child_context_matches,
@@ -790,13 +791,17 @@ def test_cancel_recovery_never_rewrites_a_retired_child_terminal_record(
     recovery_parked = threading.Event()
     release_recovery = threading.Event()
 
-    def parked_wait_for_empty(*_args) -> bool:
-        # The cancel path has already read the waiting record; hold it before it writes.
+    publish_recovered = execution_recovery._publish_recovered_terminal
+
+    def parked_publish(*args, **kwargs) -> None:
+        # The cancel path has already read the waiting record; hold it before it
+        # writes. Both the POSIX and Windows recovery paths end here.
         recovery_parked.set()
         assert release_recovery.wait(_PARALLEL_SYNC_TIMEOUT_S)
-        return True
+        publish_recovered(*args, **kwargs)
 
-    monkeypatch.setattr("booley.runtime.execution_recovery._wait_for_empty", parked_wait_for_empty)
+    monkeypatch.setattr(execution_recovery, "_wait_for_empty", lambda *_args: True)
+    monkeypatch.setattr(execution_recovery, "_publish_recovered_terminal", parked_publish)
     canceller = threading.Thread(target=registry.cancel, args=(child_id,))
     canceller.start()
     assert recovery_parked.wait(_PARALLEL_SYNC_TIMEOUT_S)
