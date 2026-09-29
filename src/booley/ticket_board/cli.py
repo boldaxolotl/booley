@@ -75,7 +75,7 @@ def _add_ticket_edit_subcommands(sub: argparse._SubParsersAction) -> None:
     # update-board
     p = sub.add_parser(
         "update-board",
-        help="Update mutable runtime/generated Board fields; v2 authored fields are rejected",
+        help="Update mutable runtime/generated Ticket Board fields; v2 authored fields are rejected",
     )
     p.add_argument("slug", help="Ticket slug")
     p.add_argument("--set", nargs="+", metavar="K=V", help="Field updates (e.g. step=planning)")

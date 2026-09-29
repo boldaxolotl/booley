@@ -5,20 +5,22 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
-
-import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import basis_refresh, ticket_document
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.operations import op_promote_waiting
 from booley.ticket_board.readiness import check_ticket_ready
+from booley.ticket_board.ticket_baseline import ticket_machine_from_spec
 from booley.ticket_board.ticket_document import (
     convert_ticket_document,
     ticket_conversion_context,
 )
-from booley.ticket_board.workspace_ops import prepare_converted_ticket_baseline
+from booley.ticket_board.workspace_ops import (
+    AuthoringWorkspace,
+    prepare_converted_ticket_baseline,
+    prepare_replacement_ticket_baseline,
+)
 
 
 def _git_project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
@@ -63,33 +65,81 @@ def _without_machine_node(source: str) -> str:
     return "".join((*lines[:start], *lines[end:]))
 
 
-def test_waiting_basis_refresh_preserves_v2_authored_body(tmp_path: Path, monkeypatch) -> None:
-    project, board = _git_project(tmp_path, monkeypatch)
-    created = board.create_ticket_document("preserve-v2", _draft_document())
+def _enqueue_waiting(project: Path, board: TicketIO, slug: str) -> Path:
+    created = board.create_ticket_document(slug, _draft_document())
     assert created is not None
-    prepare_converted_ticket_baseline(project, created, "preserve-v2")
-    assert board.enqueue_ticket("preserve-v2")
-    queued = board.tickets_dir / "board" / "queue" / "preserve-v2.md"
+    prepare_converted_ticket_baseline(project, created, slug)
+    assert board.enqueue_ticket(slug)
+    queued = board.tickets_dir / "board" / "queue" / f"{slug}.md"
     waiting = board.tickets_dir / "board" / "waiting" / queued.name
     waiting.parent.mkdir(parents=True, exist_ok=True)
     queued.replace(waiting)
+    return waiting
+
+
+def _write_prepared_refresh(project: Path, board: TicketIO, slug: str, operation: str):
+    ticket = board.tickets_dir / "board/waiting" / f"{slug}.md"
+    with ticket_conversion_context(project, slug, "executable") as context:
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    assert converted.document is not None
+    old_basis = board.load_basis(slug)
+    operation_path = basis_refresh._operation_path(project, operation)
+    candidate = operation_path / "new-outer"
+    candidate.parent.mkdir(parents=True)
+    subprocess.run(
+        [
+            "git",
+            "worktree",
+            "add",
+            "-b",
+            f"booley-generation/{'b' * 16}/{slug}",
+            str(candidate),
+            "main",
+        ],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    workspace = AuthoringWorkspace(
+        candidate,
+        None,
+        old_basis.participant("outer").destination_sha,
+        "",
+        "b" * 16,
+    )
+    refreshed, _operation = prepare_replacement_ticket_baseline(
+        project, ticket, slug, workspace, (), operation_id=operation
+    )
+    machine = ticket_machine_from_spec(refreshed, converted.document.spec, generation=operation)
+    journal = basis_refresh.BasisRefreshJournal(
+        1,
+        operation,
+        "b" * 16,
+        slug,
+        old_basis.ticket_identity()["generation"],
+        "prepared",
+        machine,
+    )
+    basis_refresh._write_journal(project, journal)
+    return machine, journal
+
+
+def test_waiting_basis_refresh_preserves_v2_authored_body(tmp_path: Path, monkeypatch) -> None:
+    project, board = _git_project(tmp_path, monkeypatch)
+    waiting = _enqueue_waiting(project, board, "preserve-v2")
     before = waiting.read_text(encoding="utf-8")
     with ticket_conversion_context(project, "preserve-v2", "executable") as context:
         old = convert_ticket_document(before, context)
     assert old.document is not None
-    prepared_machine = old.document.generated["machine"]
-    prepared_basis = board.load_basis("preserve-v2")
-    monkeypatch.setattr(
-        basis_refresh,
-        "prepare_waiting_basis_refresh",
-        lambda *_args: (prepared_basis, "a" * 32),
-    )
-    monkeypatch.setattr(
-        basis_refresh,
-        "load_basis_refresh",
-        lambda *_args: SimpleNamespace(state="prepared", machine=prepared_machine),
-    )
-    monkeypatch.setattr(basis_refresh, "finish_basis_refresh", lambda *_args: None)
+    prepared_machine, journal = _write_prepared_refresh(project, board, "preserve-v2", "a" * 32)
+    original_finish = basis_refresh.finish_basis_refresh
+    finished: list[str] = []
+
+    def finish(root: Path, slug: str, operation: str) -> None:
+        finished.append(operation)
+        original_finish(root, slug, operation)
+
+    monkeypatch.setattr(basis_refresh, "finish_basis_refresh", finish)
 
     assert op_promote_waiting(board) == [
         {"slug": "preserve-v2", "summary": "Preserve authored whitespace"}
@@ -104,43 +154,35 @@ def test_waiting_basis_refresh_preserves_v2_authored_body(tmp_path: Path, monkey
     assert new.document.spec.semantic_digest() == old.document.spec.semantic_digest()
     assert _without_machine_node(after) == _without_machine_node(before)
     assert new.document.generated["machine"] == prepared_machine
+    assert new.document.generated["machine"] != old.document.generated["machine"]
     assert (
         new.document.generated["machine"]["authored_sha256"] == new.document.spec.semantic_digest()
     )
     assert check_ticket_ready(project, "preserve-v2").errors == ()
+    assert finished == [journal.operation_id]
+    assert basis_refresh.load_basis_refresh(project, "preserve-v2") is None
+    assert not basis_refresh._operation_path(project, journal.operation_id).exists()
 
 
-def test_waiting_refresh_retries_after_ticket_serialization_failure(
+def test_waiting_refresh_serialization_failure_is_blocked_and_scan_continues(
     tmp_path: Path, monkeypatch
 ) -> None:
     project, board = _git_project(tmp_path, monkeypatch)
-    created = board.create_ticket_document("retry-v2", _draft_document())
-    assert created is not None
-    prepare_converted_ticket_baseline(project, created, "retry-v2")
-    assert board.enqueue_ticket("retry-v2")
-    queued = board.tickets_dir / "board/queue/retry-v2.md"
-    waiting = board.tickets_dir / "board/waiting/retry-v2.md"
-    waiting.parent.mkdir(parents=True, exist_ok=True)
-    queued.replace(waiting)
+    waiting = _enqueue_waiting(project, board, "a-fail-v2")
+    _enqueue_waiting(project, board, "z-success-v2")
     original_bytes = waiting.read_bytes()
-    with ticket_conversion_context(project, "retry-v2", "executable") as context:
-        converted = convert_ticket_document(waiting.read_text(encoding="utf-8"), context)
-    assert converted.document is not None
-    prepared_machine = converted.document.generated["machine"]
-    prepared_basis = board.load_basis("retry-v2")
-    journal = SimpleNamespace(state="prepared", machine=prepared_machine)
-    monkeypatch.setattr(
-        basis_refresh,
-        "prepare_waiting_basis_refresh",
-        lambda *_args: (prepared_basis, "b" * 32),
-    )
-    monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: journal)
-    monkeypatch.setattr(basis_refresh, "recover_published_basis_refreshes", lambda *_args: None)
+    _prepared_machine, journal = _write_prepared_refresh(project, board, "a-fail-v2", "c" * 32)
     finished: list[str] = []
+    original_finish = basis_refresh.finish_basis_refresh
+
+    def finish(root: Path, slug: str, operation: str) -> None:
+        finished.append(operation)
+        original_finish(root, slug, operation)
+
     monkeypatch.setattr(
         basis_refresh,
         "finish_basis_refresh",
-        lambda _root, _slug, operation: finished.append(operation),
+        finish,
     )
     original_serializer = ticket_document.serialize_ticket_document
     calls = 0
@@ -154,13 +196,11 @@ def test_waiting_refresh_retries_after_ticket_serialization_failure(
 
     monkeypatch.setattr(ticket_document, "serialize_ticket_document", fail_once)
 
-    with pytest.raises(ValueError, match="injected serialization failure"):
-        op_promote_waiting(board)
-    assert waiting.read_bytes() == original_bytes
-    assert finished == []
-
     assert op_promote_waiting(board) == [
-        {"slug": "retry-v2", "summary": "Preserve authored whitespace"}
+        {"slug": "z-success-v2", "summary": "Preserve authored whitespace"}
     ]
-    assert (board.tickets_dir / "board/queue/retry-v2.md").is_file()
-    assert finished == ["b" * 32]
+    blocked = board.tickets_dir / "board/blocked/a-fail-v2.md"
+    assert blocked.read_bytes() == original_bytes
+    assert (board.tickets_dir / "board/queue/z-success-v2.md").is_file()
+    assert finished == []
+    assert basis_refresh.load_basis_refresh(project, "a-fail-v2") == journal

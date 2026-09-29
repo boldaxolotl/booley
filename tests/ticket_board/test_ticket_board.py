@@ -1323,6 +1323,24 @@ class TestUpdateFrontmatter:
 
         assert p.read_text(encoding="utf-8") == original
 
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            '"CRITERIA_MANDATORY": {}',
+            "'CRITERIA_OPTIONAL': {}",
+            "CRITERIA_MANDATORY : {}",
+        ],
+    )
+    def test_refuses_valid_yaml_spellings_of_v2_markers(self, tmp_path, marker):
+        p = tmp_path / "ticket.md"
+        original = f"---\nsummary: Test\n{marker}\n---\n\n## Description\nKeep this.\n"
+        p.write_text(original, encoding="utf-8")
+
+        with pytest.raises(ValueError, match="v2 Ticket updates must use"):
+            update_frontmatter(p, {"priority": "high"})
+
+        assert p.read_text(encoding="utf-8") == original
+
     def test_v2_words_in_markdown_body_do_not_disable_legacy_update(self, tmp_path):
         p = tmp_path / "ticket.md"
         p.write_text(
@@ -1940,6 +1958,17 @@ class TestInitTicket:
         assert "created" in new.document.generated
         # Logs created
         assert (tio.logs_dir / "fix-fsm-bug" / "ticket.md").exists()
+
+    def test_invalid_v2_ticket_fails_before_move_or_log_copy(self, tmp_path):
+        tio = make_tio(tmp_path)
+        queued = make_ticket_in_dir(tio, "queue", "invalid-v2")
+
+        with pytest.raises(ValueError, match=r"Ticket.*invalid|Serialized Ticket.*invalid"):
+            tio.init_ticket(queued)
+
+        assert queued.is_file()
+        assert not (tio.tickets_dir / "board/active/invalid-v2.md").exists()
+        assert not (tio.logs_dir / "invalid-v2/ticket.md").exists()
 
     def test_init_slug_uses_filename_not_summary(self, tmp_path):
         """Slug must come from filename stem, not generate_slug(summary).

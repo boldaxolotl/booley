@@ -362,9 +362,20 @@ def is_v2_ticket_document(text: str) -> bool:
     if not lines or lines[0] != "---":
         return False
     end = next((index for index, line in enumerate(lines[1:], 1) if line == "---"), len(lines))
-    return any(
-        re.match(r"^(CRITERIA_MANDATORY|CRITERIA_OPTIONAL):", line) is not None
-        for line in lines[1:end]
+    frontmatter = lines[1:end]
+    marker = re.compile(
+        r"^(?:CRITERIA_MANDATORY|CRITERIA_OPTIONAL|"
+        r'"(?:CRITERIA_MANDATORY|CRITERIA_OPTIONAL)"|'
+        r"'(?:CRITERIA_MANDATORY|CRITERIA_OPTIONAL)')\s*:"
+    )
+    if any(marker.match(line) is not None for line in frontmatter):
+        return True
+    try:
+        parsed = yaml.safe_load("\n".join(frontmatter))
+    except yaml.YAMLError:
+        return False
+    return isinstance(parsed, dict) and bool(
+        {"CRITERIA_MANDATORY", "CRITERIA_OPTIONAL"} & set(parsed)
     )
 
 

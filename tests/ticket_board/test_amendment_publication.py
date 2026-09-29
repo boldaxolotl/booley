@@ -48,7 +48,8 @@ def _optional_request() -> dict:
 
 
 def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -> None:
-    root, blocked, tio = _blocked_ticket(tmp_path)
+    authored_body = "\n## Description\n\nRecover publication.  \n\n"
+    root, blocked, tio = _blocked_ticket(tmp_path, body=authored_body)
     _old_fields, old_body = _v2_fields(blocked.read_text(encoding="utf-8"))
     old_basis = tio.load_basis("blocked-again")
     old_head = _git(root, "rev-parse", old_basis.participant("outer").ticket_ref)
@@ -70,6 +71,7 @@ def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -
     queued = blocked.parent.parent / "queue" / blocked.name
     _fields, body = _v2_fields(queued.read_text(encoding="utf-8"))
     assert body == old_body
+    assert body == authored_body
     basis = tio.load_basis("blocked-again")
     assert tio.load_basis("blocked-again").basis_id == basis.basis_id
     new_head = _git(root, "rev-parse", basis.participant("outer").ticket_ref)

@@ -1234,7 +1234,11 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
 
 
 def _prepared_ticket(
-    tmp_path: Path, slug: str = "transaction", extra_file: str | None = None
+    tmp_path: Path,
+    slug: str = "transaction",
+    extra_file: str | None = None,
+    *,
+    body: str = "## Description\n\nRecover publication.\n",
 ) -> tuple[Path, Path, TicketIO]:
     root = tmp_path / "project"
     root.mkdir()
@@ -1261,7 +1265,7 @@ def _prepared_ticket(
             branch="main",
             scope=["README.md"],
             criteria={"mandatory": {"review_rtl_bugs": True}},
-            body="## Description\n\nRecover publication.\n",
+            body=body,
         ),
     )
     assert created is not None
@@ -1269,9 +1273,13 @@ def _prepared_ticket(
 
 
 def _blocked_ticket(
-    tmp_path: Path, slug: str = "blocked-again", extra_file: str | None = None
+    tmp_path: Path,
+    slug: str = "blocked-again",
+    extra_file: str | None = None,
+    *,
+    body: str = "## Description\n\nRecover publication.\n",
 ) -> tuple[Path, Path, TicketIO]:
-    root, project_dir, tio = _prepared_ticket(tmp_path, slug, extra_file)
+    root, project_dir, tio = _prepared_ticket(tmp_path, slug, extra_file, body=body)
     assert tio.enqueue_ticket(slug)
     (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
     queued = project_dir / "tickets" / "board" / "queue" / f"{slug}.md"

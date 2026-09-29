@@ -643,6 +643,9 @@ class TicketIO:
         with ticket_path.open(encoding="utf-8") as f:
             text = f.read()
         fields, _body = parse_frontmatter(text)
+        prepared_created = None
+        if not fields.get("created"):
+            prepared_created = self._prepare_spec_fields(ticket_path, {"created": now_iso()})
 
         # Move file to board/active/. Guard on identity, not just string
         # inequality: the source may already BE the destination reached via a
@@ -662,8 +665,7 @@ class TicketIO:
         shutil.copy2(str(active_path), str(log_dir / "ticket.md"))
 
         # Stamp 'created' in frontmatter (immutable, set once)
-        if not fields.get("created"):
-            self._write_spec_fields(active_path, {"created": now_iso()})
+        self._publish_spec_fields(active_path, prepared_created)
 
         # Create .runtime/progress.json with initial runtime state
         initial_progress = copy.deepcopy(PROGRESS_DEFAULTS)
