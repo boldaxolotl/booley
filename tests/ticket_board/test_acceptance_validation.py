@@ -457,8 +457,9 @@ def test_isolated_projection_ignores_checkout_root_difference(tmp_path: Path) ->
 
 def test_resumed_ticket_guard_ignores_owned_trace_projection_without_reference(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, workspace, basis = _enqueued_projection_ticket(tmp_path, ignore_native_cores=True)
+    root, workspace, _basis = _enqueued_projection_ticket(tmp_path, ignore_native_cores=True)
     overlay = workspace / ".booley_project/cores/demo.booleytrace.core"
     overlay.write_text(
         "CAPI=2:\nname: booley::demo-booleytrace:0\nfilesets: {}\ntargets: {}\n",
@@ -471,9 +472,21 @@ def test_resumed_ticket_guard_ignores_owned_trace_projection_without_reference(
     )
     overlay.unlink()
     initial = projection.read_bytes()
+    ticket = _runtime_ticket(root)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+    monkeypatch.setenv("BOOLEY_SLUG", "generated-input")
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr("booley.ticket_board.flow_execution.detect_project_root", lambda: root)
+    flow = _AcceptanceFlow()
+    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
 
-    assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
-    assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
+    flow.execution_adapter = TicketBoardFlowExecution()
+    flow.parse_args(["--target", "demo", "--work-dir", str(workspace)])
+
+    assert flow._pre_state_gate() is None
+    assert flow._pre_state_gate() is None
 
     assert projection.read_bytes() == initial
 

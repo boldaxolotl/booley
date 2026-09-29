@@ -105,6 +105,28 @@ def test_generated_root_projection_requires_strict_provenance(tmp_path: Path) ->
     assert not is_generated_projected_core(root, root / "FUSESOC_IGNORE")
 
 
+def test_projection_identity_requires_owning_mode(tmp_path: Path) -> None:
+    root, _core = _project(tmp_path)
+    projected = reconcile_projected_cores(root).written[0]
+    (root / ".booley_project/booley.toml").write_text(
+        "[stealth]\nenabled = false\n", encoding="utf-8"
+    )
+
+    assert not is_generated_projected_core(root, projected)
+
+    (root / ".booley_project/booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n",
+        encoding="utf-8",
+    )
+    isolated = reconcile_isolated_registry(root).written[0]
+    (root / ".booley_project/booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = false\n",
+        encoding="utf-8",
+    )
+
+    assert not is_generated_isolated_core(root, isolated)
+
+
 def test_reconcile_refreshes_and_removes_owned_stale_projection(tmp_path: Path) -> None:
     root, core = _project(tmp_path)
     destination = projected_core_path(root, core)

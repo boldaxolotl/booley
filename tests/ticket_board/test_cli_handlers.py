@@ -75,10 +75,7 @@ def test_amend_preview_and_apply_commands(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["status"] == "queued"
 
 
-def _paired_generated_amendment(
-    tmp_path: Path,
-) -> tuple[Path, TicketIO, str, Path, Path]:
-    root, project_dir, tio = _paired_basis_project(tmp_path)
+def _configure_generated_project(project_dir: Path) -> None:
     (project_dir / "cores").mkdir()
     (project_dir / "cores/demo.core").write_text(
         "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n",
@@ -100,6 +97,13 @@ def _paired_generated_amendment(
     hook.chmod(0o755)
     _git(project_dir, "add", "-A")
     _git(project_dir, "commit", "-m", "configure stealth preparation")
+
+
+def _paired_generated_amendment(
+    tmp_path: Path,
+) -> tuple[Path, TicketIO, str, Path, Path]:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    _configure_generated_project(project_dir)
     outer_exclude = root / ".git/info/exclude"
     project_exclude = project_dir / ".git/info/exclude"
     outer_exclude.write_text(
@@ -173,10 +177,54 @@ def test_amend_preview_and_apply_ignore_owned_generated_artifacts(tmp_path, caps
         for role in preview["source_state"].values()
         for entry in role["entries"]
     )
+    assert all(
+        role["ignored_generated"]
+        and all("sha256" in identity for identity in role["ignored_generated"].values())
+        for role in preview["source_state"].values()
+    )
     args.preview = False
     args.expected_preview = preview["digest"]
     assert _cmd_amend(tio, args) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "queued"
+    basis = tio.load_basis(slug)
+    for participant in basis.participants:
+        owner = root if participant.role == "outer" else root / ".booley_project"
+        committed = _git(owner, "ls-tree", "-r", "--name-only", participant.authoring_sha)
+        assert ".booley-projected-" not in committed
+        assert "fusesoc-isolated-cores" not in committed
+        assert "picosoc/FUSESOC_IGNORE" not in committed
+
+
+def test_amend_apply_rejects_changed_generated_projection(tmp_path, capsys):
+    root, tio, slug, blocked, workspace = _paired_generated_amendment(tmp_path)
+    prepare_acceptance_checkout(root, workspace, slug=slug, ticket_path=blocked)
+    capsys.readouterr()
+    changes_file = tmp_path / "generated-amendment.json"
+    changes_file.write_text(
+        json.dumps(
+            {
+                "actor": "QA Human",
+                "reason": "Accept residual review risk",
+                "criteria": [{"criterion": "review_rtl_bugs_clean", "make_optional": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        slug=slug,
+        changes_file=str(changes_file),
+        preview=True,
+        expected_preview=None,
+    )
+    assert _cmd_amend(tio, args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    projection = next(workspace.glob(".booley-projected-*.core"))
+    projection.write_text(projection.read_text(encoding="utf-8") + "# changed\n")
+    args.preview = False
+    args.expected_preview = preview["digest"]
+
+    assert _cmd_amend(tio, args) == 2
+    assert "preview is stale" in capsys.readouterr().err
 
 
 def test_amend_command_reports_invalid_request(tmp_path, tio, capsys):

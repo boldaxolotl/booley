@@ -125,6 +125,8 @@ def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
 
 def is_generated_projected_core(project_root: Path, path: Path) -> bool:
     """Identify a directly contained root projection, not a shaped user file."""
+    if not projection_enabled(project_root):
+        return False
     if path.parent != project_root or path.is_symlink() or not path.is_file():
         return False
     if not path.name.startswith(PROJECTED_CORE_PREFIX) or path.suffix != ".core":
@@ -140,6 +142,8 @@ def is_generated_projected_core(project_root: Path, path: Path) -> bool:
 
 def is_generated_isolated_core(project_root: Path, path: Path) -> bool:
     """Identify a directly contained Booley projection, not an authored core."""
+    if not native_cores_ignored(project_root):
+        return False
     if (
         path.parent != isolated_registry_root(project_root)
         or path.is_symlink()
@@ -155,6 +159,14 @@ def is_generated_isolated_core(project_root: Path, path: Path) -> bool:
         return isolated_core_path(project_root, source) == path
     except CoreProjectionError:
         return False
+
+
+def is_generated_projection(repository: Path, path: Path) -> bool:
+    """Identify a projection owned by the repository's active stealth mode."""
+    project_root = repository.parent if repository.name == ".booley_project" else repository
+    return is_generated_projected_core(project_root, path) or is_generated_isolated_core(
+        project_root, path
+    )
 
 
 def _projection_source(project_root: Path, path: Path) -> Path | None:
