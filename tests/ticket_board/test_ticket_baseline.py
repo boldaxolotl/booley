@@ -1362,6 +1362,9 @@ def test_authored_drift_recovery_reports_and_preserves_current_ticket(
     queued.replace(blocked)
     sealed = tio._convert_ticket(blocked, slug, "executable")
     expected_digest = sealed.generated["machine"]["authored_sha256"]
+    runtime_ticket = tio.logs_dir / slug / "ticket.md"
+    runtime_ticket.parent.mkdir(parents=True, exist_ok=True)
+    runtime_ticket.write_bytes(blocked.read_bytes())
     blocked.write_text(
         blocked.read_text(encoding="utf-8")
         .replace(

@@ -11,9 +11,11 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.criteria.state import DevelopmentState
+from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import acceptance_targets, cli_handlers
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
 from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
+from booley.ticket_board.cli import main
 from booley.ticket_board.cli_handlers import (
     _cmd_amend,
     _cmd_board,
@@ -488,6 +490,51 @@ class TestCmdNextStage:
 
 
 class TestCmdValidateLogs:
+    def test_validate_logs_executable_runtime_ticket(self, tmp_path, monkeypatch, capsys):
+        root, project_dir, tio = _paired_basis_project(tmp_path)
+        slug = "validate-runtime-ticket"
+        ticket = _create_v2_ticket(
+            tio,
+            slug,
+            TicketFileSpec(
+                summary="Validate runtime Ticket logs",
+                ticket_type="feature",
+                branch="main",
+                scope=["README.md"],
+                criteria={"mandatory": {"review_rtl_bugs": True}},
+            ),
+        )
+        assert ticket is not None
+        assert tio.enqueue_ticket(slug)
+        queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+        assert tio.init_ticket(queued, execution_id="test-execution") is not None
+        runtime_ticket = tio.logs_dir / slug / "ticket.md"
+        assert runtime_ticket.is_file()
+        assert tio.inspect_ticket(slug)["status"] == "running"
+        capsys.readouterr()
+
+        monkeypatch.setenv("TICKETS_DIR", str(project_dir / "tickets"))
+        monkeypatch.setenv("PROJECT_ROOT", str(root))
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        reset_cache()
+
+        assert main(["validate-logs", slug]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == (
+            f"# Log Validation -- {slug}\n\n"
+            "## Missing Files\n"
+            "- **developer**: `booley_state.json` not found\n\n"
+            "**1 issue(s) found.**\n"
+        )
+        assert json.loads(captured.err) == {
+            "missing_files": [{"step": "developer", "file": "booley_state.json"}],
+            "missing_meta": [],
+            "skipped_steps": [],
+            "warnings": [],
+            "gate_failures": [],
+            "gate_warnings": [],
+        }
+
     def test_ticket_not_found(self, tio, capsys):
         args = Namespace(slug="nonexistent")
         rc = _cmd_validate_logs(tio, args)
