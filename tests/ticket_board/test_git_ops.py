@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.ticket_board.git_ops import (
     _worktree_relative_path,
@@ -19,6 +21,7 @@ from booley.ticket_board.git_ops import (
     merge_branch,
     remove_worktree,
     remove_worktree_for_branch,
+    worktree_blocking_changes,
 )
 
 # ---------------------------------------------------------------------------
@@ -158,6 +161,78 @@ class TestWorktreeRelativePath:
         monkeypatch.setattr(Path, "samefile", samefile)
 
         assert _worktree_relative_path(str(root), alias / "tickets" / "ticket.md") is None
+
+
+class TestWorktreeBlockingChanges:
+    @staticmethod
+    def _result(stdout: str, returncode: int = 0) -> MagicMock:
+        return MagicMock(returncode=returncode, stdout=stdout, stderr="")
+
+    @patch("booley.ticket_board.git_ops.git")
+    def test_unrelated_untracked_path_requires_candidate_context(self, mock_git):
+        status = self._result("?? local-notes.txt\0")
+        mock_git.side_effect = [status, self._result("", 1)]
+
+        assert worktree_blocking_changes("/repo", candidate_paths=("design.txt",)) == ()
+
+        mock_git.side_effect = [status]
+        blockers = worktree_blocking_changes("/repo")
+        assert blockers is not None
+        assert [entry.path for entry in blockers] == ["local-notes.txt"]
+
+    @pytest.mark.parametrize(
+        ("untracked_path", "candidate_path"),
+        [
+            ("collision", "collision"),
+            ("collision", "collision/child.txt"),
+            ("collision/child.txt", "collision"),
+            ("collision/", "collision/child.txt"),
+        ],
+    )
+    @patch("booley.ticket_board.git_ops.git")
+    def test_untracked_candidate_path_overlap_blocks(
+        self, mock_git, untracked_path, candidate_path
+    ):
+        mock_git.side_effect = [
+            self._result(f"?? {untracked_path}\0"),
+            self._result("", 1),
+        ]
+
+        blockers = worktree_blocking_changes("/repo", candidate_paths=(candidate_path,))
+
+        assert blockers is not None
+        assert [entry.path for entry in blockers] == [untracked_path]
+
+    @pytest.mark.parametrize("status", ["M ", " M", "A "])
+    @patch("booley.ticket_board.git_ops.git")
+    def test_staged_and_tracked_entries_always_block(self, mock_git, status):
+        mock_git.side_effect = [
+            self._result(f"{status} tracked.txt\0"),
+            self._result("", 1),
+        ]
+
+        blockers = worktree_blocking_changes("/repo", candidate_paths=("other.txt",))
+
+        assert blockers is not None
+        assert [entry.path for entry in blockers] == ["tracked.txt"]
+
+    @patch("booley.ticket_board.git_ops.git")
+    def test_status_failure_is_not_clean(self, mock_git):
+        mock_git.return_value = self._result("", 128)
+
+        assert worktree_blocking_changes("/repo", candidate_paths=("design.txt",)) is None
+
+    @patch("booley.ticket_board.git_ops.git")
+    def test_case_only_overlap_blocks_when_checkout_ignores_case(self, mock_git):
+        mock_git.side_effect = [
+            self._result("?? Foo/output.txt\0"),
+            self._result("true\n"),
+        ]
+
+        blockers = worktree_blocking_changes("/repo", candidate_paths=("foo/output.txt",))
+
+        assert blockers is not None
+        assert [entry.path for entry in blockers] == ["Foo/output.txt"]
 
 
 # ---------------------------------------------------------------------------

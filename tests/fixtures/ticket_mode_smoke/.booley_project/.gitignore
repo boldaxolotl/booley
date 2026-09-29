@@ -1,5 +1,8 @@
 # Transient Booley state — do not commit.
 tmp/
+flow-reports/
+/logs/
+/.baseline-wt-*/
 tickets/logs/
 tickets/locks/
 .interactive_logs/
