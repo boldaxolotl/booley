@@ -76,7 +76,7 @@ def _ticket_context(root: Path) -> TicketContext:
     )
 
 
-def test_generated_projection_is_stable_and_drift_is_blocked_twice(
+def test_generated_projection_is_stable_and_markerless_drift_is_blocked_twice(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -100,7 +100,9 @@ def test_generated_projection_is_stable_and_drift_is_blocked_twice(
 
         projection = ctx.work_dir / ".booley-projected-demo.core"
         projection.write_text(
-            projection.read_text(encoding="utf-8") + "# drift\n",
+            projection.read_text(encoding="utf-8").replace(
+                "# Booley stealth core projection: ", "# user projection: "
+            ),
             encoding="utf-8",
         )
         setup_result = _validate_materialized_ticket_baseline(ctx, ctx.work_dir)

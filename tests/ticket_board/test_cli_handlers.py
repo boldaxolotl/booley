@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.criteria.state import DevelopmentState
 from booley.ticket_board import acceptance_targets, cli_handlers
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
+from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
 from booley.ticket_board.cli_handlers import (
     _cmd_amend,
     _cmd_board,
@@ -27,10 +28,17 @@ from booley.ticket_board.cli_handlers import (
     _cmd_validate_logs,
     _cmd_validate_ticket,
 )
+from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.paths import existing_runtime_file
+from booley.ticket_board.ticket_baseline import worktree_for_ref
 
 from .conftest import make_ticket_file
-from .test_ticket_baseline import _blocked_ticket
+from .test_ticket_baseline import (
+    _blocked_ticket,
+    _create_v2_ticket,
+    _git,
+    _paired_basis_project,
+)
 
 # ---------------------------------------------------------------------------
 # _cmd_amend
@@ -65,6 +73,158 @@ def test_amend_preview_and_apply_commands(tmp_path, capsys):
     args.expected_preview = digest
     assert _cmd_amend(tio, args) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "queued"
+
+
+def _configure_generated_project(project_dir: Path) -> None:
+    (project_dir / "cores").mkdir()
+    (project_dir / "cores/demo.core").write_text(
+        "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n",
+        encoding="utf-8",
+    )
+    (project_dir / "booley.toml").write_text(
+        "[flows]\n[stealth]\nenabled = true\nignore_native_cores = true\n",
+        encoding="utf-8",
+    )
+    hooks = project_dir / "hooks"
+    hooks.mkdir()
+    hook = hooks / "post-setup.sh"
+    hook.write_text(
+        "#!/bin/sh\n"
+        'mkdir -p "$BOOLEY_WORKTREE/picosoc"\n'
+        'printf stable > "$BOOLEY_WORKTREE/picosoc/FUSESOC_IGNORE"\n',
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    _git(project_dir, "add", "-A")
+    _git(project_dir, "commit", "-m", "configure stealth preparation")
+
+
+def _paired_generated_amendment(
+    tmp_path: Path,
+) -> tuple[Path, TicketIO, str, Path, Path]:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    _configure_generated_project(project_dir)
+    outer_exclude = root / ".git/info/exclude"
+    project_exclude = project_dir / ".git/info/exclude"
+    outer_exclude.write_text(
+        "/.booley-projected-*.core\n/picosoc/FUSESOC_IGNORE\n",
+        encoding="utf-8",
+    )
+    project_exclude.write_text(
+        "/tmp/fusesoc-isolated-cores/\n",
+        encoding="utf-8",
+    )
+    slug = "generated-amendment"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Amend generated artifacts",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    outer_exclude.write_text("", encoding="utf-8")
+    project_exclude.write_text("", encoding="utf-8")
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    blocked = project_dir / "tickets/board/blocked" / queued.name
+    blocked.parent.mkdir(parents=True, exist_ok=True)
+    queued.replace(blocked)
+    state = DevelopmentState.load(tio.logs_dir / slug / ".runtime/booley_state.json")
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.save()
+    basis = tio.load_basis(slug)
+    workspace = worktree_for_ref(root, basis.participant("outer").ticket_ref)
+    assert workspace is not None
+    return root, tio, slug, blocked, workspace
+
+
+def test_amend_preview_and_apply_ignore_owned_generated_artifacts(tmp_path, capsys):
+    root, tio, slug, blocked, workspace = _paired_generated_amendment(tmp_path)
+    prepare_acceptance_checkout(root, workspace, slug=slug, ticket_path=blocked)
+    assert list(workspace.glob(".booley-projected-*.core"))
+    assert list(workspace.glob(".booley_project/tmp/fusesoc-isolated-cores/*.core"))
+    assert (workspace / "picosoc/FUSESOC_IGNORE").is_file()
+    capsys.readouterr()
+    changes_file = tmp_path / "generated-amendment.json"
+    changes_file.write_text(
+        json.dumps(
+            {
+                "actor": "QA Human",
+                "reason": "Accept residual review risk",
+                "criteria": [{"criterion": "review_rtl_bugs_clean", "make_optional": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        slug=slug,
+        changes_file=str(changes_file),
+        preview=True,
+        expected_preview=None,
+    )
+
+    assert _cmd_amend(tio, args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert all(
+        "booley-projected" not in entry["path"]
+        and "fusesoc-isolated-cores" not in entry["path"]
+        and not entry["path"].endswith("FUSESOC_IGNORE")
+        for role in preview["source_state"].values()
+        for entry in role["entries"]
+    )
+    assert all(
+        role["ignored_generated"]
+        and all("sha256" in identity for identity in role["ignored_generated"].values())
+        for role in preview["source_state"].values()
+    )
+    args.preview = False
+    args.expected_preview = preview["digest"]
+    assert _cmd_amend(tio, args) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "queued"
+    basis = tio.load_basis(slug)
+    for participant in basis.participants:
+        owner = root if participant.role == "outer" else root / ".booley_project"
+        committed = _git(owner, "ls-tree", "-r", "--name-only", participant.authoring_sha)
+        assert ".booley-projected-" not in committed
+        assert "fusesoc-isolated-cores" not in committed
+        assert "picosoc/FUSESOC_IGNORE" not in committed
+
+
+def test_amend_apply_rejects_changed_generated_projection(tmp_path, capsys):
+    root, tio, slug, blocked, workspace = _paired_generated_amendment(tmp_path)
+    prepare_acceptance_checkout(root, workspace, slug=slug, ticket_path=blocked)
+    capsys.readouterr()
+    changes_file = tmp_path / "generated-amendment.json"
+    changes_file.write_text(
+        json.dumps(
+            {
+                "actor": "QA Human",
+                "reason": "Accept residual review risk",
+                "criteria": [{"criterion": "review_rtl_bugs_clean", "make_optional": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        slug=slug,
+        changes_file=str(changes_file),
+        preview=True,
+        expected_preview=None,
+    )
+    assert _cmd_amend(tio, args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    projection = next(workspace.glob(".booley-projected-*.core"))
+    projection.write_text(projection.read_text(encoding="utf-8") + "# changed\n")
+    args.preview = False
+    args.expected_preview = preview["digest"]
+
+    assert _cmd_amend(tio, args) == 2
+    assert "preview is stale" in capsys.readouterr().err
 
 
 def test_amend_command_reports_invalid_request(tmp_path, tio, capsys):

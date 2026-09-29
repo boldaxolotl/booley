@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.fusesoc.core_projection import reconcile_isolated_registry
 from booley.ticket_board.acceptance_journal import (
     AcceptanceOperationError,
     AcceptanceOutcome,
@@ -23,7 +24,11 @@ from booley.ticket_board.acceptance_journal._store import (
     FileAcceptanceStore,
 )
 from booley.ticket_board.completion import complete_review_ticket
-from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
+from booley.ticket_board.ticket_baseline import (
+    BasisParticipant,
+    TicketBaseline,
+    assert_inputs_unchanged,
+)
 from tests.ticket_board.test_completion import (
     _contract,
     _git,
@@ -125,6 +130,40 @@ def test_candidate_surface_materializes_submodules_before_validation(
     acceptance_impl._validate_candidate_surface(transaction, {}, tmp_path)
 
     assert events == ["clone", "clone", "materialize", "validate"]
+
+
+def test_no_reference_surface_validation_does_not_reconcile_projections(tmp_path: Path) -> None:
+    root = tmp_path / "rtl"
+    _repository(root)
+    cores = root / ".booley_project/cores"
+    cores.mkdir(parents=True)
+    (root / ".booley_project/booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n",
+        encoding="utf-8",
+    )
+    (cores / "demo.core").write_text(
+        "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "-f", ".booley_project/booley.toml", ".booley_project/cores/demo.core")
+    _git(root, "commit", "-m", "add stealth controls")
+    authoring = _git(root, "rev-parse", "HEAD")
+    reconcile_isolated_registry(root)
+    basis = TicketBaseline(
+        (
+            BasisParticipant(
+                "outer",
+                authoring,
+                "refs/heads/main",
+                "refs/heads/main",
+                authoring,
+            ),
+        )
+    )
+
+    assert not list(root.glob(".booley-projected-*.core"))
+    assert_inputs_unchanged(basis, root)
+    assert not list(root.glob(".booley-projected-*.core"))
 
 
 def test_advance_requests_approval_then_finishes_from_same_interface(tmp_path: Path) -> None:
