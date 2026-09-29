@@ -26,6 +26,7 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
 from booley.runtime.job_records import _proc_cmdline
+from booley.runtime.shared_infra import load_job_budget_config
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -255,18 +256,10 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
     if root is None:
         return (None, None)
 
-    from booley.runtime.shared_infra import _load_rtl_config
-
-    try:
-        # Caps must come from the SAME project the slot store belongs to
-        # (slots_dir → resolve_project_dir), never from work_dir: a
-        # linked worktree can carry a diverged booley.toml, and two
-        # claimants promoting under different caps overcommit the class.
-        # None = the CWD/BOOLEY_PROJECT_DIR resolution path.
-        cfg = _load_rtl_config(None)
-    except Exception:  # noqa: BLE001 — best-effort; defaults are safe
-        cfg = {}
-    caps = parse_caps(cfg or {})
+    # Caps must come from the SAME project the slot store belongs to
+    # (slots_dir → resolve_project_dir), never from work_dir: a linked
+    # worktree can carry a diverged booley.toml.
+    caps = parse_caps(load_job_budget_config())
     role = (
         job_slots.ROLE_TICKET
         if os.environ.get("BOOLEY_AGENT_ROLE") == "ticket"

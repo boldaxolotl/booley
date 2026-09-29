@@ -626,6 +626,28 @@ def test_setup_failure_archives_current_error_without_reusing_old_log(
     assert "old passing output" not in current
 
 
+def test_elab_only_dry_run_renders_setup_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    monkeypatch.setattr(
+        flow,
+        "_target_handle",
+        lambda _target: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.flow.simulation_setup_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            SimulationBuildPreparationError("cgroup denied")
+        ),
+    )
+
+    assert flow._elab_only_dry_command("sim_dut") == [
+        "ERROR: sim elab-only dry-run: cgroup denied"
+    ]
+
+
 def test_elab_only_branch_skips_test_and_cocotb_discovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

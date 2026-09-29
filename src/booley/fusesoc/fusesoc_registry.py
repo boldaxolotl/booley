@@ -2126,6 +2126,7 @@ def setup_command_for_handle(
     build_root: Path | str,
     resolution_vlnv: str | None = None,
     fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
+    backend_arguments: Sequence[str] = (),
 ) -> list[str]:
     """Build FuseSoC setup argv from catalog-authorized Target facts."""
     root = require_current_target_handle(handle)
@@ -2142,6 +2143,7 @@ def setup_command_for_handle(
         eda_tool=handle.eda_tool,
         build_root=Path(build_root),
         fusesoc_cmd=fusesoc_cmd,
+        backend_arguments=backend_arguments,
     )
 
 
@@ -2173,6 +2175,7 @@ def _setup_argv(
     eda_tool: str | None,
     build_root: Path,
     fusesoc_cmd: Sequence[str],
+    backend_arguments: Sequence[str] = (),
 ) -> list[str]:
     flag_args = ["--flag", f"tool_{eda_tool}"] if flow and eda_tool else []
     library_args = [
@@ -2180,6 +2183,7 @@ def _setup_argv(
         for library_root in library_plan.roots
         for argument in ("--cores-root", str(library_root))
     ]
+    backend_args = [f"--make_options={' '.join(backend_arguments)}"] if backend_arguments else []
     return [
         *fusesoc_cmd,
         *library_args,
@@ -2191,6 +2195,7 @@ def _setup_argv(
         "--target",
         target_name,
         vlnv,
+        *backend_args,
     ]
 
 
@@ -2302,6 +2307,7 @@ def resolve_target_handle(
     fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
     env: Mapping[str, str] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    backend_arguments: Sequence[str] = (),
 ) -> ResolvedTarget:
     """Resolve a catalog-authorized handle without selecting its token again."""
     root = require_current_target_handle(handle)
@@ -2312,6 +2318,7 @@ def resolve_target_handle(
         build_root=build_root,
         resolution_vlnv=resolution_vlnv,
         fusesoc_cmd=fusesoc_cmd,
+        backend_arguments=backend_arguments,
     )
     source_ref = TargetRef(
         name=handle.name,
