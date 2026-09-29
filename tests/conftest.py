@@ -52,6 +52,15 @@ _DEFAULT_TEST_TIMEOUT_S = 120
 _XDIST_WORKER_TEMP: Path | None = None
 
 
+def _invocation_lock_paths(root: Path) -> Iterator[Path]:
+    """Yield invocation locks without entering transient Git object trees."""
+    for directory, subdirectories, filenames in os.walk(root):
+        subdirectories[:] = [name for name in subdirectories if name != ".git"]
+        for filename in filenames:
+            if filename.startswith(".invocation-") and filename.endswith(".lock"):
+                yield Path(directory) / filename
+
+
 def _xdist_worker_temp_base() -> Path:
     """Return the parent directory for worker-specific temporary roots."""
     base = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir())
@@ -168,7 +177,7 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
         return result
     from tests.file_lock_probe import lock_is_held
 
-    held = [path for path in tmp_path.rglob(".invocation-*.lock") if lock_is_held(path)]
+    held = [path for path in _invocation_lock_paths(tmp_path) if lock_is_held(path)]
     if held:
         pytest.fail(f"Simulation invocation locks leaked past the test: {held}")
     return result
