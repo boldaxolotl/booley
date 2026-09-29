@@ -148,7 +148,11 @@ endmodule
     validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
 
 
-def test_legacy_icarus_configured_backend_define_is_active(tmp_path: Path) -> None:
+@pytest.mark.parametrize("configured_tool", ("icarus", "iverilog"))
+def test_legacy_icarus_configured_backend_define_is_active(
+    tmp_path: Path,
+    configured_tool: str,
+) -> None:
     source = """\
 module child #(parameter ENABLE_ZBB = 0) (); endmodule
 module dut ();
@@ -166,7 +170,7 @@ endmodule
             source,
             _define(),
             eda_tool=None,
-            configured_eda_tool="icarus",
+            configured_eda_tool=configured_tool,
         ),
         flow="sim",
     )

@@ -1315,7 +1315,7 @@ def _preview_work(
     try:
         eda_tool = sim_edam.normalize_eda_tool(inspection.eda_tool)
     except ValueError as exc:
-        raise SimulationBuildPreparationError(
+        raise ValueError(
             f"Simulation Target {handle.selector!r} has no supported declared simulator; "
             "declare either `flow: sim` with `flow_options.tool`, or legacy "
             "`default_tool`"

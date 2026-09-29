@@ -49,6 +49,8 @@ def _planning_fixture(tmp_path: Path):
             name="sim",
             vlnv="acme:lib:dut:1",
             project_root=tmp_path.resolve(),
+            flow=None,
+            eda_tool=None,
         ),
     )
     inputs = (TargetInput("tb.sv", "acme:lib:dut:1", "systemVerilogSource", ("tb",), False, {}),)

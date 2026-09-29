@@ -43,6 +43,9 @@ class ResolvedTargetLike(Protocol):
     def eda_tool(self) -> str | None: ...
 
     @property
+    def configured_eda_tool(self) -> str | None: ...
+
+    @property
     def build_root(self) -> Path: ...
 
     @property
@@ -365,6 +368,7 @@ def _tool_builtin_defines(resolved: ResolvedTargetLike, flow: str) -> set[str]:
     eda_tool = str(configured or resolved.eda_tool or "").lower()
     builtins = {
         "icarus": {"__ICARUS__"},
+        "iverilog": {"__ICARUS__"},
         "verilator": {"VERILATOR"},
     }.get(eda_tool, set())
     if flow == "fpga":

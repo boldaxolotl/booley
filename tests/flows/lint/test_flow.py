@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import sys
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -138,16 +140,11 @@ def test_real_preparation_rejects_missing_or_unknown_configured_linter(
     flow.parse_args(["--target", "lint_bad", "--work-dir", str(tmp_path)])
     handle = _target_handle("lint_bad", project_root=tmp_path)
     resolved = _stub_resolved(eda_tool)
-    with patch.object(
-        flow,
-        "_prepare_lint_command",
-        return_value=(["make", "-C", "build"], resolved),
+    with (
+        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        pytest.raises(ValueError, match="unknown lint EDA tool"),
     ):
-        prepared, errors = flow._prepare_lint_targets((handle,))
-
-    assert prepared == {}
-    assert len(errors) == 1
-    assert errors[0].error.startswith("lint setup failed: unknown lint EDA tool")
+        flow._prepare_lint_command(handle)
 
 
 @pytest.mark.parametrize("eda_tool", (None, "mystery-lint"))
@@ -163,6 +160,25 @@ def test_dry_run_plan_rejects_missing_or_unknown_declared_linter(
 
     assert len(plan.aggregate_errors) == 1
     assert "unknown lint EDA tool" in plan.aggregate_errors[0]
+
+
+def test_preparation_rejects_declared_and_configured_linter_disagreement(
+    tmp_path: Path,
+) -> None:
+    flow = LintFlow()
+    flow.parse_args(["--target", "lint_disagree", "--work-dir", str(tmp_path)])
+    handle = _target_handle(
+        "lint_disagree",
+        project_root=tmp_path,
+        eda_tool="verible",
+    )
+    resolved = _stub_resolved("verilator")
+
+    with (
+        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        pytest.raises(ValueError, match=r"declared 'verible'.*configured 'verilator'"),
+    ):
+        flow._prepare_lint_command(handle)
 
 
 # ---------------------------------------------------------------------------
@@ -357,9 +373,6 @@ class TestLintResolution:
     ) -> None:
         pytest.importorskip("fusesoc")
         pytest.importorskip("edalize")
-        import shutil
-        import sys
-
         work_dir = tmp_path / "legacy-proj"
         (work_dir / "rtl").mkdir(parents=True)
         (work_dir / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")

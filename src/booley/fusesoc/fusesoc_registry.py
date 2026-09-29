@@ -44,7 +44,7 @@ from typing import Any
 import yaml
 from fusesoc.capi2 import exprs as _fusesoc_exprs
 
-from booley.core.boundary import is_str_list
+from booley.core.boundary import as_dict, is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
@@ -1961,12 +1961,19 @@ class ResolvedTarget:
         return tuple(dirs)
 
 
-def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarget:
-    """Parse a resolved ``.eda.yml`` into a :class:`ResolvedTarget`.
+def _configured_eda_tool(edam: Mapping[str, Any], flow_options: Mapping[str, Any]) -> str | None:
+    """Extract FuseSoC's configured backend using CAPI2 API precedence."""
+    eda_tool = flow_options.get("tool")
+    if "tool" in flow_options:
+        return str(eda_tool) if eda_tool is not None else None
+    tool_options = as_dict(edam.get("tool_options"), default={})
+    if tool_options is not None and len(tool_options) == 1:
+        return str(next(iter(tool_options)))
+    return None
 
-    The EDAM records the design (files/top/params/EDA tool) but not the Booley
-    Target name or core VLNV that produced it, so those are passed in.
-    """
+
+def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarget:
+    """Parse EDAM design data; the caller supplies its Booley Target identity."""
     path = Path(edam_path)
     try:
         with path.open("r", encoding="utf-8") as f:
@@ -1996,15 +2003,7 @@ def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarg
     if not isinstance(flow_options, Mapping):
         flow_options = {}
     eda_tool = flow_options.get("tool")
-    tool_options = edam.get("tool_options") or {}
-    if not isinstance(tool_options, Mapping):
-        tool_options = {}
-    if "tool" in flow_options:
-        configured_eda_tool = str(eda_tool) if eda_tool is not None else None
-    elif len(tool_options) == 1:
-        configured_eda_tool = str(next(iter(tool_options)))
-    else:
-        configured_eda_tool = None
+    configured_eda_tool = _configured_eda_tool(edam, flow_options)
     cocotb_module = flow_options.get("cocotb_module")
 
     return ResolvedTarget(

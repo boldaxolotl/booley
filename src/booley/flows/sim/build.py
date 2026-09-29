@@ -38,6 +38,32 @@ class SimulationBuildPreparationError(RuntimeError):
     """An expected Target/configuration failure before the build can run."""
 
 
+def _validated_simulator(
+    handle: TargetHandle,
+    resolved: fusesoc_registry.ResolvedTarget,
+) -> str:
+    """Return the configured simulator after authenticating it against the Target."""
+    declaration_help = (
+        "declare either `flow: sim` with `flow_options.tool`, or legacy `default_tool`"
+    )
+    try:
+        eda_tool = sim_edam.matching_eda_tool(
+            handle.eda_tool,
+            resolved.configured_eda_tool,
+            target=handle.selector,
+        )
+    except ValueError as exc:
+        raise SimulationBuildPreparationError(
+            f"Simulation Target {handle.selector!r}: {exc}; {declaration_help}"
+        ) from exc
+    if eda_tool not in {"icarus", "verilator"}:
+        raise SimulationBuildPreparationError(
+            f"simulator {eda_tool!r} is not supported by the public sim Flow; "
+            "select a Verilator or Icarus Target"
+        )
+    return eda_tool
+
+
 _TERMINAL_RECORD_RE = re.compile(
     r"^BOOLEY_BUILD_STAGE token=(?P<token>[0-9a-f]+) rc=(?P<rc>-?\d+)"
     r"(?: duration_ms=(?P<duration_ms>\d+))?$",
@@ -140,33 +166,7 @@ def _prepare_simulation_build(
         resolution_vlnv=resolution_vlnv,
     )
     validate_top_parameter_intent(resolved, flow="sim")
-    declaration_help = (
-        "declare either `flow: sim` with `flow_options.tool`, or legacy `default_tool`"
-    )
-    try:
-        declared_tool = sim_edam.normalize_eda_tool(handle.eda_tool)
-    except ValueError as exc:
-        raise SimulationBuildPreparationError(
-            f"Simulation Target {target!r} has no supported declared simulator; {declaration_help}"
-        ) from exc
-    try:
-        configured_tool = sim_edam.normalize_eda_tool(resolved.configured_eda_tool)
-    except ValueError as exc:
-        raise SimulationBuildPreparationError(
-            f"Simulation Target {target!r} did not resolve a supported configured "
-            f"simulator; {declaration_help}"
-        ) from exc
-    if declared_tool != configured_tool:
-        raise SimulationBuildPreparationError(
-            f"Simulation Target {target!r} declared simulator {declared_tool!r} but "
-            f"FuseSoC configured {configured_tool!r}; {declaration_help}"
-        )
-    eda_tool = configured_tool
-    if eda_tool not in {"icarus", "verilator"}:
-        raise SimulationBuildPreparationError(
-            f"simulator {eda_tool!r} is not supported by the public sim Flow; "
-            "select a Verilator or Icarus Target"
-        )
+    eda_tool = _validated_simulator(handle, resolved)
     _stage_doctor_overlay(root, resolved.build_root)
     try:
         inspection = TargetCatalog.build(root).inspect(handle)

@@ -514,7 +514,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
         deterministic lint ``make``. The previewed ``make -C`` names the outer
         build root; resolution nests the Makefile one level deeper, so the
         preview shows *what would run*, not a byte-exact runnable command. An
-        unauthored Target yields a clean ``ERROR`` entry rather than raising.
+        an unauthored Target yields a clean ``ERROR`` entry, while invalid EDA
+        metadata raises for the plan collector to record.
         """
         build_root = work_root_for(self.args.work_dir, "lint", target.selector)
         try:

@@ -27,6 +27,15 @@ def test_eda_tool_normalization_rejects_missing_or_unknown_values(raw: str | Non
         sim_edam.normalize_eda_tool(raw)
 
 
+def test_matching_eda_tool_canonicalizes_aliases() -> None:
+    assert sim_edam.matching_eda_tool("iverilog", "icarus", target="sim") == "icarus"
+
+
+def test_matching_eda_tool_rejects_disagreement() -> None:
+    with pytest.raises(ValueError, match=r"declared 'icarus'.*configured 'verilator'"):
+        sim_edam.matching_eda_tool("icarus", "verilator", target="sim")
+
+
 def test_verilator_command(tmp_path: Path) -> None:
     assert sim_edam.sim_run_command(
         work_root=tmp_path / "wr",

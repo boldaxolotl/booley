@@ -1653,18 +1653,7 @@ replacement must differ, and every proposal must remain a single source edit.
         so the callers' ``returncode`` / ``stdout+stderr`` checks are unchanged.
         """
         try:
-            handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
-            resolved = fusesoc_registry.resolve_target_handle(
-                handle,
-                build_root=build_path,
-            )
-            declared_tool = self._supported_sim_tool(handle.eda_tool, target)
-            configured_tool = self._supported_sim_tool(resolved.configured_eda_tool, target)
-            if declared_tool != configured_tool:
-                raise UnsupportedSimTargetError(
-                    f"mutation_tester: Target {target!r} declared {declared_tool!r} "
-                    f"but FuseSoC configured {configured_tool!r}"
-                )
+            handle, resolved = self._resolve_elab_target(target, work_dir, build_path)
         except (
             Exception  # noqa: BLE001 — isolate resolve failure; surface as return code 1
         ) as exc:
@@ -1674,6 +1663,11 @@ replacement must differ, and every proposal must remain a single source edit.
                 stdout="",
                 stderr=f"FuseSoC target resolution failed: {exc}",
             )
+        configured_tool = self._matching_sim_tool(
+            handle.eda_tool,
+            resolved.configured_eda_tool,
+            target,
+        )
         rel = edam_layer.relpath_for_make(resolved.build_root, work_dir)
         (build_path / _EDALIZE_BINDIR_MARKER).write_text(rel, encoding="utf-8")
         (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(configured_tool, encoding="utf-8")
@@ -1690,6 +1684,13 @@ replacement must differ, and every proposal must remain a single source edit.
             timeout=900,
             check=False,
         )
+
+    @staticmethod
+    def _resolve_elab_target(target: str, work_dir: Path, build_path: Path) -> tuple[Any, Any]:
+        """Resolve one mutation Target without swallowing tool-authority errors."""
+        handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
+        resolved = fusesoc_registry.resolve_target_handle(handle, build_root=build_path)
+        return handle, resolved
 
     def cocotb_target(self, target: str, work_dir: Path) -> CocotbSimTarget | None:
         """Resolve *target*'s cocotb identity, or ``None`` for a classic Target.
@@ -1729,9 +1730,22 @@ replacement must differ, and every proposal must remain a single source edit.
         build_path: Path | None = None,
     ) -> str:
         """Return the run-half family for *target*, preferring resolved build metadata."""
+        declared = self._declared_sim_tool(target, work_dir)
         marker = build_path / _EDALIZE_EDA_TOOL_MARKER if build_path is not None else None
         if marker is not None and marker.exists():
-            return self._supported_sim_tool(marker.read_text(encoding="utf-8").strip(), target)
+            configured = self._supported_sim_tool(
+                marker.read_text(encoding="utf-8").strip(), target
+            )
+            if configured != declared:
+                raise UnsupportedSimTargetError(
+                    f"mutation_tester: Target {target!r} declared {declared!r} but cached "
+                    f"build metadata names {configured!r}"
+                )
+            return configured
+        return declared
+
+    def _declared_sim_tool(self, target: str, work_dir: Path) -> str:
+        """Return the selected Target's supported declared simulator."""
         try:
             declared = TargetCatalog.build(work_dir).select(target, for_flow="sim").eda_tool
         except fusesoc_registry.FuseSocError as exc:
@@ -1739,6 +1753,20 @@ replacement must differ, and every proposal must remain a single source edit.
                 f"mutation_tester: cannot select Simulation Target {target!r}: {exc}"
             ) from exc
         return self._supported_sim_tool(declared, target)
+
+    @classmethod
+    def _matching_sim_tool(
+        cls,
+        declared: str | None,
+        configured: str | None,
+        target: str,
+    ) -> str:
+        """Authenticate configured simulator metadata against the Target declaration."""
+        try:
+            family = sim_edam.matching_eda_tool(declared, configured, target=target)
+        except ValueError as exc:
+            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+        return cls._supported_sim_tool(family, target)
 
     @staticmethod
     def _supported_sim_tool(eda_tool: str | None, target: str) -> str:
