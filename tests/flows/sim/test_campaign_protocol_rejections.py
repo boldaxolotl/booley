@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -153,6 +154,8 @@ def test_protocol_record_size_limit_is_enforced(tmp_path: Path, monkeypatch) -> 
 def _registry(tmp_path: Path) -> child_protocol.ChildExecutionRegistry:
     registry = object.__new__(child_protocol.ChildExecutionRegistry)
     registry._project_data_root = tmp_path
+    registry._record_locks = {}
+    registry._record_locks_gate = threading.Lock()
     return registry
 
 
