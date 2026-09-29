@@ -122,9 +122,14 @@ class BoundedCampaignScheduler:
                 deadline = time.monotonic() + self._capacity.shutdown_timeout_seconds
             for worker in workers:
                 worker.join(timeout=0.02)
+            alive = tuple(worker for worker in workers if worker.is_alive())
+            if not alive:
+                # Every worker exited during this join: a clean shutdown, even if
+                # the deadline passed meanwhile. Raising here would also skip the
+                # caller's recover_unretired() safety net (#977).
+                return
             if deadline is not None and time.monotonic() >= deadline:
                 self._capacity.cancel_waiters()
-                alive = tuple(worker for worker in workers if worker.is_alive())
                 self._capacity.retain_outer_until(alive)
                 raise CampaignSchedulingError(
                     "campaign workers exceeded bounded shutdown: "
