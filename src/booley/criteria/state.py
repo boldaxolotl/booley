@@ -33,6 +33,7 @@ from booley.criteria.threshold_eval import (
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS, evaluate_cycle_threshold
 from booley.evidence.fields import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
+    BASELINE_RECIPE_SNAPSHOT_DETAIL,
     BASELINE_REF_DETAIL,
     BASELINE_REF_PARAM,
     BASELINE_TARGET_DETAIL,
@@ -43,8 +44,11 @@ from booley.evidence.fields import (
     RECIPE_SNAPSHOT_PARAM,
 )
 from booley.evidence.recipe import (
+    InvalidRecipeSnapshotError,
+    compatible_recipe_snapshots,
     implementation_comparison_basis,
     recipe_changes,
+    validated_recipe_compatibility,
 )
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -211,11 +215,15 @@ def _validate_recipe_snapshots(
     directed = available and isinstance(baseline_target, str) and isinstance(candidate_target, str)
     basis_changes: list[dict[str, Any]] = []
     if directed and baseline_target != candidate_target:
-        basis_changes = recipe_changes(
-            implementation_comparison_basis(baseline_snapshot),
-            implementation_comparison_basis(current_snapshot),
-        )
-        complete = complete and not basis_changes
+        try:
+            basis_changes = recipe_changes(
+                implementation_comparison_basis(baseline_snapshot),
+                implementation_comparison_basis(current_snapshot),
+            )
+        except InvalidRecipeSnapshotError:
+            complete = False
+        else:
+            complete = complete and not basis_changes
     return complete, changes, basis_changes
 
 
@@ -231,15 +239,37 @@ def _collect_recipe_evidence(entry: CriterionEntry) -> _RecipeEvidence:
         BASELINE_RECIPE_FINGERPRINT_DETAIL
     )
     complete = actual_recipe is not None
-    if expected_ref is not None:
-        complete = complete and actual_ref == expected_ref and baseline_recipe == expected_recipe
     baseline_snapshot = entry.params.get(RECIPE_SNAPSHOT_PARAM)
+    rerun_baseline_snapshot = baseline_recipe_detail.get("snapshot") or detail.get(
+        BASELINE_RECIPE_SNAPSHOT_DETAIL
+    )
+    compatibility: tuple[dict[str, Any], dict[str, Any]] | None = None
+    if expected_ref is not None:
+        complete = complete and actual_ref == expected_ref
+        if baseline_recipe != expected_recipe:
+            compatibility = validated_recipe_compatibility(
+                baseline_snapshot,
+                expected_recipe,
+                rerun_baseline_snapshot,
+                baseline_recipe,
+            )
+            complete = complete and compatibility is not None
     current_snapshot = _canonical_recipe_value(implementation, "recipe", "snapshot")
     current_snapshot = current_snapshot or detail.get(RECIPE_SNAPSHOT_DETAIL)
     baseline_target, candidate_target = _recipe_targets(entry, detail, implementation, comparison)
     complete, changes, basis_changes = _validate_recipe_snapshots(
         complete, baseline_snapshot, current_snapshot, baseline_target, candidate_target
     )
+    if (
+        compatibility is not None
+        and isinstance(baseline_snapshot, dict)
+        and isinstance(current_snapshot, dict)
+    ):
+        normalized = compatible_recipe_snapshots(baseline_snapshot, current_snapshot)
+        if normalized is None:
+            complete = False
+        else:
+            changes = recipe_changes(*normalized)
     return _RecipeEvidence(
         complete,
         expected_recipe,

@@ -19,7 +19,12 @@ from booley.evidence.fields import (
     RECIPE_SNAPSHOT_DETAIL,
     RECIPE_SNAPSHOT_PARAM,
 )
-from booley.evidence.recipe import jsonable, recipe_changes, recipe_snapshot_fingerprint
+from booley.evidence.recipe import (
+    constraint_recipe_entry,
+    jsonable,
+    recipe_changes,
+    recipe_snapshot_fingerprint,
+)
 from booley.flows.synth.backends.yosys.core import (
     DEFAULT_FRONTEND,
     resolve_frontend,
@@ -165,12 +170,13 @@ def synthesis_recipe_snapshot(
             # still produces a deterministic fingerprint; the real synth path
             # will report the missing constraint as an infrastructure error.
             digest = None
-        constraints.append({"name": sdc_file.name, "sha256": digest})
+        constraints.append(constraint_recipe_entry(sdc_file, digest, fallback_vlnv=resolved.vlnv))
 
     synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
     liberty, _found = resolve_liberty_lenient(None)
     return {
-        "schema": 3,
+        "schema": 4,
+        "flow": "synth",
         "target": target,
         "vlnv": resolved.vlnv,
         "toplevel": resolved.toplevel,
