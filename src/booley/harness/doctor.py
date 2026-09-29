@@ -1893,16 +1893,17 @@ def _run_container_checks(
     _fail: Fail,
 ) -> None:
     """Run container EDA tool and runtime checks."""
-    if not docker_exe:
-        banner("Container checks")
     from booley.runtime import runtime_context
 
+    banner("Container checks")
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
         _skip(_no_docker_skip_reason())
         return
+    if not docker_exe:
+        _skip(_no_docker_skip_reason())
+        return
 
-    banner("Container checks")
     if _docker_image_exists_by_name(image):
         _pass(f"{image} image present")
     else:

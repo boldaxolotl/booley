@@ -6889,6 +6889,25 @@ class TestNoDockerSkipReason:
             "provider-side web access disabled" in m for lvl, m in rec.events if lvl == "pass"
         )
 
+    def test_host_without_runtime_skips_instead_of_running_none(self, monkeypatch):
+        # A non-canonical host run leaves docker_exe unset even with Docker on PATH;
+        # the checks used to go on and run [None, "run", ...].
+        _set_venue(monkeypatch, False)
+        monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
+        monkeypatch.setattr(
+            doctor.subprocess,
+            "run",
+            lambda *a, **k: pytest.fail(f"ran a container check without a runtime: {a}"),
+        )
+        rec = _Rec()
+
+        doctor._run_container_checks(
+            None, None, "booley-sandbox", False, rec.p, rec.w, rec.s, rec.f
+        )
+
+        assert any("no Docker/Podman runtime found" in m for lvl, m in rec.events if lvl == "skip")
+        assert not [m for lvl, m in rec.events if lvl == "fail"]
+
 
 class TestSynthHeavyTargetCalibration:
     def _project(self, tmp_path, *, marked=("asic_small", "asic_full"), booley_toml=None):
