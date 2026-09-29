@@ -19,6 +19,7 @@ from booley.core.boundary import (
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 
+from .lifecycle import TicketState, document_state, ticket_document_path
 from .persistence import atomic_replace_bytes
 
 _OPERATION_RE = re.compile(r"[0-9a-f]{32}")
@@ -156,12 +157,15 @@ def _validate_journal_identity(slug: str, journal: EnqueueJournal) -> None:
 
 
 def _validate_board_paths(project_root: Path, slug: str, journal: EnqueueJournal) -> None:
-    board = _transaction_project_dir(project_root) / "tickets" / "board"
+    tickets = _transaction_project_dir(project_root) / "tickets"
     source = Path(journal.source)
     destination = Path(journal.destination)
-    if source != board / "drafts" / f"{slug}.md":
+    if source != ticket_document_path(tickets, slug, TicketState.DRAFT):
         raise EnqueuePublicationError("enqueue journal source path is invalid")
-    destinations = {board / state / f"{slug}.md" for state in ("queue", "waiting")}
+    destinations = {
+        ticket_document_path(tickets, slug, state)
+        for state in (TicketState.QUEUED, TicketState.WAITING)
+    }
     if destination not in destinations:
         raise EnqueuePublicationError("enqueue journal destination path is invalid")
 
@@ -170,22 +174,17 @@ def _canonicalize_board_path(
     project_root: Path,
     slug: str,
     path: Path,
-    states: tuple[str, ...],
+    states: tuple[TicketState, ...],
     label: str,
 ) -> Path:
-    board = _transaction_project_dir(project_root) / "tickets" / "board"
-    if path.name != f"{slug}.md" or path.parent.name not in states:
-        raise EnqueuePublicationError(f"enqueue journal {label} path is invalid")
-    canonical = board / path.parent.name / path.name
-    if path == canonical:
-        return canonical
+    tickets = _transaction_project_dir(project_root) / "tickets"
     try:
-        same_board = path.parent.parent.samefile(board)
+        state = document_state(tickets, path)
     except OSError as exc:
         raise EnqueuePublicationError(f"enqueue journal {label} board is unavailable") from exc
-    if not same_board:
+    if path.name != f"{slug}.md" or state not in states:
         raise EnqueuePublicationError(f"enqueue journal {label} path is invalid")
-    return canonical
+    return ticket_document_path(tickets, slug, state)
 
 
 def _canonicalize_board_paths(
@@ -195,12 +194,12 @@ def _canonicalize_board_paths(
     destination: Path,
 ) -> tuple[Path, Path]:
     return (
-        _canonicalize_board_path(project_root, slug, source, ("drafts",), "source"),
+        _canonicalize_board_path(project_root, slug, source, (TicketState.DRAFT,), "source"),
         _canonicalize_board_path(
             project_root,
             slug,
             destination,
-            ("queue", "waiting"),
+            (TicketState.QUEUED, TicketState.WAITING),
             "destination",
         ),
     )

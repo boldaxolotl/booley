@@ -104,7 +104,7 @@ from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import CoreSources, FuseSocError, TargetHandle, TargetRef
 from booley.targets.flow_names import config_section
-from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
+from booley.ticket_board.lifecycle import required_board_directories
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
@@ -2815,7 +2815,7 @@ def _run_ticket_preflight_parity_checks(
 
 def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
     tickets_dir = project_dir / "tickets"
-    required = [tickets_dir / "board" / state for state in REQUIRED_BOARD_DIRS]
+    required = required_board_directories(tickets_dir)
     required.extend([tickets_dir / "logs", tickets_dir / "locks"])
     missing = [path for path in required if not path.is_dir()]
     if missing:

@@ -148,16 +148,11 @@ from booley.runtime.project_dir import (
 )
 from booley.runtime.session_issuance import SessionSpecInputs
 from booley.runtime.timefmt import detect_host_timezone
-from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
+from booley.ticket_board.lifecycle import required_board_directories
 
 # ---------------------------------------------------------------------------
 # Layout constants
 # ---------------------------------------------------------------------------
-
-# Ticket Board directories that `booley init` creates — derived from the canonical
-# lifecycle (excludes archived, created on demand) so it can't drift from
-# doctor's required-dirs check, which reads the same source.
-BOARD_STATES = REQUIRED_BOARD_DIRS
 
 MIN_PY = (3, 11)
 
@@ -521,7 +516,9 @@ def _step_tickets(ctx: InitContext) -> None:
 
     tickets_dir = resolve_project_dir(ctx.project_root) / "tickets"
 
-    required = [tickets_dir / "board" / state for state in BOARD_STATES]
+    # Board directories come from the lifecycle's board layout, the same source
+    # doctor's required-dirs check reads, so the two cannot drift.
+    required = required_board_directories(tickets_dir)
     required.append(tickets_dir / "logs")
     required.append(tickets_dir / "locks")
 

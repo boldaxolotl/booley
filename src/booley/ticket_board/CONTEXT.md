@@ -10,9 +10,19 @@ acceptance. Shared Booley concepts such as **Target**, **Booley Flow**,
 ### Board and Tickets
 
 **Ticket Board**:
-The durable lifecycle authority for Tickets from authoring through execution,
-review, completion, or archival.
+The lifecycle authority for live Tickets in one Project checkout, from
+authoring through execution and review until they close.
 _Avoid_: bare "Board", kanban, tracker, backlog
+
+**Closed Ticket**:
+A Ticket that reached done or archived. It leaves the Ticket Board, keeps its
+outcome, and is never reopened; retrying the work means a new Ticket.
+_Avoid_: terminal Ticket, settled Ticket, finished Ticket
+
+**Ticket History**:
+The durable, append-only record of Closed Tickets and their outcomes, shared
+with the Project's version history.
+_Avoid_: archive, done list, changelog
 
 **Ticket**:
 A self-contained unit of hardware development work carrying its own Criteria
@@ -122,5 +132,8 @@ _Avoid_: merge log, rollback record, transaction database
 
 - **"abandoned" / "failed"**: Removed Ticket states. Use **archived** for a
   Ticket that will not be completed.
+- **"archive" as cleanup**: Archiving no longer removes finished work from the
+  board. It only abandons a live Ticket, which becomes a **Closed Ticket**
+  with outcome archived.
 - **"effort"**: Deprecated Ticket resource hint. Workflow Regions and
   Specialist selection do not derive from it.

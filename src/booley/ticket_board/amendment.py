@@ -32,6 +32,7 @@ from .amendment_proposal import AmendmentProposal
 from .amendment_v2 import build_v2_amendment_proposal
 from .basis_publication import load_basis_publication
 from .git_status import GitStatusEntry, parse_porcelain_v1_z
+from .lifecycle import TicketState, ticket_document_path
 from .logs import PROGRESS_DEFAULTS, load_progress, save_progress
 from .paths import existing_runtime_file, human_log_file, ticket_log_dir
 from .persistence import atomic_replace_bytes, atomic_write_once
@@ -999,7 +1000,7 @@ def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: TicketB
     save_progress(tio.logs_dir, slug, progress)
     ticket, status = find_ticket_file(tio.tickets_dir, slug)
     if status == "blocked" and ticket is not None:
-        queue = tio.tickets_dir / "board" / "queue" / ticket.name
+        queue = ticket_document_path(tio.tickets_dir, ticket.stem, TicketState.QUEUED)
         queue.parent.mkdir(parents=True, exist_ok=True)
         if queue.exists():
             raise AmendmentError("queue destination is occupied")

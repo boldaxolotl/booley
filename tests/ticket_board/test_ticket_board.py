@@ -53,7 +53,6 @@ from booley.ticket_board import (
     next_from_planned,
     no_large_area_increase,
     no_unfixed_critical,
-    normalize_dir,
     op_approve,
     op_archive,
     op_block,
@@ -85,6 +84,7 @@ from booley.ticket_board import ticket_document as ticket_document_module
 # Internal helpers imported directly from source modules for testing
 from booley.ticket_board.analytics import _match_pricing
 from booley.ticket_board.constants import RUNTIME_FIELDS
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.paths import (
     STEP_DIR_MAP,
     human_log_file,
@@ -1520,14 +1520,14 @@ class TestTicketIOMoveTicketFile:
     def test_moves_file(self, tmp_path):
         tio = make_tio(tmp_path)
         make_ticket_file(tio, "queue", "t1")
-        tio.move_ticket_file("t1", "active")
+        tio.move_ticket_file("t1", TicketState.RUNNING)
         assert (tio.tickets_dir / "board" / "active" / "t1.md").exists()
         assert not (tio.tickets_dir / "board" / "queue" / "t1.md").exists()
 
     def test_file_accessible_after_move(self, tmp_path):
         tio = make_tio(tmp_path)
         make_ticket_file(tio, "queue", "t1")
-        tio.move_ticket_file("t1", "active")
+        tio.move_ticket_file("t1", TicketState.RUNNING)
         _path, status = find_ticket_file(tio.tickets_dir, "t1")
         assert status == "running"
 
@@ -2914,7 +2914,7 @@ class TestHarnessTransitionGuard:
 
         assert tio.move_and_update(
             "t1",
-            "blocked",
+            TicketState.BLOCKED,
             {},
             transition=("queued:planning", "blocked:planning", "test", "blocked"),
             enforce_lifecycle=True,
@@ -3360,7 +3360,7 @@ class TestMoveAndUpdate:
 
         tio.move_and_update(
             "t1",
-            "blocked",
+            TicketState.BLOCKED,
             {
                 "blocked_reason": "need info",
             },
@@ -3379,7 +3379,7 @@ class TestMoveAndUpdate:
 
         tio.move_and_update(
             "t1",
-            "queue",
+            TicketState.QUEUED,
             {
                 "blocked_reason": None,
             },
@@ -3394,14 +3394,14 @@ class TestMoveAndUpdate:
         make_ticket_in_dir(tio, "active", "t1")
         make_progress(tio, "t1", {"steps_completed": ["setup"]})
 
-        tio.move_and_update("t1", "active", {}, append_step="planning")
+        tio.move_and_update("t1", TicketState.RUNNING, {}, append_step="planning")
 
         progress = load_progress(tio.logs_dir, "t1")
         assert "planning" in progress["steps_completed"]
 
     def test_not_found(self, tmp_path):
         tio = make_tio(tmp_path)
-        assert tio.move_and_update("nope", "queue", {}) is False
+        assert tio.move_and_update("nope", TicketState.QUEUED, {}) is False
 
     def test_expected_status_rejects_concurrent_state_change(self, tmp_path, capsys):
         tio = make_tio(tmp_path)
@@ -3411,7 +3411,7 @@ class TestMoveAndUpdate:
         assert (
             tio.move_and_update(
                 "t1",
-                "blocked",
+                TicketState.BLOCKED,
                 {"blocked_reason": "stale writer"},
                 expected_status="queued",
             )
@@ -5619,32 +5619,6 @@ class TestFeatureBranchFieldOrder:
         type_idx = next(i for i, l in enumerate(lines) if l.startswith("type:"))
         # feature_branch should come after type (it's in _FM_FIELD_ORDER after spec fields)
         assert fb_idx > type_idx
-
-
-# ===========================================================================
-# normalize_dir
-# ===========================================================================
-
-
-class TestNormalizeDir:
-    def test_bare_name(self):
-        assert normalize_dir("queue") == "board/queue"
-
-    def test_already_prefixed(self):
-        assert normalize_dir("board/queue") == "board/queue"
-
-    def test_all_dirs(self):
-        for bare in [
-            "drafts",
-            "queue",
-            "waiting",
-            "active",
-            "blocked",
-            "review",
-            "done",
-            "archived",
-        ]:
-            assert normalize_dir(bare) == f"board/{bare}"
 
 
 # ===========================================================================

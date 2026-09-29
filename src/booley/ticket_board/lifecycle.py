@@ -16,13 +16,26 @@ under concurrent runners). :class:`TicketState` is *derived from* that directory
 the directory move stays the one commit of a transition. Making the enum
 authoritative would be the risky path — this deliberately does not.
 
+This module also owns the **Ticket Board layout**: every caller that needs to
+know where a Ticket document lives, which state a document path represents, or
+which documents sit in a state goes through the board-layout functions below
+(:func:`ticket_document_path`, :func:`document_state`, :func:`locate_document`,
+:func:`documents_in_state`, :func:`iter_board_documents`). No other module
+joins ``board/<state>`` paths, so the storage of state can change here alone.
+
 Pure-stdlib leaf: imports nothing from ``booley`` so any layer (``constants``,
 ``harness``) can depend on it without an import cycle.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import Enum
+from pathlib import Path
+from typing import Literal
+
+# Ticket document conversion stage: a draft or a published executable Ticket.
+ConversionStage = Literal["draft", "executable"]
 
 
 class TicketState(Enum):
@@ -50,9 +63,9 @@ class TicketState(Enum):
         self.status = status
 
     @property
-    def board_dir(self) -> str:
-        """``board/``-prefixed directory, e.g. ``TicketState.RUNNING.board_dir`` -> ``board/active``."""
-        return f"board/{self.dir_name}"
+    def conversion_stage(self) -> ConversionStage:
+        """Ticket document conversion stage: ``draft`` for drafts, else ``executable``."""
+        return "draft" if self is TicketState.DRAFT else "executable"
 
     @property
     def is_terminal(self) -> bool:
@@ -73,6 +86,22 @@ STATE_BY_STATUS: dict[str, TicketState] = {s.status: s for s in TicketState}
 STATE_BY_DIR: dict[str, TicketState] = {s.dir_name: s for s in TicketState}
 
 
+def parse_board_target(value: str) -> TicketState | None:
+    """Resolve a user-facing move destination to its state.
+
+    Accepts a bare directory name (``queue``) or its ``board/``-prefixed form
+    (``board/queue``), the spellings ``move-ticket --to`` has always taken.
+    Returns ``None`` for anything else.
+    """
+    return STATE_BY_DIR.get(value.removeprefix(f"{BOARD_DIR_NAME}/"))
+
+
+def board_target_choices() -> list[str]:
+    """Every spelling :func:`parse_board_target` accepts, prefixed forms first."""
+    prefixed = [f"{BOARD_DIR_NAME}/{s.dir_name}" for s in TicketState]
+    return prefixed + [s.dir_name for s in TicketState]
+
+
 # "Settled" = the run has ended, so end-time / timing can be closed. Unlike
 # is_terminal this INCLUDES review (awaiting the user is a resting state for
 # timing). Replaces the ("done", "review") tuple duplicated at two call sites.
@@ -80,11 +109,12 @@ SETTLED_STATES: frozenset[TicketState] = frozenset({TicketState.REVIEW, TicketSt
 SETTLED_STATUSES: frozenset[str] = frozenset(s.status for s in SETTLED_STATES)
 
 
-# Ticket Board directories that ``booley init`` must create and ``doctor`` must find.
-# Excludes ``archived`` (created on demand), preserving the exact set both the
-# legacy init_cmd.BOARD_STATES and doctor.required_states hard-coded.
-REQUIRED_BOARD_DIRS: tuple[str, ...] = tuple(
-    s.dir_name for s in TicketState if s is not TicketState.ARCHIVED
+# Ticket Board states whose directories ``booley init`` must create and
+# ``doctor`` must find. Excludes ``archived`` (created on demand), preserving
+# the exact set both the legacy init_cmd.BOARD_STATES and
+# doctor.required_states hard-coded.
+REQUIRED_BOARD_STATES: tuple[TicketState, ...] = tuple(
+    s for s in TicketState if s is not TicketState.ARCHIVED
 )
 
 
@@ -177,3 +207,110 @@ def format_user_board_moves() -> str:
     (e.g. status ``running`` moves to directory ``queue`` -> ``running->queue``).
     """
     return ", ".join(f"{src.status}->{dst.dir_name}" for src, dst in USER_BOARD_MOVES)
+
+
+# Board layout ----------------------------------------------------------------
+#
+# Where Ticket documents live under ``<tickets_dir>/board/``. Today each state
+# is a directory and a document's state is the directory holding it; these
+# functions are the only code that knows that.
+
+BOARD_DIR_NAME = "board"
+
+
+def board_root(tickets_dir: Path) -> Path:
+    """Return ``<tickets_dir>/board``."""
+    return Path(tickets_dir) / BOARD_DIR_NAME
+
+
+def state_directory(tickets_dir: Path, state: TicketState) -> Path:
+    """Return the directory holding Ticket documents in *state*."""
+    return board_root(tickets_dir) / state.dir_name
+
+
+def required_board_directories(tickets_dir: Path) -> list[Path]:
+    """Return the board directories ``booley init`` creates and doctor requires."""
+    return [state_directory(tickets_dir, state) for state in REQUIRED_BOARD_STATES]
+
+
+def board_relative_document_path(slug: str, state: TicketState) -> Path:
+    """Return the document path for *slug* in *state*, relative to the tickets dir."""
+    return Path(BOARD_DIR_NAME, state.dir_name, f"{slug}.md")
+
+
+def ticket_document_path(tickets_dir: Path, slug: str, state: TicketState) -> Path:
+    """Return where the document for *slug* lives while the Ticket is in *state*."""
+    return Path(tickets_dir) / board_relative_document_path(slug, state)
+
+
+def _same_directory(left: Path, right: Path) -> bool:
+    """Compare directories by resolved path, then by identity across bind mounts.
+
+    A directory that does not exist cannot be the board, so a missing side
+    compares unequal. Any other ``OSError`` (for example a permission error
+    on the board) propagates: an unreadable board is not an off-board path.
+    """
+    if left.resolve() == right.resolve():
+        return True
+    try:
+        return left.samefile(right)
+    except FileNotFoundError:
+        return False
+
+
+def document_state(tickets_dir: Path, path: Path) -> TicketState | None:
+    """Return the state a Ticket document path represents on this board.
+
+    Returns ``None`` for any path that is not a ``.md`` document directly in one
+    of this board's state directories: a runtime snapshot such as
+    ``logs/<slug>/ticket.md``, a journal candidate, or a user-supplied file
+    elsewhere. Raises ``OSError`` when the board cannot be inspected.
+    """
+    path = Path(path)
+    state = STATE_BY_DIR.get(path.parent.name)
+    if state is None or path.suffix != ".md":
+        return None
+    return state if _same_directory(path.parent.parent, board_root(tickets_dir)) else None
+
+
+def document_stage(
+    tickets_dir: Path, path: Path, *, off_board: ConversionStage
+) -> ConversionStage:
+    """Return the conversion stage for a Ticket document path.
+
+    A board document converts at its state's stage. A path off this board
+    (a runtime snapshot, a journal candidate, a user-supplied file) has no
+    state, so the caller names the stage it has always used for such paths
+    with *off_board*.
+    """
+    state = document_state(tickets_dir, path)
+    return state.conversion_stage if state is not None else off_board
+
+
+def documents_in_state(tickets_dir: Path, state: TicketState) -> list[Path]:
+    """Return the Ticket documents in *state*, sorted by path."""
+    directory = state_directory(tickets_dir, state)
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob("*.md"))
+
+
+def iter_board_documents(tickets_dir: Path) -> Iterator[tuple[Path, TicketState]]:
+    """Yield every Ticket document on the board with its state, in lifecycle order."""
+    for state in TicketState:
+        for path in documents_in_state(tickets_dir, state):
+            yield path, state
+
+
+def locate_document(tickets_dir: Path, slug: str) -> tuple[Path, TicketState] | None:
+    """Return the document and state of the Ticket named *slug*, if any.
+
+    States are searched in lifecycle order, so a slug duplicated across states
+    resolves to the earliest one. Matching compares listed file stems rather
+    than probing ``<slug>.md`` so a slug can never traverse out of the board
+    and case-insensitive filesystems still require the exact spelling.
+    """
+    for path, state in iter_board_documents(tickets_dir):
+        if path.stem == slug:
+            return path, state
+    return None

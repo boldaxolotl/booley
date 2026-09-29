@@ -30,6 +30,7 @@ from booley.ticket_board.acceptance_journal._store import (
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.completion import complete_review_ticket
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     TicketBaseline,
@@ -152,10 +153,12 @@ class _TicketIO:
     def load_basis(self, _slug: str) -> TicketBaseline:
         return self._bases[self._project_root.resolve()]
 
-    def move_and_update(self, _slug: str, to_dir: str, _updates: dict[str, Any], **kwargs) -> bool:
+    def move_and_update(
+        self, _slug: str, to_dir: TicketState, _updates: dict[str, Any], **kwargs
+    ) -> bool:
         self.entry["status"] = "done"
         self.transitions.append(kwargs["transition"])
-        assert to_dir == "done"
+        assert to_dir is TicketState.DONE
         assert kwargs["expected_status"] == "review"
         return True
 

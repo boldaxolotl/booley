@@ -78,6 +78,7 @@ from booley.runtime.project_repositories import (
 from booley.runtime.timefmt import UtcLogFormatter, format_human_datetime
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState, documents_in_state, locate_document
 
 if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
@@ -290,23 +291,19 @@ def get_ticket_counts(project_root: Path) -> dict[str, int]:
 
 
 def get_active_slugs(project_root: Path) -> list[str]:
-    """Return slugs of tickets currently in active/."""
+    """Return slugs of tickets currently running."""
     tickets_dir = tickets_dir_from_project_root(project_root)
-    active_dir = tickets_dir / "board" / "active"
-    if not active_dir.exists():
-        return []
-    return [p.stem for p in active_dir.glob("*.md")]
+    return [p.stem for p in documents_in_state(tickets_dir, TicketState.RUNNING)]
 
 
 def get_ticket_summary(project_root: Path, slug: str) -> str:
     """Extract ticket summary from frontmatter."""
     tickets_dir = tickets_dir_from_project_root(project_root)
-    for d in ("drafts", "queue", "waiting", "active", "blocked", "review", "done"):
-        p = tickets_dir / "board" / d / f"{slug}.md"
-        if p.exists():
-            for line in p.read_text(encoding="utf-8").splitlines():
-                if line.startswith("summary:"):
-                    return line[len("summary:") :].strip().strip('"')
+    located = locate_document(tickets_dir, slug)
+    if located is not None:
+        for line in located[0].read_text(encoding="utf-8").splitlines():
+            if line.startswith("summary:"):
+                return line[len("summary:") :].strip().strip('"')
     return slug
 
 

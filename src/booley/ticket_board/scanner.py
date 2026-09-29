@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from .acceptance_journal import AcceptanceJournalError, acceptance_state
-from .constants import DIR_STATUS_MAP, TICKET_DIRS
 from .execution import next_from_planned
+from .lifecycle import TicketState, iter_board_documents, locate_document
 from .logs import load_progress
 from .paths import existing_runtime_file
 from .ticket_document import convert_ticket_document, ticket_conversion_context
@@ -28,7 +28,7 @@ def find_ticket_file(
     *,
     project_root: Path | None = None,
 ) -> tuple[Path | None, str | None]:
-    """Scan all TICKET_DIRS for .md files matching slug by filename stem,
+    """Scan the Ticket Board for a document matching slug by filename stem,
     or by feature_branch field in frontmatter.
 
     Returns (Path, status_str) or (None, None).
@@ -40,35 +40,24 @@ def find_ticket_file(
     if slug.endswith(".md"):
         slug = slug[:-3]
     # First pass: exact filename match (fast)
-    for d in TICKET_DIRS:
-        dir_path = tickets_dir / d
-        if not dir_path.is_dir():
-            continue
-        for md_file in dir_path.glob("*.md"):
-            if md_file.stem == slug:
-                return md_file, DIR_STATUS_MAP.get(d, d)
+    located = locate_document(tickets_dir, slug)
+    if located is not None:
+        return located[0], located[1].status
     # Second pass: match only a generated feature branch on a converted Ticket.
     root = project_root or tickets_dir.parent.parent
-    for d in TICKET_DIRS:
-        dir_path = tickets_dir / d
-        if not dir_path.is_dir():
+    for md_file, state in iter_board_documents(tickets_dir):
+        try:
+            with ticket_conversion_context(root, md_file.stem, state.conversion_stage) as context:
+                converted = convert_ticket_document(md_file.read_text(encoding="utf-8"), context)
+            feature_branch = (
+                converted.document.generated.get("feature_branch", "")
+                if converted.document is not None
+                else ""
+            )
+            if feature_branch and feature_branch == slug:
+                return md_file, state.status
+        except OSError:
             continue
-        for md_file in dir_path.glob("*.md"):
-            try:
-                stage = "draft" if d == "drafts" else "executable"
-                with ticket_conversion_context(root, md_file.stem, stage) as context:
-                    converted = convert_ticket_document(
-                        md_file.read_text(encoding="utf-8"), context
-                    )
-                feature_branch = (
-                    converted.document.generated.get("feature_branch", "")
-                    if converted.document is not None
-                    else ""
-                )
-                if feature_branch and feature_branch == slug:
-                    return md_file, DIR_STATUS_MAP.get(d, d)
-            except OSError:
-                continue
     return None, None
 
 
@@ -179,11 +168,11 @@ def _derive_step(rt):
     return rt.get("step", "")
 
 
-def _build_ticket_entry(md_file, d, dir_status, fields, rt):
+def _build_ticket_entry(md_file, file, dir_status, fields, rt):
     """Build a ticket entry dict from parsed frontmatter and runtime state."""
     completed = rt.get("steps_completed", [])
     entry = {
-        "file": f"{d}/{md_file.name}",
+        "file": file,
         "summary": fields.get("summary", md_file.stem),
         "type": fields.get("type", "feature"),
         "status": dir_status,
@@ -223,23 +212,17 @@ def scan_all_tickets(
     logs_dir = tickets_dir / "logs"
     result = []
 
-    for d in TICKET_DIRS:
-        dir_path = tickets_dir / d
-        if not dir_path.is_dir():
-            continue
-        dir_status = DIR_STATUS_MAP.get(d, d)
-        for md_file in sorted(dir_path.glob("*.md")):
-            entry = _scan_ticket(md_file, d, dir_status, root, tickets_dir, logs_dir)
-            if entry is not None:
-                result.append(entry)
+    for md_file, state in iter_board_documents(tickets_dir):
+        entry = _scan_ticket(md_file, state, root, tickets_dir, logs_dir)
+        if entry is not None:
+            result.append(entry)
 
     return result
 
 
 def _scan_ticket(
     path: Path,
-    directory: str,
-    status: str,
+    state: TicketState,
     root: Path,
     tickets_dir: Path,
     logs_dir: Path,
@@ -248,15 +231,15 @@ def _scan_ticket(
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    stage = "draft" if directory == "drafts" else "executable"
-    with ticket_conversion_context(root, path.stem, stage) as context:
+    file = path.relative_to(tickets_dir).as_posix()
+    with ticket_conversion_context(root, path.stem, state.conversion_stage) as context:
         converted = convert_ticket_document(text, context)
     if converted.document is None:
         preview = converted.preview
         return {
-            "file": f"{directory}/{path.name}",
+            "file": file,
             "summary": preview.summary if preview else path.stem,
-            "status": status,
+            "status": state.status,
             "ticket_error": "; ".join(
                 f"{item.line}:{item.column}: {item.message}" for item in converted.diagnostics
             ),
@@ -265,7 +248,7 @@ def _scan_ticket(
     fields = {**spec.fields, **converted.document.generated}
     progress = load_progress(logs_dir, path.stem)
     runtime_fields = progress if progress is not None else fields
-    entry = _build_ticket_entry(path, directory, status, fields, runtime_fields)
+    entry = _build_ticket_entry(path, file, state.status, fields, runtime_fields)
     entry["criteria"] = spec.semantic_record()["criteria"]
     entry["target_plan"] = spec.target_plan.as_list() if spec.target_plan else []
     _enrich_from_acceptance(entry, tickets_dir, path.stem)

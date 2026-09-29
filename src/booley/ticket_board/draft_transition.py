@@ -37,6 +37,7 @@ from booley.ticket_board.ticket_repositories import (
     ticket_project_worktree,
 )
 
+from .lifecycle import TicketState, ticket_document_path
 from .persistence import atomic_replace_bytes
 from .ticket_baseline import (
     AUTHORED_DRIFT_REASON,
@@ -184,9 +185,9 @@ def _validate_journal(
         ticket_baseline_from_machine(journal.machine)
     except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
-    board = resolve_checkout_project_dir(root) / "tickets" / "board"
+    tickets = resolve_checkout_project_dir(root) / "tickets"
     draft = Path(journal.draft_ticket).resolve()
-    if draft != (board / "drafts" / f"{slug}.md").resolve():
+    if draft != ticket_document_path(tickets, slug, TicketState.DRAFT).resolve():
         raise DraftTransitionError("return-to-draft destination path is invalid")
     if not re.fullmatch(r"[0-9a-f]{16}", journal.generation):
         raise DraftTransitionError("return-to-draft generation token is invalid")
@@ -198,7 +199,7 @@ def _validate_journal(
     if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in digests):
         raise DraftTransitionError("return-to-draft content identity is invalid")
     blocked = Path(journal.blocked_ticket).resolve()
-    if blocked != (board / "blocked" / f"{slug}.md").resolve():
+    if blocked != ticket_document_path(tickets, slug, TicketState.BLOCKED).resolve():
         raise DraftTransitionError("return-to-draft blocked Ticket path is invalid")
     archive = Path(journal.archive_dir).resolve()
     archive_root = (logs_dir / slug / "runs").resolve()
@@ -308,7 +309,8 @@ def _new_journal(
     generation_content = (json.dumps({"generation": generation}, sort_keys=True) + "\n").encode()
     atomic_replace_bytes(draft_path, draft_content, mode=0o644)
     atomic_replace_bytes(operation / "generation.json", generation_content)
-    draft_destination = ticket.parent.parent / "drafts" / ticket.name
+    tickets = resolve_checkout_project_dir(root) / "tickets"
+    draft_destination = ticket_document_path(tickets, slug, TicketState.DRAFT)
     journal = DraftTransitionJournal(
         2,
         operation_id,

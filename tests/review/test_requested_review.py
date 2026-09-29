@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from booley.harness.booley import _cmd_board_show
 from booley.ticket_board.cli_handlers import _cmd_move_ticket
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState
 
 
 def test_mechanical_move_cannot_create_unaccepted_review(tmp_path: Path):
@@ -217,7 +218,7 @@ def blocked(tmp_path, monkeypatch, request):
     )
     assert path is not None
     assert tio.enqueue_ticket("demo")
-    assert tio.move_ticket_file("demo", "blocked")
+    assert tio.move_ticket_file("demo", TicketState.BLOCKED)
     worktree = project / "worktrees" / "demo"
     _initialize_blocked_state(
         tio,
@@ -242,7 +243,7 @@ def _automatic_accepted_handoff(blocked, monkeypatch):
     package = asyncio.run(prep.prepare_review(root, "demo"))
     assert package.ready, package.message
 
-    assert tio.move_ticket_file("demo", "active")
+    assert tio.move_ticket_file("demo", TicketState.RUNNING)
     run_log = tio.logs_dir / "demo" / "human-logs" / "run.log"
     run_log.parent.mkdir(parents=True, exist_ok=True)
     run_log.write_text("# Developer Agent run log\n", encoding="utf-8")
@@ -804,7 +805,7 @@ def test_concurrent_mutator_is_fenced_during_generation(blocked, monkeypatch):
         requests._write(requests.operation_path(tio.logs_dir / "demo"), operation)
         monkeypatch.setattr("booley.ticket_board.review_records.is_pid_alive", lambda pid: True)
         with pytest.raises(ReviewEntryError, match="active review"):
-            tio.move_ticket_file("demo", "queue")
+            tio.move_ticket_file("demo", TicketState.QUEUED)
         operation["pid"] = __import__("os").getpid()
         requests._write(requests.operation_path(tio.logs_dir / "demo"), operation)
         return await original(*args, **kwargs)
@@ -2006,5 +2007,5 @@ def test_mechanical_move_to_review_is_rejected(tmp_path, capsys):
         encoding="utf-8",
     )
     tio = TicketIO(tickets, project_root=tmp_path)
-    assert not tio._move_prerequisite("demo", tickets / "board" / "review" / "demo.md", None)
+    assert not tio._move_prerequisite("demo", TicketState.REVIEW, None)
     assert "requires board review --request" in capsys.readouterr().err

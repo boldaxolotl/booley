@@ -19,6 +19,7 @@ from .acceptance_journal import (
     AcceptanceRequest,
     advance_acceptance,
 )
+from .lifecycle import TicketState, ticket_document_path
 from .ticket_baseline import TicketBaseline, TicketBaselineError
 from .validation import retired_ticket_field_errors
 
@@ -91,9 +92,9 @@ def _request(
     cleanup: bool,
     expected_sources: Mapping[str, str] | None = None,
 ) -> AcceptanceRequest:
-    ticket_name = Path(str(entry["file"])).name
+    ticket_slug = Path(str(entry["file"])).stem
     allowed_board_rename = (
-        tio.tickets_dir / "board" / "queue" / ticket_name,
+        ticket_document_path(tio.tickets_dir, ticket_slug, TicketState.QUEUED),
         tio.tickets_dir / str(entry["file"]),
     )
     return AcceptanceRequest(

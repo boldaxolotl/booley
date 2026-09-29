@@ -2062,12 +2062,12 @@ def _build_hook_env(
     # Resolve current ticket location (may have moved between statuses)
     ticket_file = str(ctx.ticket_path)
     if not ctx.ticket_path.exists():
-        board_dir = ctx.ticket_path.parent.parent
-        for status in ("active", "queue", "waiting", "blocked", "review", "done", "archived"):
-            candidate_path = board_dir / status / f"{ctx.slug}.md"
-            if candidate_path.exists():
-                ticket_file = str(candidate_path)
-                break
+        from booley.ticket_board.helpers import tickets_dir_from_project_root
+        from booley.ticket_board.lifecycle import locate_document
+
+        located = locate_document(tickets_dir_from_project_root(ctx.project_root), ctx.slug)
+        if located is not None:
+            ticket_file = str(located[0])
 
     project_dir = _ticket_project_dir(ctx)
 

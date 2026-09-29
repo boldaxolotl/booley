@@ -21,6 +21,7 @@ from .archive_generation import plan_generation, release_generation
 from .frontmatter import parse_frontmatter
 from .git_ops import cleanup_worktree_and_branch
 from .io import scan_all_tickets
+from .lifecycle import TicketState, board_relative_document_path, documents_in_state
 from .paths import existing_ticket_runtime_file, ticket_log_dir
 from .persistence import atomic_replace_bytes
 from .ticket_repositories import (
@@ -128,13 +129,9 @@ def _load_marker(path: Path, slug: str) -> dict | None:
     # A blank step is valid for an untouched draft Ticket.
     if marker["step"] != "":
         require_str(marker, "step")
-    if (
-        ticket.name != f"{slug}.md"
-        or len(ticket.parts) != 3
-        or ticket.parts[0] != "board"
-        or ticket.parts[1] in {".", ".."}
-        or re.fullmatch(r"[0-9a-f]{64}", marker["digest"]) is None
-    ):
+    # The marker records the board-relative document path it archived.
+    board_documents = {board_relative_document_path(slug, state) for state in TicketState}
+    if ticket not in board_documents or re.fullmatch(r"[0-9a-f]{64}", marker["digest"]) is None:
         raise ValueError(f"archive marker identity is invalid: {path}")
     return marker
 
@@ -295,8 +292,7 @@ def op_archive(
         return _archive_single(tio, slug, keep_logs, force)
 
     outcome = ArchiveOutcome()
-    scan_dir = tio.tickets_dir / "board" / "done"
-    for md_file in sorted(scan_dir.glob("*.md")):
+    for md_file in documents_in_state(tio.tickets_dir, TicketState.DONE):
         single = _archive_single(tio, md_file.stem, keep_logs, force)
         outcome.archived.extend(single.archived)
         outcome.failures.update(single.failures)

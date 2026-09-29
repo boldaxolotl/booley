@@ -43,14 +43,12 @@ from .cli_handlers import (
     _cmd_validate_logs,
     _cmd_validate_ticket,
 )
-from .constants import (
-    TICKET_DIRS,
-)
 from .helpers import (
     detect_tickets_dir,
     ensure_utf8_output,
 )
 from .io import TicketIO
+from .lifecycle import board_target_choices
 
 
 def _add_query_subcommands(sub: argparse._SubParsersAction) -> None:
@@ -125,8 +123,7 @@ def _add_lifecycle_subcommands(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("move-ticket", help="Move ticket file between directories")
     p.add_argument("slug", help="Ticket slug")
     # Accept both bare names (queue) and board/-prefixed (board/queue)
-    _VALID_TO_DIRS = TICKET_DIRS + [d.split("/", 1)[1] for d in TICKET_DIRS]
-    p.add_argument("--to", required=True, choices=_VALID_TO_DIRS, help="Target directory")
+    p.add_argument("--to", required=True, choices=board_target_choices(), help="Target directory")
 
     # block
     p = sub.add_parser("block", help="Block a ticket")

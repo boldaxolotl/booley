@@ -28,10 +28,7 @@ from .analytics import (
     usage_entries_to_steps,
 )
 from .archive import op_archive, report_archive_outcome
-from .constants import (
-    VALID_TYPES,
-    normalize_dir,
-)
+from .constants import VALID_TYPES
 from .evidence import op_collect_evidence
 from .execution import (
     classify_tickets,
@@ -41,7 +38,12 @@ from .execution import (
 )
 from .helpers import detect_project_root, generate_slug
 from .io import scan_all_tickets
-from .lifecycle import SETTLED_STATUSES
+from .lifecycle import (
+    SETTLED_STATUSES,
+    TicketState,
+    document_stage,
+    parse_board_target,
+)
 from .operations import (
     op_activate,
     op_approve,
@@ -176,7 +178,7 @@ def _cmd_parse_ticket(tio, args):
     if not path.exists():
         print(json.dumps({"error": f"File not found: {args.path}"}))
         return 2
-    converted = _convert_cli_ticket(path, detect_project_root())
+    converted = _convert_cli_ticket(path, detect_project_root(), tio.tickets_dir)
     if converted.document is None:
         json.dump(
             {
@@ -208,15 +210,10 @@ def _cmd_parse_ticket(tio, args):
     return 0
 
 
-def _convert_cli_ticket(path: Path, project_root: Path):
+def _convert_cli_ticket(path: Path, project_root: Path, tickets_dir: Path):
     from .ticket_document import convert_ticket_document, ticket_conversion_context
 
-    stage = (
-        "executable"
-        if path.parent.name
-        in {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
-        else "draft"
-    )
+    stage = document_stage(tickets_dir, path, off_board="draft")
     with ticket_conversion_context(project_root, path.stem, stage) as context:
         return convert_ticket_document(path.read_text(encoding="utf-8"), context)
 
@@ -447,22 +444,24 @@ def _cmd_move_ticket(tio, args):
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     cur_status = entry.get("status", "") if entry else ""
-    norm_to = normalize_dir(args.to)
-    if cur_status == "review" and norm_to == "board/done":
+    # argparse restricts --to to board_target_choices(), so this always resolves.
+    destination = parse_board_target(args.to)
+    assert destination is not None, args.to
+    if cur_status == "review" and destination is TicketState.DONE:
         print(
             "Error: cannot move ticket from review to done via move-ticket. "
             "Use 'approve' command instead.",
             file=sys.stderr,
         )
         return 1
-    if cur_status == "review" and norm_to == "board/queue":
+    if cur_status == "review" and destination is TicketState.QUEUED:
         print(
             "Error: cannot move ticket from review to queue via move-ticket. "
             "Use 'reset' for a clean run.",
             file=sys.stderr,
         )
         return 1
-    success = tio.move_ticket_file(args.slug, norm_to)
+    success = tio.move_ticket_file(args.slug, destination)
     return 0 if success else 2
 
 

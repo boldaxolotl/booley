@@ -25,11 +25,12 @@ from .git_ops import cleanup_worktree_and_branch
 from .helpers import compute_done_slugs, parse_arrow, slug_from_file
 from .io import scan_all_tickets
 from .lifecycle import (
-    STATE_BY_DIR,
     STATE_BY_STATUS,
     TicketState,
     format_user_board_moves,
     is_user_board_move,
+    parse_board_target,
+    ticket_document_path,
 )
 from .logs import RESET_BOUNDARY_PREFIX, reset_progress, save_progress
 from .notifications import is_event_enabled, ntfy_review_digest, ntfy_send
@@ -53,7 +54,7 @@ if TYPE_CHECKING:  # booley.core.models is imported lazily in the bodies below
 def _op_move_and_log(
     tio,
     slug,
-    to_dir,
+    to_state: TicketState,
     updates,
     transition: tuple[str, str, str, str],
     append_step=None,
@@ -71,7 +72,7 @@ def _op_move_and_log(
     locked_status = expected_status or from_state.partition(":")[0]
     success = tio.move_and_update(
         slug,
-        to_dir,
+        to_state,
         updates,
         append_step=append_step,
         transition=transition,
@@ -87,7 +88,7 @@ def _op_move_and_log(
     # Clear stale PID from ticket.lock when leaving active/ (running state).
     # Without this, a requeued ticket can be falsely blocked if the OS
     # reuses the old PID for an unrelated process.
-    if to_dir != "active" and from_state.startswith("running"):
+    if to_state is not TicketState.RUNNING and from_state.startswith("running"):
         _clear_lock_pid(tio, slug)
 
     return True
@@ -271,7 +272,7 @@ def op_activate(
     return _op_move_and_log(
         tio,
         slug,
-        "active",
+        TicketState.RUNNING,
         {"execution_id": execution_id, "execution_owner_pid": owner_pid},
         (
             f"{old_status}:{old_step}",
@@ -299,9 +300,8 @@ def op_claim(tio: Any, slug: str) -> bool:
         file_path, status = find_ticket_file(tio.tickets_dir, slug)
         if file_path is None or status != "queued":
             return False
-        active_dir = tio.tickets_dir / "board" / "active"
-        active_dir.mkdir(parents=True, exist_ok=True)
-        dest = active_dir / file_path.name
+        dest = ticket_document_path(tio.tickets_dir, file_path.stem, TicketState.RUNNING)
+        dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             return False
         progress = tio._load_or_bootstrap_progress(slug, file_path)
@@ -329,7 +329,7 @@ def op_block(
     ok = _op_move_and_log(
         tio,
         slug,
-        "blocked",
+        TicketState.BLOCKED,
         {"blocked_reason": reason, "blocked_step": step},
         (f"{old_status}:{old_step}", f"blocked:{step}", "ticket-execute", f"blocked -- {reason}"),
         expected_status="running" if expected_execution_id is not None else None,
@@ -370,7 +370,7 @@ def op_requeue(tio: Any, slug: str, reason: str = "requeued") -> bool:
     return _op_move_and_log(
         tio,
         slug,
-        "queue",
+        TicketState.QUEUED,
         {
             "step": "",
             "workspace_intent": "resume",
@@ -409,7 +409,7 @@ def _handoff_to_review(
     ok = _op_move_and_log(
         tio,
         slug,
-        "review",
+        TicketState.REVIEW,
         {"step": "summary"},
         (f"{old_status}:{old_step}", "review:summary", "ticket-execute", "ready for user review"),
         append_step="summary",
@@ -650,7 +650,7 @@ def op_handoff(
         ok = _op_move_and_log(
             tio,
             slug,
-            "review",
+            TicketState.REVIEW,
             {"step": "summary"},
             (
                 f"{old_status}:{old_step}",
@@ -709,7 +709,7 @@ def op_unblock(
     ok = _op_move_and_log(
         tio,
         slug,
-        "queue",
+        TicketState.QUEUED,
         {
             "workspace_intent": "resume",
             "blocked_reason": None,
@@ -807,7 +807,11 @@ def _approve_transition(
         )
         return False
     ok = _op_move_and_log(
-        tio, slug, "done", {"step": "complete"}, ("review:summary", "done:complete", actor, detail)
+        tio,
+        slug,
+        TicketState.DONE,
+        {"step": "complete"},
+        ("review:summary", "done:complete", actor, detail),
     )
     if ok and is_event_enabled("done"):
         ntfy_send(f"DONE: {entry.get('summary', slug)}", "Ticket completed")
@@ -892,7 +896,7 @@ def _promote_waiting_ticket(tio: Any, ticket: dict[str, Any]) -> dict[str, str] 
         ok = _op_move_and_log(
             tio,
             slug,
-            "queue",
+            TicketState.QUEUED,
             updates,
             (
                 "waiting:init",
@@ -954,7 +958,7 @@ def _block_failed_basis_refresh(tio: Any, slug: str) -> None:
     _op_move_and_log(
         tio,
         slug,
-        "blocked",
+        TicketState.BLOCKED,
         {"blocked_reason": "acceptance-input-change-required", "blocked_step": "setup"},
         (
             "waiting:init",
@@ -1324,7 +1328,7 @@ def op_board_move(
 
     status = entry.get("status", "")
     src = STATE_BY_STATUS.get(status)
-    dst = STATE_BY_DIR.get(target)
+    dst = parse_board_target(target)
 
     if src is None or dst is None or not is_user_board_move(src, dst):
         print(f"Error: cannot move '{slug}' from '{status}' to '{target}'", file=sys.stderr)
@@ -1430,12 +1434,9 @@ def _wipe_log_dir(tio, slug, preserved):
 
 
 def _move_to_queue(tio, file_path):
-    """Move a ticket file to the queue/ directory. Returns False on conflict."""
-    from .constants import normalize_dir
-
-    new_dir = tio.tickets_dir / normalize_dir("queue")
-    new_dir.mkdir(parents=True, exist_ok=True)
-    new_path = new_dir / file_path.name
+    """Move a ticket file to the queued state. Returns False on conflict."""
+    new_path = ticket_document_path(tio.tickets_dir, file_path.stem, TicketState.QUEUED)
+    new_path.parent.mkdir(parents=True, exist_ok=True)
     if new_path.exists() and new_path != file_path:
         print(f"Error: destination already exists: {new_path}", file=sys.stderr)
         return False
@@ -1446,9 +1447,7 @@ def _move_to_queue(tio, file_path):
 
 def _queue_destination_available(tio: Any, file_path: Path) -> bool:
     """Refuse a reset before destructive work if queue/ already has this ticket."""
-    from .constants import normalize_dir
-
-    new_path = tio.tickets_dir / normalize_dir("queue") / file_path.name
+    new_path = ticket_document_path(tio.tickets_dir, file_path.stem, TicketState.QUEUED)
     if new_path.exists() and new_path != file_path:
         print(f"Error: destination already exists: {new_path}", file=sys.stderr)
         return False

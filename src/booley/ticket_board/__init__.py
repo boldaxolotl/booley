@@ -62,9 +62,6 @@ from .cli import main as main
 # constants
 # ---------------------------------------------------------------------------
 from .constants import (
-    DIR_STATUS_MAP as DIR_STATUS_MAP,
-)
-from .constants import (
     PRIORITY_ORDER as PRIORITY_ORDER,
 )
 from .constants import (
@@ -77,16 +74,10 @@ from .constants import (
     STEP_ORDER as STEP_ORDER,
 )
 from .constants import (
-    TICKET_DIRS as TICKET_DIRS,
-)
-from .constants import (
     VALID_PRIORITIES as VALID_PRIORITIES,
 )
 from .constants import (
     VALID_TYPES as VALID_TYPES,
-)
-from .constants import (
-    normalize_dir as normalize_dir,
 )
 from .evidence import (
     op_collect_evidence as op_collect_evidence,

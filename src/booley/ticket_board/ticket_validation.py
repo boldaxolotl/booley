@@ -13,6 +13,7 @@ from . import workspace_ops
 from .acceptance_targets import deferable_rtl_or_tb_input
 from .acceptance_validation import prepare_acceptance_checkout
 from .io import TicketIO
+from .lifecycle import TicketState, document_stage
 from .planned_dependencies import (
     PlannedDependencyError,
     target_surface_sha256,
@@ -36,11 +37,9 @@ from .workspace_ops import (
     validate_draft_target_plan,
 )
 
-_EXECUTABLE_DIRS = frozenset(
-    {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
+_OPERATIONAL_STATUSES = frozenset(
+    state.status for state in (TicketState.QUEUED, TicketState.RUNNING, TicketState.BLOCKED)
 )
-
-_OPERATIONAL_STATUSES = frozenset({"queued", "queue", "running", "active", "blocked"})
 
 
 def is_operational_ticket_status(status: str | None) -> bool:
@@ -118,7 +117,7 @@ def validate_ticket_document(
     """Validate the authored contract without publishing or refreshing a generation."""
     if not path.is_file():
         return [f"File not found: {path}"]
-    stage = "executable" if path.parent.name in _EXECUTABLE_DIRS else "draft"
+    stage = document_stage(tickets_dir, path, off_board="draft")
     git_marker = project_root / ".git"
     workspace = resolve_project_dir(project_root) / "worktrees" / path.stem
     if stage == "draft" and git_marker.exists() and not workspace.is_dir():

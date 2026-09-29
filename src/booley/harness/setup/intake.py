@@ -21,6 +21,12 @@ from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.criteria_projection import project_ticket_criteria
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import (
+    TicketState,
+    document_state,
+    documents_in_state,
+    ticket_document_path,
+)
 from booley.ticket_board.paths import (
     existing_runtime_file,
     migrate_runtime_file,
@@ -98,7 +104,9 @@ def _resolve_and_validate(
 
 def _validate_intake_ticket(project_root: Path, ticket_path: Path, slug: str) -> None:
     """Validate executable Tickets operationally and preserve review intake rules."""
-    if is_operational_ticket_status(ticket_path.parent.name) and _is_git_backed(project_root):
+    state = _board_state(project_root, ticket_path)
+    status = state.status if state is not None else None
+    if is_operational_ticket_status(status) and _is_git_backed(project_root):
         errors = validate_executable_ticket(
             project_root,
             slug,
@@ -190,13 +198,10 @@ def _check_dependencies(ctx: TicketContext) -> None:
     """Raise FatalError if any ticket dependencies are unmet."""
     if not ctx.dependencies:
         return
-    # Check done/ directory directly -- classify() only returns actionable
+    # Check done Tickets directly -- classify() only returns actionable
     # tickets (executable/blocked/waiting/review/orphaned), not done ones.
-    done_dir = tickets_dir_from_project_root(ctx.project_root) / "board" / "done"
-    done_slugs: set[str] = set()
-    if done_dir.is_dir():
-        for f in done_dir.glob("*.md"):
-            done_slugs.add(f.stem)
+    tickets_dir = tickets_dir_from_project_root(ctx.project_root)
+    done_slugs = {f.stem for f in documents_in_state(tickets_dir, TicketState.DONE)}
     unmet = [dep for dep in ctx.dependencies if dep not in done_slugs]
     if unmet:
         raise FatalError(f"Unmet dependencies: {', '.join(unmet)} -- leaving in queue")
@@ -285,11 +290,13 @@ def _ensure_ticket_snapshot(project_root: Path, slug: str, ticket_path: Path) ->
         return
     logs_dir.mkdir(parents=True, exist_ok=True)
     # ticket_path may point at queue/ or blocked/ — find the actual file
+    tickets_dir = tickets_dir_from_project_root(project_root)
     for candidate in (
         ticket_path,
-        ticket_path.parent.parent / "active" / ticket_path.name,
-        ticket_path.parent.parent / "blocked" / ticket_path.name,
-        ticket_path.parent.parent / "queue" / ticket_path.name,
+        *(
+            ticket_document_path(tickets_dir, slug, state)
+            for state in (TicketState.RUNNING, TicketState.BLOCKED, TicketState.QUEUED)
+        ),
     ):
         if candidate.exists():
             shutil.copy2(str(candidate), str(ticket_md))
@@ -386,7 +393,7 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
     ticket_path = _resolve_ticket_path(project_root, ticket_path_or_slug)
     slug = ticket_path.stem
-    if ticket_path.parent.name == "waiting":
+    if _board_state(project_root, ticket_path) is TicketState.WAITING:
         ticket_path = _promote_waiting_for_intake(project_root, ticket_path, slug)
         _validate_intake_ticket(project_root, ticket_path, slug)
     else:
@@ -423,16 +430,20 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
 def _promote_waiting_before_auto_select(project_root: Path) -> None:
     tickets_dir = tickets_dir_from_project_root(project_root)
-    waiting = tickets_dir / "board" / "waiting"
-    if not waiting.is_dir() or not any(waiting.glob("*.md")):
+    if not documents_in_state(tickets_dir, TicketState.WAITING):
         return
     from booley.ticket_board.operations import op_promote_waiting
 
     op_promote_waiting(TicketIO(tickets_dir, project_root=project_root))
 
 
+def _board_state(project_root: Path, ticket_path: Path) -> TicketState | None:
+    """Return the Ticket Board state *ticket_path* represents, if it is a board document."""
+    return document_state(tickets_dir_from_project_root(project_root), ticket_path)
+
+
 def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str) -> Path:
-    if ticket_path.parent.name != "waiting":
+    if _board_state(project_root, ticket_path) is not TicketState.WAITING:
         return ticket_path
     from booley.ticket_board.operations import op_promote_waiting
 
@@ -492,15 +503,15 @@ def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
     if candidate.exists():
         return candidate
 
-    # Try as slug -- search board/ directories
-    for subdir in [
-        "board/queue",
-        "board/active",
-        "board/blocked",
-        "board/waiting",
-        "board/review",
-    ]:
-        candidate = tickets_dir / subdir / f"{path_or_slug}.md"
+    # Try as slug -- search the executable board states
+    for state in (
+        TicketState.QUEUED,
+        TicketState.RUNNING,
+        TicketState.BLOCKED,
+        TicketState.WAITING,
+        TicketState.REVIEW,
+    ):
+        candidate = ticket_document_path(tickets_dir, path_or_slug, state)
         if candidate.exists():
             return candidate
 

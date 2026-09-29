@@ -89,7 +89,7 @@ def test_executable_validator_reports_conversion_baseline_and_prepare_failures(
         ticket_validation, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
     monkeypatch.setattr(
-        ticket_validation, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "queue")
+        ticket_validation, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "queued")
     )
 
     def fail_conversion(*_args: object) -> None:
@@ -179,7 +179,7 @@ def test_executable_validator_formats_conversion_diagnostics(
         ticket_validation, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
     monkeypatch.setattr(
-        ticket_validation, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "queue")
+        ticket_validation, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "queued")
     )
     monkeypatch.setattr(
         ticket_validation,
@@ -270,7 +270,7 @@ def test_readiness_checkout_boundary_and_preparation_failures(
     monkeypatch.setattr(
         readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
-    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
+    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queued"))
     ticket.write_text("---\ntarget_contract: {}\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr(
         readiness,
@@ -292,7 +292,7 @@ def test_non_git_readiness_reports_preparation_failure_and_checkout_mutation(
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr(readiness, "resolve_checkout_project_dir", lambda _root: tmp_path)
-    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
+    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queued"))
     monkeypatch.setattr(readiness, "_checkout_statuses", lambda _root: ("clean",))
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
     monkeypatch.setattr(
@@ -326,7 +326,7 @@ def test_checkout_readiness_reports_missing_project_repository_and_ticket(
     monkeypatch.setattr(
         readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
-    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
+    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queued"))
     monkeypatch.setattr(
         readiness,
         "validate_executable_ticket",

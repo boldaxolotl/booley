@@ -42,7 +42,7 @@ class TicketFileSpec:
 
 
 from .acceptance_journal import acceptance_state
-from .constants import RUNTIME_FIELDS, normalize_dir
+from .constants import RUNTIME_FIELDS
 from .frontmatter import (
     is_v2_ticket_document,
     parse_frontmatter,
@@ -57,11 +57,12 @@ from .helpers import (
     validate_ticket_slug,
 )
 from .lifecycle import (
-    STATE_BY_DIR,
     STATE_BY_STATUS,
     TicketState,
     can_transition,
+    document_stage,
     format_transition_error,
+    ticket_document_path,
 )
 from .logs import (
     PROGRESS_DEFAULTS,
@@ -410,8 +411,7 @@ class TicketIO:
         if unsupported:
             names = ", ".join(sorted(unsupported))
             raise ValueError(f"v2 Ticket authored fields cannot be updated: {names}")
-        drafts = self.tickets_dir / "board" / "drafts"
-        stage = "draft" if file_path.parent.resolve() == drafts.resolve() else "executable"
+        stage = document_stage(self.tickets_dir, file_path, off_board="executable")
         from .ticket_document import (
             TicketDocument,
             convert_ticket_document,
@@ -444,8 +444,8 @@ class TicketIO:
         """Prepare and atomically publish Ticket field updates."""
         self._publish_spec_fields(file_path, self._prepare_spec_fields(file_path, spec_updates))
 
-    def move_ticket_file(self, slug: str, to_dir: str) -> bool:
-        """Move a ticket .md file to a different directory (queue, active, etc.)."""
+    def move_ticket_file(self, slug: str, destination: TicketState) -> bool:
+        """Move a ticket .md file to *destination* without lifecycle validation."""
         with self._ticket_lock(slug):
             file_path, _ = find_ticket_file(
                 self.tickets_dir, slug, project_root=self._project_root
@@ -454,15 +454,14 @@ class TicketIO:
                 print(f"Error: ticket '{slug}' not found", file=sys.stderr)
                 return False
 
-            if normalize_dir(to_dir) in {"board/review", "board/done"}:
+            if destination in {TicketState.REVIEW, TicketState.DONE}:
                 print(
                     "Error: use handoff or board review --request; completion requires approve",
                     file=sys.stderr,
                 )
                 return False
-            new_dir = self.tickets_dir / normalize_dir(to_dir)
-            new_dir.mkdir(parents=True, exist_ok=True)
-            new_path = new_dir / file_path.name
+            new_path = ticket_document_path(self.tickets_dir, file_path.stem, destination)
+            new_path.parent.mkdir(parents=True, exist_ok=True)
             if new_path.exists() and new_path != file_path:
                 print(f"Error: destination already exists: {new_path}", file=sys.stderr)
                 return False
@@ -474,27 +473,24 @@ class TicketIO:
         slug: str,
         file_path: Path,
         source_status: str | None,
-        to_dir: str,
+        destination: TicketState,
         *,
         enforce_lifecycle: bool,
-    ) -> tuple[Path, TicketState | None, TicketState | None] | None:
+    ) -> tuple[Path, TicketState | None, TicketState] | None:
         """Resolve a conflict-free destination and validate its lifecycle edge."""
-        normalized = normalize_dir(to_dir)
         source = STATE_BY_STATUS.get(source_status or "")
-        destination = STATE_BY_DIR.get(Path(normalized).name)
         if enforce_lifecycle:
-            if source is None or destination is None:
+            if source is None:
                 print(
                     f"Error: cannot resolve lifecycle move for '{slug}': "
-                    f"{source_status!r} -> {to_dir!r}",
+                    f"{source_status!r} -> {destination.status!r}",
                     file=sys.stderr,
                 )
                 return None
             if not can_transition(source, destination):
                 print(f"Error: {format_transition_error(source, destination)}", file=sys.stderr)
                 return None
-        new_dir = self.tickets_dir / normalized
-        new_path = new_dir / file_path.name
+        new_path = ticket_document_path(self.tickets_dir, file_path.stem, destination)
         if new_path.exists() and new_path != file_path:
             print(f"Error: destination already exists: {new_path}", file=sys.stderr)
             return None
@@ -522,10 +518,10 @@ class TicketIO:
             detail,
         )
 
-    def _move_prerequisite(self, slug, new_path, before_move):
+    def _move_prerequisite(self, slug, destination: TicketState, before_move):
         if before_move is not None and not before_move():
             return False
-        if new_path.parent.name == "review":
+        if destination is TicketState.REVIEW:
             from .acceptance_ledger import read_acceptance
 
             if read_acceptance(ticket_log_dir(self.logs_dir, slug)).kind != "accepted":
@@ -558,7 +554,7 @@ class TicketIO:
             slug,
             file_path,
             source_status,
-            "board/review",
+            TicketState.REVIEW,
             enforce_lifecycle=True,
         )
         if resolved is None:
@@ -572,7 +568,7 @@ class TicketIO:
     def move_and_update(
         self,
         slug: str,
-        to_dir: str,
+        to_state: TicketState,
         updates: dict[str, Any],
         append_step: str | None = None,
         transition: tuple[str, str, str, str] | None = None,
@@ -588,6 +584,7 @@ class TicketIO:
         Spec fields are written to frontmatter before the file move.
 
         Args:
+            to_state: Destination lifecycle state.
             transition: Optional (from_state, to_state, actor, detail) tuple.
                         If provided, the transition is logged inside the lock
                         to prevent interleaved writes under concurrent
@@ -633,14 +630,14 @@ class TicketIO:
                 slug,
                 file_path,
                 source_status,
-                to_dir,
+                to_state,
                 enforce_lifecycle=enforce_lifecycle,
             )
             if resolved is None:
                 return False
             new_path, source, destination = resolved
             transition = self._canonical_transition(transition, source, destination)
-            if not self._move_prerequisite(slug, new_path, before_move):
+            if not self._move_prerequisite(slug, destination, before_move):
                 return False
 
             updated_progress = copy.deepcopy(progress)
@@ -684,7 +681,7 @@ class TicketIO:
         # .booley_project at both /booley-project and /work/.booley_project),
         # where a plain shutil.move would raise EXDEV/SameFileError instead of
         # no-op'ing an already-active ticket (ADR 0028).
-        active_path = self.tickets_dir / "board" / "active" / ticket_path.name
+        active_path = ticket_document_path(self.tickets_dir, slug, TicketState.RUNNING)
         active_path.parent.mkdir(parents=True, exist_ok=True)
         already_active = active_path.exists() and ticket_path.samefile(active_path)
         if ticket_path != active_path and not already_active:
@@ -797,9 +794,8 @@ class TicketIO:
         if existing is not None:
             print(f"Error: ticket '{slug}' already exists ({status}): {existing}", file=sys.stderr)
             return None
-        drafts_dir = self.tickets_dir / "board" / "drafts"
-        drafts_dir.mkdir(parents=True, exist_ok=True)
-        file_path = drafts_dir / f"{slug}.md"
+        file_path = ticket_document_path(self.tickets_dir, slug, TicketState.DRAFT)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             created = atomic_write_once(file_path, content.encode(), mode=0o644)
         except WriteOnceConflictError:
@@ -893,8 +889,8 @@ class TicketIO:
 
         ticket_path = file_path
         if ticket_path is None or not ticket_path.exists():
-            for candidate_dir in ("board/drafts", "board/queue"):
-                candidate = self.tickets_dir / candidate_dir / f"{slug}.md"
+            for candidate_state in (TicketState.DRAFT, TicketState.QUEUED):
+                candidate = ticket_document_path(self.tickets_dir, slug, candidate_state)
                 if candidate.exists():
                     ticket_path = candidate
                     break
@@ -1087,8 +1083,8 @@ class TicketIO:
         from .enqueue_publication import prepare_enqueue
 
         created = now_iso()
-        destination_dir = "waiting" if has_unmet else "queue"
-        destination = self.tickets_dir / "board" / destination_dir / ticket_path.name
+        destination_state = TicketState.WAITING if has_unmet else TicketState.QUEUED
+        destination = ticket_document_path(self.tickets_dir, ticket_path.stem, destination_state)
         from .ticket_document import (
             TicketDocument,
             serialize_ticket_document,
@@ -1158,7 +1154,9 @@ class TicketIO:
             )
             result = return_to_draft(
                 self._project_root,
-                current_path or ticket_path or self.tickets_dir / "board/blocked" / f"{slug}.md",
+                current_path
+                or ticket_path
+                or ticket_document_path(self.tickets_dir, slug, TicketState.BLOCKED),
                 slug,
                 status=current_status or status or "",
                 logs_dir=self.logs_dir,

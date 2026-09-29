@@ -32,6 +32,7 @@ from booley.ticket_board.persistence import atomic_replace_bytes
 from booley.ticket_board.ticket_jobs import active_ticket_jobs, wait_for_ticket_jobs
 
 from . import review_preparation as prep
+from .lifecycle import TicketState, ticket_document_path
 from .review_records import (
     ReviewEntryError,
     ReviewInspection,
@@ -324,7 +325,7 @@ def _abandon_publication(tio, slug, operation):
     board = tio.inspect_ticket(slug)
     if board and board["status"] == "review" and operation["entry"]["source_status"] == "blocked":
         source = tio.tickets_dir / board["file"]
-        target = tio.tickets_dir / "board" / "blocked" / source.name
+        target = ticket_document_path(tio.tickets_dir, source.stem, TicketState.BLOCKED)
         if target.exists():
             raise ReviewEntryError("blocked recovery destination already exists")
         target.parent.mkdir(parents=True, exist_ok=True)

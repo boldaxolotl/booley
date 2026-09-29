@@ -35,7 +35,7 @@ from booley.ticket_board.execution import (
 )
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO, scan_all_tickets
-from booley.ticket_board.lifecycle import SETTLED_STATUSES
+from booley.ticket_board.lifecycle import SETTLED_STATUSES, document_stage
 from booley.ticket_board.logs import load_progress
 from booley.ticket_board.operations import (
     op_activate,
@@ -230,12 +230,7 @@ class DirectTicketOps:
             raise TicketCLIError("parse-ticket", 2, f"File not found: {path}")
         with p.open(encoding="utf-8") as f:
             text = f.read()
-        stage = (
-            "executable"
-            if p.parent.name
-            in {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
-            else "draft"
-        )
+        stage = document_stage(tio.tickets_dir, p, off_board="draft")
         with ticket_conversion_context(project_root, p.stem, stage) as context:
             converted = convert_ticket_document(text, context)
         if converted.document is None:
