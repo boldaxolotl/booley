@@ -660,3 +660,24 @@ def test_exact_unmanaged_link_can_require_explicit_adoption(tmp_path: Path) -> N
 
     assert refused.count("conflict") == 1
     assert adopted.count("adopted") == 1
+
+
+def test_equivalent_unmanaged_link_requires_explicit_adoption(tmp_path: Path) -> None:
+    require_symlinks(tmp_path)
+    old_source = tmp_path / "old"
+    new_source = tmp_path / "new"
+    old_skill = _skill(old_source, "booley-qa-run")
+    _skill(new_source, "booley-qa-run")
+    target = tmp_path / "skills"
+    target.mkdir()
+    (target / "booley-qa-run").symlink_to(old_skill)
+
+    report = reconcile_skill_links(target, new_source, allow_exact_adoption=False)
+
+    assert report.count("conflict") == 1
+
+
+def test_invalid_manifest_filename_fails_before_preflight(tmp_path: Path) -> None:
+    report = reconcile_skill_links(tmp_path / "target", tmp_path / "source", manifest_name="../x")
+
+    assert report.fatal == "invalid skill-link manifest filename '../x'"

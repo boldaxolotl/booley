@@ -231,6 +231,14 @@ def test_warning_is_ready_and_non_blocking() -> None:
     assert result.exit_status == 0
 
 
+@pytest.mark.parametrize("flag", ["with_qa_skills", "without_qa_skills"])
+def test_check_only_rejects_qa_selection_flags(flag: str, capsys) -> None:
+    args = SimpleNamespace(check_only=True, update=False, **{flag: True})
+
+    assert bootstrap_cli.run_bootstrap(args) == 2
+    assert "cannot be combined" in capsys.readouterr().out
+
+
 def test_opt_out_prunes_qa_before_failing_prerequisites(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -368,6 +376,53 @@ def test_qa_source_inspection_failure_is_reported(monkeypatch: pytest.MonkeyPatc
     assert "permission denied" in finding.detail
 
 
+def test_qa_source_filters_valid_skill_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packaged = tmp_path / "packaged"
+    valid = packaged / "valid"
+    valid.mkdir(parents=True)
+    (valid / "SKILL.md").write_text("# valid\n", encoding="utf-8")
+    (packaged / "incomplete").mkdir()
+
+    assert bootstrap._skill_names(packaged) == frozenset({"valid"})
+
+    monkeypatch.setattr(bootstrap, "skills_dir", lambda: packaged)
+    assert bootstrap._qa_source(True) == (packaged, frozenset())
+
+
+def test_qa_source_reports_packaged_name_collision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "current_host_installation",
+        lambda _source: SimpleNamespace(revision="abc1234"),
+    )
+    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: Path("/qa"))
+    monkeypatch.setattr(bootstrap, "_skill_names", lambda _source: bootstrap.QA_SKILL_NAMES)
+
+    with pytest.raises(bootstrap.QaSkillSelectionError, match="collide"):
+        bootstrap._qa_source(False)
+
+
+def test_explicit_qa_enable_reports_missing_checkout(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: None)
+
+    assert bootstrap_cli._apply_qa_enable(True, "abc1234") is False
+    assert "complete primary" in capsys.readouterr().out
+
+
+def test_explicit_qa_enable_reports_validation_failure(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: Path("/Booley"))
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "enable_qa_skills",
+        lambda *_args: (_ for _ in ()).throw(bootstrap_cli.QaSkillSelectionError("invalid")),
+    )
+
+    assert bootstrap_cli._apply_qa_enable(True, "abc1234") is False
+    assert "Cannot enable QA skills: invalid" in capsys.readouterr().out
+
+
 def test_opt_out_keeps_selection_when_prune_did_not_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -437,6 +492,37 @@ def test_opt_out_removes_selection_after_prune_even_if_later_resource_fails(
 
     assert status == 2
     assert events == ["reconcile", "disable"]
+
+
+def test_opt_out_reports_selection_removal_failure(monkeypatch, capsys) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    pruned = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.CHANGED, "removed links"
+    )
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, (pruned,)),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "disable_qa_skills",
+        lambda: (_ for _ in ()).throw(OSError("read-only")),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=False,
+            without_qa_skills=True,
+        )
+    )
+
+    assert status == 2
+    assert "Cannot disable QA skills: read-only" in capsys.readouterr().out
 
 
 def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) -> None:
