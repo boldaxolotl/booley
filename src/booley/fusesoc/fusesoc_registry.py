@@ -1865,6 +1865,13 @@ class ResolvedTarget:
     edam_path: Path = field(repr=False)
     """Absolute path to the resolved ``.eda.yml`` that was parsed."""
 
+    configured_eda_tool: str | None = None
+    """The EDA tool FuseSoC configured in the generated EDAM.
+
+    Modern ``flow_options.tool`` is authoritative. Legacy EDAMs identify the
+    configured tool through their sole ``tool_options`` key.
+    """
+
     flow_options: Mapping[str, Any] = field(default_factory=dict)
     """The resolved Target's ``flow_options`` block.
 
@@ -1989,6 +1996,15 @@ def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarg
     if not isinstance(flow_options, Mapping):
         flow_options = {}
     eda_tool = flow_options.get("tool")
+    tool_options = edam.get("tool_options") or {}
+    if not isinstance(tool_options, Mapping):
+        tool_options = {}
+    if "tool" in flow_options:
+        configured_eda_tool = str(eda_tool) if eda_tool is not None else None
+    elif len(tool_options) == 1:
+        configured_eda_tool = str(next(iter(tool_options)))
+    else:
+        configured_eda_tool = None
     cocotb_module = flow_options.get("cocotb_module")
 
     return ResolvedTarget(
@@ -1996,6 +2012,7 @@ def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarg
         vlnv=vlnv,
         toplevel=str(edam.get("toplevel", "")),
         eda_tool=eda_tool,
+        configured_eda_tool=configured_eda_tool,
         flow_options=dict(flow_options),
         cocotb_module=str(cocotb_module) if cocotb_module else None,
         files=tuple(files),

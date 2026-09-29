@@ -289,7 +289,7 @@ def detail_payload(
     else:
         payload["resolved"] = {
             "toplevel": resolved.toplevel,
-            "eda_tool": resolved.eda_tool,
+            "eda_tool": resolved.configured_eda_tool,
             "cocotb_module": resolved.cocotb_module,
             "parameters": dict(resolved.parameters),
             "rtl_hdl_sources": len(resolved.rtl_hdl_source_files),

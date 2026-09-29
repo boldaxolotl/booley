@@ -1087,6 +1087,7 @@ class TestDetail:
         payload = detail_payload(project, "sim", runner=fake_runner)
         resolved = payload["resolved"]
         assert resolved["toplevel"] == "tb_alpha"
+        assert resolved["eda_tool"] == "verilator"
         assert resolved["rtl_hdl_sources"] == 1
         assert resolved["tb_files"] == 1
         assert resolved["sdc_files"] == ["constraints/alpha.sdc"]
@@ -1101,3 +1102,37 @@ class TestDetail:
         text = render_detail(payload)
         assert "WIDTH (int) = 8" in text
         assert "constraints/alpha.sdc" in text
+
+    @pytest.mark.parametrize(
+        ("token", "configured_tool"),
+        (("sim", "icarus"), ("fpga", None)),
+    )
+    def test_resolved_display_uses_configured_backend_without_changing_authored_tool(
+        self,
+        project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        token: str,
+        configured_tool: str | None,
+    ) -> None:
+        selected = TargetCatalog.build(project).select(token)
+        resolved = fusesoc_registry.ResolvedTarget(
+            name=selected.name,
+            vlnv=selected.vlnv,
+            toplevel="top",
+            eda_tool=None,
+            configured_eda_tool=configured_tool,
+            files=(),
+            parameters={},
+            build_root=project / "build",
+            edam_path=project / "build/demo.eda.yml",
+        )
+        monkeypatch.setattr(
+            fusesoc_registry,
+            "resolve_target_handle",
+            lambda *_args, **_kwargs: resolved,
+        )
+
+        payload = detail_payload(project, token)
+
+        assert payload["eda_tool"] == selected.eda_tool
+        assert payload["resolved"]["eda_tool"] == configured_tool

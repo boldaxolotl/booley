@@ -140,7 +140,28 @@ def _prepare_simulation_build(
         resolution_vlnv=resolution_vlnv,
     )
     validate_top_parameter_intent(resolved, flow="sim")
-    eda_tool = sim_edam.normalize_eda_tool(resolved.eda_tool)
+    declaration_help = (
+        "declare either `flow: sim` with `flow_options.tool`, or legacy `default_tool`"
+    )
+    try:
+        declared_tool = sim_edam.normalize_eda_tool(handle.eda_tool)
+    except ValueError as exc:
+        raise SimulationBuildPreparationError(
+            f"Simulation Target {target!r} has no supported declared simulator; {declaration_help}"
+        ) from exc
+    try:
+        configured_tool = sim_edam.normalize_eda_tool(resolved.configured_eda_tool)
+    except ValueError as exc:
+        raise SimulationBuildPreparationError(
+            f"Simulation Target {target!r} did not resolve a supported configured "
+            f"simulator; {declaration_help}"
+        ) from exc
+    if declared_tool != configured_tool:
+        raise SimulationBuildPreparationError(
+            f"Simulation Target {target!r} declared simulator {declared_tool!r} but "
+            f"FuseSoC configured {configured_tool!r}; {declaration_help}"
+        )
+    eda_tool = configured_tool
     if eda_tool not in {"icarus", "verilator"}:
         raise SimulationBuildPreparationError(
             f"simulator {eda_tool!r} is not supported by the public sim Flow; "

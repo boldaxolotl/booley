@@ -21,6 +21,8 @@ def _resolved(
     parameters: dict,
     *,
     include: str | None = None,
+    eda_tool: str | None = "verilator",
+    configured_eda_tool: str | None = "verilator",
 ) -> ResolvedTarget:
     rtl = tmp_path / "dut.sv"
     rtl.write_text(source, encoding="utf-8")
@@ -44,7 +46,8 @@ def _resolved(
         name="configured",
         vlnv="::demo:0",
         toplevel="dut",
-        eda_tool="verilator",
+        eda_tool=eda_tool,
+        configured_eda_tool=configured_eda_tool,
         # Simulation tops normally live in a TB-tagged fileset. The guard must
         # inspect compiled TB HDL too, not only ResolvedTarget.rtl_files.
         files=tuple(files),
@@ -143,6 +146,30 @@ endmodule
 """
 
     validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
+
+
+def test_legacy_icarus_configured_backend_define_is_active(tmp_path: Path) -> None:
+    source = """\
+module child #(parameter ENABLE_ZBB = 0) (); endmodule
+module dut ();
+  child #(
+`ifdef __ICARUS__
+    .ENABLE_ZBB(1)
+`endif
+  ) u_child();
+endmodule
+"""
+
+    validate_top_parameter_intent(
+        _resolved(
+            tmp_path,
+            source,
+            _define(),
+            eda_tool=None,
+            configured_eda_tool="icarus",
+        ),
+        flow="sim",
+    )
 
 
 def test_string_valued_define_is_present_in_preprocessor_environment(tmp_path: Path):

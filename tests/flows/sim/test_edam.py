@@ -13,13 +13,18 @@ from booley.flows.sim import edam as sim_edam
         ("verilator", "verilator"),
         ("icarus", "icarus"),
         ("iverilog", "icarus"),
-        (None, "verilator"),
         ("xrun", "xcelium"),
         ("vcs", "vcs"),
     ],
 )
 def test_eda_tool_normalization(raw: str | None, expected: str) -> None:
     assert sim_edam.normalize_eda_tool(raw) == expected
+
+
+@pytest.mark.parametrize("raw", (None, "", "mystery-sim"))
+def test_eda_tool_normalization_rejects_missing_or_unknown_values(raw: str | None) -> None:
+    with pytest.raises(ValueError, match="unknown simulator EDA tool"):
+        sim_edam.normalize_eda_tool(raw)
 
 
 def test_verilator_command(tmp_path: Path) -> None:

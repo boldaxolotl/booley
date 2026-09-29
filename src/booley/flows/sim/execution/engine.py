@@ -1312,7 +1312,14 @@ def _preview_work(
     rel: str,
 ) -> PreparedSimulationWork:
     root = handle.project_root
-    eda_tool = sim_edam.normalize_eda_tool(inspection.eda_tool)
+    try:
+        eda_tool = sim_edam.normalize_eda_tool(inspection.eda_tool)
+    except ValueError as exc:
+        raise SimulationBuildPreparationError(
+            f"Simulation Target {handle.selector!r} has no supported declared simulator; "
+            "declare either `flow: sim` with `flow_options.tool`, or legacy "
+            "`default_tool`"
+        ) from exc
     passes, fails = resolve_sim_sentinels(root)
     return PreparedSimulationWork(
         adapter="cocotb" if cocotb else eda_tool,

@@ -361,7 +361,8 @@ def validate_top_parameter_intent(resolved: ResolvedTargetLike, *, flow: str) ->
 
 def _tool_builtin_defines(resolved: ResolvedTargetLike, flow: str) -> set[str]:
     """Preprocessor names the selected backend defines without Target input."""
-    eda_tool = str(resolved.eda_tool or "").lower()
+    configured = getattr(resolved, "configured_eda_tool", None)
+    eda_tool = str(configured or resolved.eda_tool or "").lower()
     builtins = {
         "icarus": {"__ICARUS__"},
         "verilator": {"VERILATOR"},

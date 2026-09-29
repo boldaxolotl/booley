@@ -20,6 +20,7 @@ def test_resolved_target_plans_one_private_serial_item_per_exact_test(
     ]
     assert document["required_suite"]["names"] == ("reset", "count")  # type: ignore[index]
     assert document["workload"]["run_cwd"]["configured"] == "."  # type: ignore[index]
+    assert document["workload"]["eda"]["kind"] == "icarus"  # type: ignore[index]
     assert all(item["kind"] == "ordinary_hdl" for item in document["work_items"])  # type: ignore[union-attr]
     catalog_empty = _plan(handle, inspection, preview, (), catalog_backed=True)
     assert catalog_empty["required_suite"]["names"] == ()  # type: ignore[index]

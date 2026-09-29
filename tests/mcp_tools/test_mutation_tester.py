@@ -597,7 +597,7 @@ def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
     )
 
 
-def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
+def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
     """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
     Returns a fake ResolvedTarget whose ``build_root`` is the requested build
@@ -621,6 +621,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
             build_root=Path(build_root),
             toplevel="tb",
             eda_tool=eda_tool,
+            configured_eda_tool=eda_tool,
         )
 
     monkeypatch.setattr(
@@ -1396,7 +1397,7 @@ class TestValidateScopeAgainstTarget:
 # ---------------------------------------------------------------------------
 
 
-def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "verilator"):
+def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str | None = "verilator"):
     """Make the .core reads report a Cocotb (or classic) Target."""
 
     def build(_cls, work_dir):
@@ -1424,6 +1425,19 @@ def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "ve
 
 
 class TestCocotbSimDispatch:
+    @pytest.mark.parametrize("eda_tool", (None, "mystery-sim"))
+    def test_missing_or_unknown_simulator_never_defaults_to_verilator(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        eda_tool: str | None,
+    ) -> None:
+        _patch_cocotb_target(monkeypatch, module=None, eda_tool=eda_tool)
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+        with pytest.raises(UnsupportedSimTargetError, match="unsupported simulator metadata"):
+            endpoint.target_eda_tool("default", tmp_path)
+
     def test_cocotb_target_runs_cocotb_run_half(self, tmp_path: Path, monkeypatch):
         """A Cocotb Target must run with Cocotb's module/filter environment."""
         captured: list[list[str]] = []

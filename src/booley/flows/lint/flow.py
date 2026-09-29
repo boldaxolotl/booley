@@ -79,12 +79,14 @@ def _lint_eda_tool_family(eda_tool: str | None) -> str:
 
     Mirrors :func:`booley.flows.sim.edam.normalize_eda_tool` (ADR 0022
     decision 8: the EDA tool comes from the resolved Target, not the
-    execution configuration). Everything that isn't Verible runs today's
-    Verilator path byte-for-byte — the flow default.
+    execution configuration).
     """
-    if eda_tool and "verible" in eda_tool.lower():
+    lowered = str(eda_tool or "").strip().lower()
+    if lowered == "verible":
         return "verible"
-    return "verilator"
+    if lowered == "verilator":
+        return "verilator"
+    raise ValueError(f"unknown lint EDA tool {eda_tool!r}; expected Verilator or Verible")
 
 
 def _lint_eda_executable(family: str) -> str:
@@ -481,9 +483,16 @@ class LintFlow(BuiltinFlow[LintRequest]):
             target,
             build_root=build_root,
         )
+        declared_family = _lint_eda_tool_family(target.eda_tool)
+        configured_family = _lint_eda_tool_family(resolved.configured_eda_tool)
+        if declared_family != configured_family:
+            raise ValueError(
+                f"lint Target {target.selector!r} declared {declared_family!r} but "
+                f"FuseSoC configured {configured_family!r}"
+            )
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
         command = edam_layer.make_command(rel)
-        family = _lint_eda_tool_family(resolved.eda_tool)
+        family = configured_family
         executable = _lint_eda_executable(family)
         token = new_attempt_token()
         marker = render_failure_marker(token, "missing_eda_tool", "lint", executable)
@@ -632,7 +641,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             prepared = prepared_units[target.identity]
         result = prepared.result
         cmd = prepared.command
-        family = _lint_eda_tool_family(prepared.resolved.eda_tool)
+        family = _lint_eda_tool_family(prepared.resolved.configured_eda_tool)
         start = time.monotonic()
         proc = self._execute_boundary(cmd)
         result.duration_s = time.monotonic() - start
@@ -705,7 +714,13 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 # boundary with the historical two-tuple.
                 command, resolved = prepared_command
                 attempt_token = ""
-            family = _lint_eda_tool_family(resolved.eda_tool)
+            try:
+                family = _lint_eda_tool_family(resolved.configured_eda_tool)
+            except ValueError as exc:
+                result.error = f"lint setup failed: {exc}"
+                result.error_is_eda_tool_failure = True
+                errors.append(result)
+                continue
             if not self._record_coverage_facts(result, resolved, family):
                 errors.append(result)
                 continue
@@ -733,7 +748,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         False return the make never runs: its verdict would be untrustworthy
         by construction.
         """
-        result.eda_tool = resolved.eda_tool or family
+        result.eda_tool = resolved.configured_eda_tool or family
         hdl_files = [f for f in resolved.files if f.is_hdl and not f.is_include]
         result.files_linted = len(hdl_files)
         result.toplevel = resolved.toplevel

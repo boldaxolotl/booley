@@ -121,11 +121,48 @@ def _stub_resolved(eda_tool: str | None = "verilator") -> object:
         vlnv="::stub_demo:0",
         toplevel="",
         eda_tool=eda_tool,
+        configured_eda_tool=eda_tool,
         files=(),
         parameters={},
         build_root=Path("build"),
         edam_path=Path("build/stub_demo_0.eda.yml"),
     )
+
+
+@pytest.mark.parametrize("eda_tool", (None, "mystery-lint"))
+def test_real_preparation_rejects_missing_or_unknown_configured_linter(
+    tmp_path: Path,
+    eda_tool: str | None,
+) -> None:
+    flow = LintFlow()
+    flow.parse_args(["--target", "lint_bad", "--work-dir", str(tmp_path)])
+    handle = _target_handle("lint_bad", project_root=tmp_path)
+    resolved = _stub_resolved(eda_tool)
+    with patch.object(
+        flow,
+        "_prepare_lint_command",
+        return_value=(["make", "-C", "build"], resolved),
+    ):
+        prepared, errors = flow._prepare_lint_targets((handle,))
+
+    assert prepared == {}
+    assert len(errors) == 1
+    assert errors[0].error.startswith("lint setup failed: unknown lint EDA tool")
+
+
+@pytest.mark.parametrize("eda_tool", (None, "mystery-lint"))
+def test_dry_run_plan_rejects_missing_or_unknown_declared_linter(
+    tmp_path: Path,
+    eda_tool: str | None,
+) -> None:
+    flow = LintFlow()
+    flow.parse_args(["--target", "lint_bad", "--work-dir", str(tmp_path)])
+    handle = _target_handle("lint_bad", project_root=tmp_path, eda_tool=eda_tool)
+
+    plan = flow._plan_lint((handle,))
+
+    assert len(plan.aggregate_errors) == 1
+    assert "unknown lint EDA tool" in plan.aggregate_errors[0]
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +232,7 @@ class TestLintResolution:
             vlnv="::lint_demo:0",
             toplevel="top",
             eda_tool="verilator",
+            configured_eda_tool="verilator",
             files=(),
             parameters={},
             build_root=resolved_build,
@@ -311,6 +349,58 @@ class TestLintResolution:
         assert "-Wall" in vc
         # Relocatable: no absolute project/build paths baked into the .vc.
         assert str(work_dir) not in vc
+
+    def test_real_fusesoc_legacy_verilator_lint_setup(
+        self,
+        tmp_path: Path,
+        state_file: Path,
+    ) -> None:
+        pytest.importorskip("fusesoc")
+        pytest.importorskip("edalize")
+        import shutil
+        import sys
+
+        work_dir = tmp_path / "legacy-proj"
+        (work_dir / "rtl").mkdir(parents=True)
+        (work_dir / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+        (work_dir / "lint_demo.core").write_text(
+            "CAPI=2:\n"
+            "name: ::lint_demo:0\n"
+            "filesets:\n"
+            "  rtl:\n"
+            "    files: [rtl/top.sv]\n"
+            "    file_type: systemVerilogSource\n"
+            "targets:\n"
+            "  lint_legacy:\n"
+            "    default_tool: verilator\n"
+            "    tools:\n"
+            "      verilator: {mode: lint-only}\n"
+            "    filesets: [rtl]\n"
+            "    toplevel: top\n",
+            encoding="utf-8",
+        )
+        flow = LintFlow()
+        flow.parse_args(["--work-dir", str(work_dir), "--target", "lint_legacy"])
+        flow.read_state()
+        handle = TargetCatalog.build(work_dir).select("lint_legacy", for_flow="lint")
+        fusesoc_cmd = (
+            list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+            if shutil.which("fusesoc")
+            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+        )
+        real_resolve = fusesoc_registry._resolve_target
+        with patch.object(
+            fusesoc_registry,
+            "_resolve_target",
+            side_effect=lambda *args, **kwargs: real_resolve(
+                *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
+            ),
+        ):
+            prepared = flow._prepare_lint_command(handle)
+
+        assert prepared.resolved.eda_tool is None
+        assert prepared.resolved.configured_eda_tool == "verilator"
+        assert (prepared.resolved.build_root / "Makefile").is_file()
 
 
 class TestDoctorTargetAuthority:
@@ -1946,6 +2036,7 @@ class TestLintObservability:
             vlnv="::demo:0",
             toplevel="design_top",  # declared by NO linted source
             eda_tool="verible",
+            configured_eda_tool="verible",
             files=(ResolvedFile(name="other.sv", file_type="systemVerilogSource"),),
             parameters={},
             build_root=tmp_path,
@@ -1988,6 +2079,7 @@ class TestLintObservability:
             vlnv="::demo:0",
             toplevel="design_top",
             eda_tool="verilator",
+            configured_eda_tool="verilator",
             files=(ResolvedFile(name="top.sv", file_type="systemVerilogSource"),),
             parameters={},
             build_root=tmp_path,
