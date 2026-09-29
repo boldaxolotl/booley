@@ -687,9 +687,6 @@ class _CocotbGroup:
     def bind_authenticated_bundle(self, evidence) -> None:
         assert evidence == _build_execution()
 
-    def reuse_compilation_from(self, source) -> None:
-        assert source is not None
-
     def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
         del snapshot_root, run_cwd
         self._harness.launches.append(self.names)

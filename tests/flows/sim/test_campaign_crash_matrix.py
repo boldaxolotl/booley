@@ -134,9 +134,6 @@ class _CrashGroup:
     def build_recovery_document(self):
         return _build_execution()
 
-    def reuse_compilation_from(self, _source):
-        return None
-
     def bind_authenticated_bundle(self, evidence):
         assert evidence == _build_execution()
 
