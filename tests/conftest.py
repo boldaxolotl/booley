@@ -122,8 +122,17 @@ _FLOW_SESSIONS = pytest.StashKey[list[Any]]()
 
 @pytest.fixture(autouse=True)
 def _track_flow_sessions(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Record each Flow session a test creates for the teardown lock check below."""
-    from booley.flows.flow_session import FlowSession
+    """Record each Flow session a test creates for the teardown lock check below.
+
+    Minimal CI environments (for example the production-image smoke jobs) lack
+    Flow dependencies such as PyYAML. No Flow session can exist there, so the
+    fixture tracks nothing instead of failing every test's setup.
+    """
+    try:
+        from booley.flows.flow_session import FlowSession
+    except ModuleNotFoundError:
+        yield
+        return
 
     sessions = request.node.stash.setdefault(_FLOW_SESSIONS, [])
     initialize = FlowSession.__init__
