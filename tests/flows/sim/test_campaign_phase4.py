@@ -1040,7 +1040,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     fault_enabled, original_retire = [True], ChildExecutionRegistry.retire
 
     def interrupted_retire(registry, prepared, **kwargs) -> None:
-        _wait_until(lambda: len(state.completion_order) == 3)
+        _wait_until(lambda: len(state.completion_order) == 3, timeout=10.0)
         if fault_enabled[0]:
             raise RuntimeError("injected retirement interruption")
         original_retire(registry, prepared, **kwargs)
