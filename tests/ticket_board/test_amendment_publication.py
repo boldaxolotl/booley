@@ -47,6 +47,21 @@ def _optional_request() -> dict:
     }
 
 
+def test_amendment_serializer_error_is_domain_error(tmp_path: Path, monkeypatch) -> None:
+    @contextmanager
+    def conversion_context(*_args, **_kwargs):
+        yield object()
+
+    def fail_serialization(*_args, **_kwargs):
+        raise ValueError("invalid output")
+
+    monkeypatch.setattr(amendment, "ticket_conversion_context", conversion_context)
+    monkeypatch.setattr(amendment, "serialize_ticket_document", fail_serialization)
+
+    with pytest.raises(AmendmentError, match="invalid amended Ticket: invalid output"):
+        amendment._serialize_ticket(tmp_path, "ticket", object())
+
+
 def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -> None:
     authored_body = "\n## Description\n\nRecover publication.  \n\n"
     root, blocked, tio = _blocked_ticket(tmp_path, body=authored_body)

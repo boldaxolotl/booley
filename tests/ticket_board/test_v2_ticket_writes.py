@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import basis_refresh, ticket_document
 from booley.ticket_board.io import TicketIO
@@ -204,3 +206,52 @@ def test_waiting_refresh_serialization_failure_is_blocked_and_scan_continues(
     assert (board.tickets_dir / "board/queue/z-success-v2.md").is_file()
     assert finished == []
     assert basis_refresh.load_basis_refresh(project, "a-fail-v2") == journal
+
+
+def test_prepare_spec_fields_handles_legacy_invalid_and_removed_generated_values(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project, board = _git_project(tmp_path, monkeypatch)
+    legacy = board.tickets_dir / "board/drafts/legacy.md"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("---\nsummary: Legacy\n---\n\nBody\n", encoding="utf-8")
+
+    prepared = board._prepare_spec_fields(legacy, {"feature_branch": "legacy"})
+
+    assert prepared is not None
+    assert b"feature_branch: legacy" in prepared
+
+    invalid = board.tickets_dir / "board/queue/invalid.md"
+    invalid.parent.mkdir(parents=True, exist_ok=True)
+    invalid.write_text("---\nCRITERIA_MANDATORY: {}\n---\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Ticket document is invalid"):
+        board._prepare_spec_fields(invalid, {"created": "2026-09-29T00:00:00Z"})
+    invalid.unlink()
+
+    waiting = _enqueue_waiting(project, board, "remove-generated")
+    without_branch = board._prepare_spec_fields(waiting, {"feature_branch": ""})
+    assert without_branch is not None
+    with ticket_conversion_context(project, "remove-generated", "executable") as context:
+        converted = convert_ticket_document(without_branch.decode(), context)
+    assert converted.document is not None
+    assert "feature_branch" not in converted.document.generated
+
+
+def test_waiting_refresh_without_prepared_journal_is_blocked(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    project, board = _git_project(tmp_path, monkeypatch)
+    waiting = _enqueue_waiting(project, board, "missing-refresh-journal")
+    before = waiting.read_bytes()
+    monkeypatch.setattr(
+        basis_refresh,
+        "prepare_waiting_basis_refresh",
+        lambda *_args, **_kwargs: (object(), "d" * 32),
+    )
+    monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args, **_kwargs: None)
+
+    assert op_promote_waiting(board) == []
+
+    blocked = board.tickets_dir / "board/blocked/missing-refresh-journal.md"
+    assert blocked.read_bytes() == before
+    assert "prepared waiting Ticket metadata is unavailable" in capsys.readouterr().err

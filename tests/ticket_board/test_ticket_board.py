@@ -77,6 +77,7 @@ from booley.ticket_board import (
     validate_logs,
     validate_ticket_fields,
 )
+from booley.ticket_board import frontmatter as frontmatter_module
 from booley.ticket_board import scanner as scanner_module
 from booley.ticket_board import ticket_baseline as ticket_baseline_module
 from booley.ticket_board import ticket_document as ticket_document_module
@@ -1361,6 +1362,26 @@ class TestUpdateFrontmatter:
             update_frontmatter(p, {"priority": "high"})
 
         assert p.read_text(encoding="utf-8") == original
+
+    def test_v2_detector_rejects_undelimited_and_malformed_frontmatter(self):
+        assert not frontmatter_module.is_v2_ticket_document("summary: Legacy\n")
+        assert not frontmatter_module.is_v2_ticket_document("---\nsummary: [\n---\n")
+
+    def test_legacy_atomic_write_failure_removes_temporary_file(self, tmp_path, monkeypatch):
+        p = tmp_path / "ticket.md"
+        original = "---\nsummary: Legacy\n---\n\n## Description\nKeep this.\n"
+        p.write_text(original, encoding="utf-8")
+
+        def fail_replace(_self, _target):
+            raise OSError("injected replace failure")
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+
+        with pytest.raises(OSError, match="injected replace failure"):
+            update_frontmatter(p, {"priority": "high"})
+
+        assert p.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("ticket*.tmp")) == []
 
 
 # ===========================================================================
