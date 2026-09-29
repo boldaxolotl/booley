@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import gc
 import io
 import sys
 from types import SimpleNamespace
@@ -24,6 +25,19 @@ class _MemoryFile(io.StringIO):
         return 7
 
 
+def _install_fake_lock_module(
+    monkeypatch: pytest.MonkeyPatch, platform: str, name: str, module: SimpleNamespace
+) -> None:
+    """Swap the platform lock module after finalizing locks leaked by earlier tests.
+
+    The fake is process-wide, so a leaked lock generator collected while it is
+    installed would release through the fake and fail inside this test.
+    """
+    gc.collect()
+    monkeypatch.setattr(file_lock.sys, "platform", platform)
+    monkeypatch.setitem(sys.modules, name, module)
+
+
 def test_windows_lock_seeds_empty_file_and_uses_byte_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     handle = _MemoryFile()
     calls: list[tuple[int, int, int, int]] = []
@@ -32,8 +46,7 @@ def test_windows_lock_seeds_empty_file_and_uses_byte_zero(monkeypatch: pytest.Mo
         calls.append((fd, mode, count, handle.tell()))
 
     fake_msvcrt = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2, locking=locking)
-    monkeypatch.setattr(file_lock.sys, "platform", "win32")
-    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    _install_fake_lock_module(monkeypatch, "win32", "msvcrt", fake_msvcrt)
 
     with file_lock.nonblocking_file_lock(handle):
         assert handle.getvalue() == "\0"
@@ -47,8 +60,7 @@ def test_lock_contention_has_specific_exception(monkeypatch: pytest.MonkeyPatch)
         raise OSError(errno.EAGAIN, "busy")
 
     fake_fcntl = SimpleNamespace(LOCK_EX=1, LOCK_NB=2, LOCK_UN=4, flock=flock)
-    monkeypatch.setattr(file_lock.sys, "platform", "linux")
-    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+    _install_fake_lock_module(monkeypatch, "linux", "fcntl", fake_fcntl)
 
     with pytest.raises(file_lock.LockContentionError):
         file_lock.acquire_file_lock(_MemoryFile("x"))
@@ -61,8 +73,7 @@ def test_unrelated_lock_error_propagates(monkeypatch: pytest.MonkeyPatch) -> Non
         raise error
 
     fake_fcntl = SimpleNamespace(LOCK_EX=1, LOCK_NB=2, LOCK_UN=4, flock=flock)
-    monkeypatch.setattr(file_lock.sys, "platform", "linux")
-    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+    _install_fake_lock_module(monkeypatch, "linux", "fcntl", fake_fcntl)
 
     with pytest.raises(OSError) as raised:
         file_lock.acquire_file_lock(_MemoryFile("x"))
