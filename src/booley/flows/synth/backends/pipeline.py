@@ -389,7 +389,7 @@ def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
         f"yosys:{yosys_prereq}",
         "\t@echo 'BOOLEY_STAGE: yosys'",
         _eda_tool_preflight(token, "yosys", "yosys"),
-        _required_file(token, "yosys", str(spec.liberty), spec.liberty.name),
+        _required_file(token, "yosys", spec.liberty.as_posix(), spec.liberty.name),
     ]
     if spec.frontend == "slang":
         marker = _marker(token, "missing_required_file", "yosys", "read_slang")

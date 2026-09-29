@@ -682,6 +682,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
         for target in targets:
             result = LintConfigResult(target=target.selector)
             try:
+                prepared_command: (
+                    _PreparedLintCommand | tuple[list[str], fusesoc_registry.ResolvedTarget]
+                )
                 prepared_command = self._prepare_lint_command(target)
             except Exception as exc:  # isolate and normalize a Target setup failure
                 result.error = f"lint setup failed: {exc}"
